@@ -21,6 +21,7 @@ const from = {
     "--print": (argv) => m.run(["-p", ...argv]),
   })),
   rules: () => import("./rules.ts").then((m): Record<string, Command> => ({ rules: m.rulesCmd })),
+  audit: () => import("./audit.ts").then((m): Record<string, Command> => ({ audit: m.auditCmd })),
   safety: () => import("./safety.ts").then((m): Record<string, Command> => ({ safety: m.safetyCmd })),
   review: () => import("./review.ts").then((m): Record<string, Command> => ({ review: m.reviewCmd })),
   debug: () => import("./debug.ts").then((m): Record<string, Command> => ({ debug: m.debug })),
@@ -43,7 +44,7 @@ export const WHERE: Record<string, keyof typeof from> = {
   providers: "providers",
   messages: "inspect", changes: "inspect", cost: "inspect",
   run: "run", "-p": "run", "--print": "run",
-  rules: "rules", safety: "safety", review: "review", debug: "debug", import: "import", port: "port", mcp: "mcp", completion: "completion",
+  rules: "rules", audit: "audit", safety: "safety", review: "review", debug: "debug", import: "import", port: "port", mcp: "mcp", completion: "completion",
 };
 
 export const isCommand = (name: string): boolean => Object.hasOwn(WHERE, name);

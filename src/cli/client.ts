@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { lockedDaemon, servicedDaemon } from "../core/daemon-lock.ts";
 import { defaultStateDir } from "../core/paths.ts";
+import { chunks } from "../core/proc.ts";
 
 export const EXIT = { ok: 0, owner: 2, error: 3, timeout: 124, sigint: 130, sigterm: 143 } as const;
 export const DEFAULT_URL = "http://127.0.0.1:47960";
@@ -88,6 +89,20 @@ export class Client {
     const b = (await r.json().catch(() => ({}))) as any;
     if (!r.ok) throw new ApiError(await refusal(this.base, r, b), r.status, false, r.status === 503 && b?.draining === true, r.status === 409 && Array.isArray(b?.hold));
     return b as T;
+  }
+  // A long answer taken as it comes: to a file, or to standard output, never held whole here. Returns the bytes written.
+  async download(path: string, to?: string): Promise<number> {
+    let r: Response;
+    try { r = await fetch(this.base + path, { headers: authHeaders() }); } catch (e) {
+      throw new ApiError(`no daemon answers at ${this.base} (start one with \`keel serve\`, or pass --url)`, 0, /ConnectionRefused|ECONNREFUSED/.test(String((e as any)?.code)));
+    }
+    if (!r.ok) throw new ApiError(await refusal(this.base, r, await r.json().catch(() => ({}))), r.status, false);
+    let n = 0;
+    const sink = to ? Bun.file(to).writer() : undefined;
+    for await (const chunk of chunks(r.body!)) { n += chunk.length; sink ? sink.write(chunk) : process.stdout.write(chunk); }
+    await sink?.end();
+    if (!to) process.stdout.write("\n");
+    return n;
   }
   get = <T = any>(path: string) => this.call<T>("GET", path);
   post = <T = any>(path: string, body?: unknown) => this.call<T>("POST", path, body ?? {});

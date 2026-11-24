@@ -18,6 +18,7 @@ import { fileFacts, openedLog, restLog, sealLog } from "./log-pages.ts";
 import { logHolders, logStartLine } from "./log-holders.ts";
 import { holdStore, logBytes, logPaths, storePath } from "./store-files.ts";
 import { Side } from "./side.ts";
+import { cardHead, egressHead, eventHead, link as sealed, ZERO } from "./seal.ts";
 import { keyBlocks } from "./message-facts.ts";
 import { cacheStatements } from "./statement-cache.ts";
 import type { SettleAsk, Settled } from "../engine/compact.ts";
@@ -128,10 +129,24 @@ CREATE TABLE IF NOT EXISTS queue (
 );
 `;
 
+// The sealed record's other tables (src/core/seal.ts, src/admin/seal.ts). `seal_heads`: the last link of a
+// session's cards and outward rows (its events' is on the session's row, written with the head it already writes);
+// session '' is the outward rows that name no session. `seal_cards`: each version of an approval card as it was
+// stored (the card's own row is changed by its answer). `seal_days`: each day's heads of the sessions that moved
+// since the day before, and `seal_roots`: the day's root over them.
+const SEAL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS seal_heads (session_id TEXT NOT NULL, kind TEXT NOT NULL, head BLOB NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (session_id, kind)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS seal_cards (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL, prev BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS seal_cards_session ON seal_cards(session_id, id);
+CREATE TABLE IF NOT EXISTS seal_days (day TEXT NOT NULL, session_id TEXT NOT NULL, events BLOB, cards BLOB, egress BLOB, PRIMARY KEY (day, session_id)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS seal_roots (day TEXT PRIMARY KEY, at INTEGER NOT NULL, root BLOB NOT NULL, prev_root BLOB, sessions INTEGER NOT NULL) WITHOUT ROWID;
+`;
+
 type EventRow = Omit<StoredEvent, "data"> & { data: string };
 // Fields of event data that hold the id of another event of the same session.
 export const EVENT_REFS = ["covered", "undo_head", "from_event", "replaced_head"] as const;
-const rowToEvent = (r: EventRow): StoredEvent => ({ ...r, parent: r.parent ?? null, kind: r.kind as EventKind, data: JSON.parse(r.data) });
+// (The link a row keeps, `prev`, is the sealed record's: an event handed to a reader never carries it.)
+const rowToEvent = ({ prev: _prev, ...r }: EventRow & { prev?: unknown }): StoredEvent => ({ ...r, parent: r.parent ?? null, kind: r.kind as EventKind, data: JSON.parse(r.data) });
 
 // Cached events are shared by every reader: frozen, so a reader that changes
 // one fails loudly instead of changing what the next reader sees.
@@ -318,9 +333,10 @@ const within = <T>(p: Promise<T>, ms: number): Promise<T | false> => {
 
 export type ColdReads = { n: number; rows: number; ms: number; by: { who: string; n: number; rows: number; ms: number }[] };
 export type BodyReads = { n: number; rows: number; bytes: number; ms: number; by: { who: string; n: number; rows: number; bytes: number; ms: number }[] };
-type SessionRow = Omit<Session, "archived" | "usage" | "settings" | "outside"> & { archived: number; usage: string; settings: string; outside?: string | null };
+type SessionRow = Omit<Session, "archived" | "usage" | "settings" | "outside"> & { archived: number; usage: string; settings: string; outside?: string | null; seal?: Uint8Array | null };
 
-function rowToSession({ outside, ...r }: SessionRow): Session {
+// (`seal`, the last link of the session's event chain, changes with every event: it stays in the store, and a session handed out never carries it.)
+function rowToSession({ outside, seal: _seal, ...r }: SessionRow): Session {
   const s: Session = {
     ...r,
     ...(outside ? { outside: JSON.parse(outside) } : {}),
@@ -504,7 +520,39 @@ export class Store {
   }
   // One of the statements that may be owed (src/core/owed.ts).
   sqlOrLater(name: OwedSql, params: (string | number | null)[], what: string): boolean {
-    return this.orLater(what, () => void this.db.query(owedSql(name)!).run(...params), [{ op: "sql", name, params }]);
+    return this.orLater(what, () => void this.db.transaction(() => {
+      this.db.query(owedSql(name)!).run(...params);
+      if (name === "approval") this.sealCard(String(params[1]), String(params[3]));
+    })(), [{ op: "sql", name, params }]);
+  }
+
+  // The last link of a session's chain of `kind` ("cards", "egress"; session '' is the outward rows of no session).
+  private sealHead(session: string, kind: "cards" | "egress"): Uint8Array {
+    return this.db.query<{ head: Uint8Array }, [string, string]>("SELECT head FROM seal_heads WHERE session_id = ? AND kind = ?").get(session, kind)?.head ?? ZERO;
+  }
+  private setSealHead(session: string, kind: "cards" | "egress", head: Uint8Array, at: number) {
+    this.db.query("INSERT INTO seal_heads (session_id, kind, head, at) VALUES (?, ?, ?, ?) ON CONFLICT(session_id, kind) DO UPDATE SET head = excluded.head, at = excluded.at").run(session, kind, head, at);
+  }
+  // An approval card as it was just stored: one more link of its session's chain of cards, in the write that stored it
+  // (a card's own row is changed by its answer, so the chain keeps each version).
+  sealCard(session: string, data: string, ts = Date.now()) {
+    this.db.transaction(() => {
+      const prev = this.sealHead(session, "cards");
+      this.db.query("INSERT INTO seal_cards (session_id, ts, data, prev) VALUES (?, ?, ?, ?)").run(session, ts, data, prev);
+      this.setSealHead(session, "cards", sealed(prev, cardHead(session, ts), data), ts);
+    })();
+  }
+  // A row of the outward ledger (src/safety/egress.ts) with its link, and the chain's head, in one write.
+  addEgress(o: { at: number; session: string | null; turn: string | null; call: string | null; tool: string; via: string | null; host: string; port: number | null; bytes: number | null; outcome: string; status: number | null; why: string | null }) {
+    this.db.transaction(() => {
+      const key = o.session ?? "";
+      const prev = this.sealHead(key, "egress");
+      const head = egressHead({ ts: o.at, session_id: o.session ?? null, turn_event: o.turn ?? null, call_id: o.call ?? null, tool: o.tool, via: o.via ?? null, host: o.host, port: o.port ?? null, bytes_out: o.bytes ?? null, outcome: o.outcome, status: o.status ?? null });
+      this.db
+        .query("INSERT INTO egress (ts, session_id, turn_event, call_id, tool, via, host, port, bytes_out, outcome, status, why, prev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(o.at, o.session, o.turn, o.call, o.tool, o.via, o.host, o.port, o.bytes, o.outcome, o.status, o.why, prev);
+      this.setSealHead(key, "egress", sealed(prev, head, o.why ?? ""), o.at);
+    })();
   }
   // Something the next start must say (a restart that made no backup): kept in the same file.
   noteNext(text: string) {
@@ -708,6 +756,7 @@ export class Store {
               this.append(r.session, r.kind, r.data, undefined, r.at, r.id);
             } else if (r.op === "sql") {
               this.db.query(owedSql(r.name, r.v)!).run(...r.params);
+              if (r.name === "approval") this.sealCard(String(r.params[1]), String(r.params[3]));
             }
             done.made++;
           })();
@@ -802,6 +851,11 @@ export class Store {
     if (!this.columnExists("sessions", "title_by")) this.db.exec("ALTER TABLE sessions ADD COLUMN title_by TEXT NOT NULL DEFAULT ''");
     // A session another harness runs, shown here read-only (src/integrations/outside/service.ts): what its records say of it.
     if (!this.columnExists("sessions", "outside")) this.db.exec("ALTER TABLE sessions ADD COLUMN outside TEXT");
+    // The sealed record (src/core/seal.ts): an event keeps the link before it, and the session keeps the last
+    // link. A store from before has neither; its next event starts the chain (the session's seal is empty).
+    if (!this.columnExists("events", "prev")) this.db.exec("ALTER TABLE events ADD COLUMN prev BLOB");
+    if (!this.columnExists("sessions", "seal")) this.db.exec("ALTER TABLE sessions ADD COLUMN seal BLOB");
+    this.db.exec(SEAL_SCHEMA);
     for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"], ["span_id", "TEXT"], ["read_ts", "INTEGER"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
@@ -972,7 +1026,12 @@ export class Store {
   deleteSession(id: string) {
     const unread = this.queueGone ? this.queue(id).filter((q) => !ownersMeta(q.meta)) : [];
     const session = unread.length ? this.session(id) : undefined;
-    this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
+      // (The days' heads stay: they are what says the session existed and what its chain was.)
+      this.db.query("DELETE FROM seal_cards WHERE session_id = ?").run(id);
+      this.db.query("DELETE FROM seal_heads WHERE session_id = ?").run(id);
+    })();
     this.forget(id);
     forgetSession(id);
     if (session) this.queueGone?.(unread, session);
@@ -993,13 +1052,15 @@ export class Store {
       const { n } = this.db
         .query<{ n: number }, [string]>("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM events WHERE session_id = ?")
         .get(session_id)!;
-      const p = parent !== undefined
-        ? parent
-        : (this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null);
+      const was = this.db.query<{ head: string | null; seal: Uint8Array | null }, [string]>("SELECT head, seal FROM sessions WHERE id = ?").get(session_id);
+      const p = parent !== undefined ? parent : (was?.head ?? null);
+      // The event's link: the one before it (the first of a chain, or of a store from before the seal, starts from zeros) and its own content.
+      const prev = was?.seal ?? ZERO;
+      const seal = sealed(prev, eventHead({ id, session_id, seq: n, parent: p, kind, ts }), text);
       const row = this.db
-        .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(id, session_id, n, p, kind, text, ts).lastInsertRowid;
-      this.db.query("UPDATE sessions SET updated = ?, head = ? WHERE id = ?").run(now, id, session_id);
+        .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts, prev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, session_id, n, p, kind, text, ts, prev).lastInsertRowid;
+      this.db.query("UPDATE sessions SET updated = ?, head = ?, seal = ? WHERE id = ?").run(now, id, seal, session_id);
       // (What a kill must not lose apart from this event: what the reply it stores cost.)
       this.side.joinDurable();
       return { n, p, row: Number(row) };
@@ -1675,14 +1736,18 @@ export class Store {
       const ses = this.createSession(s);
       let prev: string | null = null;
       let seq = 0;
+      let seal: Uint8Array = ZERO;
       for (const e of events) {
+        const p = e.parent !== undefined ? e.parent : prev;
+        const text = JSON.stringify(this.redact(ses.id, e.kind, e.data));
         const row = this.db
-          .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(e.id, ses.id, ++seq, e.parent !== undefined ? e.parent : prev, e.kind, JSON.stringify(this.redact(ses.id, e.kind, e.data)), e.ts).lastInsertRowid;
+          .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts, prev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(e.id, ses.id, ++seq, p, e.kind, text, e.ts, seal).lastInsertRowid;
+        seal = sealed(seal, eventHead({ id: e.id, session_id: ses.id, seq, parent: p, kind: e.kind, ts: e.ts }), text);
         this.stored?.({ id: e.id, kind: e.kind, rowid: Number(row) }, true);
         prev = e.id;
       }
-      this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(head !== undefined ? head : prev, ses.id);
+      this.db.query("UPDATE sessions SET head = ?, seal = ? WHERE id = ?").run(head !== undefined ? head : prev, events.length ? seal : null, ses.id);
       return ses.id;
     });
     const id = tx();
@@ -1699,6 +1764,7 @@ export class Store {
     const ids = new Map(events.map((e) => [e.id, Bun.randomUUIDv7()] as const));
     const tx = this.db.transaction(() => {
       let seq = 0;
+      let seal: Uint8Array = ZERO;
       for (const e of events) {
         const id = ids.get(e.id)!;
         let data = e.data as Record<string, unknown>;
@@ -1711,13 +1777,15 @@ export class Store {
             else delete data[k];
           }
         }
+        const text = JSON.stringify(this.redact(session_id, e.kind, data));
         const row = this.db
-          .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(id, session_id, ++seq, prev, e.kind, JSON.stringify(this.redact(session_id, e.kind, data)), e.ts).lastInsertRowid;
+          .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts, prev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(id, session_id, ++seq, prev, e.kind, text, e.ts, seal).lastInsertRowid;
+        seal = sealed(seal, eventHead({ id, session_id, seq, parent: prev, kind: e.kind, ts: e.ts }), text);
         this.stored?.({ id, kind: e.kind, rowid: Number(row) }, true);
         prev = id;
       }
-      this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, session_id);
+      this.db.query("UPDATE sessions SET head = ?, seal = ? WHERE id = ?").run(prev, events.length ? seal : null, session_id);
     });
     tx();
     this.forget(session_id);

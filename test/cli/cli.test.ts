@@ -5,6 +5,7 @@
 // Each run works in a folder of its own, so two runs at once do not collide:
 // KEEL_CLI_SCRATCH names it (default: one per process, removed at the end).
 // KEEL_CLI_BIN runs a binary built before instead of building one.
+import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -1647,6 +1648,25 @@ describe("client commands against a running daemon", () => {
     const off = z === "UTC" ? 0 : (z!.slice(3, 4) === "-" ? -1 : 1) * (Number(z!.slice(4, 6)) * 60 + Number(z!.slice(7, 9)));
     const hour = (ts: number) => new Date(ts + off * 60_000).toISOString().slice(0, 13).replace("T", " ");
     expect([hour(Date.now() - 3_600_000), hour(Date.now())]).toContain(text.slice("Sessions, read ".length, "Sessions, read ".length + 13));
+  }, 60_000);
+
+  test("audit: a session's history is whole, a bundle is streamed out and verifies alone, an edited one is refused", async () => {
+    const id = json((await k(["run", "--json", "seal me"])).out).session_id;
+    const whole = await k(["audit", "verify", id]);
+    expect([whole.code, whole.out]).toEqual([0, expect.stringContaining("whole: session")]);
+    expect(whole.out).toContain("sealed from event 1");
+    const file = join(SCRATCH, "bundle.json");
+    const ex = await k(["audit", "export", id, "--out", file]);
+    expect(ex.code).toBe(0);
+    // The bundle is checked with no daemon: a state folder nothing serves, and a file edited by hand is refused.
+    const alone = await keel(["audit", "verify", "--bundle", file], { state: join(SCRATCH, "state-none") });
+    expect([alone.code, alone.out]).toEqual([0, expect.stringContaining("whole: session")]);
+    const edited = join(SCRATCH, "bundle-edited.json");
+    writeFileSync(edited, readFileSync(file, "utf8").replace("seal me", "seal you"));
+    const refused = await keel(["audit", "verify", "--bundle", edited], { state: join(SCRATCH, "state-none") });
+    expect([refused.code, refused.out]).toEqual([1, expect.stringContaining("BREAK at event")]);
+    expect((await k(["audit", "verify", id])).code).toBe(0);
+    expect((await k(["audit", "roots"])).code).toBe(0);
   }, 60_000);
 });
 

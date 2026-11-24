@@ -77,6 +77,7 @@ import { shellRoutes } from "./shell.ts";
 import { checkRoutes } from "./checks.ts";
 import { pictureRoutes } from "./pictures.ts";
 import { egressRoutes } from "./egress.ts";
+import { auditRoutes } from "./audit.ts";
 import { pressRoutes } from "./presses.ts";
 import { healthRoutes } from "./health.ts";
 import { rulingRoutes } from "../../automation/rulings.ts";
@@ -157,6 +158,7 @@ const modules: Record<string, RouteModule> = {
   runRoutes, // the command line: keel run, keel send
   secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder
   egressRoutes, // after the gates: a shell call that runs carries its tag to the sandbox proxy
+  auditRoutes, // after egress: the roots cover its rows
   pressRoutes,
   telemetryRoutes, // its tool timing starts after every gate
   experimentRoutes, // after telemetry: a turn's row reads the calls telemetry wrote

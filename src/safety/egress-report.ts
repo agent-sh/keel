@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS egress (
   bytes_out INTEGER,
   outcome TEXT NOT NULL,
   status INTEGER,
-  why TEXT
+  why TEXT,
+  -- The link before this row in its session's chain (src/core/seal.ts).
+  prev BLOB
 );
 -- A day's rows; a turn's rows within its time (the receipt).
 CREATE INDEX IF NOT EXISTS egress_ts ON egress(ts);

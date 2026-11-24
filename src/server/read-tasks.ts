@@ -26,6 +26,7 @@ import { scanFiles, type FilesAsk } from "../admin/health-files.ts";
 import { mineRead, untagged } from "../automation/lessons-mine.ts";
 import { BUDGET_MS, trialRead, type TrialAsk } from "../safety/trial-read.ts";
 import { readProcs, type ProcAsk } from "../admin/proc-read.ts";
+import { sealBundleTo, sealRoots, sealVerify } from "../admin/seal-read.ts";
 
 export const tasks = {
   // What /proc says of the processes under the daemon (the resource sampler's pass, src/admin/proc-read.ts).
@@ -77,6 +78,10 @@ export const tasks = {
   // What the owner presses, most used first per view (src/admin/presses.ts).
   "presses.report": (db: Database, a: { days?: number }) => pressReport(db, a),
   "egress.report": (db: Database, a: EgressAsk) => egressReport(db, a),
+  // The sealed record (src/admin/seal-read.ts): whether a session's history is whole, its receipts as one file, the days' roots.
+  "seal.verify": (db: Database, a: Parameters<typeof sealVerify>[1]) => sealVerify(db, a),
+  "seal.bundle": (db: Database, a: Parameters<typeof sealBundleTo>[1]) => sealBundleTo(db, a),
+  "seal.roots": (db: Database, a: Parameters<typeof sealRoots>[1]) => sealRoots(db, a),
   // The health check's walk over the owner's skill, command, agent and plugin files (src/admin/health-files.ts).
   "health.files": (_db: Database, a: FilesAsk) => scanFiles(a),
   // The causes that recur across a repository's agent trees (src/automation/lessons-mine.ts).

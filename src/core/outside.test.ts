@@ -234,6 +234,7 @@ const READS_MORE = new Map<string, [number, string]>([
   ["src/admin/storage.ts", [6, "the owner's Storage report, tags and archive policy; GET /api/storage and the cleanup list leave copies out for any caller but the owner"]],
   ["src/admin/hours-read.ts", [1, "one session read by its id, which the door answers as no such session for any caller but the owner (peer-scope.ts)"]],
   ["src/admin/retention.ts", [1, "times and the pin of sessions it may clear, no words"]],
+  ["src/admin/seal.ts", [1, "the heads of the sessions the day's root covers: hashes of Keel's own chains, no words"]],
   ["src/engine/build-pin.ts", [1, "session_pins: made by turns Keel runs"]],
   ["src/fleet/message-state.ts", [1, "messages to or from one session; a message to a session another harness runs is refused (409)"]],
   ["src/server/routes/search.ts", [1, "its scope leaves them out for any caller but the owner (seesOutside)"]],
@@ -246,7 +247,7 @@ const READS_MORE = new Map<string, [number, string]>([
   ["src/core/outside.ts", [1, "the outside sessions' harness and own id (no words of theirs), to leave them out of the sessions elsewhere list for a blind caller"]],
 ]);
 // The columns a statement may read with no reason: none of them carries a session's words.
-const BARE = /^(DISTINCT\s+)?((\w+\.)?(id|parent_id|session_id|archived|created|updated|head|head_event_id)|\d+|\?|(COUNT|MIN|MAX)\([\w.*]*\))(\s+AS\s+\w+)?$/i;
+const BARE = /^(DISTINCT\s+)?((\w+\.)?(id|parent_id|session_id|archived|created|updated|head|head_event_id|seal)|\d+|\?|(COUNT|MIN|MAX)\([\w.*]*\))(\s+AS\s+\w+)?$/i;
 const columns = (text: string) => {
   const out: string[] = [];
   let depth = 0, at = 0;

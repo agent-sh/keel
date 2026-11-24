@@ -23,9 +23,9 @@ let untap: (() => void) | undefined;
 export const egressRoutes: RouteModule = ({ store }) => {
   store.migrate(EGRESS_SCHEMA);
   // A row waits with the other side writes and is made in their commit (src/core/side.ts).
-  setEgressSink((o) => store.side.later("an outward transfer's row", () => void store.db
-    .query("INSERT INTO egress (ts, session_id, turn_event, call_id, tool, via, host, port, bytes_out, outcome, status, why) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(o.at, o.session, o.turn, o.call, o.tool, o.via, o.host, o.port, o.bytes, o.outcome, o.status, o.why)));
+  // The ledger of a store from before the sealed record has no `prev` column.
+  if (!store.columnExists("egress", "prev")) store.db.exec("ALTER TABLE egress ADD COLUMN prev BLOB");
+  setEgressSink((o) => store.side.later("an outward transfer's row", () => store.addEgress(o)));
   // (A hot reload taps the fetch it finds again: the old tap is taken away first.)
   untap?.();
   untap = tapFetch();

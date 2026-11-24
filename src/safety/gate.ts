@@ -1306,7 +1306,13 @@ export class Gate {
     a = this.redact(a);
     // (An answer changes a card that is in the store: its id, its session, the state and the record it has from here.)
     if (owed) this.store.sqlOrLater("approval", [a.id, a.session_id, a.state, JSON.stringify(a)], "a card's answer");
-    else this.store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, data = excluded.data").run(a.id, a.session_id, a.state, JSON.stringify(a), a.created);
+    else {
+      const text = JSON.stringify(a);
+      this.store.db.transaction(() => {
+        this.store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, data = excluded.data").run(a.id, a.session_id, a.state, text, a.created);
+        this.store.sealCard(a.session_id, text);
+      })();
+    }
     this.bus.emit({ t: "feature", name: "approval", session_id: a.session_id, data: a });
   }
 
