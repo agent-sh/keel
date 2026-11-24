@@ -78,6 +78,15 @@ export type Change = { files: number; added: number; removed: number; more?: tru
 // The work a card shows: what its worktree holds uncommitted, and what its commits change over the base. Each is
 // null when there is none; the whole is null when the worktree is not read (none here, another machine, no time left).
 export type Work = { uncommitted: Change | null; branch: Change | null };
+// The branch checked together with another live branch it touches related code with
+// (src/landing/together.ts), at both heads as they are now. red: a check fails together and passes on
+// each alone; own: what fails together fails on a side alone too; flaky: red once, then green; broken:
+// red on both sides alone (the base or the setup is red where pairs run; the owner is told).
+export type PairFact = {
+  with: string; with_agent: string | null; head: string; with_head: string; base_tip: string | null;
+  state: "running" | "green" | "red" | "flaky" | "own" | "broken" | "error"; why: string; detail: string | null;
+  checks: { name: string; tests?: string[]; branch?: string }[]; error: string | null; at: number;
+};
 
 export type BoardRow = {
   id: string; session_id: string; parent_id: string; depth: number;
@@ -93,6 +102,7 @@ export type BoardRow = {
   queue: QueueFact | null;      // its branch's latest landing queue entry
   live: Live | null;            // null: no branch, or not landed
   work: Work | null;            // what its worktree changes; null: not read
+  together: PairFact[] | null;  // null: no branch; the pairs it was checked in at its head
 };
 
 export type Board = {
@@ -374,6 +384,16 @@ function reviewWords(v: BoardReview | null, full: boolean): string {
   return `review ${words} by ${who}${head}${v.line ? `, reviewer wrote: "${full ? v.line : clip(v.line, 60)}"` : ""}${other}`;
 }
 
+const plain2 = (xs: readonly string[], n = 4) => (xs.length > n ? `${xs.slice(0, n).join(", ")} and ${xs.length - n} more` : xs.join(", "));
+function togetherWords(t: PairFact[] | null, full: boolean): string {
+  if (!t?.length) return "";
+  const red = t.filter((p) => p.state === "red");
+  const reds = red.map((p) => `red together with ${p.with}${p.with_agent ? ` (${p.with_agent})` : ""} at ${short(p.head)}+${short(p.with_head)}: ${p.checks.map((c) => `${c.name}${c.tests?.length ? ` (${plain2(c.tests, full ? 12 : 3)})` : ""}`).join("; ")}`);
+  if (!full) return reds.join(" · ");
+  const green = t.filter((p) => p.state === "green").map((p) => p.with), running = t.filter((p) => p.state === "running").map((p) => p.with), broken = t.filter((p) => p.state === "broken").map((p) => p.with);
+  return [...reds, green.length ? `green together with ${green.join(", ")}` : "", running.length ? `checking together with ${running.join(", ")}` : "", broken.length ? `not checked together with ${broken.join(", ")}: red on both sides alone, the setup or the base is broken` : ""].filter(Boolean).join(" · ");
+}
+
 function queueWords(q: QueueFact | null, full: boolean): string {
   if (!q || (!q.current && q.state === "landed")) return "";
   return `queue ${q.state}${q.current ? "" : " (an older head)"}${q.why ? ` (${clip(q.why, full ? LINE_MAX : 60)})` : ""}`;
@@ -390,6 +410,7 @@ export function rowLine(r: BoardRow, full = false): string {
     workWords(r.work),
     landedWords(r, full),
     queueWords(r.queue, full),
+    togetherWords(r.together, full),
   ].filter(Boolean);
   return parts.join(" · ");
 }

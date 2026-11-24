@@ -13,9 +13,9 @@ import { namedFor, repoOf } from "../checks/ledger.ts";
 import { git, gitNames } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import { readsOf } from "../server/reads.ts";
-import type { AgentFact, Facts, TreeRun } from "./facts.ts";
+import type { AgentFact, Facts, PairCheckRow, TreeRun } from "./facts.ts";
 import { baseHolds } from "./held.ts";
-import { liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Change, type Deploy, type Landed, type Work } from "./rules.ts";
+import { liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Change, type Deploy, type Landed, type PairFact, type Work } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -177,6 +177,7 @@ export class WorkBoard {
         r.ahead = tip.ahead ?? null;
         r.behind = tip.behind ?? null;
         heads.push(tip.sha);
+        r.together = togetherOf(facts.pairs, repo, a.branch!, tip.sha, (b) => tips.get(`refs/heads/${b}`)?.sha, (b) => agents.find((x) => x.branch === b)?.id ?? null);
         // What its worktree changes: read for the newest agents' worktrees, never more than WORKTREES a board.
         if (r.worktree === "here" && a.wt_path && !a.machine && worktrees++ < WORKTREES) work.push(async () => { r.work = await this.changes(repo, a.wt_path!, baseTip, tip.sha, tip.ahead, by); });
         if (!baseTip) { r.landed = { state: "unknown", why: "the repository has no base branch" }; continue; }
@@ -281,8 +282,26 @@ function rowOf(a: AgentFact): BoardRow {
     checks: !branch ? null : remote ? { state: "unknown", why: "its branch is on another machine" } : !a.repo_root ? { state: "unknown", why: "no worktree record names its repository" } : null,
     review: null, reviews,
     landed: !branch ? null : remote ? { state: "unknown", why: "its branch is on another machine" } : !a.repo_root ? { state: "unknown", why: "no worktree record names its repository" } : null,
-    queue: null, live: null, work: null,
+    queue: null, live: null, work: null, together: branch ? [] : null,
   };
+}
+
+// The pairs a branch was checked in at its head, whose other head is its branch's now, newest first.
+function togetherOf(rows: PairCheckRow[], repo: string, branch: string, head: string, tipOf: (b: string) => string | undefined, agentOf: (b: string) => string | null): PairFact[] {
+  const out: PairFact[] = [];
+  const seen = new Set<string>();
+  for (const p of rows) {
+    if (p.repo !== repo) continue;
+    const mine = p.branch1 === branch && p.tip1 === head ? 1 : p.branch2 === branch && p.tip2 === head ? 2 : 0;
+    if (!mine) continue;
+    const [w, wt] = mine === 1 ? [p.branch2, p.tip2] : [p.branch1, p.tip1];
+    if (tipOf(w) !== wt || seen.has(w)) continue;
+    seen.add(w);
+    let checks: PairFact["checks"] = [];
+    try { checks = p.checks ? JSON.parse(p.checks) : []; } catch {}
+    out.push({ with: w, with_agent: agentOf(w), head, with_head: wt, base_tip: p.base_tip, state: p.state as PairFact["state"], why: p.why, detail: p.detail, checks, error: p.error, at: p.ended ?? p.started });
+  }
+  return out;
 }
 
 function checksOf(named: readonly { name: string; run: string; dir: string }[], tree: string | undefined, runs: TreeRun[]): ChecksOn {

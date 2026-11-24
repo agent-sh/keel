@@ -7,6 +7,7 @@ import * as agents from "../../automation/agents.ts";
 import { deliver, isPending } from "../../automation/core.ts";
 import * as failures from "../../automation/failures.ts";
 import { LandingQueue, LIVE_STATES, type Entry } from "../../landing/queue.ts";
+import { Together } from "../../landing/together.ts";
 import { readOptsFor } from "../../safety/sandbox-config.ts";
 import { sandboxScope } from "../../safety/sandbox-scope.ts";
 import { confine } from "../../safety/sandbox.ts";
@@ -15,10 +16,12 @@ import { registerShared } from "../../tools/registry.ts";
 import { fail, ok, type Tool } from "../../tools/types.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { sessionOfCaller } from "../caller.ts";
-import { overlaps } from "./overlaps.ts";
+import { overlapPassed, overlaps } from "./overlaps.ts";
 import { gate, presence } from "./permissions.ts";
 
 export let landing: LandingQueue | undefined;
+// The pair checks of this daemon: the board reads their results (src/server/routes/board.ts).
+export let together: Together | undefined;
 // The daemon's parts the tool reads when it runs (a tool is registered once a process; the routes may be built again).
 let current: { store: Deps["store"]; q: LandingQueue } | undefined;
 let offAgents: (() => void) | undefined;
@@ -37,6 +40,11 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
     if (!first) return;
     deliver(sessionId, first.text, first.meta, { coalesceMs: 300, onSent: first.onSent, refresh: () => now() });
   };
+  // A check runs where the session's own commands run: inside its sandbox when it has one.
+  const confineFor = (argv: string[], sessionId: string | null, folder: string) => {
+    const p = sessionId ? gate?.perm(sessionId) : undefined;
+    return p && p.sandbox !== "off" ? confine(argv, p, folder, undefined, readOptsFor(sandboxScope(folder))) : argv;
+  };
   const q = new LandingQueue(store, ov, {
     changed: (ids) => { for (const id of ids) bus.emit({ t: "feature", name: "landing", session_id: id, data: { changed: true } }); },
     error: (e, at) => void errors.capture("server", e, { at }),
@@ -44,11 +52,7 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
       if (failures.record(root, { kind: "land", cls: f.cls, message: f.message, ...(f.ref ? { ref: f.ref } : {}), tell: "wake" })) failures.wake(root);
     },
     owed: (id) => { try { owe(id); } catch (e) { errors.capture("server", e, { at: "landing outcome", session: id }); } },
-    // A check runs where the session's own commands run: inside its sandbox when it has one.
-    confine: (argv, sessionId, folder) => {
-      const p = sessionId ? gate?.perm(sessionId) : undefined;
-      return p && p.sandbox !== "off" ? confine(argv, p, folder, undefined, readOptsFor(sandboxScope(folder))) : argv;
-    },
+    confine: confineFor,
     env: (sessionId) => toolEnv(sessionId ?? "landing-queue"),
     // The push reaches the network: not for a session whose commands may not.
     mayPush: (sessionId) => {
@@ -92,6 +96,21 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
   });
   landing = q;
   current = { store, q };
+  // Live branches that merge clean and touch related code, checked together after each forecast pass.
+  const tg = new Together(store, ov, {
+    error: (e, at) => void errors.capture("server", e, { at }),
+    changed: (ids) => { for (const id of ids) bus.emit({ t: "feature", name: "pairs", session_id: id, data: { changed: true } }); },
+    tell: (to, f) => {
+      if (failures.record(to, { kind: "pair", cls: "red together", message: f.message, ...(f.ref ? { ref: f.ref } : {}), tell: "wake" })) failures.wake(to);
+    },
+    // (One row of the Errors panel a repository: its cause is the same each time it is told.)
+    broken: (message) => void errors.capture("server", new Error(message), { at: "pair checks setup" }),
+    agentOf: (sid) => { const a = agents.byChild(sid); return a ? { id: a.id, title: a.title } : undefined; },
+    confine: confineFor,
+    env: (sessionId) => toolEnv(sessionId ?? "pair-checks"),
+  });
+  together = tg;
+  overlapPassed.tell = (repo) => tg.schedule(repo);
   const boot = setTimeout(() => void q.recover().catch((e) => errors.capture("server", e, { at: "landing recover" })), 3_000);
   boot.unref?.();
 

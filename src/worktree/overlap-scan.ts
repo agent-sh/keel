@@ -61,7 +61,8 @@ const PLACED = 40;
 const SETTLE_MS = 750;
 
 // `changed`: the sessions whose repository's forecast changed (their views read it again).
-export type Teller = { changed: (sessionIds: string[]) => void; failed: (e: unknown, at: string) => void };
+// `passed`: a pass of the repository ended (the pair checks read its pairs, src/landing/together.ts).
+export type Teller = { changed: (sessionIds: string[]) => void; failed: (e: unknown, at: string) => void; passed?: (repo: string) => void };
 
 export const rootOf = (w: Where) => (w.common.endsWith("/.git") ? dirname(w.common) : w.top ?? dirname(w.common));
 
@@ -317,6 +318,7 @@ export class Overlaps {
     stat.ms = Math.round(performance.now() - t0);
     this.passes.set(repo, stat);
     if (changed) this.teller.changed([...new Set(owners.values())]);
+    this.teller.passed?.(repo);
   }
 
   // The options that leave every attribute out of a call: an empty tree as
@@ -511,6 +513,12 @@ export class Overlaps {
   // The pairs of a repository as the last pass left them, conflicts and errors only (the landing queue orders and warns by them).
   pairsOf(repo: string): { a: string; b: string; base: boolean; conflict: boolean; files: ConflictFile[] }[] {
     return this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND (conflict = 1 OR error IS NOT NULL)").all(repo).map((r) => ({ a: r.a, b: r.b, base: !!r.base, conflict: !!r.conflict, files: JSON.parse(r.files) }));
+  }
+
+  // Every pair of the repository as the last pass left it, at the tips it judged (the pair checks
+  // take the branch pairs that merge clean, of branches that merge clean with the base).
+  pairRows(repo: string): { a: string; b: string; base: boolean; a_tip: string; b_tip: string; conflict: boolean; error: boolean }[] {
+    return this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ?").all(repo).map((r) => ({ a: r.a, b: r.b, base: !!r.base, a_tip: r.a_tip, b_tip: r.b_tip, conflict: !!r.conflict, error: !!r.error }));
   }
 
   // ---- what the page reads ----

@@ -26,6 +26,7 @@ export type LandCard = {
   proof: string;               // what the check ledger saw of the agent's checks; "" when its report has none
   areas: Area[];
   queue: { state: string; why: string | null } | null; // its branch's latest entry, of this head
+  together: string[];          // what fails when it is merged with another live branch (src/landing/together.ts), in words
   ready: boolean;              // nothing is missing
   missing: string[];           // what of the evidence is not there, in words
   fp: string;
@@ -87,8 +88,8 @@ const VERDICT_SAYS: Record<string, string> = {
 
 // What of the evidence is missing: checks that failed, did not run or are not known, and a review that
 // did not approve this head. The repository naming no checks is said on the card, not missing.
-export function missingOf(checks: CardChecks, review: CardReview | null): string[] {
-  const out: string[] = [];
+export function missingOf(checks: CardChecks, review: CardReview | null, together: readonly string[] = []): string[] {
+  const out: string[] = [...together];
   if (checks.state === "unknown") out.push(`the checks are not known (${checks.why})`);
   if (checks.state === "known") {
     if (checks.failed.length) out.push(`failed: ${checks.failed.join(", ")}`);
@@ -103,7 +104,7 @@ export function missingOf(checks: CardChecks, review: CardReview | null): string
 
 // The print of what a card shows: a decision is taken on these facts and no others.
 export function cardPrint(c: Omit<LandCard, "fp" | "ready" | "missing">): string {
-  const facts = [c.key, c.branch, c.head, c.base ?? "", c.base_tip ?? "", String(c.ahead ?? ""), String(c.behind ?? ""), c.agent_state, JSON.stringify(c.checks), JSON.stringify(c.review && { v: c.review.verdict, by: c.review.by, cur: c.review.current, line: c.review.line }), c.proof, JSON.stringify(c.queue)];
+  const facts = [c.key, c.branch, c.head, c.base ?? "", c.base_tip ?? "", String(c.ahead ?? ""), String(c.behind ?? ""), c.agent_state, JSON.stringify(c.checks), JSON.stringify(c.review && { v: c.review.verdict, by: c.review.by, cur: c.review.current, line: c.review.line }), c.proof, JSON.stringify(c.queue), JSON.stringify(c.together)];
   return Bun.hash(facts.join("\u0000")).toString(36);
 }
 
@@ -119,8 +120,9 @@ export function landCard(o: { root: string; title: string; row: BoardRow; report
     branch: r.branch!, base: r.base, base_tip: o.baseTip ?? null, head: r.head!, ahead: r.ahead, behind: r.behind,
     checks, review, proof: proofOf(o.report), areas: areasOf(o.numstat),
     queue: q ? { state: q.state, why: q.why } : null,
+    together: (r.together ?? []).filter((p) => p.state === "red").map((p) => `fails together with ${p.with}: ${p.checks.map((c) => `${c.name}${c.tests?.length ? ` (${c.tests.slice(0, 3).join(", ")}${c.tests.length > 3 ? ` and ${c.tests.length - 3} more` : ""})` : ""}`).join("; ")}`),
   };
-  const missing = missingOf(checks, review);
+  const missing = missingOf(checks, review, body.together);
   return { ...body, ready: !missing.length, missing, fp: cardPrint(body) };
 }
 

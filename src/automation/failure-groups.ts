@@ -17,8 +17,9 @@ import { clip, inert } from "./core.ts";
 // tool: a tool call returned a failure. wait: a wait timed out. loop: a loop's run failed.
 // message: a message the session sent was taken and then could not be delivered
 // (its ref is who it was for). land: a branch left the landing queue (its ref is
-// the agent whose branch it is, or the session itself; src/landing/queue.ts).
-export type FailureKind = "agent" | "turn" | "provider" | "tool" | "wait" | "loop" | "message" | "land" | "budget";
+// the agent whose branch it is, or the session itself; src/landing/queue.ts). pair: two live branches
+// merge clean and fail together, each passing alone (its ref is the agent of one side; src/landing/together.ts).
+export type FailureKind = "agent" | "turn" | "provider" | "tool" | "wait" | "loop" | "message" | "land" | "budget" | "pair";
 // Where it happened: an agent of the session (its id and title), or the session
 // itself. `n`: its occurrences. `owed`: the ones the session's model is still to
 // be given. `told`: the ones it was given, or that stopped mattering.
@@ -323,6 +324,7 @@ function headOf(g: FailureGroup, refs: FailureRef[]): string {
   if (g.kind === "provider" && g.cls === "overloaded") return `${plural(n, "agent")} still waiting on a model at capacity`;
   if (g.kind === "message") return `${g.owed === 1 ? "A message this session sent was" : `${g.owed} messages this session sent were`} not delivered`;
   if (g.kind === "budget") return n ? `${plural(n, "agent")} at ${g.cls} of ${n === 1 ? "its" : "their"} dollar budget` : `This session is at ${g.cls} of its dollar cap`;
+  if (g.kind === "pair") return `${g.owed === 1 ? "A branch fails" : `${g.owed} branches fail`} together with another live branch, and pass alone`;
   if (g.kind === "land") return `${g.owed === 1 ? "A branch" : `${g.owed} branches`} left the landing queue${g.cls ? ` (${g.cls})` : ""}`;
   return `${g.kind} ${g.cls}: ${plural(g.owed, "failure")}`;
 }

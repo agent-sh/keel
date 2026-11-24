@@ -21,7 +21,7 @@ const row = (id: string, o: Partial<BoardRow> = {}): BoardRow => ({
   created: 1000, ended: 2000, machine: null, branch: `keel/${id}`, repo: dir, base: "main", head: HEAD, ahead: 1, behind: 0, worktree: "here",
   checks: { state: "known", passed: ["unit"], failed: [], notRun: [] },
   review: { by: "rv", title: "Review", how: "named", state: "completed", verdict: "approved", source: "verdict", line: "fine", tip: HEAD, of: HEAD, current: true, at: 1 },
-  reviews: [], landed: { state: "no", missing: 1 }, queue: null, live: null, work: null, ...o,
+  reviews: [], landed: { state: "no", missing: 1 }, queue: null, live: null, work: null, together: null, ...o,
 });
 
 const BASE_TIP = "9".repeat(40);

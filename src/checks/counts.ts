@@ -49,3 +49,22 @@ export function countsOf(log: string): Counts | undefined {
   if (eslint) return { fail: Number(eslint[1]) };
   return undefined;
 }
+
+// The names of what failed, from the lines a test tool or a typechecker prints for each failure: bun's
+// "(fail) a > b", jest's "● a › b", pytest's "FAILED path::test", go's "--- FAIL: TestX", cargo's
+// "test x ... FAILED", Playwright's "✘ ... › test", and tsc's "file(line,col): error TSn" (as
+// "file:line TSn"). Each name once, in the order printed; at most `max`.
+export function failedNames(log: string, max = 50): string[] {
+  const t = log.replace(ANSI, "").replace(/\r/g, "");
+  const out: string[] = [];
+  const add = (s: string | undefined) => { const n = s?.trim().replace(/\s+\[[\d.]+\s*m?s\]$/, "").replace(/\s+\([\d.]+m?s\)$/, ""); if (n && !out.includes(n) && out.length < max) out.push(n); };
+  for (const m of t.matchAll(/^\(fail\) (.+)$/gm)) add(m[1]);
+  for (const m of t.matchAll(/^\s*● (.+ › .+)$/gm)) add(m[1]);
+  for (const m of t.matchAll(/^FAILED (\S+::\S+)/gm)) add(m[1]);
+  for (const m of t.matchAll(/^\s*--- FAIL: (\S+)/gm)) add(m[1]);
+  for (const m of t.matchAll(/^test (\S+) \.\.\. FAILED$/gm)) add(m[1]);
+  for (const m of t.matchAll(/^\s*[✘×] +\d+ .*? › (.+)$/gm)) add(m[1]);
+  for (const m of t.matchAll(/^([^\s(][^(\n]*)\((\d+),\d+\): error (TS\d+)/gm)) add(`${m[1]}:${m[2]} ${m[3]}`);
+  for (const m of t.matchAll(/^([^\s:][^:\n]*):(\d+):\d+ - error (TS\d+)/gm)) add(`${m[1]}:${m[2]} ${m[3]}`);
+  return out;
+}

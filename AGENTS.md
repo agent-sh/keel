@@ -316,6 +316,22 @@ under `~/.cache/keel-work/bun/research/`.
   once with an alert, until the cap is raised. The owner's own message runs its turn whole, with a note that
   the cap is reached and what was spent (`Engine.byOwner`). One press (doubling,
   `POST /api/sessions/:id/cap`) lets the rest go on.
+- Live branches are checked together before they land (`src/landing/together.ts`; the pure part,
+  which pairs and what they run, in `pairs.ts`). After each forecast pass, the pairs that merge clean
+  and touch related code (a shared file, an import between their files, a test that reaches both in
+  two imports) are merged on the base in a worktree of Keel's own and the repository's fast checks run
+  there: its named checks that take no words, and its unit check with the tests that reach both sides,
+  nearest first, at most `PAIR_TESTS` (`pairs` in `.keel/checks.json` names others, or `false`). A hub
+  file (one much of the base's recent work touches, or many files import: `hubsOf`) relates a pair
+  only where both change lines of it near each other; an import of a hub relates nothing. The sides
+  run a failing check alone only when it failed together, and red together, green apart and red again
+  is told to each agent's parent once and shown on both cards; red on both sides alone (or a setup
+  that fails) is the base's or the setup's, told to the owner once, and holds the repository's pairs
+  until its base or its checks change. A result is kept by the two heads; a pair whose head moves is
+  dropped from the line and between its runs. A pair is due when both heads were still for
+  `together.quiet_s`; at most `together.at_once` run at once, each command after a slot of the heavy
+  pool with what the landing queue gives its commands (`KEEL_LAND_REPO`), niced here or on
+  `together.host` while its load leaves room.
 - A session's agent slots are its tree's and count the agents that work. An
   agent that waits on a wait of its own holds none. Its wake, and an agent
   asked for while every slot works, wait in line as owed and take the next
@@ -417,7 +433,7 @@ under `~/.cache/keel-work/bun/research/`.
 | `src/server/app.ts` | HTTP API and WebSocket |
 | `src/server/reads.ts` | the read thread: heavy reads off the loop |
 | `src/board/` | the work board: each agent's branch, checks, review, landed and live, from facts |
-| `src/landing/` | the landing queue: branches built on the base and the entries ahead, checked on that tree, landed by fast-forward |
+| `src/landing/` | the landing queue: branches built on the base and the entries ahead, checked on that tree, landed by fast-forward; and live branches checked together (`together.ts`, the pair choice in `pairs.ts`) |
 | `src/core/checkpoint.ts` | the checkpoint thread: the log's syncs off the loop |
 | `src/admin/stall-watch.ts` | the stall watcher's thread: what the main thread did while the loop was held |
 | `ui/` | React 19 UI, bundled by Bun from `ui/index.html` |

@@ -21,3 +21,14 @@ test("colors are read through, the last summary wins, and a log with none has no
   expect(countsOf(" 5 pass\n 1 fail\n...\n 6 pass\n 0 fail\n")).toEqual({ pass: 6, fail: 0 });
   expect(countsOf("built in 2.1s\n")).toBeUndefined();
 });
+
+test("the names of what failed, from each tool's failure lines", async () => {
+  const { failedNames } = await import("./counts.ts");
+  expect(failedNames("(pass) stamp > signs people [0.10ms]\n(fail) stamp > keeps bots [0.31ms]\n(fail) stamp > keeps bots [0.2ms]\n 1 pass\n 1 fail\n")).toEqual(["stamp > keeps bots"]);
+  expect(failedNames("  ● stamp › keeps bots\n\n    expect(received)\n")).toEqual(["stamp › keeps bots"]);
+  expect(failedNames("FAILED tests/test_stamp.py::test_bots - AssertionError\n")).toEqual(["tests/test_stamp.py::test_bots"]);
+  expect(failedNames("--- FAIL: TestStamp (0.00s)\n    --- FAIL: TestStamp/bots (0.00s)\nFAIL\n")).toEqual(["TestStamp", "TestStamp/bots"]);
+  expect(failedNames("test stamp::bots ... FAILED\ntest stamp::people ... ok\n")).toEqual(["stamp::bots"]);
+  expect(failedNames("src/a.ts(3,7): error TS2322: Type 'string' is not assignable.\nsrc/b.ts:9:1 - error TS2304: Cannot find name 'x'.\n")).toEqual(["src/a.ts:3 TS2322", "src/b.ts:9 TS2304"]);
+  expect(failedNames("built in 2.1s\n")).toEqual([]);
+});

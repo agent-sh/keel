@@ -69,6 +69,8 @@ export function route(f: Frame): Route {
       if (f.name === "overlap" && f.session_id) return one(f.session_id);
       // The landing queue of the session's repository changed: its Branches panel reads it.
       if (f.name === "landing" && f.session_id) return one(f.session_id);
+      // Branches of the session's tree were checked together (src/landing/together.ts): its Board reads it.
+      if (f.name === "pairs" && f.session_id) return one(f.session_id);
       if (f.name === "artifacts") return { topics: [feedTopic("artifacts"), EVERY, ...(f.session_id ? [sessionTopic(f.session_id)] : [])] };
       if (f.name === "awake") return { topics: [feedTopic("awake"), EVERY] };
       // The daemon's incidents (src/automation/incidents.ts): the band at the top of every page reads

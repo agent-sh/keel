@@ -2,7 +2,7 @@
 // head, and four facts the daemon keeps of it (src/board/board.ts): the named checks on its head's tree,
 // the latest review of its branch, whether the base holds it, and whether what runs holds it. A
 // reviewer's words (its verdict's why, or its LAND line) are quoted under its card as its own.
-import { Check, CircleDashed, FileDiff, GitBranch, Loader2, Minus, RefreshCw, X } from "lucide-react";
+import { Check, CircleDashed, FileDiff, GitBranch, GitMerge, Loader2, Minus, RefreshCw, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
@@ -87,6 +87,47 @@ function liveFact(r: BoardRow) {
   return <Fact name="Live" tone={v.state === "yes" ? "ok" : "none"} value={`${v.state === "yes" ? "yes" : "not yet"} · ${v.how === "after step passed" ? "after step" : v.how}`} title={`${v.how} at ${sha(v.at)}`} testid="board-live" state={v.state} />;
 }
 
+// The branches this one was checked together with at its head (src/landing/together.ts): each pair
+// that fails together and passes alone in a block of its own, with the failing tests and both heads;
+// the rest as one line.
+function Together({ r, below }: { r: BoardRow; below: Board["rows"] }) {
+  const t = r.together ?? [];
+  if (!t.length) return null;
+  const red = t.filter((p) => p.state === "red");
+  const green = t.filter((p) => p.state === "green").length, running = t.filter((p) => p.state === "running").length, broken = t.filter((p) => p.state === "broken").length;
+  const rest = [green ? `green with ${green}` : "", running ? `checking with ${running}` : "", broken ? "setup or base broken where pairs run" : ""].filter(Boolean).join(" · ");
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="board-together">
+      {red.map((p) => {
+        const other = below.find((x) => x.id === p.with_agent);
+        const tests = p.checks.flatMap((c) => (c.tests ?? []).map((n) => ({ check: c.name, n })));
+        return (
+          <div key={p.with} className="flex flex-col gap-1 rounded-md bg-danger-soft px-2 py-1.5" data-testid="board-together-red" data-with={p.with}>
+            <span className="flex min-w-0 items-center gap-1.5 text-caption text-danger">
+              <GitMerge className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 truncate">
+                Fails together with{" "}
+                {other ? <button type="button" className="font-mono hover:underline" onClick={() => openSession(other.session_id)} title={other.title}>{short(p.with)}</button> : <span className="font-mono">{short(p.with)}</span>}
+                , passes alone
+              </span>
+            </span>
+            {tests.length > 0 ? (
+              <ul className="flex flex-col gap-0.5 pl-5 text-micro text-fg">
+                {tests.slice(0, 4).map((x) => <li key={`${x.check}:${x.n}`} className="truncate font-mono" title={x.n} data-testid="board-together-test">{x.n}</li>)}
+                {tests.length > 4 && <li className="text-muted">{tests.length - 4} more</li>}
+              </ul>
+            ) : (
+              <span className="pl-5 text-micro text-fg">{p.checks.map((c) => c.name).join(", ")}</span>
+            )}
+            <span className="pl-5 font-mono text-micro text-muted" data-testid="board-together-heads">{sha(p.head)} + {sha(p.with_head)} on {sha(p.base_tip)}</span>
+          </div>
+        );
+      })}
+      {rest && <p className="flex items-center gap-1.5 px-0.5 text-micro text-faint" data-testid="board-together-rest"><GitMerge className="size-3" aria-hidden="true" />Checked together: {rest}</p>}
+    </div>
+  );
+}
+
 // A reviewer's own words under a card, named as its.
 function Quote({ by, how, title, line, below, testid }: { by: string; how: string; title: string; line: string; below: Board["rows"]; testid: string }) {
   const agent = below.find((x) => x.id === by);
@@ -153,6 +194,7 @@ function Card({ r, below, indent, w }: { r: BoardRow; below: Board["rows"]; inde
           {checksFact(r)}{reviewFact(r)}{landedFact(r)}{liveFact(r)}
         </div>
       )}
+      {r.branch && !branchGone(r) && <Together r={r} below={below} />}
       {r.review?.line && <Quote by={r.review.by} how={r.review.how} title={r.review.title} line={r.review.line} below={below} testid="board-verdict" />}
       {r.review?.against && <Quote by={r.review.against.by} how={r.review.against.how} title={r.review.against.title} line={r.review.against.line || "(no words)"} below={below} testid="board-verdict-against" />}
     </li>

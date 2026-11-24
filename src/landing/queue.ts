@@ -942,7 +942,7 @@ function clsOf(why: string): string {
 }
 
 // The last bytes of a log, read where they are (a long log is not read whole).
-function readTail(path: string, bytes = TAIL_BYTES): string {
+export function readTail(path: string, bytes = TAIL_BYTES): string {
   let fd: number | undefined;
   try {
     fd = openSync(path, "r");

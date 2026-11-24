@@ -8,7 +8,7 @@ const row = (o: Partial<BoardRow> = {}): BoardRow => ({
   created: 1000, ended: 2000, machine: null, branch: "keel/fix-retry", repo: "/r", base: "main", head: HEAD, ahead: 2, behind: 1, worktree: "here",
   checks: { state: "known", passed: ["typecheck", "unit"], failed: [], notRun: [] },
   review: { by: "rv1", title: "Review fix", how: "named", state: "completed", verdict: "approved", source: "verdict", line: "tests cover the retry", tip: HEAD, of: HEAD, current: true, at: 3000 },
-  reviews: [], landed: { state: "no", missing: 2 }, queue: null, live: null, work: null, ...o,
+  reviews: [], landed: { state: "no", missing: 2 }, queue: null, live: null, work: null, together: null, ...o,
 });
 const card = (r: BoardRow, report = "Done.\n(Checks after its last edit (2 min ago): typecheck passed 1 min ago.)\nLeft: nothing", numstat = "") =>
   landCard({ root: "s-root", title: "Coordinator", row: r, report, numstat, baseTip: "d".repeat(40) });
@@ -64,4 +64,13 @@ test("the size is told by area, the largest first, renames under their new path"
     { area: "2 more", files: 2, added: 2, removed: 0 },
   ]);
   expect(areasOf("")).toEqual([]);
+});
+
+test("a branch that fails together with another live branch is not ready, and says with which", () => {
+  const red = { with: "keel/other", with_agent: "ag2", head: "h".repeat(40), with_head: "o".repeat(40), base_tip: null, state: "red" as const, why: "test", detail: null, checks: [{ name: "unit", tests: ["stamp keeps bots"] }], error: null, at: 1 };
+  const c = card(row({ together: [red, { ...red, with: "keel/green", state: "green", checks: [] }] }));
+  expect(c.ready).toBe(false);
+  expect(c.together).toEqual(["fails together with keel/other: unit (stamp keeps bots)"]);
+  expect(c.missing[0]).toBe("fails together with keel/other: unit (stamp keeps bots)");
+  expect(c.fp).not.toBe(card(row({ together: [] })).fp);
 });

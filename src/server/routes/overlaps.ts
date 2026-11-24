@@ -10,12 +10,15 @@ import type { Deps, RouteModule } from "../app.ts";
 
 // The forecast of this daemon: the landing queue orders and warns by it (src/server/routes/landing.ts).
 export let overlaps: Overlaps | undefined;
+// Told at the end of each pass of a repository (the pair checks follow it: src/landing/together.ts).
+export const overlapPassed: { tell?: (repo: string) => void } = {};
 
 export const overlapRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
   const ov = new Overlaps(store, {
     changed: (ids) => { for (const id of ids) bus.emit({ t: "feature", name: "overlap", session_id: id, data: { changed: true } }); },
     failed: (e, at) => void errors.capture("server", e, { at }),
+    passed: (repo) => overlapPassed.tell?.(repo),
   });
   overlaps = ov;
 

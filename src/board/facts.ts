@@ -17,7 +17,9 @@ export type { ReviewFact };
 export type QueueRow = { id: string; repo: string; branch: string; tip: string; state: string; why: string | null; landed: string | null; updated: number };
 export type VerdictRow = { agent_id: string; commit_sha: string; branches: string; land: string; why: string; at: number };
 export type DeployRow = { repo: string; to_sha: string; ended: number };
-export type Facts = { total: number; agents: AgentFact[]; reviews: ReviewFact[]; queue: QueueRow[]; deploys: DeployRow[] };
+// A pair the branches were checked in (src/landing/together.ts), as its row keeps it.
+export type PairCheckRow = { repo: string; tip1: string; tip2: string; branch1: string; branch2: string; base_tip: string | null; why: string; detail: string | null; state: string; checks: string | null; error: string | null; started: number; ended: number | null };
+export type Facts = { total: number; agents: AgentFact[]; reviews: ReviewFact[]; queue: QueueRow[]; deploys: DeployRow[]; pairs: PairCheckRow[] };
 
 const tried = <T>(f: () => T[]): T[] => { try { return f(); } catch { return []; } };
 const has = (db: Database, table: string, col: string) => tried(() => db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all()).some((c) => c.name === col);
@@ -120,7 +122,12 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
   for (const repo of repos.slice(0, 20)) {
     deploys.push(...tried(() => db.query<DeployRow, [string]>("SELECT repo, to_sha, ended FROM landing_batches WHERE repo = ? AND to_sha IS NOT NULL AND after IS NOT NULL AND after_exit = 0 ORDER BY ended DESC LIMIT 1").all(repo)));
   }
-  return { total, agents, reviews, queue, deploys };
+  const pairs: PairCheckRow[] = [];
+  for (const repo of repos.slice(0, 20)) {
+    pairs.push(...tried(() => db.query<PairCheckRow, [string, string]>(`SELECT repo, tip1, tip2, branch1, branch2, base_tip, why, detail, state, checks, error, started, ended FROM pair_checks
+      WHERE repo = ?1 AND (branch1 IN (SELECT value FROM json_each(?2)) OR branch2 IN (SELECT value FROM json_each(?2))) ORDER BY started DESC LIMIT 400`).all(repo, JSON.stringify(list))));
+  }
+  return { total, agents, reviews, queue, deploys, pairs };
 }
 
 export type TreeRun = { tree: string; name: string; command: string; dir: string; result: string; ended: number };
