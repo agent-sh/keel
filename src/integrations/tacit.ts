@@ -58,7 +58,8 @@ import { readText } from "../core/proc.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
-import { afterAnswer, afterAsk, callFamilies, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
+import { DenyKeys, stoppable } from "./deny-keys.ts";
+import { afterAnswer, afterAsk, callFamilies, callTopics, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
 import { mayReadHome } from "../core/paths";
 
 // A call is known by its session and its id: ids are unique within a session only.
@@ -292,7 +293,9 @@ const PARTS_FROM = 2_000;
 const PART_EVENTS = 256;
 
 type TranscriptMark = { head: Session["head"]; model: string; workspace: string; stamp: string; last: string | null };
-type HookResult = { outcome: HookOutcome; text: string | null; ms?: number };
+// `deny`: the store stopped a shell command (tacit's pre-tool hook answers only so, since 0.9.38): its reason,
+// as the store wrote it. `text` is then the same for a call that already ran (see lateDeny).
+type HookResult = { outcome: HookOutcome; text: string | null; ms?: number; deny?: string };
 // The answers one request waits for; `counted`: their lateness was counted.
 type StepAnswers = { answers: { call: Running; owed: Promise<unknown> }[]; counted?: boolean };
 // A hook call that may still be running: `got` is set when it ended; `at`: when it was made.
@@ -302,6 +305,14 @@ const running = (done: Promise<HookResult>): Running => {
   done.then((got) => { r.got = got; });
   return r;
 };
+// How long a shell call of a family the store has denied waits for the store's answer before it runs. The hook
+// process takes about 17 ms (p95 19 ms, measured on the installed store); this is the headroom of a loaded machine.
+export const DENY_WAIT_MS = 300;
+// The reason of a deny that came after its command ran: the store's words say it stopped the command before it ran.
+export function lateDeny(reason: string): string {
+  const rest = reason.split("\n").filter((l) => !/^tacit stopped this command|^If the command is still right/.test(l)).join("\n").trim();
+  return `A rule of the owner's keyed to the command that just ran came after it started, so it was not stopped. Read it before the next command like it:\n${rest || reason}`;
+}
 const NOTHING: HookResult = { outcome: "empty", text: null };
 const NOT_MADE: HookResult = { outcome: "skipped", text: null };
 const SKIPPED: Running = { got: NOT_MADE, done: Promise.resolve(NOT_MADE), at: 0 };
@@ -351,6 +362,7 @@ export class Tacit {
   // (memory_tool_families): a quiet kind's call is asked when its family was never asked or was answered.
   private kinds = new Map<string, KindYield>();
   private families = new Map<string, number>(); // "<kind> <family>" -> answers with a fact
+  private denyKeys = new DenyKeys(); // the commands the store can stop (deny-keys.ts)
   // A kind of call that did not answer in time is out until one does: its
   // calls are made and not waited for. `failing`: its calls end in an error.
   private out: Record<Kind, boolean> = { ask: false, tool: false };
@@ -412,7 +424,7 @@ export class Tacit {
     // call), and results not held for an answer that had not come (the call
     // changed nothing). `request_waits`: requests that waited for a read's
     // answer still on its way, and how long in all.
-    tools: { never_answered: 0, not_held: 0, request_waits: 0, request_wait_ms: 0, quiet_skipped: 0, quiet_asked: 0 },
+    tools: { never_answered: 0, not_held: 0, request_waits: 0, request_wait_ms: 0, quiet_skipped: 0, quiet_asked: 0, deny_waits: { n: 0, ms: 0, max_ms: 0, timeouts: 0, denied: 0 } },
   };
 
   // `speed`: every wait and deadline is divided by it. 1 in use; the unit
@@ -764,11 +776,15 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
     const result = await runBoundedResult(argv, JSON.stringify(payload), STORE_TIMEOUT_MS / this.speed).finally(() => this.leave());
     let outcome: Exclude<HookOutcome, "skipped"> = result.outcome;
     let text = hook === "pre-compact" ? null : result.text;
+    let deny: string | undefined;
     if (outcome === "ok" && hook !== "pre-compact") {
       if (hook === "pre-tool" && text) {
         try {
-          const context = JSON.parse(text)?.hookSpecificOutput?.additionalContext;
-          text = typeof context === "string" ? context.trim() || null : null;
+          const out = JSON.parse(text)?.hookSpecificOutput;
+          const reason = out?.permissionDecision === "deny" && typeof out.permissionDecisionReason === "string" ? out.permissionDecisionReason.trim() : "";
+          if (reason) deny = reason.slice(0, MEMORY_CAP);
+          const context = out?.additionalContext;
+          text = deny ? lateDeny(deny) : typeof context === "string" ? context.trim() || null : null;
         } catch {
           outcome = "failure";
           text = null;
@@ -785,7 +801,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
     }
     const kind = kindOf(hook);
     if (kind) this.ended(kind, outcome, ms <= this.waitOf(hook), session);
-    return { outcome, text, ms };
+    return { outcome, text, ms, deny };
   }
 
   // How long a turn waits for a hook's answer.
@@ -1156,13 +1172,13 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
 
   // Whether a tool call is asked about, by how its kind has answered (memory-yield.ts). `families`: the
   // call's, for what it answers.
-  private toolAskFor(input: { tool_name: string; tool_input: any }): { kind: string; ask: ToolAsk; families: string[] } {
+  private toolAskFor(input: { tool_name: string; tool_input: any }, stops: boolean): { kind: string; ask: ToolAsk; families: string[] } {
     const kind = toolKind(input);
     const y = this.kinds.get(kind) ?? freshYield();
     const families = callFamilies(input).map((f) => `${kind} ${f}`);
     // Known: one of its families answered once, or was never asked (the store is asked once to learn it); a call of none is only sampled.
     const known = families.some((f) => (this.families.get(f) ?? 1) > 0);
-    const ask = toolAsk(y, known, namesStore(input), this.yieldRules.quietAfter, this.yieldRules.sampleEvery);
+    const ask = toolAsk(y, known, namesStore(input) || stops, this.yieldRules.quietAfter, this.yieldRules.sampleEvery);
     if (ask !== "skip") {
       const now = Date.now(), q = this.store.db.query("INSERT OR IGNORE INTO memory_tool_families (key, answered, updated) VALUES (?, 0, ?)");
       for (const f of families) if (!this.families.has(f)) { this.families.set(f, 0); q.run(f, now); }
@@ -1179,7 +1195,9 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
       for (const f of families) { this.families.set(f, (this.families.get(f) ?? 0) + 1); q.run(f, now); }
     }
     const was = this.kinds.get(kind) ?? freshYield();
-    const y = afterAnswer(was, r.outcome === "hit");
+    // A deny is about one command, which its keys name (deny-keys.ts): it does not make the whole kind asked in
+    // full again, as a rule that came with a fact did.
+    const y = afterAnswer(was, r.outcome === "hit" && !r.deny);
     this.kinds.set(kind, y);
     const q = this.yieldRules.quietAfter;
     if (y.quiet === 0 ? was.quiet !== 0 : y.quiet === q || y.quiet % 25 === 0)
@@ -1309,7 +1327,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         return { ...req, messages: toMessages(t.lineage(s.id)) };
       },
       beforeCompact: (s) => t.preCompact(s),
-      beforeTool(s, call) {
+      async beforeTool(s, call) {
         if (!t.bin || !t.flags(s.id).use_memory) return;
         // A call a run_code program makes gets its result back as data the program reads:
         // nothing is added to it (the program's own call is the step).
@@ -1320,13 +1338,15 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         // asked, every time: nothing says when the store last changed, so an
         // empty answer is not remembered. A call the store records as a step
         // in itself is always made.
-        if (!namesStore(input) && neverAnswered(s.workspace, input)) {
+        // A shell command the store can stop (a deny key names it) is asked in full, every time, and waited for.
+        const stops = input.tool_name === "Bash" && stoppable(callTopics(input), t.denyKeys.get());
+        if (!namesStore(input) && !stops && neverAnswered(s.workspace, input)) {
           t.metrics.tools.never_answered++;
           return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
         }
         // A kind of call the store has long had nothing for is asked only now and then, and then
         // not waited for (memory-yield.ts).
-        const { kind, ask, families } = t.toolAskFor(input);
+        const { kind, ask, families } = t.toolAskFor(input, stops);
         if (ask === "skip") return void t.metrics.tools.quiet_skipped++;
         if (ask === "light") t.metrics.tools.quiet_asked++;
         // Whether the call changes something, where that is known now (a
@@ -1339,6 +1359,21 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         // Whether the result is held for the answer: only for a call that changes something, of a kind asked in full.
         const holds = ask === "light" ? Promise.resolve(false) : call.tool.target ? call.tool.target(call.input, s.id).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
         t.preTool.set(preKey(s.id, call.id), { call: p, holds, light: ask === "light" });
+        // A shell command the store can stop (a command that starts with the words of one of its deny keys) waits
+        // for the store's answer: its deny is a rule that must come before the command, not after it. Any other
+        // call runs beside the ask, and a deny that comes late is told with the result (lateDeny).
+        if (!stops || p === SKIPPED || t.out.tool) return;
+        const began = performance.now();
+        await within(p, DENY_WAIT_MS / t.speed);
+        const waited = performance.now() - began, d = t.metrics.tools.deny_waits;
+        d.n++; d.ms += waited; d.max_ms = Math.max(d.max_ms, waited);
+        if (!p.got) return void d.timeouts++;
+        if (!p.got.deny) return;
+        d.denied++;
+        t.preTool.delete(preKey(s.id, call.id));
+        // The row of the ask, as a block would have written it (what the model reads is the refusal).
+        t.admit(s.id, "pre-tool", p.got, t.shownIn(s.id, t.lineage(s.id)), waited, { call: call.tool.name, ref: call.id });
+        return { deny: p.got.deny };
       },
       async afterTool(s, call, result) {
         const entry = t.preTool.get(preKey(s.id, call.id));

@@ -12,6 +12,10 @@ import { Engine } from "../engine/turn.ts";
 import { hookRoutes } from "../server/routes/hooks.ts";
 import { RECORD_FORMAT } from "./claude-format.ts";
 import { MEMORY_CAP, START_WAIT_MS, Tacit } from "./tacit.ts";
+import { ownEnv } from "../../test/env.ts";
+
+// The store's deny keys are read from its state folder: a scratch one, never the machine's.
+ownEnv({ TACIT_STATE_DIR: mkdtempSync(join(process.env.TMPDIR ?? ".", "tacit-state-")) });
 
 // Turn hooks are process-wide: the files after this one run without the ones its tests register.
 const hooksAtStart = allHooks().length;
@@ -358,6 +362,12 @@ case "$hook" in
     if [ "$mode" = lagtool ] && [[ $cmd =~ $re ]]; then for ((n = 0; n < 1000; n++)); do [ -f "$dir/result-\${BASH_REMATCH[1]}" ] && break; sleep 0.01; done
     elif [ "$mode" = lagtool ]; then sleep ${sec(0.4)}; fi
     [ "$mode" = latetool ] && sleep ${sec(1.3)}
+    # A command with "denyme" is stopped once a session, as the store's pre-tool hook stops one a rule forbids.
+    if [[ "$cmd" == *denyme* ]] && ! grep -qx deny "$seen"; then
+      echo deny >> "$seen"
+      printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"tacit stopped this command once, before it ran: a rule of this owner is keyed to it.\\n- rule-denyme (past mistake): never run denyme.\\nIf the command is still right given this, run it again unchanged: tacit does not stop it again for these."}}'
+      exit 0
+    fi
     kws "$cmd $file"
     for w in "\${KW[@]}"; do give "rule-$w"; done
     [ -n "$out" ] && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"# store: before this step\\\\n%s"}}\\n' "\${out%\\\\n}" ;;
@@ -1230,3 +1240,43 @@ test("an agent gets no start block, and its brief is asked unwaited; the owner's
   expect(paths.store_prompt!.wait_ms).toBeLessThan(T(500));
   expect(paths.store_prompt!.proc_ms).toBeGreaterThan(0);
 }), 60_000);
+
+// Since 0.9.38 the store's pre-tool hook answers with a deny (once a session, for a shell command a fact
+// forbids), never with context. The commands it can stop are the keys of its deny file: a call that starts
+// with one waits for the hook and is refused with the rule; any other is asked beside its tool, and a deny
+// that comes after it ran is told with its result.
+test("a shell command a stored rule forbids is refused with the rule; a deny that comes after the command ran is told with its result", () => inWorld("deny", async (w, _st, dir) => {
+  const before = process.env.TACIT_STATE_DIR;
+  process.env.TACIT_STATE_DIR = join(dir, "tacit-state");
+  mkdirSync(process.env.TACIT_STATE_DIR, { recursive: true });
+  writeFileSync(join(process.env.TACIT_STATE_DIR, "deny-keys.json"), JSON.stringify({ built: "2026-11-24T00:00:00Z", facts: [{ key: ["touch", "denyme-2", "--all"], name: "never-touch-denyme" }] }));
+  try {
+    const s = w.session(), t = w.session();
+    // A command the store cannot stop: asked beside the call, which runs; the rule comes with its result.
+    await w.run(s, "touch denyme-1");
+    expect(existsSync(join(dir, "denyme-1"))).toBe(true);
+    expect(w.last(s)).toContain("never run denyme");
+    expect(w.last(s)).not.toContain("tacit stopped this command once");
+    expect(w.tacit.stats().tools.deny_waits).toMatchObject({ n: 0, denied: 0 });
+    // The shell kind goes quiet (nothing came for three calls): a command a key names is asked in full all the same.
+    for (let i = 0; i < 4; i++) await w.run(s, "echo plain");
+    await until(() => (w.tacit.stats().quiet[0]?.quiet ?? 0) >= 3);
+    // A command the key names: the call waits for the store, and is refused with its own words.
+    await w.run(t, "touch denyme-2 here");
+    expect(existsSync(join(dir, "denyme-2"))).toBe(false);
+    expect(w.last(t)).toContain("tacit stopped this command once");
+    expect(w.last(t)).toContain("never run denyme");
+    expect(w.tacit.stats().tools.deny_waits).toMatchObject({ n: 1, denied: 1, timeouts: 0 });
+    // The store does not stop it again: run unchanged, it runs (and waited for the answer again).
+    await w.run(t, "touch denyme-2 here");
+    expect(existsSync(join(dir, "denyme-2"))).toBe(true);
+    expect(w.tacit.stats().tools.deny_waits).toMatchObject({ n: 2, denied: 1 });
+    // A command no key names does not wait.
+    await w.run(t, "echo plain");
+    expect(w.tacit.stats().tools.deny_waits.n).toBe(2);
+    // The meter has the refusal as a recall.
+    expect(w.store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM telemetry_memory WHERE path = 'store_tool' AND outcome = 'added'").get()!.n).toBeGreaterThanOrEqual(2);
+  } finally {
+    if (before === undefined) delete process.env.TACIT_STATE_DIR; else process.env.TACIT_STATE_DIR = before;
+  }
+}, { quietAfter: 3, sampleEvery: 1000 }), 60_000);
