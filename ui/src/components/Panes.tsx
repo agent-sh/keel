@@ -5,6 +5,8 @@ import { panesMax, useWidth } from "../lib/rail.ts";
 import { getStations, stations, useStations } from "../lib/stations.ts";
 import { useUI } from "../lib/ui.ts";
 import { Menu } from "@base-ui/react/menu";
+import { Columns3 } from "lucide-react";
+import { popupClass } from "./ui.tsx";
 
 // A session being dragged: from the rail, or a pane by its header.
 export const DRAG = "application/x-keel-session";
@@ -42,5 +44,31 @@ export function PaneChoices() {
         ))}
       </div>
     </>
+  );
+}
+
+// The folded rail has no Arrange menu (it is the list's), so the same choice is a menu of its own at
+// its foot, its glyph the count in use. (A phone has one pane: no choice to make.)
+export function PanesButton() {
+  const width = useWidth();
+  useUI((s) => s.scale);
+  const count = useStations((x) => x.count);
+  const focus = useStations((x) => x.focus);
+  if (Math.max(panesMax(width), count) < 2) return null;
+  const shown = focus ? 1 : count;
+  const name = `Panes: ${shown} open`;
+  return (
+    <Menu.Root>
+      <Menu.Trigger className="k-act" data-testid="panes-button" aria-label={name} title={name}>
+        <Columns3 />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner side="right" align="end" sideOffset={8} className="z-50 outline-none">
+          <Menu.Popup className={popupClass} data-testid="panes-menu">
+            <PaneChoices />
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   );
 }

@@ -257,6 +257,24 @@ test("pane count and settings choices by keyboard", async ({ page, request }) =>
   await expect(page.getByTestId("panes-3")).toHaveAttribute("aria-checked", "true");
   await page.getByTestId("panes-1").click();
   await expect(panes).toHaveCount(1);
+  // Folded, the rail has no list and so no Arrange menu: the same choice is a menu at its foot.
+  await page.getByTestId("rail-toggle").click();
+  await expect(page.getByTestId("sidebar")).not.toHaveAttribute("data-open", /.*/);
+  const folded = page.getByTestId("panes-button");
+  await expect(folded, "a folded rail has no way to the pane count").toBeVisible();
+  await expect(folded).toHaveAccessibleName("Panes: 1 open");
+  await folded.click();
+  await expect(page.getByTestId("panes-menu")).toBeVisible();
+  await page.getByTestId("panes-2").click();
+  await expect(panes).toHaveCount(2);
+  await expect(folded).toHaveAccessibleName("Panes: 2 open");
+  await shoot(page, "layout-10-pane-count-folded");
+  await folded.click();
+  await page.getByTestId("panes-1").click();
+  await expect(panes).toHaveCount(1);
+  await page.getByTestId("rail-toggle").click();
+  await expect(page.getByTestId("sidebar")).toHaveAttribute("data-open", "true");
+  await expect(folded).toHaveCount(0);
   // The ring of an option under the keyboard stays inside its group.
   const inside = (group: ReturnType<typeof page.getByTestId>) => group.evaluate((g) => {
     const el = g.querySelector<HTMLElement>(":focus")!;

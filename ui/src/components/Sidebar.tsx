@@ -43,7 +43,7 @@ import { useReach } from "../lib/reach.ts";
 import { auto, useAuto } from "../lib/automation.ts";
 import { briefText, failWord, folderOf, Mark, modelOf, ROW_BEAT, rowClock, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
-import { DRAG, dragSession } from "./Panes.tsx";
+import { DRAG, dragSession, PanesButton } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { Grip } from "./Grip.tsx";
 import { Kbd } from "./Kbd.tsx";
@@ -1356,6 +1356,8 @@ export function Sidebar({ open }: { open: boolean }) {
             <Archive />
           </button>
         )}
+        {/* How many panes: the open list has it in its Arrange menu; folded, it is a menu here. */}
+        {!open && !phone() && <PanesButton />}
         <button type="button" className="k-act k-act-word" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>
           <Settings /><span className="k-act-label">Settings</span>
         </button>
