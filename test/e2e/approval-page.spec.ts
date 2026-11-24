@@ -36,3 +36,13 @@ test("a command that waits for approval says it is not run, not that it printed 
     await drop(request, s.id);
   }
 });
+
+test("the approval page has no running line under the card that asks the same", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const s = await asking(request, page, "Approval page: one line of it");
+  try {
+    await expect(page.getByTestId("working")).toHaveCount(0);
+  } finally {
+    await drop(request, s.id);
+  }
+});

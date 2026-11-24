@@ -510,10 +510,12 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
   // A turn that waits for a provider it cannot reach does not work: the line above says what it waits for.
   if (st?.kind === "retry" && st.unreachable) return null;
+  // The approval card says it, and so do the head and the step: a third line of it is only height.
+  if (approving) return null;
   const s = from ? Math.max(0, Math.round((liveNow() - from) / 1000)) : 0; // stopped while the daemon is unreachable
   // What waits on the owner is said as that, in the words every surface uses: an approval, a plan to
-  // approve, a secret to give. (A tool that asks is not a tool that runs.)
-  const needs = approving ? NEEDS.approval : st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
+  // approve, a secret to give (an approval has its card and no line). (A tool that asks is not a tool that runs.)
+  const needs = st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
   // (A request on its way to the model is work, never a wait: "Calling", as the session's row says.)
   const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
   return (

@@ -798,7 +798,7 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     await expect(page.locator(`[data-approval-id="${first}"]`)).toHaveCount(1, { timeout: 30_000 });
     await expect(card).toHaveCount(1);
     await expect(card.getByTestId("approval-summary")).toContainText("ran-1");
-    await expect(page.getByTestId("working")).toBeVisible({ timeout: 15_000 }); // the continued turn waits on it
+    await expect(page.getByTestId("working")).toHaveCount(0); // the continued turn waits on the card, which says so
     await shoot(page, "restart-04-approval-after-crash");
     expect(ran()).toBe("");
 
