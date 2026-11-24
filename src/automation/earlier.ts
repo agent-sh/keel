@@ -8,6 +8,8 @@
 // from the review, landing and git facts (src/automation/earlier-line.ts says it). No model request. The
 // lines ride the spawn's result once: they are never in the system prompt and never repeated.
 import { existsSync } from "node:fs";
+import { baseHolds } from "../board/held.ts";
+import type { Landed } from "../board/rules.ts";
 import { git } from "../core/git.ts";
 import { readsOf } from "../server/reads.ts";
 import { capture, D } from "./core.ts";
@@ -51,6 +53,27 @@ const baseOf = async (repo: string): Promise<string | undefined> => {
   return undefined;
 };
 
+// Whether the base holds a head, as an ancestor or as the same patches under new hashes (`git cherry`, what
+// a stack that cherry-picked its commits leaves). One answer per pair of commits, kept: `git cherry` reads
+// the commits between them, so it runs once for a head and a base tip, not on every spawn.
+const HELD_KEPT = 500;
+const held = new Map<string, Promise<Landed>>();
+async function baseHas(repo: string, head: string, base: string, madeFrom?: string | null): Promise<boolean> {
+  const tip = await run(repo, ["rev-parse", "-q", "--verify", `${base}^{commit}`]);
+  if (!tip) return false;
+  const key = `${repo}\0${head}\0${tip}\0${madeFrom ?? ""}`;
+  let p = held.get(key);
+  if (!p) {
+    p = baseHolds((args) => git(repo, args, { read: true, timeout: GIT_MS }).catch(() => ({ code: -1, out: "" })), head, tip, { madeFrom });
+    held.set(key, p);
+    if (held.size > HELD_KEPT) held.delete(held.keys().next().value!);
+    // (A git that failed or ran out of time is asked again next time.)
+    const mine = p;
+    p.then((l) => { if (l.state === "unknown" && held.get(key) === mine) held.delete(key); }, () => held.delete(key));
+  }
+  return (await p).state === "yes";
+}
+
 // How one shown agent ended, from git and the review and landing rows.
 async function endedOf(c: Candidate, repo: string, base: string | undefined, facts: Outcome): Promise<{ ended: Ended; head: string | null }> {
   const remote = !!c.machine;
@@ -64,13 +87,13 @@ async function endedOf(c: Candidate, repo: string, base: string | undefined, fac
       tip = sha;
       head = sha.slice(0, 7);
       noWork = !!c.base_commit && sha === c.base_commit;
-      if (!landed && !noWork && base) landed = (await git(repo, ["merge-base", "--is-ancestor", sha, base], { read: true, timeout: GIT_MS }).catch(() => ({ code: 1 }))).code === 0;
+      if (!landed && !noWork && base) landed = await baseHas(repo, sha, base, c.base_commit);
     } else if (!landed && base && c.status === "completed") {
       // Its branch was removed (when it landed, as a rule): a commit its report names that the base holds says it landed.
       const named = [...new Set((facts.reports[c.id] ?? "").match(/\b[0-9a-f]{7,40}\b/g) ?? [])].filter((h) => /\d/.test(h) && /[a-f]/.test(h)).slice(0, 6);
       for (const h of named) {
         const full = await run(repo, ["rev-parse", "-q", "--verify", `${h}^{commit}`]);
-        if (full && (await git(repo, ["merge-base", "--is-ancestor", full, base], { read: true, timeout: GIT_MS }).catch(() => ({ code: 1 }))).code === 0) { landed = true; head = full.slice(0, 7); break; }
+        if (full && await baseHas(repo, full, base)) { landed = true; head = full.slice(0, 7); break; }
       }
     }
   }

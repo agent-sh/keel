@@ -14,7 +14,8 @@ import { git, gitNames } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import { readsOf } from "../server/reads.ts";
 import type { AgentFact, Facts, TreeRun } from "./facts.ts";
-import { landedFrom, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Change, type Deploy, type Landed, type Work } from "./rules.ts";
+import { baseHolds } from "./held.ts";
+import { liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Change, type Deploy, type Landed, type Work } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -77,21 +78,7 @@ export class WorkBoard {
     const key = `${repo}\0${head}\0${into}\0${madeFrom ?? ""}\0${madeFrom ? "" : since ?? ""}`;
     const kept = this.pairs.get(key);
     if (kept) return kept;
-    const p = (async (): Promise<Landed> => {
-      if (madeFrom && head === madeFrom) return { state: "nothing" };
-      const anc = await this.git(repo, ["merge-base", "--is-ancestor", head, into], undefined, by);
-      if (anc.err === "late") return { state: "unknown", why: "the board's time for git ran out" };
-      const ancestor = anc.code === 0 ? true : anc.code === 1 ? false : null;
-      if (ancestor === true && !madeFrom && since != null) {
-        const t = await this.git(repo, ["log", "-1", "--format=%ct", head], undefined, by);
-        const headTime = t.code === 0 ? Number(t.out.trim()) || null : null;
-        return headTime === null ? { state: "unknown", why: "its worktree keeps no start, and git did not say when its head was made" } : landedFrom({ head, madeFrom, ancestor, cherry: undefined, headTime, since: Math.floor(since / 1000) - 60 });
-      }
-      if (ancestor !== false) return landedFrom({ head, madeFrom, ancestor, cherry: undefined });
-      const ch = await this.git(repo, ["cherry", into, head], undefined, by);
-      if (ch.err === "late") return { state: "unknown", why: "the board's time for git ran out" };
-      return landedFrom({ head, madeFrom, ancestor, cherry: ch.code === 0 ? ch.out : undefined });
-    })();
+    const p = baseHolds((args) => this.git(repo, args, undefined, by), head, into, { madeFrom, since });
     this.pairs.set(key, p);
     if (this.pairs.size > PAIRS) this.pairs.delete(this.pairs.keys().next().value!);
     // A git that failed is asked again next time.

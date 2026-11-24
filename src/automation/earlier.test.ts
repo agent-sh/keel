@@ -90,3 +90,17 @@ test("nothing close: no note; and another repository has none of these agents", 
   expect(await ask("Mobile dock", "Make the phone dock stay put while the keyboard is open.")).toBe("");
   expect(await earlierNote({ repo: join(dir, "elsewhere"), title: "Agent leftovers", prompt: "Show what an agent leaves behind", parent: coordinator.id })).toBe("");
 });
+
+test("work a stack cherry-picked onto the base under new hashes reads as landed, and unrelated work does not", async () => {
+  const stacked = agent({ title: "Rollout gates for retries", task: "Gate the retry rollout behind the owner's rollout setting and show the gates.", branch: "keel/rollout-d4", report: "Rollout gates are in." });
+  const open = agent({ title: "Rollout gates for backoff", task: "Gate the backoff rollout behind the owner's rollout setting and show the gates.", branch: "keel/rollout-e5", report: "Backoff gates are in." });
+  // The stack's way: the branch's commit is picked onto main, a new hash, the same patch.
+  writeFileSync(join(repo, "other.txt"), "o\n");
+  sh(repo, "add", "other.txt");
+  sh(repo, "commit", "-q", "-m", "something else landed first");
+  sh(repo, "cherry-pick", "keel/rollout-d4");
+  expect(Bun.spawnSync(["git", "merge-base", "--is-ancestor", "keel/rollout-d4", "main"], { cwd: repo }).exitCode).toBe(1);
+  const note = await ask("Rollout gates", "Gate the rollout behind the owner's rollout setting and show the gates.");
+  expect(note).toContain(`(agent ${stacked}): landed; branch keel/rollout-d4`);
+  expect(note).toContain(`(agent ${open}): finished, not landed; branch keel/rollout-e5`);
+});
