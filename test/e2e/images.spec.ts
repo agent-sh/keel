@@ -173,3 +173,33 @@ test("a request over the provider's byte cap leaves out the oldest images and ke
   expect((await settings(request, s.id)).images_out).toHaveLength(out);
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// A request over the provider's byte cap with no image in it: the long tool results are sent shortened,
+// oldest first, the turn completes, and what is stored does not change.
+test("a request over the byte cap with no image is sent with its long tool results shortened", async ({ request }) => {
+  const s = await create(request);
+  const files = [0, 1, 2, 3, 4].map((i) => {
+    const file = join(s.workspace, `long-${i}-${s.id}.txt`);
+    writeFileSync(file, Array.from({ length: 90 }, (_, n) => `file ${i} line ${n} ${"abcdefghij".repeat(8)}`).join("\n"));
+    return { name: "Read", input: { file_path: file } };
+  });
+  await turn(request, s.id, `script:calls ${JSON.stringify(files)}`);
+  const stored = async () => JSON.stringify((await events(request, s.id)).filter((e) => e.kind === "tool_result").map((e) => e.data));
+  const before = await stored();
+  const said = await turn(request, s.id, "How big was that request? script:byte-cap 30000");
+  const m = /^Request: (\d+) bytes\. Shortened: (\d+)\./.exec(said);
+  expect(m, said).not.toBeNull();
+  const cut = Number(m![2]);
+  expect(cut).toBeGreaterThanOrEqual(1);
+  expect(cut).toBeLessThan(files.length); // the newest keep their words
+  expect(Number(m![1])).toBeLessThanOrEqual(30000);
+  // What is stored is unchanged; the session says what it did and keeps which results.
+  expect(await stored()).toBe(before);
+  const note = (await events(request, s.id)).findLast((e) => e.kind === "note" && e.data.kind === "results_short");
+  expect(note.data.shortened).toBe(cut);
+  expect((await settings(request, s.id)).results_short).toHaveLength(cut);
+  // The next request carries the same shortened results from the start: no refusal, the same count.
+  const again = await turn(request, s.id, "And now? script:byte-cap 30000");
+  expect(/Shortened: (\d+)\. Attempt 1\./.exec(again)?.[1], again).toBe(String(cut));
+  await request.delete(`/api/sessions/${s.id}`);
+});

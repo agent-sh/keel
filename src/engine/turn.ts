@@ -57,6 +57,7 @@ import { PriceFacts } from "./price-facts.ts";
 import type { WaitShape } from "./cache-plan.ts";
 import { withoutImages } from "./images.ts";
 import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys, oldestForSize } from "./image-fit.ts";
+import { oldestResultsForSize, shortenResults } from "./size-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, movesToFallback, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep, type MoveWhy } from "./retry.ts";
@@ -2224,14 +2225,22 @@ export class Engine {
     if (session.parent_id && !bare && purpose !== "sampling") req.cacheLife = this.cacheLife(id, st, purpose);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
-    const whole = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info, id);
+    const base = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info, id);
     // Every image within what the model's host takes (a history may hold a
     // larger one from before images were scaled when stored): a refused image
     // would fail this request and every later one of the session.
     this.sayImages(id, purpose);
+    this.saySizes(id, purpose);
     const set = this.store.session(id)?.settings;
     let limits = imageLimits(st.info.family, set?.image_edge);
     let out = new Set(set?.images_out ?? []);
+    // The long tool results this session sends shortened (a provider refused a request as too large once):
+    // a projection of the stored history, the same bytes on every request.
+    let short = new Set(set?.results_short ?? []);
+    // What this request shortened after a refusal, and the refusal that began it.
+    const shortened: string[] = [];
+    let shortCause: unknown;
+    let whole = shortenResults(base, short);
     // Shown while copies are made: after a restart a history with many large
     // images takes seconds before its first request is sent.
     const preparing = quiet ? undefined : () => this.status(id, { kind: "model", since: Date.now(), model: st.info.name, preparing: "images" });
@@ -2347,6 +2356,7 @@ export class Engine {
         this.measure(id, (h) => h.requestDone?.(session, req, res));
         this.boundThinking(id, res);
         if (fixed) this.imagesFixed(id, fixed, purpose);
+        if (shortened.length) this.resultsShortened(id, shortened, shortCause, purpose);
         // The failures this request was sent again for are healed: recorded, not open.
         if (retried.length) this.errors.recovered(retried, id);
         answeredAt.set(res, since);
@@ -2404,7 +2414,8 @@ export class Engine {
         // images of this history are left out, each as a note. Either way the
         // turn goes on.
         const held = retryable(e) ? [] : imageKeys(whole);
-        const large = held.length > 0 && !imageRefusal(e) && requestTooLarge(e);
+        const sizeRefused = !retryable(e) && !imageRefusal(e) && requestTooLarge(e);
+        const large = held.length > 0 && sizeRefused;
         // Too large in bytes can be a passing answer (a gateway's, a proxy's):
         // the same request goes once more before any image is left out.
         if (large && !resent) {
@@ -2414,6 +2425,20 @@ export class Engine {
           await sleep(wait, signal);
           attempt++;
           continue;
+        }
+        // Too large in bytes with no image left to drop: the long tool results are sent shortened,
+        // oldest first, and the request goes again. (The stored history is not changed.)
+        if (sizeRefused && !held.some((k) => !out.has(k))) {
+          const more = oldestResultsForSize(whole, short);
+          if (more.length) {
+            shortCause ??= e;
+            shortened.push(...more);
+            short = new Set([...short, ...more]);
+            whole = shortenResults(base, short);
+            req = { ...req, messages: await fitForWire(whole, limits, out, preparing) };
+            attempt++;
+            continue;
+          }
         }
         const refusal = held.length ? imageRefusal(e) ?? (large ? {} : null) : null;
         if (refusal) {
@@ -2572,6 +2597,25 @@ export class Engine {
     this.errors.capture("provider", fixed.cause, { session: id, then: n ? `${n} images left out for this session` : `images scaled to ${fixed.edge} px for this session` });
     this.imageNotes.set(id, note);
     this.sayImages(id, purpose);
+  }
+
+  // A request passed after the provider refused it as too large in bytes and the long tool results were
+  // sent shortened: kept for the session from here (the same bytes on every later request), the refusal
+  // captured once, and the transcript says what was done.
+  private resultsShortened(id: string, ids: string[], cause: unknown, purpose: ProviderRequest["purpose"]) {
+    const s = this.store.session(id);
+    if (!s) return;
+    this.store.mergeSettings(id, { results_short: [...new Set([...(s.settings.results_short ?? []), ...ids])] });
+    this.errors.capture("provider", cause, { session: id, then: `${ids.length} long tool results sent shortened for this session` });
+    this.sizeNotes.set(id, { text: `${ids.length === 1 ? "One long tool result is" : `${ids.length} long tool results are`} sent shortened to its start and end: the provider refused a request as too large, so the oldest long results of this session are no longer sent whole. What is stored is unchanged.`, shortened: ids.length, detail: errorText(cause) });
+    this.saySizes(id, purpose);
+  }
+  private sizeNotes = new SessionMap<{ text: string; shortened: number; detail: string }>(256);
+  private saySizes(id: string, purpose: ProviderRequest["purpose"]) {
+    const note = purpose === "turn" ? this.sizeNotes.get(id) : undefined;
+    if (!note) return;
+    this.sizeNotes.delete(id);
+    this.append(id, "note", { kind: "results_short", ...note });
   }
 
   // The transcript's line about it is written only inside a turn's own

@@ -383,6 +383,10 @@ export class ScriptedProvider implements Provider {
     // the request carried, how many were left out as notes, and how often
     // that same request was sent.
     const pics = (msgs as any[]).flatMap((m) => (m.role !== "user" ? [] : m.content.flatMap((b: any) => (b.type === "image" ? [b] : b.type === "tool_result" && Array.isArray(b.content) ? b.content.filter((c: any) => c.type === "image") : []))));
+    // `script:byte-cap N`: a request whose messages are over N bytes gets a 413, every time (no image needed).
+    // The reply says how many bytes the request that passed was and how many tool results it carried shortened.
+    const byteCap = (req.purpose === "summary" ? lastText : owner).match(/script:byte-cap[ \t]+(\d+)/);
+    if (byteCap && JSON.stringify(msgs).length > Number(byteCap[1])) throw classify("Scripted", 413, new Headers(), JSON.stringify({ type: "error", error: { type: "request_too_large", message: "Request exceeds the maximum size" } }));
     const rule = (req.purpose === "summary" ? lastText : owner).match(/script:image-(limit|bad|none|large|cap|always)(?:\s+(\d+))?/);
     if (rule && (pics.length || rule[1] === "always")) {
       const refuse = (message: string, status = 400) => classify("Scripted", status, new Headers(), JSON.stringify({ type: "error", error: { type: status === 413 ? "request_too_large" : "invalid_request_error", message } }));
@@ -857,6 +861,10 @@ export class ScriptedProvider implements Provider {
       case "images": case "image-limit": case "image-bad": case "image-none": case "image-large": case "image-cap": {
         const left = (msgs as any[]).flatMap((m) => (m.role !== "user" ? [] : m.content.flatMap((b: any) => (b.type === "tool_result" && Array.isArray(b.content) ? b.content : [b])))).filter((b: any) => b.type === "text" && String(b.text).startsWith("[Image left out")).length;
         return reply(`Images: ${pics.map((b) => { const z = imageSize(b.data); return z ? `${z.w}x${z.h}` : "unreadable"; }).join(", ") || "none"}. Left out: ${left}. Attempt ${attempt + 1}.`);
+      }
+      case "byte-cap": {
+        const cut = JSON.stringify(msgs).split("[Output shortened:").length - 1;
+        return reply(`Request: ${JSON.stringify(msgs).length} bytes. Shortened: ${cut}. Attempt ${attempt + 1}.`);
       }
       case "refuse-schema": {
         const n = this.schemaRefused.get(refusedKey) ?? 0;
