@@ -94,10 +94,11 @@ export function AcpAgentsSettings() {
         </div>
       </Card>
       <Card>
-        <div className="flex items-center gap-3 border-b border-line py-3">
+        {/* (A phone wraps the row: a registry that does not answer says why at length, and the button stays in reach.) */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line py-3">
           <span className="text-ui font-medium">From the ACP registry</span>
           <span className="text-caption text-faint" data-testid="acp-registry-count">{l ? `${l.agents.filter((a) => a.source === "registry").length} agents` : "..."}</span>
-          {l?.error && <span className="text-caption text-danger">{l.error}</span>}
+          {l?.error && <span className="min-w-0 text-caption text-danger [overflow-wrap:anywhere]">{l.error}</span>}
           <button type="button" className={`${btn} ml-auto`} disabled={busy} onClick={() => act(() => api<Listing>("/api/acp/agents?refresh=1"))}>Check again</button>
         </div>
         {more.map((a) => (
