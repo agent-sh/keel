@@ -289,7 +289,14 @@ under `~/.cache/keel-work/bun/research/`.
   `src/safety/provenance-books.ts` for the sessions above, the agents below and the repository). Outside content is
   a page, an MCP server's answer (every server but Keel's own until servers are classed), the output of curl,
   wget or gh, a channel event, an imported transcript, and an agent's report when that agent read any of these;
-  a search result lists an address (a page fetch to it goes on). A call that sends to such a target (a fetch, a
+  a search result lists an address (a page fetch of that address, or of a page above it with no query, goes on;
+  a path or query it did not list, a header, a cookie or a body is a send). A text is read whole, in chunks,
+  with a turn of the loop between them; a text past 8 MB, or more than 50,000 targets in a session, leaves the
+  session "unbounded" (an agent's report brings it up), and it then holds a send to any target it has no
+  sighting of that is not the owner's or the repository's. A host is any name in a URL or an ssh form (any
+  top-level domain, punycode, an IPv6 literal, a trailing dot); a bare name needs a known one. Not covered: a
+  subdomain or an IP of a host the page named is another target (a name that carries data in a label, or a
+  host a program computed, is not followed). A call that sends to such a target (a fetch, a
   push, curl, ssh, scp, mail, an MCP tool that does not only read) asks the owner in every mode, a hook's or a
   grant's allow included, and its card says where the target first appeared; an agent is refused with the same
   words. A target the owner typed, one the repository held before the session, one the model's own call named

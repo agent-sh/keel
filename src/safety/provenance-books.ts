@@ -3,8 +3,7 @@
 // workspace held it before.
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
-import { timed } from "../admin/stall.ts";
-import { gitSync } from "../core/git.ts";
+import { git } from "../core/git.ts";
 import {
   ProvenanceBook, extractTargets, hostOfRemote, held, inputTargets, wholeTargets,
   type Hit, type Origin, type Reach, type SourceOf, type Target,
@@ -40,8 +39,8 @@ export class Provenance {
     }
     // A session not in memory is brought in, and the bodies of the events this book has not read are read, off the loop.
     if (this.store.session(id)) await this.store.warmBodies(id, b.seq + 1);
-    const book = b;
-    timed(() => `reading the provenance of session ${id}`, () => book.take(this.store.events(id, book.seq)));
+    // (The events are read a few at a time with a turn of the loop between: a session of big pages is not read in one stretch.)
+    await b.take(this.store.events(id, b.seq));
     return b;
   }
 
@@ -62,6 +61,12 @@ export class Provenance {
   }
 
   // The first sighting of a key over the chain: the owner's word wins, then outside content, then a search result.
+  // What a session read that it could not keep whole: a target it has no sighting of may be one that was in it.
+  private unread(books: ProvenanceBook[]): Origin | undefined {
+    for (const b of books) if (b.unbounded) return b.unbounded;
+    return undefined;
+  }
+
   private lookup(books: ProvenanceBook[], key: string): Origin | undefined {
     let best: Origin | undefined;
     for (const b of books) {
@@ -79,14 +84,21 @@ export class Provenance {
     if (!reaches.length || !books.some((b) => b.hasOutside())) return { hits: [], ids };
     const repo = dir && !session.machine ? new Repo(dir) : null;
     const own = books[0]!;
-    const out = held(
+    const asked = (workspace: (t: Target) => boolean) => held(
       reaches,
       (key) => this.lookup(books, key),
       (key) => ids.some((id) => this.cleared.get(id)?.has(key)),
-      (t) => !!repo?.holds(t, own),
+      workspace,
+      (key, pathq) => books.some((b) => b.covers(key, pathq)),
+      () => this.unread(books),
     );
+    // What is held before the repository is asked; it is asked (off the loop) only for those.
+    const maybe = asked(() => false);
+    if (!maybe.length || !repo) return { hits: maybe, ids };
+    const mine = new Map<string, boolean>();
+    for (const h of maybe) mine.set(h.target.key, await repo.holds(h.target, own));
     void now;
-    return { hits: out, ids };
+    return { hits: asked((t) => mine.get(t.key) ?? false), ids };
   }
 
   // The targets a text or an input names that outside content named first, for the judge: not only sends.
@@ -107,19 +119,19 @@ export class Provenance {
   }
 }
 
-// What the repository at a folder holds, read when first asked (local git only, bounded).
+// What the repository at a folder holds, read when first asked (local git only, bounded, off the loop).
 class Repo {
   private remotes?: Map<string, string[]>; // host -> remote keys
   private branches?: Set<string>;
   constructor(private dir: string) {}
-  private git(...args: string[]) {
-    const r = timed(() => `reading the repository for a target's provenance (${args[0]})`, () => gitSync(this.dir, args, { read: true, timeout: 3_000 }));
-    return r.code === 0 ? r.out : null;
+  private async git(...args: string[]) {
+    const r = await git(this.dir, args, { read: true, timeout: 3_000 }).catch(() => null);
+    return r && r.code === 0 ? r.out : null;
   }
-  private readRemotes() {
+  private async readRemotes() {
     if (this.remotes) return this.remotes;
     const m = new Map<string, string[]>();
-    for (const line of (this.git("remote", "-v") ?? "").split("\n")) {
+    for (const line of ((await this.git("remote", "-v")) ?? "").split("\n")) {
       const url = /^\S+\s+(\S+)\s+\(/.exec(line)?.[1];
       if (!url) continue;
       for (const t of wholeTargets(url, true)) if (t.kind === "remote") { const h = hostOfRemote(t.key); m.set(h, [...(m.get(h) ?? []), t.key]); }
@@ -128,17 +140,16 @@ class Repo {
   }
   // Whether the workspace held it before the session: a remote of the repository (not one the session added), a
   // branch it has (not one the session made), a host of its remotes, a mail address or host its files name.
-  holds(t: Target, book: ProvenanceBook): boolean {
+  async holds(t: Target, book: ProvenanceBook): Promise<boolean> {
     const said = (s: string) => book.edited.some((c) => c.toLowerCase().includes(s.toLowerCase()));
-    if (t.kind === "remote") return !!this.readRemotes().get(hostOfRemote(t.key))?.includes(t.key) && !said(t.key.slice(7 + hostOfRemote(t.key).length + 1));
+    if (t.kind === "remote") return !!(await this.readRemotes()).get(hostOfRemote(t.key))?.includes(t.key) && !said(t.key.slice(7 + hostOfRemote(t.key).length + 1));
     if (t.kind === "branch") {
       if (book.made.has(t.key)) return false;
-      this.branches ??= new Set((this.git("for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes") ?? "").split("\n").flatMap((b) => [b, b.replace(/^[^/]+\//, "")]).filter(Boolean));
+      this.branches ??= new Set(((await this.git("for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes")) ?? "").split("\n").flatMap((b) => [b, b.replace(/^[^/]+\//, "")]).filter(Boolean));
       return this.branches.has(t.shown);
     }
-    if (t.kind === "host" && this.readRemotes().has(t.shown) && !said(t.shown)) return true;
+    if (t.kind === "host" && (await this.readRemotes()).has(t.shown) && !said(t.shown)) return true;
     // A file the repository tracks names it (as of the last commit: what the session wrote since is not "before").
-    return this.git("grep", "-q", "-I", "-F", "-e", t.shown, "HEAD", "--") !== null;
+    return (await this.git("grep", "-q", "-I", "-F", "-e", t.shown, "HEAD", "--")) !== null;
   }
 }
-

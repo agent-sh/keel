@@ -35,13 +35,20 @@ import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
 import { name as baseName, unwrap } from "./risk-words.ts";
 
 export type TargetKind = "host" | "email" | "remote" | "branch";
-export type Target = { kind: TargetKind; key: string; shown: string };
+// `pathq`: for a target a web address named, what follows its host (path and query, never the fragment), so a fetch of
+// the address is told from a send of data in it.
+export type Target = { kind: TargetKind; key: string; shown: string; pathq?: string };
 export type Class = "owner" | "outside" | "listed" | "inside";
 // `where`: the source as a card says it ("a WebFetch result"). `seq` and `ts`: the event of the first sighting.
-export type Origin = { cls: Class; where: string; seq: number; ts: number; call?: string };
+// `unread`: not a sighting of this target: the session read outside content too long to read whole.
+export type Origin = { cls: Class; where: string; seq: number; ts: number; call?: string; unread?: true };
 
-const MAX_TEXT = 200_000;
-const MAX_PER_TEXT = 256;
+// A text is read whole, in chunks of CHUNK (cut at white space, with a line's worth of overlap), up to MAX_TEXT; what
+// lies past that is not read, and the book says so (`unbounded`). MAX_KEYS bounds a session's book: the oldest
+// sighting goes first, and that too is said.
+const MAX_TEXT = 8_000_000;
+const CHUNK = 65_536;
+const OVERLAP = 256;
 export const MAX_KEYS = 50_000;
 
 // ---- what a text names ----
@@ -51,13 +58,20 @@ export const MAX_KEYS = 50_000;
 const TLD = new Set(("com net org io dev ai app co info biz xyz cloud tech online site store shop blog me tv us uk de fr nl se no fi dk it es ch at be eu ru ua cn jp kr in au ca br mx ar nz za il tr gr cz ie pt ro hu sk bg lt lv ee is li lu si hr " +
   "edu gov mil int name pro mobi asia live life world today news page link click top win vip club fun space website tools host systems network digital solutions agency email run wtf lol social example test invalid").split(" "));
 const LOOPBACK = /^(localhost|.*\.localhost|0\.0\.0\.0|127(\.\d{1,3}){3})$/i;
+const LOOPBACK6 = /^(?=.*:)[0:]*1?$|^::ffff:(127\.|0\.0\.0\.0)/i;
+// A top-level domain of a name a scheme or an ssh form gives: any letters, or a punycode label.
+const ANY_TLD = /^(?:[a-z]{2,24}|xn--[a-z0-9-]{1,59})$/;
 const FORGES = new Set(["github.com", "gitlab.com", "bitbucket.org", "codeberg.org", "git.sr.ht"]);
 const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
-const validHost = (h: string): boolean => {
-  if (!h || h.length > 253 || LOOPBACK.test(h)) return false;
+// `loose`: the name stands where only a host can (a URL's authority, user@host of ssh and scp): any letters make a
+// top-level domain there. A bare name is read with the list, since a file name looks the same.
+const validHost = (h: string, loose = false): boolean => {
+  if (!h || h.length > 253) return false;
+  if (h.startsWith("[")) return /^\[[0-9a-f:.]{2,45}\]$/i.test(h) && h.includes(":") && !LOOPBACK6.test(h.slice(1, -1));
+  if (LOOPBACK.test(h)) return false;
   if (IPV4.test(h)) return true;
   const labels = h.split(".");
-  return labels.length >= 2 && labels.every((l) => /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/.test(l)) && TLD.has(labels.at(-1)!);
+  return labels.length >= 2 && labels.every((l) => /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/.test(l)) && (loose ? ANY_TLD.test(labels.at(-1)!) : TLD.has(labels.at(-1)!));
 };
 const trim = (u: string): string => {
   let s = u.replace(/[.,;:!?*_~'"]+$/, "");
@@ -65,15 +79,20 @@ const trim = (u: string): string => {
   return s;
 };
 
-export const hostTarget = (h: string): Target => ({ kind: "host", key: `host:${h}`, shown: h });
+export const hostTarget = (h: string, pathq?: string): Target => ({ kind: "host", key: `host:${h}`, shown: h, ...(pathq !== undefined ? { pathq } : {}) });
+// What follows the host of an address, as a request sends it: the path and the query, a trailing slash dropped.
+export const pathqOf = (pathname: string, search: string): string => {
+  const p = pathname.replace(/\/+$/, "");
+  return `${p || "/"}${search}`;
+};
 export const emailTarget = (e: string): Target => ({ kind: "email", key: `email:${e.toLowerCase()}`, shown: e });
 export const branchTarget = (b: string): Target => ({ kind: "branch", key: `branch:${b}`, shown: b });
 // A remote by where it lives: host and path, with no `.git`, no trailing slash, the host in lower case.
-export function remoteTarget(host: string, path: string): Target | null {
+export function remoteTarget(host: string, path: string, pathq?: string): Target | null {
   const p = path.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/i, "");
   if (!p || p.includes("?") || p.includes("#")) return null;
   const h = host.toLowerCase();
-  return { kind: "remote", key: `remote:${h}/${p}`, shown: `${h}/${p}` };
+  return { kind: "remote", key: `remote:${h}/${p}`, shown: `${h}/${p}`, ...(pathq !== undefined ? { pathq } : {}) };
 }
 // The host a remote's key names.
 export const hostOfRemote = (key: string): string => key.slice(7, key.indexOf("/", 7));
@@ -84,23 +103,24 @@ function urlTargets(raw: string): Target[] {
   let u: URL;
   try { u = new URL(trim(raw)); } catch { return []; }
   const scheme = u.protocol.slice(0, -1).toLowerCase();
-  const host = u.hostname.toLowerCase();
-  if (!validHost(host)) return [];
-  const out = [hostTarget(host)];
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  if (!validHost(host, true)) return [];
+  const pathq = pathqOf(u.pathname, u.search);
+  const out = [hostTarget(host, pathq)];
   const segs = u.pathname.split("/").filter(Boolean);
   const dotGit = /\.git$/i.test(u.pathname);
   if (/^(ssh|git|git\+ssh|ssh\+git)$/.test(scheme) || dotGit || (FORGES.has(host) && segs.length >= 2)) {
     // (A forge's repository is its first two segments: a page of the repository, `/issues/5`, is the repository.)
-    const r = remoteTarget(host, FORGES.has(host) && !dotGit ? segs.slice(0, 2).join("/") : u.pathname);
+    const r = remoteTarget(host, FORGES.has(host) && !dotGit ? segs.slice(0, 2).join("/") : u.pathname, pathq);
     if (r) out.push(r);
   }
   return out;
 }
 
-const URL_RE = /\b(?:https?|ssh|git|git\+ssh|ssh\+git|ftp|sftp|wss?):\/\/[^\s<>"'`[\]]+/gi;
+const URL_RE = /\b(?:https?|ssh|git|git\+ssh|ssh\+git|ftp|sftp|wss?):\/\/(?:[^\s<>"'`[\]/@]*@)?(?:\[[0-9a-f:.]+\][^\s<>"'`[\]]*|[^\s<>"'`[\]]+)/gi;
 // git's scp form: user@host:path, whose path is not a port number.
-const SCP_RE = /(?<![\w.+-])([\w.+-]{1,64})@([a-z0-9][a-z0-9.-]*\.[a-z]{2,24}):(?!\d+(?:\D|$))([\w./~%+-][^\s<>"'`]*)/gi;
-const EMAIL_RE = /(?<![\w.+-])[\w.+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![\w-])/gi;
+const SCP_RE = /(?<![\w.+-])([\w.+-]{1,64})@([a-z0-9][a-z0-9.-]*\.(?:[a-z]{2,24}|xn--[a-z0-9-]{1,59})):(?!\d+(?:\D|$))([\w./~%+-][^\s<>"'`]*)/gi;
+const EMAIL_RE = /(?<![\w.+-])[\w.+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24}|xn--[a-z0-9-]{1,59})(?![\w-])/gi;
 const BARE_RE = /(?<![\w@./:-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![\w-]|\.\w)/gi;
 const IPPORT_RE = /(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}(?![\w.])/g;
 const REF_RE = /refs\/heads\/([A-Za-z0-9][A-Za-z0-9._/@+-]{0,99})/g;
@@ -109,25 +129,24 @@ const PUSH_RE = /\bgit\s+push\b[^\n`;|&]*/gi;
 const STOP = new Set(["the", "a", "an", "is", "to", "of", "and", "or", "in", "on", "for", "with", "that", "this", "it", "was", "will", "has", "had", "be", "name", "names", "named", "called", "from", "into", "if", "as", "at", "by", "are", "not", "no", "can", "should", "must", "does", "do", "protection", "protected", "rules", "rule", "list", "point", "pointing"]);
 const branchOk = (b: string): boolean => b.length >= 1 && b.length <= 100 && !b.includes("..") && !/[/.]$/.test(b) && !/\.lock$/.test(b) && !b.startsWith("-") && !STOP.has(b.toLowerCase());
 
-// Every target a text names, in order of appearance, each once. A text is read to its first MAX_TEXT characters.
-export function extractTargets(text: string): Target[] {
-  const t = text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) : text;
-  const out = new Map<string, Target>();
-  const add = (x: Target | Target[] | null) => { for (const y of Array.isArray(x) ? x : x ? [x] : []) if (out.size < MAX_PER_TEXT && !out.has(y.key)) out.set(y.key, y); };
+// What one chunk of text names, each sighting handed to `emit` as it is found (a target a chunk names twice is emitted
+// twice; the caller keeps the first).
+function scanChunk(t: string, emit: (t: Target) => void) {
   // (The user in a URL and git@github.com:org/repo are no mail address: what they stand in is read as it is.)
   const scp: [number, number][] = [];
+  const add = (x: Target | Target[] | null) => { for (const y of Array.isArray(x) ? x : x ? [x] : []) emit(y); };
   if (t.includes("://")) for (const m of t.matchAll(URL_RE)) { scp.push([m.index!, m.index! + m[0].length]); add(urlTargets(m[0])); }
   if (t.includes("@")) {
     for (const m of t.matchAll(SCP_RE)) {
       const host = m[2]!.toLowerCase();
-      if (!validHost(host)) continue;
+      if (!validHost(host, true)) continue;
       scp.push([m.index!, m.index! + m[1]!.length + 1 + m[2]!.length]);
       add(hostTarget(host));
       add(remoteTarget(host, trim(m[3]!)));
     }
     for (const m of t.matchAll(EMAIL_RE)) if (!scp.some(([a, b]) => m.index! >= a && m.index! < b)) add(emailTarget(m[0]));
   }
-  if (t.includes(".")) for (const m of t.matchAll(BARE_RE)) { const h = m[0].toLowerCase(); if (validHost(h)) add(hostTarget(h)); }
+  if (t.includes(".")) for (const m of t.matchAll(BARE_RE)) { const h = m[0].toLowerCase(); if (validHost(h)) add(hostTarget(h, bareRest(t, m.index! + m[0].length))); }
   if (/\d:\d/.test(t)) for (const m of t.matchAll(IPPORT_RE)) { const h = m[0].slice(0, m[0].lastIndexOf(":")); if (validHost(h)) add(hostTarget(h)); }
   if (t.includes("refs/heads/")) for (const m of t.matchAll(REF_RE)) if (branchOk(m[1]!)) add(branchTarget(m[1]!));
   if (/branch/i.test(t)) {
@@ -140,7 +159,44 @@ export function extractTargets(text: string): Target[] {
     }
   }
   if (/git\s+push/i.test(t)) for (const m of t.matchAll(PUSH_RE)) add(pushTargets(m[0].split(/\s+/).slice(2), () => undefined).filter((x) => x.kind === "branch"));
+}
+
+// What follows a bare host in a text ("evil.example/path?q"): the path and query, when it is one word.
+const bareRest = (t: string, at: number): string | undefined => {
+  if (t[at] !== "/" && t[at] !== "?") return undefined;
+  const m = /^[^\s<>"'`)\]]*/.exec(t.slice(at, at + 2048))![0].replace(/#.*$/, "").replace(/[.,;:!?*_~]+$/, "");
+  return m.startsWith("?") ? `/${m}` : pathqOf(m.split("?")[0]!, m.includes("?") ? `?${m.split("?").slice(1).join("?")}` : "");
+};
+
+// A text in chunks that overlap by a line's worth and start and end at white space where there is some.
+function* chunksOf(text: string): Generator<string> {
+  const end = Math.min(text.length, MAX_TEXT);
+  let pos = 0;
+  while (pos < end) {
+    let stop = Math.min(end, pos + CHUNK);
+    if (stop < end) { const w = /\s/.exec(text.slice(stop, stop + 4096)); if (w) stop += w.index; }
+    yield text.slice(pos, stop);
+    if (stop >= end) return;
+    const from = stop - OVERLAP;
+    const w = /\s/.exec(text.slice(from, stop));
+    pos = w ? from + w.index + 1 : stop;
+  }
+}
+
+// Whether a text is longer than what is read of it.
+export const cutText = (text: string): boolean => text.length > MAX_TEXT;
+
+// Every target a text names, in order of appearance, each once, up to `max` (the whole text is read).
+export function extractTargets(text: string, max = 5000): Target[] {
+  const out = new Map<string, Target>();
+  const emit = (t: Target) => { if (out.size < max && !out.has(t.key)) out.set(t.key, t); };
+  for (const c of chunksOf(text)) scanChunk(c, emit);
   return [...out.values()];
+}
+
+// The same, handed to `emit` and yielding to the loop between chunks (`pause`).
+export async function scanTargets(text: string, emit: (t: Target) => void, pause: () => Promise<void>): Promise<void> {
+  for (const c of chunksOf(text)) { scanChunk(c, emit); await pause(); }
 }
 
 // ---- what a call sends to ----
@@ -181,16 +237,21 @@ export function wholeTargets(word: string, remote = false): Target[] {
   if (!w || w.startsWith("-") || w.length > 2048) return [];
   w = w.replace(/^["']|["']$/g, "");
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(w)) return urlTargets(w);
-  const scp = /^(?:[\w.+-]{1,64}@)?([a-z0-9][a-z0-9.-]*\.[a-z]{2,24}):(?!\d+$)([\w./~%+-][^\s]*)$/i.exec(w);
-  if (scp && validHost(scp[1]!.toLowerCase())) {
+  const scp = /^(?:[\w.+-]{1,64}@)?([a-z0-9][a-z0-9.-]*\.(?:[a-z]{2,24}|xn--[a-z0-9-]{1,59})):(?!\d+$)([\w./~%+-][^\s]*)$/i.exec(w);
+  if (scp && validHost(scp[1]!.toLowerCase(), true)) {
     const host = scp[1]!.toLowerCase();
     const r = remote || /\.git$/i.test(scp[2]!) ? remoteTarget(host, scp[2]!) : null;
     return [hostTarget(host), ...(r ? [r] : [])];
   }
   const user = /^[\w.+-]{1,64}@([a-z0-9][a-z0-9.-]*)$/i.exec(w);
-  if (user && validHost(user[1]!.toLowerCase())) return [hostTarget(user[1]!.toLowerCase()), ...(/@[^@]+\.[a-z]{2,24}$/i.test(w) ? [emailTarget(w)] : [])];
-  const bare = /^((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}|(?:\d{1,3}\.){3}\d{1,3})(?::\d{1,5})?(?:[/?#].*)?$/i.exec(w);
-  if (bare && validHost(bare[1]!.toLowerCase())) return [hostTarget(bare[1]!.toLowerCase())];
+  if (user && validHost(user[1]!.toLowerCase().replace(/\.$/, ""), true)) return [hostTarget(user[1]!.toLowerCase().replace(/\.$/, "")), ...(/@[^@]+\.[a-z]{2,24}$/i.test(w) ? [emailTarget(w)] : [])];
+  // A host alone, with a port or a path, a trailing dot, an IPv4 or an IPv6 literal.
+  const six = /^(\[[0-9a-f:.]+\])(?::\d{1,5})?(?:([/?#].*))?$/i.exec(w);
+  const bare = six ?? /^((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}|(?:\d{1,3}\.){3}\d{1,3})\.?(?::\d{1,5})?(?:([/?#].*))?$/i.exec(w);
+  if (bare && validHost(bare[1]!.toLowerCase(), !!six)) {
+    const rest = (bare[2] ?? "").replace(/#.*$/, "");
+    return [hostTarget(bare[1]!.toLowerCase(), pathqOf(rest.split("?")[0]!, rest.includes("?") ? `?${rest.split("?").slice(1).join("?")}` : ""))];
+  }
   return [];
 }
 
@@ -202,7 +263,8 @@ const FETCHERS = new Set(["curl", "wget", "http", "https", "xh", "xhs", "aria2c"
 const SENDERS = new Set(["nc", "ncat", "netcat", "telnet", "socat", "ssh", "scp", "sftp", "rsync", "ftp", "lftp", "mosh", "rclone"]);
 const MAILERS = new Set(["mail", "mailx", "mutt", "neomutt", "sendmail", "msmtp", "swaks", "mailsend", "s-nail", "mpack", "ssmtp"]);
 // Options of curl and wget that send something besides the address: a body, a file, another method, a form.
-const CARRIES = /^(-d|-F|-T|-X|--data(-\w+)*|--form(-string)?|--upload-file|--request|--post-(data|file)|--body-(data|file)|--method|--json)(=.*)?$/;
+// (A header, a cookie, a user name, a referer and a user agent carry what the caller puts in them too.)
+const CARRIES = /^(-d|-F|-T|-X|-H|-b|-u|-e|-A|--data(-\w+)*|--form(-string)?|--upload-file|--request|--post-(data|file)|--body-(data|file)|--method|--json|--header|--cookie|--user|--referer|--user-agent)(=.*)?$/;
 // Options that take the next word as their value (so that word is not an address).
 const FETCH_VALUED = /^(-o|-O|-A|-e|-H|-u|-b|-c|-w|-m|-x|-U|-K|--output|--user-agent|--referer|--header|--user|--cookie|--cookie-jar|--max-time|--proxy|--connect-timeout|--retry|--limit-rate|-P|--directory-prefix)$/;
 const SEND_VALUED = /^-[pPilJoFSDEcWwOLRBbse]$/;
@@ -275,9 +337,10 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number): Reach[] {
 export function inputTargets(input: unknown): Target[] {
   const out = new Map<string, Target>();
   let seen = 0;
+  let chars = 0;
   const walk = (v: unknown, depth: number) => {
-    if (++seen > 400 || depth > 6 || out.size >= MAX_PER_TEXT) return;
-    if (typeof v === "string") { for (const t of extractTargets(v.length > 20_000 ? v.slice(0, 20_000) : v)) if (t.kind !== "branch") out.set(t.key, t); }
+    if (++seen > 4000 || depth > 8 || chars > MAX_TEXT) return;
+    if (typeof v === "string") { chars += v.length; for (const t of extractTargets(v)) if (t.kind !== "branch") out.set(t.key, t); }
     else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
     else if (v && typeof v === "object") for (const x of Object.values(v)) walk(x, depth + 1);
   };
@@ -339,12 +402,19 @@ const textOf = (content: unknown): string =>
 export class ProvenanceBook {
   private first = new Map<string, Origin>();
   private calls = new Map<string, { name: string; input: any }>();
+  // The addresses (path and query) a web search listed for a host: a fetch of one of them asks for nothing more.
+  private listed = new Map<string, Set<string>>();
   // What the model's own commands made in this session: branches it created, remotes it added or changed. A branch or a
   // remote the repository holds is the workspace's, unless the session made it.
   made = new Set<string>();
   edited: string[] = [];
   seq = 0;
   private outside = 0;
+  // Set when outside content was read that this book could not keep whole (a text past what is read, a sighting that
+  // went out of the book): a target that is not in it may be one that was.
+  unbounded?: Origin;
+  private lock: Promise<unknown> = Promise.resolve();
+  private lastYield = performance.now();
   constructor(
     private source: SourceOf,
     // Every event of the session up to this time is another harness's transcript.
@@ -356,61 +426,118 @@ export class ProvenanceBook {
   get(key: string): Origin | undefined { return this.first.get(key); }
   get size() { return this.first.size; }
   // Whether any outside content was seen: a call that names a target is checked against nothing until then.
-  hasOutside(): boolean { return this.outside > 0; }
+  hasOutside(): boolean { return this.outside > 0 || !!this.unbounded; }
   // Every target first seen as outside content, for an agent's report to its parent.
   outsideKeys(): [string, Origin][] { return [...this.first].filter(([, o]) => o.cls === "outside" || o.cls === "listed"); }
+  // Whether a fetch of `pathq` at a listed host asks for nothing a search result did not give: the address itself, or
+  // a page above it with no query.
+  covers(key: string, pathq: string | undefined): boolean {
+    const set = this.listed.get(key);
+    if (!set) return false;
+    const at = pathq ?? "/";
+    if (set.has(at)) return true;
+    if (at.includes("?")) return false;
+    for (const l of set) { const p = l.split("?")[0]!; if (p === at || at === "/" || p.startsWith(`${at}/`)) return true; }
+    return false;
+  }
 
-  private note(key: string, o: Origin) {
+  private markUnbounded(where: string, e: BookEvent) {
+    this.unbounded ??= { cls: "listed", unread: true, where, seq: e.seq, ts: e.ts };
+  }
+
+  private note(key: string, o: Origin, e: BookEvent, pathq?: string) {
     const was = this.first.get(key);
     if (was) {
       // The owner's own word makes a target theirs, whatever named it first.
       if (o.cls === "owner" && was.cls !== "owner") this.first.set(key, o);
       return;
     }
-    if (this.first.size >= MAX_KEYS) return;
+    if (this.first.size >= MAX_KEYS) {
+      // The oldest sightings go, a tenth at a time (a Map walked from its start after deletions is slow, so not one by
+      // one), never the owner's; one that was outside content leaves the book unbounded.
+      let n = MAX_KEYS / 10;
+      for (const [k, v] of this.first) {
+        if (v.cls === "owner") continue;
+        this.first.delete(k);
+        this.listed.delete(k);
+        if (v.cls === "outside" || v.cls === "listed") this.markUnbounded(`${v.where} (more than ${MAX_KEYS} targets were named)`, e);
+        if (--n <= 0) break;
+      }
+    }
     this.first.set(key, o);
     if (o.cls === "outside" || o.cls === "listed") this.outside++;
+    if (o.cls === "listed" && pathq !== undefined) this.listedAt(key, pathq);
   }
 
-  private noteAll(text: string, cls: Class, where: string, e: BookEvent, call?: string) {
+  private listedAt(key: string, pathq: string) {
+    const set = this.listed.get(key) ?? new Set<string>();
+    if (set.size < 64 && pathq.length <= 2048) set.add(pathq);
+    this.listed.set(key, set);
+  }
+
+  private async tick() {
+    if (performance.now() - this.lastYield < 8) return;
+    await new Promise<void>((r) => setImmediate(r));
+    this.lastYield = performance.now();
+  }
+
+  private async noteAll(text: string, cls: Class, where: string, e: BookEvent, call?: string) {
     if (!text) return;
-    for (const t of extractTargets(text)) this.note(t.key, { cls, where, seq: e.seq, ts: e.ts, call });
+    const o: Origin = { cls, where, seq: e.seq, ts: e.ts, call };
+    await scanTargets(text, (t) => {
+      this.note(t.key, o, e, t.pathq);
+      // A search result's address is kept even when the host was first named otherwise: it is what a fetch may ask for.
+      if (cls === "listed" && t.pathq !== undefined && this.first.get(t.key)?.cls === "listed") this.listedAt(t.key, t.pathq);
+    }, () => this.tick());
+    if (cutText(text) && cls !== "inside" && cls !== "owner") this.markUnbounded(`${where}, which is longer than what is read`, e);
   }
 
-  take(events: readonly BookEvent[]) {
+  // Takes the events after the last one read, one at a time (a turn of the loop between them when it is long). Two
+  // callers never read at once: the second waits for the first.
+  take(events: readonly BookEvent[]): Promise<void> {
+    const run = this.lock.then(() => this.takeNow(events));
+    this.lock = run.catch(() => {});
+    return run;
+  }
+
+  private async takeNow(events: readonly BookEvent[]) {
     for (const e of events) {
       if (e.seq <= this.seq) continue;
       this.seq = e.seq;
+      await this.tick();
       const d = e.data;
       if (!d) continue;
       // Another harness's transcript, whatever it holds.
       if (this.importedUntil > 0 && e.ts <= this.importedUntil) {
         const where = "an imported transcript";
-        if (e.kind === "user") this.noteAll(String(d.text ?? ""), "outside", where, e);
-        else if (e.kind === "assistant") for (const b of d.blocks ?? []) { if (b?.type === "text") this.noteAll(String(b.text ?? ""), "outside", where, e); else if (b?.type === "tool_use") this.noteAll(JSON.stringify(b.input ?? {}), "outside", where, e); }
-        else if (e.kind === "tool_result") for (const r of d.results ?? []) this.noteAll(textOf(r?.content), "outside", where, e);
+        if (e.kind === "user") await this.noteAll(String(d.text ?? ""), "outside", where, e);
+        else if (e.kind === "assistant") for (const b of d.blocks ?? []) { if (b?.type === "text") await this.noteAll(String(b.text ?? ""), "outside", where, e); else if (b?.type === "tool_use") await this.noteAll(JSON.stringify(b.input ?? {}), "outside", where, e); }
+        else if (e.kind === "tool_result") for (const r of d.results ?? []) await this.noteAll(textOf(r?.content), "outside", where, e);
         continue;
       }
       if (e.kind === "user") {
         const text = String(d.text ?? "");
-        if (ownerPrompt(d) && !text.startsWith("[harness]")) this.noteAll(text, "owner", "the owner's message", e);
-        else if (d.kind === "channel") this.noteAll(text, "outside", `a channel event${d.source ? ` (${String(d.source).slice(0, 60)})` : ""}`, e);
+        if (ownerPrompt(d) && !text.startsWith("[harness]")) await this.noteAll(text, "owner", "the owner's message", e);
+        else if (d.kind === "channel") await this.noteAll(text, "outside", `a channel event${d.source ? ` (${String(d.source).slice(0, 60)})` : ""}`, e);
         else if (d.kind === "subagent") {
           const kid = typeof d.agent_id === "string" ? this.child(d.agent_id) : null;
           const outside = !!kid?.hasOutside();
-          this.noteAll(text, outside ? "outside" : "inside", outside ? "an agent's report (the agent read outside content)" : "an agent's report", e);
+          await this.noteAll(text, outside ? "outside" : "inside", outside ? "an agent's report (the agent read outside content)" : "an agent's report", e);
           // What the agent saw of outside content comes up with its report, each target as first seen outside here.
-          if (kid && outside) for (const [key, o] of kid.outsideKeys()) this.note(key, { cls: "outside", where: `an agent's report (it first saw this in ${o.where})`, seq: e.seq, ts: e.ts });
+          if (kid && outside) {
+            for (const [key, o] of kid.outsideKeys()) this.note(key, { cls: "outside", where: `an agent's report (it first saw this in ${o.where})`, seq: e.seq, ts: e.ts }, e);
+            if (kid.unbounded) this.markUnbounded(`an agent's report (it read ${kid.unbounded.where})`, e);
+          }
         }
-        else this.noteAll(text, "inside", "a message", e);
+        else await this.noteAll(text, "inside", "a message", e);
       } else if (e.kind === "assistant") {
         for (const b of d.blocks ?? []) {
-          if (b?.type === "text") this.noteAll(String(b.text ?? ""), "inside", "the model's words", e);
+          if (b?.type === "text") await this.noteAll(String(b.text ?? ""), "inside", "the model's words", e);
           else if (b?.type === "tool_use" && typeof b.id === "string") {
             this.calls.set(b.id, { name: String(b.name), input: b.input });
             const cmd = typeof b.input?.command === "string" ? b.input.command : typeof b.input?.cmd === "string" ? b.input.cmd : "";
             // What the model's own call names is first seen as its own, before the call is judged.
-            this.noteAll(cmd || JSON.stringify(b.input ?? {}).slice(0, 20_000), "inside", "the model's own call", e, b.id);
+            await this.noteAll(cmd || JSON.stringify(b.input ?? {}).slice(0, 20_000), "inside", "the model's own call", e, b.id);
             if (cmd) this.madeBy(cmd);
           }
         }
@@ -425,8 +552,8 @@ export class ProvenanceBook {
           const text = textOf(r?.content);
           if (!text) continue;
           const s = this.sourceOf(call.name, call.input);
-          if (s) this.noteAll(text, s.listed ? "listed" : "outside", s.where, e, r.tool_use_id);
-          else this.noteAll(text, "inside", `a ${call.name} result`, e, r.tool_use_id);
+          if (s) await this.noteAll(text, s.listed ? "listed" : "outside", s.where, e, r.tool_use_id);
+          else await this.noteAll(text, "inside", `a ${call.name} result`, e, r.tool_use_id);
         }
       }
     }
@@ -455,7 +582,12 @@ export type Hit = { target: Target; how: Reach["how"]; origin: Origin };
 
 // The reaches that are held: first seen as outside content, not since said by the owner, not cleared by an answer, not the workspace's.
 // `lookup`: the first sighting over the session and the sessions above it (the owner's wins).
-export function held(reaches: Reach[], lookup: (key: string) => Origin | undefined, cleared: (key: string) => boolean, workspace: (t: Target) => boolean): Hit[] {
+// `covers`: whether a search result listed what a fetch asks for. `unread`: set when the session read outside content
+// it could not keep whole, so a target it has no sighting of may be one that was in it.
+export function held(
+  reaches: Reach[], lookup: (key: string) => Origin | undefined, cleared: (key: string) => boolean, workspace: (t: Target) => boolean,
+  covers: (key: string, pathq: string | undefined) => boolean = () => true, unread: () => Origin | undefined = () => undefined,
+): Hit[] {
   const out: Hit[] = [];
   const seen = new Set<string>();
   // (A remote carries its host: the card names the remote, once.)
@@ -466,8 +598,10 @@ export function held(reaches: Reach[], lookup: (key: string) => Origin | undefin
     const keys = r.target.kind === "remote" ? [r.target.key, `host:${hostOfRemote(r.target.key)}`] : [r.target.key];
     let k: string | undefined, o: Origin | undefined;
     for (const key of keys) { o = lookup(key); if (o) { k = key; break; } }
+    if (!o) { o = unread(); k = keys[0]; }
     if (!o || !k || o.cls === "owner" || o.cls === "inside") continue;
-    if (o.cls === "listed" && r.how === "fetch") continue;
+    // A page fetch to an address a search listed goes on, as long as it asks for nothing the listing did not give.
+    if (o.cls === "listed" && r.how === "fetch" && (o.unread || covers(k, r.target.pathq))) continue;
     if (cleared(k) || cleared(r.target.key)) continue;
     if (workspace(r.target)) continue;
     if (seen.has(k)) continue;
@@ -491,7 +625,9 @@ export function ago(ms: number): string {
 const NOUN: Record<TargetKind, string> = { host: "address", email: "email address", remote: "git remote", branch: "branch name" };
 // The sentence for one held target: what it is and where it first appeared.
 export const hitText = (h: Hit, now: number): string =>
-  `${h.target.shown}: this ${NOUN[h.target.kind]} first appeared in ${h.origin.where} ${ago(now - h.origin.ts)}`;
+  h.origin.unread
+    ? `${h.target.shown}: this ${NOUN[h.target.kind]} is not one the session has seen, and it read outside content it could not keep whole (${h.origin.where}, ${ago(now - h.origin.ts)})`
+    : `${h.target.shown}: this ${NOUN[h.target.kind]} first appeared in ${h.origin.where} ${ago(now - h.origin.ts)}`;
 
 // The reason a card shows or an agent is refused with.
 export function reasonOf(hits: Hit[], now: number): string {

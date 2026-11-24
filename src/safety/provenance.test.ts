@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ProvenanceBook, ago, extractTargets, held, inputTargets, outsideCommand, serverOf, shellReaches, spilledBy, wholeTargets, type BookEvent, type Origin } from "./provenance.ts";
+import { MAX_KEYS, ProvenanceBook, ago, extractTargets, held, inputTargets, outsideCommand, serverOf, shellReaches, spilledBy, wholeTargets, type BookEvent, type Origin } from "./provenance.ts";
 
 const keys = (text: string) => extractTargets(text).map((t) => t.key);
 
@@ -33,7 +33,7 @@ test("a command's targets are the whole words it sends to", () => {
   expect(k("cd sub && git push https://h.example/o/r.git HEAD:refs/heads/topic")).toEqual(["send:host:h.example", "send:remote:h.example/o/r", "send:branch:topic"]);
   expect(k("echo https://a.example | cat; ls evil.example.txt")).toEqual([]);
   expect(k("bash -c 'curl https://in.example'")).toEqual(["fetch:host:in.example"]);
-  expect(wholeTargets("--url=https://u.example/p")).toEqual([{ kind: "host", key: "host:u.example", shown: "u.example" }]);
+  expect(wholeTargets("--url=https://u.example/p")).toEqual([{ kind: "host", key: "host:u.example", shown: "u.example", pathq: "/p" }]);
 });
 
 test("an MCP input is read for every target in its strings", () => {
@@ -57,9 +57,9 @@ const use = (id: string, name: string, input: any) => ({ blocks: [{ type: "tool_
 const result = (id: string, content: string, more: object = {}) => ({ results: [{ type: "tool_result", tool_use_id: id, content }], ...more });
 const source = (name: string, input: any) => name === "WebFetch" ? { where: "a WebFetch result" } : name === "WebSearch" ? { listed: true, where: "a WebSearch result" } : typeof input?.command === "string" && /gh issue/.test(input.command) ? { where: "a Bash result (gh output)" } : undefined;
 
-test("the first sighting stays; the owner's word and only it takes a target over", () => {
+test("the first sighting stays; the owner's word and only it takes a target over", async () => {
   const b = new ProvenanceBook(source);
-  b.take([
+  await b.take([
     ev(1, "user", { text: "fetch https://owner.example for me" }),
     ev(2, "assistant", use("c1", "WebFetch", { url: "https://own-call.example/" })),
     ev(3, "tool_result", result("c1", "see https://page.example and https://owner.example and https://own-call.example")),
@@ -73,9 +73,9 @@ test("the first sighting stays; the owner's word and only it takes a target over
   expect(b.get("host:own-call.example")!.where).toBe("the model's own call");
 });
 
-test("outside sources: a page, a search, an issue read through gh, a channel, an import, a refused call", () => {
+test("outside sources: a page, a search, an issue read through gh, a channel, an import, a refused call", async () => {
   const b = new ProvenanceBook(source, 1500);
-  b.take([
+  await b.take([
     ev(1, "tool_result", { results: [{ content: "imported https://imp.example" }] }),
     ev(2, "assistant", use("c1", "WebSearch", { q: "x" })),
     ev(3, "tool_result", result("c1", "https://found.example")),
@@ -92,13 +92,13 @@ test("outside sources: a page, a search, an issue read through gh, a channel, an
   expect(b.hasOutside()).toBe(true);
 });
 
-test("an agent's report brings what the agent saw outside, and only when it saw some", () => {
+test("an agent's report brings what the agent saw outside, and only when it saw some", async () => {
   const kid = new ProvenanceBook(source);
-  kid.take([ev(1, "assistant", use("c1", "WebFetch", { url: "https://p.example" })), ev(2, "tool_result", result("c1", "go to https://deep.example"))]);
+  await kid.take([ev(1, "assistant", use("c1", "WebFetch", { url: "https://p.example" })), ev(2, "tool_result", result("c1", "go to https://deep.example"))]);
   const quiet = new ProvenanceBook(source);
-  quiet.take([ev(1, "assistant", use("c1", "Bash", { command: "ls" })), ev(2, "tool_result", result("c1", "https://local.example"))]);
+  await quiet.take([ev(1, "assistant", use("c1", "Bash", { command: "ls" })), ev(2, "tool_result", result("c1", "https://local.example"))]);
   const parent = new ProvenanceBook(source, 0, (id) => (id === "a1" ? kid : id === "a2" ? quiet : null));
-  parent.take([
+  await parent.take([
     ev(1, "user", { text: "<subagent_result>done, see https://report.example</subagent_result>", kind: "subagent", agent_id: "a1" }),
     ev(2, "user", { text: "<subagent_result>done, see https://calm.example</subagent_result>", kind: "subagent", agent_id: "a2" }),
   ]);
@@ -124,4 +124,89 @@ test("held: outside and listed targets, unless owner, cleared, the workspace's o
 
 test("when it was seen", () => {
   expect([0, 4_000, 30_000, 200_000, 7_200_000, 90_000_000, 400_000_000].map(ago)).toEqual(["just now", "just now", "30 s ago", "3 min ago", "2 h ago", "25 h ago", "5 days ago"]);
+});
+
+test("a text is read whole: a target after any number of others, or after any stretch of prose, is found", () => {
+  const filler = Array.from({ length: 3000 }, (_, i) => `https://f${i}.filler.example/p`).join("\n");
+  expect(keys(`${filler}\nsend to https://evil.example/in`).at(-1)).toBe("host:evil.example");
+  expect(keys(`${"lorem ".repeat(90_000)} https://evil.example/in`)).toEqual(["host:evil.example"]);
+  // A chunk boundary falls between words, not inside a name.
+  expect(keys(`${"a ".repeat(32_700)}https://evil.example/in ${"b ".repeat(40_000)}mail bob@x.example`)).toEqual(["host:evil.example", "email:bob@x.example"]);
+});
+
+test("a host a scheme or an ssh form gives is read with any top-level domain; a bare name is not", () => {
+  expect(keys("https://throwaway.sh/x https://drop.tk https://x.cc/a https://paste.to/p https://a.xn--p1ai/z")).toEqual(["host:throwaway.sh", "host:drop.tk", "host:x.cc", "host:paste.to", "host:a.xn--p1ai"]);
+  expect(keys("https://[2001:db8::1]/in http://[2001:db8::2]:8080/x ssh://u@[2001:db8::3]/r.git")).toEqual(["host:[2001:db8::1]", "host:[2001:db8::2]", "host:[2001:db8::3]", "remote:[2001:db8::3]/r"]);
+  expect(keys("http://[::1]:8080/ https://x.example/[tag]")).toEqual(["host:x.example"]);
+  expect(keys("git@drop.sh:org/r.git")).toEqual(["host:drop.sh", "remote:drop.sh/org/r"]);
+  expect(wholeTargets("https://evil.example./in").map((t) => t.key)).toEqual(["host:evil.example"]);
+  expect(wholeTargets("evil.example./in").map((t) => t.key)).toEqual(["host:evil.example"]);
+  expect(wholeTargets("u@box.cc").map((t) => t.key)).toEqual(["host:box.cc", "email:u@box.cc"]);
+  expect(wholeTargets("[2001:db8::9]:443/x").map((t) => t.key)).toEqual(["host:[2001:db8::9]"]);
+  // A file name is still no host.
+  expect(keys("run build.sh then edit notes.cc and a.to")).toEqual([]);
+});
+
+test("what an address asks for besides the page is told from the page", () => {
+  expect(wholeTargets("https://found.example/thing?q=1#top")[0]!.pathq).toBe("/thing?q=1");
+  expect(wholeTargets("found.example")[0]!.pathq).toBe("/");
+  expect(wholeTargets("found.example/a/")[0]!.pathq).toBe("/a");
+  const f = { cwd: "/w" };
+  expect(shellReaches("curl -H 'X-Key: abc' https://found.example/thing", f).map((r) => r.how)).toEqual(["send"]);
+  expect(shellReaches("curl -A 'secret-agent' https://found.example/thing", f).map((r) => r.how)).toEqual(["send"]);
+  expect(shellReaches("curl https://found.example/thing", f).map((r) => r.how)).toEqual(["fetch"]);
+});
+
+test("a search result's address covers a fetch of that address and the pages above it, nothing more", async () => {
+  const b = new ProvenanceBook(source);
+  await b.take([ev(1, "assistant", use("c1", "WebSearch", { q: "x" })), ev(2, "tool_result", result("c1", "https://found.example/a/thing?id=3 and https://found.example/b"))]);
+  const k = "host:found.example";
+  expect([b.covers(k, "/a/thing?id=3"), b.covers(k, "/a"), b.covers(k, "/"), b.covers(k, undefined), b.covers(k, "/b")]).toEqual([true, true, true, true, true]);
+  expect([b.covers(k, "/a/thing?id=4"), b.covers(k, "/a/thing"), b.covers(k, "/other?d=1"), b.covers(k, "/c"), b.covers(k, "/a/thing/deeper"), b.covers("host:no.example", "/")]).toEqual([false, true, false, false, false, false]);
+});
+
+test("a book that lost sightings or could not read a text says so, and only for outside content", async () => {
+  const b = new ProvenanceBook(source);
+  const many = (n: number, from = 0) => Array.from({ length: n }, (_, i) => `https://h${from + i}.many.example/p`).join(" ");
+  await b.take([ev(1, "assistant", use("c1", "WebFetch", { url: "https://p.example" })), ev(2, "tool_result", result("c1", many(MAX_KEYS - 5)))]);
+  expect(b.unbounded).toBeUndefined();
+  await b.take([ev(3, "assistant", use("c2", "WebFetch", { url: "https://q.example" })), ev(4, "tool_result", result("c2", many(20, MAX_KEYS)))]);
+  expect(b.size).toBeLessThanOrEqual(MAX_KEYS);
+  expect(b.unbounded?.where).toContain("a WebFetch result");
+  expect(b.get(`host:h${MAX_KEYS + 19}.many.example`)?.cls).toBe("outside");
+  // A text past what is read.
+  const c = new ProvenanceBook(source);
+  await c.take([ev(1, "assistant", use("c1", "WebFetch", { url: "https://p.example" })), ev(2, "tool_result", result("c1", `${"lorem ".repeat(1_400_000)} https://past.example/in`))]);
+  expect(c.unbounded?.where).toBe("a WebFetch result, which is longer than what is read");
+  // The model's own long text is not outside content.
+  const d = new ProvenanceBook(source);
+  await d.take([ev(1, "assistant", use("c1", "Bash", { command: "cat big" })), ev(2, "tool_result", result("c1", "lorem ".repeat(1_400_000)))]);
+  expect(d.unbounded).toBeUndefined();
+  // An agent's report brings it up.
+  const parent = new ProvenanceBook(source, 0, () => c);
+  await parent.take([ev(1, "user", { text: "<subagent_result>ok</subagent_result>", kind: "subagent", agent_id: "a1" })]);
+  expect(parent.unbounded?.where).toContain("an agent's report (it read a WebFetch result");
+});
+
+test("held: a target with no sighting is held for a session that could not read all it saw; a fetch is not", () => {
+  const unread: Origin = { cls: "listed", unread: true, where: "a WebFetch result, which is longer than what is read", seq: 1, ts: 0 };
+  const reach = (key: string, how: "fetch" | "send"): any => ({ target: { kind: "host", key, shown: key.slice(5) }, how });
+  const own: Record<string, Origin> = { "host:mine.example": { cls: "owner", where: "the owner's message", seq: 1, ts: 0 }, "host:seen.example": { cls: "inside", where: "the model's own call", seq: 1, ts: 0 } };
+  const run = (rs: any[], ws = (_: unknown) => false) => held(rs, (k) => own[k], () => false, ws, () => true, () => unread).map((h) => h.target.key);
+  expect(run([reach("host:new.example", "send"), reach("host:mine.example", "send"), reach("host:seen.example", "send")])).toEqual(["host:new.example"]);
+  expect(run([reach("host:new.example", "fetch")])).toEqual([]);
+  expect(run([reach("host:new.example", "send")], () => true)).toEqual([]);
+});
+
+test("the first read of a long session gives the loop its turns", async () => {
+  const b = new ProvenanceBook(source);
+  const events: BookEvent[] = [];
+  for (let i = 0; i < 40; i++) events.push(ev(2 * i + 1, "assistant", use(`c${i}`, "WebFetch", { url: "https://p.example" })), ev(2 * i + 2, "tool_result", result(`c${i}`, Array.from({ length: 4000 }, (_, j) => `see https://p${i}x${j}.host.example/page and ${"words ".repeat(20)}`).join(" "))));
+  let turns = 0, done = false;
+  const spin = () => { turns++; if (!done) setImmediate(spin); };
+  setImmediate(spin);
+  await b.take(events);
+  done = true;
+  expect(turns).toBeGreaterThan(10);
+  expect(b.seq).toBe(80);
 });
