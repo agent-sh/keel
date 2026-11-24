@@ -100,6 +100,10 @@ export type PictureFact = {
   kept: boolean;
 };
 
+// The named checks on a head's tree, and those that decided only on files not committed (a run with the head
+// checked out and changes in the worktree), said apart from "not run" because they ran, just not on a commit.
+export type BoardChecks = ChecksOn & { uncommitted?: { passed: string[]; failed: string[] } };
+
 export type BoardRow = {
   id: string; session_id: string; parent_id: string; depth: number;
   title: string; type: string; model: string; state: string; created: number; ended: number | null;
@@ -107,7 +111,7 @@ export type BoardRow = {
   branch: string | null; repo: string | null; base: string | null;
   head: string | null; ahead: number | null; behind: number | null;
   worktree: "here" | "gone" | null;
-  checks: ChecksOn | null;      // null: no branch
+  checks: BoardChecks | null;   // null: no branch
   review: BoardReview | null;   // the latest review of its branch
   reviews: string[];            // the branches this agent reviews
   landed: Landed | null;        // null: no branch
@@ -355,11 +359,13 @@ const live = (s: string) => s === "running" || s === "waiting";
 
 // A row's words. Terse (the board's own lines): a fact that says nothing is left out ("review: none", no
 // checks named); `full` (one agent asked for) says every fact and why one is not known.
-function checksWords(c: ChecksOn | null, full: boolean): string {
+function checksWords(c: BoardChecks | null, full: boolean): string {
   if (!c) return "";
   if (c.state === "none") return full ? "checks: the repository names none" : "";
   if (c.state === "unknown") return full ? `checks: unknown (${c.why})` : "checks unknown";
-  const parts = [c.passed.length ? `passed ${c.passed.join(", ")}` : "", c.failed.length ? `failed ${c.failed.join(", ")}` : "", c.notRun.length ? `not run ${c.notRun.join(", ")}` : ""].filter(Boolean);
+  const u = c.state === "known" ? c.uncommitted : undefined;
+  const notRun = c.notRun.filter((n) => !u?.passed.includes(n) && !u?.failed.includes(n));
+  const parts = [c.passed.length ? `passed ${c.passed.join(", ")}` : "", c.failed.length ? `failed ${c.failed.join(", ")}` : "", u?.passed.length ? `passed on uncommitted files, none on a commit: ${u.passed.join(", ")}` : "", u?.failed.length ? `failed on uncommitted files, none on a commit: ${u.failed.join(", ")}` : "", notRun.length ? `not run ${notRun.join(", ")}` : ""].filter(Boolean);
   return `checks ${full ? "on its head: " : ""}${parts.join("; ") || "none decided"}`;
 }
 

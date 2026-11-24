@@ -52,8 +52,12 @@ function checksFact(r: BoardRow) {
   if (c.state === "none") return <Fact name="Checks" tone="none" value="none named" testid="board-checks" state="none" />;
   if (c.state === "unknown") return <Fact name="Checks" tone="none" value="not known" title={c.why} testid="board-checks" state="unknown" />;
   const all = [...c.passed.map((n) => `${n} passed`), ...c.failed.map((n) => `${n} failed`), ...c.notRun.map((n) => `${n} not run`)].join(", ");
-  const value = c.failed.length ? `${c.failed.length} failed` : c.passed.length && !c.notRun.length ? "all passed" : c.passed.length ? `${c.passed.length} of ${c.passed.length + c.notRun.length} passed` : "none run";
-  return <Fact name="Checks on head" tone={c.failed.length ? "bad" : c.passed.length && !c.notRun.length ? "ok" : "none"} value={value} title={all} testid="board-checks" state={c.failed.length ? "failed" : c.notRun.length ? "partial" : "passed"} />;
+  // Checks that ran only on files not committed: they did run, so "none run" would be wrong, and they are
+  // not on a commit, so they never read as passed on the head.
+  const off = !c.passed.length && !c.failed.length ? c.uncommitted : undefined;
+  const value = c.failed.length ? `${c.failed.length} failed` : c.passed.length && !c.notRun.length ? "all passed" : c.passed.length ? `${c.passed.length} of ${c.passed.length + c.notRun.length} passed` : off?.failed.length ? "failed on uncommitted files; none on a commit" : off?.passed.length ? "passed on uncommitted files; none on a commit" : "none run";
+  const more = off ? [...off.passed.map((n) => `${n} passed on uncommitted files`), ...off.failed.map((n) => `${n} failed on uncommitted files`)].join(", ") : "";
+  return <Fact name="Checks on head" tone={c.failed.length ? "bad" : c.passed.length && !c.notRun.length ? "ok" : "none"} value={value} title={[all, more].filter(Boolean).join(", ")} testid="board-checks" state={c.failed.length ? "failed" : off ? "uncommitted" : c.notRun.length ? "partial" : "passed"} />;
 }
 
 const SOURCE: Record<string, string> = {

@@ -130,14 +130,20 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
   return { total, agents, reviews, queue, deploys, pairs };
 }
 
-export type TreeRun = { tree: string; name: string; command: string; dir: string; result: string; ended: number };
+export type TreeRun = { tree: string; head: string | null; name: string; command: string; dir: string; result: string; ended: number };
 
-// The passes and failures of every check on each tree given (an index on tree, src/checks/ledger.ts).
-export function boardChecks(db: Database, a: { trees: string[] }): TreeRun[] {
+// The passes and failures of every check on each tree given (an index on tree, src/checks/ledger.ts), and
+// the runs made with one of the heads given checked out: those on another tree ran on files that were not
+// committed (the head's commit plus what the worktree changed).
+export function boardChecks(db: Database, a: { trees: string[]; heads?: string[] }): TreeRun[] {
   const out: TreeRun[] = [];
-  const st = (() => { try { return db.prepare<TreeRun, [string]>("SELECT tree, name, command, dir, result, ended FROM check_runs WHERE tree = ? AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT 100"); } catch { return undefined; } })();
+  const st = (() => { try { return db.prepare<TreeRun, [string]>("SELECT tree, head, name, command, dir, result, ended FROM check_runs WHERE tree = ? AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT 100"); } catch { return undefined; } })();
   if (!st) return out;
   try { for (const t of a.trees.slice(0, MAX_ROWS)) out.push(...st.all(t)); } finally { st.finalize(); }
+  if (a.heads?.length) {
+    const on = tried(() => db.query<TreeRun, [string]>("SELECT tree, head, name, command, dir, result, ended FROM check_runs WHERE head IN (SELECT value FROM json_each(?)) AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT 1000").all(JSON.stringify(a.heads!.slice(0, MAX_ROWS))));
+    out.push(...on);
+  }
   return out;
 }
 

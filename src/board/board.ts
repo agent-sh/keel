@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
-import { checksOnTree, type ChecksOn } from "../automation/landing.ts";
+import { checksOnTree } from "../automation/landing.ts";
 import { namedFor, repoOf } from "../checks/ledger.ts";
 import { git, gitNames } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
@@ -16,7 +16,7 @@ import { readsOf } from "../server/reads.ts";
 import type { AgentFact, Facts, PairCheckRow, PictureRow, TreeRun } from "./facts.ts";
 import { baseHolds } from "./held.ts";
 import { FILE as PICTURES_FILE, readPictures } from "../pictures/config.ts";
-import { liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Change, type Deploy, type Landed, type PairFact, type PictureFact, type Work } from "./rules.ts";
+import { liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardChecks, type BoardRow, type Change, type Deploy, type Landed, type PairFact, type PictureFact, type Work } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -212,7 +212,7 @@ export class WorkBoard {
     await pool(work, AT_ONCE, (f) => f());
 
     // The checks on each head's tree, by the names its repository gives them.
-    const runs = trees.size ? await reads.run("board.checks", { trees: [...new Set(trees.values())] }) as TreeRun[] : [];
+    const runs = trees.size ? await reads.run("board.checks", { trees: [...new Set(trees.values())], heads: [...trees.keys()] }) as TreeRun[] : [];
     const runsOf = new Map<string, TreeRun[]>();
     for (const r of runs) runsOf.set(r.tree, [...(runsOf.get(r.tree) ?? []), r]);
     const named = new Map<string, ReturnType<typeof namedFor>>();
@@ -221,7 +221,7 @@ export class WorkBoard {
       if (!named.has(r.repo)) { const at = repoOf(r.repo); named.set(r.repo, at ? namedFor(at) : undefined); }
       const n = named.get(r.repo)?.checks ?? [];
       const tree = r.head ? trees.get(r.head) : undefined;
-      r.checks = checksOf(n, tree, tree ? runsOf.get(tree) ?? [] : []);
+      r.checks = checksOf(n, tree, tree ? runsOf.get(tree) ?? [] : [], r.head ? runs.filter((x) => x.head === r.head && x.tree !== tree) : []);
     }
 
     // The before and after pictures of each head, by its repository (its main checkout or its common git directory).
@@ -339,12 +339,17 @@ function togetherOf(rows: PairCheckRow[], repo: string, branch: string, head: st
   return out;
 }
 
-function checksOf(named: readonly { name: string; run: string; dir: string }[], tree: string | undefined, runs: TreeRun[]): ChecksOn {
+function checksOf(named: readonly { name: string; run: string; dir: string }[], tree: string | undefined, runs: TreeRun[], uncommitted: TreeRun[] = []): BoardChecks {
   if (!named.length) return { state: "none" };
   if (!tree) return { state: "unknown", why: "the tree of its head could not be read" };
   const by = new Map(named.map((c) => [c.name, c.dir]));
-  const mine = runs.filter((r) => { const dir = by.get(r.name); return dir !== undefined && (dir === "*" || dir === r.dir); });
-  return { state: "known", ...checksOnTree(named, mine) };
+  const of = (list: TreeRun[]) => list.filter((r) => { const dir = by.get(r.name); return dir !== undefined && (dir === "*" || dir === r.dir); });
+  const on = checksOnTree(named, of(runs));
+  // A check that decided on files the commit does not hold, and on no commit of this head: said apart from "not run".
+  const off = of(uncommitted).length ? checksOnTree(named, of(uncommitted)) : undefined;
+  const passed = off?.passed.filter((n) => !on.passed.includes(n) && !on.failed.includes(n)) ?? [];
+  const failed = off?.failed.filter((n) => !on.passed.includes(n) && !on.failed.includes(n)) ?? [];
+  return { state: "known", ...on, ...(passed.length || failed.length ? { uncommitted: { passed, failed } } : {}) };
 }
 
 const noPictures = (head: string): PictureFact => ({

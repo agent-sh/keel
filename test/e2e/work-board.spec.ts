@@ -49,7 +49,12 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start three agents.", `script:batch ${JSON.stringify([
     lane("Lane alpha", [bash(commit("s/^line 1$/line 1 ALPHA/", "Lane alpha")), bash("sh check.sh")]),
     lane("Lane beta", [bash(commit("s/^line 12$/line 12 BETA/", "Lane beta"))]),
-    lane("Lane gamma", [bash(`${commit("s/^line 6$/line 6 GAMMA/", "Lane gamma")} && sed -i 's/^line 2$/line 2 WIP/' notes.md && printf 'one\\ntwo\\n' > wip.txt && while [ ! -e '${gate}' ]; do sleep 0.2; done`, 600_000)]),
+    lane("Lane gamma", [
+      bash(`${commit("s/^line 6$/line 6 GAMMA/", "Lane gamma")} && sed -i 's/^line 2$/line 2 WIP/' notes.md && printf 'one\\ntwo\\n' > wip.txt`),
+      // The named check on files it has not committed: it ran, on no commit.
+      bash("sh check.sh"),
+      bash(`while [ ! -e '${gate}' ]; do sleep 0.2; done`, 600_000),
+    ]),
   ])}`) } });
   const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
   await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(2);
@@ -100,6 +105,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const board = async () => (await (await request.get(`/api/sessions/${coord}/board?fresh=1`)).json()) as any;
   const rowOf = (b: any, id: string) => b.rows.find((r: any) => r.id === id);
   await expect.poll(async () => rowOf(await board(), alpha.id)?.live?.state, { timeout: 30_000 }).toBe("yes");
+  await expect.poll(async () => rowOf(await board(), gamma.id)?.checks?.uncommitted, { timeout: 30_000 }).toEqual({ passed: ["notes"], failed: [] });
   const b = await board();
   expect(b.total).toBe(5);
   const a = rowOf(b, alpha.id), be = rowOf(b, beta.id), g = rowOf(b, gamma.id), rv = rowOf(b, refuser.id);
@@ -110,6 +116,8 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(be.checks).toEqual({ state: "known", passed: [], failed: [], notRun: ["notes"] });
   expect(be.review).toMatchObject({ by: refuser.id, how: "named", verdict: "refused", source: "verdict", line: refusal, tip: betaTip, of: betaTip, current: true });
   expect(g).toMatchObject({ state: "running", landed: { state: "no", missing: 1 }, review: null, worktree: "here" });
+  // Gamma's check passed on its uncommitted files and ran on no commit: not "not run", and not a pass on the head.
+  expect(g.checks).toEqual({ state: "known", passed: [], failed: [], notRun: ["notes"], uncommitted: { passed: ["notes"], failed: [] } });
   expect(rv).toMatchObject({ branch: null, reviews: [beta.branch], landed: null });
   // What each worktree changes: gamma's commit, and its changed line and new file that no commit holds.
   expect(g.work).toEqual({ uncommitted: { files: 2, added: 3, removed: 1 }, branch: { files: 1, added: 1, removed: 1 } });
@@ -124,6 +132,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(text).toContain(`${gamma.id} working \\"Lane gamma\\"`);
   expect(text).toContain(`review refused by ${refuser.id}`);
   expect(text).toContain("uncommitted 2 files +3 -1, on branch 1 file +1 -1");
+  expect(text).toContain("checks passed on uncommitted files, none on a commit: notes");
   expect(text).toContain(`Landed (and live where a deploy is known): ${alpha.id}.`);
   expect(text).toContain(`Done, branch removed: ${approver.id}.`);
   expect(text.length).toBeLessThan(2400);
@@ -146,6 +155,9 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(card(gamma.id)).toHaveAttribute("data-state", "running");
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "none");
   await expect(card(gamma.id).getByTestId("board-uncommitted")).toHaveText("2 files+3-1uncommitted");
+  await expect(card(gamma.id).getByTestId("board-checks")).toHaveAttribute("data-state", "uncommitted");
+  await expect(card(gamma.id).getByTestId("board-checks").getByTestId("board-fact-value")).toHaveText("passed on uncommitted files; none on a commit");
+  await expect(card(beta.id).getByTestId("board-checks").getByTestId("board-fact-value")).toHaveText("none run");
   await expect(card(gamma.id).getByTestId("board-on-branch")).toHaveText("1 file+1-1on branch");
   await expect(card(beta.id).getByTestId("board-uncommitted")).toHaveCount(0);
   await expect(card(approver.id).getByTestId("board-work")).toHaveCount(0);
