@@ -7,8 +7,10 @@
 // reference-transaction hook (githooks(5): "invoked by any Git command that
 // performs reference updates ... also supports symbolic reference updates";
 // a non-zero exit in the "prepared" state aborts the whole transaction). The
-// hook refuses an update of the worktree's base branch and of a branch another
-// checkout has out, a symbolic HEAD put on one, and a change of another
+// hook refuses an update of the worktree's base branch, of a branch another
+// checkout has out, and of any branch that exists and that this worktree did not
+// make (it notes the branches its own git makes beside its HEAD, and a renamed
+// one is known by the rename in its log), a symbolic HEAD put on one, and a change of another
 // checkout's HEAD.
 //
 // How git is given it: the command's environment carries, after the pairs it
@@ -41,6 +43,9 @@ import { offerToSandbox } from "./sandbox-view.ts";
 import type { Shared } from "./shared-branches.ts";
 import { homeDir } from "../core/paths";
 
+// What this worktree's git made, by ref, one a line, in its own git directory: the hook writes it (the gate refuses
+// any other write there, shared-branches.ts) and the gate reads it.
+export const MADE = "keel-made-branches";
 export const refGuardRoot = () => join(dirname(gitViewsDir()), "ref-guard");
 // A confined command runs the hook too: its folder is shown read-only in every sandbox.
 offerToSandbox(() => [refGuardRoot()]);
@@ -107,15 +112,18 @@ common=${shq(s.common)}
 branch=${shq(`refs/heads/${s.branch}`)}
 base=${shq(base)}
 others=${shq((s.gitDirs ?? []).join("\n"))}
+kids=${shq((s.kids ?? []).map((b) => `refs/heads/${b}`).join("\n"))}
+made="$own/${MADE}"
 orig=${shq(join(orig, "reference-transaction"))}
 nl='
 '
+tab=$(printf '\\t')
 input=
 while IFS= read -r l || [ -n "$l" ]; do input="$input$l$nl"; done
-[ "$1" = prepared ] || [ -x "$orig" ] || exit 0
+[ "$1" = prepared ] || [ "$1" = committed ] || [ "$1" = aborted ] || [ -x "$orig" ] || exit 0
 refuse() {
   b=\${base#refs/heads/}
-  printf '%s\\n' "Refused by Keel: this git command $1. This worktree shares the repository's branches with its other checkouts (the owner's and other agents'), so an agent here changes its own branch only (\${branch#refs/heads/}). A branch reaches \${b:-its base} through Keel's landing queue (keel__landing_queue), which rebases it, runs the repository's checks and lands it. Leave the other branches as they are, even to undo a mistake, and say in your report what you wanted done." >&2
+  printf '%s\\n' "Refused by Keel: this git command $1. This worktree shares the repository's branches with its other checkouts (the owner's and other agents'), so an agent here changes its own branch (\${branch#refs/heads/}) and the branches it makes itself only. A branch reaches \${b:-its base} through Keel's landing queue (keel__landing_queue), which rebases it, runs the repository's checks and lands it. Leave the other branches as they are, even to undo a mistake, and say in your report what you wanted done." >&2
   exit 1
 }
 real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\\n' "$1"; }
@@ -145,6 +153,34 @@ unmoved() {
        [ ! -e "$common/packed-refs.lock" ] && grep -qxF "$1 $3" "$common/packed-refs" 2>/dev/null ;;
   esac
 }
+# (The old value in a transaction is zero where the command gave none, so a ref's own files say whether it exists.)
+exists() { [ -f "$common/$1" ] || grep -q -e " $1\\$" "$common/packed-refs" 2>/dev/null; }
+# A branch of this worktree's: its own, the one it is on, one an agent under it made, one its own git made before (the
+# list beside its HEAD), or one of those renamed (git writes the new name of a rename with no entry of its own in
+# the transaction, and says it in that branch's log).
+mine() {
+  [ "$1" = "$branch" ] && return 0
+  line=
+  IFS= read -r line < "$own/HEAD" || :
+  [ "$line" = "ref: $1" ] && return 0
+  case "$nl$kids$nl" in *"$nl$1$nl"*) return 0 ;; esac
+  [ -f "$made" ] && grep -qxF "$1" "$made" && return 0
+  [ "$2" -ge 4 ] && return 1
+  [ -f "$common/logs/$1" ] || return 1
+  for from in $(sed -nE "s|^.*$tab"'Branch: renamed (refs/heads/[^ ]*) to '"$1"'$|\\1|p' "$common/logs/$1" 2>/dev/null); do
+    mine "$from" $(($2 + 1)) && return 0
+  done
+  return 1
+}
+# A branch that exists and that this worktree did not make.
+foreign() { exists "$1" && ! mine "$1" 0; }
+# What this worktree's git makes is its own to move: noted where only git writes (the gate refuses a write there),
+# once the transaction that makes it went through.
+pending="$made.$PPID"
+if [ "$1" = committed ]; then
+  if [ -f "$pending" ]; then cat "$pending" >> "$made" 2>/dev/null || :; rm -f "$pending"; fi
+elif [ "$1" = aborted ]; then rm -f "$pending"
+fi
 if [ "$1" = prepared ] && [ -n "$input" ]; then
   here=
   while read -r old new ref; do
@@ -159,7 +195,10 @@ if [ "$1" = prepared ] && [ -n "$input" ]; then
         fi
         case "$new" in ref:refs/heads/*) shared "\${new#ref:}" && refuse "puts a checkout on the branch \${new#ref:refs/heads/}, which this worktree shares" ;; esac
         ;;
-      refs/heads/*) shared "$ref" && ! unmoved "$old" "$new" "$ref" && refuse "moves the branch \${ref#refs/heads/}, which this worktree shares" ;;
+      refs/heads/*)
+        if shared "$ref" && ! unmoved "$old" "$new" "$ref"; then refuse "moves the branch \${ref#refs/heads/}, which this worktree shares"; fi
+        if foreign "$ref" && ! unmoved "$old" "$new" "$ref"; then refuse "moves the branch \${ref#refs/heads/}, which this worktree did not make"; fi
+        exists "$ref" || printf '%s\\n' "$ref" >> "$pending" 2>/dev/null || : ;;
     esac
   done <<KEEL_EOF
 $input
@@ -184,7 +223,7 @@ export function guardFor(s: Shared, env: Record<string, string | undefined> = pr
   const files = configFiles(s.common, s.gitDir, env);
   const orig = hooksOf(s, env);
   const origAbs = isAbsolute(orig) ? orig : resolve(s.root, orig);
-  const mark = [orig, mtime(origAbs), ...files.map(mtime), s.base, s.branch, (s.gitDirs ?? []).join(":")].join("|");
+  const mark = [orig, mtime(origAbs), ...files.map(mtime), s.base, s.branch, (s.gitDirs ?? []).join(":"), (s.kids ?? []).join(":")].join("|");
   const was = made.get(s.gitDir);
   if (was && was.mark === mark && existsSync(join(dir, "config"))) return dir;
   try {

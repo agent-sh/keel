@@ -1,4 +1,8 @@
-// An agent in a worktree Keel made for it changes its own branch only. The
+// An agent in a worktree Keel made for it changes its own branch, and the
+// branches it makes itself, only. A branch that exists and that it did not make
+// (the owner's, another agent's, one left by an agent that is gone) is not
+// moved, renamed or deleted from it: the ones it made are the ones its own git
+// noted (src/safety/ref-guard.ts) and the ones of the agents under it. The
 // worktree shares the repository's branches with every other checkout (the
 // owner's main one, other agents'), and a git command run from it can move
 // one of them: `git branch -f main`, `git update-ref refs/heads/main`, `git
@@ -21,6 +25,7 @@
 //
 // Pure: the gate reads the checkouts from the disk (refwatch.ts checkoutsOf).
 import { isAbsolute, join, resolve } from "node:path";
+import { MADE } from "./ref-guard.ts";
 import { laid } from "./risk.ts";
 import { name, redirected, SHELLS, type Run } from "./risk-words.ts";
 import { isReadOnly, splitCommand, type Simple } from "./shell.ts";
@@ -37,6 +42,12 @@ import { isReadOnly, splitCommand, type Simple } from "./shell.ts";
 export type Shared = {
   root: string; gitDir: string; common: string; branch: string; base: string | null; out: Map<string, string>; folders: string[];
   gitDirs?: string[]; remotes?: Map<string, string[]>; hosts?: string[]; real?: (p: string) => string;
+  // The branches that exist, other than this worktree's own, the one it is on and the ones it made itself (or an
+  // agent under it did), in small letters. They are no one's but another's: the owner's, another agent's, one
+  // left by an agent that is gone. Read when a command names a branch, not before. Absent: not known.
+  foreign?: () => Set<string>;
+  // The branches an agent under this one made (each with its own worktree), for the hook's script.
+  kids?: string[];
 };
 
 const within = (dir: string, p: string) => p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
@@ -210,7 +221,7 @@ function configSet(args: string[]): [string, string | undefined] | null {
 // repository is, and each checkout's .git.
 export function gitStoreOf(p: string, s: Shared): string | null {
   if (within(join(s.common, "objects"), p)) return null;
-  if (within(s.gitDir, p)) return ["HEAD", "commondir", "gitdir"].some((f) => p === join(s.gitDir, f)) ? `${p}, which says what this worktree has out and where its repository is` : null;
+  if (within(s.gitDir, p)) return ["HEAD", "commondir", "gitdir", MADE].some((f) => p === join(s.gitDir, f)) ? `${p}, which says what this worktree has out, where its repository is and which branches it made` : null;
   if (within(s.common, p)) return `${p}, in the repository's git directory, which every checkout shares`;
   if (p === join(s.root, ".git")) return `${p}, which says which repository this worktree is in`;
   for (const f of s.folders) if (within(join(f, ".git"), p)) return `${p}, another checkout's git data`;
@@ -237,12 +248,17 @@ function isLocal(remote: string, dir: string, home: string, s: Shared, url = fal
 
 // The branches the worktree shares, by name in small letters (a file system that ignores case takes MAIN for main).
 const sharedSet = (s: Shared) => new Set([...s.out.keys(), ...(s.base ? [s.base] : [])].filter((b) => b !== s.branch).map((b) => b.toLowerCase()));
+// Those and every other branch that exists and is not this worktree's: the ones a command may not move, rename or delete.
+const heldSet = (s: Shared) => new Set([...sharedSet(s), ...(s.foreign?.() ?? [])]);
 
 // What a git command run in the agent's own worktree does to a branch it shares, if anything.
 function movesShared(g: Git, dir: string, home: string, s: Shared): string | null {
   const shared = sharedSet(s);
-  const named = (w: string) => unread(w) || shared.has(branchOf(w).toLowerCase());
-  const what = (w: string) => (unread(w) ? `a branch it names with an expansion (${w})` : `the branch ${branchOf(w)}${s.out.has(branchOf(w)) ? ", which another checkout has out" : ", this worktree's base"}`);
+  // `named`: a branch this command may not move, rename or delete. `onto`: one it may not put the worktree on
+  // either, which is only what the other checkouts use (a branch left by an agent that is gone can be read).
+  let held: Set<string> | undefined;
+  const named = (w: string) => unread(w) || shared.has(branchOf(w).toLowerCase()) || (held ??= heldSet(s)).has(branchOf(w).toLowerCase());
+  const what = (w: string) => (unread(w) ? `a branch it names with an expansion (${w})` : `the branch ${branchOf(w)}${s.out.has(branchOf(w)) ? ", which another checkout has out" : shared.has(branchOf(w).toLowerCase()) ? ", this worktree's base" : ", which this worktree did not make"}`);
   const { sub, args } = g;
   if (sub === "branch") {
     const p = operands(args, /^(-u|--set-upstream-to|--contains|--no-contains|--merged|--no-merged|--points-at|--sort|--format|--column)$/);
@@ -310,7 +326,9 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
     // are fine, and so is its commit detached (--detach; switch's -d): a commit there moves no branch.
     if (has(args, /^--detach$/) || (sub === "switch" && has(args, /^-d$/))) return null;
     const p = operands(args, /^(-b|-B|-c|-C|--orphan|-t|--track|--conflict|--pathspec-from-file)$/);
-    return k < 0 && !args.includes("--") && p.length === 1 && named(p[0]!) && !unread(p[0]!) ? `puts this worktree on ${what(p[0]!)}` : null;
+    // (A branch made from it, `checkout -b new START`, puts the worktree on the new one.)
+    const makes = args.some((a) => /^(-b|-c|-C|--orphan|--create|--force-create)/.test(a));
+    return k < 0 && !makes && !args.includes("--") && p.length === 1 && named(p[0]!) && !unread(p[0]!) ? `puts this worktree on ${what(p[0]!)}` : null;
   }
   if (sub === "worktree" && args[0] === "add") {
     const rest = args.slice(1);
@@ -541,5 +559,5 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
 
 // What the agent is told: what the command would do, and the way its work lands instead.
 export function sharedMessage(why: string, s: Shared, what = "the command"): string {
-  return `Refused: ${what} ${why}. This worktree shares the repository's branches with its other checkouts (the owner's and other agents'), so an agent here changes its own branch only (${s.branch}): commit there, and reset or rebase it as you need. A branch reaches ${s.base ?? "its base"} through Keel's landing queue (keel__landing_queue), which rebases it, runs the repository's checks and lands it. Leave the other branches as they are, even to undo a mistake, and say in your report what you wanted done.`;
+  return `Refused: ${what} ${why}. This worktree shares the repository's branches with its other checkouts (the owner's and other agents'), so an agent here changes its own branch (${s.branch}) and the branches it makes itself only: commit there, and reset or rebase it as you need. A branch reaches ${s.base ?? "its base"} through Keel's landing queue (keel__landing_queue), which rebases it, runs the repository's checks and lands it. Leave the other branches as they are, even to undo a mistake, and say in your report what you wanted done.`;
 }

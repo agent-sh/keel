@@ -8,6 +8,7 @@ import { realOf } from "../core/paths.ts";
 import { checkoutsOf } from "./refwatch.ts";
 import { guardEnv, hooksPathIn, refGuardRoot } from "./ref-guard.ts";
 import { confine, sandboxStatus, splitScope } from "./sandbox.ts";
+import { sharedRefusal } from "./shared-branches.ts";
 
 const hasGit = !!Bun.which("git");
 // git runs the hook for a symbolic ref's update from 2.46 on, the release that made such updates part of a ref
@@ -101,6 +102,64 @@ test.skipIf(!hasGit)("a git an agent's command starts moves no branch its worktr
   } finally {
     rmSync(dir, { recursive: true, force: true });
     // (Its folders are shown in every sandbox while they are there: none is left for the files after this one.)
+    rmSync(refGuardRoot(), { recursive: true, force: true });
+  }
+});
+
+test.skipIf(!hasGit)("an agent moves, renames or deletes no branch but its own and the ones it made, at the gate and at git's door", () => {
+  const dir = realOf(mkdtempSync(join(process.env.TMPDIR ?? ".", "guard-")));
+  const base = { PATH: process.env.PATH!, HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  const run = (cwd: string, env: Record<string, string>, ...argv: string[]) => {
+    const r = Bun.spawnSync(argv, { cwd, env: { ...base, ...env } });
+    return { code: r.exitCode, err: r.stderr.toString(), out: r.stdout.toString() };
+  };
+  const git = (cwd: string, ...a: string[]) => { const r = run(cwd, {}, "git", "-c", "init.defaultBranch=main", ...a); if (r.code !== 0) throw new Error(r.err); return r.out.trim(); };
+  try {
+    const main = join(dir, "main"), agent = join(dir, "agent");
+    git(dir, "init", "-q", main);
+    writeFileSync(join(main, "a"), "a\n");
+    git(main, "add", "a");
+    git(main, "commit", "-qm", "a");
+    git(main, "worktree", "add", "-q", "-b", "keel/x", agent);
+    // Branches nobody has out: the owner's release line, and what an agent that is gone left.
+    git(main, "branch", "release/1");
+    git(main, "branch", "keel/gone");
+    // (Its own commit, so that HEAD is a value none of those branches has.)
+    writeFileSync(join(agent, "b"), "b\n");
+    git(agent, "add", "b");
+    git(agent, "commit", "-qm", "b");
+    const s = checkoutsOf(agent, "keel/x", "main", ["keel/kid"])!;
+    const env = guardEnv(s, base);
+    const sh = (line: string) => run(agent, env, "sh", "-c", line);
+    expect([...s.foreign!()].sort()).toEqual(["keel/gone", "main", "release/1"]);
+    // The gate: the commands a model sends.
+    for (const line of ["git branch -D keel/gone", "git update-ref refs/heads/release/1 HEAD", "git branch -m release/1 r", "git checkout -B keel/gone", "git push . HEAD:release/1"]) {
+      expect([line, sharedRefusal(line, agent, dir, s)?.includes("which this worktree did not make")]).toEqual([line, true]);
+    }
+    // Git's door: what the gate cannot read.
+    const at = (b: string) => git(main, "rev-parse", b);
+    const before = [at("release/1"), at("keel/gone")];
+    for (const line of ["git update-ref refs/heads/release/1 HEAD", "git update-ref -d refs/heads/keel/gone", "git branch -f release/1 HEAD", "git branch -D keel/gone", "sh -c 'git branch -M keel/gone keel/x2'"]) {
+      const r = sh(line);
+      expect([line, r.code !== 0, r.err.includes("did not make")]).toEqual([line, true, true]);
+    }
+    expect([at("release/1"), at("keel/gone")]).toEqual(before);
+    // Its own: a commit, a branch it makes, moved, renamed and deleted again, in separate commands and in one.
+    for (const line of ["git commit -q --allow-empty -m c", "git branch keel/x-sub", "git branch -f keel/x-sub HEAD~1", "git branch -m keel/x-sub keel/x-sub2", "git update-ref -d refs/heads/keel/x-sub2", "git branch t && git branch -D t", "git checkout -q -b keel/x-more && git checkout -q keel/x"]) {
+      const r = sh(line);
+      expect([line, r.code, r.err]).toEqual([line, 0, ""]);
+    }
+    // (The hook noted what it made; the rename's new name is its own too.)
+    expect(readFileSync(join(s.gitDir, "keel-made-branches"), "utf8")).toContain("refs/heads/keel/x-sub\n");
+    expect(sh("git branch -D keel/x-more").code).toBe(0);
+    // The branch an agent under it made is its own to remove, by what the harness says of it.
+    git(main, "branch", "keel/kid");
+    const s2 = checkoutsOf(agent, "keel/x", "main", ["keel/kid"])!;
+    expect(sharedRefusal("git branch -D keel/kid", agent, dir, s2)).toBeNull();
+    expect(run(agent, guardEnv(s2, base), "git", "branch", "-D", "keel/kid").code).toBe(0);
+    expect(run(agent, guardEnv(s2, base), "git", "branch", "-D", "release/1").code).not.toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
     rmSync(refGuardRoot(), { recursive: true, force: true });
   }
 });

@@ -1343,10 +1343,10 @@ export class Gate {
   // under (the nearest that holds its folder). Read at each command: a checkout
   // made or gone, or a branch taken out, since the last one counts.
   private sharedOf(session: Session): Shared | undefined {
-    let row: { path: string; branch: string; base: string } | null;
+    let row: { path: string; branch: string; base: string; session_id: string } | null;
     try {
-      row = this.store.db.query<{ path: string; branch: string; base: string }, [string, string]>(
-        "SELECT path, branch, base FROM worktrees WHERE state = 'active' AND (session_id = ?1 OR ?2 = path OR substr(?2, 1, length(path) + 1) = path || '/') ORDER BY session_id = ?1 DESC, length(path) DESC LIMIT 1",
+      row = this.store.db.query<{ path: string; branch: string; base: string; session_id: string }, [string, string]>(
+        "SELECT path, branch, base, session_id FROM worktrees WHERE state = 'active' AND (session_id = ?1 OR ?2 = path OR substr(?2, 1, length(path) + 1) = path || '/') ORDER BY session_id = ?1 DESC, length(path) DESC LIMIT 1",
       ).get(session.id, session.workspace);
     } catch {
       return undefined; // (no worktree was ever made: the table is not there)
@@ -1354,7 +1354,14 @@ export class Gate {
     if (!row) return undefined;
     // (A worktree made from a commit has no base branch.)
     const base = /^[0-9a-f]{7,64}$/.test(row.base) || row.base === "HEAD" ? null : row.base.replace(/^refs\/heads\//, "");
-    return timed(() => "reading the checkouts an agent's worktree shares its branches with", () => checkoutsOf(row.path, row.branch, base));
+    // The branches of the agents under the one that owns the worktree: made for them, so theirs to move.
+    let kids: string[] = [];
+    try {
+      kids = this.store.db.query<{ branch: string }, [string]>(
+        "WITH RECURSIVE sub(id) AS (SELECT id FROM sessions WHERE parent_id = ?1 UNION SELECT s.id FROM sessions s JOIN sub ON s.parent_id = sub.id) SELECT branch FROM worktrees WHERE session_id IN (SELECT id FROM sub) AND branch != ''",
+      ).all(row.session_id).map((r) => r.branch);
+    } catch { /* (no worktree was ever made) */ }
+    return timed(() => "reading the checkouts an agent's worktree shares its branches with", () => checkoutsOf(row.path, row.branch, base, kids));
   }
 
   // What stands on this machine under the names of the programs a command's reading forms depend on (node
