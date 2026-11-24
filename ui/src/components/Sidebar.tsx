@@ -31,7 +31,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, WAITS_ON_YOU, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, WAITS_ON_YOU, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
@@ -485,8 +485,10 @@ const coverOf = (root: HTMLElement) => {
   return `${-Math.ceil(find.offsetHeight + 0.25 * rem)}px 0px 0px 0px`;
 };
 
-function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }; machines: { machine: string; count: number }[] }) {
-  const key = machines.map((m) => `${m.machine}:${m.count}`).join(" ");
+function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }; machines: { machine: string; list: Session[] }[] }) {
+  const key = machines.map((m) => `${m.machine}:${m.list.length}`).join(" ");
+  // What waits on the owner and what works there, in the words of the counts: a folded part still says it.
+  const states = useSessionStates(useMemo(() => machines.flatMap((m) => m.list), [machines]));
   const [below, setBelow] = useState<string[]>([]);
   const narrowScreen = usePhoneWidth();
   useEffect(() => {
@@ -507,7 +509,9 @@ function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }
       {machines.filter((m) => below.includes(m.machine)).map((m) => (
         <button key={m.machine} type="button" className="k-late-line" data-testid="machine-foot" data-machine={m.machine} title={`The sessions on ${machineName(m.machine) ?? m.machine}, below`}
           onClick={() => nav.current?.querySelector(`[data-testid="machine-sep"][data-machine="${CSS.escape(m.machine)}"]`)?.scrollIntoView({ block: "start" })}>
-          <ArrowDown aria-hidden="true" /><span className="min-w-0 truncate">{machineName(m.machine) ?? m.machine}</span><span className="ml-auto tabular-nums text-faint">{m.count}</span>
+          <ArrowDown aria-hidden="true" /><span className="min-w-0 truncate">{machineName(m.machine) ?? m.machine}</span>
+          {(["need", "work"] as const).map((w) => { const n = m.list.filter((s) => states[s.id]?.watch === w).length; return n > 0 ? <span key={w} className={cn("shrink-0 tabular-nums", w === "need" ? "text-st-need" : "text-accent")} data-testid={`machine-foot-${w}`}>{countWord(w, n)}</span> : null; })}
+          <span className="ml-auto tabular-nums text-faint">{m.list.length}</span>
         </button>
       ))}
     </div>
@@ -1179,7 +1183,7 @@ function Index({ current }: { current: string | null }) {
       </div>
       </div>
       <div className="k-list-foot" data-testid="list-foot">
-        {sections.length > 1 && <MachinesBelow nav={nav} machines={sections.filter((x) => x.machine).map((x) => ({ machine: x.machine!, count: x.list.length }))} />}
+        {sections.length > 1 && <MachinesBelow nav={nav} machines={sections.filter((x) => x.machine).map((x) => ({ machine: x.machine!, list: x.list }))} />}
         <NeedStrip nav={nav} open={(id) => { navigate({ name: "session", id }); if (getStations().shown.includes(id)) intoBox(id); }} />
         {/* They are below what the list shows: said at its foot, and a press goes to them. */}
         {waits && !lateSeen && <LateLine n={late.length} to={lateBox} />}

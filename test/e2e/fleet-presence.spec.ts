@@ -146,3 +146,46 @@ test("another machine is named in a narrow pane's head, and its part of the list
     await request.delete(`/api/fleet/machines/${mid}`);
   }
 });
+
+// Feature: a session of another machine names its machine once in its page head (the machine button,
+// which also moves it), and the list's foot line for a part of the list below the view says how many
+// of its sessions work and wait for the owner.
+test("a remote session names its machine once, and the foot line of its part counts what works", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const old = (await (await request.get("/api/fleet/machines")).json()).machines.filter((m: any) => m.daemon_url === PEER).map((m: any) => m.id);
+  for (const s of (await (await request.get("/api/sessions")).json()).sessions) if (old.includes(s.machine)) await request.delete(`/api/sessions/${s.id}`);
+  for (const id of old) await request.delete(`/api/fleet/machines/${id}`);
+  mkdirSync(ROOT, { recursive: true });
+  const mid = (await (await request.post("/api/fleet/machines", { data: { name: "far-desk", daemon_url: PEER, workspace_root: ROOT } })).json()).id as string;
+  const { session: far } = await (await request.post(`${PEER}/api/sessions`, { data: { workspace: ROOT, title: "Far long build", model: HAIKU } })).json();
+  await request.put(`${PEER}/api/sessions/${far.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await request.post(`${PEER}/api/sessions/${far.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 600" } }])}` } });
+  const ws = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/machine-chip-${Date.now().toString(36)}`;
+  const local: string[] = [];
+  try {
+    for (let f = 0; f < 4; f++) { mkdirSync(`${ws}/f${f}`, { recursive: true }); for (let i = 0; i < 6; i++) local.push((await (await request.post("/api/sessions", { data: { model: HAIKU, title: `Here ${f}.${i}`, workspace: `${ws}/f${f}` } })).json()).session.id); }
+    const farId = `${mid}--${far.id}`;
+    await page.setViewportSize({ width: 1400, height: 700 });
+    await page.goto(`/s/${local[0]}`);
+    const sep = page.locator(`[data-testid="machine-sep"][data-machine="${mid}"]`);
+    await expect(sep).toBeAttached({ timeout: 30_000 });
+    await page.getByTestId("session-list").evaluate((l) => { l.scrollTop = 0; });
+    const foot = page.locator(`[data-testid="machine-foot"][data-machine="${mid}"]`);
+    await expect(foot).toBeInViewport();
+    // It works there: the folded line says so, and what is only a count before is not all it says.
+    await expect(foot.getByTestId("machine-foot-work")).toHaveText("1 working", { timeout: 30_000 });
+    await shoot(page, "fleet-presence-04-foot-counts");
+    // The far session's page: the machine is the button, once.
+    await page.goto(`/s/${farId}`);
+    await expect(page.getByTestId("machine-chip")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("station-machine")).toBeHidden();
+    await expect(page.locator('[data-testid="session-header"], [data-testid="station-head"]').getByText("far-desk").filter({ visible: true })).toHaveCount(1);
+    await shoot(page, "fleet-presence-05-one-machine-chip");
+  } finally {
+    for (const id of local) await request.delete(`/api/sessions/${id}`);
+    await request.post(`${PEER}/api/sessions/${far.id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+    await request.delete(`${PEER}/api/sessions/${far.id}`);
+    await request.delete(`/api/fleet/machines/${mid}`);
+  }
+});
