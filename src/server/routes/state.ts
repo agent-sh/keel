@@ -29,6 +29,10 @@ import type { Deps, RouteModule } from "../app.ts";
 const SETTLE_MS = 25;
 // What no frame tells (a background command ending, a step passing its limit) is caught within this.
 const SWEEP_MS = 5000;
+// A session the telling read this recently is not read again by the sweep: a working session's frames
+// (a step, a status) read it every few seconds already, and the sweep's own read would find the same.
+// What only time changes in it (a step past its limit) is then caught within SWEEP_MS plus this.
+export const SWEEP_FRESH_MS = SWEEP_MS / 2;
 // A working session's step changes many times a second (one tool call after
 // another). Its row is read at a glance, so a change from one step to the next
 // is told at most this often; a change of the word itself is told at once.
@@ -37,6 +41,13 @@ const STEP_MS = 600;
 // Only queues of sessions in the snapshot. An empty map is still an answer.
 export function queuedFor(states: Record<string, object>, counts: Map<string, number>): Record<string, number> {
   return Object.fromEntries([...counts].filter(([id]) => Object.hasOwn(states, id)));
+}
+
+// The sessions the sweep reads: those not at rest that the telling has not read lately.
+export function sweepDue(live: Iterable<string>, readAt: Map<string, number>, now: number): string[] {
+  const out: string[] = [];
+  for (const id of live) if (now - (readAt.get(id) ?? -Infinity) >= SWEEP_FRESH_MS) out.push(id);
+  return out;
 }
 
 export class StateBoard {
@@ -49,6 +60,8 @@ export class StateBoard {
   private due = 0; // when the pending telling runs
   private asking = new Set<string>();
   private sent = new Map<string, { at: number; watch: string }>();
+  // When the telling last read each session.
+  private readAt = new Map<string, number>();
   // Sessions seen not at rest (told so, or read so by a snapshot): looked at again by the sweep.
   private live = new Set<string>();
 
@@ -108,10 +121,15 @@ export class StateBoard {
 
   // The session and the sessions above it: an agent's card is its parent's too.
   // (A change is told within the settle time also while a step change waits out its own, longer, time.)
+  // (One column of one row: a change marks the session and every one above it, many times a second.)
+  private parentOf(id: string): string | null | undefined {
+    try { return this.deps.store.db.query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM sessions WHERE id = ?").get(id)?.parent_id; } catch { return this.deps.store.session(id)?.parent_id; } // (a store before agents' column)
+  }
+
   touch(id: string | undefined | null) {
     for (let n = 0; id && n < 32; n++) {
       this.dirty.add(id);
-      id = this.deps.store.session(id)?.parent_id;
+      id = this.parentOf(id);
     }
     this.arm(SETTLE_MS);
   }
@@ -131,6 +149,7 @@ export class StateBoard {
     for (const id of ids) {
       const st = this.read(id, l);
       if (!st) { this.gone(id); continue; }
+      this.readAt.set(id, at);
       this.note(id, st);
       const now = JSON.stringify(st);
       if (this.last.get(id) === now) continue;
@@ -168,6 +187,7 @@ export class StateBoard {
   private gone(id: string) {
     this.dirty.delete(id);
     this.sent.delete(id);
+    this.readAt.delete(id);
     this.live.delete(id);
     if (this.last.delete(id)) this.deps.bus.emit({ t: "feature", name: "state", session_id: id, data: null });
   }
@@ -175,8 +195,8 @@ export class StateBoard {
   // Sessions that are not at rest are read again: what ended without a frame shows within the sweep.
   // Whether a session is not at rest (the sweep has something to read).
   restless(): boolean { return this.live.size > 0; }
-  sweep() {
-    for (const id of this.live) this.touch(id);
+  sweep(now = Date.now()) {
+    for (const id of sweepDue(this.live, this.readAt, now)) this.touch(id);
   }
 }
 

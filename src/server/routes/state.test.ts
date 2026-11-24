@@ -7,7 +7,7 @@ import { Bus } from "../../core/bus.ts";
 import { Store } from "../../core/store.ts";
 import type { Frame } from "../../core/types.ts";
 import type { SessionState } from "../../core/watch.ts";
-import { StateBoard } from "./state.ts";
+import { StateBoard, SWEEP_FRESH_MS, sweepDue } from "./state.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "keel-state-"));
@@ -87,4 +87,10 @@ test("a change of the word is told at once, also while a step change waits its t
   } finally {
     done();
   }
+});
+
+test("the sweep leaves a session the telling read a moment ago", () => {
+  const readAt = new Map([["fresh", 10_000], ["old", 10_000 - SWEEP_FRESH_MS]]);
+  expect(sweepDue(["fresh", "old", "never"], readAt, 10_000 + 1)).toEqual(["old", "never"]);
+  expect(sweepDue(["fresh"], readAt, 10_000 + SWEEP_FRESH_MS)).toEqual(["fresh"]);
 });
