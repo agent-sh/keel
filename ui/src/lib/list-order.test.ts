@@ -60,6 +60,12 @@ test("the counts name the longest wait first, and unread only what no other coun
   expect(after([], null)).toBeUndefined();
 });
 
+test("news counts only where its dot shows: a row at work or waiting with a clock keeps the clock", () => {
+  const list = [s("a", 1), s("b", 2), s("c", 3), s("d", 4)];
+  const t = tally(list, { a: { watch: "work", since: 5 }, b: { watch: "wait", until: 9 }, c: { watch: "work" }, d: { watch: "done" } }, { a: 1, b: 1, c: 1, d: 1 });
+  expect(t.unread).toEqual(["c", "d"]);
+});
+
 test("the line above the list counts working and waiting as the home does: a command in the background is working", () => {
   const list = [s("a", 1), s("b", 2), s("c", 3), s("d", 4)];
   const states = { a: { watch: "work" as const, why: "tool" }, b: { watch: "work" as const, why: "command" }, c: { watch: "wait" as const, why: "timer" }, d: { watch: "resume" as const } };

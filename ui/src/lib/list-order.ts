@@ -114,7 +114,7 @@ export function held<T extends { id: string }>(was: T[], now: T[], own: (id: str
 // session that needs the owner or failed is always one press away, wherever
 // its row is: the longest wait first.
 export type Tally = { need: string[]; fail: string[]; work: string[]; wait: string[]; unread: string[] };
-export function tally(sessions: { id: string; created: number }[], states: Record<string, { watch: Watch; since?: number; why?: string } | undefined>, unread: Record<string, number | undefined>): Tally {
+export function tally(sessions: { id: string; created: number }[], states: Record<string, { watch: Watch; since?: number; until?: number; why?: string } | undefined>, unread: Record<string, number | undefined>): Tally {
   const since = (id: string) => states[id]?.since ?? Infinity;
   const first = (a: { id: string; created: number }, b: { id: string; created: number }) => since(a.id) - since(b.id) || a.created - b.created || a.id.localeCompare(b.id);
   const of = (ws: Watch[]) => sessions.filter((s) => ws.includes(states[s.id]?.watch ?? "idle")).sort(first).map((s) => s.id);
@@ -125,8 +125,12 @@ export function tally(sessions: { id: string; created: number }[], states: Recor
     work: of(["work"]),
     // Waiting: at rest until something it set up wakes it, or a turn a restart cut that Keel resumes (the home's count).
     wait: of(["wait", "resume"]),
-    // Unread that says something new: what needs them or failed is counted there already.
-    unread: sessions.filter((s) => (unread[s.id] ?? 0) > 0 && !["need", "fail", "declined"].includes(states[s.id]?.watch ?? "idle")).sort(first).map((s) => s.id),
+    // Unread that says something new, as the rows show it: what needs them or failed is counted there already, and a
+    // row at work or waiting keeps its clock where the dot of news would stand (it comes back when the row rests).
+    unread: sessions.filter((s) => {
+      const st = states[s.id], w = st?.watch ?? "idle";
+      return (unread[s.id] ?? 0) > 0 && !["need", "fail", "declined"].includes(w) && !((w === "work" || w === "wait") && (st?.since || st?.until));
+    }).sort(first).map((s) => s.id),
   };
 }
 

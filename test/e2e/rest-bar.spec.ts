@@ -263,6 +263,9 @@ test("a row red for its agents says how many failed, and a calm list says a time
     })));
     await expect.poll(async () => (await kinds()).filter((r) => r.kinds.length > 1)).toEqual([]);
     expect((await kinds()).find((r) => r.id === busy)!.kinds).toEqual(["row-time"]);
+    // The line above the list counts news as the rows show it: a row at work keeps its clock, so its news is not in "new".
+    const dots = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="session-row"] [data-testid="unread-dot"]')].filter((e) => getComputedStyle(e).display !== "none" && e.getBoundingClientRect().width > 0).length);
+    await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the dots the rows show" }).toBe(await dots());
     expect((await kinds()).find((r) => r.id === coord)!.kinds).toHaveLength(1);
     await shoot(page, "rest-bar-04-rows");
   } finally {
