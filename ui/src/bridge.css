@@ -429,15 +429,16 @@
 .k-list-note { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); margin: 0 0.625rem 0.125rem; padding-left: 0.375rem; font-size: var(--text-caption); color: var(--faint); }
 /* A folded folder's head says that a session inside needs the owner or failed. */
 .k-head-calls { width: 0.5rem; height: 0.5rem; }
-/* The agents under a row. Their line of counts is one line that never wraps: how many, then each
-   state's mark and count, what calls the owner first and in words; the others give their words
-   where the list is wide. A row is the agent's mark, its title and its state word, in the faces and
+/* The agents under a row: a line of counts (below), then, opened, a row for each. A row is the agent's mark, its title and its state word, in the faces and
    inks of a session's row; where the row is too narrow for both, the title stays and the mark says the state. */
 .k-session-children { margin-left: 0.75rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
-/* A count is never cut. What is not a count (how many are new, which one is on screen) has the room the counts leave on
-   their line and goes whole when that is too little; counts that cannot share one line (a list dragged narrow) take a second. */
-.k-kids-sum { display: flex; align-items: flex-start; column-gap: 0.4375rem; width: 100%; min-width: 0; min-height: 1.5rem; padding: 0 0.375rem; border-radius: var(--radius-md); white-space: nowrap; text-align: left; font-size: var(--text-caption); color: var(--faint); }
-.k-kids-counts { display: flex; flex-wrap: wrap; align-items: center; column-gap: 0.4375rem; row-gap: 0; flex: 0 1 auto; min-width: 0; }
+/* One form whatever the states (an agents' line that turned from a sentence into figures, and wrapped, read as a
+   different thing each time): how many, then each state's mark and figure, what calls the owner first, in that state's
+   ink. The words are the line's name and each figure's tooltip. One line of a fixed height, never wrapped: a count
+   with no room on it goes to a line that is not shown, whole, the last ones first. How many are new has the room
+   the counts leave and goes whole where that is too little. */
+.k-kids-sum { display: flex; align-items: flex-start; column-gap: 0.4375rem; width: 100%; min-width: 0; height: 1.5rem; overflow: hidden; padding: 0 0.375rem; border-radius: var(--radius-md); white-space: nowrap; text-align: left; font-size: var(--text-caption); color: var(--faint); }
+.k-kids-counts { display: flex; flex-wrap: wrap; align-items: center; column-gap: 0.4375rem; row-gap: 0; flex: 0 1 auto; min-width: 0; height: 1.5rem; overflow: hidden; }
 .k-kids-sum:hover { color: var(--muted); }
 .k-kids-sum:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-kids-fold { width: 0.75rem; height: 0.75rem; margin-block: 0.375rem; flex-shrink: 0; transition: transform var(--dur-quick) var(--ease-out); }
@@ -449,30 +450,16 @@
 .k-kids-extra::before { content: ""; width: 0; height: 1.5rem; }
 .k-kids-extra > * { display: inline-block; height: 1.5rem; line-height: 1.5rem; }
 .k-kids-extra > :not(:first-child) { margin-left: 0.4375rem; }
-/* With every state in it the line still holds each count: the word "agents" gives way first. */
-.k-kids-sum[data-many] .k-kids-label { display: none; }
 .k-kids-part .k-mark { width: 0.5rem; height: 0.5rem; animation: none; }
 .k-kids-part .k-mark[data-watch="work"] { border-width: 1.5px; }
 .k-kids-n { font-weight: 500; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1; color: var(--muted); }
-/* Each count is its state's mark and a number, as a row is its mark and its title; what calls the owner is in that state's ink.
-   Where the list is wide enough for the whole sentence the words stand too (they are always the line's name and tooltip). */
-.k-kids-word { display: none; font-size: var(--text-micro); line-height: 1; }
-/* A line of three states or fewer is a sentence in the text face: "4 agents 3 working 1 done".
-   A mark only before what calls the owner (its state, its ink); the others are words alone.
-   The sentence needs about 18 rem of list for three states ("1 failed 1 working 6 done"); in a list dragged narrower the line falls
-   back to the marks and figures, which keep one line down to the narrowest list. */
-@container rail (min-width: 18.5rem) {
-  .k-kids-sum[data-words] .k-kids-word { display: inline; }
-  .k-kids-sum[data-words] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-mark { display: none; }
-  .k-kids-sum[data-words] .k-kids-part { gap: 0.1875rem; }
-  .k-kids-sum[data-words] .k-kids-label { font-size: var(--text-micro); }
-  .k-kids-sum[data-words] .k-kids-total .k-kids-n { color: var(--muted); }
-}
-.k-kids-part[data-watch="need"] :is(.k-kids-n, .k-kids-word) { color: var(--st-need-ink); }
-.k-kids-part:is([data-watch="fail"], [data-watch="declined"]) :is(.k-kids-n, .k-kids-word) { color: var(--st-fail-ink); }
-@container rail (min-width: 30rem) { .k-kids-part .k-kids-word { display: inline; } .k-kids-sum[data-many] .k-kids-label { display: inline; } }
+.k-kids-total .k-kids-n { color: var(--muted); }
+.k-kids-label { font-size: var(--text-micro); }
+/* (The words stay in the page for the line's text; they are its name and tooltips, not shown.) */
+.k-kids-word { display: none; }
+.k-kids-part[data-watch="need"] .k-kids-n { color: var(--st-need-ink); }
+.k-kids-part:is([data-watch="fail"], [data-watch="declined"]) .k-kids-n { color: var(--st-fail-ink); }
 .k-kids-new { flex-shrink: 0; font-weight: 500; font-size: var(--text-micro); color: var(--accent-ink); }
-.k-kids-viewing { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
 .k-child-row { position: relative; container: kid / inline-size; }
 /* Under an agent's row: what it is doing now, a step in from its mark. */
 .k-child-now { padding: 0 0.375rem 0.125rem 1.875rem; font-size: var(--text-micro); }
@@ -599,8 +586,7 @@
 .k-rail[data-narrow] .k-session-children { margin-left: 0.375rem; padding-left: 0.25rem; }
 .k-rail[data-narrow] .k-kids-sum { column-gap: 0.3125rem; padding-inline: 0.125rem; }
 .k-rail[data-narrow] .k-kids-counts { column-gap: 0.3125rem; }
-.k-rail[data-narrow] :is(.k-kids-label, .k-kids-viewing, .k-kids-fold) { display: none; }
-.k-rail[data-narrow] .k-kids-part .k-kids-word { display: none; }
+.k-rail[data-narrow] :is(.k-kids-label, .k-kids-fold) { display: none; }
 .k-rail[data-narrow] .k-kids-part::before { content: none; }
 /* The narrow list keeps the total and what calls the owner; the other counts are in the line's tooltip, as a row's state is on its card. */
 .k-rail[data-narrow] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) { display: none; }

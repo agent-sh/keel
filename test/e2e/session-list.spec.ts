@@ -66,10 +66,12 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     const trimmed = await counts();
     expect(trimmed.parts).toEqual(["fail 1", "work 1", "done 6"]);
     expect(reads).toEqual([""]);
-    // Three states are said in words, on one line: "8 agents 1 failed 1 working 6 done", not marks and figures.
-    for (const [part, word] of [["fail", "failed"], ["work", "working"], ["done", "done"]] as const) {
-      await expect(kids.getByTestId(`children-${part}`).locator(".k-kids-word")).toBeVisible();
-      await expect(kids.getByTestId(`children-${part}`).locator(".k-kids-word")).toHaveText(word);
+    // One form whatever the states: each is its mark and its figure, on one line; the words are the line's name and
+    // each part's tooltip ("8 agents 1 failed 1 working 6 done" once read as a sentence that changed shape and wrapped).
+    for (const [part, word] of [["fail", "1 failed"], ["work", "1 working"], ["done", "6 done"]] as const) {
+      await expect(kids.getByTestId(`children-${part}`).locator(".k-mark")).toBeVisible();
+      await expect(kids.getByTestId(`children-${part}`).locator(".k-kids-word")).toBeHidden();
+      await expect(kids.getByTestId(`children-${part}`)).toHaveAttribute("title", word);
     }
     await shoot(page, "session-list-01-agents-line");
     expect((await toggle.boundingBox())!.height, "the agents line is one line").toBeLessThanOrEqual(30);
@@ -117,7 +119,7 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     expect(await counts()).toEqual(trimmed);
     await page.unroute("**/api/sessions");
 
-    // At every desk width, the narrowest rail (232px at 1050) included: one line, nothing cut, else marks and figures.
+    // At every desk width, the narrowest rail (232px at 1050) included: one line, nothing cut.
     for (const [width, listW] of [[1050, 232], [1366, 232], [1920, 232], [1050, 0], [1920, 0]] as const) {
       await page.setViewportSize({ width, height: 1040 });
       await page.evaluate((w) => { if (w) localStorage.setItem("keel.listW", String(w)); else localStorage.removeItem("keel.listW"); }, listW);
@@ -125,7 +127,7 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
       await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
       const fit = () => toggle.evaluate((el) => {
         const sum = el.getBoundingClientRect(), cut = [...el.querySelectorAll<HTMLElement>(".k-kids-part, .k-kids-total")].filter((e) => e.getClientRects().length).map((e) => e.getBoundingClientRect());
-        return { h: Math.round(sum.height), over: Math.max(0, ...cut.map((r) => Math.round(r.right - sum.right))), words: el.hasAttribute("data-words") };
+        return { h: Math.round(sum.height), over: Math.max(0, ...cut.map((r) => Math.round(r.right - sum.right))) };
       });
       await expect.poll(async () => { const f = await fit(); return f.h <= 30 && f.over <= 0; }, { message: `the agents line at ${width}, list ${listW || "default"}: ${JSON.stringify(await fit())}` }).toBe(true);
       await shoot(page, `session-list-01-agents-line-${width}-${listW || "wide"}`);

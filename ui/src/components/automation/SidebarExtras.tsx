@@ -58,7 +58,6 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const live = useMemo(() => ({ kids: liveKids, said: liveSaid }), [liveKids, liveSaid]);
   const { kids, said } = useSettled(`kids:${parentId}`, live, liveKids.map((k, i) => `${k.id}:${liveSaid[i]!.watch}:${liveSaid[i]!.title}`).join(" "), (was) => calling(live) !== calling(was));
   const sum = useMemo(() => agentTally(said.map((x) => x.watch)), [said]);
-  const viewing = kids.find((k) => k.session_id === current);
   const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
   // The rows whose lane is open: its five lines under it (./Lane.tsx).
   const [lanes, setLanes] = useState<ReadonlySet<string>>(() => new Set());
@@ -99,11 +98,10 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
         data-testid="children-toggle"
         onClick={() => setOpen(!expanded)}
         className="k-kids-sum"
-        data-many={sum.parts.length > 5 || undefined}
-        // Three states or fewer are said in words ("8 agents 1 failed 1 working 6 done"); more are each a mark and a figure, the words in the tooltip.
-        data-words={sum.parts.length <= 3 || undefined}
       >
-        {/* The counts, never cut: on a list too narrow for one line of them they take a second. */}
+        {/* One form whatever the states: how many, then each state's mark and figure, what calls the owner first. The
+            words are the line's name and each figure's tooltip. One line, never wrapped: a count with no room on it
+            goes whole, the last first. */}
         <span className="k-kids-counts">
         <ChevronRight className={cn("k-kids-fold", expanded && "rotate-90")} />
         <span className="k-kids-total" data-testid="children-total"><b className="k-kids-n">{kids.length}</b><span className="k-kids-label"> agent{kids.length > 1 ? "s" : ""}</span></span>
@@ -115,11 +113,10 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
           ))}
         </span>
         </span>
-        {/* Not counts: they have the room the counts leave, and go whole where that is too little (the line's name has them). */}
-        {!expanded && (fresh > 0 || viewing) && (
+        {/* Not a count: how many ended since the owner looked, in the room the counts leave, gone whole where that is too little. */}
+        {!expanded && fresh > 0 && (
           <span className="k-kids-extra">
-            {fresh > 0 && <span className="k-kids-new" data-testid="children-fresh" title="Ended since you looked">{fresh} {NEW.toLowerCase()}</span>}
-            {viewing && <span className="k-kids-viewing" data-testid="children-viewing">viewing {sessions[viewing.session_id]?.title || viewing.title}</span>}
+            <span className="k-kids-new" data-testid="children-fresh" title="Ended since you looked">{fresh} {NEW.toLowerCase()}</span>
           </span>
         )}
       </button>

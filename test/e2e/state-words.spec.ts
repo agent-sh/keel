@@ -177,37 +177,40 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(tree("Bench the cache").getByTestId("child-fresh")).toBeVisible();
     await expect(tree("Summarize the open issues")).not.toHaveAttribute("data-fresh", "true");
     await shoot(page, "state-words-02-agent-ended");
-    // Folded, the line says how many are new after its counts. A count is never cut: with too little room
-    // for both, "1 new" goes whole; with too little for the counts, they take a second line.
+    // Folded, the line says how many are new after its counts. A count is never cut and the line never wraps:
+    // with too little room for both, "1 new" goes whole; with too little for the counts, the last ones go whole,
+    // and what calls the owner stays (it comes first; the line's name says every count).
     await toggle.click();
     const fresh = kids.getByTestId("children-fresh");
     await expect(fresh).toHaveText("1 new");
     const whole = () => toggle.evaluate((line) => {
       const l = line.getBoundingClientRect();
       const within = (e: Element, box: DOMRect) => { const r = e.getBoundingClientRect(); return r.left >= box.left - 0.5 && r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5; };
-      const counts = [...line.querySelectorAll("[data-count]")];
+      // (The counts on the line: one the line has no room for lies wholly below it, out of sight.)
+      const counts = [...line.querySelectorAll("[data-count]")].filter((c) => c.getBoundingClientRect().top < l.bottom - 0.5);
       const extra = line.querySelector(".k-kids-extra")!.getBoundingClientRect();
       const news = line.querySelector('[data-testid="children-fresh"]')!;
       const r = news.getBoundingClientRect();
       return {
-        counts: counts.every((c) => within(c, l)), sum: counts.reduce((n, c) => n + Number(c.getAttribute("data-count")), 0),
+        counts: counts.every((c) => within(c, l)), sum: counts.reduce((n, c) => n + Number(c.getAttribute("data-count")), 0), first: counts[0]?.getAttribute("data-watch"),
         // "new" is whole in its room or wholly out of it (on the line the room cuts off), never part of it.
         fresh: within(news, extra) ? "whole" : Math.min(r.right, extra.right) - Math.max(r.left, extra.left) <= 0.5 || Math.min(r.bottom, extra.bottom) - Math.max(r.top, extra.top) <= 0.5 ? "gone" : "cut",
         lines: Math.round(l.height / parseFloat(getComputedStyle(document.documentElement).fontSize) / 1.5),
       };
     });
-    expect(await whole()).toEqual({ counts: true, sum: 8, fresh: "whole", lines: 1 });
+    expect(await whole()).toMatchObject({ counts: true, sum: 8, fresh: "whole", lines: 1 });
     // The list squeezed until the counts just fit, then to half of that.
     const need = await toggle.evaluate((line) => { const last = [...line.querySelectorAll("[data-count]")].at(-1)!.getBoundingClientRect(); const cs = getComputedStyle(line); return last.right - line.getBoundingClientRect().left + parseFloat(cs.columnGap) + parseFloat(cs.paddingRight) + 1; });
     // (Room for the counts and half of "1 new": the half is not shown.)
     await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need + 24);
-    expect(await whole()).toEqual({ counts: true, sum: 8, fresh: "gone", lines: 1 });
+    expect(await whole()).toMatchObject({ counts: true, sum: 8, fresh: "gone", lines: 1 });
     await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need);
-    expect(await whole()).toEqual({ counts: true, sum: 8, fresh: "gone", lines: 1 });
+    expect(await whole()).toMatchObject({ counts: true, sum: 8, fresh: "gone", lines: 1 });
     await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need * 0.6);
-    const two = await whole();
-    expect(two).toMatchObject({ counts: true, sum: 8, fresh: "gone" });
-    expect(two.lines).toBeGreaterThanOrEqual(2);
+    const short = await whole();
+    expect(short, "the squeezed line keeps whole counts on one line").toMatchObject({ counts: true, fresh: "gone", lines: 1 });
+    expect(["need", "fail"], "what calls the owner is the first count the squeezed line keeps").toContain(short.first);
+    expect(short.sum).toBeLessThan(8);
     await shoot(page, "state-words-14-agents-line-squeezed");
     await toggle.evaluate((el) => { (el as HTMLElement).style.width = ""; });
     await toggle.click();
