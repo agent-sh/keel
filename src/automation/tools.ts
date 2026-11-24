@@ -275,7 +275,8 @@ const spawn_agent: Tool = {
   run: (input, ctx) => guard(async () => {
     const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, task_name: typeof input.task_name === "string" ? input.task_name : undefined, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews, api: input.api, effort: typeof input.effort === "string" ? input.effort : undefined, speed: input.speed }, ctx.signal);
     const left = agents.notCarried(a.id).trim();
-    return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}), ...(agents.scopeNote(a.id) ? { write_scope: agents.scopeNote(a.id) } : {}) }));
+    const earlier = agents.takeEarlier(a.id).trim();
+    return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}), ...(agents.scopeNote(a.id) ? { write_scope: agents.scopeNote(a.id) } : {}), ...(earlier ? { earlier_attempts: earlier } : {}) }));
   }),
 };
 
@@ -581,7 +582,7 @@ const notify: Tool = {
 skillRun.fork = async (ctx, skill, prompt) => {
   const fg = skill.fork?.background === false;
   try {
-    const spawn = () => agents.spawn(ctx.sessionId, { title: `/${skill.name}`, prompt, type: skill.fork?.agent, model: skill.model, ...(skill.effort ? { effort: skill.effort } : {}), ...(skill.disallowed ? { disallowed: skill.disallowed } : {}), background: !fg, call_id: ctx.callId }, ctx.signal);
+    const spawn = () => agents.spawn(ctx.sessionId, { title: `/${skill.name}`, prompt, earlier: false, type: skill.fork?.agent, model: skill.model, ...(skill.effort ? { effort: skill.effort } : {}), ...(skill.disallowed ? { disallowed: skill.disallowed } : {}), background: !fg, call_id: ctx.callId }, ctx.signal);
     const a = fg ? await blocks(ctx, spawn) : await spawn();
     if (!fg) return ok(`The skill ${skill.name} runs as agent ${a.id} (its context: fork). Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.`);
     if (a.status === "waiting") return ok(`The skill ${skill.name}'s agent ${a.id} is waiting and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);

@@ -259,6 +259,13 @@ under `~/.cache/keel-work/bun/research/`.
   model (`src/checks/proof.ts`). The ledger keeps the newest
   `checks.keep_runs` rows (20,000 by default) and is read at `/api/checks`
   and in the session's timeline.
+- A spawn in a repository says what was tried there before: its result (once, never the system prompt) names
+  the closest earlier agents of that repository, at most three, each with how it ended (landed, refused by
+  review with the first finding's class, abandoned, working now), its branch and head, and the first line of
+  its report (`src/automation/earlier.ts`; the ranking, task words and the files they touched, is
+  `earlier-rank.ts`, the outcome words `earlier-line.ts`, the reads on the read thread `earlier-facts.ts`).
+  Outcomes come from git, the review and landing rows and the agent's record, never from a model; the lookup
+  takes at most four seconds and never fails a spawn.
 - A session's agent slots are its tree's and count the agents that work. An
   agent that waits on a wait of its own holds none. Its wake, and an agent
   asked for while every slot works, wait in line as owed and take the next

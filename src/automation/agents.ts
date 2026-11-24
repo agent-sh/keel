@@ -53,6 +53,7 @@ import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow
 import type { NowLine } from "./now-line.ts";
 import { budgetOfMeta, closingText, endedWords, mergeBudget, parseBudget, spentOn, type Budget, type Limit, type Used } from "./budget.ts";
 import { agentTitle } from "./agent-title.ts";
+import { lookup as earlierLookup } from "./earlier.ts";
 import { yamlWithin } from "../core/yaml-bound.ts";
 import { ifHolds } from "../integrations/hooks.ts";
 import { choiceOf as turnChoiceOf } from "../tools/skill-turn.ts";
@@ -93,7 +94,7 @@ export const STOP_TEXT: Record<StopBy, string> = {
   handoff: "its turn was stopped to move its session",
   unknown: "its turn was stopped",
 };
-const END_TEXT: Record<string, string> = {
+export const END_TEXT: Record<string, string> = {
   refusal: "the model declined to go on",
   max_tokens: "its reply hit the output limit",
   max_steps: "it ran out of its step budget",
@@ -832,6 +833,7 @@ export type SpawnInput = {
   disallowed?: string[]; // added to its definition's (a skill's disallowed-tools with context: fork); not in any tool's schema
   reviews?: unknown; // the branch (or branches) it reviews, for the work board (src/board/rules.ts reviewsInput)
   api?: unknown; // "read": its commands may read the daemon's read-only lists, as its parent's do (src/automation/api-grant.ts)
+  earlier?: false; // Keel's own: no lookup of earlier agents for the spawn's result (a skill's fork)
 };
 
 // Agents on another machine: the fleet places them (a directory there, its own
@@ -1002,6 +1004,9 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
       .place(parent, { machine: input.machine, cwd: input.cwd, worktree: wantWorktree, key: id, title })
     : null;
   const iso = placed ? null : await isolate(parent, def, input, title, id, mode);
+  // The closest earlier agents of its repository, read while the rest of the start goes on: said once in the spawn's result.
+  const repo = placed || input.branch || input.earlier === false ? undefined : iso?.wt.repo_root ?? (await wts().repoOf(parent.workspace))?.root;
+  const earlier = repo ? earlierLookup({ repo, title, prompt: input.prompt, parent: parentId }) : undefined;
   // Where it may write, when its spawn says or its task is to review: an agent on another machine has none here.
   const scope = placed || (mode && writesNothing(mode)) ? { json: null, left: [] } : await writeAsks.forSpawn(parent, input.writes, { type: def.name, cwd: iso?.cwd ?? parent.workspace });
   const settings = { ...(effort ? { effort } : {}), ...(speed ? { speed } : {}), ...(def.maxTurns ? { max_steps: def.maxTurns } : {}) };
@@ -1072,6 +1077,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   if (left.length) leftOut.set(id, left);
   if (scope.json && scope.why) scopeOut.set(id, writeAsks.spawnLine(store.session(child.id) ?? child, scope.json, scope.why));
   const reviews = await reviewsAt(parentId, parent.workspace, input).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });
+  const near = await earlier;
+  if (near) { earlierOut.set(id, near); if (earlierOut.size > EARLIER_KEPT) earlierOut.delete(earlierOut.keys().next().value!); }
   const task = [
     preamble(depth, max), def.body, memory?.block ?? "", ...preloaded,
     reviews || isReviewer(def.name) ? VERDICT_LINE : "",
@@ -1233,10 +1240,15 @@ export function notCarried(id: string): string {
 // Where an agent with a write scope may write and why it has one, by agent id, for the spawn's result to say.
 const scopeOut = new Map<string, string>();
 export const scopeNote = (id: string) => scopeOut.get(id) ?? "";
-// What the spawn's result says past the start: what was not carried, and the agent's write scope.
+// The earlier agents of the repository closest to its task (src/automation/earlier.ts), by agent id, said once in the spawn's result.
+const earlierOut = new Map<string, string>();
+const EARLIER_KEPT = 200;
+// Taken once: the spawn's result carries the lines, and no later read of the agent does.
+export const takeEarlier = (id: string) => { const n = earlierOut.get(id) ?? ""; earlierOut.delete(id); return n; };
+// What the spawn's result says past the start: what was not carried, the agent's write scope, and the earlier attempts near its task.
 export function spawnNotes(id: string): string {
   const s = scopeOut.get(id);
-  return notCarried(id) + (s ? `\n\n${s}` : "");
+  return notCarried(id) + (s ? `\n\n${s}` : "") + takeEarlier(id);
 }
 
 // The agent's first prompt goes into its session, once: from the start that
