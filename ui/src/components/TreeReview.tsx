@@ -11,6 +11,7 @@ import { useTreeMark } from "../lib/board.ts";
 import { usePhoneWidth } from "../lib/list-hold.ts";
 import { failed, onFeature, reportUnlessGone, scope } from "../lib/store.ts";
 import { decide, laneOf, readArea, readTree, wouldConflict, type AreaDetail, type AreaHunk, type Decision, type TreeArea, type TreeBranch, type TreeOverlap, type TreeView } from "../lib/tree-review.ts";
+import { checksWords } from "../lib/check-words.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { PicturesArea } from "./Pictures.tsx";
 import { confirmAction } from "./Confirm.tsx";
@@ -43,9 +44,9 @@ function checksOf(b: TreeBranch): { word: string; cls: string } {
   const c = b.checks;
   if (!c || c.state === "none") return { word: "no checks named", cls: "text-faint" };
   if (c.state === "unknown") return { word: "checks unknown", cls: "text-faint" };
-  if (c.failed.length) return { word: `check failed: ${c.failed.join(", ")}`, cls: "text-danger" };
-  if (c.notRun.length && !c.passed.length) return { word: `not run: ${c.notRun.join(", ")}`, cls: "text-muted" };
-  return { word: `passed: ${c.passed.join(", ")}${c.notRun.length ? `; not run: ${c.notRun.join(", ")}` : ""}`, cls: c.notRun.length ? "text-muted" : "text-ok" };
+  const word = checksWords(c);
+  if (c.failed.length) return { word, cls: "text-danger" };
+  return { word, cls: c.notRun.length ? "text-muted" : "text-ok" };
 }
 
 // Who a hunk is: the branch's mark and name, its agent, its verdict and its checks.

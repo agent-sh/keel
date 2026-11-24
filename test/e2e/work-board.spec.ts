@@ -150,11 +150,15 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(card(beta.id).getByTestId("board-review")).toHaveAttribute("data-state", "refused");
   await expect(card(beta.id).getByTestId("board-verdict")).toContainText(refusal);
   await expect(card(beta.id).getByTestId("board-reviewer")).toContainText(`Reviewer ${refuser.title} wrote:`);
-  await expect(card(gamma.id).getByTestId("board-live")).toHaveAttribute("data-state", "n/a");
+  // A tile shows only a fact: gamma has landed nothing and has no review, so it has no Live or Review tile, and the
+  // agent's id is in its title's tooltip, not printed on the card.
+  await expect(card(gamma.id).getByTestId("board-live")).toHaveCount(0);
+  await expect(card(gamma.id).getByTestId("board-title")).toHaveAttribute("title", `${gamma.title} (agent ${gamma.id})`);
+  await expect(card(gamma.id).getByText(gamma.id, { exact: true })).toHaveCount(0);
   // The reviewer with a worktree of its own kept no commit: its branch went at its end, and nothing of it waits to land.
   await expect(card(approver.id).getByTestId("board-gone")).toBeVisible();
   await expect(card(gamma.id)).toHaveAttribute("data-state", "running");
-  await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "none");
+  await expect(card(gamma.id).getByTestId("board-review")).toHaveCount(0);
   await expect(card(gamma.id).getByTestId("board-uncommitted")).toHaveText("2 files+3-1uncommitted");
   await expect(card(gamma.id).getByTestId("board-checks")).toHaveAttribute("data-state", "uncommitted");
   await expect(card(gamma.id).getByTestId("board-checks").getByTestId("board-fact-value")).toHaveText("passed on uncommitted files; none on a commit");

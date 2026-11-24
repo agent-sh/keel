@@ -13,6 +13,7 @@ import { treeOrder } from "../lib/board-order.ts";
 import { rememberPanel } from "../lib/ui.ts";
 import { branchGone, toLand, type Change } from "../../../src/board/rules.ts";
 import { loadBoard, useBoard, type Board, type BoardRow } from "../lib/board.ts";
+import { checksWords } from "../lib/check-words.ts";
 import { failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { useToldStates, type SessionState, type Watch } from "../lib/watch.ts";
@@ -52,13 +53,14 @@ function Fact({ name, tone, value, title, testid, state }: { name: string; tone:
 function checksFact(r: BoardRow) {
   const c = r.checks;
   if (!c) return null;
-  if (c.state === "none") return <Fact name="Checks" tone="none" value="none named" testid="board-checks" state="none" />;
+  // A repository that names no check has nothing to say here: no tile.
+  if (c.state === "none") return null;
   if (c.state === "unknown") return <Fact name="Checks" tone="none" value="not known" title={c.why} testid="board-checks" state="unknown" />;
   const all = [...c.passed.map((n) => `${n} passed`), ...c.failed.map((n) => `${n} failed`), ...c.notRun.map((n) => `${n} not run`)].join(", ");
   // Checks that ran only on files not committed: they did run, so "none run" would be wrong, and they are
   // not on a commit, so they never read as passed on the head.
   const off = !c.passed.length && !c.failed.length ? c.uncommitted : undefined;
-  const value = c.failed.length ? `${c.failed.length} failed` : c.passed.length && !c.notRun.length ? "all passed" : c.passed.length ? `${c.passed.length} of ${c.passed.length + c.notRun.length} passed` : off?.failed.length ? "failed on uncommitted files; none on a commit" : off?.passed.length ? "passed on uncommitted files; none on a commit" : "none run";
+  const value = c.failed.length ? checksWords(c) : c.passed.length && !c.notRun.length ? "all passed" : c.passed.length ? checksWords(c) : off?.failed.length ? "failed on uncommitted files; none on a commit" : off?.passed.length ? "passed on uncommitted files; none on a commit" : "none run";
   const more = off ? [...off.passed.map((n) => `${n} passed on uncommitted files`), ...off.failed.map((n) => `${n} failed on uncommitted files`)].join(", ") : "";
   return <Fact name="Checks on head" tone={c.failed.length ? "bad" : c.passed.length && !c.notRun.length ? "ok" : "none"} value={value} title={[all, more].filter(Boolean).join(", ")} testid="board-checks" state={c.failed.length ? "failed" : off ? "uncommitted" : c.notRun.length ? "partial" : "passed"} />;
 }
@@ -72,7 +74,7 @@ const SOURCE: Record<string, string> = {
 
 function reviewFact(r: BoardRow) {
   const v = r.review;
-  if (!v) return <Fact name="Review" tone="none" value="none" testid="board-review" state="none" />;
+  if (!v) return null;
   const word = v.verdict === "pending" ? "running" : v.verdict === "words" ? "words only" : v.verdict;
   // Approved is the one word the board must never say wrongly: only a structured verdict on this head says it.
   const tone: Tone = v.verdict === "approved" && v.current === true ? "ok" : v.verdict === "refused" || v.verdict === "disputed" ? "bad" : v.verdict === "pending" ? "wait" : "none";
@@ -87,12 +89,13 @@ function landedFact(r: BoardRow) {
   if (!l) return null;
   if (l.state === "yes") return <Fact name="Landed" tone="ok" value={l.how === "patch" ? "yes · as patches" : l.how === "queue" ? "yes · by the queue" : `yes · on ${r.base ?? "the base"}`} title={l.how === "patch" ? `${r.base ?? "The base"} holds a commit of the same patch for each of its commits` : l.how === "queue" ? `The landing queue landed this head; git does not see its patches on ${r.base ?? "the base"} (a squash or edited patches)` : `${r.base ?? "The base"} holds its head`} testid="board-landed" state="yes" />;
   if (l.state === "no") return <Fact name="Landed" tone={r.queue?.current && ["queued", "building", "checking"].includes(r.queue.state) ? "wait" : "none"} value={r.queue?.current && r.queue.state !== "landed" ? `no · ${r.queue.state === "left" ? "left the queue" : r.queue.state}` : `no · ${l.missing} to land`} title={r.queue?.why ?? "Git compares patches per commit: a squash or edited patches are not seen"} testid="board-landed" state="no" />;
-  if (l.state === "nothing") return <Fact name="Landed" tone="none" value="nothing to land" testid="board-landed" state="nothing" />;
+  if (l.state === "nothing") return null;
   return <Fact name="Landed" tone="none" value="not known" title={l.why} testid="board-landed" state="unknown" />;
 }
 
 function liveFact(r: BoardRow) {
-  if (!r.landed || r.landed.state !== "yes") return r.landed ? <Fact name="Live" tone="none" value="n/a" title="Not landed, so nothing that runs holds it" testid="board-live" state="n/a" /> : null;
+  // Not landed: nothing that runs holds it, and a tile saying so is no fact.
+  if (!r.landed || r.landed.state !== "yes") return null;
   const v = r.live;
   if (!v || v.state === "unknown") return <Fact name="Live" tone="none" value="no deploy record" title={v?.why} testid="board-live" state="unknown" />;
   return <Fact name="Live" tone={v.state === "yes" ? "ok" : "none"} value={`${v.state === "yes" ? "yes" : "not yet"} · ${v.how === "after step passed" ? "after step" : v.how}`} title={`${v.how} at ${sha(v.at)}`} testid="board-live" state={v.state} />;
@@ -178,7 +181,7 @@ function Line({ r, indent, w }: { r: BoardRow; indent: number; w: Watch }) {
   return (
     <li className="flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-compact="" data-agent={r.id} data-state={r.state} data-indent={indent} data-watch={w}>
       <StateMark w={w} />
-      <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-caption font-medium text-fg hover:text-accent" title={r.title} data-testid="board-title">{r.title}</button>
+      <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-caption font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
       {r.reviews.length > 0 && <span className="min-w-0 max-w-[40%] shrink truncate font-mono text-micro text-muted" title={`reviews ${r.reviews.map(short).join(", ")}`}>reviews {r.reviews.map(short).join(", ")}</span>}
       <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
       <span className="shrink-0 text-micro text-faint tabular-nums" data-testid="board-lasted" title={r.ended ? `Worked ${lasted(r.created, r.ended)}; ended ${ago(r.ended)}` : "Working since it started"}>{lasted(r.created, r.ended ?? Date.now())}</span>
@@ -189,13 +192,15 @@ function Line({ r, indent, w }: { r: BoardRow; indent: number; w: Watch }) {
 function Card({ r, below, indent, w }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch }) {
   if (compact(r)) return <Line r={r} indent={indent} w={w} />;
   const reviewing = r.reviews.length > 0;
+  // A tile shows only a fact: a check the repository names, a review, a landing, a live record.
+  const facts = [checksFact(r), reviewFact(r), landedFact(r), liveFact(r)].filter(Boolean);
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent} data-watch={w}>
       <div className="flex min-w-0 items-center gap-2">
         <StateMark w={w} />
-        <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={r.title} data-testid="board-title">{r.title}</button>
+        <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
         <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
-        <span className="shrink-0 font-mono text-micro text-faint">{r.id}</span>
+        
       </div>
       {r.branch ? (
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption">
@@ -223,9 +228,9 @@ function Card({ r, below, indent, w }: { r: BoardRow; below: Board["rows"]; inde
         </div>
       )}
       {r.branch && branchGone(r) && <p className="text-caption text-muted" data-testid="board-gone">{r.reviews.length > 0 && <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span> · </>}Branch removed at its end; nothing left to land{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>}
-      {r.branch && !branchGone(r) && (
+      {r.branch && !branchGone(r) && facts.length > 0 && (
         <div className="grid grid-cols-2 gap-1.5 @[30rem]:grid-cols-4">
-          {checksFact(r)}{reviewFact(r)}{landedFact(r)}{liveFact(r)}
+          {facts}
         </div>
       )}
       {r.branch && !branchGone(r) && <Together r={r} below={below} />}
