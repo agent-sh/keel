@@ -623,10 +623,10 @@ function file(x: Filing): Alert | undefined {
     store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = '${kind}' AND json_extract(data, ${KEY_PATH[key]}) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
       .run(...[String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
   } else if (sid && failureFp(data)) {
-    // A newer count of a cause whose notification is still on screen (unread, told on the desktop) replaces that
-    // notification where it stands: the same desktop key, no sound.
+    // A newer count of a cause in the same episode (a row of it told on the desktop within the last hour, read or not)
+    // replaces that notification where it stands: the same desktop key, no sound.
     if (x.silent && !(data as { in_incident?: string } | undefined)?.in_incident) {
-      inPlace = !!store.db.query(`SELECT 1 FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND json_extract(data, '$.failure_fp') = ? AND json_extract(delivery, '$.desktop.state') = 'sent' LIMIT 1`).get(sid, kind, failureFp(data)!);
+      inPlace = !!store.db.query(`SELECT 1 FROM alerts WHERE ${col} = ? AND kind = ? AND ts > ? AND json_extract(data, '$.failure_fp') = ? AND json_extract(delivery, '$.desktop.state') = 'sent' LIMIT 1`).get(sid, kind, Date.now() - EPISODE_GAP_MS, failureFp(data)!);
     }
     // Agents' failures of one cause are one row a cause: a newer count replaces the unread row of its cause, never the session's own failure.
     store.db.query(`DELETE FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND json_extract(data, '$.failure_fp') = ?`).run(sid, kind, failureFp(data)!);
@@ -1263,13 +1263,15 @@ registerChannel({
 // An agent's failure reaches the owner as its cause does in the session's own
 // record (session_failures, src/automation/failure-groups.ts): one alert a
 // cause a parent, "Coordinator: 6 agents failed: billing", its count raised as
-// more agents fail of it. The owner is pushed once a cause (a session's row of it
-// is in the inbox, read or not): a newer count replaces the unread row, and where
-// its notification is still on the desktop it replaces that one in place with no
-// sound; a count that grows after the row was read is a new unread row told on no
-// channel (the owner read the cause already). An agent's finished work
+// more agents fail of it. The owner is pushed once an episode of a cause: while the
+// cause recurs with no gap of an hour (EPISODE_GAP_MS), a newer count replaces the
+// unread row, and the notification already on the desktop is replaced in place with
+// no sound, whether the owner read it or not. After an hour with no failure of the
+// cause, the next one is a new episode and pushes. An agent's finished work
 // is not an alert: its report goes to its parent, and the parent's own Done
 // says when the work is over (its alert waits while agents are out).
+// A cause recurring with a gap shorter than this is one episode: one push for it.
+export const EPISODE_GAP_MS = 60 * 60_000;
 const failureFp = (data: unknown) => { const fp = (data as { failure_fp?: unknown } | null | undefined)?.failure_fp; return typeof fp === "string" ? fp : undefined; };
 export function agentsFailed(a: { id: string; parent_id: string; session_id?: string }) {
   try {
@@ -1282,7 +1284,7 @@ export function agentsFailed(a: { id: string; parent_id: string; session_id?: st
     const n = named.length + (g.refs.find((r) => r.id === OTHERS)?.n ?? 0);
     const mine = named.find((r) => r.id === a.id);
     const why = failWord(g.cls) || exampleOf(g.sample);
-    const told = store.db.query<{ n: number }, [string, string]>("SELECT COUNT(*) AS n FROM alerts WHERE kind = 'failed' AND session_id = ? AND json_extract(data, '$.failure_fp') = ?").get(parent.parent_id ?? parent.id, g.fp)!.n > 0;
+    const told = store.db.query<{ n: number }, [string, number, string]>("SELECT COUNT(*) AS n FROM alerts WHERE kind = 'failed' AND session_id = ? AND ts > ? AND json_extract(data, '$.failure_fp') = ?").get(parent.parent_id ?? parent.id, Date.now() - EPISODE_GAP_MS, g.fp)!.n > 0;
     raise("failed", parent.id, `${parent.title || "Session"}: ${n} ${n === 1 ? "agent" : "agents"} failed: ${why}`, `${mine?.label ? `Agent "${mine.label}": ` : ""}${exampleOf(mine?.eg ?? g.sample)}`, { failure_fp: g.fp, agents_failed: n, agent_id: a.id, cls: g.cls, ...(a.session_id ? { agent_session: a.session_id } : {}) }, told);
     // The session the owner sees counts as failed until they look at it (ui/src/lib/home.ts).
     let root = parent;

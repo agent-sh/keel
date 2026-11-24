@@ -562,7 +562,7 @@ test("a failure with no session to open leads to the Errors panel; anything else
 });
 
 // One cause, told once: a growing count replaces the notification on the desktop where it stands, with no sound.
-test("a failure cause pushes once: a growing count replaces its notification in place, quietly, also after it was read", async () => {
+test("a failure cause pushes once: a growing count replaces its notification in place, quietly, read or not; an hour with no failure starts a new episode", async () => {
   const { session, store } = scratch();
   failures.migrate();
   const parent = session("Coordinator");
@@ -583,13 +583,19 @@ test("a failure cause pushes once: a growing count replaces its notification in 
   expect(sent.map((s) => [s.title.replace(/^\S+ /, ""), s.sound])).toEqual([["1 agent failed: billing", true], ["2 agents failed: billing", false]]);
   expect(new Set(sent.map((s) => s.key)).size).toBe(1);
   expect(alerts.list({ unread: true }).filter((a) => a.kind === "failed")).toHaveLength(1);
-  // The owner reads it: a later count is a row of the inbox again, and no push.
+  // The owner reads it: the episode goes on, a later count replaces the notification in place, no sound.
   alerts.markRead({ session_id: parent });
   await fail(3);
-  expect(sent).toHaveLength(2);
+  expect(sent.map((s) => s.sound)).toEqual([true, false, false]);
+  expect(new Set(sent.map((s) => s.key)).size).toBe(1);
   const rows = alerts.list().filter((a) => a.kind === "failed");
   expect(rows.map((a) => a.read)).toEqual([false, true]);
   expect(rows[0]!.title).toContain("3 agents failed");
+  // An hour with no failure of the cause ends the episode: the next failure is a new one and pushes with its sound.
+  store.db.query("UPDATE alerts SET ts = ts - ?").run(alerts.EPISODE_GAP_MS + 60_000);
+  await fail(4);
+  expect(sent.map((s) => s.sound)).toEqual([true, false, false, true]);
+  expect(sent[3]!.title).toContain("4 agents failed");
 });
 
 test("a change of tools reported by two entries of one server is one alert naming both", () => {
