@@ -310,14 +310,14 @@ function TreeLand({ view, busy, onLand }: { view: TreeView; busy: boolean; onLan
     }))) return;
     await onLand(undefined, risky.length > 0);
   };
-  const btn = "inline-flex h-7 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-caption disabled:opacity-50";
+  const btn = "inline-flex h-7 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-caption disabled:opacity-50 max-md:h-auto max-md:py-1";
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2" data-testid="tree-land-bar">
       {safe.length > 0 && (
         <button type="button" disabled={busy} onClick={() => void onLand(safe, false)} data-testid="tree-land-set"
           title={`Queues ${safe.map(short).join(", ")} in the proposed order.${risky.length ? ` ${risky.map(short).join(", ")} would conflict when landing and stays for its agent to rebase.` : ""}`}
           className={cn(btn, "bg-accent text-accent-fg hover:bg-accent-hover")}>
-          <GitMerge className="size-3.5 shrink-0" /><span className="truncate">{safe.length === total ? `Land all ${total}` : `Land ${safe.length} of ${total}`}: {names}</span>
+          <GitMerge className="size-3.5 shrink-0" /><span className="truncate max-md:whitespace-normal max-md:break-words max-md:text-left">{safe.length === total ? `Land all ${total}` : `Land ${safe.length} of ${total}`}: {names}</span>
         </button>
       )}
       {risky.length > 0 && (
@@ -522,8 +522,9 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup data-testid="tree-review" onKeyDown={onKey} style={{ "--k-dialog-w": "120rem", "--k-dialog-bg": "var(--bg)", height: "calc(100dvh - 2rem)" } as CSSProperties}
           className="k-dialog rounded-xl border border-line bg-bg shadow-3 transition-[scale,opacity] data-starting-style:scale-[0.98] data-starting-style:opacity-0">
-          <div className="flex items-center gap-3 border-b border-line px-4 py-3">
-            <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-center gap-3 border-b border-line px-4 py-3 max-md:flex-wrap max-md:gap-y-1">
+            {/* (On a phone the title and its summary keep eight rem, and Refresh and Close go to a row under them when they do not fit beside it.) */}
+            <div className="flex min-w-0 flex-1 flex-col max-md:min-w-[8rem]">
               <Dialog.Title className="truncate text-ui font-semibold text-fg">Review the tree</Dialog.Title>
               <p className="truncate text-caption text-muted max-md:whitespace-normal max-md:break-words" data-testid="tree-summary">
                 {view ? <>

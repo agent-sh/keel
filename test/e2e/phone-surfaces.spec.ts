@@ -735,6 +735,20 @@ for (const size of SIZES) {
         await dlg.locator('[data-testid="tree-area"][data-area="src/landing"]').tap();
         await expect(dlg.locator('[data-testid="tree-file"][data-path="src/landing/queue.ts"]')).toBeVisible();
         await noSideScroll(page);
+        // The same review at 150% text: the areas and the land-all header read whole and are targets, inside the page.
+        await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+        await page.reload();
+        // (The board is still the open panel after a reload.)
+        await expect(page.getByTestId("work-board")).toBeVisible();
+        await page.getByTestId("board-review-tree").tap();
+        await expect(dlg.getByTestId("tree-area")).toHaveCount(3);
+        expect(await phoneProblems(dlg), "the tree review's areas at 150% text").toEqual([]);
+        await shoot(page, `phone-surfaces-29-tree-areas-large-${size.width}`);
+        await dlg.locator('[data-testid="tree-area"][data-area="src/board"]').tap();
+        await expect(dlg.getByTestId("tree-area-files")).toBeVisible();
+        await dlg.getByTestId("tree-land-all").scrollIntoViewIfNeeded();
+        expect(await phoneProblems(dlg), "the tree review's area at 150% text").toEqual([]);
+        await shoot(page, `phone-surfaces-30-tree-area-large-${size.width}`);
       } finally {
         await drop(request, coord);
       }
