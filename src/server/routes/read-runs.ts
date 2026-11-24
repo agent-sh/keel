@@ -19,7 +19,8 @@ export const readRunRoutes: RouteModule = ({ store, providers }) => {
   const runs = new Map<string, RunState>();
   const steps = new Map<string, Pending>();
   const parentOf = (id: string) => store.session(id);
-  const arm = (s: Session) => readRunsOf(store.session(s.id) ?? s, parentOf);
+  // (Only agents are told: a top session asks the store nothing on each of its steps.)
+  const arm = (s: Session) => (s.parent_id ? readRunsOf(store.session(s.id) ?? s, parentOf) : undefined);
   const listPrice = (m: { model: string }) => providers.catalog.lookup(m.model)?.price;
   const forget = (id: string) => { runs.delete(id); steps.delete(id); };
   const close = (s: Session, p: Pending) => {

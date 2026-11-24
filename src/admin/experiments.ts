@@ -253,7 +253,8 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
       arms: [{ name: "plain" }, { name: "batch", settings: { read_runs: "batch" } }, { name: "reader", settings: { read_runs: "reader" } }], primary: "cost_usd",
       // What a read the agent needed and did not make would show: a turn that fails, more failed calls (an edit
       // of a file it did not read), a context lost to a successor, the owner's Stop, a reply rated down.
-      // (steps_per_read is reported: it says whether the agents followed the note.)
+      // (steps_per_read is reported: it says whether the agents followed the note. The replay's savings assume they
+      // always do, so read steps_per_read before the cost: an arm whose agents ignore the note saves nothing.)
       guards: [{ metric: "error", mde: 0.1 }, { metric: "tool_errors", mde: 0.25, relative: true }, { metric: "successor", mde: 0.05 },
         { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
