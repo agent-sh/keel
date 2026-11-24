@@ -573,9 +573,13 @@ const SETUP = new Set(["cd", "export", "echo", "printf", "true", ":"]);
 // control words or open quotes in the line.
 export function lastCommand(command: string): string[] | undefined {
   const all = simples(tokens(command));
-  const last = all.at(-1);
-  if (!last || last.cut || last.groupRedir || last.path.length || last.group || (last.sep !== "" && last.sep !== ";")) return undefined;
+  const end = all.at(-1);
+  if (!end || end.cut || end.groupRedir || end.path.length || end.group || (end.sep !== "" && end.sep !== ";")) return undefined;
   if (all.some((s) => s.cut || (s.words.length && STOPS.has(s.words[0]!.raw)))) return undefined;
+  // `A && echo yes`: the echo runs only when A passed, so a status that is not 0 is A's.
+  while (all.length > 1 && all.at(-2)!.sep === "&&" && !all.at(-1)!.group && !all.at(-1)!.path.length && ["echo", "printf"].includes(all.at(-1)!.words.slice(countAssign(all.at(-1)!))[0]?.raw ?? "")) all.pop();
+  const last = all.at(-1)!;
+  if (last.cut || last.groupRedir || last.path.length || last.group) return undefined;
   // Behind `&&` the status may be an earlier command's: only setup that says what failed in its own output.
   for (let i = all.length - 2; i >= 0 && all[i]!.sep === "&&"; i--) {
     const w = all[i]!.words.slice(countAssign(all[i]!))[0]?.raw;

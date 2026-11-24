@@ -5,7 +5,8 @@
 // Nothing leaves the machine. Rows are small and kept; a deleted session's
 // rows stay so the totals over time do not change.
 import { keyShaped, scrubbed } from "../core/conceal.ts";
-import { reasonLine } from "./reason.ts";
+import { exitOf, reasonLine } from "./reason.ts";
+import { silentExit } from "../tools/no-match.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
@@ -253,7 +254,7 @@ export class Telemetry {
         let turn = this.turnOf.get(s.id);
         if (turn === undefined) this.turnOf.set(s.id, (turn = openTurn(this.lineageOf(s.id))));
         const tag = armOf(this.store, s.id);
-        const row = [s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, ran.outcome === "error" ? this.scrubbed(s.id, excerpt(result.content)) : null,
+        const row = [s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, ran.outcome === "error" ? this.scrubbed(s.id, excerpt(result.content, silentCall(call.input, result.content))) : null,
           ran.outcome, ev?.id ?? null, ev?.model ?? null, turn, tag?.exp_id ?? null, tag?.arm ?? null] as const;
         // (A row of the ledger: written with the next commit, src/core/side.ts.)
         this.store.side.later("a tool call's ledger row", () => void this.store.db
@@ -742,5 +743,10 @@ export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChan
 
 // One line of a failed result, at most 140 characters: a shell failure's last
 // line that says something, any other's first (src/admin/reason.ts).
-const excerpt = (content: unknown): string => reasonLine(content, 140);
+const excerpt = (content: unknown, silent = false): string => reasonLine(content, 140, silent);
+// Whether the shell command of a call that failed prints nothing when it fails (a yes-or-no answer of git, `test`).
+const silentCall = (input: unknown, content: unknown): boolean => {
+  const command = (input as { command?: unknown } | undefined)?.command;
+  return typeof command === "string" && silentExit(command, exitOf(content) ?? null);
+};
 type ToolRow = { ts: number; tool: string; ms: number | null; is_error: number };

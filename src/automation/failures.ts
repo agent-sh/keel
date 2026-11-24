@@ -1,5 +1,7 @@
 import { keyShaped } from "../core/conceal.ts";
 import { errorClass } from "../admin/classes.ts";
+import { exitOf, shellMessage } from "../admin/reason.ts";
+import { silentExit } from "../tools/no-match.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, ToolResultBlock } from "../core/types.ts";
 import type { TurnHooks } from "../engine/hooks.ts";
@@ -160,7 +162,12 @@ export const hooks: TurnHooks = {
   toolRan: (s, call, result, ran) => {
     if (ran.outcome !== "error") return;
     const at = scope(s);
-    record(at.root, { kind: "tool", cls: call.tool.name, message: textOf(result), ref: at.ref, tell: at.told ? "ride" : undefined }, s.id);
+    // A shell failure is told by how it ended and the line of the command's own output that names the cause: its first
+    // output lines may be an earlier command's (src/admin/reason.ts).
+    const text = textOf(result);
+    const command = (call.input as { command?: unknown } | undefined)?.command;
+    const message = typeof command === "string" ? shellMessage(text, silentExit(command, exitOf(text) ?? null)) : text;
+    record(at.root, { kind: "tool", cls: call.tool.name, message, ref: at.ref, tell: at.told ? "ride" : undefined }, s.id);
   },
   requestFailed: (s, _req, err, aborted) => {
     const cls = aborted ? null : errorClass(err);

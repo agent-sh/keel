@@ -333,6 +333,19 @@ test("a prune that fails after the failure is written does not bring the report 
   expect(got[0]).not.toContain("<subagent_result");
 });
 
+// A failed Bash call is a cause of its own by how it ended and the last line of what its command printed: the
+// first lines of the output may be an earlier command's.
+test("a failed shell call is told by its exit code and the cause line, and a silent yes-or-no command by its exit code alone", () => {
+  const p = parentOf("Shell");
+  const s = store.session(p.id)!;
+  const bash = (command: string, content: string) =>
+    failures.hooks.toolRan!(s, { id: "b", tool: { name: "Bash" }, input: { command } } as any, { type: "tool_result", tool_use_id: "b", content, is_error: true }, { ms: 1, outcome: "error" });
+  bash("git log -1 --format=%s; make", "Exit code 2\n5321daf6f Give the memory rule spec a rule\nsrc/core/state-words.ts:54:export const X = 1;\nmake: *** [all] Error 2");
+  bash("git log -1 --format=%s; git merge-base --is-ancestor A B", "Exit code 1\n5321daf6f Give the memory rule spec a rule");
+  const samples = store.db.query<{ sample: string }, [string]>("SELECT sample FROM session_failures WHERE session_id = ? ORDER BY sample").all(p.id).map((r) => r.sample);
+  expect(samples).toEqual(["Exit code 1", "Exit code 2\nmake: *** [all] Error 2"]);
+});
+
 // Last in the file: it sets other daemon parts.
 test("the notice's rider goes with the daemon parts it was set up for", () => {
   const other = new Store(join(dir, "other")); // a store the notice was never set up on: no failures table

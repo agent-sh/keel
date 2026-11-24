@@ -38,11 +38,14 @@ export function exitOf(content: unknown): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-export function reasonLine(content: unknown, max = 140): string {
+// How a shell result ended and what its output said: `how` as the words after "(", `head` as the result's own
+// first line, `body` the output's lines. `how` is undefined for a result that is not a shell failure.
+function shell(content: unknown) {
   const ls = lines(text(content));
   const head = ls[0] ?? "";
   let how: string | undefined;
   let body: string[] = [];
+  let lead = head;
   if (HEAD.test(head)) {
     how = head.charAt(0).toLowerCase() + head.slice(1);
     body = ls.slice(1);
@@ -51,10 +54,30 @@ export function reasonLine(content: unknown, max = 140): string {
     const to = ls.findLastIndex((l) => /^Exit Code: /.test(l));
     how = `exit code ${ls[to]!.slice("Exit Code: ".length)}`;
     body = from >= 0 && to > from ? [ls[from]!.slice("Output: ".length).trim(), ...ls.slice(from + 1, to)] : [];
+    lead = `Exit code ${ls[to]!.slice("Exit Code: ".length)}`;
   }
-  const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, Math.max(n - 3, 0))}...` : s);
-  if (how === undefined) return clip(head, max);
   const said = body.filter((l) => l && !NOISE.test(l) && !TAIL.test(l));
   const cause = said.findLast((l) => ERROR.test(l) && !FRAME.test(l)) ?? said.findLast((l) => PLACE.test(l) && !FRAME.test(l)) ?? said.at(-1);
-  return cause ? `${clip(cause, max - how.length - 3)} (${how})` : clip(head, max);
+  return { head, lead, how, cause };
+}
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, Math.max(n - 3, 0))}...` : s);
+
+// `silent`: the command that failed prints nothing when it fails (shellMessage): no line of the output is the cause.
+export function reasonLine(content: unknown, max = 140, silent = false): string {
+  const { head, how, cause } = shell(content);
+  if (how === undefined) return clip(head, max);
+  return cause && !silent ? `${clip(cause, max - how.length - 3)} (${how})` : clip(head, max);
+}
+
+// A failed shell result as the message a failure is grouped and told by: how it ended, then the one line of the
+// output that names the cause (the same line as reasonLine). The first lines of the output are not it: a command
+// line is often several commands, and what the early ones printed (a source line, a commit subject) is not why the
+// last one failed. `silent`: the command that failed prints nothing when it fails (a yes-or-no answer), so
+// everything in the output is from before it and no line is the cause. A result that is not a shell failure is
+// returned as it is.
+export function shellMessage(content: unknown, silent = false, max = 200): string {
+  const { lead, how, cause } = shell(content);
+  const own = typeof content === "string" ? content : text(content);
+  if (how === undefined) return own;
+  return cause && !silent ? `${lead}\n${clip(cause, max)}` : lead;
 }

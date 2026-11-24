@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { exitOf, reasonLine } from "./reason.ts";
+import { exitOf, reasonLine, shellMessage } from "./reason.ts";
 
 test("a shell failure's reason is the last line it printed, with how it ended; any other failure's is its first line", () => {
   // Claude's Bash: the exit code leads, the output follows. It read "Exit code 4" for every such failure.
@@ -63,4 +63,20 @@ test("the line is printable: no escape sequences, the last frame of a redrawn li
   const binary = reasonLine(`Exit code 1\n\x00\x01\x1b\x07abc\x1f\x7f def\x1b]0;title\x07 ghi`);
   expect(binary).toBe("abc def ghi (exit code 1)");
   expect(reasonLine("\x1b[1mTool failed\x1b[0m: no such thing\r\n")).toBe("Tool failed: no such thing");
+});
+
+test("a shell failure is told by how it ended and the cause line, never by the first lines the call printed", () => {
+  // A line of several commands: the early ones printed a commit subject and a source line, the last one failed.
+  const out = "Exit code 1\n5321daf6f Give the memory rule spec a rule\nsrc/core/state-words.ts:54:export const X = 1;\nmake: *** [all] Error 1";
+  expect(shellMessage(out)).toBe("Exit code 1\nmake: *** [all] Error 1");
+  // The cause is the line shaped like an error, as in reasonLine.
+  expect(shellMessage("Exit code 1\nsubject line\nerror: Module not found\n    at x.ts:1:1\nBun v1")).toBe("Exit code 1\nerror: Module not found");
+  // A command that prints nothing when it says no: the output is from before it.
+  expect(shellMessage(out, true)).toBe("Exit code 1");
+  expect(reasonLine("Exit code 1\n5321daf6f Give the memory rule spec a rule", 140, true)).toBe("Exit code 1");
+  expect(reasonLine("Exit code 1\n5321daf6f Give the memory rule spec a rule")).toBe("5321daf6f Give the memory rule spec a rule (exit code 1)");
+  // Gemini's shell leads with the same words; any other result is as it was.
+  expect(shellMessage("Command: make\nDirectory: /w\nOutput: compiling\nFAIL a_test.go:4\nExit Code: 2")).toBe("Exit code 2\nFAIL a_test.go:4");
+  expect(shellMessage("File does not exist: /a")).toBe("File does not exist: /a");
+  expect(shellMessage("Exit code 1")).toBe("Exit code 1");
 });
