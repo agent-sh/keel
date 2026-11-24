@@ -52,7 +52,8 @@ test("network: what left, by host and session", async ({ page, request }) => {
 
     // The turn's receipt lists the host it went to.
     const tl = await (await request.get(`/api/sessions/${s.id}/timeline`)).json();
-    const turn = tl.rows.find((r: any) => r.kind === "turn") ?? tl.rows[0];
+    // (The first turn: the one that fetched the first host. The timeline's order is not this test's.)
+    const turn = tl.rows.filter((r: any) => r.kind === "turn").sort((a: any, b: any) => a.ts - b.ts)[0] ?? tl.rows[0];
     await page.goto(`/s/${s.id}`);
     await openPanel(page, "timeline");
     const line = page.locator(`[data-testid="timeline-row"][data-id="${turn.id}"]`);
