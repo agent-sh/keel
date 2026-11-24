@@ -68,7 +68,13 @@ session of its own): stopping the app never takes the daemon with it. For an
 address that is not this machine's there is no button and nothing is
 started: the first page says so.
 
-- **Tray.** The mark shows how many things wait on you, and its menu opens the
+- **Tray.** The mark shows how many things wait on you, and its menu lists up
+  to five sessions, each with its title and a state word: the ones that need
+  you first, then the unread, then the working. A click on a line shows that
+  session in the window. Mark All as Read is there while something is unread.
+  The list comes in the same frame as the count (the daemon's `needs` event),
+  so the two never differ, and it changes when that frame does. A title is
+  shown as one plain line, cut at 60 characters. Below the list the menu opens the
   window, starts a session, pauses notifications for an hour, and quits. A
   press on the mark shows the window; the middle button starts a session. On a
   desktop with no tray host (GNOME without the AppIndicator extension) there
@@ -174,7 +180,7 @@ may use it:
 | The app tells the page (`keel-shell` events) | The app only. | A place to show, the daemon's state, the text size keys. |
 | `keel://` links and a second launch | Any program or web page. | A place of the page and nothing more: no query, so no link names a request to approve. The window comes up with the keyboard off every answer: a Return on its way approves nothing. |
 | A notification's click | The desktop's notification service. | Opens where the alert leads now; a click on a request's own notification may land on its answer, as in a browser. |
-| Tray menu, the app's name on the session bus | Any program of your session. | Open, new session, pause alerts, start the daemon, quit; "Quit and Stop the Daemon" asks first. |
+| Tray menu, the app's name on the session bus | Any program of your session. | Open, a listed session, mark all as read, new session, pause alerts, start the daemon, quit; "Quit and Stop the Daemon" asks first. |
 
 ## The engine is a seam
 
@@ -283,7 +289,7 @@ software, off any graphics card, and it checks that the app holds no device
 of one. It reads the first picture of
 the window (with ImageMagick, when it is there): a page that answers but is
 not drawn fails the check. A signal it sends goes only to a
-process it started itself. It proves the window, a daemon restart under it, the tray count, a
+process it started itself. It proves the window, a daemon restart under it, the tray count and its list of sessions, a
 notification's click, a second launch, a link, the text size keys, the
 remembered size and the start button, and leaves screenshots in the folder
 it prints. It drives what an owner does at the desktop's own edges: the

@@ -17,6 +17,7 @@
 # was given to another process, and an address that is not this machine's.
 #
 #   desktop/test/e2e.sh                         an X11 workspace
+#   KEEL_E2E_UNTIL=tray-list desktop/test/e2e.sh   only as far as the tray's list of sessions
 #   KEEL_E2E_ROOT=DIR desktop/test/e2e.sh       the same, of a package unpacked in DIR (see below)
 #   KEEL_E2E_BACKEND=kwin desktop/test/e2e.sh   a native Wayland workspace (KWin): also the clipboard's
 #                                               picture and the focus a launch's activation token gives
@@ -277,6 +278,42 @@ daemon_up
 check "the shell sees it back" "wait_for 20 'last link | grep -q Up'"
 sleep 3; shot 03-back-light
 check "the window stayed: the page was not loaded again" "[ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ]"
+
+# --- 2b. the tray lists the sessions that need the owner, from the frame the count comes in
+# (The menu's lines are read from the stand-in host's side: the items the app offers over the menu protocol.)
+sessions_lines() { menu | grep -o "'label': <'[^']*'>" | sed "s/^'label': <'//; s/'>\$//" | grep -F ' · ' || true; }
+item_of() { menu | py 'import re,sys
+t = sys.stdin.read()
+m = re.search(r"\((\d+), \{[^}]*?\x27label\x27: <\x27" + re.escape(sys.argv[1]) + r"[^\x27]*\x27>", t)
+print(m.group(1) if m else "")' "$1"; }
+check "with nothing to answer the menu lists no session and offers no Mark All as Read" "wait_for 10 'tray ToolTip | grep -q \"Nothing needs you\"' && [ -z \"\$(sessions_lines)\" ] && ! menu | grep -q 'Mark All as Read'"
+for t in "Desktop: first to answer" "Desktop: second to answer"; do
+  id=$(api /api/sessions "{\"model\":\"scripted:stand-in\",\"title\":\"$t\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
+  api "/api/sessions/$id/permissions" '{"mode":"ask","sandbox":"off"}' PUT > /dev/null
+  api "/api/sessions/$id/messages" "{\"text\":\"script:calls [{\\\"name\\\":\\\"Bash\\\",\\\"input\\\":{\\\"command\\\":\\\"touch $D/answered-$id\\\"}}]\"}" POST > /dev/null
+  case "$t" in *first*) first=$id ;; *) second=$id ;; esac
+done
+check "two sessions that need an answer show two lines with their titles and the state word, and the count says two" "wait_for 30 \"tray ToolTip | grep -q '2 need you'\" && wait_for 10 '[ \"\$(sessions_lines | grep -c \"Needs you\$\")\" = 2 ]' && sessions_lines | grep -q '^Desktop: first to answer · Needs you\$' && sessions_lines | grep -q '^Desktop: second to answer · Needs you\$'"
+shot 02b-tray-list-light
+mark=$(logged present)
+pick "$(item_of 'Desktop: second to answer')"
+check "a click on a line shows the window on that session" "wait_for 15 \"last present | grep -q '/s/$second'\" && wait_for 10 \"geometry | grep -q 'second to answer'\""
+approval=$(api "/api/sessions/$first/approvals" | py 'import json,sys; print(json.load(sys.stdin)["approvals"][0]["id"])')
+api "/api/sessions/$first/approvals/$approval" '{"choice":"deny"}' POST > /dev/null
+check "answering one removes its line and lowers the count" "wait_for 15 \"tray ToolTip | grep -q '1 needs you'\" && wait_for 10 '! sessions_lines | grep -q \"first to answer · Needs you\"' && sessions_lines | grep -q 'second to answer · Needs you'"
+approval=$(api "/api/sessions/$second/approvals" | py 'import json,sys; print(json.load(sys.stdin)["approvals"][0]["id"])')
+api "/api/sessions/$second/approvals/$approval" '{"choice":"deny"}' POST > /dev/null
+check "with none left to answer, no line says it needs you" "wait_for 15 \"tray ToolTip | grep -q 'Nothing needs you'\" && ! sessions_lines | grep -q 'Needs you'"
+# A session the owner is not looking at, with an alert not yet read: listed with its own word, and Mark All as Read clears it.
+left=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: left unread","text":"One line."}' POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
+wait_for 20 "tray ToolTip | grep -q 'Nothing needs you'"
+api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$left\"}" POST > /dev/null
+check "what is unread is listed, with its own word, and Mark All as Read is offered" "wait_for 20 'sessions_lines | grep -q \"^Desktop: left unread · Unread\$\"' && menu | grep -q 'Mark All as Read'"
+pick "$(item_of 'Mark All as Read')"
+check "Mark All as Read reads them all: no line is left and the item is gone" "wait_for 15 '! sessions_lines | grep -q \"left unread\"' && ! menu | grep -q 'Mark All as Read'"
+shot 02b-tray-list-after-light
+# KEEL_E2E_UNTIL=tray-list: stop here (a quick run of the tray's list alone).
+if [ "${KEEL_E2E_UNTIL:-}" = tray-list ]; then echo "$((n - fails)) of $n passed (stopped after the tray list)"; [ "$fails" = 0 ]; exit; fi
 
 # --- 3. the tray count: a session that asks before it runs a command
 ask=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: clean the build output"}' POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')

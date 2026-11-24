@@ -47,6 +47,8 @@ export const asOf = (hhmm: string) => `as of ${hhmm}`;
 // How many messages of the owner's wait in a session's queue, and the mark of what came since they looked.
 export const queuedWord = (n: number) => `${n} ${QUEUED.toLowerCase()}`;
 export const NEW = "New";
+// A session with alerts the owner has not read (the tray's list names it so).
+export const UNREAD_WORD = "Unread";
 // Who a row that needs the owner waits on, where its time would be.
 export const WAITS_ON_YOU = "you";
 // What a failed row says in the same place: its class (failWord), how many of its agents failed, else this.

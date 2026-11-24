@@ -60,12 +60,33 @@ impl Link {
     }
 }
 
+/// A session the tray's menu lists: its id, its title and the word for its state, as the daemon says them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Listed {
+    pub id: String,
+    pub title: String,
+    pub word: String,
+}
+
+/// The most the menu lists.
+pub const LISTED: usize = 5;
+
+/// The sessions of a frame: those that have an id of the page's shape and nothing else, at most `LISTED`.
+fn listed(v: &Value) -> Vec<Listed> {
+    let s = |l: &Value, k: &str| l.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    v.get("list")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(|l| Listed { id: s(l, "id"), title: s(l, "title"), word: s(l, "word") }).filter(|l| crate::links::page_path(&format!("/s/{}", l.id)).is_some()).take(LISTED).collect())
+        .unwrap_or_default()
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     Link { link: Link, url: String },
     /// Why the app does not speak to the address it was given.
     Refused(String),
-    Needs(u32),
+    /// One frame: what waits on the owner and the sessions the tray's menu lists, so the two never differ.
+    Needs { n: u32, unread: u32, list: Vec<Listed> },
     /// `ack` and `stream` go back to the daemon once the notification is on screen.
     Notify { key: String, alert: String, title: String, body: String, urgent: bool, silent: bool, ack: Option<u64>, stream: String },
     Withdraw(String),
@@ -278,8 +299,8 @@ fn told(event: &str, data: &str, stream: &str) -> Option<Event> {
     let v: Value = serde_json::from_str(data).ok()?;
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     Some(match event {
-        "hello" => Event::Needs(v.get("needs")?.as_u64()? as u32),
-        "needs" => Event::Needs(v.get("n")?.as_u64()? as u32),
+        "hello" => Event::Needs { n: v.get("needs")?.as_u64()? as u32, unread: v.get("unread").and_then(Value::as_u64).unwrap_or(0) as u32, list: listed(&v) },
+        "needs" => Event::Needs { n: v.get("n")?.as_u64()? as u32, unread: v.get("unread").and_then(Value::as_u64).unwrap_or(0) as u32, list: listed(&v) },
         "notify" => Event::Notify { key: s("key"), alert: s("alert"), title: s("title"), body: s("body"), urgent: v.get("urgency").and_then(Value::as_u64) == Some(2), silent: v.get("sound").and_then(Value::as_bool) == Some(false), ack: v.get("ack").and_then(Value::as_u64), stream: stream.to_string() },
         "withdraw" => Event::Withdraw(s("key")),
         "snooze" => Event::Snooze(v.get("until_ms").and_then(Value::as_i64)),
@@ -587,8 +608,17 @@ mod tests {
 
     #[test]
     fn the_stream_is_read_into_events() {
-        assert!(matches!(told("hello", r#"{"pid":1,"needs":3,"snooze_until":null}"#, ""), Some(Event::Needs(3))));
-        assert!(matches!(told("needs", r#"{"n":0}"#, ""), Some(Event::Needs(0))));
+        assert!(matches!(told("hello", r#"{"pid":1,"needs":3,"snooze_until":null}"#, ""), Some(Event::Needs { n: 3, unread: 0, list }) if list.is_empty()));
+        assert!(matches!(told("needs", r#"{"n":0}"#, ""), Some(Event::Needs { n: 0, .. })));
+        // The count and the list come in one frame; an id that is not the page's shape is left out, and no more than five are kept.
+        let many = (0..8).map(|i| format!(r#"{{"id":"s{i}","title":"T{i}","state":"need","word":"Needs you"}}"#)).collect::<Vec<_>>().join(",");
+        match told("needs", &format!(r#"{{"n":2,"unread":4,"list":[{{"id":"../x","title":"bad","word":"w"}},{many}]}}"#), "") {
+            Some(Event::Needs { n, unread, list }) => {
+                assert_eq!((n, unread, list.len()), (2, 4, 5));
+                assert_eq!(list[0], Listed { id: "s0".into(), title: "T0".into(), word: "Needs you".into() });
+            }
+            other => panic!("{other:?}"),
+        }
         match told("notify", r#"{"key":"s1","alert":"a1","title":"T","body":"B","urgency":2,"sound":false,"kind":"approval","ack":9}"#, "st-1") {
             Some(Event::Notify { key, alert, title, body, urgent, silent, ack, stream }) => assert_eq!((key.as_str(), alert.as_str(), title.as_str(), body.as_str(), urgent, silent, ack, stream.as_str()), ("s1", "a1", "T", "B", true, true, Some(9), "st-1")),
             other => panic!("{other:?}"),

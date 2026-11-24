@@ -92,6 +92,9 @@ struct Shell {
     tray: RefCell<Option<Tray>>,
     notifier: RefCell<Option<notify::Notifier>>,
     needs: Cell<u32>,
+    /// The sessions the tray lists and the unread count: from the frame the count came in.
+    listed: RefCell<Vec<daemon::Listed>>,
+    unread: Cell<u32>,
     paused_until: Cell<Option<i64>>,
     starting: Cell<bool>,
     note: RefCell<String>,
@@ -173,8 +176,8 @@ impl Shell {
 
     fn show_tray(&self) {
         if let Some(t) = self.tray.borrow().as_ref() {
-            t.show(Shown { needs: self.needs.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get(), keys: self.keys() });
-            self.note_done("tray", serde_json::json!({ "needs": self.needs.get(), "paused": self.paused(), "headline": tray::headline(&t.shown()) }));
+            t.show(Shown { needs: self.needs.get(), list: self.listed.borrow().clone(), unread: self.unread.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get(), keys: self.keys() });
+            self.note_done("tray", serde_json::json!({ "needs": self.needs.get(), "listed": self.listed.borrow().iter().map(|l| l.id.clone()).collect::<Vec<_>>(), "unread": self.unread.get(), "paused": self.paused(), "headline": tray::headline(&t.shown()) }));
         }
     }
 
@@ -435,8 +438,10 @@ impl Shell {
                 }
                 self.show_tray();
             }
-            Event::Needs(n) => {
+            Event::Needs { n, unread, list } => {
                 self.needs.set(n);
+                self.unread.set(unread);
+                *self.listed.borrow_mut() = list;
                 self.show_tray();
             }
             Event::Notify { key, alert, title, body, urgent, silent, ack, stream } => {
@@ -479,6 +484,8 @@ impl Shell {
         match p {
             Pick::Open => self.open(None, false),
             Pick::New => self.open(Some("/"), false),
+            Pick::Session(id) => self.open(Some(&format!("/s/{id}")), false),
+            Pick::MarkRead => daemon::call(&self.place, "POST", "/api/alerts/read".into(), Some("{}".into()), |_| {}),
             Pick::Start => {
                 self.open(None, false);
                 self.start_daemon();
@@ -644,6 +651,8 @@ fn main() -> glib::ExitCode {
             tray: RefCell::new(None),
             notifier: RefCell::new(None),
             needs: Cell::new(0),
+            listed: RefCell::new(Vec::new()),
+            unread: Cell::new(0),
             paused_until: Cell::new(None),
             starting: Cell::new(false),
             // Known before the first window: an address the app does not speak to says so in its first page.

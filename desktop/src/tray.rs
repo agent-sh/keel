@@ -4,7 +4,7 @@
 //! AppIndicator extension) shows nothing; `available` says which it is, and
 //! the shell then quits with its last window instead of hiding where no one
 //! can find it.
-use crate::daemon::Link;
+use crate::daemon::{Link, Listed};
 use crate::shortcut::Keys;
 use gtk::prelude::*;
 use gtk::{cairo, gio, glib};
@@ -51,9 +51,13 @@ const MENU_XML: &str = r#"<node><interface name="com.canonical.dbusmenu">
 <signal name="ItemActivationRequested"><arg name="id" type="i"/><arg name="timestamp" type="u"/></signal>
 </interface></node>"#;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Pick {
     Open,
+    /// A session of the list: it opens in the window.
+    Session(String),
+    /// Every unread alert is read.
+    MarkRead,
     New,
     Pause,
     Resume,
@@ -67,6 +71,10 @@ pub enum Pick {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shown {
     pub needs: u32,
+    /// The sessions that need the owner, then the unread, then the working, as the daemon sent them with the count.
+    pub list: Vec<Listed>,
+    /// Unread alerts in all.
+    pub unread: u32,
     pub paused: bool,
     pub link: Link,
     /// The daemon's address is not this machine's: there is nothing here to start.
@@ -96,9 +104,54 @@ pub fn badge(needs: u32) -> Option<String> {
     }
 }
 
+/// A title as the menu shows it: one plain line. Whatever the daemon sent, a control character or a
+/// line break is a space and the characters that reorder text are gone. A menu reads `_` as the mark
+/// of a key, so it is doubled; nothing else in a label is markup to the menu.
+pub fn plain(title: &str) -> String {
+    let one: String = title.chars().filter(|c| !matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).map(|c| if c.is_control() || c == '\u{2028}' || c == '\u{2029}' { ' ' } else { c }).collect();
+    let one = one.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one = if one.is_empty() { "Untitled session".to_string() } else { one };
+    let cut: String = if one.chars().count() > 60 { format!("{}…", one.chars().take(59).collect::<String>().trim_end()) } else { one };
+    cut.replace('_', "__")
+}
+
+/// A session's line: its title and its state word.
+fn line(l: &Listed) -> String {
+    let word = plain(&l.word);
+    if l.word.trim().is_empty() { plain(&l.title) } else { format!("{} · {word}", plain(&l.title)) }
+}
+
+/// The id of a session's item: one per session, from its id, so a click on a menu that has changed
+/// never picks another session. Above the fixed items' ids; a clash moves on to the next free one.
+fn item_id(id: &str, taken: &[i32]) -> i32 {
+    let mut h: u32 = 2166136261;
+    for b in id.bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    let mut n = 1000 + (h % 1_000_000) as i32;
+    while taken.contains(&n) {
+        n += 1;
+    }
+    n
+}
+
 /// The menu, top to bottom: id, label (empty for a line), enabled, what it picks.
 pub fn menu(s: &Shown) -> Vec<(i32, String, bool, Option<Pick>)> {
-    let mut m = vec![(1, headline(s), false, None), (2, String::new(), true, None), (3, "Open Keel".into(), true, Some(Pick::Open))];
+    let mut m = vec![(1, headline(s), false, None), (2, String::new(), true, None)];
+    // The sessions that wait, from the frame the count came in; none while the daemon is away.
+    if s.link == Link::Up && !s.list.is_empty() {
+        let mut taken: Vec<i32> = Vec::new();
+        for l in &s.list {
+            let id = item_id(&l.id, &taken);
+            taken.push(id);
+            m.push((id, line(l), true, Some(Pick::Session(l.id.clone()))));
+        }
+        if s.unread > 0 {
+            m.push((15, "Mark All as Read".into(), true, Some(Pick::MarkRead)));
+        }
+        m.push((16, String::new(), true, None));
+    }
+    m.push((3, "Open Keel".into(), true, Some(Pick::Open)));
     match s.link {
         Link::Up => {
             m.push((4, "New Session".into(), true, Some(Pick::New)));
@@ -217,7 +270,7 @@ pub struct Tray {
 
 impl Tray {
     pub fn new(conn: &gio::DBusConnection, symbolic: bool, on_pick: impl Fn(Pick) + 'static, on_host: impl Fn(bool) + 'static) -> Result<Self, glib::Error> {
-        let shown = Rc::new(RefCell::new(Shown { needs: 0, paused: false, link: Link::Down, refused: false, elsewhere: false, keys: Keys::None }));
+        let shown = Rc::new(RefCell::new(Shown { needs: 0, list: Vec::new(), unread: 0, paused: false, link: Link::Down, refused: false, elsewhere: false, keys: Keys::None }));
         let revision = Rc::new(Cell::new(1u32));
         let available = Rc::new(Cell::new(false));
         let on_pick = Rc::new(on_pick);
@@ -304,7 +357,7 @@ impl Tray {
                         let event = params.child_value(1).get::<String>().unwrap_or_default();
                         inv.return_value(None);
                         if event == "clicked" {
-                            if let Some(p) = items.iter().find(|i| i.0 == id).and_then(|i| i.3) {
+                            if let Some(p) = items.iter().find(|i| i.0 == id).and_then(|i| i.3.clone()) {
                                 on_pick(p);
                             }
                         }
@@ -315,7 +368,7 @@ impl Tray {
                             .filter_map(|n| {
                                 let e = events.child_value(n);
                                 let (id, event) = (e.child_value(0).get::<i32>()?, e.child_value(1).get::<String>()?);
-                                (event == "clicked").then(|| items.iter().find(|i| i.0 == id).and_then(|i| i.3)).flatten()
+                                (event == "clicked").then(|| items.iter().find(|i| i.0 == id).and_then(|i| i.3.clone())).flatten()
                             })
                             .collect();
                         inv.return_value(Some(&(Vec::<i32>::new(),).to_variant()));
@@ -391,7 +444,11 @@ mod tests {
     use super::*;
 
     fn s(needs: u32, paused: bool, link: Link) -> Shown {
-        Shown { needs, paused, link, refused: false, elsewhere: false, keys: Keys::None }
+        Shown { needs, list: Vec::new(), unread: 0, paused, link, refused: false, elsewhere: false, keys: Keys::None }
+    }
+
+    fn listed(id: &str, title: &str, word: &str) -> Listed {
+        Listed { id: id.into(), title: title.into(), word: word.into() }
     }
 
     #[test]
@@ -436,6 +493,42 @@ mod tests {
         let mut sorted = ids.clone();
         sorted.dedup();
         assert_eq!(ids, sorted);
+    }
+
+    #[test]
+    fn the_menu_lists_the_sessions_of_the_frame() {
+        let some = |list: Vec<Listed>, unread: u32, link: Link| Shown { list, unread, ..s(2, false, link) };
+        let two = vec![listed("s1", "Fix the build", "Needs you"), listed("s2", "Rename the tables", "Needs you")];
+        let m = menu(&some(two.clone(), 0, Link::Up));
+        let labels: Vec<&str> = m.iter().map(|i| i.1.as_str()).collect();
+        assert_eq!(&labels[..5], ["2 need you", "", "Fix the build · Needs you", "Rename the tables · Needs you", ""]);
+        assert_eq!(m[2].3, Some(Pick::Session("s1".into())));
+        assert_eq!(m[3].3, Some(Pick::Session("s2".into())));
+        // Mark all as read is there while something is unread, and only then.
+        assert!(!labels.contains(&"Mark All as Read"));
+        assert!(menu(&some(two.clone(), 3, Link::Up)).iter().any(|i| i.3 == Some(Pick::MarkRead)));
+        // None listed: no lines and no separator for them, the menu is what it was. None while the daemon is away.
+        let none = menu(&some(Vec::new(), 0, Link::Up));
+        assert_eq!(none.iter().map(|i| i.1.as_str()).take(3).collect::<Vec<_>>(), ["2 need you", "", "Open Keel"]);
+        assert!(!menu(&some(two, 3, Link::Restarting)).iter().any(|i| matches!(i.3, Some(Pick::Session(_) | Pick::MarkRead))));
+        // An item's id comes from its session, so it is the same wherever the session stands in the list.
+        let id = |l: Vec<Listed>, sid: &str| menu(&some(l, 0, Link::Up)).into_iter().find(|i| i.3 == Some(Pick::Session(sid.into()))).map(|i| i.0);
+        assert_eq!(id(vec![listed("a", "A", "w"), listed("b", "B", "w")], "b"), id(vec![listed("b", "B", "w")], "b"));
+        assert_ne!(item_id("a", &[]), item_id("a", &[item_id("a", &[])]));
+    }
+
+    #[test]
+    fn a_title_reaches_the_menu_as_plain_text() {
+        assert_eq!(plain("Fix\nthe\tbuild\r\n"), "Fix the build");
+        assert_eq!(plain("a\u{202e}b\u{200f}c"), "abc");
+        assert_eq!(plain("<b>bold</b> & &amp; <img src=x>"), "<b>bold</b> & &amp; <img src=x>");
+        // A menu reads an underscore as a key mark: doubled, it shows as one.
+        assert_eq!(plain("snake_case _x"), "snake__case __x");
+        assert_eq!(plain(" \n "), "Untitled session");
+        let long = plain(&"é".repeat(100));
+        assert_eq!(long.chars().count(), 60);
+        assert!(long.ends_with('…'));
+        assert_eq!(line(&listed("s", "T", "")), "T");
     }
 
     #[test]
