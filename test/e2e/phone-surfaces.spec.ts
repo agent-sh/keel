@@ -160,6 +160,8 @@ for (const size of SIZES) {
         await page.getByTestId("panel-pick-board").tap();
         const board = page.getByTestId("work-board");
         await expect(board.getByTestId("board-row")).toHaveCount(3);
+        // A phone shows a row an agent; the facts open on a tap.
+        for (const t of await board.getByTestId("board-toggle").all()) await t.tap();
         // Each fact says all it knows: "older head" and the commit a stale verdict spoke of are not cut off.
         await expect(board.getByTestId("board-review").filter({ hasText: "refused" })).toContainText("older head");
         const values = board.locator('[data-testid^="board-"] > span:nth-child(2) > span:last-child');
@@ -874,6 +876,8 @@ for (const size of SIZES) {
         await page.getByTestId("panel-pick-board").tap();
         const board = page.getByTestId("work-board");
         await expect(board.getByTestId("board-row")).toHaveCount(3);
+        // A phone shows a row an agent; the facts open on a tap.
+        for (const t of await board.getByTestId("board-toggle").all()) await t.tap();
         await expect(board.getByTestId("board-checks")).toContainText("passed on uncommitted files");
         expect(await phoneProblems(board), "the board").toEqual([]);
         await shoot(page, `phone-surfaces-24-board-lines-${size.width}`);
@@ -953,6 +957,66 @@ for (const size of SIZES) {
       } finally {
         await page.evaluate(() => localStorage.removeItem("keel.textScale")).catch(() => {});
         await drop(request, a, b);
+      }
+    });
+    test("the work board is a row an agent with its state and its one action, and its facts open on a tap", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      await settle(request);
+      const id = await start(request, "Phone board rows");
+      const q = await create(request, "Phone board asker", folder("phone-board-asker"));
+      try {
+        await ask(request, q, "question");
+        const head = "b3166396dd37cfd55fb0fd54b7bafd8f0457e17c";
+        const row = (n: number, extra: Record<string, unknown>) => ({
+          id: `${n}`.repeat(12), session_id: `s-${n}`, parent_id: id, depth: 1, title: `Lane ${n}`, type: "general-purpose", model: STAND_IN, state: "completed", created: Date.now() - 600_000, ended: Date.now(), machine: null,
+          branch: `keel/lane-${n}`, repo: "/r", base: "main", head, ahead: 1, behind: 0, worktree: "here",
+          checks: { state: "known", passed: ["notes"], failed: [], notRun: [] }, reviews: [], queue: null, live: null,
+          work: { uncommitted: null, branch: { files: 2, added: 5, removed: 1 } }, landed: { state: "no", missing: 1 }, review: null, ...extra,
+        });
+        const rows = [
+          row(1, {}),
+          row(2, { review: { by: "222222222222", title: "Reviewer", how: "verdict", state: "completed", verdict: "refused", source: "verdict", line: "LAND: no", tip: head, of: head, current: true } }),
+          row(3, { session_id: q, state: "running", ended: null, landed: { state: "no", missing: 1 } }),
+        ];
+        await page.route(`**/api/sessions/${id}/board*`, (route) => route.fulfill({ json: { session_id: id, rows, total: rows.length, repos: [{ repo: "/r", base: "main", base_tip: head, deploys: [] }], at: Date.now(), took_ms: 3 } }));
+        await page.goto(`/s/${id}`);
+        await page.getByTestId("panel-menu").first().tap();
+        await page.getByTestId("panel-pick-board").tap();
+        const board = page.getByTestId("work-board");
+        const cards = board.getByTestId("board-row");
+        const agent = (n: number) => board.locator(`[data-agent="${`${n}`.repeat(12)}"]`);
+        await expect(cards).toHaveCount(3);
+        const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+        await shoot(page, `phone-surfaces-29-board-rows-${size.width}`);
+        // Collapsed: a row each, with no checks tile and no branch hash, and exactly one action.
+        for (const c of await cards.all()) {
+          expect((await c.boundingBox())!.height, "a row, not a card").toBeLessThanOrEqual(5 * rem);
+          await expect(c.getByTestId("board-state")).toBeVisible();
+          await expect(c.locator('[data-testid="board-answer"], [data-testid="board-land"], [data-testid="board-open"]')).toHaveCount(1);
+        }
+        await expect(board.getByTestId("board-checks")).toHaveCount(0);
+        await expect(board.getByTestId("board-head")).toHaveCount(0);
+        await expect(agent(1).getByTestId("board-land")).toBeVisible();
+        await expect(agent(2).getByTestId("board-open")).toBeVisible();
+        await expect(agent(3).getByTestId("board-answer")).toBeVisible();
+        expect(await phoneProblems(board), "the board's rows").toEqual([]);
+        // A tap on a row opens its facts, and a second closes them.
+        const first = agent(1);
+        await first.getByTestId("board-toggle").tap();
+        await expect(first.getByTestId("board-toggle")).toHaveAttribute("aria-expanded", "true");
+        await expect(first.getByTestId("board-checks")).toBeVisible();
+        await expect(first.getByTestId("board-head")).toBeVisible();
+        await noSideScroll(page);
+        expect(await phoneProblems(board), "the board with a row open").toEqual([]);
+        await shoot(page, `phone-surfaces-30-board-row-open-${size.width}`);
+        await first.getByTestId("board-toggle").tap();
+        await expect(first.getByTestId("board-checks")).toHaveCount(0);
+        // Answer goes to what the agent asks.
+        await agent(3).getByTestId("board-answer").tap();
+        await expect(page).toHaveURL(new RegExp(`/s/${q}$`));
+      } finally {
+        await page.unroute(`**/api/sessions/${id}/board*`);
+        await drop(request, id, q);
       }
     });
     test("the head's reason for a state is read whole: it wraps under the word, never cut by an ellipsis", async ({ page, request }) => {

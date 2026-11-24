@@ -2,8 +2,8 @@
 // head, and four facts the daemon keeps of it (src/board/board.ts): the named checks on its head's tree,
 // the latest review of its branch, whether the base holds it, and whether what runs holds it. A
 // reviewer's words (its verdict's why, or its LAND line) are quoted under its card as its own.
-import { Check, ChevronRight, CircleDashed, FileDiff, GitBranch, GitMerge, GitPullRequestArrow, Loader2, Minus, RefreshCw, X } from "lucide-react";
-import { lazy, Suspense, useState, type ReactNode } from "react";
+import { Check, ChevronDown, ChevronRight, CircleDashed, FileDiff, GitBranch, GitMerge, GitPullRequestArrow, Loader2, Minus, RefreshCw, X } from "lucide-react";
+import { lazy, Suspense, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
 import { listedOnItsOwn, useFold, useNow } from "../lib/agent-fold.ts";
@@ -25,6 +25,14 @@ import { PicturesArea } from "./Pictures.tsx";
 
 // The tree review: every agent's branch as one diff by area (TreeReview.tsx), read when it opens.
 const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
+
+// A phone: a touch screen at a phone's width. There an agent with a branch is a row (its state and its one
+// action), and its facts are one tap away.
+const PHONE = "(pointer: coarse) and (max-width: 767px)";
+const usePhone = () => useSyncExternalStore(
+  (f) => { const m = matchMedia(PHONE); m.addEventListener("change", f); return () => m.removeEventListener("change", f); },
+  () => matchMedia(PHONE).matches,
+);
 
 type Tone = "ok" | "bad" | "wait" | "none";
 const TONE: Record<Tone, string> = { ok: "text-ok", bad: "text-danger", wait: "text-st-work", none: "text-faint" };
@@ -205,6 +213,8 @@ function Line({ r, indent, w, st }: { r: BoardRow; indent: number; w: Watch; st:
 function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch; st: SessionState | undefined; coord: string }) {
   const [landing, setLanding] = useState(false);
   const [err, setErr] = useState("");
+  const phone = usePhone();
+  const [open, setOpen] = useState(false);
   if (compact(r)) return <Line r={r} indent={indent} w={w} st={st} />;
   // One action leads the card: Answer when its agent waits on the owner, else Land when its branch can land.
   // Without either, the card's one act is to open what it changed (below, in the line of its changes).
@@ -219,53 +229,73 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
       .finally(() => setLanding(false));
   };
   const reviewing = r.reviews.length > 0;
+  const changes = !!(r.work && (r.work.uncommitted || r.work.branch));
   // A tile shows only a fact: a check the repository names, a review, a landing, a live record.
   const facts = [checksFact(r), reviewFact(r), landedFact(r), liveFact(r)].filter(Boolean);
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent} data-watch={w}>
       <div className="flex min-w-0 items-center gap-2">
         <StateMark w={w} />
-        <button type="button" onClick={() => openSession(r.session_id)} className="k-whole min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
-        <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
+        {phone ? (
+          // The row: the agent and its state in one control that opens its facts; the one action beside it.
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={`${r.title} (agent ${r.id})`} data-testid="board-toggle">
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="k-whole text-ui font-medium text-fg" data-testid="board-title">{r.title}</span>
+              <span className="text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
+            </span>
+            <ChevronDown className={cn("size-4 shrink-0 text-faint transition-transform", open && "rotate-180")} aria-hidden="true" />
+          </button>
+        ) : (
+          <>
+            <button type="button" onClick={() => openSession(r.session_id)} className="k-whole min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
+            <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
+          </>
+        )}
         {answers && <button type="button" className="k-btn" data-ink="" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it">Answer</button>}
         {lands && <button type="button" className="k-btn" data-ink="" disabled={landing} onClick={land} data-testid="board-land" title={`Queue ${short(r.branch!)} to land on ${r.base ?? "the base"}`}><GitMerge /> Land</button>}
+        {phone && !answers && !lands && <button type="button" className="k-btn" onClick={() => { if (changes) rememberPanel(r.session_id, "changes"); openSession(r.session_id); }} data-testid="board-open" title={changes ? "Open what it changed" : "Open the agent"}>Open</button>}
       </div>
       {err && <p className="text-caption text-danger" data-testid="board-land-error">{err}</p>}
-      {r.branch ? (
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption">
-          <GitBranch className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <span className="k-whole min-w-0 truncate font-mono text-fg" title={r.branch}>{short(r.branch)}</span>
-          {r.head && <span className="shrink-0 font-mono text-micro text-muted" data-testid="board-head">{sha(r.head)}</span>}
-          {!!r.behind && r.landed?.state !== "yes" && <span className="shrink-0 text-micro text-warn">{r.behind} behind {r.base ?? "the base"}</span>}
-          {r.worktree === "gone" && !branchGone(r) && <span className="shrink-0 text-micro text-faint">worktree removed</span>}
-        </div>
-      ) : (
-        <p className="text-caption text-muted">{reviewing ? <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span></> : "no branch of its own"}{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>
-      )}
-      {r.work && (
-        <div className="flex min-w-0 items-start gap-x-3 text-caption" data-testid="board-work">
-          <FileDiff className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-            {r.work.uncommitted && <Changed c={r.work.uncommitted} where="uncommitted" testid="board-uncommitted" />}
-            {r.work.branch && <Changed c={r.work.branch} where="on branch" testid="board-on-branch" />}
-            {!r.work.uncommitted && !r.work.branch && <span className="text-muted" data-testid="board-no-changes">no changes yet</span>}
+      {(!phone || open) && (
+        <>
+        {r.branch ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption">
+            <GitBranch className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+            <span className="k-whole min-w-0 truncate font-mono text-fg" title={r.branch}>{short(r.branch)}</span>
+            {r.head && <span className="shrink-0 font-mono text-micro text-muted" data-testid="board-head">{sha(r.head)}</span>}
+            {!!r.behind && r.landed?.state !== "yes" && <span className="shrink-0 text-micro text-warn">{r.behind} behind {r.base ?? "the base"}</span>}
+            {r.worktree === "gone" && !branchGone(r) && <span className="shrink-0 text-micro text-faint">worktree removed</span>}
           </div>
-          {!answers && !lands && (r.work.uncommitted || r.work.branch) && (
-            <button type="button" onClick={() => { rememberPanel(r.session_id, "changes"); openSession(r.session_id); }} data-testid="board-open-changes"
-              className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-micro text-accent hover:bg-hover">Open changes</button>
-          )}
-        </div>
+        ) : (
+          <p className="text-caption text-muted">{reviewing ? <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span></> : "no branch of its own"}{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>
+        )}
+        {r.work && (
+          <div className="flex min-w-0 items-start gap-x-3 text-caption" data-testid="board-work">
+            <FileDiff className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden="true" />
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+              {r.work.uncommitted && <Changed c={r.work.uncommitted} where="uncommitted" testid="board-uncommitted" />}
+              {r.work.branch && <Changed c={r.work.branch} where="on branch" testid="board-on-branch" />}
+              {!r.work.uncommitted && !r.work.branch && <span className="text-muted" data-testid="board-no-changes">no changes yet</span>}
+            </div>
+            {!phone && !answers && !lands && (r.work.uncommitted || r.work.branch) && (
+              <button type="button" onClick={() => { rememberPanel(r.session_id, "changes"); openSession(r.session_id); }} data-testid="board-open-changes"
+                className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-micro text-accent hover:bg-hover">Open changes</button>
+            )}
+          </div>
+        )}
+        {r.branch && branchGone(r) && <p className="text-caption text-muted" data-testid="board-gone">{r.reviews.length > 0 && <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span> · </>}Branch removed at its end; nothing left to land{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>}
+        {r.branch && !branchGone(r) && facts.length > 0 && (
+          <div className="grid grid-cols-2 gap-1.5 @[30rem]:grid-cols-4">
+            {facts}
+          </div>
+        )}
+        {r.branch && !branchGone(r) && <Together r={r} below={below} />}
+        {r.branch && !branchGone(r) && r.pictures && <PicturesArea fact={r.pictures} sessionId={r.session_id} repo={r.repo} />}
+        {r.review?.line && <Quote by={r.review.by} how={r.review.how} title={r.review.title} line={r.review.line} below={below} testid="board-verdict" />}
+        {r.review?.against && <Quote by={r.review.against.by} how={r.review.against.how} title={r.review.against.title} line={r.review.against.line || "(no words)"} below={below} testid="board-verdict-against" />}
+        {phone && <button type="button" onClick={() => openSession(r.session_id)} className="k-btn self-start" data-testid="board-open-agent">Open agent</button>}
+        </>
       )}
-      {r.branch && branchGone(r) && <p className="text-caption text-muted" data-testid="board-gone">{r.reviews.length > 0 && <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span> · </>}Branch removed at its end; nothing left to land{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>}
-      {r.branch && !branchGone(r) && facts.length > 0 && (
-        <div className="grid grid-cols-2 gap-1.5 @[30rem]:grid-cols-4">
-          {facts}
-        </div>
-      )}
-      {r.branch && !branchGone(r) && <Together r={r} below={below} />}
-      {r.branch && !branchGone(r) && r.pictures && <PicturesArea fact={r.pictures} sessionId={r.session_id} repo={r.repo} />}
-      {r.review?.line && <Quote by={r.review.by} how={r.review.how} title={r.review.title} line={r.review.line} below={below} testid="board-verdict" />}
-      {r.review?.against && <Quote by={r.review.against.by} how={r.review.against.how} title={r.review.against.title} line={r.review.against.line || "(no words)"} below={below} testid="board-verdict-against" />}
     </li>
   );
 }
