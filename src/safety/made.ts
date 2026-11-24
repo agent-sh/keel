@@ -10,8 +10,8 @@
 //  - the pad, in the worktree's git directory: the guard hook writes it while a command runs, which a confined
 //    command can write as well. The hook trusts it for the length of the command; after it, nothing here does.
 //  - the ledger, in Keel's folder for the agent: only the daemon writes it, after each command, from the pad (what
-//    the pad says was made by that command: its line carries the time, and a line older than the command is not
-//    taken), and it keeps each entry on the branch it names now (a rename is followed) and drops the ones whose
+//    the pad says was made by that command: its line carries the time, and a line from before the command's start
+//    is not taken), and it keeps each entry on the branch it names now (a rename is followed) and drops the ones whose
 //    branch is gone.
 import { closeSync, openSync, readFileSync, readSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -122,7 +122,9 @@ export async function settleMade(common: string, gitDir: string, since: number):
   let text = "";
   try { text = await readFile(pad, "utf8"); } catch { /* none made */ }
   const kept = await ledger(gitDir);
-  const floor = Math.floor(since / 1000) - 2;
+  // (The line has whole seconds: the command's start, as it was recorded, is the floor. No slack: a pad line older than the
+  // command is not one of its branches, and a forged one cannot claim a sibling's branch made just before it.)
+  const floor = Math.floor(since / 1000);
   const fresh = parseMade(text).filter((e) => Number(SECONDS.exec(e.line)?.[1] ?? 0) >= floor);
   if (!kept.length && !fresh.length) { if (text) await rm(pad, { force: true }); return; }
   const all = new Map<string, Made>();

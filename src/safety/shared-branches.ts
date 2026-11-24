@@ -273,7 +273,9 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
   const what = (w: string) => (unread(w) ? `a branch it names with an expansion (${w})` : `the branch ${branchOf(w)}${s.out.has(branchOf(w)) ? ", which another checkout has out" : shared.has(branchOf(w).toLowerCase()) ? ", this worktree's base" : ", which this worktree did not make"}`);
   const { sub, args } = g;
   // A file the command writes by name (git log --output=FILE, diff, show, format-patch) is no place in the git data.
+  // A name with an expansion is not read: it could be the pad or a ref, as it is for a branch name.
   for (const f of valuesOf(args, ["--output"])) {
+    if (unread(f)) return `writes a file it names with an expansion (${f}), which the rules cannot read (--output)`;
     const at = pathOf(dir, f, home);
     const what = at === null ? null : gitStoreOf(at, s);
     if (what) return `writes ${what} (--output)`;

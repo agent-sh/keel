@@ -229,6 +229,41 @@ test.skipIf(!hasGit)("a branch an agent made and deleted does not make the next 
   } finally { t.done(); }
 });
 
+test.skipIf(!hasGit)("a branch the owner made again with logs off is not the one the agent made, and a rename still follows its log", async () => {
+  const t = scratch();
+  try {
+    expect((await t.shm("git branch wip")).code).toBe(0);
+    expect(ledgerSync(t.s.gitDir).map((e) => e.ref)).toEqual(["refs/heads/wip"]);
+    // The owner deletes it and makes the name again with reflogs off: no log, and the name alone does not make it the agent's.
+    t.owner("branch", "-D", "wip");
+    t.owner("-c", "core.logAllRefUpdates=false", "branch", "wip");
+    expect(existsSync(join(t.s.common, "logs/refs/heads/wip"))).toBe(false);
+    const r = t.sh("git branch -D wip");
+    expect([r.code !== 0, r.err.includes("did not make")]).toEqual([true, true]);
+    expect(t.owner("rev-parse", "--verify", "wip")).toMatch(/^[0-9a-f]{40}$/);
+    // A rename of a branch it made, in one command, goes through.
+    expect((await t.shm("git branch mine && git branch -m mine mine2")).code).toBe(0);
+    expect(t.sh("git branch -D mine2").code).toBe(0);
+  } finally { t.done(); }
+});
+
+test.skipIf(!hasGit)("a pad line for a branch made before the command's start is not taken", async () => {
+  const t = scratch();
+  try {
+    t.owner("branch", "sibling");
+    const line = readFileSync(join(t.s.common, "logs/refs/heads/sibling"), "utf8").split("\n")[0]!;
+    const sec = Number(/> (\d+) [+-]\d{4}\t/.exec(line)![1]);
+    // A command that started in the second after the branch was made: the branch is not its.
+    writeFileSync(join(t.s.gitDir, PAD), `refs/heads/sibling ${line}\n`);
+    await settleMade(t.s.common, t.s.gitDir, (sec + 1) * 1000);
+    expect(ledgerSync(t.s.gitDir)).toEqual([]);
+    // One that started in the same second could have made it: the line has no finer time.
+    writeFileSync(join(t.s.gitDir, PAD), `refs/heads/sibling ${line}\n`);
+    await settleMade(t.s.common, t.s.gitDir, sec * 1000);
+    expect(ledgerSync(t.s.gitDir).map((e) => e.ref)).toEqual(["refs/heads/sibling"]);
+  } finally { t.done(); }
+});
+
 // (An older git moves a symbolic ref without the hook: the gate refuses the typed form there, see ref-guard.ts.)
 test.skipIf(!hasGit || !symrefs)("a script puts HEAD on no branch the worktree did not make", () => {
   const t = scratch();
@@ -255,6 +290,8 @@ test.skipIf(!hasGit)("no write to the old list of made branches, or to the pad, 
       expect(sharedRefusal(`git log --output=${f}`, t.agent, t.dir, now)).not.toBeNull();
     }
     expect(sharedRefusal(`git log --output=${join(t.agent, "log.txt")}`, t.agent, t.dir, now)).toBeNull();
+    // A name with an expansion is not read, as for a branch name.
+    for (const l of ["git log -1 --output=$PADX", "git log -1 --output ${PADX}", "git show --output=.git/keel-made-p* HEAD"]) expect([l, sharedRefusal(l, t.agent, t.dir, now)?.includes("expansion")]).toEqual([l, true]);
     const line = t.owner("log", "-g", "--format=%H", "release/1").length ? readFileSync(join(t.s.common, "logs/refs/heads/release/1"), "utf8").split("\n")[0]! : "";
     t.sh(`printf 'refs/heads/release/1 %s\\n' ${JSON.stringify(line)} > ${join(t.s.gitDir, "keel-made-branches")}`);
     expect(t.sh("git branch -D release/1").code).not.toBe(0);

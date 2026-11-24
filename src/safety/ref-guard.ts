@@ -179,13 +179,14 @@ mine() {
   [ "$line" = "ref: $1" ] && return 0
   case "$nl$kids$nl" in *"$nl$1$nl"*) return 0 ;; esac
   fl=$(first "$1")
-  # (A rename moves the branch's log away before it deletes the old name: a branch with no log is known by its name.)
+  # (A rename moves the branch's log to a file of its own before it deletes the old name, and puts it on the new one: a
+  # branch with no log is known only by the log in that file, which begins with the line the branch was made with. A
+  # branch an agent made, the owner deleted and made again with logs off has no log and no such file.)
   if [ -z "$fl" ]; then
     [ -f "$common/logs/$1" ] && return 1
-    for lf in "$ledger" "$pad"; do
-      [ -f "$lf" ] || continue
-      while read -r r rest; do [ "$r" = "$1" ] && return 0; done < "$lf"
-    done
+    tl=
+    [ -f "$common/logs/refs/.tmp-renamed-log" ] && { IFS= read -r tl < "$common/logs/refs/.tmp-renamed-log" || :; }
+    [ -n "$tl" ] && listed "$1" "$tl" && return 0
     return 1
   fi
   listed "$1" "$fl" && return 0
