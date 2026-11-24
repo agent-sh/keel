@@ -9,6 +9,7 @@ import { crossing, crossingIn, routeOf, RouteRefused, sayCrossing } from "../saf
 import { allowedOnly, type RoutePurpose } from "../safety/route-rule.ts";
 import { DeltaJoin } from "./deltas.ts";
 import type { Bus } from "../core/bus.ts";
+import type { Ruled } from "../safety/trial.ts";
 import { asAsker } from "../core/asker.ts";
 import { errorScope, type ErrorTracker } from "../core/errors.ts";
 import { diskFull, refusedWrite, type Store } from "../core/store.ts";
@@ -586,6 +587,8 @@ export class Engine {
   private stoppedEarly = new Set<string>();
   // What a finished call left for the transcript (ToolOutput.shown), until its step is stored.
   private shown = new Map<string, unknown>();
+  // What the gate's rules decided of a call (ToolCall.ruled), until its result is stored with it.
+  private ruled = new Map<string, Ruled>();
   // How a call's error result came about, for the turn's own count: the tool
   // ran and failed, or a gate refused the call before it ran. Anything else
   // (no such tool, a call cut at the output limit, a stop) is neither.
@@ -2682,6 +2685,8 @@ export class Engine {
       else if (how === "failed" && !signal.aborted) toolErrors++;
       const shown = this.shown.get(r.tool_use_id);
       this.shown.delete(r.tool_use_id);
+      const ruled = this.ruled.get(r.tool_use_id);
+      this.ruled.delete(r.tool_use_id);
       // One write through the store: when it fails, the result is not left in the kept events.
       // When the store takes no writes the result is owed, like the turn's end after it (Store.orLater):
       // an answer the owner gave, or what a command they allowed printed, is not thrown away. The turn
@@ -2689,7 +2694,7 @@ export class Engine {
       const at = Date.now(), eid = Bun.randomUUIDv7();
       // What an error result is, kept with it: the call ran and failed, a gate refused it, or it was not
       // run for another reason. Whoever counts later (an agent's report) counts as this turn's end does.
-      const data = this.store.redact(id, "tool_result", { results: [r], ...(r.is_error ? { verdict: how ?? "none" } : {}), ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
+      const data = this.store.redact(id, "tool_result", { results: [r], ...(r.is_error ? { verdict: how ?? "none" } : {}), ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}), ...(ruled ? { ruled } : {}) });
       let made = false;
       const stored = this.store.orLater("a tool's result", () => this.store.atomic(id, () => {
         this.emitEvent(this.store.append(id, "tool_result", data, undefined, at, eid));
@@ -3242,6 +3247,11 @@ export class Engine {
       // What the call added for the process it starts is not kept past the call, whether it started one or not (a
       // tool that ran no command, one that threw, a later gate's refusal); a run a stop left going keeps it until
       // it settles, for a command it still starts.
+      // (A call a program made has no result of its own in the history: what its rules decided is not kept.)
+      if (call.ruled && !ctx.nestedIn) {
+        if (this.ruled.size >= 4096) this.ruled.delete(this.ruled.keys().next().value!);
+        this.ruled.set(u.id, call.ruled);
+      }
       if (dispatched) void dispatched.then(() => dropCallEnv(session.id, call.id), () => dropCallEnv(session.id, call.id));
       else dropCallEnv(session.id, call.id);
       ctx.signal.removeEventListener("abort", onStop);

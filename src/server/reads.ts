@@ -29,7 +29,7 @@ function programUrl(): string {
 
 type Waiting = { resolve: (v: any) => void; reject: (e: Error) => void; name: TaskName; args: unknown; due: ReturnType<typeof setTimeout> };
 type Args<K extends TaskName> = Parameters<Tasks[K]>[1];
-type Result<K extends TaskName> = ReturnType<Tasks[K]>;
+type Result<K extends TaskName> = Awaited<ReturnType<Tasks[K]>>;
 
 // A read with no answer after this long is over: its thread is taken to be
 // stuck and is ended. The longest read known, the sum over every event of a

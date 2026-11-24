@@ -7,6 +7,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["attach", "follow a session in this terminal and type into it"],
     ["approve", "answer an open approval card or question"],
     ["rules", "the standing permission rules: list, revoke, check a sample"],
+    ["safety", "trial: a safety rule change replayed over the stored calls before it is on"],
     ["review", "pull request reviews from GitHub: watch a repository, list, post a draft"],
     ["stop", "interrupt a session's running turn"],
   ]],

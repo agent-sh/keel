@@ -9,7 +9,7 @@ declare var self: Worker;
 
 let db: Database | undefined;
 
-self.onmessage = (ev: MessageEvent) => {
+self.onmessage = async (ev: MessageEvent) => {
   const m = ev.data as { open: string } | { id: number; name: TaskName; args: unknown };
   if ("open" in m) {
     db = new Database(m.open, { readonly: true });
@@ -21,7 +21,8 @@ self.onmessage = (ev: MessageEvent) => {
     if (!db) throw new Error("the read thread has no database");
     const run = tasks[m.name] as ((db: Database, args: unknown) => unknown) | undefined;
     if (!run) throw new Error(`no read named ${m.name}`);
-    const value = run(db, m.args);
+    // (A read that answers in time, such as a rule trial that asks the disk, is awaited.)
+    const value = await run(db, m.args);
     // A read that answers with bytes names their buffers: handed to the loop, not copied.
     const transfer = (value as { transfer?: ArrayBuffer[] } | null)?.transfer;
     if (transfer) postMessage({ id: m.id, value: { ...(value as object), transfer: undefined } }, transfer);

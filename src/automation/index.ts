@@ -10,6 +10,7 @@ import { sessionRef } from "../admin/session-ref.ts";
 import { readsOf } from "../server/reads.ts";
 import { awakeHolds, awakeReasons, forTurns, recheckAwake } from "../admin/awake.ts";
 import type { Judged } from "../safety/gate.ts";
+import { UNREVIEWED } from "../safety/trial.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { stopKind } from "../core/stops.ts";
 import { toMessages } from "../engine/turn.ts";
@@ -292,7 +293,7 @@ function init(deps: Deps) {
       const j = f.data as Judged;
       incidents.onJudged(j);
       const ran = j.outcome === "rule" || j.outcome === "judge" || j.outcome === "retry" || j.outcome === "unreviewed";
-      activity.record("approval", ran ? (j.outcome === "unreviewed" ? "ran unreviewed (Full auto)" : `allowed by ${j.outcome === "rule" ? "a rule" : j.outcome === "judge" ? "the judge" : "a retry"}`) : j.outcome === "repeat" ? "refused again" : "refused", j.session_id, `${j.tool}: ${spelled(j.summary)}`.slice(0, 300) + ` (${j.reason})`.slice(0, 300), { call_id: j.call_id, blocked_id: j.blocked_id, model: j.model, ms: j.ms });
+      activity.record("approval", ran ? (j.outcome === "unreviewed" ? UNREVIEWED : `allowed by ${j.outcome === "rule" ? "a rule" : j.outcome === "judge" ? "the judge" : "a retry"}`) : j.outcome === "repeat" ? "refused again" : "refused", j.session_id, `${j.tool}: ${spelled(j.summary)}`.slice(0, 300) + ` (${j.reason})`.slice(0, 300), { call_id: j.call_id, blocked_id: j.blocked_id, model: j.model, ms: j.ms });
       if (!ran && j.outcome !== "repeat") {
         const s = deps.store.session(j.session_id);
         alerts.raise("refused", j.session_id, `Refused in ${s?.title || "a session"}`, `${j.tool}: ${spelled(j.summary)}`.slice(0, 200) + ` (${j.reason})`.slice(0, 300), { blocked_id: j.blocked_id, open_session: j.session_id });

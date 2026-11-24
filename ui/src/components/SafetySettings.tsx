@@ -8,6 +8,7 @@ import { ModelPicker } from "./ModelPicker.tsx";
 import { enroll, passkeyBlock } from "../lib/presence.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 import { AccountsCard } from "./AccountsCard.tsx";
+import { RuleTrialCard } from "./RuleTrialCard.tsx";
 import { Select } from "./Select.tsx";
 import { Switch } from "@base-ui/react/switch";
 import { composing } from "../lib/keys.ts";
@@ -66,6 +67,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
       <RemoteAccessCard />
       <TrustCard />
       <AccountsCard />
+      <RuleTrialCard />
       <WorktreesCard />
       {children}
     </div>

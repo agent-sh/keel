@@ -102,7 +102,7 @@ const SINKS = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
 // it: from the records its jobs left. Read again only when the folder of
 // records changed.
 const ranIn = new Map<string, { at: number; by: Map<string, string> }>();
-function foldersOf(dir: string): Map<string, string> {
+export function foldersOf(dir: string): Map<string, string> {
   let at = 0;
   try { at = statSync(dir).mtimeMs; } catch { return new Map(); }
   const had = ranIn.get(dir);

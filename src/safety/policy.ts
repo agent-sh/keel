@@ -16,7 +16,7 @@ import { atCwd, contains, homeDir } from "../core/paths.ts";
 import { RESERVED } from "../mcp/config.ts";
 import type { ToolKind } from "../tools/types.ts";
 import type { WebUse } from "./addresses.ts";
-import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a.ts";
+import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a-parse.ts";
 
 // Who decides what a mode lets run: the owner, a model, or nobody because
 // nothing changes. A menu groups the modes by it, in this order.

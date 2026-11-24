@@ -37,6 +37,8 @@ import { AddressBook, addressOf, dataIn, groupOf, sendShown, wholeOf, type WebUs
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
+import { buildId } from "../core/build.ts";
+import { ruledOf, type Ruled } from "./trial.ts";
 import { Provenance } from "./provenance-books.ts";
 import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, type Hit, type Reach } from "./provenance.ts";
 import { ownerDenial } from "../core/stops.ts";
@@ -83,20 +85,8 @@ import { attachmentsGiven } from "../engine/attachments.ts";
 export { landing };
 export type { CallMark } from "./marks.ts";
 
-// The folders of a PATH that commands are found in by name and that lie
-// inside a session's folder: a whole path there, or a relative entry (bash
-// reads it from the folder a command runs in, so any folder of the workspace
-// that ends with it). An entry that is the running folder itself ("." or an
-// empty one) names every folder and is not a folder to guard: left out.
-export function workspaceBins(path: string, workspace: string): string[] {
-  const out = new Set<string>();
-  for (const e of path.split(":")) {
-    if (isAbsolute(e)) { const r = realOf(e); if (contains(workspace, r)) out.add(r); continue; }
-    const rel = normalize(e).replace(/\/+$/, "");
-    if (rel && rel !== "." && !rel.startsWith("..")) out.add(rel);
-  }
-  return [...out];
-}
+import { workspaceBins } from "./bins.ts";
+export { workspaceBins };
 
 // What a call does, its relative paths resolved where the tool resolves them.
 const cwdOf = (call: ToolCall) => call.tool.cwdOf?.(call.ctx, call.input);
@@ -235,6 +225,9 @@ type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
 type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
 type AutoShell = { path: string; identity: string; interpreter: string };
 type CheckResult = { deny: string } | { cls: CallClass; authorization?: ToolAuthorization };
+// The build that decides, once a process.
+let build: string | undefined;
+const rev = () => (build ??= buildId());
 const interruptedApproval = "The earlier approval cannot be used under Auto. Check the prior outcome before proposing the action again.";
 const changedReview = { deny: "Refused: authorization or the action changed while permission was pending. Check the current permissions before proposing it again." };
 const secretReview = { deny: "Refused: Auto cannot review an action that contains a secret or requires secret substitution. Use Ask to approve the action yourself." };
@@ -1260,6 +1253,11 @@ export class Gate {
     };
   }
 
+  // What a trial of a rule change replays every session's stored calls with (src/safety/trial-read.ts).
+  trialFacts(): { home: string; state: string; config: string[]; path: string; shell?: string; defaultMode: Mode } {
+    return { home: realOf(homeDir()), state: this.store.stateDir, config: ownConfig(), path: process.env.PATH ?? "", shell: process.env.SHELL, defaultMode: this.defaultMode() };
+  }
+
   // `real`: for a command that names a program a version manager may stand in for, whether each such name is
   // the program itself here (see `shimmed`). Without it those forms ask.
   // `before`: only the standing rules that are not younger than this time (a held card's own).
@@ -1488,11 +1486,11 @@ export class Gate {
   async beforeTool(session: Session, call: ToolCall): Promise<ToolGate> {
     for (const [, limit] of this.toolLimits) {
       const refused = limit(session)?.(call.tool);
-      if (refused) return { deny: refused };
+      if (refused) return (this.ruled(session, call, "the session's tool limits"), { deny: refused });
     }
     if (!this.perm(session.id).network) {
       const web = webRefusal(call.tool.name, call.input);
-      if (web) return { deny: web };
+      if (web) return (this.ruled(session, call, "network off"), { deny: web });
     }
     const r = await this.check(session, call);
     if ("deny" in r) return r;
@@ -1614,7 +1612,8 @@ export class Gate {
     try { return await this.checked(session, call); } finally { this.checking.delete(callKey(session.id, call.id)); }
   }
   private async checked(session: Session, call: ToolCall): Promise<CheckResult> {
-    { const moved = this.rootMoved(session); if (moved) return { deny: moved }; }
+    { const moved = this.rootMoved(session); if (moved) return (this.ruled(session, call, "folder moved"), { deny: moved }); }
+    if (call.tool.confirm) this.ruled(session, call, "the tool confirms each call");
     if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
     const target = call.tool.target ? await call.tool.target(call.input, session.id) : null;
     const name = target?.name ?? call.tool.name;
@@ -1642,7 +1641,7 @@ export class Gate {
     if (!session.machine && scopes.of?.(session.id)) {
       const r = this.scopeRefusal(session, call, cls);
       const out = typeof r === "object" ? await r : r;
-      if (out) return { deny: out };
+      if (out) return (this.ruled(session, call, "agent write scope"), { deny: out });
     }
     const mode = this.perm(session.id).mode;
     const dir = mode === "auto" ? localShellDir(session, call, target, cls) : undefined;
@@ -1697,6 +1696,11 @@ export class Gate {
     if (l) facts.looked = l.view();
     facts.settles = "ask" in dNow && !!dNow.ask.settles;
     this.checking.set(callKey(session.id, call.id), facts);
+    // What the rules decided, kept with the call's result for a trial of a rule change (src/safety/trial.ts).
+    call.ruled = ruledOf(mode, dNow, {
+      looked: l?.known(), real: names.length && facts.real ? Object.fromEntries(names.map((n) => [n, facts.real!(n)])) : undefined,
+      named: facts.own?.filter((x) => x.from === "parent" || x.from === "owner").map((x) => x.path), rev: rev(),
+    });
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
     const back = this.recovered(session.id, call, false) ?? (mode === "auto" ? this.recovered(session.id, call, true) : undefined);
@@ -1836,6 +1840,11 @@ export class Gate {
     const r = await this.alone(session, call, name, cls, summary, key, ask.why ?? "no safe default or standing grant covers it",
       { ask, cwd: invocation?.path, interpreter: invocation?.interpreter, input, valid });
     return "deny" in r ? r : { cls, authorization };
+  }
+
+  // A check before the rules refused the call: kept with its result as such (src/safety/trial.ts).
+  private ruled(session: Session, call: ToolCall, before: string) {
+    call.ruled = { mode: this.perm(session.id).mode, before, rev: rev() } satisfies Ruled;
   }
 
   // A new turn: the run of refusals starts over.

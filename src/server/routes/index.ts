@@ -49,6 +49,7 @@ import { prReviewRoutes } from "./pr-reviews.ts";
 import { turnRoutes } from "./turns.ts";
 import { switchRoutes } from "./switch.ts";
 import { accountRoutes } from "./accounts.ts";
+import { safetyTrialRoutes } from "./safety-trial.ts";
 import { buildPinRoutes } from "./build-pin.ts";
 import { sideRoutes } from "./side.ts";
 import { treeRoutes } from "./tree.ts";
@@ -113,6 +114,7 @@ const modules: Record<string, RouteModule> = {
   turnRoutes,
   switchRoutes,
   accountRoutes,
+  safetyTrialRoutes, // after permissions: it reads the gate
   buildPinRoutes,
   sideRoutes,
   treeRoutes,

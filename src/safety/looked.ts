@@ -213,12 +213,16 @@ export async function manifestIn(dir: string): Promise<Manifest | null | "late">
 // The answers gathered for one call. `view(asked)` is what a decision reads: an answer already in hand, else the
 // answer of a disk that did not answer, with the question noted in `asked`. `answer` asks the disk what was noted.
 // A decision that asks more than QUESTIONS at once is over: nothing is asked for it, and it stands as it is.
-export function looking(workspace: string) {
-  const known = new Map<string, unknown>();
+// `seed`: answers given before (a stored call's, replayed: src/safety/trial-rules.ts). `may`: which questions may
+// be asked of the disk now (the others are noted in `missed` and read as not answered).
+export function looking(workspace: string, seed?: Iterable<[string, unknown]>, may?: (key: string) => boolean) {
+  const known = new Map<string, unknown>(seed ?? []);
+  const missed = new Set<string>();
   let over = false;
   const view = (asked?: Map<string, () => Promise<unknown>>): Looked => {
     const get = <A>(key: string, late: A, ask: () => Promise<A>): A => {
       if (known.has(key)) return known.get(key) as A;
+      if (may && !may(key)) { missed.add(key); return late; }
       if (asked && !asked.has(key)) { if (asked.size >= QUESTIONS) over = true; else asked.set(key, ask); }
       return late;
     };
@@ -234,8 +238,20 @@ export function looking(workspace: string) {
     };
   };
   const answer = async (asked: Map<string, () => Promise<unknown>>) => { await Promise.all([...asked].map(async ([key, ask]) => { known.set(key, await ask()); })); };
-  return { view, answer, over: () => over };
+  return { view, answer, over: () => over, known: () => kept(known), missed: () => [...missed] };
 }
+
+// The answers a decision was made with, as they are kept with the call's result (src/safety/trial.ts Ruled): a
+// small file's text is kept up to KEPT_TEXT characters, a longer one is left out (a replay reads it as not answered).
+export const KEPT_TEXT = 8_192;
+function kept(known: Map<string, unknown>): [string, unknown][] {
+  const out: [string, unknown][] = [];
+  for (const [k, v] of known) if (!(k.startsWith("read\0") && typeof v === "string" && v.length > KEPT_TEXT)) out.push([k, v]);
+  return out;
+}
+// A question of the disk that a later look answers the same (a repository's remotes, a manifest's package, an
+// ssh name's host), unlike what a folder held at the time (kept, exists, targets, read).
+export const lasting = (key: string) => /^(remotes|manifest|ssh)\0/.test(key);
 
 // Decides with what the disk says: `run` is called with the answers so far, what it asked is answered, and it is
 // called again, at most four times. A question still open then stays not answered.

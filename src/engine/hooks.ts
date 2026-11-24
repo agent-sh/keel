@@ -1,3 +1,4 @@
+import type { Ruled } from "../safety/trial.ts";
 import type { Message, QueueItem, Session, StoredEvent, ToolResultBlock, TurnStatus, Usage } from "../core/types.ts";
 import type { ModelInfo, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
@@ -9,7 +10,8 @@ import type { Crossing } from "../safety/route-rule.ts";
 // what every gate judges and what runs). `allowed`: a hook allowed the call,
 // with its reason; `skipped`: that allow answered an ask in the owner's place.
 // `hook.failed`: hooks of the call that failed (src/integrations/hooks.ts hookFailureText): shown under it.
-export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true; failed?: string[] } };
+// `ruled`: what the gate's rules decided of the call, stored with its result (src/safety/trial.ts).
+export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true; failed?: string[] }; ruled?: Ruled };
 
 // What a hook says reaches the model as the hook's words and nothing else: at
 // most HOOK_SAID characters, with no tag in it (every `<` that could open or
