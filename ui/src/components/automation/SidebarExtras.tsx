@@ -16,6 +16,8 @@ import { useNeedCount, useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
 import { calls, useSettled } from "../../lib/settle.ts";
 import type { Watch } from "../../../../src/core/watch.ts";
+import { listedOnItsOwn, useFold, useNow } from "../../lib/agent-fold.ts";
+import { EarlierRow } from "./Earlier.tsx";
 import { treeRows } from "../../../../src/core/agent-tree.ts";
 import { isCounted } from "../../../../src/core/agent-count.ts";
 
@@ -63,7 +65,18 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const foldLane = (id: string) => setLanes((was) => { const n = new Set(was); if (!n.delete(id)) n.add(id); return n; });
   // The list leaves out the sessions of agents at rest: their rows (a title the owner gave one) are read once the agents are opened.
   const left = useStore((s) => s.agentsLeft[parentId] ?? 0);
-  useEffect(() => { if (expanded && left) actions.loadAgentsOf(parentId).catch(reportError); }, [expanded, left, parentId]);
+  // What the opened list shows: what is live, what ended lately or since the owner looked, the row open on screen
+  // and the ones with a lane open; the rest is one "N earlier" row that opens them a page at a time. The line's
+  // counts stay whole.
+  const now = useNow(expanded);
+  const fold = useFold(
+    kids.map((k) => place.get(k.id)?.depth ?? 1),
+    kids.map((k, i) => listedOnItsOwn(k, said[i]!.watch, seen, now) || current === k.session_id || lanes.has(k.id)),
+    `${parentId}:${expanded}`,
+  );
+  // The sessions of the agents at rest are read when a row of one is shown: a page of the earlier ones, or a listed row the list left out.
+  const wantRows = fold.opened > 0 || kids.some((k, i) => fold.show[i] && !sessions[k.session_id]);
+  useEffect(() => { if (expanded && left && wantRows) actions.loadAgentsOf(parentId).catch(reportError); }, [expanded, left, parentId, wantRows]);
   // While the tree's rows show and an agent of it works, what each is doing comes to this page (lib/scope.ts).
   const working = liveKids.some(isLive);
   useEffect(() => (expanded && working ? scope.feed(`tree:${parentId}`) /* the tree feed of src/server/scope.ts (treeFeed) */ : undefined), [expanded, working, parentId]);
@@ -110,7 +123,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
           </span>
         )}
       </button>
+      {expanded && <EarlierRow n={fold.earlier} onMore={fold.more} />}
       {expanded && kids.map((a, i) => {
+        if (!fold.show[i]) return null;
         // The settled list (its said rows) with each agent's place in the tree, read from the live tree by id.
         const { depth, below } = place.get(a.id) ?? { depth: 1, below: 0 };
         const st = said[i]!;

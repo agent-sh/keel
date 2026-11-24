@@ -7,6 +7,9 @@ import { reportError, useStore } from "../../lib/store.ts";
 import { ago, clock, cn } from "../../lib/utils.ts";
 import { STATE_WORD, agentTally } from "../../../../src/core/state-words.ts";
 import { useToldStates } from "../../lib/watch.ts";
+import { listedOnItsOwn, useFold, useNow } from "../../lib/agent-fold.ts";
+import { useAgentsSeen } from "../../lib/agent-seen.ts";
+import { EarlierRow } from "./Earlier.tsx";
 import { AgentMark, agentSaid, Empty, IconButton, SectionTitle, StopAgent } from "./bits.tsx";
 
 export function waitLabel(w: WaitRecord): string {
@@ -78,6 +81,10 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
   const { agents, waits, loops, live, counts } = useBackground(sessionId);
   const sessions = useStore((s) => s.sessions);
   const told = useToldStates();
+  // Live agents and the ones that ended lately or since the owner looked; "N earlier" opens the rest a page at a time.
+  const seen = useAgentsSeen();
+  const now = useNow(agents.length > 0);
+  const fold = useFold(agents.map((a) => a.depth), agents.map((a) => listedOnItsOwn(a, agentSaid(a, told[a.session_id]).watch, seen, now)), sessionId, "first");
   if (!agents.length && !waits.length && !loops.length) return null;
 
   return (
@@ -105,7 +112,8 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
           >
             <SectionTitle>Agents</SectionTitle>
             {agents.length === 0 && <Empty>No agents.</Empty>}
-            {agents.map((a) => {
+            {agents.map((a, i) => {
+              if (!fold.show[i]) return null;
               // The agent's state in the word its tree row and its card use (src/core/state-words.ts).
               const st = agentSaid(a, told[a.session_id]);
               const title = sessions[a.session_id]?.title || a.title;
@@ -132,6 +140,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
                 </div>
               );
             })}
+            <EarlierRow n={fold.earlier} onMore={fold.more} testid="bg-agents-earlier" className="k-earlier mx-1 w-[calc(100%-0.5rem)]" />
             {waits.length > 0 && <SectionTitle>{STATE_WORD.wait} for</SectionTitle>}
             {waits.map((w) => (
               <div key={w.id} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-ui hover:bg-hover" data-testid="bg-wait">

@@ -6,6 +6,9 @@ import { Check, CircleDashed, FileDiff, GitBranch, GitMerge, GitPullRequestArrow
 import { lazy, Suspense, useState, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
+import { listedOnItsOwn, useFold, useNow } from "../lib/agent-fold.ts";
+import { useAgentsSeen } from "../lib/agent-seen.ts";
+import { EarlierRow } from "./automation/Earlier.tsx";
 import { treeOrder } from "../lib/board-order.ts";
 import { rememberPanel } from "../lib/ui.ts";
 import { branchGone, toLand, type Change } from "../../../src/board/rules.ts";
@@ -244,11 +247,17 @@ export function WorkBoard({ session }: { session: Session }) {
     setErr("");
     loadBoard(session.id, true).catch((e) => setErr(failed(e, { at: "WorkBoard" }))).finally(() => setBusy(false));
   };
+  const seen = useAgentsSeen();
+  const now = useNow(!!b && b.rows.length > 0);
+  const rows = b?.rows ?? [];
+  const ordered = treeOrder(rows, session.id, Object.fromEntries(rows.map((r) => [r.session_id, told[r.session_id]?.watch])));
+  // Working counts the agents that work, by the one status: the tree line under the row counts the same.
+  const watches = new Map(rows.map((r) => [r.id, watchOf(r, told[r.session_id])]));
+  // The cards of what is live and of what ended lately or since the owner looked; "N earlier" opens the rest a page at a time.
+  const fold = useFold(ordered.map((o) => o.indent + 1), ordered.map((o) => listedOnItsOwn({ id: o.row.id, status: o.row.state, ended: o.row.ended }, watches.get(o.row.id), seen, now)), session.id, "first");
   if (!b) return <p className="k-empty px-3 py-4">{err || "Loading…"}</p>;
   const repo = b.repos.length === 1 ? b.repos[0] : undefined;
-  const ordered = treeOrder(b.rows, session.id, Object.fromEntries(b.rows.map((r) => [r.session_id, told[r.session_id]?.watch])));
-  // Working counts the agents that work, by the one status: the tree line under the row counts the same.
-  const watches = new Map(b.rows.map((r) => [r.id, watchOf(r, told[r.session_id])]));
+  const toLandLeft = ordered.filter((_, i) => !fold.show[i] && toLand(ordered[i]!.row)).length;
   const working = b.rows.filter((r) => watches.get(r.id) === "work").length;
   const landed = b.rows.filter((r) => r.landed?.state === "yes").length;
   return (
@@ -279,7 +288,8 @@ export function WorkBoard({ session }: { session: Session }) {
         <p className="k-empty px-1"><b>No agents yet</b>Each agent this session starts shows here with its branch, checks, review and whether it landed, kept from what Keel sees.</p>
       ) : (
         <ul className="flex flex-col gap-2" data-testid="board-rows">
-          {ordered.map(({ row, indent }) => <Card key={row.id} r={row} below={b.rows} indent={indent} w={watches.get(row.id)!} />)}
+          {ordered.map(({ row, indent }, i) => fold.show[i] ? <Card key={row.id} r={row} below={b.rows} indent={indent} w={watches.get(row.id)!} /> : null)}
+          {fold.earlier > 0 && <li className="list-none"><EarlierRow n={fold.earlier} onMore={fold.more} extra={toLandLeft ? `${toLandLeft} to land` : undefined} testid="board-earlier" className="k-earlier" /></li>}
         </ul>
       )}
       {b.total > b.rows.length && <p className="px-1 text-micro text-faint"><CircleDashed className="mr-1 inline size-3" />{b.total - b.rows.length} older agents are not shown.</p>}

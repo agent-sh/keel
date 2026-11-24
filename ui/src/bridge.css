@@ -494,6 +494,13 @@
 /* An agent's own agents: a step further in, with a hairline back to the row that started them. */
 .k-child-row[data-depth]:not([data-depth="1"]) { padding-inline-start: var(--k-indent); }
 .k-child-row[data-depth]:not([data-depth="1"])::before { content: ""; position: absolute; top: 0.25rem; bottom: 0.25rem; inset-inline-start: calc(var(--k-indent) - 0.4375rem); width: 1px; background: var(--line); }
+/* The row that opens the agents left out of a folded list, a page at a time. */
+.k-earlier { display: flex; align-items: center; gap: 0.375rem; width: 100%; min-width: 0; height: 1.5rem; padding: 0 0.375rem; border-radius: var(--radius-md); white-space: nowrap; overflow: hidden; text-align: left; font-size: var(--text-micro); color: var(--faint); }
+.k-earlier svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; }
+.k-earlier:hover { background: var(--raised); color: var(--muted); }
+.k-earlier:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.k-earlier-n { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--muted); margin-inline-end: -0.1875rem; }
+.k-earlier-extra { overflow: hidden; text-overflow: ellipsis; }
 .k-child-below { flex: none; color: var(--faint); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
 .k-child-state { flex-shrink: 0; white-space: nowrap; font-weight: 500; font-size: var(--text-micro); line-height: 1rem; color: var(--faint); }
 .k-child-state:is([data-watch="need"], [data-watch="work"], [data-watch="wait"], [data-watch="resume"], [data-watch="fail"], [data-watch="declined"]) { font-weight: 700; }
