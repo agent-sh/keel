@@ -22,6 +22,7 @@ import { describeStall, Recurrence, type Stall, stallCapture, StallMonitor, time
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
 import { liveJobs } from "../tools/jobs.ts";
+import { COMMAND_WAIT_MS, commandsBegin, commandsEnd, type Front, waitForCommands } from "./drain-commands.ts";
 
 export * from "../core/daemon-lock.ts";
 export { relaunchArgv };
@@ -153,6 +154,11 @@ export class Daemon {
 
   runningSessions(): string[] {
     return this.deps.engine.runningIds();
+  }
+
+  // The commands that run in front of a running turn (its call waits on them, and parking the turn stops them).
+  fronts(): Front[] {
+    return liveJobs().filter((j) => j.stops && !j.background && j.ended === undefined && this.deps.engine.isRunning(j.sessionId)).map((j) => ({ id: j.id, session: j.sessionId }));
   }
 
   // The daemon's own unresponsiveness (src/admin/stall.ts): each stall is one
@@ -299,7 +305,8 @@ export class Daemon {
     this.emit();
   }
 
-  // Stops taking work, lets running turns finish until the deadline, and the
+  // Stops taking work, lets running turns finish until the deadline, waits a minute more for the commands in
+  // front of them (drain-commands.ts), and the
   // engine parks the rest (their end reason is "restart": the next daemon
   // continues them once). Then it exits, and starts again for a restart.
   // `reason`: why, in a few words, for the log's line (who asked, or what for).
@@ -325,9 +332,19 @@ export class Daemon {
     };
     noBackup();
     this.emit();
-    say(drainLine({ restart: opts.restart, running: this.runningSessions().length, timeoutMs: opts.timeoutMs, reason: opts.reason }));
+    say(drainLine({ restart: opts.restart, running: this.runningSessions().length, timeoutMs: opts.timeoutMs, reason: opts.reason, commands: this.fronts().length, commandsMs: COMMAND_WAIT_MS }));
     this.finished = (async () => {
       await this.deps.engine.settle(opts.timeoutMs);
+      // The turns had their time. A command in front of one is waited for a minute more (drain-commands.ts):
+      // parking the turn stops it. The notes say how many it waits for and how many it cut.
+      const waiting = this.fronts().length;
+      if (waiting) {
+        this.say(commandsBegin(waiting, COMMAND_WAIT_MS), false);
+        this.draining!.deadline_ms = Date.now() + COMMAND_WAIT_MS;
+        this.emit();
+        const ended = await waitForCommands({ list: () => this.fronts(), boundMs: COMMAND_WAIT_MS });
+        if (ended.cut) this.say(commandsEnd(ended.cut, COMMAND_WAIT_MS), false);
+      }
       const silent = noBackup();
       if (this.draining!.restart && !silent) {
         const t0 = Date.now();
@@ -355,10 +372,11 @@ export class Daemon {
         }
       }
       let parked = 0;
+      const cut = this.fronts().length;
       const off = this.deps.bus.on((f) => { if (f.t === "event" && f.event.kind === "turn_end" && f.event.data?.reason === "restart") parked++; });
       await this.deps.engine.park();
       off();
-      say(exitLine({ restart: this.draining!.restart, parked, upMs: Date.now() - this.started, reason: opts.reason }));
+      say(exitLine({ restart: this.draining!.restart, parked, upMs: Date.now() - this.started, reason: opts.reason, cut }));
       for (const f of this.beforeExit) await (async () => f())().catch((e) => this.deps.errors.capture("server", e, { at: "shutdown" }));
       // The checkpoint thread's connections close first, as at a stop: the log can then be emptied
       // into the database as the process exits, which is what lets the next start follow it

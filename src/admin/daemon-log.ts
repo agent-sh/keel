@@ -53,12 +53,13 @@ export function mcpLine(servers: { name: string; state: string }[]): string {
   return clip(`[daemon] MCP servers: ${servers.length} configured${up.length ? `; connected: ${list(up)}` : ""}${bad.length ? `; failed: ${list(bad)}` : ""}${auth.length ? `; need sign-in: ${list(auth)}` : ""}${off.length ? `; ${off.length} disabled` : ""}${rest ? `; ${rest} not connected yet` : ""}`);
 }
 
-export const drainLine = (o: { restart: boolean; running: number; timeoutMs: number; reason?: string }) =>
-  clip(`[daemon] draining for a ${o.restart ? "restart" : "stop"}${o.reason ? ` (${val(o.reason)})` : ""}: ${o.running ? `${o.running} turn${o.running === 1 ? "" : "s"} running get${o.running === 1 ? "s" : ""} up to ${dur(o.timeoutMs)}` : "no turn is running"}`);
+// `commands`: the commands that run in front of those turns now; a restart waits for them past the turns' time (drain-commands.ts).
+export const drainLine = (o: { restart: boolean; running: number; timeoutMs: number; reason?: string; commands?: number; commandsMs?: number }) =>
+  clip(`[daemon] draining for a ${o.restart ? "restart" : "stop"}${o.reason ? ` (${val(o.reason)})` : ""}: ${o.running ? `${o.running} turn${o.running === 1 ? "" : "s"} running get${o.running === 1 ? "s" : ""} up to ${dur(o.timeoutMs)}` : "no turn is running"}${o.commands ? `; ${o.commands} command${o.commands === 1 ? "" : "s"} run${o.commands === 1 ? "s" : ""} in front of them${o.commandsMs ? `, waited for up to ${dur(o.commandsMs)} more` : ""}` : ""}`);
 export const backupLine = (o: { ok: boolean; ms: number; name?: string; owed?: string; error?: string }) =>
   clip(o.owed ? `[daemon] no backup before the restart, it is made after the start: ${val(o.owed)}` : o.ok ? `[daemon] backup before the restart made in ${dur(o.ms)}${o.name ? `: ${val(o.name)}` : ""}` : `[daemon] backup before the restart failed after ${dur(o.ms)}: ${o.error ? val(o.error) : "no reason given"}; the restart is called off`);
-export const exitLine = (o: { restart: boolean; parked: number; upMs: number; reason?: string }) =>
-  clip(`[daemon] ${o.restart ? `restarting${o.reason ? ` (${val(o.reason)})` : ""}` : "stopping cleanly"} after ${dur(o.upMs)} up${o.parked ? `: ${o.parked} turn${o.parked === 1 ? "" : "s"} parked for the next start` : ""}`);
+export const exitLine = (o: { restart: boolean; parked: number; upMs: number; reason?: string; cut?: number }) =>
+  clip(`[daemon] ${o.restart ? `restarting${o.reason ? ` (${val(o.reason)})` : ""}` : "stopping cleanly"} after ${dur(o.upMs)} up${o.parked ? `: ${o.parked} turn${o.parked === 1 ? "" : "s"} parked for the next start` : ""}${o.cut ? `${o.parked ? "," : ":"} ${o.cut} command${o.cut === 1 ? "" : "s"} in front of them cut` : ""}`);
 
 // What a settings change changed, by section and key. A value is shown only
 // when it is a number, a boolean or null: a string may be a key, a header or
