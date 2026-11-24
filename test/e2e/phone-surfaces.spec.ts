@@ -696,6 +696,20 @@ for (const size of SIZES) {
           expect(r.x, `${t} is inside the page`).toBeGreaterThanOrEqual(0);
           expect(r.x + r.width, `${t} is inside the page`).toBeLessThanOrEqual(size.width);
         }
+        // The main button lands the branches that do not conflict and says so; landing them all is beside it and asks first.
+        await expect(land).toContainText("would conflict");
+        const all = dlg.getByTestId("tree-land-all");
+        await all.scrollIntoViewIfNeeded();
+        await inside(page, all);
+        await all.tap();
+        const sure = page.getByTestId("confirm");
+        await expect(sure).toContainText("branches?");
+        // (Its buttons are measured once it has opened: it grows into place.)
+        await expect.poll(() => small(sure), { message: "the confirmation's buttons are finger targets" }).toEqual([]);
+        await inside(page, sure);
+        await shoot(page, `phone-surfaces-19-tree-land-all-${size.width}`);
+        await sure.getByRole("button", { name: "Cancel" }).tap();
+        await expect(sure).toHaveCount(0);
         // Where two branches change the same lines, both sides are reached (side by side, scrolling inside the area, not the page).
         const sides = dlg.getByTestId("tree-overlap-sides").first();
         await sides.scrollIntoViewIfNeeded();
