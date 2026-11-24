@@ -123,7 +123,14 @@ test("an agent's lane: doing, waits for, went wrong, changed and next, for each 
       const phone = await ctx.newPage();
       await phone.goto(`/s/${id}`);
       const g = phone.locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
-      await expect(g).toBeVisible({ timeout: 30_000 });
+      // (The group stands far above the end, where the question card above the message box takes the room: a block
+      // far from the view is held, not drawn. The view goes up to it by the reader's own scroll.)
+      await expect.poll(async () => {
+        if (await g.count()) return true;
+        await phone.getByTestId("transcript").evaluate((el) => el.parentElement!.scrollBy(0, -300));
+        return false;
+      }, { timeout: 30_000 }).toBe(true);
+      await expect(g).toBeVisible();
       await g.tap();
       for (const t of ["Broken", "Asker"]) {
         await card(phone, t).locator("button.k-line").first().tap();
