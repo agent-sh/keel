@@ -65,14 +65,14 @@ function checksFact(r: BoardRow) {
   if (!c) return null;
   // A repository that names no check has nothing to say here: no tile.
   if (c.state === "none") return null;
-  if (c.state === "unknown") return <Fact name="Checks" tone="none" value="not known" title={c.why} testid="board-checks" state="unknown" />;
+  if (c.state === "unknown") return <Fact key="board-checks" name="Checks" tone="none" value="not known" title={c.why} testid="board-checks" state="unknown" />;
   const all = [...c.passed.map((n) => `${n} passed`), ...c.failed.map((n) => `${n} failed`), ...c.notRun.map((n) => `${n} not run`)].join(", ");
   // Checks that ran only on files not committed: they did run, so "none run" would be wrong, and they are
   // not on a commit, so they never read as passed on the head.
   const off = !c.passed.length && !c.failed.length ? c.uncommitted : undefined;
   const value = c.failed.length ? checksWords(c) : c.passed.length && !c.notRun.length ? "all passed" : c.passed.length ? checksWords(c) : off?.failed.length ? "failed on uncommitted files; none on a commit" : off?.passed.length ? "passed on uncommitted files; none on a commit" : "none run";
   const more = off ? [...off.passed.map((n) => `${n} passed on uncommitted files`), ...off.failed.map((n) => `${n} failed on uncommitted files`)].join(", ") : "";
-  return <Fact name="Checks on head" tone={c.failed.length ? "bad" : c.passed.length && !c.notRun.length ? "ok" : "none"} value={value} title={[all, more].filter(Boolean).join(", ")} testid="board-checks" state={c.failed.length ? "failed" : off ? "uncommitted" : c.notRun.length ? "partial" : "passed"} />;
+  return <Fact key="board-checks" name="Checks on head" tone={c.failed.length ? "bad" : c.passed.length && !c.notRun.length ? "ok" : "none"} value={value} title={[all, more].filter(Boolean).join(", ")} testid="board-checks" state={c.failed.length ? "failed" : off ? "uncommitted" : c.notRun.length ? "partial" : "passed"} />;
 }
 
 const SOURCE: Record<string, string> = {
@@ -91,24 +91,24 @@ function reviewFact(r: BoardRow) {
   const who = v.how === "panel" ? "The Review panel" : `${v.title} (agent ${v.by})`;
   const said = v.was ? `; it said ${v.was}${v.of ? ` of ${sha(v.of)}` : ""}${v.verdict === "stale" ? ", not of the head now" : ", of a head not known"}` : "";
   const from = v.source ? `; read from ${SOURCE[v.source] ?? v.source}` : "";
-  return <Fact name="Review" tone={tone} value={<>{word}{v.verdict === "stale" && v.of ? <span className="text-faint"> · of {sha(v.of)}</span> : v.current === false && <span className="text-faint"> · older head</span>}</>} title={`${who}${v.tip ? ` was started on ${sha(v.tip)}` : ""}${said}${from}`} testid="board-review" state={v.verdict} />;
+  return <Fact key="board-review" name="Review" tone={tone} value={<>{word}{v.verdict === "stale" && v.of ? <span className="text-faint"> · of {sha(v.of)}</span> : v.current === false && <span className="text-faint"> · older head</span>}</>} title={`${who}${v.tip ? ` was started on ${sha(v.tip)}` : ""}${said}${from}`} testid="board-review" state={v.verdict} />;
 }
 
 function landedFact(r: BoardRow) {
   const l = r.landed;
   if (!l) return null;
-  if (l.state === "yes") return <Fact name="Landed" tone="ok" value={l.how === "patch" ? "yes · as patches" : l.how === "queue" ? "yes · by the queue" : `yes · on ${r.base ?? "the base"}`} title={l.how === "patch" ? `${r.base ?? "The base"} holds a commit of the same patch for each of its commits` : l.how === "queue" ? `The landing queue landed this head; git does not see its patches on ${r.base ?? "the base"} (a squash or edited patches)` : `${r.base ?? "The base"} holds its head`} testid="board-landed" state="yes" />;
-  if (l.state === "no") return <Fact name="Landed" tone={r.queue?.current && ["queued", "building", "checking"].includes(r.queue.state) ? "wait" : "none"} value={r.queue?.current && r.queue.state !== "landed" ? `no · ${r.queue.state === "left" ? "left the queue" : r.queue.state}` : `no · ${l.missing} to land`} title={r.queue?.why ?? "Git compares patches per commit: a squash or edited patches are not seen"} testid="board-landed" state="no" />;
+  if (l.state === "yes") return <Fact key="board-landed" name="Landed" tone="ok" value={l.how === "patch" ? "yes · as patches" : l.how === "queue" ? "yes · by the queue" : `yes · on ${r.base ?? "the base"}`} title={l.how === "patch" ? `${r.base ?? "The base"} holds a commit of the same patch for each of its commits` : l.how === "queue" ? `The landing queue landed this head; git does not see its patches on ${r.base ?? "the base"} (a squash or edited patches)` : `${r.base ?? "The base"} holds its head`} testid="board-landed" state="yes" />;
+  if (l.state === "no") return <Fact key="board-landed" name="Landed" tone={r.queue?.current && ["queued", "building", "checking"].includes(r.queue.state) ? "wait" : "none"} value={r.queue?.current && r.queue.state !== "landed" ? `no · ${r.queue.state === "left" ? "left the queue" : r.queue.state}` : `no · ${l.missing} to land`} title={r.queue?.why ?? "Git compares patches per commit: a squash or edited patches are not seen"} testid="board-landed" state="no" />;
   if (l.state === "nothing") return null;
-  return <Fact name="Landed" tone="none" value="not known" title={l.why} testid="board-landed" state="unknown" />;
+  return <Fact key="board-landed" name="Landed" tone="none" value="not known" title={l.why} testid="board-landed" state="unknown" />;
 }
 
 function liveFact(r: BoardRow) {
   // Not landed: nothing that runs holds it, and a tile saying so is no fact.
   if (!r.landed || r.landed.state !== "yes") return null;
   const v = r.live;
-  if (!v || v.state === "unknown") return <Fact name="Live" tone="none" value="no deploy record" title={v?.why} testid="board-live" state="unknown" />;
-  return <Fact name="Live" tone={v.state === "yes" ? "ok" : "none"} value={`${v.state === "yes" ? "yes" : "not yet"} · ${v.how === "after step passed" ? "after step" : v.how}`} title={`${v.how} at ${sha(v.at)}`} testid="board-live" state={v.state} />;
+  if (!v || v.state === "unknown") return <Fact key="board-live" name="Live" tone="none" value="no deploy record" title={v?.why} testid="board-live" state="unknown" />;
+  return <Fact key="board-live" name="Live" tone={v.state === "yes" ? "ok" : "none"} value={`${v.state === "yes" ? "yes" : "not yet"} · ${v.how === "after step passed" ? "after step" : v.how}`} title={`${v.how} at ${sha(v.at)}`} testid="board-live" state={v.state} />;
 }
 
 // The branches this one was checked together with at its head (src/landing/together.ts): each pair

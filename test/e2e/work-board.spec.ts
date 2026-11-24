@@ -24,6 +24,9 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user
 // cards are in the order of the tree: an agent's own agents follow it, indented.
 test("the work board keeps each agent's branch, checks, review, landed and live from facts", async ({ page, request }) => {
   test.setTimeout(240_000);
+  // React says a list without stable keys in the console; the board's cards and tiles have them.
+  const keyWarnings: string[] = [];
+  page.on("console", (m) => { if (/unique "key" prop|same key/.test(m.text())) keyWarnings.push(m.text().slice(0, 300)); });
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   const top = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `board-${Date.now()}`);
   const repo = join(top, "repo");
@@ -305,6 +308,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await page.reload();
   await openPanel(page, "board");
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "stale");
+  expect(keyWarnings).toEqual([]);
 });
 
 // Feature: a one-line row of the board (an agent with no branch and no changes) says what to do and why. A row that
