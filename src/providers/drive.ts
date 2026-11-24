@@ -3,6 +3,7 @@
 // step. A stream that ends before the wire's final event keeps what it showed.
 import type { SseEvent } from "./sse.ts";
 import { ProviderError, streamEvents, type StreamOpts } from "./http.ts";
+import { reportUsage } from "./reported.ts";
 import type { Delta, ProviderRequest, ProviderResult } from "./types.ts";
 import type { WireCodec, WireCtx } from "./wires/common.ts";
 
@@ -16,13 +17,18 @@ export async function runEvents(
   const body = req.extraBody ? { ...codec.body(req, ctx), ...req.extraBody } : codec.body(req, ctx);
   let shown = false;
   const parser = codec.parser(req, ctx, (d) => { shown = true; onDelta(d); });
-  for await (const ev of events(body)) {
-    parser.event(ev);
-    if (parser.finished && ev.data === "[DONE]") break;
+  try {
+    for await (const ev of events(body)) {
+      parser.event(ev);
+      if (parser.finished && ev.data === "[DONE]") break;
+    }
+  } catch (e) {
+    // A stream that broke or was stopped after it counted the prompt: the failure says what it reported.
+    throw reportUsage(e, parser.usage);
   }
   const res = parser.result();
   if (!parser.finished) {
-    if (!shown && !res.blocks.length) throw new ProviderError("network", "the stream ended before the model answered");
+    if (!shown && !res.blocks.length) throw reportUsage(new ProviderError("network", "the stream ended before the model answered"), parser.usage);
     res.stop = "incomplete";
   }
   return res;

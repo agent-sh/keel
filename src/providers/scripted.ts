@@ -36,6 +36,7 @@ import { inflateSync } from "node:zlib";
 import type { Message } from "../core/types.ts";
 import { imageSize } from "../engine/images.ts";
 import { classify, fetchFailure, ProviderError } from "./http.ts";
+import { reportUsage } from "./reported.ts";
 import { REWORD_SYSTEM } from "../automation/successor.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult, Wire } from "./types.ts";
 
@@ -241,6 +242,11 @@ export class ScriptedProvider implements Provider {
       if (action.includes("judge-allow.txt")) return reply('{"decision":"allow","risk":"low","reason":"The scratch marker is in scope."}');
       if (action.includes("judge-deny.txt") || action.includes("git clean -fn")) return reply('{"decision":"deny","risk":"high","reason":"The fixture refuses this action."}');
       if (action.includes("judge-unavailable.txt")) return reply('{"decision":"allow"}');
+      // A judge whose stream counted the prompt and then said nothing: its time limit ends it.
+      if (action.includes("judge-slow.txt")) {
+        for (let i = 0; i < 600 && !req.signal.aborted; i++) await Bun.sleep(50);
+        throw reportUsage(req.signal.reason ?? Object.assign(new Error("interrupted"), { name: "AbortError" }), usage);
+      }
       // A judge that thinks before its verdict, as an adaptive thinking model does: about 1,500
       // tokens of thought at a high effort (or none named), 300 at a low one. A limit that leaves no
       // room after the thought ends the reply there, with no verdict.
@@ -542,7 +548,8 @@ export class ScriptedProvider implements Provider {
             onDelta({ kind: "text", index: 0, text: part });
             await Bun.sleep(300);
           }
-          throw new ProviderError("network", "Scripted: the stream broke");
+          // The stream had counted its prompt and the half it sent: the failed attempt reports them.
+          throw reportUsage(new ProviderError("network", "Scripted: the stream broke"), { ...usage, output: tokens("This half reply is dropped with the stream") });
         }
         return reply("The whole reply, after the dropped stream.");
       case "cut":
@@ -587,6 +594,17 @@ export class ScriptedProvider implements Provider {
         for (let i = 0; i < 600 && gate && !existsSync(gate) && !req.signal.aborted; i++) await Bun.sleep(100);
         if (req.signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
         return reply("Answered after a silent wait.");
+      }
+      case "started": {
+        // `script:started <path>`: the stream's start counted the prompt (1,000 tokens read, 50,000
+        // from the cache, as a message_start reports them), then nothing until that file exists, the
+        // turn is stopped, or a minute passed. A stop ends the request with what its start reported.
+        const gate = owner.match(/script:started\s+(\S+)/)?.[1];
+        const begun = { ...usage, input: 1_000, cache_read: 50_000, cache_write: 0, output: 0 };
+        for (let i = 0; i < 600 && gate && !existsSync(gate) && !req.signal.aborted; i++) await Bun.sleep(100);
+        if (req.signal.aborted) throw reportUsage(Object.assign(new Error("interrupted"), { name: "AbortError" }), begun);
+        const r = await reply("Answered after the stream's start.");
+        return { ...r, usage: { ...begun, output: r.usage.output } };
       }
       case "hold": {
         // `script:hold <path>`: half a reply, then nothing until that file

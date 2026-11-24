@@ -117,6 +117,7 @@ export function chatWire(o: ChatOpts = {}, systemPrefix?: string): WireCodec {
       let sawFinish = false;
       return {
         get finished() { return finished; },
+        usage,
         event(e) {
           if (e.data === "[DONE]") { finished = true; return; }
           const ev = parseJson(e.data);

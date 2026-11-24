@@ -81,7 +81,7 @@ type Tokens = {
   turns: { turn_event: string; ts_ms: number; prompt: string; prompt_event?: string; requests: number; zones: ZoneSet; per_request: { ts_ms: number; purpose: string; zones: ZoneSet }[] }[];
 };
 
-const PURPOSE: Record<string, string> = { turn: "Turn steps", summary: "Compaction summaries", side: "Side answers", reader: "Reader reads" };
+const PURPOSE: Record<string, string> = { turn: "Turn steps", summary: "Compaction summaries", side: "Side answers", reader: "Reader reads", judge: "Safety checks" };
 
 export function TokensView({ range }: { range: Range }) {
   const sessions = useStore((s) => s.sessions);

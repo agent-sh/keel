@@ -54,6 +54,7 @@ import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, movesToFallback, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep, type MoveWhy } from "./retry.ts";
 import { OUTAGE } from "../providers/outage.ts";
 import { unreachable } from "../providers/unreachable.ts";
+import { reportedUsage } from "../providers/reported.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
 
@@ -2079,7 +2080,12 @@ export class Engine {
         const slow = !!(e as { probeBeforeRetry?: boolean })?.probeBeforeRetry;
         const waitForProvider = !signal.aborted && outages && (uncounted || (slow && attempt + 1 < RETRY.max));
         if (waitForProvider && uncounted) this.measure(id, (h) => h.requestWaiting?.(session, req));
-        else this.measure(id, (h) => h.requestFailed?.(session, req, e, signal.aborted));
+        else {
+          this.measure(id, (h) => h.requestFailed?.(session, req, e, signal.aborted));
+          // What the attempt's stream reported before it ended is the session's spend, as its ledger row says.
+          const spent = reportedUsage(e);
+          if (spent) this.store.addUsage(id, spent, { keepPlace: true });
+        }
         if (signal.aborted) {
           outages?.left(id);
           throw abortError();

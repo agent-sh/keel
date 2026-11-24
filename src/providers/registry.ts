@@ -18,6 +18,7 @@ import { unreachable } from "./unreachable.ts";
 import { Probes } from "./probe.ts";
 import { PluginProvider, Plugins } from "./plugins/index.ts";
 import { priceOf } from "./pricing.ts";
+import { reportedUsage, reportUsage } from "./reported.ts";
 import { NoKey, ProviderError } from "./http.ts";
 import { fromHeaders, Limits, type Window } from "./limits.ts";
 import { ScriptedProvider, scriptedEnabled } from "./scripted.ts";
@@ -548,6 +549,14 @@ export class Providers {
           }
           req.onAnswer?.();
         };
+        // The usage an answer or a failed request's stream reported, priced at the tier it was billed at.
+        const bill = (u: Usage, served?: string) => {
+          const tier = servedTier(info, offer, served);
+          const out = priced(u, tier.offer?.price ? { ...info, price: tier.offer.price } : info);
+          if (offer) out.speed_asked = offer.id;
+          if (tier.reported) out.speed = tier.reported;
+          return out;
+        };
         let res: Awaited<ReturnType<Provider["stream"]>>;
         try {
           res = await p.stream({
@@ -558,25 +567,26 @@ export class Providers {
             extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
           }, (d) => { onAnswer(); onDelta(d); });
         } catch (e) {
+          // What the stream reported before it ended is priced as an answer's usage is: the
+          // ledger books a failed or stopped request at what it was billed (src/providers/reported.ts).
+          const spent = reportedUsage(e);
+          const billed = <E>(err: E): E => (spent ? reportUsage(err, bill(spent)) : err);
           // Once a reply began, even a claimed connect error is bounded. A
           // broker's explicit HTTP refusal can have headers but no model reply.
           const status = (e as ProviderError)?.status;
           if (unreachable(e) && (told || (sawHeaders && !status))) {
-            throw new ProviderError("network", `the stream broke: ${(e as Error).message}`);
+            throw billed(new ProviderError("network", `the stream broke: ${(e as Error).message}`));
           }
           // Only an API reply or successful listing releases unrelated waiters.
           p.broker?.noteRefusal(e);
           this.note(p.id, e, "turn");
-          throw e;
+          throw billed(e);
         }
         onAnswer();
         this.cleared(p.id);
         const origin = `${p.id}:${req.model}`;
         for (const b of res.blocks) if ((b.type === "thinking" || b.type === "tool_use" || b.type === "text") && !b.origin && (b.type === "thinking" || b.signature)) b.origin = origin;
-        const tier = servedTier(info, offer, res.served);
-        res.usage = priced(res.usage, tier.offer?.price ? { ...info, price: tier.offer.price } : info);
-        if (offer) res.usage.speed_asked = offer.id;
-        if (tier.reported) res.usage.speed = tier.reported;
+        res.usage = bill(res.usage, res.served);
         return res;
       },
     };

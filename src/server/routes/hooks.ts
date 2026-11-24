@@ -17,6 +17,7 @@ import { gate as daemonGate, presence } from "./permissions.ts";
 import { ownerStop, replaced } from "../../core/stoppers.ts";
 import { HOOK_BLOCKED } from "../../core/stops.ts";
 import { hookLine, sayAt } from "../../admin/daemon-log.ts";
+import { reportedUsage } from "../../providers/reported.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -280,7 +281,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     requestSent: (s, req) => tell("PreModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn" })),
     requestDone: (s, req, res) => tell("PostModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn", status: "completed", error: null, token_usage: res.usage })),
     requestWaiting: (s, req) => tell("PostModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn", status: "waiting", error: null, token_usage: null })),
-    requestFailed: (s, req, err, aborted) => tell("PostModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn", status: aborted ? "cancelled" : "failed", error: aborted ? null : String((err as Error)?.message ?? err).slice(0, 2000), token_usage: null })),
+    requestFailed: (s, req, err, aborted) => tell("PostModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn", status: aborted ? "cancelled" : "failed", error: aborted ? null : String((err as Error)?.message ?? err).slice(0, 2000), token_usage: reportedUsage(err) ?? null })),
   });
 
   // The scripts the session's hooks run are the owner's alone to change.

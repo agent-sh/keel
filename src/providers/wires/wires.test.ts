@@ -7,7 +7,9 @@ import { join } from "node:path";
 import type { Message, StoredEvent } from "../../core/types.ts";
 import { toMessages } from "../../engine/turn.ts";
 import { project } from "../project.ts";
+import { runEvents } from "../drive.ts";
 import { priceOf } from "../pricing.ts";
+import { reportedUsage } from "../reported.ts";
 import { JsonArrayDecoder, SseDecoder } from "../sse.ts";
 import type { ProviderRequest } from "../types.ts";
 import { anthropicWire, toWire } from "./anthropic.ts";
@@ -202,6 +204,27 @@ test("the Messages reader takes input counts sent at message_delta", () => {
   ev({ type: "message_stop" });
   const u = p.result().usage;
   expect([u.input, u.cache_read, u.output]).toEqual([19, 4, 3]);
+});
+
+// A stream stopped after its start counted the prompt: the failure carries those counts, on every
+// wire, so the ledger books what the stopped request was billed for (src/providers/reported.ts).
+test("a stream that breaks after its start reports the usage it counted", async () => {
+  const starts: [WireCodec, any, number][] = [
+    [anthropicWire, { type: "message_start", message: { usage: { input_tokens: 1000, cache_read_input_tokens: 50000, output_tokens: 1 } } }, 51000],
+    [chatWire(), { choices: [], usage: { prompt_tokens: 51000, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 50000 } } }, 51000],
+  ];
+  for (const [codec, start, prompt] of starts) {
+    const stopped = Object.assign(new Error("stopped"), { name: "AbortError" });
+    async function* events() { yield { event: start.type ?? "", data: JSON.stringify(start) }; throw stopped; }
+    const e = await runEvents(codec, req, ctx, () => {}, events).catch((x) => x);
+    expect(e).toBe(stopped);
+    const u = reportedUsage(e)!;
+    expect(u.input + u.cache_read).toBe(prompt);
+    expect(u.cache_read).toBe(50000);
+  }
+  // A failure before the stream began reported nothing.
+  async function* refused() { throw new Error("HTTP 429"); }
+  expect(reportedUsage(await runEvents(anthropicWire, req, ctx, () => {}, refused).catch((x) => x))).toBeUndefined();
 });
 
 // Deferred tools: only the Anthropic wire with deferred tools in the request

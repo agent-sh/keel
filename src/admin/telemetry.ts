@@ -1,5 +1,7 @@
-// Local telemetry: one row per model request (latency, time to first token,
-// tokens, cost, outcome) and one per tool call that ran (duration, failure).
+// Local telemetry: one row per model request attempt (latency, time to first
+// token, tokens, cost, outcome), every purpose's (the policy judge's too, and a
+// failed or stopped one at what its stream reported), and one per tool call
+// that ran (duration, failure).
 // Nothing leaves the machine. Rows are small and kept; a deleted session's
 // rows stay so the totals over time do not change.
 import { keyShaped, scrubbed } from "../core/conceal.ts";
@@ -13,6 +15,7 @@ import { promptOf } from "../engine/prompt-store.ts";
 import { adoptionBetween, EXPIRED } from "../engine/build-pin.ts";
 import { errorText } from "../engine/retry.ts";
 import { keptTotals } from "../engine/trail.ts";
+import { reportedUsage } from "../providers/reported.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { errorClass } from "./classes.ts";
 import { armOf, experimentTables } from "./experiments.ts";
@@ -224,11 +227,16 @@ export class Telemetry {
         const step = this.steps.get(req);
         if (step) step.attempt--;
       },
+      // A request that failed or was stopped is booked at what its stream reported before it ended
+      // (the prompt a stream's start counts, and the output it sent), priced by the registry; nothing
+      // when it reported nothing. Each attempt is a row of its own with its own stream's counts: a retry
+      // adds its own and carries none of the attempt before it, so nothing is counted twice.
       requestFailed: (_s, req, err, aborted) => {
         const p = this.take(req);
         if (!p) return;
         const cls = aborted ? null : errorClass(err);
-        this.callEnd(p, aborted || !cls ? { outcome: "interrupted" } : { outcome: "error", error: errorText(err), cls });
+        const usage = reportedUsage(err);
+        this.callEnd(p, aborted || !cls ? { outcome: "interrupted", usage } : { outcome: "error", error: errorText(err), cls, usage });
       },
       // A new turn: what the last one's requests said is not this one's.
       turnStart: (s) => void this.turnOf.delete(s.id),

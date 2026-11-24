@@ -164,7 +164,7 @@ export function singleLabel(p: { t: number; at?: number }, bucket: number, fmt: 
 }
 
 // A purpose as the subject of "were": plural, whatever its label on a table row.
-const PURPOSES: Record<string, string> = { turn: "Turns", summary: "Summaries", side: "Side questions", advisor: "Advisor calls", consult: "Consults", reader: "Readers" };
+const PURPOSES: Record<string, string> = { turn: "Turns", summary: "Summaries", side: "Side questions", advisor: "Advisor calls", consult: "Consults", reader: "Readers", judge: "Safety checks" };
 export const purposeNoun = (p: string) => PURPOSES[p] ?? `${p[0]?.toUpperCase() ?? ""}${p.slice(1)} requests`;
 
 // The sentences name what drove the spend, not the normal case. Turns being most of it is

@@ -99,6 +99,7 @@ export function geminiWire(o: GeminiOpts = {}, systemPrefix?: string): WireCodec
       const started = Date.now().toString(36);
       return {
         get finished() { return finished; },
+        usage,
         event(e) {
           let ev = parseJson(e.data);
           if (!ev || typeof ev !== "object") return;

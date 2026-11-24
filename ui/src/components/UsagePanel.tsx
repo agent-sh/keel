@@ -128,7 +128,7 @@ type Cost = { priced_cost_usd: number; unpriced_calls: number; incomplete_calls?
 export const fmtSpend = (c: Cost) => (c.unpriced_calls || c.incomplete_calls ? (c.priced_cost_usd ? `${fmtUsd(c.priced_cost_usd)}+` : "unknown") : fmtUsd(c.priced_cost_usd));
 // An amount in a table: the priced part alone. What is missing from it is said once, under the page's figure.
 const amount = (c: Cost | undefined) => (!c ? "none" : c.priced_cost_usd ? fmtUsd(c.priced_cost_usd) : c.unpriced_calls ? "not priced" : "$0");
-const PURPOSE: Record<string, string> = { turn: "Turns", summary: "Summaries", side: "Side questions", advisor: "Advisor", consult: "Consults", reader: "Reader" };
+const PURPOSE: Record<string, string> = { turn: "Turns", summary: "Summaries", side: "Side questions", advisor: "Advisor", consult: "Consults", reader: "Reader", judge: "Safety checks" };
 export const fmtUsd = (v: number) => (v === 0 ? "$0" : v < 0.01 ? `$${v.toFixed(4)}` : v < 100 ? `$${v.toFixed(2)}` : `$${Math.round(v)}`);
 
 // A boxed card, or with `plain` a section of the page itself: a hairline, a

@@ -240,6 +240,7 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string, 
       };
       return {
         get finished() { return finished; },
+        usage,
         event(e) {
           if (e.data === "[DONE]") { finished = true; return; }
           const ev = parseJson(e.data);

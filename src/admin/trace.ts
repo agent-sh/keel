@@ -15,6 +15,7 @@ import type { Store } from "../core/store.ts";
 import type { Message, Session, ToolResultBlock } from "../core/types.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { errorText } from "../engine/retry.ts";
+import { reportedUsage } from "../providers/reported.ts";
 import type { ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { redactHeaders, type Wire, wireOf } from "../providers/wiretap.ts";
 import { errorClass } from "./classes.ts";
@@ -544,13 +545,15 @@ export class Tracer {
     const e = err as any;
     const type = aborted ? "cancelled" : errorClass(err) ?? e?.kind ?? e?.name ?? "error";
     const prior = this.kept.get(req);
+    // What its stream reported before it ended: the tokens it was billed for, as an answer's span has them.
+    const usage = reportedUsage(err);
     const packed = aborted || prior ? null : packRequest(req);
     if (packed) this.kept.set(req, o.span);
     this.finish(o.span, {
       status: aborted ? "interrupted" : "error",
       error: aborted ? null : scrubbed(errorText(err).slice(0, 4000)),
       error_type: type,
-      attrs: { ...this.wireAttrs(req, o), ...(e?.status ? { http_status: e.status } : {}), ...(e?.kind ? { error_kind: e.kind } : {}), ...(e?.retryAfterMs ? { retry_after_ms: e.retryAfterMs } : {}), ...(prior && !aborted ? { request_in: prior } : {}) },
+      attrs: { ...this.wireAttrs(req, o), ...(e?.status ? { http_status: e.status } : {}), ...(e?.kind ? { error_kind: e.kind } : {}), ...(e?.retryAfterMs ? { retry_after_ms: e.retryAfterMs } : {}), ...(prior && !aborted ? { request_in: prior } : {}), ...(usage ? { result: { usage } } : {}) },
       request: packed,
     });
   }

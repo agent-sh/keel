@@ -222,3 +222,20 @@ export const cacheBreaks = new WeakMap<ProviderResult, string>();
 const hooks: TurnHooks[] = [];
 export const registerHooks = (h: TurnHooks) => void hooks.push(h);
 export const allHooks = () => hooks;
+
+// A model request sent outside the engine's request loop (the policy judge's): the measuring hooks see
+// it as they see the engine's (sent, each streamed piece, its answer or its failure), so the ledger,
+// the trace and the owner's request hooks count it with the rest. `aborted`: stopped by its caller,
+// not by its own time limit (a time limit that ends a request is that request's failure).
+export async function measured(s: Session, req: ProviderRequest, send: (onDelta: (d: { kind: string; text: string }) => void) => Promise<ProviderResult>, aborted: () => boolean = () => false): Promise<ProviderResult> {
+  const each = (f: (h: TurnHooks) => void) => { for (const h of hooks) try { f(h); } catch { /* a measuring hook never fails the request */ } };
+  each((h) => h.requestSent?.(s, req));
+  try {
+    const res = await send((d) => each((h) => h.requestDelta?.(s, req, d)));
+    each((h) => h.requestDone?.(s, req, res));
+    return res;
+  } catch (e) {
+    each((h) => h.requestFailed?.(s, req, e, aborted()));
+    throw e;
+  }
+}

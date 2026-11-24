@@ -189,6 +189,7 @@ export const anthropicWire: WireCodec = {
     let transformations: ProviderResult["input_transformations"];
     return {
       get finished() { return finished; },
+      usage,
       event(e) {
         const ev = parseJson(e.data);
         if (!ev) return;

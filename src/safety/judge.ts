@@ -8,8 +8,11 @@
 // else the session's own; the first that answers decides.
 import { settings } from "../admin/settings.ts";
 import type { Store } from "../core/store.ts";
-import type { StoredEvent } from "../core/types.ts";
+import type { Session, StoredEvent } from "../core/types.ts";
+import { measured } from "../engine/hooks.ts";
 import type { Providers } from "../providers/registry.ts";
+import { reportedUsage } from "../providers/reported.ts";
+import type { ProviderRequest } from "../providers/types.ts";
 import { REVIEW_INPUT_LIMIT, REVIEW_SUMMARY_LIMIT, type ReviewAsk, type Verdict } from "./gate.ts";
 import { vault } from "./secrets.ts";
 import { outward } from "./egress.ts";
@@ -163,7 +166,10 @@ export function judgePrompt(a: ReviewAsk, asked: Asked, policy?: string): JudgeT
 }
 
 // One verdict from one model; throws when the model cannot be used or answers nothing usable.
-export async function askJudge(providers: Providers, id: string, p: JudgeText, sessionKey: string, timeout = JUDGE_TIMEOUT_MS) {
+// `session`: the session whose call is judged. Its ledger books the request (purpose "judge", the
+// judge's model, what its stream reported and its cost) whether it answers, fails or runs out of time,
+// so its usage, its turn's cost and its agent's dollar budget count the verdicts it needed.
+export async function askJudge(providers: Providers, id: string, p: JudgeText, sessionKey: string, timeout = JUDGE_TIMEOUT_MS, session?: Session) {
   const { provider, info } = await providers.resolve(id);
   const effort = info.efforts.includes("low") ? "low" : undefined;
   const t0 = Date.now();
@@ -171,10 +177,11 @@ export async function askJudge(providers: Providers, id: string, p: JudgeText, s
   // thinking runs at high effort when the model offers no low one) can spend a small limit on its
   // thinking and end without a verdict, and the call is then refused. A verdict is short; the
   // limit costs nothing that is not written, and the timeout bounds the wait.
-  const res = await outward({ tool: "policy judge", via: provider.id }, () => provider.stream({
+  const req: ProviderRequest = {
     model: info.model, system: p.system, messages: [{ role: "user", content: [{ type: "text", text: p.text }] }], tools: [],
-    effort, maxTokens: info.output || undefined, signal: AbortSignal.timeout(timeout), sessionKey,
-  }, () => {}));
+    effort, maxTokens: info.output || undefined, signal: AbortSignal.timeout(timeout), sessionKey, purpose: "judge", route: info.id,
+  };
+  const res = await outward({ tool: "policy judge", via: provider.id }, () => session ? measured(session, req, (d) => provider.stream(req, d)) : provider.stream(req, () => {}));
   const out = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n");
   const m = out.match(/\{[\s\S]*\}/);
   let v: any = null;
@@ -202,7 +209,7 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
       const left = JUDGE_TIMEOUT_MS * 2 - (Date.now() - t0);
       if (left < 5_000) break;
       try {
-        const r = await askJudge(providers, id, p, `judge-${a.session.id}`, Math.min(JUDGE_TIMEOUT_MS, left));
+        const r = await askJudge(providers, id, p, `judge-${a.session.id}`, Math.min(JUDGE_TIMEOUT_MS, left), a.session);
         store.addUsage(a.session.id, r.usage);
         if (!r.v) { tried.push(`${r.info.name} gave no allow or deny`); continue; }
         const risk = ["low", "medium", "high", "critical"].includes(r.v.risk) ? r.v.risk : "unknown";
@@ -212,6 +219,9 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
         }
         return { allow: r.v.decision === "allow" && risk !== "critical", risk, reason: String(r.v.reason ?? "").slice(0, 400) || "no reason given", model: r.info.id, ms: Date.now() - t0 };
       } catch (e) {
+        // A request cut by its time limit or broken mid-stream was billed for what its stream reported.
+        const spent = reportedUsage(e);
+        if (spent) store.addUsage(a.session.id, spent);
         tried.push((e as Error).name === "TimeoutError" ? `${id} did not answer within ${Math.round(JUDGE_TIMEOUT_MS / 1000)} seconds` : `${id}: ${(e as Error).message.slice(0, 200)}`);
       }
     }

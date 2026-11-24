@@ -1,3 +1,4 @@
+import type { Usage } from "../../core/types.ts";
 import type { SseEvent } from "../sse.ts";
 import type { WireRules } from "../project.ts";
 import type { Delta, ProviderRequest, ProviderResult, Wire } from "../types.ts";
@@ -29,6 +30,9 @@ export interface WireParser {
   event(e: SseEvent): void;
   // The wire's final event arrived (only trailing frames can follow).
   readonly finished: boolean;
+  // The counts the stream has reported so far (the parser's own object, filled in as events come):
+  // what a request that fails or is stopped mid-stream was billed for (src/providers/reported.ts).
+  readonly usage?: Usage;
   result(): ProviderResult;
 }
 
