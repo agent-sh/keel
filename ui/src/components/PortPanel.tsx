@@ -33,7 +33,7 @@ const runnable = (i: Item) => (i.state === "new" || i.state === "update") && !i.
 function Row({ it, on, toggle }: { it: Item; on: boolean; toggle: () => void }) {
   return (
     <li className="flex items-start gap-3 border-b border-line/60 py-2.5 last:border-0" data-port-item={it.id}>
-      <input type="checkbox" aria-label={`Bring ${it.title}`} className="mt-1 accent-accent" checked={on} disabled={!runnable(it)} onChange={toggle} style={{ visibility: runnable(it) ? "visible" : "hidden" }} />
+      <label className="k-hit mt-1" style={{ visibility: runnable(it) ? "visible" : "hidden" }}><input type="checkbox" aria-label={`Bring ${it.title}`} className="accent-accent" checked={on} disabled={!runnable(it)} onChange={toggle} /></label>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="shrink-0 text-caption text-faint">{it.source}</span>
@@ -67,7 +67,7 @@ function Sessions({ items, picked, set }: { items: Item[]; picked: Set<string>; 
         return (
           <li key={src} className="border-b border-line/60 py-2.5 last:border-0" data-port-source={src}>
             <div className="flex items-center gap-3">
-              <input type="checkbox" aria-label={`Bring ${src} sessions`} className="accent-accent" checked={!!run.length && on === run.length} ref={(el) => { if (el) el.indeterminate = on > 0 && on < run.length; }} disabled={!run.length} onChange={(e) => set(run.map((i) => i.id), e.target.checked)} style={{ visibility: run.length ? "visible" : "hidden" }} />
+              <label className="k-hit"><input type="checkbox" aria-label={`Bring ${src} sessions`} className="accent-accent" checked={!!run.length && on === run.length} ref={(el) => { if (el) el.indeterminate = on > 0 && on < run.length; }} disabled={!run.length} onChange={(e) => set(run.map((i) => i.id), e.target.checked)} style={{ visibility: run.length ? "visible" : "hidden" }} /></label>
               <span className="text-ui font-medium">{src}</span>
               <span className="text-caption text-muted">
                 {[run.length && `${run.length} to bring`, rest.filter((i) => i.state === "done").length && `${rest.filter((i) => i.state === "done").length} here`].filter(Boolean).join(", ")}

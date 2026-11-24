@@ -300,7 +300,7 @@ function Placement({ machines }: { machines: Machine[] }) {
             <option value="">any work</option><option value="session">a session</option><option value="subagent">a subagent</option><option value="run">a command</option>
           </Select>
           {COND.map((c) => (
-            <label key={c.key} className={cn("inline-flex h-8 cursor-default items-center gap-1.5 rounded-md border px-2 text-caption", cond[c.key] ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted hover:text-fg")}>
+            <label key={c.key} className={cn("inline-flex h-8 cursor-default items-center gap-1.5 rounded-md border px-2 text-caption max-md:min-h-11", cond[c.key] ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted hover:text-fg")}>
               <input type="checkbox" className="sr-only" checked={!!cond[c.key]} onChange={(e) => setCond({ ...cond, [c.key]: e.target.checked })} />{c.label}
             </label>
           ))}

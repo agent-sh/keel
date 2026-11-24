@@ -1426,6 +1426,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 @media (pointer: coarse) and (max-width: 767px) {
   .k-truncate, .k-set-sub[data-clip], .k-settings-body :is(.k-path, .k-editor-bar > span:first-child) { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 }
+/* A checkbox in a row: the label around it is the target, as large as a finger needs on a phone. */
+.k-hit { display: inline-grid; place-items: center; }
+@media (pointer: coarse) and (max-width: 767px) {
+  .k-hit { min-width: var(--spacing-tap); min-height: var(--spacing-tap); margin: -0.625rem 0 -0.625rem -0.875rem; }
+}
 /* The bar carries the title on a narrow page; the heading stays for a screen reader. */
 .k-settings-body > h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Wide: the grouped rail stands beside the section and the bar is gone. */

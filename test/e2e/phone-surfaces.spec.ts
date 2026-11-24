@@ -12,7 +12,7 @@ import { SHOTS, inHead, leaveHead, shoot } from "./shots.ts";
 // hover, and a popup opened from the menu stands over the menu.
 const STAND_IN = "scripted:stand-in";
 // Settings sections whose phone fit is not done yet (the walk below).
-const WALK_PENDING = new Set<string>(["plugins", "port", "machines"]);
+const WALK_PENDING = new Set<string>(["plugins"]);
 const SIZES = [{ width: 390, height: 844 }, { width: 412, height: 915 }];
 
 async function scripted(request: APIRequestContext) {
