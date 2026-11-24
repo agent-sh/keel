@@ -30,6 +30,13 @@
 //   script:outage-end                the provider is back now
 // <kind>: dns (EAI_AGAIN), gateway (a broker's 502 naming a DNS failure), refused, tls.
 // Kept in the state folder, so an outage survives a restart and starts once per prompt.
+//
+// An account's rate limit (src/providers/admission.ts), for every request on the model's account:
+//   script:account-limit <ms>   the account is spent for <ms> from this prompt's first request on:
+//                               every request on it meanwhile is answered 429, with retry-after
+//                               and Anthropic's rate-limit headers saying what is left
+//   script:account-wait         a reply that says its place among the answers since the limit
+//                               ended, and how many requests the account refused
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -144,6 +151,27 @@ export class ScriptedProvider implements Provider {
   }
 
   private outage: OutageState = { kind: "dns", until: 0, started: [], requests: 0, listings: 0 };
+  // Each account's rate limit (`script:account-limit`): until when it is spent, the requests it
+  // refused, the answers since it ended, and the prompts that started one.
+  private limits = new Map<string, { until: number; refused: number; answered: number }>();
+  private limitStarted = new Set<string>();
+  // A reply's place among the answers on the account since its limit ended.
+  private placeWords(account: string): string {
+    const lim = this.limits.get(account);
+    if (!lim) return "Answered with no limit on the account.";
+    lim.answered++;
+    return `Answered in place ${lim.answered} after the account's limit; it refused ${lim.refused} request${lim.refused === 1 ? "" : "s"}.`;
+  }
+  // The 429 an account sends while it is spent, with the headers a real one carries.
+  private limitedAnswer(req: ProviderRequest, until: number): ProviderError {
+    const ms = Math.max(0, until - Date.now());
+    req.onHeaders?.(new Headers({
+      "retry-after": String(Math.ceil(ms / 1000)),
+      "anthropic-ratelimit-requests-limit": "50", "anthropic-ratelimit-requests-remaining": "0",
+      "anthropic-ratelimit-requests-reset": new Date(until).toISOString(),
+    }));
+    return new ProviderError("rate", `Scripted: HTTP 429: rate_limit_error: This request would exceed the rate limit for your organization; retry after ${Math.ceil(ms / 1000)} s`, 429, ms);
+  }
   // The refusals `script:refuse-schema` made, per session and prompt.
   private schemaRefused = new Map<string, number>();
   private saveOutage() {
@@ -194,6 +222,13 @@ export class ScriptedProvider implements Provider {
     if (/^script:outage-end\b/.test(lastText) && this.outage.until) { this.outage.until = 0; this.saveOutage(); }
     const gone = this.down("requests");
     if (gone) throw gone;
+    // An account that is spent refuses every request on it, whatever it asks.
+    const account = this.accountOf(req.model) ?? this.id;
+    const spent = this.limits.get(account);
+    if (spent && spent.until > Date.now()) {
+      spent.refused++;
+      throw this.limitedAnswer(req, spent.until);
+    }
     // A family's stand-in refuses a tool its wire refuses, and a reference to a tool it is not sent, as that provider does.
     const wire = this.wireOf(req.model);
     if (wire) { const refused = schemaRefusal(req, wire); if (refused) throw refused; }
@@ -564,6 +599,20 @@ export class ScriptedProvider implements Provider {
         if (round < Number(n)) return reply(`Check ${round + 1} of ${n}.`, "tool_use", [{ type: "tool_use", id: `hold-${msgs.length}`, name: "Bash", input: { command: `cat ${pipe}; echo released` } }]);
         return reply(JSON.stringify({ verdict: "met", reason: "Every check ran.", evidence: [`${n} reads of the pipe were started`] }));
       }
+      case "account-limit": {
+        const key = `${req.sessionKey}\u0000${owner}`;
+        if (!this.limitStarted.has(key)) {
+          this.limitStarted.add(key);
+          const ms = Number(owner.match(/script:account-limit[ \t]+(\d+)/)?.[1]) || 5_000;
+          const until = Date.now() + Math.min(ms, 600_000);
+          this.limits.set(account, { until, refused: 1, answered: 0 });
+          throw this.limitedAnswer(req, until);
+        }
+        // Once the limit passed, its prompt is answered as a waiting one is.
+        return reply(this.placeWords(account));
+      }
+      case "account-wait":
+        return reply(this.placeWords(account));
       case "rate-limit-always":
         // A provider that asks for the long wait however often it is asked.
         throw longRateLimit(owner);

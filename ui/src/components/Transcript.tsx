@@ -39,7 +39,7 @@ import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
 import { attemptWords, CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
-import { agentLive, hhmm } from "../../../src/core/watch.ts";
+import { agentLive, hhmm, limitText } from "../../../src/core/watch.ts";
 import { probeWords } from "../../../src/engine/trail.ts";
 import { appSaysNow } from "./Stale.tsx";
 
@@ -517,14 +517,15 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   // approve, a secret to give (an approval has its card and no line). (A tool that asks is not a tool that runs.)
   const needs = st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
   // (A request on its way to the model is work, never a wait: "Calling", as the session's row says.)
-  const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
+  // A request held in its account's line says so, with how long the account said the wait lasts.
+  const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" && st.limit ? limitText(st.limit.until, liveNow()) : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
   return (
     <div className="flex min-h-[1.875rem] items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
         {/* Waiting on the owner is their color and does not pulse: nothing runs until they answer. */}
         {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", needs ? "bg-st-need" : "bg-brass animate-pulse-dot")} style={needs ? undefined : { animationDelay: `${i * 160}ms` }} />)}
       </span>
-      <span data-testid="working-what">{what}</span>
+      <span data-testid="working-what" title={st?.kind === "model" ? st.limit?.why : undefined}>{what}</span>
       {s >= 2 ? <span className="tabular-nums text-faint">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null}
     </div>
   );
@@ -629,6 +630,7 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
   else if (st?.kind === "retry" && st.unreachable) text = `${unreachableSince(hhmm(st.unreachable))}.`;
   else if (st?.kind === "retry") text = `The provider failed: ${st.message}. Retrying, ${attemptWords(st.attempt, st.max)}.`;
   else if (st?.kind === "compacting") text = `Compacting the context${compactPlan(st.plan)}.`;
+  else if (st?.kind === "model" && st.limit) text = `${limitText(undefined, 0)}.`;
   else if (working) text = `${STATE_WORD.work}.`;
   else if (said.current) text = "The turn ended.";
   if (said.current === null && !working && !approving && !asking) text = ""; // opening an idle session announces nothing

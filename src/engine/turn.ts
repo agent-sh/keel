@@ -59,6 +59,8 @@ import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-l
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, movesToFallback, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep, type MoveWhy } from "./retry.ts";
 import { OUTAGE } from "../providers/outage.ts";
+import { laneOf, rateLimited, type Lane } from "../providers/admission.ts";
+import { depthOf } from "../core/agent-tree.ts";
 import { unreachable } from "../providers/unreachable.ts";
 import { reportedUsage } from "../providers/reported.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
@@ -536,8 +538,16 @@ class MovedToFallback extends Error {
   }
 }
 
+// A prompt in the owner's own words: typed, steered, queued or said by the owner, with nothing that
+// marks it as another sender's (a harness input, an agent's task, another session's message).
+const OWNER_ORIGINS = new Set([undefined, "owner", "steer", "queued", "voice"]);
+const ownerWords = (d: any) => !!d && OWNER_ORIGINS.has(d.origin) && !d.kind && !d.from && !d.agent_id && !(typeof d.text === "string" && d.text.startsWith("[harness]"));
+
 export class Engine {
   private running = new Map<string, Running>();
+  // Whether a page shows the session now (the app sets it: a socket names the session's stream).
+  // Its requests go before agents' in the account's line (src/providers/admission.ts).
+  viewed?: (id: string) => boolean;
   // Each model that answers overloaded, across the daemon's sessions: the first such answer of
   // the overload going on, and the last. An answer of the model ends it, and so does a quiet of
   // OUTAGE.flapMs (an overload after that is another one, as an outage's is).
@@ -2055,6 +2065,34 @@ export class Engine {
     return new MovedToFallback(to, why, f.overloadedMs, cause);
   }
 
+  // Where a request stands in its account's line: the owner's own turn first, then a session a page
+  // shows, then agents by depth; what no turn waits on at once (a reader, a title, a summary made
+  // ahead, a side answer) last. A summary the running turn waits on is the turn's.
+  private laneOf(id: string, session: Session, purpose: ProviderRequest["purpose"], signal: AbortSignal) {
+    const inTurn = purpose === "turn" || (purpose === "summary" && this.running.get(id)?.abort.signal === signal);
+    const top = !session.parent_id;
+    return laneOf({
+      inTurn, top,
+      ownerTurn: inTurn && top && this.ownerTurn(id),
+      shown: inTurn && !!this.viewed?.(id),
+      depth: top ? 0 : depthOf((s) => this.store.session(s)?.parent_id, id),
+    });
+  }
+
+  // Whether the running turn answers the owner: one of its prompts (the one that started it, or a
+  // steer since) is the owner's own words, not a harness input, a report, a wake or another session's message.
+  private ownerTurn(id: string): boolean {
+    const line = this.lineage(id);
+    let started = false;
+    for (let i = line.length - 1; i >= 0; i--) {
+      const e = line[i]!;
+      if (e.kind === "user" && ownerWords(e.data)) return true;
+      if (e.kind === "turn_start") started = true;
+      else if (started && e.kind !== "user") return false;
+    }
+    return false;
+  }
+
   // One provider call with retries for passing failures. The UI is told about
   // each wait and the half-streamed reply of a failed attempt is dropped.
   // `fit`: what the caller counted for this request. The request as it is
@@ -2137,6 +2175,16 @@ export class Engine {
       if (held >= st.info.context) throw overWindow(st.info, tokens);
     };
     fits();
+    // Where the request stands in its account's line if the account's limit holds requests; a retry keeps its place.
+    // A held request says so in the session's status, with when the account said it takes requests again.
+    req.lane = {
+      ...this.laneOf(id, session, purpose, signal), since: Date.now(),
+      held: (h) => {
+        if (quiet || !shown || signal.aborted) return;
+        this.status(id, { kind: "model", since: Date.now(), model: st.info.name, limit: { ...(h.until ? { until: h.until } : {}), why: h.why } });
+      },
+      going: () => { if (!quiet && shown && !signal.aborted) this.status(id, { kind: "model", since: Date.now(), model: st.info.name }); },
+    } satisfies Lane;
     let attempt = 0;
     const carry = outages && this.resumedProviderRetry.get(id);
     if (carry && carry.model === st.info.id && carry.purpose === purpose) {
@@ -2342,6 +2390,14 @@ export class Engine {
         if (!retriesLeft(e, counted, waitsOut ? busySince : undefined)) throw e;
         // Only a wait the provider asked for is longer than a turn waits (backoffMs keeps its own under it).
         if (wait > RETRY_WAIT_MAX_MS && retryAfterMs(e) !== undefined) throw new RetryTooLong(e, Date.now() + wait);
+        // A rate limit the account's line now holds is waited out there, in its order: the owner's
+        // turn ahead of agents, and one request first when the hold ends (src/providers/admission.ts).
+        const line = rateLimited(e) ? this.providers.admission.held(this.providers.routeOf(st.info.id)) : undefined;
+        if (line) {
+          retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: Math.max(0, line.until - Date.now()), then: "waits in the account's line" }));
+          attempt++;
+          continue;
+        }
         retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait }));
         if (shown) this.status(id, { kind: "retry", attempt: (waitsOut ? busyTries : counted) + 1, max: waitsOut ? 0 : RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
         // Where the counted retries would have ended the turn, the session that started it hears

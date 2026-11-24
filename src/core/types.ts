@@ -306,5 +306,7 @@ export type TurnStatus =
   // scaled for it (src/engine/image-fit.ts).
   // `quiet`: the reply was streaming and stopped: when its last output came.
   // Told once the silence passes STREAM_QUIET_MS; the next output ends it.
-  | { kind: "model"; since: number; model: string; connected?: number; preparing?: "images"; quiet?: number }
+  // `limit`: the request waits in its account's line while the account's limit holds requests
+  // (src/providers/admission.ts): until when the account said, and why, in its words.
+  | { kind: "model"; since: number; model: string; connected?: number; preparing?: "images"; quiet?: number; limit?: { until?: number; why: string } }
   | { kind: "tool"; since: number; names: string[] };

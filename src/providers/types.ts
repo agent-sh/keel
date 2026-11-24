@@ -1,4 +1,5 @@
 import type { AssistantBlock, Message, Usage } from "../core/types.ts";
+import type { Lane } from "./admission.ts";
 
 export type ToolSpec = {
   name: string;
@@ -87,6 +88,9 @@ export type ProviderRequest = {
   // Set by the registry: the provider accepted the request and its answer begins
   // (an outage of the provider is over: src/providers/outage.ts).
   onAnswer?: () => void;
+  // Set by the engine: where the request stands in its account's line while the account's limit
+  // holds requests, and what to tell while it waits (src/providers/admission.ts). None: an agent's place.
+  lane?: Lane;
 };
 
 export type Delta =

@@ -65,7 +65,8 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
       GET: async (req: Request) => {
         const windows = await providers.windows(new URL(req.url).searchParams.has("refresh"));
         const problems = Object.fromEntries(providers.statuses().map((s) => [s.id, providers.problem(s.id)]).filter(([, p]) => p));
-        return json({ windows, close: windows.filter(isClose).map((w) => `${w.provider}:${w.id}`), problems, close_percent: CLOSE_PERCENT });
+        // `held`: the accounts whose limit holds requests now, and how many wait in their line (src/providers/admission.ts).
+        return json({ windows, close: windows.filter(isClose).map((w) => `${w.provider}:${w.id}`), problems, close_percent: CLOSE_PERCENT, held: providers.admission.state() });
       },
     },
 

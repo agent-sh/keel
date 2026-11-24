@@ -109,7 +109,7 @@ export function askWords(why: string | undefined, text: string): string {
   return `${mark.charAt(0).toUpperCase()}${mark.slice(1)}, ${quote(m[1]!)}${m[2] ?? ""}`;
 }
 
-const MODEL_WAIT: Record<string, string> = { model: "The model's reply", stalled: "The model's reply, which has gone quiet", compacting: "Its context to be compacted", retry: "The provider, to try again" };
+const MODEL_WAIT: Record<string, string> = { model: "The model's reply", stalled: "The model's reply, which has gone quiet", compacting: "Its context to be compacted", retry: "The provider, to try again", limit: "Its account's rate limit, in the account's line" };
 function waits(f: LaneFacts): LaneLine {
   const s = f.state;
   const at = s?.since;

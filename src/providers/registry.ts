@@ -21,6 +21,7 @@ import { priceOf } from "./pricing.ts";
 import { reportedUsage, reportUsage } from "./reported.ts";
 import { NoKey, ProviderError } from "./http.ts";
 import { fromHeaders, Limits, type Window } from "./limits.ts";
+import { Admission } from "./admission.ts";
 import { SCRIPTED_SECOND, ScriptedProvider, scriptedEnabled, scriptedSecond } from "./scripted.ts";
 import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus, SpeedOffer } from "./types.ts";
 import { XaiProvider } from "./xai.ts";
@@ -85,6 +86,8 @@ export class Providers {
   private refreshing = new Map<string, { identity?: string; done: Promise<ListingResult> }>();
   private fixed: Provider[] | null;
   readonly limits = new Limits();
+  // One line per account in front of every request (src/providers/admission.ts).
+  readonly admission = new Admission();
   private usageAt = new Map<string, number>();
   private problems = new Map<string, Problem>();
   // A mark past its time that a choice of new work is trying again, and since when (shut).
@@ -610,10 +613,13 @@ export class Providers {
       list: () => p.list(),
       stream: async (req: ProviderRequest, onDelta) => {
         const offer = speedOffer(info, req.speed);
+        // The account's line: a request waits here while the account's limit holds (its own word only).
+        const ticket = await this.admission.admit(p.accountOf?.(req.model) ?? p.id, req.lane, req.signal);
         const base = p.broker?.value;
         let sawHeaders = false;
         const onHeaders = (h: Headers) => {
           sawHeaders = true;
+          this.admission.heard(ticket, h);
           const r = fromHeaders(h);
           if (r.length) this.limits.record(p.id, r);
           req.onHeaders?.(h);
@@ -624,6 +630,7 @@ export class Providers {
           if (told) return;
           told = true;
           // A response from the retired port cannot recover the new one.
+          this.admission.answered(ticket);
           if (base === p.broker?.value) {
             this.brokerAnswered(p, base);
             if (this.outages.known(p.id)) this.opts.recover?.(timeoutGroup(p.id));
@@ -649,6 +656,7 @@ export class Providers {
             extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
           }, (d) => { onAnswer(); onDelta(d); });
         } catch (e) {
+          this.admission.failed(ticket, e);
           // What the stream reported before it ended is priced as an answer's usage is: the
           // ledger books a failed or stopped request at what it was billed (src/providers/reported.ts).
           const spent = reportedUsage(e);

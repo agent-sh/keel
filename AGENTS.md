@@ -80,6 +80,19 @@ under `~/.cache/keel-work/bun/research/`.
   A gateway's own 503 keeps the bounded retries. Readers, side
   answers and summaries made ahead do not join the wait. The policy judge still
   fails closed when it cannot give a verdict.
+- Every model request passes its account's line (`src/providers/admission.ts`,
+  in the registry's wrap). A request is held only on the account's own word: a
+  429 (its retry-after, else a refused plan's reset, else the earliest reset of
+  a window its headers say is spent, else one retry's backoff). An answer whose
+  headers say a requests or tokens window has nothing left holds nothing for a
+  time (a bucket refills continuously; its reset is when it is full): the next
+  request goes alone. A plan's percentage and a spent quota hold nothing. When
+  a hold ends one request goes first and the rest go after its answer, a little
+  apart. The order: the owner's own turns, then sessions a page shows, then
+  agents by depth, then readers, titles, summaries made ahead and side answers.
+  A turn's 429 that the line holds is waited out in the line, not by the turn's
+  own backoff; a hold longer than a turn waits is refused unsent, as the
+  provider's 429 would be. A held request says so in its status (`limit`).
 - An image never breaks a session. It is stored within `STORE`
   (`src/providers/image-limits.ts`, the one place for image limits, each with
   its reason and source), scaled down when it is larger; a larger one already
