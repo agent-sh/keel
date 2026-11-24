@@ -26,6 +26,10 @@ describe("class keys", () => {
     expect(toolClass("Exit code 124")).toBe("the command reached its time limit");
     expect(toolClass("No tool named bash.")).toBe("No tool named bash.");
   });
+  test("a wait that reached its deadline is no class", () => {
+    expect(toolClass("Timed out after 900 s. Last probe: file missing")).toBeNull();
+    expect(toolClass("Timed out after 30 s.")).toBeNull();
+  });
 });
 
 describe("review findings by their words", () => {
@@ -107,6 +111,21 @@ describe("hitsOf and mineRead over the tables", () => {
     db.query("INSERT INTO telemetry_tools (session_id, ts, tool, is_error, error) VALUES ('s1', ?, 'Bash', 0, NULL)").run(now);
     const got = mineRead(db, { now, days: 7 });
     expect(got.map((c) => [c.source, c.repo, c.trees, c.failures])).toEqual([["tool", "/r/a", 3, 3]]);
+  });
+  test("a failure from before the tool's last change is not counted, and a wait's timeout is none", () => {
+    const db = store();
+    db.exec("CREATE TABLE build_adoptions (id INTEGER PRIMARY KEY, session_id TEXT, ts INTEGER, tools TEXT)");
+    const err = (s: string, ts: number, tool: string, e: string) => db.query("INSERT INTO telemetry_tools (session_id, ts, tool, is_error, error) VALUES (?, ?, ?, 1, ?)").run(s, ts, tool, e);
+    for (const [i, s] of ["s1", "s2", "s3"].entries()) {
+      err(s, now - 5000 + i, "Edit", "old string not found in the file (exit code 1)");
+      err(s, now - 100 + i, "Bash", "tail: option used in invalid context (exit code 1)");
+      err(s, now - 50 + i, "WaitFor", "Timed out after 900 s. Last probe: no file");
+    }
+    // Edit changed after its failures; Bash changed before its own.
+    db.query("INSERT INTO build_adoptions (session_id, ts, tools) VALUES ('s1', ?, ?)").run(now - 1000, JSON.stringify(["Edit"]));
+    db.query("INSERT INTO build_adoptions (session_id, ts, tools) VALUES ('s2', ?, ?)").run(now - 3000, JSON.stringify(["Bash", "Read"]));
+    const got = mineRead(db, { now, days: 7 });
+    expect(got.map((c) => [c.source, c.label ?? c.key.split(":")[1], c.failures])).toEqual([["tool", "Bash", 3]]);
   });
   test("a failure row's agents are their own sessions; provider and message causes are not read", () => {
     const db = store();

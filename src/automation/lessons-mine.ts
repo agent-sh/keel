@@ -84,9 +84,12 @@ export function errorShape(text: string): string {
 const ENDED = /\(?exit code <n>\)?|killed by \w+|signal: \w+|interrupted|stopped/gi;
 // A command its time limit ended (timeout's status): a cause of its own, with no words.
 const TIME_LIMIT = /\bexit code 124\b|\btimed? ?out\b/i;
+const WAIT_DEADLINE = /^\s*Timed out after \d+ s\b/;
 // The class of a failed call's ledger line, or null when it names no cause: at least two words besides how it
 // ended (the same test as the guards' remedy classes), or a time limit.
 export function toolClass(error: string): string | null {
+  // A wait that reached its own deadline (WaitFor, a command's wait) is the wait ending as asked, not a failure.
+  if (WAIT_DEADLINE.test(error)) return null;
   const shape = errorShape(error);
   if ((shape.replace(ENDED, " ").match(/[A-Za-z]{3,}/g) ?? []).length >= 2) return shape;
   return TIME_LIMIT.test(error) ? "the command reached its time limit" : null;
@@ -162,13 +165,23 @@ const tried = <T>(f: () => T[]): T[] => { try { return f(); } catch { return [];
 const json = (s: string | null) => { try { return s ? JSON.parse(s) : undefined; } catch { return undefined; } };
 
 // Every failure of the three sources since `since`, as hits.
+// When each tool's definition last changed in a build a session took (build_adoptions, src/engine/build-pin.ts):
+// a failure of the tool before that is of a tool that is not as it was.
+export function toolChanges(db: Database, since: number): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const r of tried(() => db.query<{ ts: number; tools: string }, [number]>("SELECT ts, tools FROM build_adoptions WHERE ts >= ?").all(since)))
+    for (const name of (json(r.tools) ?? []) as unknown[]) if (typeof name === "string" && (out.get(name) ?? 0) < r.ts) out.set(name, r.ts);
+  return out;
+}
+
 export function hitsOf(db: Database, since: number): Hit[] {
   const out: Hit[] = [];
+  const changed = toolChanges(db, since);
   for (const r of tried(() => db.query<{ session_id: string; ts: number; tool: string; error: string | null }, [number, number]>(
     "SELECT session_id, ts, tool, error FROM telemetry_tools WHERE is_error = 1 AND ts >= ? ORDER BY ts DESC LIMIT ?").all(since, ROWS))) {
     const error = r.error ?? "";
     const cls = toolClass(error);
-    if (cls) out.push({ source: "tool", key: toolKey(r.tool, cls), label: r.tool, example: error, session: r.session_id, ts: r.ts, n: 1 });
+    if (cls && r.ts > (changed.get(r.tool) ?? 0)) out.push({ source: "tool", key: toolKey(r.tool, cls), label: r.tool, example: error, session: r.session_id, ts: r.ts, n: 1 });
   }
   const agentSession = new Map<string, string>();
   const sessionOfAgent = (id: string) => {
