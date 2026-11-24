@@ -33,6 +33,7 @@ import { SETTLE_MS } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, keysSettled, noteAnswer, noteOneKey, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { later, useAway } from "../lib/later.ts";
+import { usePhoneWidth } from "../lib/list-hold.ts";
 import { openSession } from "../lib/automation.ts";
 import { actions, api, failed, getState, reportError, useStore } from "../lib/store.ts";
 import { askedQuestions, questions, resultText, siteOf, type UiQuestion } from "../lib/tools.ts";
@@ -332,6 +333,7 @@ export function AskedUnder({ use, sessionId, children }: { use: ToolUseBlock; se
 function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; sessionId: string; first: boolean; asked?: Asked; onLater?: () => void }) {
   const qs = useMemo(() => (asked ? askedQuestions(asked) : questions(use.name, use.input)), [asked, use.name, use.input]);
   const key = asked ? `${sessionId}:${use.id}:${asked.id}` : `${sessionId}:${use.id}`;
+  const slimPhone = usePhoneWidth() && !asked;
   const [picked, setPicked] = useState<Picked>(() => answerDrafts.get(key)?.picked ?? {});
   const [other, setOther] = useState<Record<string, string>>(() => answerDrafts.get(key)?.other ?? {});
   const [sending, setSending] = useState(false);
@@ -536,7 +538,7 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
       onKeyDownCapture={dropRepeats}
       onKeyDown={onKeyDown}
     >
-      <Head open answered={false} from={asked?.from} slim={!asked} onLater={onLater} />
+      <Head open answered={false} from={asked?.from} slim={!asked} onLater={slimPhone ? undefined : onLater} />
       <div className="flex flex-col gap-4 px-3.5 pt-3">
         {asked && (
           // The server's own words: plain text set apart from the card's, never markup or a link.
@@ -654,6 +656,12 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
               className="k-btn k-btn-lg"
             >
               {link?.waiting ? "Cancel" : "Decline"}
+            </button>
+          )}
+          {/* An open question of the agent's has no head row on a phone, so Later stands in the foot. */}
+          {slimPhone && onLater && (
+            <button type="button" data-testid="ask-later" onClick={onLater} title="Put this away to the count in the head: the turn still waits for it" className="k-btn k-btn-lg ml-auto">
+              <Clock className="size-3.5" aria-hidden="true" />Later
             </button>
           )}
           {err && <span className="text-caption text-danger" role="alert">{err}</span>}

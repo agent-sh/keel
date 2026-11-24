@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
-import { calls, colors, create, folder, pending } from "./answering.ts";
+import { ask, calls, colors, create, folder, pending, settle } from "./answering.ts";
 import { SHOTS, inHead, leaveHead, shoot } from "./shots.ts";
 
 // Feature: the surfaces that landed after the phone page was last checked fit a phone and are
@@ -884,6 +884,33 @@ for (const size of SIZES) {
       } finally {
         await drop(request, session.id);
         await request.delete("/api/acp/agents/children-p");
+      }
+    });
+    test("a question the agent asks can be put away with Later by a finger, and the count in the head is pressed back", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      await settle(request);
+      const id = await create(request, "Phone later question", folder("phone-later-q"));
+      try {
+        await ask(request, id, "question");
+        await page.goto(`/s/${id}`);
+        const card = page.getByTestId("question");
+        await expect(card).toBeVisible();
+        // The card has no head row on a phone: Later stands in its foot, a target inside the card.
+        const later = card.getByTestId("ask-later");
+        await expect(later).toBeVisible();
+        await expect.poll(async () => { const b = await later.boundingBox(); return !!b && b.x >= 0 && b.x + b.width <= size.width && b.y + b.height <= size.height; }, { message: "Later is inside the page" }).toBe(true);
+        await expect.poll(() => small(card), { message: "every control of the question card is a finger's target" }).toEqual([]);
+        await shoot(page, `phone-surfaces-27-question-later-${size.width}`);
+        await later.tap();
+        await expect(card).toHaveCount(0);
+        const pill = page.getByTestId("later-pill");
+        await expect(pill).toHaveText("1 waiting");
+        await expect.poll(async () => { const b = await pill.boundingBox(); return !!b && b.x >= 0 && b.x + b.width <= size.width; }, { message: "the count is inside the page" }).toBe(true);
+        await expect.poll(() => small(pill.locator("xpath=..")), { message: "the head's controls are finger targets" }).toEqual([]);
+        await pill.tap();
+        await expect(card).toBeVisible();
+      } finally {
+        await drop(request, id);
       }
     });
   });
