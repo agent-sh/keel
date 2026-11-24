@@ -343,10 +343,21 @@ export class McpClient {
   // `origin`: the request whose response stream carried the message (HTTP).
   private dispatch(msg: any, origin?: number | string) {
     if (Array.isArray(msg)) return msg.forEach((m) => this.dispatch(m, origin));
-    if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && !msg.method) {
-      const p = this.pending.get(msg.id);
+    if (msg && typeof msg === "object" && msg.id !== undefined && msg.id !== null && !msg.method) {
+      // A server that echoes the number as a string ("3" for 3) still answers that request.
+      const id = this.pending.has(msg.id) ? msg.id : typeof msg.id === "string" && /^\d+$/.test(msg.id) && this.pending.has(Number(msg.id)) ? Number(msg.id) : undefined;
+      const p = id === undefined ? undefined : this.pending.get(id);
       if (!p) return;
-      this.pending.delete(msg.id);
+      // A reply that is neither a result nor an error object ends the call now: it would wait out its timeout for an answer that is not coming.
+      const bad = msg.result === undefined && msg.error === undefined ? "it has neither a result nor an error"
+        : msg.error !== undefined && (!msg.error || typeof msg.error !== "object" || Array.isArray(msg.error)) ? "its error is not an object" : "";
+      if (bad) {
+        let said = ""; try { said = JSON.stringify(msg) ?? ""; } catch {}
+        p.reject(new Error(`the server sent a malformed reply (${bad}): ${said.slice(0, 200)}${said.length > 200 ? "..." : ""}`));
+        this.pending.delete(id!);
+        return;
+      }
+      this.pending.delete(id!);
       if (msg.error) p.reject(new RpcError(msg.error.code, msg.error.message ?? "error", msg.error.data));
       else p.resolve(msg.result);
       return;
