@@ -17,6 +17,7 @@
 //   the `stuck` section of the daemon settings (model_s, tool_s; 120 and 600).
 import type { Frame } from "../../core/types.ts";
 import { STUCK_AFTER, stuckOf, stuckText, type After, type StuckItem } from "../../core/stuck.ts";
+import { liveJobs, running } from "../../tools/jobs.ts";
 import { joinPulse } from "../../core/pulse.ts";
 import type { SessionState } from "../../core/watch.ts";
 import { registerSettings } from "../../admin/settings.ts";
@@ -79,8 +80,10 @@ export class StateBoard {
   stuck(after: After = stuckAfter(), now = Date.now()): StuckItem[] {
     const l = lens(this.from());
     const out: StuckItem[] = [];
+    // A session whose turn ended while a command of it runs is read too: that command can be stuck.
+    const commands = new Set(liveJobs().filter((j) => j.background && running(j)).map((j) => j.sessionId));
     for (const s of this.deps.store.sessions()) {
-      if (!this.deps.engine.isRunning(s.id)) continue;
+      if (!this.deps.engine.isRunning(s.id) && !commands.has(s.id)) continue;
       const hit = stuckOf(progressOf(s, l, factsOf(s, l)), now, after);
       if (!hit) continue;
       const parent = s.parent_id ? this.deps.store.session(s.parent_id) : undefined;

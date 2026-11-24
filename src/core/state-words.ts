@@ -68,6 +68,9 @@ export const WAITS_FOR: Record<string, string> = {
 export const waitsFor = (kind: unknown) => WAITS_FOR[String(kind)] ?? "a condition";
 // A command the session left running after its turn: the session works.
 export const COMMAND_IN_BACKGROUND = "command in background";
+// The same command when it has written nothing for the tool's stuck limit (src/core/stuck.ts): it still works.
+export const COMMAND_RUNNING_LONG = "command running long";
+const commandWhat = (st: Stated) => (st.stuck ? COMMAND_RUNNING_LONG : COMMAND_IN_BACKGROUND);
 
 // A failure's class: one fixed word each. A class with no better word than
 // the failure itself (other) has none.
@@ -103,7 +106,7 @@ export const outageBegan = (provider: string, since: string, sessions: number) =
 export const outageEnded = (provider: string, lasted: string, answered: boolean) => (answered ? `${provider} answers again: it could not be reached for ${lasted}` : `${provider} could not be reached for ${lasted}: no session waits for it any more`);
 
 // The fields of the served state the words are read from.
-export type Stated = Pick<SessionState, "watch"> & Partial<Pick<SessionState, "why" | "on" | "cls" | "agents" | "parked" | "agents_total">>;
+export type Stated = Pick<SessionState, "watch"> & Partial<Pick<SessionState, "why" | "on" | "cls" | "agents" | "parked" | "agents_total" | "stuck">>;
 
 // The agents of a session that work now: those still out, less the ones that wait.
 export const agentsWorking = (st: Stated) => Math.max(0, (st.agents ?? 0) - (st.parked ?? 0));
@@ -120,7 +123,7 @@ export function stateWords(st: Stated): Said {
   const word = STATE_WORD[w];
   const out = (what: string, join = ": "): Said => ({ watch: w, word, what, phrase: what ? `${word}${join}${what}` : word });
   if (w === "need") return out(NEEDS[st.why ?? ""] ?? "");
-  if (w === "work") return out(st.why === "command" ? COMMAND_IN_BACKGROUND : agentsWorking(st) > 0 ? plural(agentsWorking(st)) : "");
+  if (w === "work") return out(st.why === "command" ? commandWhat(st) : agentsWorking(st) > 0 ? plural(agentsWorking(st)) : "");
   if (w === "wait") { const on = st.why === "wait" ? st.on : st.why; return out(on ? `for ${waitsFor(on)}` : "", " "); }
   if (w === "resume") return out("to resume", " ");
   if (w === "fail") return out(failWord(st.cls));
@@ -144,7 +147,7 @@ export function stateLabel(st: Stated): string {
 // recent row, a phone's dock): a session that only keeps a command going says so, since
 // "Working" alone would read as a turn that runs.
 export function stateAlone(st: Stated): string {
-  return st.watch === "work" && st.why === "command" ? cap(COMMAND_IN_BACKGROUND) : stateLabel(st);
+  return st.watch === "work" && st.why === "command" ? cap(commandWhat(st)) : stateLabel(st);
 }
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 // What a group of sessions holds, where one head stands for more than one state (a band of the

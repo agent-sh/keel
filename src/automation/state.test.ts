@@ -8,6 +8,8 @@ import { allHooks } from "../engine/hooks.ts";
 import * as agents from "./agents.ts";
 import { setDeps } from "./core.ts";
 import { sessionState, TALLY } from "./state.ts";
+import { startJob, stopJob } from "../tools/jobs.ts";
+import { stuckSaid } from "../core/stuck.ts";
 
 const hooksAtStart = allHooks().length;
 afterAll(() => { allHooks().length = hooksAtStart; });
@@ -80,4 +82,32 @@ test("a session's agent counts are its tree's of the last day, and its failures 
   store.mergeSettings(lead.id, { agents_fail_seen_ms: null });
   expect(sessionState(store.session(lead.id)!)).toMatchObject({ agents_total: 4, agents_failed: 2 });
   store.db.close();
+});
+
+// A command its session left running works; one that writes nothing past the tool's stuck limit is marked
+// stuck, "command running long" in the session's words, while one that keeps writing is not.
+test("a session's command that writes nothing past the tool's limit marks it stuck, still working", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-state-"));
+  const store = new Store(join(dir, "state"));
+  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine: { isRunning: () => false, isHeld: () => false }, providers: { current: () => [] } } as any);
+  store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+  agents.migrate();
+  const hung = store.createSession({ model: "m:x", workspace: dir, title: "Hung" });
+  const busy = store.createSession({ model: "m:x", workspace: dir, title: "Busy" });
+  const logDir = join(dir, "jobs");
+  const a = startJob({ sessionId: hung.id, command: "sleep 30", description: "the hung run", cwd: dir, logDir, background: true });
+  const b = startJob({ sessionId: busy.id, command: "for i in $(seq 1500); do echo x; sleep 0.02; done", cwd: dir, logDir, background: true });
+  try {
+    const after = { model: 120_000, tool: 300 };
+    await Bun.sleep(600);
+    const st = sessionState(store.session(hung.id)!, { after });
+    expect(st).toMatchObject({ watch: "work", why: "command", stuck: { what: "tool", text: "Command running long" }, text: "Command running long: the hung run", label: "Working", word: "working (command running long)" });
+    expect(stuckSaid({ ...st.stuck!, elapsed_ms: 660_000 })).toBe("Command running long, no output for 11m");
+    const ok = sessionState(store.session(busy.id)!, { after });
+    expect([ok.watch, ok.why, ok.stuck, ok.word]).toEqual(["work", "command", undefined, "working (command in background)"]);
+  } finally {
+    await stopJob(a);
+    await stopJob(b);
+    store.db.close();
+  }
 });

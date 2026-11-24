@@ -15,7 +15,7 @@ import { statSync } from "node:fs";
 import { STUCK_AFTER, stuckOf, type After, type Progress } from "../core/stuck.ts";
 import { agentWorks, oneLine, treeWaiting, stateOf, watchWord, type AgentFact, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
 import { stopSays } from "../core/stoppers.ts";
-import { UNREACHABLE_WORD, stateLabel, stateWords } from "../core/state-words.ts";
+import { COMMAND_IN_BACKGROUND, COMMAND_RUNNING_LONG, UNREACHABLE_WORD, stateLabel, stateWords } from "../core/state-words.ts";
 import { zonedClock } from "../core/clock.ts";
 import { settings } from "../admin/settings.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -277,7 +277,8 @@ const wrote = (log: string) => { try { return statSync(log).mtimeMs; } catch { r
 // The running step and when it last made progress (src/core/stuck.ts); null for a step that waits or a turn between steps.
 export function progressOf(s: Session, l: Lens, f: WatchFacts): Progress | null {
   const st = f.status;
-  if (!st || f.asks?.length || f.owner || l.d.engine.waitsOnOwner?.(s.id)) return null;
+  if (!st) return l.d.engine.isRunning(s.id) ? null : commandProgress(s.id, f);
+  if (f.asks?.length || f.owner || l.d.engine.waitsOnOwner?.(s.id)) return null;
   if (st.kind === "model") {
     if (st.preparing) return null;
     if (st.quiet) return { what: "stream", text: "The model is answering, no output", since: st.quiet };
@@ -296,6 +297,17 @@ export function progressOf(s: Session, l: Lens, f: WatchFacts): Progress | null 
   if (jobs.length) return { what: "tool", text, since: Math.max(st.since, ...jobs.map((j) => wrote(j.log))) };
   return { what: "step", text, since: st.since };
 }
+
+// A session whose turn ended while commands of it run works while they do (src/core/watch.ts): a command
+// that has not written for the tool's limit is called stuck, as a silent command of a running step is, and
+// its end still starts the next turn. Its progress is the last write of any of them.
+function commandProgress(id: string, f: WatchFacts): Progress | null {
+  if (f.asks?.length) return null;
+  const cmds = jobsOf(id).filter((j) => j.background && running(j));
+  if (!cmds.length) return null;
+  return { what: "tool", text: cap(COMMAND_RUNNING_LONG), since: Math.max(...cmds.map((j) => Math.max(j.started, wrote(j.log)))) };
+}
+const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
 // The owner's limits (the `stuck` section of the daemon settings, seconds), else the defaults.
 export function stuckAfter(): After {
@@ -344,6 +356,12 @@ export function sessionState(s: Session, o: { counts?: Map<string, number>; from
   // A running step that has made no progress past its limit is marked: the one answer to "is anything stuck".
   const stuck = st.watch === "work" ? stuckOf(progressOf(s, l, facts), Date.now(), o.after ?? stuckAfter()) : null;
   if (stuck) st.stuck = stuck;
+  // A command that has written nothing for the limit: its reason says so in the same place ("Command running long: make test").
+  if (stuck && st.why === "command") {
+    const long = (t?: string) => t?.replace(cap(COMMAND_IN_BACKGROUND), cap(COMMAND_RUNNING_LONG));
+    if (st.text) st.text = long(st.text);
+    if (st.brief) st.brief = long(st.brief);
+  }
   // Its agents in numbers, the ended ones of the last day too: a failed agent stays on its parent's row.
   const all = tallyOf(l, s);
   if (all) {
