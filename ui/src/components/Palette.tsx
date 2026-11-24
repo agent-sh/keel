@@ -20,6 +20,7 @@ function openSession(id: string) {
 import { ago, clock, cn, folderNames } from "../lib/utils.ts";
 import { useStateLabel, useWatches } from "../lib/watch.ts";
 import { machineName } from "../lib/fleet.ts";
+import { agentOf, groupIndex, ranked } from "../lib/palette-rank.ts";
 import { openImport } from "../lib/integrations-ui.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
@@ -107,8 +108,9 @@ export function Palette() {
   // This daemon's own rows: its sessions, what was said in them, its actions and models.
   const local = useMemo(() => {
     const out: Entry[] = [];
-    const recent = Object.values(sessions).filter((s) => !s.archived).sort((a, b) => b.updated - a.updated);
     const w = watches;
+    // What waits for the owner first, then what failed, then the newest.
+    const recent = ranked(Object.values(sessions).filter((s) => !s.archived), w);
     const listed = q ? recent : recent.slice(0, 6);
     // Folders read apart where their last parts are the same (alpha/api, beta/api).
     const names = folderNames([...listed.map((s) => s.workspace), ...hits.map((h) => h.cwd)]);
@@ -118,7 +120,7 @@ export function Palette() {
       if (score > 0) {
         seen.add(s.id);
         out.push({
-          key: `s:${s.id}`, group: s.machine ? `Sessions on ${machineName(s.machine) ?? s.machine}` : "Sessions", label: s.title || "New session", detail: `${names.get(s.workspace)}  ${ago(s.updated)}`,
+          key: `s:${s.id}`, group: s.machine ? `Sessions on ${machineName(s.machine) ?? s.machine}` : "Sessions", label: s.title || "New session", detail: `${s.parent_id ? agentOf(sessions[s.parent_id]?.title) : names.get(s.workspace)}  ${ago(s.updated)}`,
           icon: <span className="grid size-4 place-items-center" title={label(s.id, w[s.id] ?? "idle")}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5,
           run: () => openSession(s.id),
         });
@@ -221,7 +223,7 @@ export function Palette() {
     // Keep groups together, ordered by their best hit.
     const best = new Map<string, number>();
     out.forEach((e, i) => best.has(e.group) || best.set(e.group, i));
-    const rows = out.sort((a, b) => (q ? best.get(a.group)! - best.get(b.group)! : order.indexOf(a.group) - order.indexOf(b.group))).slice(0, 60);
+    const rows = out.sort((a, b) => (q ? best.get(a.group)! - best.get(b.group)! : groupIndex(order, a.group) - groupIndex(order, b.group))).slice(0, 60);
     // Not searched there yet: the last row asks for it (it keeps the palette open, and the rows come in its place).
     if (mayElsewhere && !wantsElsewhere) rows.push({
       key: "x:ask", group: "Other harnesses", label: "Search other harnesses' sessions", detail: "Claude Code, Codex and others here",
