@@ -10,6 +10,7 @@ import { fds, read, readProcs, status, stat, type CgroupCost, type ProcAsk, type
 import type { Reads } from "../server/reads.ts";
 import { timed } from "./stall.ts";
 import { vault } from "../safety/secrets.ts";
+import { ongoing } from "./activity.ts";
 
 // A process's command line as shown, known values hidden: read once a command
 // line (a sample reads every process, and most stay the same).
@@ -33,6 +34,52 @@ export type Proc = {
   rss_bytes: number; peak_rss_bytes: number; cpu_user_ms: number; cpu_system_ms: number; cpu_percent: number; threads: number; open_files?: number;
 };
 type Sample = { ts_ms: number; unmeasured_ended: number; cpu_percent: number; daemon_cpu_percent: number; cpu_ms: number; daemon_cpu_ms: number; rss_bytes: number; daemon_rss_bytes: number; processes: number; busy: boolean };
+
+// The daemon's resident memory that grew by more than STEP_BYTES within STEP_MS: the step, from the lowest
+// sample in that window (the sample before the newest when the window holds none, as when the daemon is idle
+// and samples every 30 s, up to `apart`). `since`: samples before it belong to a step already told.
+export const STEP_BYTES = 200 * 1024 * 1024;
+export const STEP_MS = 10_000;
+export type RssPoint = { ts_ms: number; rss_bytes: number };
+export function rssStep(series: RssPoint[], since = 0, step = STEP_BYTES, within = STEP_MS, apart = 2 * IDLE_MS): { from: RssPoint; to: RssPoint } | null {
+  const to = series.at(-1);
+  if (!to) return null;
+  let from: RssPoint | undefined;
+  for (let i = series.length - 2; i >= 0; i--) {
+    const s = series[i]!;
+    if (s.ts_ms < since || to.ts_ms - s.ts_ms > (from || i < series.length - 2 ? within : apart)) break;
+    if (!from || s.rss_bytes < from.rss_bytes) from = s;
+  }
+  return from && to.rss_bytes - from.rss_bytes > step ? { from, to } : null;
+}
+
+// How fast the daemon's memory grows, in bytes an hour: the slope through the samples of the last hour (a
+// least-squares line, so one step does not stand for a rate), none until they span ten minutes.
+export function growthPerHour(series: RssPoint[], now: number, span = 3600_000, least = 600_000): number | null {
+  const pts = series.filter((p) => p.ts_ms >= now - span);
+  if (pts.length < 2 || pts.at(-1)!.ts_ms - pts[0]!.ts_ms < least) return null;
+  const t0 = pts[0]!.ts_ms;
+  const n = pts.length;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const p of pts) { const x = p.ts_ms - t0, y = p.rss_bytes; sx += x; sy += y; sxx += x * x; sxy += x * y; }
+  const den = n * sxx - sx * sx;
+  return den > 0 ? ((n * sxy - sx * sy) / den) * 3600_000 : null;
+}
+
+// What the daemon was doing when its memory stepped: the memory split it had, and what was in flight.
+export type RssStep = {
+  at_ms: number; from_ms: number; from_bytes: number; to_bytes: number; heap_bytes: number;
+  memory: ReturnType<typeof memorySplit>;
+  running: {
+    turns: number; readers: number; run_code: number; acp_agents: number;
+    // Reads on the loop since the sample the step is measured from.
+    cold_reads: { n: number; rows: number; ms: number }; body_reads: { n: number; rows: number; bytes: number; ms: number };
+    processes: { kind: string; processes: number; rss_bytes: number }[];
+    // Processes started since then.
+    spawned: { label: string; kind: string; rss_bytes: number }[];
+  };
+};
+export type ReadTotals = { cold: { n: number; rows: number; ms: number }; bodies: { n: number; rows: number; bytes: number; ms: number } };
 
 // Where the daemon's resident memory is. The kernel's split: its own memory
 // (anon) and mapped files such as its binary (file). The runtime's: live
@@ -134,8 +181,12 @@ export class Resources {
   readonly started = Date.now();
   private startRss = process.memoryUsage().rss;
   helpers = 0;
+  // The steps told (the newest last), the sample the last one was found at, and the loop's read totals at each sample.
+  private steps: RssStep[] = [];
+  private toldAt = 0;
+  private marks: { ts_ms: number; totals: ReadTotals }[] = [];
 
-  constructor(bus: Bus, private stateDir: string, private reads?: Pick<Reads, "run">) {
+  constructor(bus: Bus, private stateDir: string, private reads?: Pick<Reads, "run">, private totals?: () => ReadTotals) {
     bus.on((f) => {
       if (f.t !== "session") return;
       const was = this.busy.size;
@@ -252,6 +303,36 @@ export class Resources {
       busy: this.busy.size > 0,
     });
     while (this.history.length && this.history[0]!.ts_ms < now - HISTORY_MS) this.history.shift();
+    this.watchStep(now, d, procs);
+  }
+
+  // A step of the daemon's memory is told once: a line in the log and a note in the report (`daemon.steps`).
+  private watchStep(now: number, d: { rss_bytes: number; heap_bytes: number; memory: ReturnType<typeof memorySplit> }, procs: Proc[]): void {
+    let totals: ReadTotals | undefined;
+    try { totals = this.totals?.(); } catch {}
+    if (totals) { this.marks.push({ ts_ms: now, totals }); if (this.marks.length > 64) this.marks.shift(); }
+    const step = rssStep(this.history.slice(-24).map((h) => ({ ts_ms: h.ts_ms, rss_bytes: h.daemon_rss_bytes })), this.toldAt);
+    if (!step) return;
+    this.toldAt = step.to.ts_ms;
+    const mark = this.marks.findLast((m) => m.ts_ms <= step.from.ts_ms);
+    const diff = (a: Record<string, number> | undefined, b: Record<string, number> | undefined) => Object.fromEntries(Object.keys(b ?? {}).map((k) => [k, Math.max(0, Math.round((b![k] ?? 0) - (a?.[k] ?? 0)))]));
+    const kinds = new Map<string, { processes: number; rss_bytes: number }>();
+    for (const p of procs) { const k = kinds.get(p.kind) ?? { processes: 0, rss_bytes: 0 }; k.processes++; k.rss_bytes += p.rss_bytes; kinds.set(p.kind, k); }
+    const live = ongoing();
+    const row: RssStep = {
+      at_ms: step.to.ts_ms, from_ms: step.from.ts_ms, from_bytes: step.from.rss_bytes, to_bytes: step.to.rss_bytes, heap_bytes: d.heap_bytes, memory: d.memory,
+      running: {
+        turns: this.busy.size, readers: live.readers ?? 0, run_code: live.run_code ?? 0, acp_agents: live.acp_agents ?? 0,
+        cold_reads: diff(mark?.totals.cold, totals?.cold) as RssStep["running"]["cold_reads"], body_reads: diff(mark?.totals.bodies, totals?.bodies) as RssStep["running"]["body_reads"],
+        processes: [...kinds].map(([kind, v]) => ({ kind, ...v })),
+        spawned: procs.filter((p) => p.started_ms >= step.from.ts_ms).slice(0, 8).map((p) => ({ label: p.label.slice(0, 80), kind: p.kind, rss_bytes: p.rss_bytes })),
+      },
+    };
+    this.steps.push(row);
+    if (this.steps.length > 20) this.steps.shift();
+    const mb = (b: number) => `${Math.round(b / 1048576)} MB`;
+    const r = row.running;
+    console.log(`[resources] the daemon's memory grew ${mb(row.to_bytes - row.from_bytes)} in ${Math.round((row.at_ms - row.from_ms) / 1000)} s (${mb(row.from_bytes)} to ${mb(row.to_bytes)}; heap ${mb(row.heap_bytes)}, anon ${mb(row.memory.anon_bytes)}, file ${mb(row.memory.file_bytes)}); running: ${r.turns} turns, ${r.readers} readers, ${r.run_code} run_code programs, ${r.acp_agents} ACP agents, ${r.cold_reads.n} cold reads and ${r.body_reads.n} body reads on the loop, ${r.spawned.length} processes started`);
   }
 
   // Percent of one core since the last sample at least a second older.
@@ -271,7 +352,8 @@ export class Resources {
       pid: process.pid, started_ms: this.started, rss_bytes: s.rss, peak_rss_bytes: s.hwm,
       cpu_user_ms: st.utime, cpu_system_ms: st.stime, cpu_percent: this.percent(process.pid, st.utime + st.stime, now),
       threads: s.threads, open_files: fds(process.pid), heap_bytes: usage.heapUsed, memory: memorySplit(read(`/proc/${process.pid}/status`), usage), swap: swap(),
-      growth: { start_rss_bytes: this.startRss, per_hour_bytes: now - this.started > 600_000 ? ((s.rss - this.startRss) / (now - this.started)) * 3600_000 : null },
+      // Over the last hour's samples and this one, not from the daemon's start.
+      growth: { start_rss_bytes: this.startRss, per_hour_bytes: growthPerHour([...this.history.map((h) => ({ ts_ms: h.ts_ms, rss_bytes: h.daemon_rss_bytes })), { ts_ms: now, rss_bytes: s.rss }], now) },
     };
   }
 
@@ -303,7 +385,7 @@ export class Resources {
         threads: daemon.threads + sum(this.procs, "threads"),
         cpu_user_ms: daemon.cpu_user_ms + sum(this.procs, "cpu_user_ms"), cpu_system_ms: daemon.cpu_system_ms + sum(this.procs, "cpu_system_ms"),
       },
-      daemon: { ...daemon, ...share(daemon.rss_bytes, daemon.cpu_percent) },
+      daemon: { ...daemon, steps: this.steps, ...share(daemon.rss_bytes, daemon.cpu_percent) },
       processes: procs.map((p) => ({ ...p, ...share(p.rss_bytes, p.cpu_percent) })),
       jobs: q.session ? this.jobs.filter((j) => j.session_id === q.session) : this.jobs,
       kinds: [...kinds.entries()].map(([kind, list]) => ({ kind, processes: list.length, rss_bytes: sum(list, "rss_bytes"), cpu_percent: sum(list, "cpu_percent"), ...share(sum(list, "rss_bytes"), sum(list, "cpu_percent")) })),

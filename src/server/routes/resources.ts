@@ -33,7 +33,7 @@ export let resources: Resources | undefined;
 
 export const resourceRoutes: RouteModule = ({ store, bus }) => {
   resources?.stop(); // a hot reload makes a new sampler
-  const r = (resources = new Resources(bus, store.stateDir, readsOf(store)));
+  const r = (resources = new Resources(bus, store.stateDir, readsOf(store), () => store.readTotals()));
   heavyChanged.tell = (c) => bus.emit({ t: "feature", name: "heavy", session_id: c.session_id, data: c });
   return {
     "/api/resources": {

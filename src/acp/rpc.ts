@@ -3,6 +3,7 @@
 // client: it sends requests and notifications, and answers the agent's
 // requests (permission, files) through `onRequest`.
 import { pumpLines, pumpText } from "../core/proc.ts";
+import { begin } from "../admin/activity.ts";
 import { scrubbedEnv } from "../safety/env-secret.ts";
 
 type Json = any;
@@ -19,6 +20,8 @@ export class AcpConnection {
 
   constructor(argv: string[], opts: { cwd: string; env?: Record<string, string>; pass?: string[] }, private log: (m: string) => void = () => {}) {
     this.proc = Bun.spawn(argv, { cwd: opts.cwd, env: opts.pass ? scrubbedEnv(process.env, opts.pass, opts.env) : { ...process.env, ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const end = begin("acp_agents");
+    void this.proc.exited.then(end, end);
     void pumpLines(this.proc.stdout as ReadableStream<Uint8Array>, (l) => this.line(l), "acp agent stdout");
     // The tail of what the agent wrote to stderr: said when it ends early.
     void pumpText(this.proc.stderr as ReadableStream<Uint8Array>, (t) => { this.stderr = (this.stderr + t).slice(-4000); }, "acp agent stderr");

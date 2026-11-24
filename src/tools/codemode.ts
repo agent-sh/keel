@@ -22,6 +22,7 @@ import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { appendFileSync } from "node:fs";
 import { pump } from "../core/proc.ts";
+import { begin } from "../admin/activity.ts";
 
 export const RUN_CODE = "run_code";
 
@@ -197,6 +198,8 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
     },
   });
   const release = scope.hold(proc.pid);
+  const endCounted = begin("run_code");
+  void proc.exited.then(endCounted, endCounted);
   void proc.exited.then(release, release);
   const onAbort = () => proc.kill("SIGKILL");
   ctx.signal.addEventListener("abort", onAbort, { once: true });

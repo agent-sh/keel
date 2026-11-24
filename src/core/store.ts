@@ -1355,6 +1355,10 @@ export class Store {
   private coldStart = { n: 0, rows: 0, ms: 0, by: new Map<string, { n: number; rows: number; ms: number }>() };
   // Set once the daemon answers: from here a read that holds the loop holds everyone.
   serving = false;
+  // The running totals of the reads on the loop since the daemon answered, with no breakdown (cheap to read on a beat).
+  readTotals() {
+    return { cold: { n: this.cold.n, rows: this.cold.rows, ms: this.cold.ms }, bodies: { n: this.bodies.n, rows: this.bodies.rows, bytes: this.bodies.bytes, ms: this.bodies.ms } };
+  }
   coldReads(): ColdReads & { start: ColdReads } {
     const of = (c: Store["cold"]): ColdReads => ({ n: c.n, rows: c.rows, ms: Math.round(c.ms), by: [...c.by].map(([who, v]) => ({ who, n: v.n, rows: v.rows, ms: Math.round(v.ms) })).sort((a, b) => b.ms - a.ms) });
     return { ...of(this.cold), start: of(this.coldStart) };

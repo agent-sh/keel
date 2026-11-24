@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
+import { clock } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { Stat, Stats } from "./Stat.tsx";
 import { fmtMs } from "./UsagePanel.tsx";
@@ -19,10 +20,17 @@ export const fmtBytes = (b: number | null | undefined) => {
 };
 const fmtCpu = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)}%`;
 
+// A step of the daemon's memory (over 200 MB in 10 s) and what ran then.
+type Step = {
+  at_ms: number; from_ms: number; from_bytes: number; to_bytes: number; heap_bytes: number; memory: { anon_bytes: number; file_bytes: number };
+  running: { turns: number; readers: number; run_code: number; acp_agents: number; cold_reads: { n: number }; body_reads: { n: number }; spawned: { label: string }[] };
+};
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
 type Report = {
   measured_ms: number; interval_ms: number;
   totals: { rss_bytes: number; cpu_percent: number; processes: number; threads: number; cpu_user_ms: number; cpu_system_ms: number };
-  daemon: { pid: number; started_ms: number; rss_bytes: number; peak_rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number; heap_bytes: number; growth: { start_rss_bytes: number; per_hour_bytes: number | null }; swap?: { process_bytes: number; unit_bytes?: number; unit_limit_bytes?: number; unit?: string; own?: boolean } };
+  daemon: { pid: number; started_ms: number; rss_bytes: number; peak_rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number; heap_bytes: number; growth: { start_rss_bytes: number; per_hour_bytes: number | null }; steps?: Step[]; swap?: { process_bytes: number; unit_bytes?: number; unit_limit_bytes?: number; unit?: string; own?: boolean } };
   processes: { pid: number; name: string; label: string; command: string; kind: string; session_id?: string; rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number }[];
   sessions: { session_id: string; processes: number; rss_bytes: number; cpu_percent: number; total: { cpu_user_ms: number; cpu_system_ms: number; processes: number } }[];
   disk: { path: string; free_bytes: number; total_bytes: number } | null;
@@ -71,6 +79,8 @@ export function ResourcesPanel() {
   // What of the daemon itself is in swap, else of its own unit (the unit holds its commands too). A
   // daemon started from a terminal runs in the terminal's scope: what else is in swap there is not its own.
   const sw = d.swap;
+  // The newest step of the last hour.
+  const step = d.steps?.findLast((x) => x.at_ms > Date.now() - 3600_000);
   const swapped = sw?.process_bytes || (sw?.own ? sw.unit_bytes : 0) || 0;
 
   const P: Record<string, Col> = { name: { head: "Process", grow: true }, kind: { head: "Kind", minor: true }, mem: { head: "Memory", end: true }, cpu: { head: "CPU", end: true }, time: { head: "CPU time", end: true, minor: true }, threads: { head: "Threads", end: true, minor: true } };
@@ -95,6 +105,14 @@ export function ResourcesPanel() {
           {sw?.own
             ? sw.unit_limit_bytes === 0 ? "" : ` To keep it out, add MemorySwapMax=0 under [Service] of the unit (systemctl --user edit ${sw.unit}) and restart it.`
             : ` It was started from a terminal${sw?.unit ? ` (it runs in ${sw.unit})` : ""}, where nothing keeps it out of swap: a service unit with MemorySwapMax=0 does.`}
+        </Notice>
+      )}
+
+      {step && (
+        <Notice testid="resources-step">
+          The daemon's memory grew {fmtBytes(step.to_bytes - step.from_bytes)} in {Math.max(1, Math.round((step.at_ms - step.from_ms) / 1000))} s, at {clock(step.at_ms)}
+          {" "}({fmtBytes(step.from_bytes)} to {fmtBytes(step.to_bytes)}; heap {fmtBytes(step.heap_bytes)}, kernel anon {fmtBytes(step.memory.anon_bytes)}, mapped files {fmtBytes(step.memory.file_bytes)}).
+          Then running: {plural(step.running.turns, "turn")}, {plural(step.running.readers, "reader")}, {plural(step.running.run_code, "run_code program")}, {plural(step.running.acp_agents, "ACP agent")}, {plural(step.running.cold_reads.n, "whole-session read")} and {plural(step.running.body_reads.n, "body read")} on the loop, {plural(step.running.spawned.length, "process", "processes")} started.
         </Notice>
       )}
 

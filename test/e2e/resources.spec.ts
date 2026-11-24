@@ -130,6 +130,34 @@ test("the resources panel waits for a slow answer and rests while hidden", async
   await shoot(page, "resources-03-polling");
 });
 
+// The daemon says once when its memory stepped by over 200 MB in 10 s, with the split it has and what ran then.
+// The daemon has no step to show on a scripted run, so the report is the same answer with one in it.
+test("the resources panel notes a step of the daemon's memory", async ({ page, request }) => {
+  const real = await (await request.get("/api/resources?refresh=1")).json();
+  expect(Array.isArray(real.daemon.steps)).toBe(true);
+  let steps: unknown[] | undefined;
+  await page.route(/\/api\/resources\?/, async (route) => {
+    const answer = await route.fetch();
+    const body = await answer.json();
+    await route.fulfill({ response: answer, json: steps ? { ...body, daemon: { ...body.daemon, steps } } : body });
+  });
+  await page.goto("/settings/resources");
+  const panel = page.getByTestId("resources-panel");
+  await expect(panel.getByTestId("tile-memory")).not.toContainText("none");
+  // (A scratch daemon may have told a step of its own while it started: the mocked one below replaces it.)
+  const MB = 1024 * 1024, now = Date.now();
+  steps = [{
+    at_ms: now - 60_000, from_ms: now - 65_000, from_bytes: 520 * MB, to_bytes: 1000 * MB, heap_bytes: 164 * MB, memory: { anon_bytes: 900 * MB, file_bytes: 90 * MB },
+    running: { turns: 2, readers: 3, run_code: 1, acp_agents: 0, cold_reads: { n: 4, rows: 9000, ms: 80 }, body_reads: { n: 7, rows: 300, bytes: 1_000_000, ms: 20 }, processes: [], spawned: [{ label: "bun -e", kind: "tool", rss_bytes: 80 * MB }] },
+  }];
+  await page.reload();
+  const note = panel.getByTestId("resources-step");
+  await expect(note).toContainText("memory grew 480 MB in 5 s");
+  await expect(note).toContainText("heap 164 MB, kernel anon 900 MB");
+  await expect(note).toContainText("2 turns, 3 readers, 1 run_code program, 0 ACP agents, 4 whole-session reads and 7 body reads on the loop, 1 process started");
+  await shoot(page, "resources-05-step");
+});
+
 // The daemon's report says what of it is in swap (its own process, and its unit from the cgroup's
 // memory.swap.current). The panel says nothing while that is zero, and says how much and what it
 // costs when it is not. The daemon's own answer is shown first; the swapped one is the same answer

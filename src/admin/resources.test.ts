@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { intervalCpu, memorySplit, swapFrom } from "./resources.ts";
+import { growthPerHour, intervalCpu, memorySplit, rssStep, swapFrom, type RssPoint } from "./resources.ts";
 
 // Daemon 1,000 ms and a child 2,000 ms; a second later the daemon is at
 // 1,100 and the child is gone: the interval used 100 ms (10%), not 0.
@@ -53,4 +53,43 @@ test("a process's command line is shown with the values the vault knows hidden",
     expect(out).not.toContain(secret);
     expect(out.split("\0").slice(0, 2)).toEqual(["node", "server.js"]);
   } finally { vault.forget((e as { id: string }).id); }
+});
+
+// A step of the daemon's memory: over 200 MB within 10 s, told once, from the lowest sample of the window.
+const MB = 1024 * 1024;
+const series = (rows: [number, number][]): RssPoint[] => rows.map(([s, mb]) => ({ ts_ms: s * 1000, rss_bytes: mb * MB }));
+test("a step of over 200 MB in 10 s is found once, with the sample it is measured from", () => {
+  const all = series([[0, 500], [5, 500], [10, 980], [15, 990], [20, 1240], [25, 1240]]);
+  // Samples every 5 s: the +480 MB lands at 10 s, and what follows it is not the same step.
+  expect(rssStep(all.slice(0, 2))).toBeNull();
+  const first = rssStep(all.slice(0, 3))!;
+  expect([first.from.ts_ms, first.to.rss_bytes / MB]).toEqual([5000, 980]);
+  expect(rssStep(all.slice(0, 4), first.to.ts_ms)).toBeNull(); // 980 to 990 only
+  const second = rssStep(all.slice(0, 5), first.to.ts_ms)!;
+  expect([second.from.rss_bytes / MB, second.to.rss_bytes / MB]).toEqual([980, 1240]); // from the lowest sample since the step told
+  // Without the mark of the step told, the next sample would tell it again (its window still holds the low sample).
+  expect(rssStep(all.slice(0, 4))).not.toBeNull();
+  // Growth over a longer time is not a step: 150 MB in 10 s, twice, with 10 s between.
+  expect(rssStep(series([[0, 500], [10, 650], [20, 800], [30, 950]]))).toBeNull();
+  // Exactly the size is not over it, and a fall is none.
+  expect(rssStep(series([[0, 500], [5, 700]]))).toBeNull();
+  expect(rssStep(series([[0, 1500], [5, 500]]))).toBeNull();
+  // An idle daemon samples every 30 s: the sample before stands for the window.
+  expect(rssStep(series([[0, 500], [30, 760]]))?.from.ts_ms).toBe(0);
+  expect(rssStep(series([[0, 500], [200, 900]]))).toBeNull();
+  // One that is older than the window is not the lowest of it.
+  expect(rssStep(series([[0, 100], [24, 500], [28, 600], [35, 750]]))).toBeNull();
+});
+
+test("growth an hour is the slope of the last hour's samples, not the rise from the start", () => {
+  const hour = (mb: (min: number) => number) => Array.from({ length: 61 }, (_, i) => ({ ts_ms: i * 60_000, rss_bytes: mb(i) * MB }));
+  // 100 MB at the start, 1 GB for the whole hour: no growth now, though 900 MB above the start.
+  expect(growthPerHour(hour(() => 1000), 3600_000)).toBeCloseTo(0, 3);
+  // 2 MB a minute is 120 MB an hour.
+  expect(growthPerHour(hour((m) => 1000 + 2 * m), 3600_000)! / MB).toBeCloseTo(120, 3);
+  // Samples older than the hour are not read.
+  const old = [{ ts_ms: 0, rss_bytes: 100 * MB }, ...hour(() => 1000).map((p) => ({ ...p, ts_ms: p.ts_ms + 7200_000 }))];
+  expect(growthPerHour(old, 7200_000 + 3600_000)! / MB).toBeCloseTo(0, 3);
+  // Under ten minutes of samples: not known.
+  expect(growthPerHour(hour((m) => 1000 + m).slice(0, 8), 7 * 60_000)).toBeNull();
 });

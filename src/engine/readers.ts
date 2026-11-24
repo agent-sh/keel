@@ -10,6 +10,7 @@
 import { addUsage, emptyUsage, type Usage } from "../core/types.ts";
 import type { ModelInfo, Price } from "../providers/types.ts";
 import { bytesPerToken } from "./compact.ts";
+import { during } from "../admin/activity.ts";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { OUTPUT_CAP } from "../tools/spill.ts";
 import {
@@ -133,7 +134,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
       sent = true;
       onModel?.(m);
       try {
-        const r = await host.ask(m, prompt, signal);
+        const r = await during("readers", () => host.ask(m, prompt, signal));
         usage = addUsage(usage, r.usage);
         const text = r.text.trim();
         if (r.stop === "refusal" || !text) throw new Error(`the reader (${m.name}) ${r.stop === "refusal" ? "refused" : "gave no answer"}`);
