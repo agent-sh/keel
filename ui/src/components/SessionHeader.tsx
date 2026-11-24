@@ -177,8 +177,10 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
   };
   // Up and Down walk the actions, as in any menu; Tab walks every control of it.
   const walk = (e: KeyboardEvent<HTMLElement>) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
     const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])')];
+    // Tab past the last action leaves the menu: the keys come back to its button, not out into the page.
+    if (e.key === "Tab" && !e.shiftKey && items.length && document.activeElement === items[items.length - 1]) { e.preventDefault(); close(); return; }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
     if (!items.length) return;
     e.preventDefault();
     const i = items.indexOf(document.activeElement as HTMLElement);

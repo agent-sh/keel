@@ -81,6 +81,13 @@ test("the bar rests with three or four controls, the rest in the session's one m
     await page.keyboard.press("Escape");
     await expect(menu).toBeHidden();
     await expect(header.getByTestId("session-menu")).toBeFocused();
+    // Tab past the last action leaves the menu and gives the keys back to its button.
+    await header.getByTestId("session-menu").click();
+    await expect(menu).toBeVisible();
+    await menu.getByTestId("menu-delete").focus();
+    await page.keyboard.press("Tab");
+    await expect(menu).toBeHidden();
+    await expect(header.getByTestId("session-menu")).toBeFocused();
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
   }
