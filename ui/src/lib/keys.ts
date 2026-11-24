@@ -39,6 +39,8 @@ export const allCommands = () => [...commands.values()].filter((c) => !c.when ||
 export const everyCommand = () => [...commands.values()];
 export const commandsVersion = () => version;
 export const onCommands = (f: () => void) => (subs.add(f), () => void subs.delete(f));
+// Told the id of each command a key runs (what the owner presses is recorded from it: lib/presses.ts).
+export const keyRan = new Set<(id: string) => void>();
 export const runCommand = (id: string) => commands.get(id)?.run();
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
@@ -96,6 +98,7 @@ export function installKeymap() {
         if (c.when && !c.when()) continue;
         if ((covered ??= modalOpen()) && !c.over?.()) continue;
         e.preventDefault();
+        keyRan.forEach((f) => f(c.id));
         c.run();
         return;
       }

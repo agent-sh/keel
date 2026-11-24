@@ -18,6 +18,7 @@ import { checkDrivers, driversOf, type DriversAsk } from "../admin/cost-drivers.
 import { boardChecks, boardFacts } from "../board/facts.ts";
 import { earlierCandidates, earlierOutcomes } from "../automation/earlier-facts.ts";
 import { priceFactsRead } from "../engine/price-facts.ts";
+import { pressReport } from "../admin/presses.ts";
 import { egressReport, type EgressAsk } from "../safety/egress-report.ts";
 
 export const tasks = {
@@ -60,6 +61,8 @@ export const tasks = {
   "agents.earlier": (db: Database, a: { repo: string; skip?: string[] }) => earlierCandidates(db, a),
   "agents.earlierOutcomes": (db: Database, a: { repo: string; branches: string[]; agents: string[] }) => earlierOutcomes(db, a),
   // What left the daemon in a range, by host and session (src/safety/egress-report.ts).
+  // What the owner presses, most used first per view (src/admin/presses.ts).
+  "presses.report": (db: Database, a: { days?: number }) => pressReport(db, a),
   "egress.report": (db: Database, a: EgressAsk) => egressReport(db, a),
 };
 

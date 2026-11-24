@@ -26,6 +26,7 @@ import "./features/experiments.tsx";
 import "./features/pr-reviews.tsx";
 import "./features/board.tsx";
 import "./features/shell.ts";
+import "./features/presses.tsx";
 
 // Install metadata. Added here, not in index.html, because the bundler tries
 // to resolve every link in the page as a file to bundle.
