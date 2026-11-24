@@ -142,7 +142,7 @@ export function preparedHolds(lineage: readonly StoredEvent[], covered: string, 
 // context then leaves far less, and the prepared one would bring a second
 // compaction within a few steps, or the turn to the window. OpenCode falls back
 // to a fresh summary when the conversation since the held one grew past about
-// 40% of its threshold (its compaction docs, PR 64290, 2026-11-16). Counted from
+// 40% of its threshold (https://opencode.ai/docs/compaction/, "Background compaction", the Falls back row). Counted from
 // the bytes at the model's bytes a token, as a context no reply measured is.
 export const PREPARED_TAIL = 0.4;
 export function preparedFits(lineage: readonly StoredEvent[], data: Record<string, unknown>, model: string | undefined, limit: number): boolean {
