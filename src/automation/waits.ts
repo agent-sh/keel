@@ -604,21 +604,19 @@ export function reframe(
   };
 }
 
-// Whether a wait may probe a local address: the address is this machine's own and its port is one the session's
-// running background commands name in their command line or listen on. A wait runs unasked as a read, so it does
-// not reach other local services (the owner's own daemons and databases); a server the session started is its own.
-// `host`: the URL's host; `jobs`: the session's commands that run; `listening`: ports their processes listen on.
-export function localProbe(url: URL, jobs: readonly { command: string }[], listening: readonly number[]): boolean {
+// Whether a wait may probe a local address: the address is this machine's own and its port is one a process of the
+// session listens on. A wait runs unasked as a read, so it does not reach other local services (the owner's own
+// daemons and databases); a server the session started is its own. A port only named in a command line counts for
+// nothing: the words of a command say nothing of what listens.
+// `listening`: ports the session's running commands' processes listen on.
+export function localProbe(url: URL, listening: readonly number[]): boolean {
   const bytes = addressBytes(url.hostname);
   const v4 = bytes && bytes.length === 16 ? mappedV4(bytes) : null;
   const loopback = bytes
     ? (v4 ?? (bytes.length === 4 ? bytes : null))?.[0] === 127 || (bytes.length === 16 && !v4 && bytes.slice(0, 15).every((b) => b === 0) && bytes[15] === 1)
     : /^(localhost|.*\.localhost)\.?$/i.test(url.hostname);
   if (!loopback) return false;
-  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-  if (listening.includes(port)) return true;
-  const word = new RegExp(`(?<![\\w.])${port}(?![\\w])`);
-  return jobs.some((j) => word.test(j.command));
+  return listening.includes(Number(url.port || (url.protocol === "https:" ? 443 : 80)));
 }
 
 // Validates a spec the way the model or the page wrote it; throws the reason.

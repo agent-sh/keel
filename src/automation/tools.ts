@@ -16,6 +16,7 @@ import { statusText } from "./now.ts";
 import { existsSync } from "node:fs";
 import { jobPidsOf, jobsOf, running } from "../tools/jobs.ts";
 import { portsOf } from "../fleet/portal.ts";
+import { isOwnPort } from "../safety/net-proxy.ts";
 import { basename, dirname, join } from "node:path";
 
 // Each family gets the names and shapes it was trained on: Claude the Claude
@@ -418,7 +419,7 @@ const waitSchema = {
 const ownJobs = (sessionId: string) => jobsOf(sessionId).filter(running);
 const ownPorts = (sessionId: string) => {
   const pids = new Map(ownJobs(sessionId).map((j) => [j.id, jobPidsOf(j)] as const));
-  return [...portsOf(pids).values()].flat().map((p) => p.port);
+  return [...portsOf(pids).values()].flat().map((p) => p.port).filter((p) => !isOwnPort(p));
 };
 
 // `monitorName`: the family's name for the monitor tool (what a refusal names as the other way).
@@ -440,12 +441,15 @@ const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard
   if (out && !elsewhere && dirname(out) === join(ctx.spillDir, "jobs") && !existsSync(out) && !(out.endsWith(".exit") && existsSync(out.slice(0, -".exit".length))))
     return fail(`${basename(out)} is the output file of no background command of this session. A background command you started wakes this session by itself when it ends: it needs no wait. To wait on one all the same, use kind "file" on its log's path plus ".exit", which its end writes.`);
   // The model's http wait follows web fetch's address rules (the wait tool runs unasked, as a read), except a
-  // loopback port the session's own running commands name or listen on: a server it started is its own.
+  // loopback port one of the session's own processes listens on: a server it started is its own.
   if (spec.kind === "http") {
     const u = new URL(spec.url);
-    if (privateHost(u.hostname) && !waits.localProbe(u, ownJobs(ctx.sessionId), ownPorts(ctx.sessionId))) {
+    if (privateHost(u.hostname) && !waits.localProbe(u, ownPorts(ctx.sessionId))) {
       const probe = `until curl -fsS -o /dev/null ${spec.url}; do ${"sle" + "ep"} 1; done; echo up`;
-      return fail(`${u.hostname} is a local or private address, and ${u.port ? `no running background command of this session names or listens on port ${u.port}` : "a wait reaches a local address only on a port the session's own commands use"}. Start the server with the shell tool's run_in_background and its port in the command, then wait on its URL; or watch it now with ${monitorName} (command: ${JSON.stringify(probe)}, match: "up").`);
+      const loop = /^(localhost|.*\.localhost)\.?$/i.test(u.hostname) || /^(127\.|\[?::1\]?$)/.test(u.hostname);
+      return fail(loop && u.port
+        ? `no process of this session listens on ${u.port} yet: start the server, then wait, or use ${monitorName} with curl (command: ${JSON.stringify(probe)}, match: "up").`
+        : `${u.hostname} is a local or private address; a wait reaches only a loopback port a process of this session listens on. Start the server with the shell tool's run_in_background, then wait on its URL; or watch it now with ${monitorName} (command: ${JSON.stringify(probe)}, match: "up").`);
     }
   }
   // The same condition again before it fired: the wait already set stands (its deadline the later one).
@@ -458,7 +462,7 @@ const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard
 const waitDesc =
   "Wait without spending tokens: the daemon checks a condition (a timer, a file appearing or containing text, a new log line matching a pattern, an HTTP status, a process ending, every check of a GitHub pull request finishing) and wakes this session with the result when it holds or the timeout passes. " +
   "A file or log wait's wake carries what the file gained since the wait began (its end, as a tool's output is cut) and what is known of the job that writes it; that job's end without the condition, or a long stretch of it with no output, no processor use and nothing of it waiting, wakes you before the deadline. " +
-  "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work. Not for your own agents, nor for a background command you started: their reports and its end wake you by themselves, so there is no pid to give for one. A pause is kind timer with seconds. A local http address is waited on only at a port of a background command of this session.";
+  "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work. Not for your own agents, nor for a background command you started: their reports and its end wake you by themselves, so there is no pid to give for one. A pause is kind timer with seconds. A local http address is waited on only at a port a background command of this session listens on, once it listens.";
 
 // A pull request wait runs gh with the owner's login against a repository the
 // model names: the gate judges it as its own tool (wait_pr_checks), so it asks

@@ -25,7 +25,9 @@ const text = (o: { content: unknown }) => String(o.content);
 test("an http wait follows web fetch's address rules", async () => {
   const r = await tool("WaitFor").run({ kind: "http", url: "http://127.0.0.1:3000/health" }, ctx);
   expect(r.is_error).toBe(true);
-  expect(text(r)).toContain("local or private address");
+  expect(text(r)).toContain("no process of this session listens on 3000 yet");
+  const priv = await tool("WaitFor").run({ kind: "http", url: "http://10.0.0.5:3000/health" }, ctx);
+  expect(text(priv)).toContain("local or private address");
 });
 
 test("a wait on a background command's output file that no command of the session has is refused", async () => {
@@ -128,25 +130,31 @@ test("a pid given with another kind is ignored", async () => {
 test("a local http wait names the monitor call that does it", async () => {
   const r = await tool("WaitFor").run({ kind: "http", url: "http://127.0.0.1:48555/api/health" }, ctx);
   expect(r.is_error).toBe(true);
-  expect(text(r)).toContain("no running background command of this session names or listens on port 48555");
-  expect(text(r)).toContain('Monitor (command: "until curl -fsS -o /dev/null http://127.0.0.1:48555/api/health;');
+  expect(text(r)).toContain("no process of this session listens on 48555 yet: start the server, then wait, or use Monitor with curl");
+  expect(text(r)).toContain('command: "until curl -fsS -o /dev/null http://127.0.0.1:48555/api/health;');
   const other = await tool("wait_for").run({ kind: "http", url: "http://10.0.0.5/x" }, ctx);
   expect(text(other)).toContain("monitor (command:");
 });
 
 
-// A server the session started is its own: its port is in a running command of the session.
-test("an http wait on a loopback port of the session's own running command is set", async () => {
+// A server the session started is its own: a port its process listens on. A port a command only names is not.
+test("an http wait on a loopback port a process of the session listens on is set", async () => {
   const { startJob, stopJob } = await import("../tools/jobs.ts");
   const dir = mkdtempSync(join(tmpdir(), "keel-job-"));
-  const job = startJob({ sessionId: s.id, command: "exec tail -f /dev/null # serve 48777", cwd: dir, logDir: join(dir, "jobs"), background: true });
+  const port = 48777;
+  const job = startJob({ sessionId: s.id, command: `exec bun -e 'Bun.serve({ port: ${port}, hostname: "127.0.0.1", fetch: () => new Response("ok") }); setInterval(() => {}, 1000)' # ${port + 1}`, cwd: dir, logDir: join(dir, "jobs"), background: true });
   try {
-    const ok = await tool("WaitFor").run({ kind: "http", url: "http://127.0.0.1:48777/health" }, ctx);
+    const refused = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port + 1}/health` }, ctx);
+    expect(refused.is_error).toBe(true);
+    expect(text(refused)).toContain(`no process of this session listens on ${port + 1} yet`);
+    let ok: any;
+    for (let i = 0; i < 100; i++) {
+      ok = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port}/health` }, ctx);
+      if (!ok.is_error) break;
+      await Bun.sleep(100);
+    }
     expect(ok.is_error).toBeFalsy();
     expect(text(ok)).toContain("Scheduled http wait");
-    const other = await tool("WaitFor").run({ kind: "http", url: "http://127.0.0.1:48778/health" }, ctx);
-    expect(other.is_error).toBe(true);
-    expect(text(other)).toContain("names or listens on port 48778");
   } finally {
     await stopJob(job);
     for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);

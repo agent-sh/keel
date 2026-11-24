@@ -509,3 +509,5 @@ export function relayFiles(root: string): { relay: string; ssh: string } {
   }
   return { relay: relayAt, ssh };
 }
+// Whether a port is one of the daemon's own listeners.
+export const isOwnPort = (port: number): boolean => ownPorts.has(port);

@@ -95,20 +95,19 @@ test("reframe turns a process wait with no process into the wait it meant", () =
   expect(waits.reframe({ kind: "process", path: join(dir, "x.txt"), timeout_seconds: 5 }, dir, { job, log })).toBeUndefined();
 });
 
-test("a local http wait is allowed only on a loopback port the session's own commands use", () => {
-  const jobs = [{ command: "scripts/dev.sh 48555" }, { command: "sleep 300" }];
+test("a local http wait is allowed only on a loopback port a process of the session listens on", () => {
   const u = (s: string) => new URL(s);
-  expect(waits.localProbe(u("http://127.0.0.1:48555/api/health"), jobs, [])).toBe(true);
-  expect(waits.localProbe(u("http://localhost:48555/"), jobs, [])).toBe(true);
-  expect(waits.localProbe(u("http://[::1]:48555/"), jobs, [])).toBe(true);
-  expect(waits.localProbe(u("http://127.0.0.1:9000/"), jobs, [9000])).toBe(true);
-  // Another port, a longer number that holds it, another local service, a private network, an address in a path.
-  expect(waits.localProbe(u("http://127.0.0.1:8555/"), jobs, [])).toBe(false);
-  expect(waits.localProbe(u("http://127.0.0.1:4855/"), jobs, [])).toBe(false);
-  expect(waits.localProbe(u("http://127.0.0.1:47950/"), jobs, [])).toBe(false);
-  expect(waits.localProbe(u("http://127.0.0.1/"), jobs, [])).toBe(false);
-  expect(waits.localProbe(u("http://10.0.0.5:48555/"), jobs, [])).toBe(false);
-  expect(waits.localProbe(u("http://169.254.169.254:48555/"), jobs, [])).toBe(false);
+  expect(waits.localProbe(u("http://127.0.0.1:48555/api/health"), [48555])).toBe(true);
+  expect(waits.localProbe(u("http://localhost:48555/"), [48555])).toBe(true);
+  expect(waits.localProbe(u("http://[::1]:48555/"), [48555])).toBe(true);
+  // A port a command line only names (`sleep 600 # 47950`), a longer number that holds it, no port, another network.
+  expect(waits.localProbe(u("http://127.0.0.1:47950/"), [])).toBe(false);
+  expect(waits.localProbe(u("http://127.0.0.1:48555/"), [])).toBe(false);
+  expect(waits.localProbe(u("http://127.0.0.1:8555/"), [48555])).toBe(false);
+  expect(waits.localProbe(u("http://127.0.0.1:4855/"), [48555])).toBe(false);
+  expect(waits.localProbe(u("http://127.0.0.1/"), [48555])).toBe(false);
+  expect(waits.localProbe(u("http://10.0.0.5:48555/"), [48555])).toBe(false);
+  expect(waits.localProbe(u("http://169.254.169.254:48555/"), [48555])).toBe(false);
 });
 
 test("a replaced file is read from its start, whatever its size", async () => {
