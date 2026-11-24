@@ -421,6 +421,11 @@ export class ScriptedProvider implements Provider {
     }
 
     if (req.purpose === "summary" && lastText.includes("[harness] The context is being compacted")) {
+      // `script:summary-hang` in the focus: the summary request never answers, until it is aborted (a minute at most).
+      if (lastText.includes("Keep above all: script:summary-hang")) {
+        for (let i = 0; i < 1_200 && !req.signal.aborted; i++) await Bun.sleep(50);
+        throw reportUsage(req.signal.reason ?? Object.assign(new Error("interrupted"), { name: "AbortError" }), usage);
+      }
       // The focus picks what a summary request gets: a reply cut at the output
       // limit (every time, or until it is asked for again, shorter), or, for
       // the first part of a transcript, a summary far longer than planned.

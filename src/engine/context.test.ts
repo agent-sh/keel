@@ -51,7 +51,7 @@ function rig(reply?: (req: any, sent: Sent[]) => any) {
       sent.push({ purpose: req.purpose, model: info.id, tokens, refused, messages: req.messages, system: Buffer.byteLength(req.system) });
       if (refused) throw new ProviderError("context", `prompt is too long: ${tokens} tokens > ${info.context} maximum`, 400);
       const last = count({ system: "", messages: req.messages.slice(-1) });
-      const out = reply?.(req, sent) ?? { blocks: [{ type: "text", text: req.purpose === "summary" ? "SUMMARY" : "ok" }], stop: "end_turn" };
+      const out = (await reply?.(req, sent)) ?? { blocks: [{ type: "text", text: req.purpose === "summary" ? "SUMMARY" : "ok" }], stop: "end_turn" };
       return { model: req.model, ...out, usage: { input: last, cache_read: tokens - last, cache_write: 0, output: 10, ...out.usage } };
     },
   };
@@ -523,4 +523,38 @@ test("the build panel compares the sessions used in the last hour when it is ask
   expect((await next.buildPins()).unknown).toBe(1);
   expect(next.pins.open().unknown).toEqual([old]);
   expect(r.failures).toEqual([]);
+});
+
+// The owner's compaction has no turn to stop. A summary request that never answers is ended by Stop:
+// the status clears, nothing is stored, the head stays, and the session takes a message again.
+test("a compaction the owner asked for is stopped by Stop: nothing stored, nothing failed, the session goes on", async () => {
+  let hung = true, aborted = 0;
+  const r = rig((req) => {
+    if (req.purpose !== "summary" || !hung) return undefined;
+    return new Promise((_, reject) => req.signal.addEventListener("abort", () => { aborted++; reject(Object.assign(new Error("aborted"), { name: "AbortError" })); }));
+  });
+  const id = r.session(SMALL.id);
+  r.store.append(id, "user", { text: "read it" });
+  r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(15_000) }], model: SMALL.id, stop: "end_turn", usage: { input: 10, cache_read: 100, cache_write: 0, output: 6_000 } });
+  const head = r.store.session(id)!.head, events = r.store.events(id).length;
+  const pending = r.engine.compactNow(id).then(() => "done", (e) => e);
+  for (let n = 0; n < 200 && !r.sent.some((s) => s.purpose === "summary"); n++) await Bun.sleep(5);
+  expect(r.engine.statusOf(id).kind).toBe("compacting");
+  const t0 = Date.now();
+  await r.engine.interrupt(id, "owner");
+  const end = await pending;
+  expect(Date.now() - t0).toBeLessThan(1_000);
+  expect(end).toMatchObject({ status: 409, code: "stopped", stopped_by: "owner" });
+  expect(aborted).toBe(1);
+  expect(r.engine.statusOf(id).kind).toBe("idle");
+  expect(r.store.session(id)!.head).toBe(head);
+  expect(r.store.events(id)).toHaveLength(events);
+  expect(r.failures).toEqual([]);
+  // A stop with nothing to stop changes nothing, and the next request is the session's own.
+  await r.engine.interrupt(id, "owner");
+  hung = false;
+  expect((await r.engine.compactNow(id)).kind).toBe("compaction");
+  r.engine.send(id, "go on");
+  await r.idle(id);
+  expect(r.store.events(id).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
 });

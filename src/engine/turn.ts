@@ -31,7 +31,7 @@ import { EFFORT_LADDER, type ModelInfo, type Price, type Provider, type Provider
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
-import { holds, ownerStop } from "../core/stoppers.ts";
+import { holds, ownerStop, stopSays } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
 import { answers, callPaths, stoppedWaiting, unansweredText } from "../tools/fs-bound.ts";
@@ -969,7 +969,12 @@ export class Engine {
   // The first stop names the turn's end; the owner's Stop after another's does.
   async interrupt(id: string, by: string) {
     const r = this.running.get(id);
-    if (!r) return;
+    if (!r) {
+      // No turn: the owner's compaction, if one is being written, is what the stop is for.
+      const c = this.compacting.get(id);
+      if (c && !c.abort.signal.aborted) { c.by = by; c.abort.abort(); }
+      return;
+    }
     if (!this.stoppedEarly.has(id) && (!this.stoppedBy.has(id) || ownerStop(by))) this.stoppedBy.set(id, by);
     // A stop always stops: what it writes besides (the hold on the queue,
     // the turn's end) is owed when the store takes no writes, and the turn
@@ -4194,8 +4199,11 @@ export class Engine {
     const transcript = !!opts.auto && over && !!this.gaveUpFor(id, events, st);
     for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session, { auto: !!opts.auto, focus: opts.focus })).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact", session: id }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
-    const own = new AbortController();
-    const signal = opts.signal ?? own.signal;
+    // A compaction inside a turn is stopped with the turn. One asked for between turns (the owner's, or the
+    // one before a model switch) has no turn: Engine.interrupt reaches it through `compacting`.
+    const own: { abort: AbortController; by?: string } = { abort: new AbortController() };
+    if (!opts.signal) this.compacting.set(id, own);
+    const signal = opts.signal ?? own.abort.signal;
     const t0 = Date.now();
     try {
       // A history read in parts says first what it will take, and how far it is.
@@ -4206,6 +4214,7 @@ export class Engine {
       if (!summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
       // (Checked against the conversation before anything below is decided: that waits for the read thread.)
       const settled = await this.settled(upto, summary);
+      if (own.abort.signal.aborted) throw new Error("stopped");
       // Bound to the branch it summarized; the owner's compaction also to no turn having started since.
       const moved = headMoved(events.at(-1)?.id, this.store.session(id)?.head);
       // Inside a turn, a note a hook stored for the summary request itself (memory
@@ -4226,10 +4235,18 @@ export class Engine {
       this.emitSession(id);
       await this.compacted(session, ev);
       return ev;
+    } catch (e) {
+      // The owner's stop: nothing was stored and nothing failed.
+      if (own.abort.signal.aborted && !opts.signal) throw Object.assign(new Error(`The compaction was ${stopSays(own.by)}. Nothing was changed.`), { status: 409, code: "stopped", stopped_by: own.by });
+      throw e;
     } finally {
+      if (this.compacting.get(id) === own) this.compacting.delete(id);
       this.status(id, { kind: "idle" });
     }
   }
+
+  // The compactions asked for between turns that are being written now, each with the way to stop it.
+  private compacting = new Map<string, { abort: AbortController; by?: string }>();
 
   // A summary is in place: told to the modules that follow compactions.
   private async compacted(session: Session, ev: StoredEvent) {

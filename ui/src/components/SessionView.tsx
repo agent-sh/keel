@@ -56,6 +56,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   const connected = useStore((s) => s.connected);
   const gone = useStore((s) => s.gone[id]);
   const loaded = useStore((s) => !!s.events[id]);
+  // A compaction between turns has no turn, and Stop ends it all the same (the daemon aborts its request).
+  const compacting = useStore((s) => s.status[id]?.kind === "compacting");
   // The page's socket is asked for this session's stream while the view is up (lib/scope.ts).
   useEffect(() => scope.show(id), [id]);
   useEffect(() => {
@@ -121,7 +123,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
               {/* A session another harness runs is read-only here: its bar takes the box's place. */}
               {session.outside
                 ? <OutsideBar session={session} />
-                : <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working"} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} panel={panel} />}
+                : <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working" || compacting} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} panel={panel} />}
             </div>
           </div>
         </div>

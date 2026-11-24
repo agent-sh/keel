@@ -40,6 +40,26 @@ test("a compaction keeps the work's artifact trail and says what it kept", async
 
   await page.goto(`/s/${id}`);
   await page.getByTestId("context-meter").click();
+
+  // A compaction whose summary never answers is stopped by Stop: it ends at once, nothing is stored,
+  // no failure is recorded for the owner's own stop, and the session takes a message again.
+  const before = (await (await request.get(`/api/sessions/${id}/events`)).json()).events.length;
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  await page.getByTestId("compact-focus").fill("script:summary-hang");
+  await page.getByTestId("compact-now").click();
+  await expect(page.getByTestId("compacting")).toBeVisible();
+  await expect(page.getByTestId("stop")).toBeVisible();
+  await shoot(page, "compaction-stop-01-compacting");
+  const stoppedAt = Date.now();
+  await page.getByTestId("stop").click();
+  await expect(page.getByTestId("compacting")).toHaveCount(0, { timeout: 1_000 });
+  expect(Date.now() - stoppedAt).toBeLessThan(2_000);
+  await expect(page.getByTestId("stop")).toHaveCount(0);
+  expect((await (await request.get(`/api/sessions/${id}/events`)).json()).events).toHaveLength(before);
+  expect((await (await request.get("/api/errors")).json()).errors).toHaveLength(errorsBefore);
+  await shoot(page, "compaction-stop-02-stopped");
+
+  await page.getByTestId("compact-focus").fill("");
   await page.getByTestId("compact-now").click();
   await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 60_000 });
   await page.keyboard.press("Escape");
