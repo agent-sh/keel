@@ -1,10 +1,10 @@
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, ExternalLink, GitBranch, GitMerge, GitPullRequest, MoveLeft, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ExternalLink, GitBranch, GitMerge, GitPullRequest, MoveLeft, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
-import { isGitFolder, loadBranches, loadWorktree, setStartBase, setStartInWorktree, setStartPr, startBase, useStartBase, useStartInWorktree, useStartPr, useWorktree, type BranchList } from "../lib/worktree.ts";
+import { isGitFolder, loadBranches, loadWorktree, setStartBase, setStartInWorktree, setStartPr, startBase, useHead, useStartBase, useStartInWorktree, useStartPr, useWorktree, type BranchList } from "../lib/worktree.ts";
 import { loadOverlap, mineOf, useOverlap } from "../lib/overlap.ts";
 import { OverlapList } from "./BranchesPanel.tsx";
 import { stoppingShells } from "../lib/shells.ts";
@@ -17,6 +17,38 @@ const CHECKS: Record<string, { text: string; cls: string }> = {
   passing: { text: "checks pass", cls: "text-ok" }, failing: { text: "checks fail", cls: "text-danger" },
   pending: { text: "checks running", cls: "text-warn" }, action_required: { text: "checks wait on a person", cls: "text-warn" },
 };
+
+// A session at a pull request's head from a fork (or one nobody could vouch for): its own instructions are not
+// loaded, and the owner trusts the head here.
+export function HeadChip({ session }: { session: Session }) {
+  const head = useHead(session.id);
+  const [busy, setBusy] = useState(false);
+  if (!head?.held) return null;
+  const trust = async () => {
+    setBusy(true);
+    try {
+      await api(`/api/sessions/${session.id}/head/trust`, { method: "POST", body: "{}" });
+      await loadWorktree(session.id);
+    } catch (e) {
+      reportError(e, { at: "HeadChip" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span data-testid="head-held" title={head.why} className="inline-flex h-7 max-w-[26rem] items-center gap-1.5 rounded-lg bg-warn/10 pl-2 pr-0.5 text-caption text-warn">
+      <ShieldAlert className="size-3.5 shrink-0" />
+      <span className="truncate">PR from a fork: its instructions are not loaded</span>
+      <button
+        type="button" disabled={busy} data-testid="head-trust" onClick={trust}
+        title={`Trust the head of pull request ${head.number}: its instruction files, skills, hooks and checks load as the repository's own`}
+        className="h-6 shrink-0 rounded-md bg-warn/15 px-2 text-caption font-medium hover:bg-warn/25 disabled:opacity-50"
+      >
+        Trust
+      </button>
+    </span>
+  );
+}
 
 const btn = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-ui hover:bg-hover disabled:opacity-50 [&>svg]:size-3.5 [&>svg]:text-faint";
 

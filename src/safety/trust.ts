@@ -13,6 +13,7 @@ import type { Store } from "../core/store.ts";
 import { timed } from "../admin/stall.ts";
 import { instructionNames } from "./instruction-files.ts";
 import { codexConfig, nativeRoots } from "../engine/native-memory.ts";
+import { headHold } from "./head-trust.ts";
 
 export type TrustKind = "instructions" | "skill";
 export type ProjectFile = {
@@ -214,7 +215,8 @@ export class Trust {
       }
     }
     const out: ProjectFile[] = [];
-    const auto = this.newFiles() === "auto";
+    // (A tree whose head is held pins nothing on first sight: its files wait for the owner to trust the head.)
+    const auto = this.newFiles() === "auto" && !headHold.of?.(root);
     for (const f of found) {
       const p = this.pin(f.path);
       // (A skill past what the scan reads is never trusted: not on first sight, not by its old pin.)
@@ -255,6 +257,9 @@ export class Trust {
   instructionText(path: string, text: string): string | null {
     const root = rootOf(dirname(path));
     if (!root || !path.startsWith(root + "/")) return text; // the owner's own files, outside any repository
+    // The head of a pull request nobody vouched for: the base branch's file of that name, never the head's own.
+    const head = headHold.of?.(path);
+    if (head) return head.base(path);
     const st = this.check(path, "instructions", sha(text), text);
     if (st === "trusted") return text;
     if (st === "changed") return this.pin(path)?.content ?? null;
@@ -267,6 +272,7 @@ export class Trust {
   // Why a repository's skill does not load, in words for the model and the owner; null when it loads.
   skillHeld(dir: string): string | null {
     if (!rootOf(dir)) return null;
+    if (headHold.of?.(dir)) return "it is in the head of a pull request from a fork, which nobody the repository trusts wrote: the owner trusts the head on the session's chip first";
     const state = (digest: string) => {
       const st = this.check(dir, "skill", digest, null);
       return st === "trusted" ? null : st === "changed" ? "it changed since the owner trusted it, and waits for him to trust it again (the session's Trust panel)" : "it is new in this repository, and waits for the owner to trust it (the session's Trust panel)";
@@ -288,6 +294,7 @@ export class Trust {
   // The digest the owner pinned a project skill at himself, while the skill
   // is still that on disk; else null.
   skillOwnerDigest(dir: string): string | null {
+    if (headHold.of?.(dir)) return null;
     const digest = skillDigest(dir);
     if (!digest) return null;
     const p = this.pin(dir);
@@ -298,6 +305,7 @@ export class Trust {
   trust(cwd: string, path: string, digest: string): ProjectFile {
     const f = this.files(cwd).find((x) => x.path === path);
     if (!f) throw Object.assign(new Error("no such project file in that folder"), { status: 404 });
+    if (headHold.of?.(path)) throw Object.assign(new Error("this folder is the head of a pull request from a fork: trust the head on the session's chip first"), { status: 409 });
     if (f.state === "gone") {
       this.store.db.query("DELETE FROM trust_pins WHERE path = ?").run(path);
       return f;

@@ -27,6 +27,7 @@ import { safety, useSafety } from "../lib/safety.ts";
 
 // Popovers of the header load after the page (their Base UI parts are large).
 const WorktreeChip = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeChip })));
+const HeadChip = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.HeadChip })));
 
 // The session's permission mode in the bar, only where it is not the mode new sessions start in: the choice is
 // in the message box's row, beside the model, so the bar says what is out of the ordinary and takes the owner there.
@@ -332,6 +333,8 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   const every: Tool[] = [
     ...(modeWord ? [{ id: "mode", label: "Permission mode", rank: 6, rest: true, node: <ModeWord sessionId={session.id} word={modeWord} /> }] : []),
     { id: "worktree", label: "Worktree", rank: 5, rest: true, node: <Suspense fallback={null}><WorktreeChip session={session} /></Suspense> },
+    // A pull request's head nobody vouched for: it says so and takes the owner's trust (it renders nothing otherwise).
+    { id: "head", label: "Pull request head", rank: 7, rest: true, node: <Suspense fallback={null}><HeadChip session={session} /></Suspense> },
     // What the session cost, one figure; the tokens behind it are in its title and the Usage panel it opens.
     // The title is a tip under the pointer and the keyboard (lib/tips.ts), and steps aside while it shows: the
     // counts are its description too (a hidden line: the button's text stays one figure), so a screen reader

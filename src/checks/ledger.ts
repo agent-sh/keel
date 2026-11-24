@@ -25,6 +25,7 @@ import { dirname, join, relative } from "node:path";
 import { settings } from "../admin/settings.ts";
 import { addAll, git, locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
+import { headHold } from "../safety/head-trust.ts";
 import { sandboxScope } from "../safety/sandbox-scope.ts";
 import { FILE, normDir, overlay, parseChecks, readChecks, type Named as NamedChecks } from "./named.ts";
 import type { Result, Run } from "./words.ts";
@@ -118,6 +119,9 @@ export type Named = NamedChecks & { source: "file" | "setting" | "file and setti
 // The owner's setting for a repository (checks.repos, by its main checkout).
 export const settingFor = (scope: string): unknown => (settings().checks?.repos as Record<string, unknown> | undefined)?.[scope];
 function fileOf(top: string): NamedChecks | undefined {
+  // The head of a pull request nobody vouched for wrote this file: it names no check until the owner trusts the head
+  // (the owner's setting for the repository still does).
+  if (headHold.of?.(top)) return undefined;
   const path = join(top, FILE);
   let mark: string;
   try { const st = statSync(path); if (!st.isFile()) return undefined; mark = `${st.size}:${st.mtimeMs}:${st.ino}`; } catch { return undefined; }

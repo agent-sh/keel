@@ -10,7 +10,7 @@ import { Shadow, type DiffResult } from "../safety/shadow.ts";
 import { addAll, git as gitCall, gitEnv, gitReach, innerWork, locate, nestedIn, type GitFetch } from "../core/git.ts";
 import { readText } from "../core/proc.ts";
 import { contains, realOf } from "../core/paths.ts";
-import { prTarget } from "./pr-head.ts";
+import { prTarget, type Host } from "./pr-head.ts";
 
 export type Worktree = {
   session_id: string;
@@ -232,7 +232,7 @@ export class Worktrees {
   // its head is fetched by name into a ref of Keel's own, the worktree is made on a new branch at that
   // commit (pr-N in its name), and the ref is let go (the branch holds the commits). The fetch asks for
   // nothing: no terminal, askpass or ssh prompt. The ref is the host's (src/worktree/pr-head.ts).
-  async atPr(sessionKey: string, workspace: string, pr: string | number, madeFor: string = sessionKey): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string; number: number; commit: string }> {
+  async atPr(sessionKey: string, workspace: string, pr: string | number, madeFor: string = sessionKey): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string; number: number; commit: string; host: Host; origin: string; top: string }> {
     const repo = await this.repoOf(workspace);
     if (!repo) throw new GitError(`not a git repository: ${workspace}`, 400);
     const origin = (await git(repo.top, ["config", "--get", "remote.origin.url"], { ok: true })).trim();
@@ -252,7 +252,7 @@ export class Worktrees {
     try {
       const commit = (await git(repo.top, ["rev-parse", "--verify", `${own}^{commit}`])).trim();
       const made = await this.create(sessionKey, workspace, `pr-${t.number}`, commit, madeFor);
-      return { ...made, number: t.number, commit };
+      return { ...made, number: t.number, commit, host: t.host, origin, top: repo.top };
     } finally {
       await git(repo.top, ["update-ref", "-d", own], { ok: true });
     }

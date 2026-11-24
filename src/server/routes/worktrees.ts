@@ -7,6 +7,8 @@ import { GitError, Worktrees } from "../../worktree/manager.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { fitted } from "../../engine/image-fit.ts";
 import { crossingIn, routeOfFolder } from "../../safety/content-routes.ts";
+import { hostOfRemote } from "../../worktree/pr-head.ts";
+import { headsRef } from "./trust.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -66,8 +68,11 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         const title = String(b.title || b.text || (pr !== undefined ? `Pull request ${String(pr).replace(/^.*\/(?:pull|merge_requests)\/(\d+).*$/, "$1")}` : "")).split("\n")[0]!.slice(0, 80);
         const s = store.createSession({ model, workspace, title });
         try {
-          const { wt, cwd } = pr !== undefined ? await wts.atPr(s.id, workspace, pr) : await wts.create(s.id, workspace, title, b.base);
+          const at = pr !== undefined ? await wts.atPr(s.id, workspace, pr) : undefined;
+          const { wt, cwd } = at ?? await wts.create(s.id, workspace, title, b.base);
           wts.adopt(s.id, wt);
+          // Who wrote the head is decided before the session reads a file of it (src/safety/head-trust.ts).
+          if (at) await headsRef?.record({ sessionId: s.id, path: wt.path, top: at.top, number: at.number, host: at.host, named: String(pr).trim().replace(/^#/, ""), origin: at.origin, hasHost: !!hostOfRemote(at.origin), commit: at.commit });
           sweep().catch((e) => deps.errors.capture("server", e, { at: "worktree prune" }));
           const next = store.updateSession(s.id, { workspace: cwd });
           bus.emit({ t: "session", session: next });
@@ -149,7 +154,7 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
       GET: (req: any) => guard(async () => {
         if (!store.session(req.params.id)) return bad("no such session", 404);
         const w = wts.get(req.params.id);
-        return json({ worktree: w ? await wts.status(w) : null });
+        return json({ worktree: w ? await wts.status(w) : null, head: headsRef?.view(req.params.id) ?? null });
       }),
       DELETE: (req: any) => guard(async () => {
         const m = managed(req.params.id);

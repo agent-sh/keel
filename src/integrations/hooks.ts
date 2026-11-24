@@ -32,6 +32,7 @@ import { homeOf } from "../safety/credentials.ts";
 import { shellText } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
 import { timed } from "../admin/stall.ts";
+import { headHold } from "../safety/head-trust.ts";
 import { enabledUnits, type Unit } from "../plugins/registry.ts";
 import { substitute } from "../plugins/options.ts";
 import { hookOptions, waiting } from "../plugins/settings.ts";
@@ -160,6 +161,8 @@ export const skillHookTrust: {
 } = {};
 const SKILL_ENV = new WeakMap<object, Record<string, string>>();
 const SKILL_ONCE = new WeakMap<object, { session: string; skill: string }>();
+
+const HEAD_HELD = "it is in the head of a pull request from a fork, which nobody the repository trusts wrote: it does not run until the owner trusts the head on the session's chip";
 
 export const ownerHooksPath = () => process.env.KEEL_HOOKS ?? join(configDir(), "hooks.json");
 
@@ -572,6 +575,8 @@ export class Hooks {
     let active = true;
     if (!pin) { active = false; problems.unshift("not pinned: the owner reads the file and pins it before it runs"); }
     else if (pin !== digest) { active = false; problems.unshift(`changed since it was pinned${files.length ? " (the file or a script it runs)" : ""}: pin it again to run it`); }
+    // The head of a pull request nobody vouched for wrote this file: it does not run, pinned or not, until the owner trusts the head.
+    if (headHold.of?.(root)) { active = false; problems.unshift(HEAD_HELD); }
     if (links.length) { active = false; problems.unshift(`${links.map((f) => relative(root, f)).join(", ")} ${links.length > 1 ? "are links" : "is a link"} out of .keel/: the pin cannot hold what ${links.length > 1 ? "they run" : "it runs"}`); }
     const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
     return { path, scope: "project", root, text: text.slice(0, SHOWN_MAX + 1), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups };
@@ -589,7 +594,7 @@ export class Hooks {
     const owner = this.ownerSource(root);
     if (owner) out.push({ scope: "owner", root, text: owner.sha256, groups: owner.groups });
     for (const p of this.pluginSources(root)) out.push({ scope: "plugin", root, text: p.sha256, groups: p.groups });
-    if (root === homeOf() || !this.pinned(root)) return out;
+    if (root === homeOf() || !this.pinned(root) || headHold.of?.(root)) return out;
     let text: string;
     try { text = readFileSync(join(root, ".keel", "hooks.json"), "utf8"); } catch { return out; }
     const kept = this.projects.get(root);
@@ -769,6 +774,7 @@ export class Hooks {
   pin(cwd: string, digest: string): string | null {
     const project = this.sources(cwd).find((s) => s.scope === "project");
     if (!project) return "this folder has no .keel/hooks.json";
+    if (headHold.of?.(project.root)) return `${HEAD_HELD}: trust the head first`;
     if (project.sha256 !== digest) return "the file is no longer the one that was shown: read it again";
     if (project.text.length > SHOWN_MAX) return `the file is longer than Keel shows whole (${SHOWN_MAX} characters), so it cannot be pinned: you would pin hooks you were not shown`;
     this.store.db.query("INSERT INTO hook_pins (root, sha256, created) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET sha256 = excluded.sha256, created = excluded.created").run(pinKey(projectRoot(cwd)), digest, Date.now());

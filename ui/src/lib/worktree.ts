@@ -6,7 +6,11 @@ import { api, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
 export type { BranchList, WorktreeStatus };
 
+// Who wrote the head of a session that started at a pull request (src/safety/head-trust.ts).
+export type HeadView = { held: boolean; state: "held" | "trusted" | "owner"; number: number; author: string | null; fork: boolean | null; why: string; base_ref: string | null; merge_base: string | null; head_commit: string };
+
 let byId: Record<string, WorktreeStatus | null> = {};
+let heads: Record<string, HeadView | null> = {};
 let startInWorktree = localStorage.getItem("keel.startInWorktree") === "1";
 const subs = new Set<() => void>();
 const changed = () => subs.forEach((f) => f());
@@ -20,8 +24,9 @@ export function loadWorktree(id: string, shared = false): Promise<void> {
   const out = shared ? reading.get(id) : undefined;
   if (out) return out;
   const read = (async () => {
-    const r = await api<{ worktree: WorktreeStatus | null }>(`/api/sessions/${id}/worktree`);
+    const r = await api<{ worktree: WorktreeStatus | null; head?: HeadView | null }>(`/api/sessions/${id}/worktree`);
     byId = { ...byId, [id]: r.worktree };
+    heads = { ...heads, [id]: r.head ?? null };
     changed();
   })().finally(() => { if (reading.get(id) === read) reading.delete(id); });
   reading.set(id, read);
@@ -32,6 +37,8 @@ export function useWorktree(id: string): WorktreeStatus | null | undefined {
   useEffect(() => { if (!(id in byId)) loadWorktree(id, true).catch(reportError); }, [id]);
   return useSyncExternalStore(subscribe, () => byId[id]);
 }
+
+export const useHead = (id: string): HeadView | null | undefined => useSyncExternalStore(subscribe, () => heads[id]);
 
 export const useStartInWorktree = () => useSyncExternalStore(subscribe, () => startInWorktree);
 export function setStartInWorktree(v: boolean) {

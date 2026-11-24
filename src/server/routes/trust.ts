@@ -9,6 +9,7 @@ import { git } from "../../core/git.ts";
 import { instructionFilter } from "../../engine/turn.ts";
 import { classifyCall } from "../../safety/gate.ts";
 import { Quarantine, snapshot, type Snap } from "../../safety/quarantine.ts";
+import { HeadTrust } from "../../safety/head-trust.ts";
 import { rootOf, skillDigest, Trust } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -37,11 +38,15 @@ const needs = (req: Request, action: string) => (!presence || presence.allows(re
 
 // The pins, for the settings pages that write a repository's files for the owner.
 export let trustRef: Trust | undefined;
+// Who wrote the head of each session that started at a pull request (src/safety/head-trust.ts).
+export let headsRef: HeadTrust | undefined;
 
 export const trustRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
   const trust = new Trust(store);
   trustRef = trust;
+  const heads = new HeadTrust(store);
+  headsRef = heads;
   const quarantine = new Quarantine(store, join(store.stateDir, "quarantine"));
   instructionFilter.file = (path, text) => trust.instructionText(path, text);
   skillFilter.allow = (dir) => trust.skillAllowed(dir);
@@ -59,6 +64,8 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
     // Once per session (the prompt is frozen): say which of the repository's
     // files wait for the owner.
     async system(s) {
+      // The head of a pull request nobody vouched for: its files wait for the head to be trusted, which the session's chip says.
+      if (heads.held(s.workspace)) return "";
       const held = trust.files(s.workspace).filter((f) => f.state === "new" || f.state === "changed");
       // Said once per change of the files (src/safety/trust.ts owesNote): not at each daemon start.
       if (trust.owesNote(s.id, held)) {
@@ -153,6 +160,30 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
         // another machine (src/core/outside.ts), and its panel reads the session's own id.
         for (const id of sessionsIn(cwd)) bus.emit({ t: "feature", name: "trust", session_id: id, data: { cwd } });
         return json(view(cwd));
+      })(),
+    },
+    // Who wrote the head of a session that started at a pull request, and the owner's trust of it.
+    "/api/sessions/:id/head": {
+      GET: (req: any) => json({ head: heads.view(req.params.id) }),
+    },
+    "/api/sessions/:id/head/trust": {
+      POST: (req: any) => guard(async () => {
+        const g = needs(req, "trust");
+        if (g) return g;
+        const id = req.params.id;
+        const before = heads.forSession(id);
+        if (!before) return bad("this session did not start at a pull request", 404);
+        if (before.state !== "held") return json({ head: heads.view(id) });
+        heads.trust(id);
+        // The owner has looked at the head: its instruction files and skills are pinned as they are now, the way a
+        // repository's files are on first sight.
+        const cwd = before.path;
+        for (const f of trust.files(cwd)) {
+          if ((f.state === "new" || f.state === "changed") && f.sha256 && !f.refused && !f.outside?.length) trust.trust(cwd, f.path, f.sha256);
+        }
+        for (const sid of sessionsIn(cwd)) bus.emit({ t: "feature", name: "trust", session_id: sid, data: { cwd } });
+        bus.emit({ t: "feature", name: "worktree", session_id: id, data: { changed: true } });
+        return json({ head: heads.view(id) });
       })(),
     },
     "/api/trust/settings": {

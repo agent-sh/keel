@@ -44,6 +44,7 @@ import { timed } from "../admin/stall.ts";
 import { buildId } from "../core/build.ts";
 import { ruledOf, type Ruled } from "./trial.ts";
 import { Provenance } from "./provenance-books.ts";
+import { headHold } from "./head-trust.ts";
 import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, wholeTargets, type Hit, type Reach } from "./provenance.ts";
 import { webShape } from "./web-shape.ts";
 import { ownerDenial } from "../core/stops.ts";
@@ -409,6 +410,11 @@ export class Gate {
       const shape = webShape(tool, name === "mcp_call" ? input?.arguments : input);
       return { ...(shape ? ("search" in shape ? { listed: true } : { linked: true }) : {}), where: `a ${tool} result` };
     }
+    // A file the head of a pull request from a fork wrote is read as outside content: the addresses and branches it
+    // names are the author's, not the project's.
+    const at = typeof input?.file_path === "string" ? input.file_path : typeof input?.path === "string" ? input.path : "";
+    const head = at.startsWith("/") && /^(read|view|grep|glob|search|find|list|ls)/i.test(name) ? headHold.of?.(at) : undefined;
+    if (head) return { where: `a file of the head of pull request ${head.number}, which was not written by anyone the repository trusts` };
     const cmd = typeof input?.command === "string" ? input.command : typeof input?.cmd === "string" ? input.cmd : undefined;
     const prog = cmd ? outsideCommand(cmd) : null;
     return prog ? { ...(cmd && plainFetcher(cmd) ? { linked: true } : {}), where: `a ${name} result (${prog} output)` } : undefined;
