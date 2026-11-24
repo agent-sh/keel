@@ -391,7 +391,8 @@ test("settings search shows keyboard focus", async ({ page, request }) => {
   await expect(page.getByRole("textbox", { name: "Find a setting" })).toHaveValue("usage");
   // (Storage answers to the word too: it keeps the usage records and says for how long.)
   // The row inside Storage that matched is named under it.
-  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText(["Usage", "Storage", "Keep usage records"]);
+  // (Telemetry answers to it as well since it shows what the owner uses: their presses, 372488761.)
+  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText(["Usage", "Storage", "Keep usage records", "Telemetry"]);
   // Each word is matched on its own, by the words a section answers to as well as its name.
   const nav = page.getByRole("navigation", { name: "Settings sections" });
   const sections = nav.locator("button[data-section]");
