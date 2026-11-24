@@ -11,6 +11,8 @@ import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.
 import { dropRepeats, keyedTo, keyRefused, keyTried, keysArrived, mayTake, noteAnswer, owned, pageFocus, pressKeysSettled, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { later, useAway } from "../lib/later.ts";
+import { placeOf, type Place } from "../lib/reply-calls.ts";
+import { NEEDS_APPROVAL } from "../lib/work.ts";
 import { modalOpen } from "../lib/overlay.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError, useStore } from "../lib/store.ts";
@@ -360,6 +362,23 @@ export function Approvals({ sessionId, asker, where }: { sessionId: string; aske
   // Put away with Later (an agent's requests are answered where they are asked: no Later there).
   const away = useAway(sessionId);
   const cards = useMemo(() => (!asker && away.size ? all.filter((a) => !away.has(a.id)) : all), [all, away, asker]);
+  // Where each card's call stands in its model reply, and the later calls of the reply that have not run and
+  // have no card of their own in the list (still being checked, running, or put away with Later): named on
+  // the first card of the reply that is open. Read from the page's events while a card waits.
+  const events = useStore((s) => (cards.length ? s.events[sessionId] : undefined));
+  const cwd = useStore((s) => (cards.length ? s.sessions[sessionId]?.workspace : undefined));
+  const places = useMemo(() => {
+    const out = new Map<string, { place: Place; lead: boolean }>();
+    const led = new Set<number>();
+    const listed = new Set(cards.map((c) => c.call_id));
+    for (const c of cards) {
+      const place = placeOf(events, c, all, cwd);
+      if (!place) continue;
+      out.set(c.id, { place: { ...place, later: place.later.filter((l) => !listed.has(l.id)) }, lead: !led.has(c.reply!.seq) });
+      led.add(c.reply!.seq);
+    }
+    return out;
+  }, [events, cards, all, cwd]);
   const list = useRef<HTMLDivElement>(null);
   const { view, tick, waiting, setHot, spend, own, reader, latest } = useReadings(list, cards);
   // A reading on by keys under way (End, Space): one at a time, and a press meanwhile joins it.
@@ -638,6 +657,8 @@ export function Approvals({ sessionId, asker, where }: { sessionId: string; aske
               key={a.id}
               a={a}
               first={i === 0}
+              place={places.get(a.id)?.place}
+              lead={!!places.get(a.id)?.lead}
               asker={asker}
               where={where}
               list={list}
@@ -837,8 +858,8 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card now.
 // `keysOn`: where the keyboard is, as far as this card goes: on its Allow once, on the card
 // itself, or on the list. `touch`: the pointer is a finger.
-function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, keyLive, keyUnseen, armedKey, whole, onWhole, enterOpens, keysOn, touch, onLater }: {
-  a: Approval; first: boolean; asker?: string; where?: Where; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
+function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, keyLive, keyUnseen, armedKey, whole, onWhole, enterOpens, keysOn, touch, onLater }: {
+  a: Approval; first: boolean; place?: Place; lead: boolean; asker?: string; where?: Where; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
   hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; read: () => unknown; cut: boolean; unseen?: Unseen;
   keyLive: boolean; keyUnseen?: number; armedKey: (of?: "once" | "grant") => boolean;
   whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list"; touch: boolean;
@@ -1158,6 +1179,27 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
       in <Spelled text={runsIn.folder.split("/").filter(Boolean).at(-1) ?? runsIn.folder} />{runsIn.branch && <>, branch <Spelled text={runsIn.branch} /></>}
     </span>
   );
+  // Which of its reply's calls this is, when the reply made several: "1 of 4".
+  const call = at && (
+    <span className={cn("rounded-full border border-line px-2 py-0.5 text-micro font-medium tabular-nums text-muted", dense && plain && "sr-only")} aria-label={`Call ${at.at} of ${at.of} of the model's reply`} data-testid="approval-call">
+      {at.at} of {at.of}
+    </span>
+  );
+  // The calls of the reply that stand behind this one and have not run: an Allow once on this card is for this call alone.
+  const behind = lead && at && at.later.length > 0 && (
+    <div className={cn("text-micro", dense ? "mt-1.5" : "mx-4 mt-2")} data-testid="approval-later">
+      <p className="text-muted">Allow once is for this call only. Behind it in this reply:</p>
+      <ul className="mt-0.5 flex flex-col gap-0.5">
+        {at.later.map((l) => (
+          <li key={l.id} className="flex min-w-0 flex-wrap items-baseline gap-x-2" data-testid="approval-later-call" data-asks={l.asks || undefined} data-risk={l.high ? "high" : undefined} dir="ltr">
+            <span className="shrink-0 font-mono text-faint">{l.tool}</span>
+            <span className="min-w-0 break-all font-mono text-muted"><Spelled text={l.line} /></span>
+            {l.asks && <span className={cn("shrink-0 font-medium", l.high ? "text-danger" : "text-accent")} data-testid="approval-later-asks">{l.high ? `high risk, ${NEEDS_APPROVAL}` : NEEDS_APPROVAL}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
   const fromCode = a.call_id.includes("~") && <span className="rounded-full bg-sunken px-1.5 py-px text-micro text-muted" data-testid="approval-from-code">from a program</span>;
   const title = (
     <span id={`${ids}-title`} className={cn(dense ? "text-caption font-medium" : "text-ui font-medium", dense && plain && "sr-only")}>
@@ -1287,10 +1329,12 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
         <div className="flex min-w-0 flex-1 basis-64 items-start gap-2.5 py-2 pl-3 pr-1">
           <span className="mt-0.5">{icon}</span>
           <div className="min-w-0 flex-1">
-            {(!plain || fromCode || machine || place) && <div className="mb-1 flex flex-wrap items-center gap-2">{!plain && title}{machine}{place}{fromCode}</div>}
-            {plain && title}
+            {(!plain || fromCode || machine || place) && <div className="mb-1 flex flex-wrap items-center gap-2">{!plain && title}{!plain && call}{machine}{place}{fromCode}</div>}
+            {/* (A row of one tool has no header line: its place in the reply is read out, and the list's order shows it.) */}
+            {plain && <>{title}{call}</>}
             {notice}
             {summary}
+            {behind}
           </div>
         </div>
       ) : (
@@ -1298,6 +1342,7 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3">
             {icon}
             {title}
+            {call}
             {machine}
             {place}
             {fromCode}
@@ -1310,6 +1355,7 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
           </div>
           {notice}
           {summary}
+          {behind}
         </>
       )}
       {closed ? (

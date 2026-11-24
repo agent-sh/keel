@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
@@ -887,4 +887,50 @@ test("a request drawn as the owner leaves its pane records no error", async ({ p
       expect(errors, `left for ${way}`).toEqual([]);
     }
   } finally { for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); } }
+});
+
+test("a card says which call of the reply it is and names the calls behind it that have no card", async ({ page, request }) => {
+  const calls = [
+    { name: "Edit", input: { file_path: "a.md", old_string: "x", new_string: "y" } },
+    bash("two"),
+    bash("three"),
+    { name: "Bash", input: { command: "git push origin main --force" } },
+  ];
+  const { id, ws, cards } = await start(request, "Four in one reply", calls, { later: true });
+  writeFileSync(join(ws, "a.md"), "x\n");
+  try {
+    await page.goto(`/s/${id}`);
+    const pane = paneOf(page, id);
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify(calls)}` } });
+    const card = pane.getByTestId("approval");
+    await expect(card).toHaveCount(4);
+    // Each card says its place in the reply. Every call has a card here, so nothing is named twice.
+    await expect(pane.getByTestId("approval-call")).toHaveText(["1 of 4", "2 of 4", "3 of 4", "4 of 4"]);
+    await expect(pane.getByTestId("approval-later")).toHaveCount(0);
+    // The force push is put away with Later: it has no card now, and the first card names it, marked.
+    await card.filter({ hasText: "--force" }).getByTestId("ask-later").click();
+    await expect(card).toHaveCount(3);
+    await expect(pane.getByTestId("approval-call")).toHaveText(["1 of 4", "2 of 4", "3 of 4"]);
+    const later = pane.getByTestId("approval-later");
+    await expect(later).toHaveCount(1);
+    await expect(card.first().getByTestId("approval-later")).toHaveCount(1);
+    await expect(later).toContainText("Allow once is for this call only");
+    const row = later.getByTestId("approval-later-call");
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("Bash");
+    await expect(row).toContainText("git push origin main --force");
+    await expect(row.getByTestId("approval-later-asks")).toContainText("high risk");
+    await shoot(page, "approvals-reply-place");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await shoot(page, "approvals-reply-place-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    // Allow once answers the shown call only: the others, the one put away included, still wait.
+    await card.first().getByTestId("allow-once").click();
+    await expect(card).toHaveCount(2);
+    await expect.poll(async () => (await cards()).map((c) => c.state).sort()).toEqual(["allowed", "pending", "pending", "pending"]);
+    await expect(pane.getByTestId("approval-call")).toHaveText(["2 of 4", "3 of 4"]);
+    await expect(card.first().getByTestId("approval-later-call")).toContainText("git push origin main --force");
+  } finally {
+    await request.delete(`/api/sessions/${id}`);
+  }
 });
