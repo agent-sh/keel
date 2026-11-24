@@ -265,6 +265,17 @@ const sharedSet = (s: Shared) => new Set([...s.out.keys(), ...(s.base ? [s.base]
 const heldSet = (s: Shared) => new Set([...sharedSet(s), ...(s.foreign?.() ?? [])]);
 
 // What a git command run in the agent's own worktree does to a branch it shares, if anything.
+// git archive only reads the repository and writes the archive to its output, so from another checkout it
+// is a read, as git show is: a reviewer builds a candidate's tree with `git archive REV | tar -x -C DIR`.
+// Where the archive goes is judged apart: tar's extraction target by the write rules, and git's own
+// -o / --output by the check below, so only the options that name no place and run nothing are let
+// through (--remote reaches another repository and --exec runs a program there; a word the shell
+// expands could be either).
+const ARCHIVE_OPTION = /^(--|-[0-9]+|-[lv]+|--(format|prefix|add-file|add-virtual-file|mtime)(=.*)?|--(list|verbose|worktree-attributes))$/;
+function archiveReads(g: Git): boolean {
+  return g.sub === "archive" && g.args.every((a) => !unread(a) && (!a.startsWith("-") || ARCHIVE_OPTION.test(a)));
+}
+
 function movesShared(g: Git, dir: string, home: string, s: Shared): string | null {
   const shared = sharedSet(s);
   // `named`: a branch this command may not move, rename or delete. `onto`: one it may not put the worktree on
@@ -619,7 +630,7 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
       if (RUNS_COMMAND.test(k.toLowerCase()) && v !== undefined) { const ran = inner(commandOf(v), at ?? dir); if (ran) return `sets ${k} to a command that ${ran}`; }
     }
     for (const body of bodiesOf(g)) { const why = inner(body, at ?? dir); if (why) return why; }
-    const reads = isReadOnly({ words: ["git", g.sub, ...g.args], text: "", redirects: false });
+    const reads = archiveReads(g) || isReadOnly({ words: ["git", g.sub, ...g.args], text: "", redirects: false });
     if (place.at === "other" && !reads) return `runs git ${g.sub} in ${place.folder}, another checkout of this repository`;
     if (place.at === "unknown" && !reads) return `runs git ${g.sub} in ${place.what}, which may be another checkout of this repository`;
     if (place.at === "own") { const why = movesShared(g, at!, home, s); if (why) return why; }

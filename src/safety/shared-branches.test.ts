@@ -109,3 +109,22 @@ test("a command does not write the other object stores git reads, nor make a lin
   expect(gitStoreOf("/r/.git/objects/ab/cdef", s)).toBeNull();
   expect(gitStoreOf("/r/.git/objects/ab", s, true)).toContain("link");
 });
+
+test("git archive reads: a candidate's tree is built in another checkout, and an archive written into its git data is still refused", () => {
+  for (const line of [
+    "git -C /r archive HEAD | tar -x -C /tmp/cand",
+    "cd /r && git archive keel/agent-2 | tar -x -C /tmp/cand",
+    "git -C /r archive --format=tar --prefix=cand/ release/1.0 | tar -x -C /tmp/cand",
+    "git -C /r archive -0 HEAD src | tar -x -C /tmp/cand",
+  ]) expect([line, refused(line)]).toEqual([line, null]);
+  for (const line of [
+    "git -C /r archive --output=/r/.git/hooks/x.tar HEAD",
+    "git -C /r archive -o /r/.git/x.tar HEAD",
+    "git -C /r archive -ox.tar HEAD",
+    "git -C /r archive --out=/r/.git/x HEAD",
+    "git -C /r archive --remote=origin HEAD",
+    "git -C /r archive --exec=sh HEAD",
+    "git -C /r archive HEAD $(echo --output=/r/.git/x)",
+    "git -C /r archive --prefix --output=/r/.git/x HEAD",
+  ]) expect([line, refused(line) !== null]).toEqual([line, true]);
+});
