@@ -135,7 +135,19 @@ export const toolRoutes: RouteModule = (deps) => {
 
   return {
     "/api/sessions/:id/questions": {
-      GET: (req: any) => json({ pending: pendingQuestions(req.params.id) }),
+      // `calls`: the call that asks each one (its tool and input), for a view that answers an agent's question
+      // without holding the agent's transcript.
+      GET: (req: any) => {
+        const pending = pendingQuestions(req.params.id);
+        const calls = pending.flatMap((call_id) => {
+          const e = deps.store.db.query<{ data: string }, [string, string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'assistant' AND instr(data, ?) > 0 ORDER BY seq DESC LIMIT 1").get(req.params.id, JSON.stringify(call_id));
+          try {
+            const use = e && (JSON.parse(e.data).blocks ?? []).find((b: any) => b.type === "tool_use" && b.id === call_id);
+            return use ? [{ call_id, name: String(use.name), input: use.input }] : [];
+          } catch { return []; }
+        });
+        return json({ pending, calls });
+      },
     },
     "/api/sessions/:id/questions/:call": {
       POST: async (req: any) => {

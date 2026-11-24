@@ -30,7 +30,7 @@ import type { Asked, AskedLink, ToolResultBlock, ToolUseBlock } from "../../../s
 import { SETTLE_MS } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, keysSettled, noteAnswer, noteOneKey, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
-import { actions, failed, getState, useStore } from "../lib/store.ts";
+import { actions, api, failed, getState, reportError, useStore } from "../lib/store.ts";
 import { askedQuestions, questions, resultText, siteOf, type UiQuestion } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
 import { justOnce, keepRuling, useOfferMark, type Scope } from "../lib/rulings.ts";
@@ -218,30 +218,51 @@ function RulingOffer({ sessionId, callId, offer }: { sessionId: string; callId: 
 }
 
 // The questions of a session that wait for an answer, above its message box.
-export function Questions({ sessionId }: { sessionId: string }) {
+// `agent`: the session is one of the view's agents, whose transcript the page does not hold: the
+// calls that ask come from the daemon, only while they wait. `lead`: the first card takes the
+// keyboard as it appears (one card in a pane does).
+export function Questions({ sessionId, agent, lead = true }: { sessionId: string; agent?: boolean; lead?: boolean }) {
   const calls = useStore((s) => s.questionCalls[sessionId]) ?? NONE;
-  const events = useStore((s) => s.events[sessionId]);
+  const events = useStore((s) => (agent ? undefined : s.events[sessionId]));
+  const told = useAskedCalls(sessionId, agent ? calls : NONE);
   const uses = useMemo(() => {
-    if (!calls.length || !events) return [];
+    if (!calls.length) return [];
+    if (agent) return calls.map((id) => told.get(id)).filter((u): u is ToolUseBlock => !!u);
+    if (!events) return [];
     const found = new Map<string, ToolUseBlock>();
     for (let i = events.length - 1; i >= 0 && found.size < calls.length; i--) {
       const e = events[i]!;
       if (e.kind === "assistant") for (const b of e.data.blocks as ToolUseBlock[]) if (b.type === "tool_use" && calls.includes(b.id)) found.set(b.id, b);
     }
     return calls.map((id) => found.get(id)).filter((u): u is ToolUseBlock => !!u);
-  }, [calls, events]);
+  }, [calls, events, told, agent]);
   // What a server asked on a call that runs (the call's input is not the question).
   const asks = useStore((s) => s.questionAsks[sessionId]);
   if (!uses.length) return null;
   return (
-    <div className="mb-2 flex flex-col gap-2">
+    <div className={agent ? "flex flex-col gap-2" : "mb-2 flex flex-col gap-2"}>
       {uses.map((u, i) => {
         const asked = at(asks, u.id);
         // (A card of its own per question: a server's next one on the same call starts empty and takes an answer.)
-        return <Docked key={asked ? `${u.id}:${asked.id}` : u.id} use={u} sessionId={sessionId} first={i === 0} asked={asked} />;
+        return <Docked key={asked ? `${u.id}:${asked.id}` : u.id} use={u} sessionId={sessionId} first={lead && i === 0} asked={asked} />;
       })}
     </div>
   );
+}
+
+// The calls that ask an agent's open questions, read from the daemon once per set of calls.
+function useAskedCalls(sessionId: string, calls: string[]): Map<string, ToolUseBlock> {
+  const [got, setGot] = useState(() => new Map<string, ToolUseBlock>());
+  const key = calls.join();
+  useEffect(() => {
+    if (!key) return;
+    let gone = false;
+    api<{ calls?: { call_id: string; name: string; input: unknown }[] }>(`/api/sessions/${sessionId}/questions`)
+      .then((r) => { if (!gone) setGot(new Map((r.calls ?? []).map((c) => [c.call_id, { type: "tool_use", id: c.call_id, name: c.name, input: c.input } as ToolUseBlock]))); })
+      .catch((e) => { if ((e as { status?: number }).status !== 404) reportError(e, { at: "agent question" }); });
+    return () => { gone = true; };
+  }, [sessionId, key]);
+  return got;
 }
 
 // In the conversation, under a call whose server asks the owner something: a

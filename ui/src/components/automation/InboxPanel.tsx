@@ -11,6 +11,7 @@ import { ActivityList } from "./ActivityList.tsx";
 import { plainLine } from "../../../../src/core/plain.ts";
 import { AwayDigest } from "./AwayDigest.tsx";
 import { AlertIcon, alertState, CHANNEL_NAME, Empty } from "./bits.tsx";
+import { rootOf } from "../../lib/agent-tree.ts";
 import { seeAllAgents } from "../../lib/agent-seen.ts";
 import { ALERT_GROUPS, ALERT_GROUP_WORD, ASK_KINDS, COUNTERS, STATE_WORD, TURN_ENDED, alertGroup, alertWord, askAction, type AlertGroup } from "../../../../src/core/state-words.ts";
 import { Mark } from "../Mark.tsx";
@@ -150,13 +151,13 @@ function Inbox({ onClose }: { onClose: () => void }) {
       reportError(e, { at: "inbox open" });
       return note(a.id, { text: "Could not reach the daemon." });
     }
-    // An approval opens on the page that answers it (a parent answers its
-    // agents' cards), with that card focused; one answered meanwhile says so.
+    // An approval opens on the page that answers it (a coordinator answers the cards of its whole tree), with that card focused; one answered meanwhile says so.
     if (a.kind === "approval" && a.data?.approval_id) {
       if (t.approval !== "pending") return note(a.id, { text: "Already answered." });
       const page = t.parent ?? t.open;
       if (!page) return note(a.id, { text: "This session was deleted." });
-      openSession(page);
+      // The session at the top of the agent's tree shows it, whatever its depth.
+      openSession(rootOf((id) => sessions[id]?.parent_id, page));
       onClose();
       // As every way to a request: the keyboard lands on the list of requests, on no answer, and
       // the card decides from there (a text that is not read keeps it off its answers).

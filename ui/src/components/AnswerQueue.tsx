@@ -81,12 +81,12 @@ const QUIET_MS = 60_000;
 const CARDS = new Set(["approval", "question", "plan", "secret"]);
 type State = {
   order: string[]; // the sessions that wait, the longest wait first
-  parent: Record<string, string>; // of those, the agents' sessions: the session that started each
+  above: Record<string, string[]>; // of those, the agents' sessions: the sessions above each, up to the one at the top of its tree
   card: Record<string, boolean>; // of those, the ones that wait with a card (not with a message that did not go)
   on: boolean; // a sequence is being answered
   at: string | null; // the session the sequence is on
 };
-let state: State = { order: [], parent: {}, card: {}, on: false, at: null };
+let state: State = { order: [], above: {}, card: {}, on: false, at: null };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => { state = { ...state, ...patch }; subs.forEach((f) => f()); };
 const useQueue = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => sel(state));
@@ -196,9 +196,10 @@ export function AnswerQueue() {
   const order = waitingOrder(list, (id) => states[id], (id) => held(id).length > 0 || !!unsentOf(id), (id) => costs.get(id)?.key ?? 0, (id) => states[id]?.watch === "fail" && costs.has(id));
   const key = order.join();
   const cardKey = order.map((id) => (CARDS.has(states[id]?.why ?? "") || held(id).length > 0 ? 1 : 0)).join("");
+  const ancestors = (id: string) => { const up: string[] = []; for (let p = sessions[id]?.parent_id; p && !up.includes(p) && up.length < 32; p = sessions[p]?.parent_id) up.push(p); return up; };
   useEffect(() => set({
     order,
-    parent: Object.fromEntries(order.flatMap((id) => (sessions[id]?.parent_id ? [[id, sessions[id]!.parent_id!]] : []))),
+    above: Object.fromEntries(order.flatMap((id) => (sessions[id]?.parent_id ? [[id, ancestors(id)]] : []))),
     card: Object.fromEntries(order.map((id, i) => [id, cardKey[i] === "1"])),
   }), [key, cardKey]);
 
@@ -327,7 +328,7 @@ export function AnswerQueue() {
 // them. In a sequence it says that the next one opens by itself. The session's
 // own agents are not elsewhere: what they ask is reached from this page.
 export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
-  const others = useQueue((s) => (s.order.includes(sessionId) ? s.order.filter((id) => id !== sessionId && s.parent[id] !== sessionId).length : 0));
+  const others = useQueue((s) => (s.order.includes(sessionId) ? s.order.filter((id) => id !== sessionId && !s.above[id]?.includes(sessionId)).length : 0));
   const on = useQueue((s) => s.on && s.at === sessionId);
   const helm = useUI((s) => s.route.name === "session" && s.route.id === sessionId);
   if (!others || !helm) return null;
