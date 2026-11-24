@@ -2,7 +2,7 @@
 // head, and four facts the daemon keeps of it (src/board/board.ts): the named checks on its head's tree,
 // the latest review of its branch, whether the base holds it, and whether what runs holds it. A
 // reviewer's words (its verdict's why, or its LAND line) are quoted under its card as its own.
-import { Check, CircleDashed, FileDiff, GitBranch, GitMerge, GitPullRequestArrow, Loader2, Minus, RefreshCw, X } from "lucide-react";
+import { Check, ChevronRight, CircleDashed, FileDiff, GitBranch, GitMerge, GitPullRequestArrow, Loader2, Minus, RefreshCw, X } from "lucide-react";
 import { lazy, Suspense, useState, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
@@ -17,7 +17,8 @@ import { checksWords } from "../lib/check-words.ts";
 import { failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { useToldStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { STATE_WORD, agentState } from "../../../src/core/state-words.ts";
+import { STATE_WORD, agentState, failWord } from "../../../src/core/state-words.ts";
+import { goToAsk } from "./AnswerQueue.tsx";
 import { Mark as StateMark } from "./Mark.tsx";
 import { PicturesArea } from "./Pictures.tsx";
 
@@ -177,20 +178,31 @@ export function lasted(from: number, to: number): string {
 // to land, check or review: one line, not a card of facts that are all empty.
 const compact = (r: BoardRow) => !r.branch && !r.work;
 
-function Line({ r, indent, w }: { r: BoardRow; indent: number; w: Watch }) {
+// What waits as a card the owner answers (the daemon's reason for a state that needs them).
+const CARD_ASKS = new Set(["approval", "question", "plan", "secret"]);
+
+function Line({ r, indent, w, st }: { r: BoardRow; indent: number; w: Watch; st: SessionState | undefined }) {
+  // The state in a word, and for a failure its class: what to see to. A needs-you row has a verb: Answer goes to its card.
+  const why = w === "fail" ? failWord(st?.cls) : "";
+  const word = STATE_WORD[w].toLowerCase() + (why ? `: ${why}` : "");
+  const answers = w === "need" && CARD_ASKS.has(st?.why ?? "");
   return (
-    <li className="flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-compact="" data-agent={r.id} data-state={r.state} data-indent={indent} data-watch={w}>
+    <li className="group/line flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1 hover:bg-hover" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-compact="" data-agent={r.id} data-state={r.state} data-indent={indent} data-watch={w}
+      // The whole row opens the agent (its title is the control for a keyboard); its own buttons keep their own press.
+      onClick={(e) => { if (e.target === e.currentTarget || !(e.target as Element).closest("button")) openSession(r.session_id); }}>
       <StateMark w={w} />
-      <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-caption font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
+      <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-caption font-medium text-fg group-hover/line:text-accent" title={`Open ${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
       {r.reviews.length > 0 && <span className="min-w-0 max-w-[40%] shrink truncate font-mono text-micro text-muted" title={`reviews ${r.reviews.map(short).join(", ")}`}>reviews {r.reviews.map(short).join(", ")}</span>}
-      <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
+      <span className={cn("shrink-0 text-micro", w === "fail" ? "text-danger" : "text-muted")} data-testid="board-state">{word}</span>
       <span className="shrink-0 text-micro text-faint tabular-nums" data-testid="board-lasted" title={r.ended ? `Worked ${lasted(r.created, r.ended)}; ended ${ago(r.ended)}` : "Working since it started"}>{lasted(r.created, r.ended ?? Date.now())}</span>
+      {answers && <button type="button" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it" className="inline-flex h-6 shrink-0 items-center rounded-md border border-accent/40 bg-accent-soft px-2 text-micro font-medium text-accent-ink hover:border-accent">Answer</button>}
+      <ChevronRight className="size-3.5 shrink-0 text-faint group-hover/line:text-accent" aria-hidden="true" data-testid="board-opens" />
     </li>
   );
 }
 
-function Card({ r, below, indent, w }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch }) {
-  if (compact(r)) return <Line r={r} indent={indent} w={w} />;
+function Card({ r, below, indent, w, st }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch; st: SessionState | undefined }) {
+  if (compact(r)) return <Line r={r} indent={indent} w={w} st={st} />;
   const reviewing = r.reviews.length > 0;
   // A tile shows only a fact: a check the repository names, a review, a landing, a live record.
   const facts = [checksFact(r), reviewFact(r), landedFact(r), liveFact(r)].filter(Boolean);
@@ -293,7 +305,7 @@ export function WorkBoard({ session }: { session: Session }) {
         <p className="k-empty px-1"><b>No agents yet</b>Each agent this session starts shows here with its branch, checks, review and whether it landed, kept from what Keel sees.</p>
       ) : (
         <ul className="flex flex-col gap-2" data-testid="board-rows">
-          {ordered.map(({ row, indent }, i) => fold.show[i] ? <Card key={row.id} r={row} below={b.rows} indent={indent} w={watches.get(row.id)!} /> : null)}
+          {ordered.map(({ row, indent }, i) => fold.show[i] ? <Card key={row.id} r={row} below={b.rows} indent={indent} w={watches.get(row.id)!} st={told[row.session_id]} /> : null)}
           {fold.earlier > 0 && <li className="list-none"><EarlierRow n={fold.earlier} onMore={fold.more} extra={toLandLeft ? `${toLandLeft} to land` : undefined} testid="board-earlier" className="k-earlier" /></li>}
         </ul>
       )}

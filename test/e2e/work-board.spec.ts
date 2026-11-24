@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, ask, openPanel, shoot } from "./shots.ts";
+import { HAIKU, SCRIPTED, ask, openPanel, shoot } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
 
@@ -268,4 +268,58 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await page.reload();
   await openPanel(page, "board");
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "stale");
+});
+
+// Feature: a one-line row of the board (an agent with no branch and no changes) says what to do and why. A row that
+// needs the owner has an Answer button that goes to its card; a failed row names the failure's class beside the word;
+// and every row shows by a mark at its end that it opens the agent.
+test("a one-line board row has a verb for what waits and the class of what failed", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "needs the scripted provider: one agent asks a question and one fails with a billing error");
+  test.setTimeout(120_000);
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `board-lines-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: ws, title: "Board lines" } })).json()).session.id as string;
+  await request.put(`/api/sessions/${coord}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  const question = { name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which store should I use?", options: [{ label: "SQLite" }, { label: "Valkey" }], multiSelect: false }] } };
+  const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn(`Asker\nscript:calls ${JSON.stringify([question])}`), spawn("Broken\nscript:billing")])}` } });
+  const agents = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as { id: string; session_id: string; title: string; status: string }[];
+  await expect.poll(async () => (await agents()).find((a) => a.title === "Broken")?.status, { timeout: 60_000 }).toBe("failed");
+  await expect.poll(async () => (await agents()).length, { timeout: 30_000 }).toBe(2);
+  const named = (t: string) => async () => (await agents()).find((a) => a.title === t)!;
+  const asker = named("Asker"), broken = named("Broken");
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "board");
+  const row = async (get: typeof asker) => page.getByTestId("work-board").locator(`[data-testid="board-row"][data-agent="${(await get()).id}"]`);
+  const ask_ = await row(asker), bad = await row(broken);
+  await expect(ask_).toBeVisible();
+  await expect(ask_.getByTestId("board-state")).toHaveText(/^needs you/);
+  await page.mouse.move(0, 0);
+  await shoot(page, "work-board-05-lines");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(ask_).toBeVisible();
+  await shoot(page, "work-board-06-lines-phone");
+  const phoneAnswer = await ask_.getByTestId("board-answer").isVisible();
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await expect(ask_).toHaveAttribute("data-compact", "");
+  await expect(ask_).toHaveAttribute("data-watch", "need");
+  await expect(ask_.getByTestId("board-state")).toHaveText("needs you");
+  await expect(ask_.getByTestId("board-answer")).toHaveText("Answer");
+  // A failed row says its class, as the session list does; it asks for no answer.
+  await expect(bad.getByTestId("board-state")).toHaveText("failed: billing");
+  await expect(bad.getByTestId("board-answer")).toHaveCount(0);
+  // The mark at the end of each says the row opens the agent.
+  await expect(ask_.getByTestId("board-opens")).toBeVisible();
+  await expect(bad.getByTestId("board-opens")).toBeVisible();
+  expect(phoneAnswer, "Answer is there on a phone too").toBe(true);
+  // Answer goes to the agent's card, with the keyboard on it.
+  await ask_.getByTestId("board-answer").click();
+  await expect(page).toHaveURL(new RegExp(`/s/${(await asker()).session_id}$`));
+  await expect(page.getByTestId("question")).toBeVisible();
+  // A press on the failed row's own words opens that agent.
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "board");
+  await (await row(broken)).getByTestId("board-lasted").click();
+  await expect(page).toHaveURL(new RegExp(`/s/${(await broken()).session_id}$`));
+  await request.delete(`/api/sessions/${coord}`);
 });

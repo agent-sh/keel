@@ -135,6 +135,9 @@ function go(id: string, from?: { route: Route; slot: number }, gentle = false) {
   set({});
   focusAsk(id, gentle);
 }
+// The owner goes to one session's card and answers it from there (a row's Answer button): the sequence's own way,
+// so the answer leads back to where the owner was.
+export const goToAsk = (id: string) => go(id);
 const end = () => { setSequence(null); origin = null; if (state.on) set({ on: false, at: null }); };
 // Nothing is left to answer: the owner is back where the sequence began, the keyboard where it was there.
 // A sequence that began inside a look and ended in it leaves that look: it was answered.
