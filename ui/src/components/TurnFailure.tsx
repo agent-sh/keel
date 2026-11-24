@@ -35,7 +35,7 @@ function Linked({ text }: { text: string }) {
 
 const button = "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-caption font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40";
 const primary = "bg-accent text-accent-fg hover:bg-accent-hover";
-const plain = "border border-line bg-raised text-fg hover:bg-hover";
+const plainButton = "border border-line bg-raised text-fg hover:bg-hover";
 
 // `live`: this is the failure the session stopped on, so its actions apply.
 export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: boolean }) {
@@ -96,12 +96,14 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
 // address the provider gave; another model. `retry`: the session stopped on
 // this failure, so trying again and another model apply (else only the pages).
 // The failure box in the transcript and a row of the Errors panel both show it.
-export function FailureActions({ f, s, retry = true, className }: { f: Failure; s?: Session; retry?: boolean; className?: string }) {
+export function FailureActions({ f, s, retry = true, quiet, className }: { f: Failure; s?: Session; retry?: boolean; quiet?: boolean; className?: string }) {
   const [picking, setPicking] = useState(false);
   const [pick, setPick] = useState("");
   const on = retry && s ? s : undefined;
   const again = () => on && actions.resume(on.id).catch(reportError);
   const { fix, page, kind } = f;
+  // `quiet`: where the page has a primary action of its own (the Errors panel row), the other acts are text.
+  const plain = quiet ? "text-muted hover:bg-hover hover:text-fg" : plainButton;
   if (!on && !fix && !page) return null;
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5", className)} data-testid="failure-actions">

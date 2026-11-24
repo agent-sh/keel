@@ -12,6 +12,8 @@ import type { ErrorRecord } from "../../src/core/types.ts";
 test("errors fold, link to their session and resolve", async ({ page, request }) => {
   const s = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Error tracker check" } })).json()).session;
   const tag = `e2e failure ${Date.now().toString(36)}`;
+  // (Two other failures beside it: under three open errors the panel is a popover without the Unread filter.)
+  for (const other of ["first", "second"]) await request.post("/api/errors", { data: { message: `filler ${other} kind of thing broke before the check` } });
   for (let i = 1; i <= 3; i++) {
     await request.post("/api/errors", { data: { message: `${tag}: request ${i} timed out after ${i * 100} ms`, context: { url: `/s/${s.id}` } } });
   }
@@ -370,10 +372,20 @@ test("a row offers the acts that fit its failure, and Fix this only where an age
     await expect(acts.getByTestId("failure-switch")).toHaveText("Switch model");
     await expect(row.getByTestId("error-fix")).toHaveCount(0);
     expect(await isOpen()).toBe(false);
+    // One primary action a row: Open billing has the fill, Try again and Switch model are text. The row names its
+    // session (a link) and its model; the link opens the session.
+    const filled = (loc: import("@playwright/test").Locator) => loc.evaluate((el) => [...el.querySelectorAll<HTMLElement>("a, button")].filter((b) => { const c = getComputedStyle(b).backgroundColor; return c !== "rgba(0, 0, 0, 0)" && c !== "transparent"; }).map((b) => b.dataset.testid));
+    await page.mouse.move(0, 0);
+    expect(await filled(acts)).toEqual(["failure-fix"]);
+    await expect(row.getByTestId("error-where-session")).toHaveText(`Nightly report ${tag}`);
+    await expect(row.getByTestId("error-where-model")).toHaveText(/\S/);
+    expect(await row.getByTestId("error-where-session").evaluate((b) => b.tagName)).toBe("BUTTON");
     // A failure of the page's own code is an agent's to fix: Fix this on its row, folded.
     const own = panel.getByTestId("error-row").filter({ hasText: broken });
     await expect(own.getByTestId("error-fix")).toBeVisible();
     await expect(own.getByTestId("failure-fix")).toHaveCount(0);
+    // Fix this is text: a row with no page to fix it has no dark button.
+    expect(await filled(own.getByTestId("error-acts"))).toEqual([]);
     await shoot(page, "errors-acts-01-rows");
 
     // Unfolded: the stack is not shown until Details is pressed.
@@ -416,5 +428,65 @@ test("a row offers the acts that fit its failure, and Fix this only where an age
     await request.delete(`/api/sessions/${session.id}`);
     const left = (await (await request.get("/api/errors?resolved=0")).json()).errors.filter((e: any) => e.message === broken);
     for (const e of left) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } }).catch(() => {});
+  }
+});
+
+// Feature: a few open errors are a popover by the corner they are reached from, not a drawer of the page's height:
+// under three open errors the panel is as tall as its rows, the tabs that hold nothing are not drawn (so no strip
+// with one tab), and the row names the session it happened in. Three open errors make it the drawer again, with its
+// note and its filter.
+test("under three open errors the panel is a popover with no empty tabs", async ({ page, request }) => {
+  const tag = Date.now().toString(36);
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: `Popover check ${tag}` } })).json();
+  const open = async () => (await (await request.get("/api/errors?resolved=0")).json()).errors as ErrorRecord[];
+  // (This daemon's earlier errors are marked resolved first: the panel's mode is a function of what is open.)
+  const resolveAll = async () => { const list = await open(); if (list.length) await request.post("/api/errors/resolve-all", { data: { seen: list.map((e) => ({ id: e.id, count: e.count ?? 1 })) } }); };
+  try {
+    await resolveAll();
+    await request.post("/api/errors", { data: { message: `popover one ${tag}: the first thing broke`, context: { url: `/s/${session.id}` } } });
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto("/");
+    await page.getByTestId("errors-button").click();
+    const panel = page.getByTestId("errors-panel");
+    await expect(panel).toHaveAttribute("data-mode", "popover");
+    await expect(panel.getByTestId("error-row")).toHaveCount(1);
+    // A tab that holds nothing is not drawn (Recovered and Resolved show only when the daemon has some); the panel is
+    // as tall as its row, not the page.
+    const held = async (state: "recovered" | "resolved") => ((await (await request.get("/api/errors")).json()).errors as ErrorRecord[]).filter((e) => (state === "resolved" ? !!e.resolved_ts : !e.resolved_ts && !!e.recovered_ts)).length;
+    const tabs = async () => { for (const state of ["recovered", "resolved"] as const) await expect(panel.getByRole("tab", { name: new RegExp(state, "i") })).toHaveCount((await held(state)) > 0 ? 1 : 0); };
+    await tabs();
+    await expect(panel.getByTestId("errors-note")).toHaveCount(0);
+    expect((await panel.boundingBox())!.height).toBeLessThan(300);
+    // It stands by the corner of the Errors button, above it.
+    const at = (await panel.boundingBox())!, from = (await page.getByTestId("errors-button").boundingBox())!;
+    expect(at.x).toBeLessThan(from.x + from.width);
+    expect(at.y + at.height).toBeLessThanOrEqual(from.y);
+    // The row names its session, and the link goes there.
+    await expect(panel.getByTestId("error-where-session")).toHaveText(`Popover check ${tag}`);
+    await page.mouse.move(0, 0);
+    await shoot(page, "errors-popover-01-one");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(panel).toBeInViewport();
+    expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await shoot(page, "errors-popover-02-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await panel.getByTestId("error-row").locator("summary").click();
+    await panel.getByTestId("error-resolve").click();
+    await expect(panel.getByTestId("error-row")).toHaveCount(0);
+    await tabs();
+    await request.post("/api/errors", { data: { message: `popover two ${tag}: the second thing broke`, context: { url: `/s/${session.id}` } } });
+    await request.post("/api/errors", { data: { message: `popover three ${tag}: a third thing broke`, context: { url: `/s/${session.id}` } } });
+    await request.post("/api/errors", { data: { message: `popover four ${tag}: and a fourth one broke`, context: { url: `/s/${session.id}` } } });
+    await expect(panel.getByTestId("error-row")).toHaveCount(3);
+    await expect(panel).toHaveAttribute("data-mode", "drawer");
+    await tabs();
+    await expect(panel.getByTestId("errors-note")).toBeVisible();
+    await shoot(page, "errors-popover-03-three");
+    // The session link opens the session.
+    await panel.getByTestId("error-where-session").first().click();
+    await expect(page).toHaveURL(new RegExp(`/s/${session.id}`));
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+    await resolveAll().catch(() => {});
   }
 });

@@ -9,6 +9,7 @@ import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { footSheet } from "./ui.tsx";
+import { modelOf } from "./Mark.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { FailureActions } from "./TurnFailure.tsx";
 import { IncidentList } from "./IncidentBand.tsx";
@@ -124,6 +125,7 @@ function Sites({ e }: { e: ErrorRecord }) {
 
 function Row({ e }: { e: ErrorRecord }) {
   const session = useStore((s) => (e.session_id ? s.sessions[e.session_id] : undefined));
+  const modelName = useStore((s) => s.models.find((m) => m.id === session?.model)?.name);
   // The span this failure names, once asked for: kept, or gone (null: spans are pruned after a while).
   const [got, setGot] = useState<{ id: string; span: Span | null }>();
   const [open, setOpen] = useState(false);
@@ -138,6 +140,8 @@ function Row({ e }: { e: ErrorRecord }) {
   const live = useStore((st) => !!e.session_id && stoppedOn(st.errors, e.session_id, st.sessions[e.session_id]?.settings.failed_ms) === e.id);
   const fixable = agentCanFix(e);
   const acts = !!failure && !!(live || failure.fix || failure.page);
+  // One primary action a row, and only where there is one to lead with: the page that fixes it, else trying again.
+  // The rest, Fix this included, are text.
   const n = e.count ?? 1;
   const unread = !e.read_ts;
   const state = errorState(e);
@@ -201,13 +205,25 @@ function Row({ e }: { e: ErrorRecord }) {
         )}
         </span>
         {/* The acts of the row, on the row: buttons and links here do not fold or unfold it. */}
+        {/* Where it happened: the session as a link, and the model it ran on. */}
+        {e.session_id && (
+          <span className="ml-[1.375rem] flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-caption text-muted" data-testid="error-where">
+            <span>in</span>
+            <button type="button" onClick={(ev) => { ev.preventDefault(); goTo(); }} className="min-w-0 max-w-full truncate rounded-sm text-accent-ink hover:underline focus-visible:ring-2 focus-visible:ring-accent/40" data-testid="error-where-session" title="Open the session at this failure">
+              {session?.title || e.sites?.[0]?.title || "its session"}
+            </button>
+            {session && <><span aria-hidden="true">·</span><span className="truncate" data-testid="error-where-model">{modelName ?? modelOf(session.model)}</span></>}
+            {(e.sites?.length ?? 0) > 1 && <span className="text-faint">and {e.sites!.length - 1} more {e.sites!.length === 2 ? "session" : "sessions"}</span>}
+          </span>
+        )}
         {(acts || fixable) && (
           <span className="ml-[1.375rem] flex flex-wrap items-center gap-1.5" data-testid="error-acts">
-            {acts && <FailureActions f={failure!} s={session} retry={live} />}
+            {acts && <FailureActions f={failure!} s={session} retry={live} quiet />}
             {fixable && (
               <button
                 type="button"
-                className={cn(tool, "border-line-strong bg-raised font-medium text-fg")}
+                className={tool}
+                data-quiet=""
                 disabled={fixing}
                 title="Starts a session that reads this failure's debug bundle and fixes the cause"
                 onClick={() => { setFixing(true); fixThis(target).catch(reportError).finally(() => setFixing(false)); }}
@@ -239,6 +255,7 @@ function Row({ e }: { e: ErrorRecord }) {
           <button
             type="button"
             className={tool}
+            data-quiet=""
             title="The failure, its trace, the transcript before it and the daemon log, as Markdown"
             onClick={(e) => copyBundle(target, e.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })}
             data-testid="error-bundle"
@@ -249,6 +266,7 @@ function Row({ e }: { e: ErrorRecord }) {
             <button
               type="button"
               className={tool}
+              data-quiet=""
               title={toSpan ? "Opens the trace at the request or tool call that failed" : e.span_id ? "Opens the trace of the turn it failed in: the span that failed is no longer kept" : "Opens the trace of the turn it failed in"}
               onClick={() => trace().catch(reportError)}
               data-testid="error-trace"
@@ -257,7 +275,7 @@ function Row({ e }: { e: ErrorRecord }) {
             </button>
           )}
           {e.session_id && !sited && (
-            <button type="button" onClick={goTo} className="k-btn max-w-80" data-testid="error-session">
+            <button type="button" onClick={goTo} className="k-btn max-w-80" data-quiet="" data-testid="error-session">
               <CornerDownRight className="size-3.5 shrink-0" />
               <span className="truncate">{n > 1 ? "Last in " : ""}{session?.title || (n > 1 ? "its session" : "Open the session")}</span>
               {e.turn_event && <span className="shrink-0 text-faint">at its turn</span>}
@@ -267,6 +285,7 @@ function Row({ e }: { e: ErrorRecord }) {
             type="button"
             onClick={() => actions.resolveError(e.id, !e.resolved_ts).catch(reportError)}
             className="k-btn ml-auto"
+            data-quiet=""
             data-testid="error-resolve"
           >
             {e.resolved_ts ? <><RotateCcw className="size-3.5" /> Open again</> : <><Check className="size-3.5 text-ok" /> Resolve</>}
@@ -301,38 +320,45 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
   const recovered = errors.filter((e) => errorState(e) === "recovered");
   const resolved = errors.filter((e) => e.resolved_ts);
   const list = tab === "open" ? (unreadOnly ? unread : openList) : tab === "recovered" ? recovered : resolved;
+  // A few open errors are a popover over the corner they are reached from, not a drawer of a page's height; the
+  // tabs that hold nothing are not drawn, and with only one left there is no strip.
+  const popover = tab === "open" && openList.length < 3;
+  const tabs = ([["open", ERROR_STATE.open, openList.length], ["recovered", ERROR_STATE.recovered, recovered.length], ["resolved", ERROR_STATE.resolved, resolved.length]] as const).filter(([id, , n]) => n > 0 || id === tab);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
+        <Dialog.Backdrop className={cn("fixed inset-0 z-40 transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0", popover ? "bg-transparent" : "bg-overlay")} />
         <Dialog.Popup
           data-testid="errors-panel"
+          data-mode={popover ? "popover" : "drawer"}
           data-float
-          className={footSheet()}
+          className={popover
+            ? "k-surface fixed bottom-12 left-3 z-50 max-h-[min(34rem,calc(100dvh-4rem))] w-[min(30rem,calc(100vw-1.5rem))] transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:translate-y-2 data-ending-style:opacity-0"
+            : footSheet()}
         >
           {/* On a phone the note has a line of its own under the title, read whole. */}
           <div className="k-surface-head k-errors-head">
             <Bug className="k-surface-icon" />
             <Dialog.Title className="k-surface-title">Errors</Dialog.Title>
-            <span className="k-surface-note" data-testid="errors-note">from the daemon, the page, providers and tools</span>
+            {!popover && <span className="k-surface-note" data-testid="errors-note">from the daemon, the page, providers and tools</span>}
             <Dialog.Close className="k-surface-close" aria-label="Close">
               <X />
             </Dialog.Close>
           </div>
           <IncidentList />
           {/* One band: which errors, then what to do with the open ones at its right end. */}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line px-3 py-2 whitespace-nowrap">
-            <Seg
+          <div className={cn("flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line px-3 py-2 whitespace-nowrap", tabs.length > 1 || (tab === "open" && openList.length > 1) ? "flex" : "hidden")}>
+            {tabs.length > 1 && <Seg
               wrap
               kind="tabs"
               panel={panel}
               label="Which errors"
               value={tab}
               onChange={setTab}
-              options={([["open", ERROR_STATE.open, openList.length], ["recovered", ERROR_STATE.recovered, recovered.length], ["resolved", ERROR_STATE.resolved, resolved.length]] as const).map(([id, label, n]) => ({ value: id, label: <>{label}<span className="text-micro tabular-nums text-faint">{n}</span></> }))}
-            />
+              options={tabs.map(([id, label, n]) => ({ value: id, label: <>{label}<span className="text-micro tabular-nums text-faint">{n}</span></> }))}
+            />}
             <div className={cn("ml-auto items-center gap-1 max-md:flex-wrap", tab === "open" && openList.length > 0 ? "flex" : "hidden")}>
-            {tab === "open" && (
+            {tab === "open" && !popover && (
               <label className="flex h-ctl-md items-center gap-1.5 px-1.5 text-caption text-muted">
                 <input type="checkbox" checked={unreadOnly} onChange={(ev) => setUnreadOnly(ev.currentTarget.checked)} className="accent-[var(--accent)]" data-testid="errors-unread-only" />
                 Unread only
