@@ -23,7 +23,7 @@ import { Seg, tabId } from "./Seg.tsx";
 import { fmtMs, fmtPct, Panel, Table } from "./UsagePanel.tsx";
 
 type Row = {
-  asked: number; recalls: number; empty: number; repeat: number; skipped: number; late: number; timeouts: number; failures: number;
+  asked: number; recalls: number; empty: number; repeat: number; skipped: number; late: number; later: number; timeouts: number; failures: number;
   facts: number; tokens: number; facts_checked: number; used: number; recalls_checked: number; recalls_used: number;
   repeats: number; cut: number; wait_ms: number; wait_max_ms: number; proc_ms: number;
 };
@@ -74,7 +74,7 @@ function UsageTable({ since }: { since: number }) {
   }, [since]);
   if (!r) return <p className="text-caption text-faint" data-testid="memory-usage-loading">Reading what memory added in this range</p>;
   const cells = (label: ReactNode, x: Row): ReactNode[] => {
-    const why = [x.skipped && `${x.skipped} not asked`, x.empty && `${x.empty} with nothing to add`, x.repeat && `${x.repeat} already in the context`, x.late && `${x.late} not waited for`, x.timeouts && `${x.timeouts} timed out`, x.failures && `${x.failures} failed`].filter(Boolean).join(", ");
+    const why = [x.skipped && `${x.skipped} not asked`, x.empty && `${x.empty} with nothing to add`, x.repeat && `${x.repeat} already in the context`, x.late && `${x.late} not waited for`, x.later && `${x.later} answered after the turn went on, carried to a later step`, x.timeouts && `${x.timeouts} timed out`, x.failures && `${x.failures} failed`].filter(Boolean).join(", ");
     return [
       // A phone has room for the path on two lines, not on one: it wraps there, whole, and leaves
       // out the words every path shares (the panel is Memory).

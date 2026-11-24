@@ -58,8 +58,10 @@ export const KEEP_MS = 90 * 86_400_000;
 // waited its full wait and went on without the answer; late: the turn did
 // not wait at all (the store was already not answering in time). What a
 // call answers after its turn went on joins a later request as store_owed.
+// later: an ask nothing waited for (an agent's brief, a loop's run) that gave
+// facts: they join a later request, and its store_owed row says what they added.
 // failure: the store's.
-export type MemoryOutcome = "added" | "empty" | "repeat" | "skipped" | "late" | "timeout" | "failure";
+export type MemoryOutcome = "added" | "empty" | "repeat" | "skipped" | "late" | "later" | "timeout" | "failure";
 export type Fact = { names: string[]; text: string };
 
 const fold = (s: string) => s.normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase();
@@ -131,7 +133,7 @@ function stringsOf(v: unknown, out: string[] = []): string[] {
 // A deleted session's given rows deleted in one statement: a few milliseconds of the loop.
 const DROP_PART = 500;
 const ORPHANS_AFTER_MS = 30_000;
-type Sum = Record<"asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms" | "proc_ms", number>;
+type Sum = Record<"asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "later" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms" | "proc_ms", number>;
 type Open = { row: number; facts: Fact[]; ts: number; given: number[] };
 // Where a block came from, for the list of what a session was given: the
 // store's hook, the tool it was asked about (a tool's name) and what it
@@ -140,7 +142,7 @@ export type GivenBy = { hook: string; call?: string; ref?: string };
 export type MemoryFilter = { since?: number; until?: number; session?: string };
 
 // Whether a path's recall fell: the share of its answered asks that gave
-// facts (added, or all held already) in the last RECENT_MS, against the same
+// facts (added, all held already, or carried to a later step) in the last RECENT_MS, against the same
 // share over the DAY_MS before that. It fell when the recent share is half
 // of the day's or less. A path asked or answered rarely cannot be said to
 // fall: both windows need FELL_MIN_ASKS answered asks, and the day FELL_MIN_HITS
@@ -321,7 +323,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     const n = (o: MemoryOutcome) => `COALESCE(SUM(outcome = '${o}'), 0)`;
     const added = (col: string, more = "") => `COALESCE(SUM(CASE WHEN outcome = 'added'${more} THEN ${col} ELSE 0 END), 0)`;
     const checked = " AND used IS NOT NULL";
-    const cols = `COUNT(*) AS asked, ${n("added")} AS recalls, ${n("empty")} AS empty, ${n("repeat")} AS repeat, ${n("skipped")} AS skipped, ${n("late")} AS late, ${n("timeout")} AS timeouts, ${n("failure")} AS failures,
+    const cols = `COUNT(*) AS asked, ${n("added")} AS recalls, ${n("empty")} AS empty, ${n("repeat")} AS repeat, ${n("skipped")} AS skipped, ${n("late")} AS late, ${n("later")} AS later, ${n("timeout")} AS timeouts, ${n("failure")} AS failures,
       ${added("facts")} AS facts, ${added("tokens")} AS tokens, ${added("facts", checked)} AS facts_checked, ${added("used", checked)} AS used,
       ${added("1", checked)} AS recalls_checked, ${added("1", " AND used > 0")} AS recalls_used,
       COALESCE(SUM(repeats), 0) AS repeats, COALESCE(SUM(cut), 0) AS cut, COALESCE(SUM(wait_ms), 0) AS wait_ms, COALESCE(MAX(wait_ms), 0) AS wait_max_ms, COALESCE(SUM(proc_ms), 0) AS proc_ms`;
@@ -336,7 +338,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
   }
   // The recall of each path against its own day (recallFell), at `now`. Two windows, one scan of the day.
   private fellSql(now: number) {
-    const hit = "outcome IN ('added', 'repeat')", answered = "outcome IN ('added', 'repeat', 'empty')";
+    const hit = "outcome IN ('added', 'repeat', 'later')", answered = "outcome IN ('added', 'repeat', 'later', 'empty')";
     const recentFrom = now - FELL_RECENT_MS;
     const sql = `SELECT path, ts >= ? AS recent, COALESCE(SUM(${answered}), 0) AS answered, COALESCE(SUM(${hit}), 0) AS hits
       FROM telemetry_memory WHERE ts >= ? AND ts < ? AND path IN ('store_start', 'store_prompt', 'store_tool') GROUP BY path, recent`;

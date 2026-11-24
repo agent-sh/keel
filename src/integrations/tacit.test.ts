@@ -340,7 +340,7 @@ case "$hook" in
     case "$src" in compact|clear) : > "$seen" ;; startup) ;; *) exit 0 ;; esac
     give start-rule; printf '# store: standing rules\\n%b' "$out" ;;
   prompt)
-    case "$mode" in slow) exec sleep ${sec(8)} ;; esac
+    case "$mode" in slow) exec sleep ${sec(8)} ;; lagprompt) sleep ${sec(1.8)} ;; esac
     q=; re='"prompt":"(.*)","transcript_path'; [[ $input =~ $re ]] && q=\${BASH_REMATCH[1]}
     kws "$q"
     for w in "\${KW[@]}"; do give "fact-$w"; done
@@ -484,16 +484,19 @@ test("memory across prompts: nothing twice; a report and a wait's wake do not as
     await w.say(s, text, meta);
     expect(prompts()).toBe(before);
   }
-  // Requests that are not typed: asked, and their facts are in the turn.
+  // Requests that are not typed: asked beside their request, not waited for; their facts come with the next request.
   for (const [text, meta, name] of [["Check the kw6 queue", { kind: "loop", loop_name: "x" }, "fact-kw6"], ["Make kw7 pass", { kind: "goal", goal: "start" }, "fact-kw7"], ["Verify kw8", { kind: "verify_goal" }, "fact-kw8"],
     ["report kw9\n\nsteer kw10", { kind: "wake", parts: [{ kind: "subagent" }, { kind: "steer" }] }, "fact-kw10"]] as const) {
     await w.say(s, text, meta);
+    expect(w.names(w.last(s))).not.toContain(name);
+    await until(() => w.tacit.owed(s) > 0);
+    await w.say(s, "and then");
     expect(w.names(w.last(s))).toContain(name);
   }
   const { memoryMeter } = await import("./memory-meter.ts");
   const report = memoryMeter(w.store).report({ session: s });
   const prompt = report.paths.find((p) => p.path === "store_prompt")!;
-  expect(prompt).toMatchObject({ asked: 9, recalls: 6, skipped: 3, timeouts: 0 });
+  expect(prompt).toMatchObject({ asked: 13, recalls: 2, later: 4, empty: 4, skipped: 3, timeouts: 0 });
   expect(JSON.stringify(report)).not.toContain("kw");
 }), 30_000);
 
@@ -1196,3 +1199,34 @@ test("a kind of tool call the store has nothing for is asked only now and then, 
   expect(proc().ms).toBeGreaterThan(0);
   void dir;
 }, { quietAfter: 3, sampleEvery: 2 }), 120_000);
+
+// An agent is a session another one started. It gets no start block (its parent's standing rules and
+// titles it cannot open), and its brief is asked beside its first request, not waited for: what the
+// store returns for it joins the next request. The owner's typed prompt is the one that waits.
+test("an agent gets no start block, and its brief is asked unwaited; the owner's typed prompt waits", () => inWorld("agents", async (w, st) => {
+  const owner = w.session(), agent = w.session();
+  if (!w.store.columnExists("sessions", "parent_id")) w.store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+  w.store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(owner, agent);
+  st.set("mode", "lagprompt");
+  // The typed prompt waits for the store (its lag is shorter than the wait).
+  expect(await w.say(owner, "typed kw1")).toBeGreaterThan(T(1_200));
+  expect(w.names(w.last(owner))).toEqual(expect.arrayContaining(["start-rule", "fact-kw1"]));
+  // The brief does not: the first request goes at once and the fact is in the one after the tool call.
+  expect(await w.say(agent, "kw5 tools=1", { kind: "task", agent_id: "x" })).toBeLessThan(T(1_000));
+  const mine = w.asked.filter((r) => r.session === agent);
+  expect(mine[0]!.messages).not.toContain("fact-kw5");
+  await until(() => w.tacit.owed(agent) > 0);
+  await w.say(agent, "next", { kind: "steer", agent_id: "x" });
+  expect(w.names(w.last(agent))).toContain("fact-kw5");
+  expect(w.names(w.last(agent))).not.toContain("start-rule");
+  expect(st.calls("session-start").filter((l) => l.includes(agent))).toEqual([]);
+  expect(st.calls("prompt").filter((l) => l.includes(agent)).length).toBeGreaterThan(0);
+  const { memoryMeter } = await import("./memory-meter.ts");
+  const report = () => Object.fromEntries(memoryMeter(w.store).report({ session: agent }).paths.map((p) => [p.path, p]));
+  await until(() => report().store_prompt?.asked === 2);
+  const paths = report();
+  expect(paths.store_start).toBeUndefined();
+  expect(paths.store_prompt).toMatchObject({ asked: 2, later: 1, empty: 1 });
+  expect(paths.store_prompt!.wait_ms).toBeLessThan(T(500));
+  expect(paths.store_prompt!.proc_ms).toBeGreaterThan(0);
+}), 60_000);

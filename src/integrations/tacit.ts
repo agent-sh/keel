@@ -55,6 +55,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
 import { RECORD_FORMAT, toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
+import { ownerPrompt } from "../core/owner.ts";
 import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
 import { afterAnswer, afterAsk, callFamilies, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
@@ -443,6 +444,13 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   stats() {
     const quiet = [...this.kinds].filter(([, y]) => y.quiet >= this.yieldRules.quietAfter).map(([kind, y]) => ({ kind, quiet: y.quiet }));
     return { ...this.metrics, out: { ...this.out }, degraded: { ask: this.degraded("ask"), tool: this.degraded("tool") }, quiet };
+  }
+
+  // An agent: a session another one started. The store's start block goes to the owner's sessions
+  // only (an agent cannot open a title, and the standing rules of the repository are its parent's
+  // to read); what an agent gets is what the store returns for its own brief.
+  private isAgent(id: string): boolean {
+    return !!this.store.session(id)?.parent_id;
   }
 
   // A session's own switches; an agent with none of its own has its parent's.
@@ -1009,6 +1017,16 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
     return call.done.then((r) => { if (r.text) this.owe(id, hook, r.text.trim().split("\n").filter((l) => l.trim()), true); }).catch(() => {});
   }
 
+  // An ask nothing waited for: its row is written when it ends (a later one when it gave facts, which
+  // join the next request as owed lines; the store_owed row says what they added), with its process time.
+  private later(id: string, hook: OwedHook, call: Running): Promise<unknown> {
+    return call.done.then((r) => {
+      if (!this.store.session(id)) return;
+      this.meter.record(id, PATH_OF[hook], { outcome: r.outcome === "hit" ? "later" : r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", procMs: r.ms });
+      if (r.text) this.owe(id, hook, r.text.trim().split("\n").filter((l) => l.trim()), true);
+    }).catch(() => {});
+  }
+
   // One block as the turn gets it, and its row in the measurements: the lines
   // the context lacks, within a block's cap; what did not fit is owed.
   // `by`: what the block answers (the prompt's event, the tool and its call),
@@ -1219,7 +1237,8 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         const cp = checkpointAt(events);
         const checkpoint = cp.at >= 0 ? events[cp.at]! : null;
         let again: Running | null = null;
-        if (checkpoint && t.toldCheckpoint(s.id) !== checkpoint.id) {
+        const agent = t.isAgent(s.id);
+        if (checkpoint && !agent && t.toldCheckpoint(s.id) !== checkpoint.id) {
           const source = checkpoint.data.mode === "clear" ? "clear" : "compact";
           again = t.call(s, "session-start", { source });
           if (again !== SKIPPED) {
@@ -1243,22 +1262,26 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         // A session's first prompt gets its start block (waited for up to the
         // start hook's own wait, so the standing rules are in); so does one
         // whose start call could not be made before.
-        if (!again && ((fresh && !events.slice(0, i).some((e) => e.kind === "user")) || t.startOwed.has(s.id))) start = t.startCall(s);
+        if (!again && !agent && ((fresh && !events.slice(0, i).some((e) => e.kind === "user")) || t.startOwed.has(s.id))) start = t.startCall(s);
         if (fresh) {
           t.done.add(last.id);
           if (asksMemory(last.data)) prompt = t.call(s, "prompt", { prompt: last.data.text ?? "" });
           else t.meter.record(s.id, "store_prompt", { outcome: "skipped" });
         }
-        if (waits) await Promise.all([start && within(start, t.waitOf("session-start")), prompt && within(prompt, t.waitOf("prompt"))]);
+        // Only the owner's typed prompt is waited for. Any other input (an agent's brief, a parent's
+        // message, a loop's run) is asked beside its request, and what the store answers joins a later one.
+        const typed = fresh && ownerPrompt(last!.data);
+        if (waits) await Promise.all([start && within(start, t.waitOf("session-start")), prompt && typed && within(prompt, t.waitOf("prompt"))]);
         const waited = performance.now() - began;
 
         const shown = t.shownIn(s.id, events);
         // What earlier steps owe comes first: it was given first.
         for (const p of t.payOwed(s.id, shown)) add(p.hook, p.block);
-        const settle = (hook: "session-start" | "prompt", c: Running | null, waitMs: number, by?: { hook?: string; ref?: string }) => {
+        const settle = (hook: "session-start" | "prompt", c: Running | null, waitMs: number, by?: { hook?: string; ref?: string }, unwaited = false) => {
           if (!c) return;
           // Not made: one of this session's calls of this hook is still out. The store was not asked.
           if (c === SKIPPED || c.got?.outcome === "skipped") return void t.meter.record(s.id, PATH_OF[hook], { outcome: "skipped" });
+          if (!c.got && unwaited) return void t.later(s.id, hook, c);
           if (!c.got) {
             // The turn goes on without it: what it answers is owed. Waited for
             // and not there in time, it starts an outage of asking.
@@ -1276,7 +1299,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         };
         // A start block that came again says why: the context was summarized, or cleared.
         settle("session-start", again ?? start, prompt ? 0 : waited, again ? { hook: `session-start:${checkpoint?.data.mode === "clear" ? "clear" : "compact"}` } : undefined);
-        settle("prompt", prompt, waited, fresh ? { ref: last.id } : undefined);
+        settle("prompt", prompt, typed ? waited : 0, fresh ? { ref: last.id } : undefined, !typed);
         if (!blocks.length) return req;
         const ev = t.store.append(s.id, "note", { text: blocks.join("\n\n"), model: true, memory: { source: "tacit", hooks } });
         t.bus.emit({ t: "event", event: ev });
@@ -1371,7 +1394,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         this.forget(f.session.id);
         if (!this.store.session(f.session.id)) return; // deleted: nothing left to dream
         this.preCompact(f.session).catch((e) => this.errors.capture("server", e, { at: "tacit pre-compact" }));
-      } else if (!this.start.has(f.session.id) && this.flags(f.session.id).use_memory && !this.store.hasEvents(f.session.id)) {
+      } else if (!this.start.has(f.session.id) && !f.session.parent_id && this.flags(f.session.id).use_memory && !this.store.hasEvents(f.session.id)) {
         this.startCall(f.session);
       }
     });
