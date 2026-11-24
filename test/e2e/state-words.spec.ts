@@ -707,3 +707,45 @@ test("a command stopped after its turn ended turns the session's 'still runs' al
     await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
   }
 });
+
+// The line above the list counts every state at the sidebar's width: with a session in each state, what
+// calls the owner keeps its word, and a count whose word has no room keeps its mark and says itself in
+// words in its tooltip ("1 waiting: ..."); what is new gives its word up before a state does.
+test("the line above the list keeps the waiting count's word at the sidebar's width", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(120_000);
+  mkdirSync(gates, { recursive: true });
+  const need = await start(request, "Line: an approval waits", "ask");
+  const failed = await start(request, "Line: its credit ran out");
+  const busy = await start(request, "Line: its command runs on");
+  const timer = await start(request, "Line: it checks back in an hour");
+  const told = await start(request, "Line: it said what it found");
+  const made = [need, failed, busy, timer, told];
+  try {
+    await send(request, need, script([{ name: "Bash", input: { command: "touch line-approved.txt" } }]));
+    await send(request, failed, "script:billing");
+    await send(request, busy, script([{ name: "Bash", input: { command: `i=0; until [ -f ${gate("line")} ] || [ $i -ge 400 ]; do i=$((i+1)); sleep 0.3; done`, run_in_background: true, description: "the line run" } }]));
+    await send(request, timer, script([{ name: "wait_for", input: { kind: "timer", seconds: 3600, note: "check back" } }]));
+    await send(request, told, "script:say Found three stale caches.");
+    await expect.poll(async () => { const s = await states(request); return made.map((id) => s[id]?.watch); }, { timeout: 60_000 }).toEqual(["need", "fail", "work", "wait", "done"]);
+    for (const [width, height] of [[1400, 900], [1920, 1040]] as const) {
+      await page.setViewportSize({ width, height });
+      await page.goto("/");
+      const line = page.getByTestId("list-summary");
+      for (const k of ["need", "fail", "work", "wait", "unread"]) await expect(line.getByTestId(`sum-${k}`)).toBeVisible();
+      // What calls the owner keeps its word; every count says itself in words, shown or in its tooltip when there is no room.
+      for (const k of ["need", "fail"]) await expect(line.getByTestId(`sum-${k}`).locator(".k-sum-word")).toBeVisible();
+      const wait = line.getByTestId("sum-wait");
+      await expect(wait).toHaveAccessibleName(/^\d+ waiting\. Go to the next$/);
+      await expect(wait).toHaveAttribute("title", /^\d+ waiting: .*Line: it checks back in an hour/);
+      if (await wait.getAttribute("data-bare") !== null) await expect(wait.locator(".k-sum-mark")).toBeVisible();
+      else await expect(wait.locator(".k-sum-word")).toBeVisible();
+      await expect(line.getByTestId("sum-work")).toHaveAttribute("title", /^\d+ working: /);
+      await expect(line.getByTestId("sum-unread")).toHaveAttribute("title", /^\d+ new since you looked: /);
+    }
+    await shoot(page, "state-words-12-line-every-state");
+  } finally {
+    release("line");
+    for (const id of made) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+  }
+});

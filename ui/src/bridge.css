@@ -543,6 +543,7 @@
 .k-sum-mark { display: none; }
 .k-sum-chip[data-bare] .k-sum-mark { display: inline-grid; place-items: center; }
 .k-sum-mark .k-mark { width: 0.5rem; height: 0.5rem; }
+.k-sum-dot { width: 0.375rem; height: 0.375rem; border-radius: 9999px; background: var(--accent-ink); }
 .k-sum[data-tight] .k-sum-chip { gap: 0.1875rem; padding: 0 0.1875rem; }
 .k-sum[data-tight] .k-sum-chip:not([hidden]) ~ .k-sum-chip:not([hidden])::before { margin-left: -0.25rem; }
 .k-sum-chip:hover { background: var(--hover); color: var(--fg); }

@@ -864,11 +864,14 @@ const COUNTS: { kind: Kind; watch?: Watch; says: string }[] = [
 ];
 // The line fits its bar at every width and text size, and a figure is never cut: measured on the
 // line itself. Every count keeps its mark and its figure, and the words take the room that is
-// left, the one that calls the owner first. With no room for a word the line's calm sentence
-// goes, then the room between the counts, and at the very narrowest whole counts, the ones that
-// call the owner last.
-const WORDS_STAY: Kind[] = ["need", "fail", "offline", "unread", "work", "wait"];
+// left, the one that calls the owner first, the states before what is new (whose mark is the
+// rows' own dot for news), the room between the counts given up before a word. With no room for
+// a word the line's calm sentence goes, then the room between the counts, and at the very
+// narrowest whole counts, the ones that call the owner last.
+const WORDS_STAY: Kind[] = ["need", "fail", "offline", "work", "wait", "unread"];
 const COUNTS_GO: Kind[] = ["wait", "work", "unread", "offline"];
+// A count's tooltip starts with the count in its words, which a count whose word has no room keeps there.
+const tipHead = (c: (typeof COUNTS)[number], n: number, word: string) => c.kind === "offline" ? c.says : `${n} ${c.kind === "unread" ? NEW_SINCE.toLowerCase() : word}`;
 function fitSummary(el: HTMLElement) {
   const chips = [...el.querySelectorAll<HTMLElement>(".k-sum-chip")];
   const chip = (k: Kind) => chips.find((c) => c.dataset.kind === k);
@@ -882,7 +885,8 @@ function fitSummary(el: HTMLElement) {
       const c = chip(k);
       if (!c) continue;
       c.removeAttribute("data-bare");
-      // A word that says less is not shown where one that says more has no room.
+      // Closer counts first, then the word goes: a word that says less is not shown where one that says more has no room.
+      if (over() && !el.hasAttribute("data-tight")) { el.setAttribute("data-tight", ""); if (!over()) continue; el.removeAttribute("data-tight"); }
       if (over()) { c.setAttribute("data-bare", ""); break; }
     }
     return;
@@ -950,11 +954,12 @@ function Summary() {
         const { n, word } = said(c.kind, ids);
         return (
           <button key={c.kind} type="button" className="k-sum-chip" data-kind={c.kind} data-testid={`sum-${c.kind}`} tabIndex={c.kind === at ? 0 : -1} onFocus={() => setStop(c.kind)} onClick={() => jumpNext(c.kind)}
-            aria-label={`${n} ${c.kind === "offline" && since ? `on ${since}, ${word}` : word}. Go to the next`} title={`${c.says}${c.kind === "offline" && since ? ` (${since})` : ""}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
+            aria-label={`${n} ${c.kind === "offline" && since ? `on ${since}, ${word}` : word}. Go to the next`} title={`${tipHead(c, n, word)}${c.kind === "offline" && since ? ` (${since})` : ""}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
             {/* One sentence in the text face: the rows' marks say each state, the line says how many. */}
             {c.kind === "offline" && <ServerOff aria-hidden="true" />}
             {/* A count whose word has no room keeps its state's mark, so the figure still says what it counts. */}
             {c.watch && c.kind !== "need" && c.kind !== "fail" && <span className="k-sum-mark" aria-hidden="true"><Mark w={c.watch} /></span>}
+            {c.kind === "unread" && <span className="k-sum-mark" aria-hidden="true"><span className="k-sum-dot" /></span>}
             <b className="k-sum-n">{n}</b>
             <span className="k-sum-word">{c.kind === "offline" && down.length === 1 && <span className="inline-block max-w-[6.5rem] truncate align-bottom" data-testid="sum-offline-name">{down[0]!.name}</span>}{c.kind === "offline" && down.length === 1 ? " " : ""}{word}</span>
           </button>
