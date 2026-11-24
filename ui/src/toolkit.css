@@ -176,7 +176,7 @@
 @media (max-width: 767px) {
   .k-ledger { grid-template-columns: 1fr; height: auto; }
   .k-ledger-list { max-height: 40dvh; border-right: 0; border-bottom: 1px solid var(--line); }
-  .k-tally { margin-left: 0; }
+  .k-tally { margin-left: 0; flex-wrap: wrap; gap: 0.5rem 1.375rem; }
 }
 
 /* ---------- Controls drawn by us in every engine ---------- */
