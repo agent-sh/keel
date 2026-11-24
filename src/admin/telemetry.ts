@@ -136,6 +136,13 @@ export function reportKey(q: Filter, now = Date.now()): string {
 }
 type PrevCall = { ts: number; model: string; prompt: number; h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null; cache_ms: number | null; compaction_event: string | null; turn_event: string | null };
 
+// What a request cost, told when its row is made: every purpose's, an answer, a failed attempt or
+// a stopped one at what its stream reported. The OpenTelemetry cost metric counts these, the same
+// rows the ledger's dollars are summed over.
+export type LedgerCost = { session: string; route: string; purpose: string; outcome: string; cost: number };
+const costListeners = new Set<(c: LedgerCost) => void>();
+export const onLedgerCost = (fn: (c: LedgerCost) => void): (() => void) => { costListeners.add(fn); return () => void costListeners.delete(fn); };
+
 export class Telemetry {
   // In flight, by the request object the engine passes to every measuring hook.
   private pending = new Map<ProviderRequest, Pending>();
@@ -332,6 +339,9 @@ export class Telemetry {
     }
     if (r.outcome === "ok" && p.purpose === "warm" && !((this.lastWarmCall.get(p.session)?.ts ?? -1) > p.t0)) this.lastWarmCall.set(p.session, { ts: p.t0, model: p.model, cache_ms: p.cacheMs ?? null });
     this.spent(p.t0, typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0);
+    if (typeof u.cost === "number" && u.cost > 0) for (const fn of costListeners) {
+      try { fn({ session: p.session, route: p.model, purpose: p.purpose, outcome: r.outcome, cost: u.cost }); } catch { /* a listener never breaks the ledger */ }
+    }
     return brk;
   }
 

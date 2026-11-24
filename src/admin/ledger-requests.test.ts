@@ -16,7 +16,7 @@ import { Providers } from "../providers/registry.ts";
 import { ScriptedProvider } from "../providers/scripted.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { askJudge, makeJudge } from "../safety/judge.ts";
-import { Telemetry } from "./telemetry.ts";
+import { onLedgerCost, type LedgerCost, Telemetry } from "./telemetry.ts";
 
 setDefaultTimeout(20_000);
 // The stand-in answers only where scripted models are turned on.
@@ -119,4 +119,24 @@ test("a judge's request is counted in the session's total and does not move it i
   expect([after.usage.input, after.usage.cache_read]).toEqual([r[0]!.input, r[0]!.cache_read]);
   expect(after.usage.input + after.usage.cache_read).toBeGreaterThan(0);
   expect(after.updated).toBe(before.updated);
+});
+
+test("the cost metric's feed is the ledger's rows: a judge and a stopped turn count at what their streams reported", async () => {
+  const seen: LedgerCost[] = [];
+  const off = onLedgerCost((c) => seen.push(c));
+  try {
+    const s = session("Cost feed");
+    const judge = makeJudge(store, providers, () => MODEL);
+    await judge({ session: store.session(s.id)!, tool: "Write", kind: "write", summary: "judge-allow.txt", input: {} });
+    const at = begun.length;
+    engine.send(s.id, `script:started ${join(dir, "never")}`);
+    for (let i = 0; i < 200 && !begun.slice(at).some((q) => q.sessionKey === s.id); i++) await Bun.sleep(10);
+    await engine.interrupt(s.id, "owner");
+    await engine.idle(s.id);
+    const r = rows(s.id);
+    expect(r.map((x) => [x.purpose, x.outcome])).toEqual([["judge", "ok"], ["turn", "interrupted"]]);
+    const mine = seen.filter((c) => c.session === s.id);
+    expect(mine.map((c) => [c.purpose, c.outcome, c.route])).toEqual([["judge", "ok", MODEL], ["turn", "interrupted", MODEL]]);
+    expect(mine.reduce((n, c) => n + c.cost, 0)).toBeCloseTo(r.reduce((n, x) => n + (x.cost ?? 0), 0), 12);
+  } finally { off(); }
 });

@@ -32,6 +32,7 @@ import { newestTurn } from "../../admin/marks.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { turnReceipt } from "../../admin/receipt.ts";
 import { endpointOf, headerRefError, headerSourceOf, OtlpExporter, providerName } from "../../admin/otlp.ts";
+import { onLedgerCost } from "../../admin/telemetry.ts";
 import { type LogEvent, Meter, metricInterval, type Point, promptEvent, signalEndpoint, signalOn, spanEvent, spanMetrics, toOtlpLogs, toOtlpMetrics } from "../../admin/otlp-signals.ts";
 import { key } from "../../providers/creds.ts";
 import { onSettings, registerSettings, settings } from "../../admin/settings.ts";
@@ -136,12 +137,13 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     if (f.t !== "event" || (!metricsOut.state.endpoint && !eventsOut.state.endpoint)) return;
     const e = f.event;
     if (e.kind === "user" && eventsOut.state.endpoint) detached(() => eventsOut.push(promptEvent(e)));
-    else if (e.kind === "turn_end" && metricsOut.state.endpoint && e.data?.usage?.cost > 0) {
-      const route = store.session(e.session_id)?.model ?? "";
-      meter.add("keel.cost.usage", "USD", { "gen_ai.request.model": route.slice(route.indexOf(":") + 1), "gen_ai.provider.name": providerName(route) }, e.data.usage.cost);
-    }
   });
-  G.__keelOtlpMore = () => { clearTimeout(window); metricsOut.stop(); eventsOut.stop(); offBus(); };
+  // What a request cost, from the ledger rows (every purpose, a failed or stopped attempt at what its stream reported): the sum the ledger shows.
+  const offCost = onLedgerCost((c) => {
+    if (!metricsOut.state.endpoint) return;
+    meter.add("keel.cost.usage", "USD", { "gen_ai.request.model": c.route.slice(c.route.indexOf(":") + 1), "gen_ai.provider.name": providerName(c.route) }, c.cost);
+  });
+  G.__keelOtlpMore = () => { clearTimeout(window); metricsOut.stop(); eventsOut.stop(); offBus(); offCost(); };
   // A command a turn runs joins the turn's trace (W3C trace context), as Claude Code's shells do, when traces go out.
   registerEnv((sid): Record<string, string> => {
     if (!exporter.state.endpoint || !engine.isRunning(sid)) return {};
