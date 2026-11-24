@@ -50,6 +50,8 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
       await expect(card(a!.session_id).getByTestId("approval")).toHaveCount(1);
       await expect(card(g.session_id).getByTestId("approval")).toHaveCount(1);
       await expect(card(b!.session_id).getByTestId("question-submit")).toHaveCount(1);
+      // The question's header chip shows once at every width (wide: beside the question, narrow: leading its text).
+      await expect(card(b!.session_id).locator(".k-q-chip").filter({ visible: true })).toHaveCount(1);
       await shoot(page, `tree-approvals-01-${size.width}`);
 
       // The grandchild's card by the keyboard. A key right after the keyboard arrives answers nothing.
