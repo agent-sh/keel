@@ -1,6 +1,6 @@
 import { copyOrSay } from "../../lib/copy.ts";
 import { Dialog } from "@base-ui/react/dialog";
-import { Check, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Copy, ExternalLink, KeyRound, Pause, Play, Plus, Repeat, ShieldCheck, Trash2, X } from "lucide-react";
+import { Check, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Copy, ExternalLink, KeyRound, ListChecks, Pause, Play, Plus, Repeat, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { auto, autoState, inMs, openSession, useAuto, type LoopRecord, type RunRecord } from "../../lib/automation.ts";
 import { api, reportError, useStore, failed, workspaces } from "../../lib/store.ts";
@@ -15,6 +15,9 @@ import { ago, clock, cn, fmtTokens } from "../../lib/utils.ts";
 import { modelOf } from "../Mark.tsx";
 import { Empty, IconButton } from "./bits.tsx";
 import { QUEUED, STATE_WORD } from "../../../../src/core/state-words.ts";
+
+// What a gated loop's row says of its checks: "12 checks, 2 ran".
+const countChecks = (l: LoopRecord) => `${l.checks ?? 0} check${l.checks === 1 ? "" : "s"}, ${l.checks_ran ?? 0} ran`;
 
 function RunIcon({ r }: { r: RunRecord }) {
   if (r.skip_reason) return <CircleSlash className="size-3.5 shrink-0 text-faint" />;
@@ -137,6 +140,15 @@ function History({ loop }: { loop: LoopRecord }) {
           {session?.workspace && <span className="truncate font-mono text-micro leading-[inherit]" title={session.workspace}>{session.workspace}</span>}
         </p>
         <p className="mt-2 line-clamp-3 rounded-lg bg-code px-3 py-2 font-mono text-caption text-muted whitespace-pre-wrap">{loop.prompt}</p>
+        {loop.gate && (
+          <div className="mt-2 flex flex-col gap-1" data-testid="loop-gate">
+            <p className="k-label">Gate</p>
+            <code className="line-clamp-2 break-all rounded-lg bg-code px-3 py-2 font-mono text-caption text-muted">{loop.gate}</code>
+            <p className="text-caption text-faint" data-testid="loop-gate-count">
+              {countChecks(loop)}{loop.last_check_ms ? ` · last ${ago(loop.last_check_ms)}: ${loop.last_check ?? ""}` : ""}
+            </p>
+          </div>
+        )}
         {loop.kind === "webhook" && <WebhookBox loop={loop} />}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -200,6 +212,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
   const [err, setErr] = useState("");
   const [signed, setSigned] = useState(true);
   const [push, setPush] = useState(false);
+  const [gate, setGate] = useState("");
   const [keys, setKeys] = useState<{ hook_key: string; hook_secret?: string } | null>(null);
   // Where its runs work and what they may do without asking, said before it is made: a run
   // that asks waits for the owner, and the next runs are skipped until they answer.
@@ -225,6 +238,8 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const preview = useMemo(() => previewSchedule(schedule, Date.now(), 3, zone), [schedule, zone]);
   const field = "k-field h-auto w-full py-2";
+  // A gate is for a loop on an interval or a calendar schedule.
+  const gateable = !("error" in preview) && (preview.kind === "interval" || preview.kind === "cron");
   return (
     <form
       className="flex flex-col gap-3 p-5"
@@ -236,7 +251,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
         setErr("");
         try {
           // The zone the preview read the schedule in: the made loop's times are the ones shown.
-          const l = await auto.createLoop({ name: name || undefined, schedule, prompt, ...(cwd ? { cwd } : {}), ...(mode ? { mode } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(zone ? { tz: zone } : {}), ...(isHook ? { signed, ...(push ? { push } : {}) } : {}) });
+          const l = await auto.createLoop({ name: name || undefined, schedule, prompt, ...(cwd ? { cwd } : {}), ...(mode ? { mode } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(zone ? { tz: zone } : {}), ...(gateable && gate.trim() ? { gate: gate.trim() } : {}), ...(isHook ? { signed, ...(push ? { push } : {}) } : {}) });
           if (l.hook_key) setKeys({ hook_key: l.hook_key, hook_secret: l.hook_secret });
           else onDone(l.id);
         } catch (x) {
@@ -266,6 +281,15 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
         <When preview={preview} zone={zone} />
       </div>
       <textarea className={cn(field, "min-h-28 resize-y")} placeholder="What to do each run" value={prompt} onChange={(e) => setPrompt(e.target.value)} data-testid="new-loop-prompt" />
+      {gateable && (
+        <div className="flex flex-col gap-1">
+          <label htmlFor="new-loop-gate" className="k-label">Gate (optional)</label>
+          <textarea id="new-loop-gate" className={cn(field, "min-h-16 resize-y font-mono")} placeholder="A command that runs first: the prompt runs only when it exits 0" value={gate} onChange={(e) => setGate(e.target.value)} data-testid="new-loop-gate" aria-describedby="new-loop-gate-note" />
+          <p id="new-loop-gate-note" className="px-1 text-caption text-faint">
+            It runs in the folder, inside the sandbox, at each time (30 s at most) and its output comes with the prompt. Exit 1 skips the run at no cost; any other end counts as a failed run.
+          </p>
+        </div>
+      )}
       {isHook && (
         <label className="flex items-center gap-2 text-ui">
           <input type="checkbox" data-testid="new-loop-signed" checked={signed} onChange={(e) => setSigned(e.target.checked)} className="accent-[var(--accent)]" />
@@ -305,12 +329,15 @@ function LoopItem({ l, picked, onPick }: { l: LoopRecord; picked: boolean; onPic
         <div className={cn("truncate text-ui", !l.enabled && "text-muted")}>{l.name}</div>
         <div className="truncate text-micro text-faint" data-testid="loop-item-state">
           {waits ? <span className="font-medium text-accent">{waits}</span> : <>{l.schedule_text} · {l.enabled ? (l.next_ms ? inMs(l.next_ms) : l.kind === "webhook" ? "on call" : "running") : (l.disabled_reason ?? "paused")}</>}
+          {l.gate ? ` · ${countChecks(l)}` : ""}
           {l.last_ms ? ` · ran ${ago(l.last_ms)}` : ""}
         </div>
       </div>
       <span className="hidden items-center group-hover:flex">
         {/* A run that waits for the owner goes on when they answer: another run would only be refused. */}
         {!waits && <IconButton title="Run now" onClick={() => act(auto.runLoop(l.id))}><Play className="size-3.5" /></IconButton>}
+        {/* The gate command now, and the prompt when it says so: the run by hand above never asks the gate. */}
+        {l.gate && l.enabled && <IconButton title="Check now" onClick={() => act(auto.checkLoop(l.id))}><ListChecks className="size-3.5" /></IconButton>}
         <IconButton title={l.enabled ? "Turn off" : "Turn on"} onClick={() => act(auto.patchLoop(l.id, { enabled: !l.enabled }))}>
           {l.enabled ? <Pause className="size-3.5" /> : <Repeat className="size-3.5" />}
         </IconButton>

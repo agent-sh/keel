@@ -310,3 +310,22 @@ test("the line after a report counts running agents and says the parked ones apa
   expect(core.stillRunning(4, undefined, ["timer", "timer", "file"])).toStartWith("\n4 more of your agents are not done: 1 running, 3 parked on 2 timers and a file;");
   expect(core.stillRunning(2, undefined)).toStartWith("\n2 more of your agents are still running;");
 });
+
+test("an agent's loops end with the agent, and a loop of the parent stays", async () => {
+  const p = open("parent of loops");
+  engine.send(p, "owner: warm");
+  await settle(p);
+  hangs.add(p);
+  engine.send(p, "owner: start");
+  expect(await until(() => engine.isRunning(p))).toBe(true);
+  const a = await agents.spawn(p, { prompt: "lane with a loop", isolation: "none", background: true });
+  const mine = loops.create({ session_id: a.session_id, schedule: "1h", prompt: "poll", created_by: "model" }).loop;
+  const parents = loops.create({ session_id: p, schedule: "1h", prompt: "poll" }).loop;
+  agents.stop(a.id);
+  expect(await until(() => agents.isEnded(agents.get(a.id)!))).toBe(true);
+  expect(await until(() => !loops.get(mine.id)!.enabled)).toBe(true);
+  expect(loops.get(mine.id)).toMatchObject({ enabled: false, disabled_reason: "its agent ended" });
+  expect(loops.get(parents.id)!.enabled).toBe(true);
+  hangs.delete(p);
+  await engine.interrupt(p, "owner");
+}, 20_000);

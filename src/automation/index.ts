@@ -692,13 +692,16 @@ export const automationRoutes: RouteModule = (deps) => {
           deps.bus.emit({ t: "session", session: s });
           sid = s.id;
         }
-        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, tz: b.tz, created_by: "owner", signed: b.signed === undefined ? undefined : !!b.signed, min_interval_seconds: b.min_interval_seconds, push: b.push === true });
+        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, tz: b.tz, gate: b.gate, created_by: "owner", signed: b.signed === undefined ? undefined : !!b.signed, min_interval_seconds: b.min_interval_seconds, push: b.push === true });
         return json({ ...r.loop, hook_key: r.hook_key, hook_secret: r.hook_secret }, 201);
       }),
     },
     "/api/loops/:id": {
       PATCH: (req: any) => attempt(async () => (loops.get(req.params.id) ? json(loops.update(req.params.id, await body(req))) : bad("no such loop", 404))),
       DELETE: (req: any) => (loops.remove(req.params.id) ? json({ ok: true }) : bad("no such loop", 404)),
+    },
+    "/api/loops/:id/check": {
+      POST: (req: any) => attempt(async () => (loops.get(req.params.id) ? json(await loops.checkNow(req.params.id)) : bad("no such loop", 404))),
     },
     "/api/loops/:id/run": {
       POST: (req: any) => attempt(() => (loops.get(req.params.id) ? json(loops.runNow(req.params.id)) : bad("no such loop", 404))),

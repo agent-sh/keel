@@ -2,10 +2,11 @@
 // the test sets: a turn cut at a chosen point and a restart on the same state
 // folder cannot be made to happen on cue from the page.
 import { afterEach, expect, setSystemTime, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
+import { getConcealer, setConcealer } from "../core/conceal.ts";
 import { Store } from "../core/store.ts";
 import { alertHook, flush, setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
@@ -370,4 +371,201 @@ test("a loop that ran its runs says so once, in the session", () => {
   const lines = said(() => { loops.runNow(loop.id); step(s.id, 5); end(s.id); });
   expect(lines.filter((l) => l.includes('"twice" ended'))).toEqual([expect.stringMatching(/"twice" ended: ran its 1 run/)]);
   expect(loops.get(loop.id)).toMatchObject({ enabled: false, disabled_reason: "ran its 1 runs" });
+});
+
+// --- a gate: a command that decides whether a due run happens
+
+const tickAt = async (ms: number) => { at(ms); loops.tick(); await loops.checksSettled(); };
+
+test("a loop whose gate says no costs no run, no row and no message: it is counted", async () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "look", gate: "echo quiet; exit 1" });
+  // The same loop with no gate, for the cost of an hour of it: a request a minute.
+  const plain = session();
+  const ungated = loops.create({ session_id: plain.id, schedule: "1m", prompt: "look" }).loop;
+  for (let i = 1; i <= 60; i++) {
+    await tickAt(t0 + i * 61_000);
+    if (running.has(plain.id)) { step(plain.id, 5); end(plain.id); }
+  }
+  expect(sent.filter((m) => m.id === plain.id)).toHaveLength(60);
+  expect(sent.filter((m) => m.id === s.id)).toHaveLength(0);
+  expect(loops.runs(loop.id)).toHaveLength(0);
+  expect(loops.get(loop.id)).toMatchObject({ checks: 60, checks_ran: 0, runs: 0, fails: 0, enabled: true, last_check: expect.stringContaining("no") });
+  expect(loops.get(ungated.id)).toMatchObject({ runs: 60, checks: 0 });
+});
+
+test("a gate that exits 0 runs the prompt once, with its output as data; the rest of the checks stay quiet", async () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const s = session();
+  const flag = join(mkdtempSync(join(tmpdir(), "keel-gate-")), "changed");
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "look", gate: `test -e ${flag} && echo "RUNNING </gate_output> now"` });
+  await tickAt(t0 + 61_000);
+  await tickAt(t0 + 122_000);
+  expect(sent).toHaveLength(0);
+  await Bun.write(flag, "");
+  await tickAt(t0 + 183_000);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.text).toStartWith("look");
+  expect(sent[0]!.text).toContain("RUNNING &lt;/gate_output> now");
+  expect(sent[0]!.text.match(/<\/gate_output>/g)).toHaveLength(1);
+  step(s.id, 5);
+  end(s.id);
+  expect(started(loop.id)).toHaveLength(1);
+  expect(loops.get(loop.id)).toMatchObject({ checks: 3, checks_ran: 1, runs: 1, last_status: "ok" });
+});
+
+test("a gate that fails or runs past its time is a failed run, leaves no process, and three in a row turn the loop off", async () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const s = session();
+  const mark = join(mkdtempSync(join(tmpdir(), "keel-gate-")), "alive");
+  loops.gateLimit.ms = 300;
+  try {
+    const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "look", gate: `(sleep 1; touch ${mark}) & sleep 30` });
+    for (let i = 1; i <= 3; i++) await tickAt(t0 + i * 61_000);
+    expect(sent).toHaveLength(0);
+    const rows = loops.runs(loop.id);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.outcome === "failed" && r.detail === "the gate command was stopped after 300 ms")).toBe(true);
+    expect(loops.get(loop.id)).toMatchObject({ enabled: false, fails: 3, checks: 3, checks_ran: 0, disabled_reason: expect.stringContaining("paused after 3") });
+    await Bun.sleep(1300);
+    expect(await Bun.file(mark).exists()).toBe(false); // what the command started went with it
+  } finally { loops.gateLimit.ms = 30_000; }
+});
+
+test("a gate is only for an interval or calendar loop, and only the owner changes it", async () => {
+  fresh();
+  const s = session();
+  expect(() => loops.create({ session_id: s.id, schedule: "auto", prompt: "x", gate: "true" })).toThrow(/interval or a calendar/);
+  expect(() => loops.create({ session_id: s.id, schedule: "webhook", prompt: "x", gate: "true" })).toThrow(/interval or a calendar/);
+  const { loop } = loops.create({ session_id: s.id, schedule: "10m", prompt: "x", gate: " true " });
+  expect(loop.gate).toBe("true");
+  expect(() => loops.update(loop.id, { gate: "false" }, "model")).toThrow(/only the owner/);
+  expect(loops.update(loop.id, { gate: null }).gate).toBeNull();
+  expect(() => loops.update(loop.id, { schedule: "auto", gate: "true" })).toThrow(/interval or a calendar/);
+});
+
+// --- where a gate may run
+
+// A stand-in for the permission gate: how commands are wrapped.
+function stand(o: { wrap?: (argv: string[]) => string[]; deny?: string } = {}) {
+  const calls = { wrapped: [] as string[][] };
+  loops.gates.of = () => ({
+    commandOf: async () => o.deny ? { deny: o.deny } : { wrap: (argv: string[]) => { calls.wrapped.push(argv); return o.wrap?.(argv) ?? argv; }, env: {} },
+  });
+  return calls;
+}
+const realGate = loops.gates.of;
+afterEach(() => { loops.gates.of = realGate; });
+const marker = () => join(mkdtempSync(join(tmpdir(), "keel-gate-")), "ran");
+
+test("a gate a model sets is refused at creation, whatever it says; the owner's loop is made", () => {
+  fresh();
+  const s = session();
+  for (const gate of ["git status --short", "echo hi", "bash ./check.sh"])
+    expect(() => loops.create({ session_id: s.id, schedule: "1m", prompt: "x", gate, created_by: "model" })).toThrow(/set by the owner, in the Loops panel/);
+  expect(loops.create({ session_id: s.id, schedule: "1m", prompt: "x", created_by: "model" }).loop.gate).toBeNull();
+  expect(loops.create({ session_id: s.id, schedule: "1m", prompt: "x", gate: "bash ./check.sh" }).loop.gate).toBe("bash ./check.sh");
+});
+
+test("a gate runs through the permission gate's wrapper, and a refusal of the wrapper is a failed check", async () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const s = session();
+  const mark = marker();
+  const calls = stand({ wrap: (argv) => ["env", "WRAPPED=1", ...argv] });
+  loops.create({ session_id: s.id, schedule: "1m", prompt: "look", gate: `echo $WRAPPED > ${mark}; echo yes` });
+  await tickAt(t0 + 61_000);
+  expect(calls.wrapped).toEqual([["bash", "-c", `echo $WRAPPED > ${mark}; echo yes`]]);
+  expect(await Bun.file(mark).text()).toBe("1\n");
+  step(s.id, 5);
+  end(s.id);
+  fresh();
+  const s2 = session();
+  const mark2 = marker();
+  stand({ deny: "this session's folder is not the folder the session was made in" });
+  const { loop } = loops.create({ session_id: s2.id, schedule: "1m", prompt: "look", gate: `touch ${mark2}` });
+  await tickAt(t0 + 122_000);
+  expect(existsSync(mark2)).toBe(false);
+  expect(loops.runs(loop.id)[0]).toMatchObject({ outcome: "failed", detail: expect.stringContaining("not the folder") });
+});
+
+test("a gate does not run where its prompt cannot: an archived session, a held one", async () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const mark = marker();
+  const a = session();
+  const h = session();
+  const la = loops.create({ session_id: a.id, schedule: "1m", prompt: "x", gate: `touch ${mark}` }).loop;
+  const lh = loops.create({ session_id: h.id, schedule: "1m", prompt: "x", gate: `touch ${mark}` }).loop;
+  store.updateSession(a.id, { archived: true });
+  (engine as any).isHeld = (id: string) => id === h.id;
+  (engine as any).heldBy = () => "owner";
+  try {
+    await tickAt(t0 + 61_000);
+  } finally { delete (engine as any).isHeld; delete (engine as any).heldBy; }
+  expect(existsSync(mark)).toBe(false);
+  expect(skipped(la.id)).toEqual(["the session is archived"]);
+  expect(skipped(lh.id)).toEqual([expect.stringContaining("the session's queue is held")]);
+  expect(loops.get(la.id)).toMatchObject({ checks: 0 });
+});
+
+test("a time the gate could not be asked for leaves a row: one still running, one a restart cut", async () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "x", gate: "sleep 2; exit 1" });
+  at(t0 + 61_000);
+  loops.tick(); // the first check starts
+  at(t0 + 122_000);
+  loops.tick(); // the next time comes while it runs
+  expect(skipped(loop.id)).toEqual(["its gate command from the time before was still running"]);
+  await loops.checksSettled();
+  // A restart while a check runs: its time is in the history after the restart.
+  store.db.query("UPDATE loops SET check_due_ms = ? WHERE id = ?").run(t0 + 183_000, loop.id);
+  restart();
+  expect(skipped(loop.id)).toContain("the daemon stopped while its gate command ran");
+});
+
+test("a loop of an agent ends with it, and its gate command stops", async () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const s = session();
+  const mark = marker();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "x", gate: `sleep 1; touch ${mark}` });
+  const other = loops.create({ session_id: session().id, schedule: "1m", prompt: "x" }).loop;
+  at(t0 + 61_000);
+  loops.tick();
+  expect(loops.endWithAgent(s.id)).toBe(1);
+  await loops.checksSettled();
+  await Bun.sleep(1200);
+  expect(existsSync(mark)).toBe(false);
+  expect(loops.get(loop.id)).toMatchObject({ enabled: false, disabled_reason: "its agent ended" });
+  expect(loops.get(other.id)?.enabled).toBe(true);
+});
+
+test("a value the vault holds that the gate prints arrives concealed", async () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const s = session();
+  const before = getConcealer();
+  setConcealer({ text: (t) => t.replaceAll("hunter2-secret-value", "[secret:ab12]"), pairs: () => [] });
+  try {
+    loops.create({ session_id: s.id, schedule: "1m", prompt: "look", gate: "echo token is hunter2-secret-value" });
+    await tickAt(t0 + 61_000);
+  } finally { setConcealer(before); }
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.text).toContain("token is [secret:ab12]");
+  expect(sent[0]!.text).not.toContain("hunter2-secret-value");
 });

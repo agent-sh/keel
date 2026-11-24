@@ -535,7 +535,7 @@ const schedule_wakeup: Tool = { name: "schedule_wakeup", families: OTHERS, readO
 
 function loopLine(l: loops.LoopRecord) {
   const next = l.next_ms ? zonedStamp(l.next_ms) : "-";
-  return `${l.id} · ${l.enabled ? "on" : `off (${l.disabled_reason ?? "paused"})`} · ${l.schedule_text} · next ${next} · ${l.runs} runs · last ${l.last_status ?? "-"} · ${l.name}`;
+  return `${l.id} · ${l.enabled ? "on" : `off (${l.disabled_reason ?? "paused"})`} · ${l.schedule_text} · next ${next} · ${l.runs} runs${l.gate ? ` of ${l.checks ?? 0} checks (gate: ${l.gate.length > 60 ? `${l.gate.slice(0, 59)}…` : l.gate})` : ""} · last ${l.last_status ?? "-"} · ${l.name}`;
 }
 
 const cronSchema = {
@@ -548,6 +548,8 @@ const cronSchema = {
   required: ["cron", "prompt"],
 };
 const cronRun = (input: any, ctx: ToolContext) => guard(() => {
+  // The schema offers no gate, but a session whose tools are pinned from before still shows the old definition.
+  if (input.gate !== undefined && input.gate !== null && String(input.gate).trim()) return fail("A check command for a loop is set by the owner, in the Loops panel; this loop runs its prompt each time.");
   const { loop } = loops.create({ session_id: ctx.sessionId, schedule: String(input.cron ?? input.schedule), prompt: input.prompt, max_runs: input.recurring === false ? 1 : (input.max_runs ?? null), created_by: "model" });
   return ok(`Scheduled ${loop.id}: ${loop.schedule_text}, next run ${loop.next_ms ? zonedStamp(loop.next_ms) : "-"}. Recurring tasks expire after 30 days.`);
 });

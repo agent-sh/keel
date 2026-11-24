@@ -25,6 +25,7 @@ import { git, Worktrees } from "../worktree/manager.ts";
 import { git as gitRead, locate } from "../core/git.ts";
 import { matchableTips, namedIn, reviewsInput } from "../board/rules.ts";
 import * as leftovers from "./leftovers.ts";
+import * as loops from "./loops.ts";
 import { contains, realOf, homeDir } from "../core/paths.ts";
 import { isReviewer, parseWrites } from "../safety/write-scope.ts";
 import * as writeAsks from "./write-asks.ts";
@@ -2145,8 +2146,10 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   const proof = row.output_schema && status === "completed" || a.machine || !folder ? "" : await proofFor(a.session_id, folder, got.events).catch(() => "");
   // What it left running is stopped, and what is new in its repositories is named (leftovers.ts), before its
   // worktree is looked at: a process of it could still write there.
-  const left = a.machine ? "" : await leftovers.settle({ store: D().store, isRunning: (sid) => D().engine.isRunning(sid) }, { ...a, report: reportId(a) })
-    .catch((e) => { capture(e, { at: "agent leftovers", agent: a.id }); return ""; });
+  // Its loops end with it: one left on would go on delivering prompts to a finished agent, and running its gate, for days.
+  const loopsOff = loopsEnded(a.session_id);
+  const left = [a.machine ? "" : await leftovers.settle({ store: D().store, isRunning: (sid) => D().engine.isRunning(sid) }, { ...a, report: reportId(a) })
+    .catch((e) => { capture(e, { at: "agent leftovers", agent: a.id }); return ""; }), loopsOff].filter(Boolean).join("\n");
   const { run: ran, late } = starting ? await settleBefore(starting, beforeBy) : {};
   const before = ran ? beforeOf(ran) : "";
   // Decided by what the report says, not by the run's state later: one that ends after this is still owed.
@@ -2282,6 +2285,7 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   const text = [head, capsule].filter(Boolean).join("\n\n");
   // What its old session left running stops, and its repositories are read again for the new one.
   await leftovers.settle({ store, isRunning: (sid) => engine.isRunning(sid) }, { ...a, report: reportId(a) }).catch((e) => capture(e, { at: "agent successor leftovers", agent: a.id }));
+  loopsEnded(a.session_id);
   await leftovers.before(store, a.id, [old.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: a.id }));
   const settings = { ...old.settings };
   if (model !== a.model && settings.effort && !(await providers.resolve(model)).info.efforts.includes(String(settings.effort))) delete settings.effort;
@@ -2886,3 +2890,14 @@ slotGate.inLine = (sessionId) => { if (!kept.has(D().store)) return false; const
 // Its result goes to its own panel, never to the parent's conversation (a reviewer).
 export const isSilent = (id: string) => !!defOf(id)?.silent;
 export type { StoredEvent };
+
+// The loops of an agent's session turned off at its end; the line a report carries about them ("" when none).
+function loopsEnded(sessionId: string): string {
+  try {
+    const n = loops.endWithAgent(sessionId);
+    return n ? `${n} loop${n === 1 ? "" : "s"} of its own ${n === 1 ? "was" : "were"} turned off with it.` : "";
+  } catch (e) {
+    capture(e, { at: "agent loops end", session: sessionId });
+    return "";
+  }
+}

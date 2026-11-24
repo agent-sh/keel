@@ -644,6 +644,28 @@ export class Gate {
     const given = shown.length ? { ...read, own: [...(read.own ?? []), ...shown], ...(layers.length ? { layers } : {}) } : read;
     return { wrap: (argv) => confine(argv, p, workspace, writable, given), sandbox: p.sandbox, network: p.network, layered: layers.length > 0 };
   }
+
+  // --- a command Keel runs for a session at a time nobody is there to answer (a loop's gate, src/automation/loops.ts) ---
+
+  // How the command runs: wrapped as a Bash call of the session is (its write scope, the branches it holds read-only,
+  // its folder's pin, the credential folders its sandbox hides), with the hook that keeps an agent off the branches
+  // its worktree shares. Refused when the session's folder is not the one it was made in. No wrap for a session
+  // whose commands run unconfined. `spill`: a folder of the command's own, writable in every profile.
+  async commandOf(sessionId: string, command: string, spill: string): Promise<{ deny: string } | { wrap: (argv: string[]) => string[]; env: Record<string, string> }> {
+    const session = this.store.session(sessionId);
+    if (!session) return { deny: "the session is gone" };
+    if (session.machine) return { deny: "the session's tools run on another machine" };
+    const moved = this.rootMoved(session);
+    if (moved) return { deny: moved.replace(/^Refused: /, "") };
+    await this.credentialValuesOf(session, { kind: "shell", command, cwd: session.workspace });
+    const shared = session.parent_id ? this.sharedOf(session) : undefined;
+    const env = shared ? timed(() => "making the hook that keeps an agent off the shared branches", () => guardEnv(shared)) : {};
+    const p = this.perm(session.id);
+    if (p.sandbox === "off" || !this.sandboxed(session, p)) return { wrap: (argv) => argv, env };
+    try { mkdirSync(spill, { recursive: true }); } catch {} // not writable here: the command is told when it tries
+    return { wrap: (argv) => confine(argv, p, session.workspace, this.writable(session, spill, p.sandbox), this.readOpts(session, p.sandbox)), env };
+  }
+
   // (Read from the store at most every two seconds per session: a turn asks for it at every call.)
   private trees = new Map<string, { at: number; list: string[] }>();
   private agentTrees(sessionId: string): string[] {

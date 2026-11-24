@@ -224,3 +224,64 @@ test("loops: the form reads the schedule as it is typed, with a model and an eff
   const errors = (await (await request.get("/api/errors")).json()).errors;
   expect(errors.length, JSON.stringify(errors.slice(0, 3))).toBe(errorsBefore);
 });
+
+// A loop can carry a gate: a command that runs first at each time, and the prompt runs only when it exits 0,
+// with the command's output attached as data. A check that says no costs no model request and is counted in the
+// loop's row. The checks are asked for by hand here ("Check now"), as the schedule would at each time.
+test("loops: a gate that says no twice and yes once runs one prompt", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const { models } = await (await request.get("/api/models")).json();
+  test.skip(!models.some((m: { id: string }) => m.id === STAND_IN), "requires the scripted provider");
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `loop-gate-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Gate host" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("loops-button").click();
+  await page.getByTestId("new-loop-button").click();
+  await page.getByTestId("new-loop-where").getByTestId("workspace-picker").click();
+  await page.getByTestId("folder-find").fill(ws);
+  await page.getByTestId("folder-find").press("Enter");
+  await page.getByTestId("use-folder").click();
+  // A gate is for a loop on an interval or a calendar: a self-paced one is offered none.
+  await page.getByTestId("new-loop-schedule").fill("auto");
+  await expect(page.getByTestId("new-loop-gate")).toHaveCount(0);
+  await page.getByTestId("new-loop-schedule").fill("1m");
+  await page.getByTestId("new-loop-prompt").fill("Say only the word tock.");
+  // Says no the first two times, yes the third, and prints what it found.
+  await page.getByTestId("new-loop-gate").fill('n=$(cat count 2>/dev/null || echo 0); echo $((n+1)) > count; test "$n" -ge 2 && echo "CHANGED after $n checks"');
+  await shoot(page, "loops-10-new-gate");
+  await page.getByRole("button", { name: "Create loop" }).click();
+  await expect(page.getByTestId("loop-gate")).toContainText("count");
+  const loop = (await (await request.get("/api/loops")).json()).loops.find((l: any) => l.prompt === "Say only the word tock.");
+  expect(loop.gate).toContain("echo $((n+1))");
+  const count = page.getByTestId("loop-gate-count");
+  const item = page.getByTestId("loop-item").filter({ hasText: "Say only the word tock." });
+  const check = async () => { await item.hover(); await item.getByTitle("Check now").click(); };
+
+  await check();
+  await expect(count).toContainText("1 check, 0 ran");
+  await check();
+  await expect(count).toContainText("2 checks, 0 ran");
+  // Two checks that said no: no run, no message, no model request in the loop's session.
+  const eventsOf = async () => (await (await request.get(`/api/sessions/${loop.session_id}/events`)).json()).events as any[];
+  expect((await (await request.get(`/api/loops/${loop.id}/runs`)).json()).runs).toHaveLength(0);
+  expect((await eventsOf()).filter((e) => e.kind === "user" || e.kind === "assistant")).toHaveLength(0);
+  await shoot(page, "loops-11-gate-quiet");
+
+  await check();
+  await expect(count).toContainText("3 checks, 1 ran");
+  await expect(page.getByTestId("loop-run")).toHaveCount(1);
+  await expect(page.getByTestId("loop-run").first()).toContainText("finished", { timeout: 60_000 });
+  const events = await eventsOf();
+  expect(events.filter((e) => e.kind === "assistant")).toHaveLength(1);
+  const prompt = events.find((e) => e.kind === "user")!.data.text as string;
+  expect(prompt).toMatch(/^Say only the word tock\./);
+  expect(prompt).toContain("<gate_output>\nCHANGED after 2 checks\n</gate_output>");
+  await expect(item.getByTestId("loop-item-state")).toContainText("3 checks, 1 ran");
+  await shoot(page, "loops-12-gate-ran");
+
+  for (const l of (await (await request.get("/api/loops")).json()).loops) await request.delete(`/api/loops/${l.id}`);
+  const errors = (await (await request.get("/api/errors")).json()).errors;
+  expect(errors.length, JSON.stringify(errors.slice(0, 3))).toBe(errorsBefore);
+});

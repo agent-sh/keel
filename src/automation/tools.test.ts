@@ -168,3 +168,13 @@ test("CronDelete deletes the model's own scheduled tasks, not the owner's", asyn
   expect(loops.get(owners.id)).toBeTruthy();
   expect((await tool("CronDelete").run({ id: mine.id }, ctx)).is_error).toBeFalsy();
 });
+
+test("CronCreate offers no gate, and a gate sent anyway is refused with the owner's way, the loop not made", async () => {
+  expect(JSON.stringify(tool("CronCreate").input_schema)).not.toContain("gate");
+  const n = loops.list().length;
+  const r = await tool("CronCreate").run({ cron: "10m", prompt: "check", gate: "git status" }, ctx);
+  expect(r.is_error).toBe(true);
+  expect(text(r)).toContain("A check command for a loop is set by the owner, in the Loops panel; this loop runs its prompt each time.");
+  expect(loops.list()).toHaveLength(n);
+  expect((await tool("CronCreate").run({ cron: "10m", prompt: "check" }, ctx)).is_error).toBeFalsy();
+});

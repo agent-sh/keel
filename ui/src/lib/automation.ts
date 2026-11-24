@@ -117,12 +117,13 @@ export const auto = {
   cancelWait: (id: string) => api(`/api/waits/${id}`, { method: "DELETE" }),
   patchLoop: (id: string, body: Partial<LoopRecord>) => api(`/api/loops/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   runLoop: (id: string) => api(`/api/loops/${id}/run`, { method: "POST" }),
+  checkLoop: (id: string) => api(`/api/loops/${id}/check`, { method: "POST" }),
   deleteLoop: async (id: string) => {
     await api(`/api/loops/${id}`, { method: "DELETE" });
     const { [id]: _, ...rest } = state.loops;
     set({ loops: rest });
   },
-  createLoop: (body: { name?: string; schedule: string; prompt: string; session_id?: string; max_runs?: number; signed?: boolean; push?: boolean; cwd?: string; mode?: string; model?: string; effort?: string; tz?: string }) =>
+  createLoop: (body: { name?: string; schedule: string; prompt: string; session_id?: string; max_runs?: number; signed?: boolean; push?: boolean; cwd?: string; mode?: string; model?: string; effort?: string; tz?: string; gate?: string }) =>
     api<LoopRecord & { hook_key?: string; hook_secret?: string }>("/api/loops", { method: "POST", body: JSON.stringify(body) }),
   rotateKey: (id: string) => api<{ hook_key: string; hook_secret?: string }>(`/api/loops/${id}/hook-key`, { method: "POST" }),
   runs: (id: string) => api<{ loop: LoopRecord; runs: RunRecord[] }>(`/api/loops/${id}/runs`),
