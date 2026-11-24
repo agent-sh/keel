@@ -26,3 +26,25 @@ test("the skill routes refuse a folder that a link leads out of the granted dire
     expect((await call(path, join(granted, "real"))).status).toBe(200);
   }
 });
+
+// The walk up from the folder for a project's skills ends at the granted directory: a folder above it
+// (here a repository's root over it) is not the peer's to read.
+test("the skill routes stop the project walk at the granted directory", async () => {
+  const base = mkdtempSync(join(process.env.TMPDIR ?? ".", "hands-skills-"));
+  dirs.push(base);
+  mkdirSync(join(base, ".git"));
+  mkdirSync(join(base, ".claude/skills/above"), { recursive: true });
+  writeFileSync(join(base, ".claude/skills/above/SKILL.md"), "---\nname: above\ndescription: over the granted folder\n---\nbody\n");
+  const granted = join(base, "granted");
+  mkdirSync(join(granted, ".claude/skills/inside"), { recursive: true });
+  writeFileSync(join(granted, ".claude/skills/inside/SKILL.md"), "---\nname: inside\ndescription: in it\n---\nbody\n");
+  const routes: any = handsRoutes({ spillRoot: join(base, "spill"), capture: () => {} } as any);
+  const call = (path: string, name: string) =>
+    routes[path].POST(new Request("http://x", { method: "POST", body: JSON.stringify({ cwd: granted, root: granted, session: "s1", name }) })) as Promise<Response>;
+  const names = ((await (await call("/api/fleet/hands/skills", "")).json()) as { skills: { name: string }[] }).skills.map((s) => s.name);
+  expect(names).toContain("inside");
+  expect(names).not.toContain("above");
+  const one = (await (await call("/api/fleet/hands/skill", "above")).json()) as { missing?: { names: string[] } };
+  expect(one.missing?.names).toContain("inside");
+  expect(one.missing?.names).not.toContain("above");
+});

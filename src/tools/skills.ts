@@ -18,6 +18,7 @@ import type { RuleKind } from "../safety/policy.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { offerToSandbox } from "../safety/sandbox-view.ts";
 import { holdChoice } from "./skill-turn.ts";
+import { contains } from "../core/paths.ts";
 import { yamlWithin } from "../core/yaml-bound.ts";
 
 export type Skill = {
@@ -137,14 +138,21 @@ function gitRoot(dir: string): string | null {
 
 // Where skills live: the owner's folders first (they win a name), then the
 // project's, from the working directory up to the repository root.
-export function skillRoots(cwd: string): { dir: string; scope: Skill["scope"] }[] {
+// The walk up from the folder ends at the repository's root, or at `stop` when that is nearer (a machine
+// serving its skills to another walks no higher than the directory it granted).
+function topOf(cwd: string, stop?: string): string {
+  const g = gitRoot(cwd) ?? cwd;
+  return stop && !contains(stop, g) ? stop : g;
+}
+
+export function skillRoots(cwd: string, stop?: string): { dir: string; scope: Skill["scope"] }[] {
   const home = homedir();
   const roots: { dir: string; scope: Skill["scope"] }[] = [
     { dir: join(home, ".claude/skills"), scope: "personal" },
     { dir: join(home, ".agents/skills"), scope: "personal" },
     { dir: join(configDir(), "skills"), scope: "personal" },
   ];
-  const top = gitRoot(cwd) ?? cwd;
+  const top = topOf(cwd, stop);
   for (let d = cwd; ; d = dirname(d)) {
     if (d !== home) for (const sub of [".claude/skills", ".agents/skills"]) roots.push({ dir: join(d, sub), scope: "project" });
     if (d === top || dirname(d) === d) break;
@@ -190,13 +198,13 @@ export const foreignSkill = (name: string, description: string, body: string) =>
 // Command files, the older form of a skill Claude Code still reads
 // (<folder>/<name>.md, the same frontmatter): the owner's, then the
 // project's from the working directory up to the repository root.
-export function commandRoots(cwd: string): { dir: string; scope: Skill["scope"] }[] {
+export function commandRoots(cwd: string, stop?: string): { dir: string; scope: Skill["scope"] }[] {
   const home = homedir();
   const roots: { dir: string; scope: Skill["scope"] }[] = [
     { dir: join(home, ".claude/commands"), scope: "personal" },
     { dir: join(configDir(), "commands"), scope: "personal" },
   ];
-  const top = gitRoot(cwd) ?? cwd;
+  const top = topOf(cwd, stop);
   for (let d = cwd; ; d = dirname(d)) {
     if (d !== home) roots.push({ dir: join(d, ".claude/commands"), scope: "project" });
     if (d === top || dirname(d) === d) break;
@@ -204,8 +212,23 @@ export function commandRoots(cwd: string): { dir: string; scope: Skill["scope"] 
   return roots;
 }
 
+// What a skill's own frontmatter says it may do and how it runs: the one reading of it, used for a skill
+// found on this machine and for one of another machine (taken from its text there, never from that
+// machine's account of it).
+export function frontFields(data: Record<string, any>): Pick<Skill, "userInvocable" | "modelInvocable" | "allowedTools" | "model" | "effort" | "disallowed" | "fork"> {
+  return {
+    userInvocable: data["user-invocable"] !== false,
+    modelInvocable: data["disable-model-invocation"] !== true,
+    ...(listField(data["allowed-tools"]).length ? { allowedTools: listField(data["allowed-tools"]) } : {}),
+    ...(typeof data.model === "string" && data.model.trim() && data.model.trim() !== "inherit" ? { model: data.model.trim() } : {}),
+    ...(typeof data.effort === "string" && data.effort.trim() ? { effort: data.effort.trim().toLowerCase() } : {}),
+    ...(listField(data["disallowed-tools"]).length ? { disallowed: listField(data["disallowed-tools"]) } : {}),
+    ...(data.context === "fork" ? { fork: { ...(typeof data.agent === "string" && data.agent.trim() ? { agent: data.agent.trim() } : {}), background: data.background !== false } } : {}),
+  };
+}
+
 // `heldBack`: the repository skills the filter holds back are added to it, by the name they would have.
-export function discoverSkills(cwd: string, heldBack?: { name: string; dir: string }[]): Skill[] {
+export function discoverSkills(cwd: string, heldBack?: { name: string; dir: string }[], stop?: string): Skill[] {
   const out = new Map<string, Skill>();
   const off = skillsOff();
   const seenReal = new Set<string>();
@@ -231,22 +254,16 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
     const args = Array.isArray(data.arguments) ? data.arguments : typeof data.arguments === "string" ? data.arguments.split(/\s+/).filter(Boolean) : [];
     out.set(name, {
       name, description: desc, dir: dirname(file), file, scope, kind,
-      userInvocable: data["user-invocable"] !== false,
-      modelInvocable: data["disable-model-invocation"] !== true,
       argumentHint: data["argument-hint"] || undefined,
       arguments: args,
       root,
       enabled: !off.has(name),
       ...(unit ? { data: unit.data, plugin: unit.id } : {}),
-      ...(listField(data["allowed-tools"]).length ? { allowedTools: listField(data["allowed-tools"]) } : {}),
-      ...(typeof data.model === "string" && data.model.trim() && data.model.trim() !== "inherit" ? { model: data.model.trim() } : {}),
-      ...(typeof data.effort === "string" && data.effort.trim() ? { effort: data.effort.trim().toLowerCase() } : {}),
-      ...(listField(data["disallowed-tools"]).length ? { disallowed: listField(data["disallowed-tools"]) } : {}),
-      ...(data.context === "fork" ? { fork: { ...(typeof data.agent === "string" && data.agent.trim() ? { agent: data.agent.trim() } : {}), background: data.background !== false } } : {}),
+      ...frontFields(data),
     });
   };
   const list = (dir: string) => { try { return readdirSync(dir).sort(); } catch { return []; } };
-  const roots = skillRoots(cwd);
+  const roots = skillRoots(cwd, stop);
   const own = roots.filter((r) => r.scope === "personal");
   const cfg = skillsConfig();
   for (const { dir, scope } of own) {
@@ -278,7 +295,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
     for (const n of list(dir)) if (!n.startsWith(".") && n !== "synced") add(join(dir, n, "SKILL.md"), join(dir, n), n, dir, scope, "skill");
   }
   // A skill wins a name over a command file, as in Claude Code.
-  for (const { dir, scope } of commandRoots(cwd)) {
+  for (const { dir, scope } of commandRoots(cwd, stop)) {
     for (const n of list(dir)) if (n.endsWith(".md") && !n.startsWith(".")) add(join(dir, n), join(dir, n), n.slice(0, -3), dir, scope, "command");
   }
   for (const u of units) for (const c of u.commands) add(c.file, c.file, c.name, u.dir, "plugin", "command", `${u.id}:`, true, u);
@@ -440,7 +457,8 @@ function grantOf(skill: Skill, vars: Record<string, string>, grantable = mayGran
 // local-only skill must not be offered there. `of` answers null for a session
 // on this machine.
 export type SkillHome = {
-  machine: string;
+  machine: string; // its name, as the owner sees it
+  id: string; // what the owner's trust of its skills is kept under (a rename keeps it, a machine paired again loses it)
   list(): Promise<{ skills: Skill[] } | { error: string }>;
   get(name: string): Promise<PeerSkill | { missing: { names: string[]; held?: string } } | { error: string }>;
 };
@@ -449,8 +467,8 @@ export const skillHome: { of?: (sessionId: string) => SkillHome | null } = {};
 // What it may do on this machine is decided here, never by that machine (see peerTrusted).
 export type PeerSkill = { skill: Skill; raw: string; vars: Record<string, string> };
 
-// The owner's own word on a skill of another machine: the digest of its text he trusted, by machine
-// and skill name (`fleet_skills.trusted`). With none, or with the text changed since, its allowed-tools
+// The owner's own word on a skill of another machine: the digest of its text he trusted, by the machine's
+// id and skill name (`fleet_skills.trusted`). With none, or with the text changed since, its allowed-tools
 // ask as usual and the model, effort and fork it names are not taken. The machine's own answer about it
 // counts for nothing: it is the one a skill would have to talk past.
 registerSettings("fleet_skills", { trusted: {} as Record<string, Record<string, string>> }, (v) => {
@@ -462,23 +480,24 @@ registerSettings("fleet_skills", { trusted: {} as Record<string, Record<string, 
   return undefined;
 });
 export const peerDigest = (raw: string) => createHash("sha256").update(raw).digest("hex");
-export function peerTrusted(machine: string, name: string, raw: string): boolean {
-  const d = (settings().fleet_skills?.trusted as Record<string, Record<string, string>> | undefined)?.[machine]?.[name];
+export function peerTrusted(machineId: string, name: string, raw: string): boolean {
+  const d = (settings().fleet_skills?.trusted as Record<string, Record<string, string>> | undefined)?.[machineId]?.[name];
   return typeof d === "string" && d === peerDigest(raw);
 }
-const peerHeld = (machine: string) => `it is on ${machine}, and the owner has not trusted it from here (fleet_skills in Settings)`;
+const peerHeld = (machine: string, id: string) => `it is on ${machine}, and the owner has not trusted it from here (fleet_skills.trusted.${id} in Settings)`;
 
 // What a machine serves of its skills to a session placed on it (the hands routes): what it
 // discovers for the folder, under its own trust and scan rules, and a skill's text with its variables.
-export function servedSkills(cwd: string): Skill[] {
-  return discoverSkills(cwd).filter((s) => s.enabled);
+// `stop`: the directory it granted: the folder's own skills are read from it and below, no higher.
+export function servedSkills(cwd: string, stop?: string): Skill[] {
+  return discoverSkills(cwd, undefined, stop).filter((s) => s.enabled);
 }
-export function servedSkill(cwd: string, name: string, sessionId: string): PeerSkill | { missing: { names: string[]; held?: string } } {
+export function servedSkill(cwd: string, name: string, sessionId: string, stop?: string): PeerSkill | { missing: { names: string[]; held?: string } } {
   const want = (n: string) => n === name || n === name.replace(/^\//, "");
-  const skill = discoverSkills(cwd).filter((s) => s.enabled).find((s) => want(s.name));
+  const skill = discoverSkills(cwd, undefined, stop).filter((s) => s.enabled).find((s) => want(s.name));
   if (!skill) {
     const heldBack: { name: string; dir: string }[] = [];
-    const names = discoverSkills(cwd, heldBack).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
+    const names = discoverSkills(cwd, heldBack, stop).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
     const held = heldBack.find((h) => want(h.name));
     return { missing: { names, ...(held ? { held: heldText(held) } : {}) } };
   }
@@ -490,13 +509,26 @@ const heldText = (h: { name: string; dir: string }) => `The skill "${h.name}" is
 // `held`: why its allowed-tools ask (a skill of another machine the owner has not trusted from here).
 type Found = PeerSkill & { grantable: boolean; machine?: string; held?: string };
 
-// A skill of another machine as this one takes it: its text and variables are the machine's own, what it
-// may do here is the owner's word kept here. Untrusted, it grants nothing and its model, effort and fork
-// are not taken (it is plain text then; a skill only narrows or informs).
-function adoptPeer(machine: string, r: PeerSkill): Found {
-  const trusted = peerTrusted(machine, r.skill.name, r.raw);
-  const { model: _m, effort: _e, fork: _f, ...rest } = r.skill;
-  return { ...r, skill: trusted ? r.skill : rest, grantable: trusted, machine, ...(trusted ? {} : { held: peerHeld(machine) }) };
+// A skill of another machine as this one takes it. Its text and variables are the machine's own. What
+// the text says it may do and how it runs (allowed-tools, disallowed-tools, model, effort, fork, who may
+// invoke it) is read here, from the text, by the same reading as a skill on this machine: the machine's
+// own account of those fields is never used, only what a trusted text says. Whether its allowed-tools
+// run unasked, and its model, effort and fork, are the owner's word kept here (`peerTrusted`); without it
+// the skill is plain text that asks for what it needs.
+export function adoptPeer(home: { machine: string; id: string }, r: PeerSkill): Found {
+  const { data } = frontmatter(r.raw);
+  const { allowedTools, model, effort, fork, disallowed, userInvocable, modelInvocable } = frontFields(data);
+  const trusted = peerTrusted(home.id, r.skill.name, r.raw);
+  const skill: Skill = {
+    ...r.skill,
+    userInvocable, modelInvocable,
+    // Only descriptive fields of the machine's own object are kept; none of these can grant or steer.
+    model: undefined, effort: undefined, fork: undefined, allowedTools: undefined, disallowed: undefined,
+    ...(allowedTools ? { allowedTools } : {}), ...(disallowed ? { disallowed } : {}),
+    ...(trusted ? { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(fork ? { fork } : {}) } : {}),
+  };
+  for (const k of ["model", "effort", "fork", "allowedTools", "disallowed"] as const) if (skill[k] === undefined) delete skill[k];
+  return { ...r, skill, grantable: trusted, machine: home.machine, ...(trusted ? {} : { held: peerHeld(home.machine, home.id) }) };
 }
 async function findSkill(ctx: { sessionId: string; cwd: string }, name: string): Promise<{ found: Found } | { error: string }> {
   const home = skillHome.of?.(ctx.sessionId);
@@ -504,7 +536,7 @@ async function findSkill(ctx: { sessionId: string; cwd: string }, name: string):
     const r = await home.get(name);
     if ("error" in r) return { error: `The skills on ${home.machine}, where this session's tools run, could not be read: ${r.error}. None are offered; this machine's skills are not used there.` };
     if ("missing" in r) return { error: r.missing.held ?? `No skill named "${name}" on ${home.machine}. Available: ${r.missing.names.join(", ") || "none"}.` };
-    return { found: adoptPeer(home.machine, r) };
+    return { found: adoptPeer(home, r) };
   }
   const want = (n: string) => n === name || n === name.replace(/^\//, "");
   const skill = discoverSkills(ctx.cwd).filter((s) => s.enabled).find((s) => want(s.name));
@@ -520,10 +552,13 @@ async function findSkill(ctx: { sessionId: string; cwd: string }, name: string):
 }
 
 // The hooks a skill of another machine names are not registered here: they run commands on this machine.
-function peerHooksSaid(raw: string, machine: string): string {
+function peerHooksSaid(raw: string, machine: string, vars: Record<string, string> = {}): string {
   const { hooks, problem } = hooksOf(raw);
-  if (problem) return `Its hooks are not registered: ${problem}.`;
-  return hooks ? `Its hooks are not registered: the skill is on ${machine}, and hooks run on this machine.` : "";
+  const names = Object.keys(vars);
+  // The variables are the machine's: they name its paths, and are put into the skill's text only.
+  const said = names.length ? ` Its variables (${names.join(", ")}) are those of ${machine}, put into its text only.` : "";
+  if (problem) return `Its hooks are not registered: ${problem}.${said}`;
+  return (hooks ? `Its hooks are not registered: the skill is on ${machine}, and hooks run on this machine.` : "") + (hooks ? said : said.trim());
 }
 
 export async function loadSkill(name: string, args: string, ctx: ToolContext): Promise<ToolOutput> {
@@ -544,7 +579,7 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
   const g = grantOf(skill, vars, grantable, held);
   if (g.rules.length) skillRun.grant!(ctx.sessionId, g.rules, skill.name, false);
   holdChoice(ctx.sessionId, choiceOf(skill), skill.name, grantable, false);
-  const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine) : hooksSaid(skill, raw, ctx.sessionId));
+  const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine, vars) : hooksSaid(skill, raw, ctx.sessionId));
   if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.${extra}`);
   usage?.record(skill.name);
   return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}`);
@@ -573,7 +608,7 @@ export async function preloadSkillIn(name: string, cwd: string, sessionId: strin
   if ("missing" in r) return { error: `no skill of that name on ${home.machine}` };
   const { skill, raw, vars } = r;
   if (!skill.enabled) return { error: `it is turned off on ${home.machine}` };
-  if (!skill.modelInvocable) return { error: "only the owner invokes it (disable-model-invocation)" };
+  if (!frontFields(frontmatter(raw).data).modelInvocable) return { error: "only the owner invokes it (disable-model-invocation)" };
   usage?.record(skill.name);
   return { text: `Skill ${skill.name} (base directory ${skill.dir}, on ${home.machine}):\n\n${renderSkill(frontmatter(raw).body, "", skill.arguments, vars).trim()}` };
 }
@@ -595,7 +630,7 @@ export async function renderForOwnerIn(name: string, args: string, s: { id: stri
   const r = await home.get(name);
   if ("error" in r) return { error: `the skills on ${home.machine}, where this session's tools run, could not be read: ${r.error}` };
   if ("missing" in r || r.skill.name !== name) return { error: `no skill named ${name} on ${home.machine}` };
-  return ownerText(adoptPeer(home.machine, r), args, s.id, opts);
+  return ownerText(adoptPeer(home, r), args, s.id, opts);
 }
 
 function ownerText(f: Found, args: string, sessionId: string, opts: { grant?: "next" | "now"; cmd?: string; count?: boolean }): { skill: Skill; text: string } | { error: string } {
@@ -611,7 +646,7 @@ function ownerText(f: Found, args: string, sessionId: string, opts: { grant?: "n
     const g = grantOf(skill, vars, grantable, held);
     if (g.rules.length) skillRun.grant!(sessionId, g.rules, skill.name, opts.grant === "next", opts.cmd);
     holdChoice(sessionId, choiceOf(skill), skill.name, grantable, opts.grant === "next", opts.cmd);
-    extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine) : hooksSaid(skill, raw, sessionId));
+    extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine, vars) : hooksSaid(skill, raw, sessionId));
   }
   return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}` };
 }

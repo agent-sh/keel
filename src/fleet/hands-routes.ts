@@ -147,7 +147,7 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
       POST: async (req: Request) => {
         const b = await body(req);
         if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd)) || !contains(realOf(b.root), realOf(b.cwd))) return bad("not a directory inside the granted one");
-        return json({ skills: existsSync(b.cwd) ? servedSkills(resolve(b.cwd)) : [] });
+        return json({ skills: existsSync(b.cwd) ? servedSkills(resolve(b.cwd), resolve(b.root)) : [] });
       },
     },
     "/api/fleet/hands/skill": {
@@ -155,7 +155,7 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
         const b = await body(req);
         if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd)) || !contains(realOf(b.root), realOf(b.cwd))) return bad("not a directory inside the granted one");
         if (typeof b.name !== "string" || !b.name || typeof b.session !== "string" || !/^[\w-]+$/.test(b.session)) return bad("a skill is asked for by name, for a session");
-        return json(servedSkill(resolve(b.cwd), b.name, b.session));
+        return json(servedSkill(resolve(b.cwd), b.name, b.session, resolve(b.root)));
       },
     },
 

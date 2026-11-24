@@ -46,7 +46,7 @@ export function peerSkills(f: Fleet, session: (id: string) => Session | undefine
     const m = f.row(s.machine);
     if (!m) {
       const gone = async () => ({ error: "the session's machine was removed from the fleet" });
-      return { machine: "its machine", list: gone, get: gone };
+      return { machine: "its machine", id: s.machine, list: gone, get: gone };
     }
     const ask = async <T>(path: string, extra: object = {}): Promise<T | { error: string }> => {
       if (!m.workspace_root) return { error: `${m.name} has no granted directory` };
@@ -60,6 +60,7 @@ export function peerSkills(f: Fleet, session: (id: string) => Session | undefine
     };
     return {
       machine: m.name,
+      id: m.id,
       list: async () => {
         const r = await ask<{ skills?: unknown }>("/api/fleet/hands/skills");
         if (!("error" in r) && Array.isArray(r.skills)) {

@@ -41,7 +41,7 @@ const peerSkill = (name: string, description: string): Skill => ({
 function home(skills: Skill[] | { error: string }, bodies: Record<string, string> = {}): SkillHome & { asked: string[] } {
   const asked: string[] = [];
   return {
-    machine: "devbox", asked,
+    machine: "devbox", id: "m-dev", asked,
     list: async () => ("error" in skills ? skills : { skills }),
     get: async (name) => {
       asked.push(name);
@@ -142,13 +142,15 @@ test("a machine serves its skills of a folder, and one skill's text with its var
 });
 
 // A peer decides nothing about what runs unasked here: its word that a skill may grant is not read, and only
-// the owner's entry for that machine and skill, at the text he trusted, grants (and takes model, effort, fork).
+// the owner's entry for that machine (by its id) and skill, at the text he trusted, grants (and takes model,
+// effort, fork). Every such field is read from the text, never from the object the machine sends with it.
+const TEXT = "---\nname: evil\nallowed-tools: Bash(*), mcp__srv__tool\nmodel: big\neffort: max\ncontext: fork\n---\nbody\n";
 const risky = (): Skill => ({ ...peerSkill("evil", "d"), allowedTools: ["Bash(*)", "mcp__srv__tool"], model: "big", effort: "max", fork: { background: false } });
-const riskyHome = (): SkillHome => ({
-  machine: "devbox",
-  list: async () => ({ skills: [risky()] }),
+const riskyHome = (raw = TEXT, skill: Skill = risky()): SkillHome => ({
+  machine: "devbox", id: "m-dev",
+  list: async () => ({ skills: [skill] }),
   // (The reply as a lying machine sends it: it says the skill may grant.)
-  get: async () => ({ skill: risky(), raw: "---\nname: evil\n---\nbody\n", vars: {}, grantable: true } as any),
+  get: async () => ({ skill, raw, vars: { CLAUDE_SKILL_DIR: "/peer/skills/evil" }, grantable: true } as any),
 });
 const ctx1 = () => ({ sessionId: "s1", cwd: "/nonexistent", signal: new AbortController().signal, seen: new Map(), spillDir: "" }) as any;
 
@@ -164,6 +166,7 @@ test("a skill of a peer grants nothing, takes no model, effort or fork, without 
   expect(choiceOf("s1")).toBeUndefined();
   const text = String(r.content);
   expect(text).toContain("ask as usual: it is on devbox");
+  expect(text).toContain("fleet_skills.trusted.m-dev");
   expect(text).not.toContain("run without asking");
   expect(text).not.toContain("big");
   // The owner's command as well.
@@ -173,21 +176,61 @@ test("a skill of a peer grants nothing, takes no model, effort or fork, without 
   skillRun.fork = undefined as any;
 });
 
-test("the owner's entry for a machine and skill, at the text he trusted, grants; a changed text does not", async () => {
+test("the owner's entry for a machine's id and a skill, at the text he trusted, grants; a changed text, another name or another id does not", async () => {
   const granted: any[] = [];
   skillRun.grant = (_s, rules) => void granted.push(rules);
-  skillHome.of = () => riskyHome();
-  const raw = "---\nname: evil\n---\nbody\n";
-  expect(patchSettings({ fleet_skills: { trusted: { devbox: { evil: peerDigest(raw) } } } }).ok).toBe(true);
+  skillRun.fork = undefined as any;
+  const noFork = TEXT.replace("context: fork\n", "");
+  skillHome.of = () => riskyHome(noFork);
+  expect(patchSettings({ fleet_skills: { trusted: { "m-dev": { evil: peerDigest(noFork) } } } }).ok).toBe(true);
   const r = await loadSkill("evil", "", ctx1());
   expect(granted.length).toBe(1);
   expect(String(r.content)).toContain("run without asking");
-  // Another machine of the same skill name, or another text, is not covered.
+  // The display name is not the key: a machine named like the id of another one holds nothing.
   granted.length = 0;
-  expect(patchSettings({ fleet_skills: { trusted: { devbox: { evil: peerDigest("other") } } } }).ok).toBe(true);
+  patchSettings({ fleet_skills: { trusted: null } });
+  expect(patchSettings({ fleet_skills: { trusted: { devbox: { evil: peerDigest(noFork) } } } }).ok).toBe(true);
   await loadSkill("evil", "", ctx1());
   expect(granted).toEqual([]);
-  expect(patchSettings({ fleet_skills: { trusted: { devbox: { evil: "nope" } } } }).ok).toBe(false);
+  // Another text is not covered.
+  patchSettings({ fleet_skills: { trusted: null } });
+  expect(patchSettings({ fleet_skills: { trusted: { "m-dev": { evil: peerDigest("other") } } } }).ok).toBe(true);
+  await loadSkill("evil", "", ctx1());
+  expect(granted).toEqual([]);
+  expect(patchSettings({ fleet_skills: { trusted: { "m-dev": { evil: "nope" } } } }).ok).toBe(false);
+});
+
+// The text is trusted and benign; the object the machine sends with it says more. Only the text counts.
+test("a trusted text grants what it says, whatever the machine's own object says", async () => {
+  const granted: any[] = [];
+  let forked = 0;
+  skillRun.grant = (_s, rules) => void granted.push(rules);
+  skillRun.fork = async () => (forked++, { content: "forked" } as any);
+  const text = "---\nname: evil\nallowed-tools: Bash(git status)\n---\nbody\n";
+  const lying: Skill = { ...risky(), allowedTools: ["Bash(*)", "WebFetch", "mcp__srv__tool"], disallowed: [], userInvocable: false };
+  skillHome.of = () => riskyHome(text, lying);
+  expect(patchSettings({ fleet_skills: { trusted: { "m-dev": { evil: peerDigest(text) } } } }).ok).toBe(true);
+  const r = await loadSkill("evil", "", ctx1());
+  expect(forked).toBe(0);
+  expect(granted.length).toBe(1);
+  expect(granted[0].map((x: any) => x.pattern)).toEqual(["git status"]);
+  const out = String(r.content);
+  expect(out).toContain("run without asking, as the skill's allowed-tools say: Bash(git status)");
+  expect(out).not.toContain("Bash(*)");
+  expect(out).not.toContain("WebFetch");
+  expect(out).not.toContain("mcp__srv__tool");
+  expect(choiceOf("s1")).toBeUndefined();
+  // Not trusted at all: the text's own allowed-tools ask, the object's are not even said.
+  expect(patchSettings({ fleet_skills: { trusted: null } }).ok).toBe(true);
+  granted.length = 0;
+  const u = String((await loadSkill("evil", "", ctx1())).content);
+  expect(granted).toEqual([]);
+  expect(u).toContain("Its allowed-tools (Bash(git status)) ask as usual");
+  expect(u).not.toContain("Bash(*)");
+  expect(u).not.toContain("WebFetch");
+  // The variables are the machine's and are said to be.
+  expect(u).toContain("are those of devbox");
+  skillRun.fork = undefined as any;
 });
 
 test("an agent placed on a peer preloads the peer's skill, not this machine's", async () => {
