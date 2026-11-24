@@ -370,7 +370,11 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
       data-missing={!fresh && look && !look.s ? "" : undefined}
       data-testid={fresh ? undefined : "station"}
       aria-label={fresh ? "New session" : top ? `${top.title || "New session"}, ${label(top.id, w)}${whereWords(top)}` : "Session not on this daemon"}
-      onPointerDownCapture={() => { if (!helm && shownId) { paneMove(shownId); navigate({ name: "session", id: shownId }); } }}
+      // A press takes the helm. On the head it takes it when the press ends as a click: where the pane is
+      // wide the helm's head shares the bar with the session's tools, so taking it at the press would
+      // move what lies under the pointer (a drag of the head would not start, a click would land on a tool).
+      onPointerDownCapture={(e) => { if (!helm && shownId && !(e.target as Element).closest?.(".k-station-head")) { paneMove(shownId); navigate({ name: "session", id: shownId }); } }}
+      onClickCapture={(e) => { if (!helm && shownId && (e.target as Element).closest?.(".k-station-head")) { paneMove(shownId); navigate({ name: "session", id: shownId }); } }}
       // Keyboard: tabbing into a pane takes the helm. Focus moved by code (an
       // approval card taking the keys in another pane) does not.
       onKeyUpCapture={(e) => { if (!helm && shownId && e.key === "Tab") { paneMove(shownId); navigate({ name: "session", id: shownId }); } }}

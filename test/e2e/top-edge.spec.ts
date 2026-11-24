@@ -54,12 +54,12 @@ test("the rail and a pinned pane meet in one clean top edge, the head and its to
   // Panes side by side: the other pane's head ends where the bar does.
   const { session: other } = await (await request.post("/api/sessions", { data: { model, title: "Beside the pinned one" } })).json();
   try {
-    await page.addInitScript(([a, b]) => {
-      if (sessionStorage.getItem("two-panes")) return;
-      sessionStorage.setItem("two-panes", "1");
-      localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [a, b], sizes: {}, active: 0 }));
-    }, [session.id, other.id]);
-    await page.goto(`/s/${session.id}`);
+    // Two panes, the other session dropped on the second from the list.
+    await page.getByTestId("panes-2").click();
+    const second = page.getByTestId("bridge").locator(':scope > [data-slot="1"]');
+    await expect(second).toBeVisible();
+    await page.locator(`[data-testid="session-row"][data-session="${other.id}"]`).dragTo(second);
+    await expect(second).toHaveAttribute("data-station", other.id);
     await page.mouse.move(1000, 700);
     await expect(page.getByTestId("station-head")).toHaveCount(2);
     const ends = await page.getByTestId("station-head").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().bottom)));
