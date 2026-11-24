@@ -161,6 +161,28 @@ test("blocking spawns wake on failed admission and a raised limit, and detach wh
   expect(agents.live(p.id)).toEqual([]);
 });
 
+test("reads of many agents leave their reports in the store, and say how long each is", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "Lean reads" });
+  store.append(p.id, "assistant", { blocks: [] });
+  const a = await agents.spawn(p.id, { prompt: "write a long report", isolation: "none", background: true });
+  const report = "a long report with caf\u00e9 ".repeat(500);
+  end(a, "end_turn", report);
+  await settled();
+  const whole = agents.get(a.id)!;
+  expect(whole.result).toContain("a long report");
+  // Every read that lists or walks agents is without the report (a coordinator's agents are mostly reports).
+  for (const row of [agents.list(p.id)[0], agents.byChild(a.session_id), agents.tree(p.id)[0]!.agent, agents.shown(p.id)[0]]) {
+    expect(row?.id).toBe(a.id);
+    expect(row && "result" in row).toBe(false);
+    expect(row?.report_chars).toBe(whole.result!.length);
+  }
+  // The page's frame and list carry the same length whether the report was read or not.
+  expect(agents.brief(agents.list(p.id)[0]!)).toEqual(agents.brief(whole));
+  expect(agents.brief(whole).report_chars).toBe(whole.result!.length);
+  // A definition is read only where it names an external agent.
+  expect(agents.list(p.id)[0]!.external).toBeUndefined();
+});
+
 test("who stopped an agent is kept, and a second stop does not change it", async () => {
   const a = await spawn();
   agents.stop(a.id, "owner");
