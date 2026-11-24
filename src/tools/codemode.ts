@@ -16,8 +16,8 @@
 // result text; not on Bedrock) and Cloudflare's Code Mode (tools as a typed
 // API, results by console.log).
 import type { ToolResultBlock } from "../core/types.ts";
-import { shq } from "./shell.ts";
-import { sessionScope, toolEnv, UNREAD_CAP } from "./jobs.ts";
+import { logDir, shq } from "./shell.ts";
+import { codeJob, endCodeJob, sessionScope, toolEnv, UNREAD_CAP, type Job } from "./jobs.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { pump } from "../core/proc.ts";
@@ -64,9 +64,12 @@ globalThis.tools = new Proxy({}, {
     return (input) => call(name, input);
   },
 });
+// The daemon went away (a restart, a crash): nothing reads this program's calls or its end any more.
+process.on("disconnect", () => process.exit(143));
 process.on("unhandledRejection", (e) => keep("[unhandled rejection] " + show(e?.stack ?? e) + "\\n"));
 const finish = (error) => process.send({ done: true, printed, dropped, error });
 process.on("message", async (m) => {
+  if (m?.snap) { process.send({ snap: true, printed, dropped }); return; }
   if (typeof m?.code === "string") {
     let error = null;
     try {
@@ -103,27 +106,33 @@ export type CodeCall = { id: string; parent: string; seq: number; tool: string; 
 export type CodeRecorder = { start(sessionId: string, c: CodeCall): void; end(sessionId: string, c: CodeCall): void };
 
 type Outcome = { printed: string; dropped: number; error: string | null; output: string; outputDropped: number; calls: number; finished: boolean; exit: number | null };
+// A program that outlived its wait: the job it goes on as, and what it had printed when the call returned.
+export type Moved = Outcome & { moved?: Job };
 
 // Reads a stream, keeping its head; the rest is read and counted so the child
-// never blocks on a full pipe.
-async function head(stream: ReadableStream<Uint8Array> | undefined): Promise<{ text: string; dropped: number }> {
-  if (!stream) return { text: "", dropped: 0 };
+// never blocks on a full pipe. `text(from)` is what was kept so far, from a byte on.
+function collect(stream: ReadableStream<Uint8Array> | undefined) {
   const parts: Uint8Array[] = [];
   let held = 0, dropped = 0;
-  await pump(stream, (chunk) => {
+  const done = stream ? pump(stream, (chunk) => {
     const take = Math.min(chunk.length, KEPT - held);
     if (take > 0) { parts.push(chunk.subarray(0, take)); held += take; }
     dropped += chunk.length - take;
-  }, "run_code output");
-  return { text: new TextDecoder().decode(Buffer.concat(parts)), dropped };
+  }, "run_code output") : Promise.resolve();
+  return { done, held: () => held, dropped: () => dropped, text: (from = 0) => new TextDecoder().decode(Buffer.concat(parts).subarray(from)) };
 }
 
-export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecorder): Promise<Outcome> {
+// `waitMs`: past it the program goes on in the background (the call returns with `moved` set), unless the
+// turn was stopped (then it is killed, as always). Without it the call waits for the program.
+export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecorder, waitMs?: number): Promise<Moved> {
   const argv = [process.execPath, "-e", PRELUDE];
   let calls = 0;
   let done: { printed: string; dropped: number; error: string | null } | null = null;
   let resolveDone!: () => void;
   const doneP = new Promise<void>((r) => (resolveDone = r));
+  let snapped: ((m: { printed: string; dropped: number } | null) => void) | undefined;
+  // What a call of the program runs under: the turn's own stop, until the program goes on past its turn.
+  let signal: AbortSignal | undefined;
   // In a scope of its own, as a shell command is (else in a process group and session of its own): a
   // request it makes to the daemon's API has its session's authority only (src/server/peer-scope.ts).
   const scope = sessionScope("code", ctx.wrapSpawn ? ctx.wrapSpawn(argv) : argv, ctx.sessionId);
@@ -133,6 +142,7 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
     stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: !scope.cgroup,
     ipc(m: any) {
       if (m?.done) { done = m; resolveDone(); return; }
+      if (m?.snap) { snapped?.(m); return; }
       if (typeof m?.call !== "number") return;
       const n = ++calls;
       void (async () => {
@@ -142,7 +152,7 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
         if (c.tool === RUN_CODE) r = { type: "tool_result", tool_use_id: c.id, is_error: true, content: "A program cannot start another program." };
         else if (!ctx.callTool) r = { type: "tool_result", tool_use_id: c.id, is_error: true, content: "Tools cannot be called from here." };
         else {
-          const run = (tool: string, input: any) => ctx.callTool!(tool, input, c.id).catch((e) => ({ type: "tool_result" as const, tool_use_id: c.id, is_error: true, content: `Tool failed: ${(e as Error).message}` }));
+          const run = (tool: string, input: any) => ctx.callTool!(tool, input, c.id, signal).catch((e) => ({ type: "tool_result" as const, tool_use_id: c.id, is_error: true, content: `Tool failed: ${(e as Error).message}` }));
           r = await run(c.tool, c.input);
           // A catalog tool's own name (server__tool, as search_tools lists it) runs as the
           // session declares it: mcp__server__tool where tools load natively, else through mcp_call.
@@ -169,22 +179,61 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
   void proc.exited.then(release, release);
   const onAbort = () => proc.kill("SIGKILL");
   ctx.signal.addEventListener("abort", onAbort, { once: true });
-  const streams = Promise.all([head(proc.stdout), head(proc.stderr)]);
-  try {
-    proc.send({ code });
+  const out = collect(proc.stdout), err = collect(proc.stderr);
+  const streams = Promise.all([out.done, err.done]);
+  // What the program printed and its commands wrote, from the given points on.
+  const outcome = (exit: number | null, from = { printed: 0, dropped: 0, out: 0, err: 0, outDropped: 0, errDropped: 0 }): Outcome => {
+    const d = done as { printed: string; dropped: number; error: string | null } | null;
+    const output = [out.text(from.out), err.text(from.err)].filter((t) => t.trim()).join("\n");
+    return {
+      printed: d?.printed.slice(from.printed) ?? "", dropped: Math.max(0, (d?.dropped ?? 0) - from.dropped), error: d?.error ?? null,
+      output, outputDropped: out.dropped() - from.outDropped + err.dropped() - from.errDropped, calls, finished: !!d, exit: d ? 0 : exit,
+    };
+  };
+  const ended = (async () => {
     await Promise.race([doneP, proc.exited]);
     // Unawaited work of a finished program is dropped with it.
     if (done) proc.kill("SIGKILL");
     const exit = await proc.exited;
-    const [out, err] = await streams;
-    const output = [out.text, err.text].filter((t) => t.trim()).join("\n");
-    const d = done as { printed: string; dropped: number; error: string | null } | null;
-    return {
-      printed: d?.printed ?? "", dropped: d?.dropped ?? 0, error: d?.error ?? null,
-      output, outputDropped: out.dropped + err.dropped, calls, finished: !!d, exit: d ? 0 : exit,
-    };
-  } finally {
+    await streams;
+    return { exit };
+  })();
+  let keep = false;
+  try {
+    proc.send({ code });
+    let timer: Timer | undefined;
+    const late = waitMs === undefined ? undefined : new Promise<"late">((r) => { timer = setTimeout(() => r("late"), waitMs); });
+    const first = await Promise.race([ended, late].filter((p): p is NonNullable<typeof p> => !!p));
+    clearTimeout(timer);
+    if (first !== "late") return outcome(first.exit);
+    // The turn was stopped as the wait ran out: the program goes with it.
+    if (ctx.signal.aborted) return outcome((await ended).exit);
+    // Its wait is over: what it printed so far is asked of the program (one stuck in a loop of its own
+    // answers nothing, and the call says what its commands wrote).
+    const snap = await Promise.race([
+      new Promise<{ printed: string; dropped: number } | null>((r) => { snapped = r; try { proc.send({ snap: true }); } catch { r(null); } setTimeout(() => r(null), 500); }),
+      ended.then(() => null),
+    ]);
+    if (done || proc.exitCode !== null || proc.signalCode !== null) return outcome((await ended).exit);
+    const given = { printed: snap?.printed.length ?? 0, dropped: snap?.dropped ?? 0, out: out.held(), err: err.held(), outDropped: out.dropped(), errDropped: err.dropped() };
+    const sofar: Outcome = { printed: snap?.printed ?? "", dropped: snap?.dropped ?? 0, error: null, output: [out.text(), err.text()].filter((t) => t.trim()).join("\n"), outputDropped: out.dropped() + err.dropped(), calls, finished: true, exit: null };
+    const first_ = code.trim().split("\n")[0]!.slice(0, 80);
+    const job = codeJob({ sessionId: ctx.sessionId, command: `run_code: ${first_}`, cwd: ctx.cwd, logDir: logDir(ctx), callId: ctx.callId, proc, cgroup: scope.cgroup });
+    // From here the program is the job's: the turn's stop is not its stop, and its calls stop with it.
+    const own = new AbortController();
+    signal = own.signal;
     ctx.signal.removeEventListener("abort", onAbort);
+    keep = true;
+    void ended.then(({ exit }) => {
+      const rest = outcome(exit, given);
+      // (A program that finished was ended by us, with a kill: that is no signal of its own.)
+      const sig = rest.finished || proc.signalCode == null ? null : String(proc.signalCode);
+      endCodeJob(job, { code: rest.finished ? (rest.error ? 1 : 0) : exit, signal: sig, text: `${render(rest)}\n` });
+      if (job.stopReason) own.abort();
+    }, () => {});
+    return { ...sofar, moved: job };
+  } finally {
+    if (!keep) ctx.signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -209,10 +258,15 @@ export function runCodeTool(rec: CodeRecorder): Tool {
       "Each call goes through the same permissions as a direct call and is shown to the owner as its own call; the program itself is checked like a shell command of this session and runs in its sandbox. " +
       "The code is the body of an async function: `await` and `return` work at the top level; run independent calls together with `Promise.all`. " +
       "Only what the program prints (`console.log`) and the value it returns come back to you: the tool results it reads stay out of your context, so filter, count and summarize in code. " +
-      "Use it to batch several calls into one step or to cut large results down; make single calls directly.",
+      "Use it to batch several calls into one step or to cut large results down; make single calls directly. " +
+      "A program still running at its timeout (default 120000 ms, max 600000) goes on in the background instead of being killed: you get its ID and what it printed so far, " +
+      "and its end wakes you with what it printed since and its value, so do not wait for it or run it again. Its calls still go through the same permissions.",
     input_schema: {
       type: "object",
-      properties: { code: { type: "string", description: "JavaScript source: the body of an async function." } },
+      properties: {
+        code: { type: "string", description: "JavaScript source: the body of an async function." },
+        timeout: { type: "number", description: "Optional wait in milliseconds (default 120000, max 600000): a program still running then goes on in the background" },
+      },
       required: ["code"],
       additionalProperties: false,
     },
@@ -228,7 +282,16 @@ export function runCodeTool(rec: CodeRecorder): Tool {
     async run(input, ctx): Promise<ToolOutput> {
       const code = typeof input?.code === "string" ? input.code : "";
       if (!code.trim()) return fail("Give the program in `code`.");
-      const o = await runProgram(code, ctx, rec);
+      const timeout = Math.min(Math.max(Number(input?.timeout) || 120_000, 1000), 600_000);
+      const o = await runProgram(code, ctx, rec, timeout);
+      if (o.moved) {
+        const j = o.moved;
+        const sofar = [o.printed.trimEnd(), o.output.trim() ? `[output of commands]\n${o.output.trimEnd()}` : ""].filter(Boolean).join("\n\n");
+        const head = `The program did not finish within its ${Math.round(timeout / 1000)}s timeout and went on in the background with ID: ${j.id} (pid ${j.pid}). `
+          + `You are told when it ends, with what it printed since and its value: do not run it again. It is listed with your other background tasks; stop it with TaskStop (ID ${j.id}) if you have that tool, or the owner can. `
+          + `What it prints from now on is written to ${j.log} when it ends.`;
+        return ok(await spill(sofar ? `${head}\n\nPrinted so far:\n${sofar}` : head, ctx.spillDir, "run_code"));
+      }
       const text = await spill(render(o), ctx.spillDir, "run_code");
       return o.error || !o.finished ? fail(text) : ok(text);
     },

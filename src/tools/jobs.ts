@@ -79,6 +79,10 @@ export type Job = {
   left?: number[];       // what a stop could not end of its group (it still runs)
   leftStart?: Map<number, string>;   // each one's start time, so a pid given to another process is not taken for it
   proc?: Subprocess<any, any, any>;   // absent for a job adopted after a restart
+  // A program of run_code that went on in the background (see codeJob): it holds no log of its own while
+  // it runs, and what it printed since the call returned is written to its log, and carried, when it ends.
+  kind?: "code";
+  result?: string;       // what a program of that kind printed since its call returned (carried by its end's input)
   exited: Promise<void>;
 };
 
@@ -320,6 +324,47 @@ export function startJob(o: StartOpts): Job {
   return job;
 }
 
+// A program of run_code that outlived its call's wait goes on as a background job of its session: listed with
+// the others, stopped by the same routes, its end told once (finish). The program is the daemon's child with an
+// IPC channel for its tool calls, so unlike a command it cannot outlive its daemon: it ends with it, and the
+// next daemon tells that it was interrupted, never runs it again. Its log holds what it printed since its
+// call returned, written when it ends. `end` resolves when the caller has settled it (endCodeJob).
+export type CodeJobOpts = { sessionId: string; command: string; cwd: string; logDir: string; callId?: string; proc: Subprocess<any, any, any>; cgroup?: string };
+export function codeJob(o: CodeJobOpts): Job {
+  mkdirSync(o.logDir, { recursive: true });
+  const num = ++counter;
+  const id = `b${num.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const log = join(o.logDir, `${id}.log`);
+  writeFileSync(log, "");
+  let settle!: () => void;
+  const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), cwd: o.cwd, pty: false, log, started: Date.now(), background: true, readOff: 0, decoder: new TextDecoder(),
+    callId: o.callId, kind: "code", proc: o.proc, pid: o.proc.pid, stateId: stateIdOf(dirname(dirname(o.logDir))),
+    ...(o.cgroup ? { cgroup: o.cgroup, contain: "cgroup" as const } : { contain: "group" as const }),
+    exited: new Promise<void>((r) => (settle = r)) } as Job;
+  codeEnds.set(id, settle);
+  startedHere.add(id);
+  job.boot = procStart(job.pid);
+  writeMeta(log, meta(job, job.pid));
+  jobs.set(id, job);
+  jobsChanged.tell?.(job.sessionId);
+  trim();
+  return job;
+}
+const codeEnds = new Map<string, () => void>();
+// The most of what a program printed that its end's input carries (the whole is in the job's log).
+const CODE_CARRY = 8_000;
+// The program has ended (or was stopped): what it printed since its call returned goes to the log and, cut to
+// CODE_CARRY, into the input that tells its end.
+export function endCodeJob(job: Job, o: { code: number | null; signal?: string | null; text: string }) {
+  if (job.ended !== undefined) return;
+  try { appendFileSync(job.log, o.text); } catch {}
+  const t = o.text.trim();
+  job.result = t.length <= CODE_CARRY ? t : `${t.slice(0, CODE_CARRY / 2)}\n[... ${t.length - CODE_CARRY} characters cut; the whole is in the log ...]\n${t.slice(-CODE_CARRY / 2)}`;
+  finish(job, o.code, o.signal ?? null);
+  codeEnds.get(job.id)?.();
+  codeEnds.delete(job.id);
+}
+
 // Ended jobs past the newest MAX_ENDED go, except one that still has processes alive: its group, its
 // session, its cgroup, or (where no cgroup holds it) what carries its mark, which is read off the loop in one
 // pass for all of them. One trim at a time; a start while one reads asks again when it is done.
@@ -379,6 +424,7 @@ export type Meta = {
   wake?: true;       // its end starts a turn of its session (a call a restart cut was waiting on it)
   cgroup?: string; contain?: "cgroup" | "group"; contain_why?: string;
   state_id?: string; // the state folder whose daemon started it (stateIdOf)
+  kind?: "code";     // a program of run_code (codeJob): it cannot outlive its daemon, its end says it was interrupted
   // An older build's record (no state_id): the state folder whose daemon took it back first, its scope
   // running with the job's mark. A copy of the folder made after that carries this folder's id.
   state_taken?: string;
@@ -389,7 +435,7 @@ export type Meta = {
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
   started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, handle: j.handle, trace_file: j.traceFile, stopping: j.stopping || undefined, wake: j.wake || undefined, read_off: j.readOff,
-  cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy, state_id: j.stateId, state_taken: j.stateTaken,
+  cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy, state_id: j.stateId, state_taken: j.stateTaken, kind: j.kind,
 });
 // Every sidecar write goes through here: the whole record with secrets as placeholders.
 function writeMeta(log: string, m: Meta) {
@@ -471,13 +517,16 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     // (The command and its description are the model's own words; on one line, so nothing of them reads as a line of the harness.)
     const line = (t: string) => t.replace(/[\x00-\x1f\x7f]+/g, " ");
     const what = job.description ? `"${line(job.description)}"` : `\`${line(job.command.slice(0, 80))}\``;
-    const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? "ended; its exit code was not recorded (it ended under another daemon, or was killed)" : `exited with code ${code}`);
+    const code_ = job.kind === "code";
+    const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? (code_ ? "was interrupted when its daemon went down; it is not run again, run it again if its work is still needed" : "ended; its exit code was not recorded (it ended under another daemon, or was killed)") : `exited with code ${code}`);
+    const noun = code_ ? "program" : "command";
+    const carried = code_ && job.result ? `\nWhat it printed since its call returned (all of it is in ${job.log}):\n${job.result}` : "";
     // One that ended while no daemon watched it is told now, at this start: it says when it really ended.
     const down = at !== undefined ? whileDown(at, lastDown()) : undefined;
     const when = down ? ` It ended ${down}.` : "";
     const note = (o: Pick<Notice, "key" | "stored"> = {}) => {
       const list = notices.get(job.sessionId) ?? [];
-      list.push({ text: `Background command ${what} (ID ${job.id}) ${how}.${when} Output: ${job.log}`, job: job.id, log: job.log, ...o });
+      list.push({ text: `Background ${noun} ${what} (ID ${job.id}) ${how}.${when} Output: ${job.log}${carried}`, job: job.id, log: job.log, ...o });
       notices.set(job.sessionId, list);
     };
     // Named by words of its own that cannot read as a tag or a line of the harness inside an input.
@@ -496,7 +545,7 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
       const key = endKey(job);
       job.owes = true;
       note({ key, stored: () => { if (!job.owes) return; job.owes = false; try { jobEnded.read?.(job); } catch {} } });
-      const text = `[harness] Your background command ${named} (ID ${job.id}) ${how}, after ${span(job.ended - job.started)}.${when} Its output is in ${job.log}.`;
+      const text = `[harness] Your background ${noun} ${named} (ID ${job.id}) ${how}, after ${span(job.ended - job.started)}.${when} Its output is in ${job.log}.${carried}`;
       jobEnded.tell(job, text, {
         riding: key,
         sent: () => { job.owes = false; takeNotice(job.sessionId, key); patchMeta(job.log, { reported: true }); },
@@ -697,6 +746,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   const held: { m?: Meta; dir: string; f: string }[] = [];
   const history: Job[] = [];
   const terminals: Job[] = [];
+  const cut: Job[] = [];
   // `m`: the record as read; a record its folder's index lists as settled is not read unless it is kept (`m` absent).
   const ended: { m?: Meta; started: number; num: number; dir: string; f: string }[] = [];
   // The settled records read at this start that their folder's index does not list yet.
@@ -743,6 +793,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   }
   for (const e of ended.slice(MAX_ENDED)) counter = Math.max(counter, e.num);
   concealLater(unlisted);
+  for (const j of cut) finish(j, null, null);
   for (const j of history.sort((a, b) => b.started - a.started)) jobs.set(j.id, j);
   trim();
   // One read of the process table for all of them, however many records an upgrade left without an end.
@@ -752,6 +803,19 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
 
   // `verified`: its scope runs and a process there carries its mark (scopeWhy).
   function take(m: Meta, dir: string, f: string, verified = false) {
+    // A program of run_code that was running when its daemon went down: it ends with its daemon (its calls
+    // came over that daemon's channel). It is told as interrupted, once, and never run again.
+    if (m.kind === "code" && !m.reported && m.ended === undefined) {
+      if (typeof m.id !== "string" || !/^[\w-]+$/.test(m.id) || (folderOf(m) !== undefined && folderOf(m) !== stateId)) { refused?.(join(dir, f), COPIED); return; }
+      counter = Math.max(counter, m.num ?? 0);
+      if (jobs.has(m.id)) return;
+      // (One still there, a moment from seeing its channel closed, is ended: the process the record names, by its start time.)
+      try { if (Number.isInteger(m.pid) && m.pid > 1 && m.boot && procStart(m.pid) === m.boot) process.kill(m.pid, "SIGKILL"); } catch {}
+      const j: Job = { ...baseOf(m, dir), pty: false, wake: m.wake, background: true, exited: Promise.resolve() };
+      jobs.set(j.id, j);
+      cut.push(j);
+      return;
+    }
     const why = notOurs(m, stateId);
     if (why) { refused?.(join(dir, f), why); return; }
     counter = Math.max(counter, m.num ?? 0);
@@ -805,7 +869,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
 function baseOf(m: Meta, dir: string) {
   return { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
     pty: !!m.pty, log: join(dir, `${m.id}.log`), started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
-    callId: m.call_id, by: m.by, handle: m.handle, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why, stateId: m.state_id, stateTaken: m.state_taken };
+    callId: m.call_id, by: m.by, handle: m.handle, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why, stateId: m.state_id, stateTaken: m.state_taken, kind: m.kind };
 }
 const historyOf = (m: Meta, dir: string): Job => {
   const base = baseOf(m, dir);

@@ -2923,7 +2923,7 @@ export class Engine {
       this.verdicts.set(none, "failed");
       return none;
     }
-    const callTool = (name: string, input: any, id: string): Promise<ToolResultBlock> => {
+    const callTool = (name: string, input: any, id: string, signal?: AbortSignal): Promise<ToolResultBlock> => {
       // Nested calls have no question card of their own, and the program can
       // exit without awaiting its calls. Ask in a top-level call instead.
       if (tools.some((t) => t.name === name && t.asksOwner)) return Promise.resolve({
@@ -2935,7 +2935,7 @@ export class Engine {
       const key = `${ctx.sessionId}:${top}`;
       const mine = this.nested.get(key) ?? new Set<string>();
       this.nested.set(key, mine.add(id));
-      return this.runTool(session, tools, { type: "tool_use", id, name, input }, { ...ctx, nestedIn: top })
+      return this.runTool(session, tools, { type: "tool_use", id, name, input }, { ...ctx, nestedIn: top, ...(signal ? { signal } : {}) })
         .finally(() => { mine.delete(id); if (!mine.size && this.nested.get(key) === mine) this.nested.delete(key); });
     };
     const offers = (name: string) => tools.some((t) => t.name === name);

@@ -60,7 +60,8 @@ export type ToolContext = {
   authorizationError?: () => string | undefined;
   // Set by the engine: runs another tool of the session as a call of its own
   // (gate, hooks, dispatch, under the id given), for a tool that calls tools (run_code).
-  callTool?: (name: string, input: any, id: string) => Promise<ToolResultBlock>;
+  // `signal`: the call's own, for a program that went on past its turn (the turn's does not stop it).
+  callTool?: (name: string, input: any, id: string, signal?: AbortSignal) => Promise<ToolResultBlock>;
   // Set by the engine: whether the session's tool set offers this tool (a hint names only what the model has).
   offers?: (name: string) => boolean;
   // Set by the engine: long content read by the session's reader model with a
