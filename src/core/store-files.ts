@@ -25,7 +25,7 @@
 //   ask `heldFile` first and leave these files alone. A stat is fine.
 // src/conventions.test.ts holds the list of files that may name them.
 import { type Dirent, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { lstat, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { CLAIM_FILE, claimedDirs, claimNote, isClaimFile } from "./claim.ts";
 import { OWED_FILE } from "./owed.ts";
@@ -283,13 +283,34 @@ export async function heldWriteOf(path: string): Promise<string | undefined> {
 export function storeLocked(stateDir: string, table: () => string = () => readFileSync("/proc/locks", "utf8"), pid = process.pid): boolean | undefined {
   let ino: number;
   try { ino = statSync(storePath(stateDir)).ino; } catch { return undefined; }
-  for (let n = 0; n < 5; n++) {
+  for (let n = 0; n < LOCK_LOOKS; n++) {
     let text: string;
     try { text = table(); } catch { return undefined; }
-    for (const line of text.split("\n")) {
-      const f = line.trim().split(/\s+/);
-      if (f[1] === "POSIX" && Number(f[4]) === pid && f[5]?.endsWith(`:${ino}`)) return true;
-    }
+    if (lockListed(text, ino, pid)) return true;
+  }
+  return false;
+}
+
+// The same look with the table read on the thread pool. Inside the daemon the read holds the loop for
+// ten milliseconds and more (the kernel builds the table under the locks the store's own threads take),
+// so what looks every half minute reads it here.
+export async function storeLockedOff(stateDir: string, table: () => Promise<string> = () => readFile("/proc/locks", "utf8"), pid = process.pid): Promise<boolean | undefined> {
+  let ino: number;
+  try { ino = (await stat(storePath(stateDir))).ino; } catch { return undefined; }
+  for (let n = 0; n < LOCK_LOOKS; n++) {
+    let text: string;
+    try { text = await table(); } catch { return undefined; }
+    if (lockListed(text, ino, pid)) return true;
+  }
+  return false;
+}
+
+const LOCK_LOOKS = 5;
+// Whether the kernel's table has a POSIX lock of this process on the file with this inode number.
+export function lockListed(text: string, ino: number, pid: number): boolean {
+  for (const line of text.split("\n")) {
+    const f = line.trim().split(/\s+/);
+    if (f[1] === "POSIX" && Number(f[4]) === pid && f[5]?.endsWith(`:${ino}`)) return true;
   }
   return false;
 }

@@ -7,7 +7,7 @@ import { existsSync, fstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "./store.ts";
-import { heldFile, heldWrite, isStoreFile, storeFd, storeLocked, storePath, STORE_FILES } from "./store-files.ts";
+import { heldFile, heldWrite, isStoreFile, storeFd, storeLocked, storeLockedOff, storePath, STORE_FILES } from "./store-files.ts";
 import { readFile } from "../tools/files.ts";
 
 const locksOf = (file: string) => {
@@ -101,6 +101,12 @@ test("a descriptor of the store's files is opened once and kept; the file tools 
       let reads = 0;
       expect(storeLocked(dir, () => (reads++ === 0 ? without : readFileSync("/proc/locks", "utf8")))).toBe(true);
       expect(storeLocked(dir, () => { throw new Error("no table here"); })).toBeUndefined();
+      // The same answers with the table read on the thread pool.
+      expect(await storeLockedOff(dir)).toBe(true);
+      expect(await storeLockedOff(dir, async () => without)).toBe(false);
+      let looks = 0;
+      expect(await storeLockedOff(dir, async () => (looks++ === 0 ? without : readFileSync("/proc/locks", "utf8")))).toBe(true);
+      expect(await storeLockedOff(dir, async () => { throw new Error("no table here"); })).toBeUndefined();
     }
     store.db.close();
   } finally {

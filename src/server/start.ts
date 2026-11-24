@@ -16,7 +16,7 @@ import { ErrorTracker } from "../core/errors.ts";
 import { runMode } from "../core/runmode.ts";
 import { type Checkpointer, startCheckpointer } from "../core/checkpoint.ts";
 import { Store, STORE_REFUSES } from "../core/store.ts";
-import { storeLocked } from "../core/store-files.ts";
+import { storeLocked, storeLockedOff } from "../core/store-files.ts";
 import { Engine } from "../engine/turn.ts";
 import { Providers } from "../providers/registry.ts";
 import { addAdmission } from "./admission.ts";
@@ -115,10 +115,15 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // minute: a lock that is gone (some code of this process closed a
   // descriptor of keel.db: src/core/store-files.ts) is said once, loudly.
   if (storeLocked(stateDir)) {
+    let looking = false;
     const watch = setInterval(() => {
-      if (storeLocked(stateDir) !== false) return;
-      clearInterval(watch);
-      errors.capture("server", new Error("The daemon no longer holds its lock on its store (keel.db): something in this process opened the file outside SQLite and closed it. Until the daemon is restarted, another program that opens the store read-write and closes it can remove the store's log, and what is written after that is lost. Restart the daemon now (keel restart)."), { at: "store lock" });
+      if (looking) return;
+      looking = true;
+      void storeLockedOff(stateDir).then((held) => {
+        if (held !== false) return;
+        clearInterval(watch);
+        errors.capture("server", new Error("The daemon no longer holds its lock on its store (keel.db): something in this process opened the file outside SQLite and closed it. Until the daemon is restarted, another program that opens the store read-write and closes it can remove the store's log, and what is written after that is lost. Restart the daemon now (keel restart)."), { at: "store lock" });
+      }).finally(() => { looking = false; });
     }, 30_000);
     watch.unref?.();
   }
