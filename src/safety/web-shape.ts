@@ -22,14 +22,15 @@ const FETCH = /^(?:[a-z0-9]+[_-])?(?:(?:web|http)[_-]?)?(?:fetch|scrape|crawl)(?
 // which part), each with what its value may be: a count, a switch, one short word. Keys are compared as written (a
 // spelling no known tool uses is not one of them), and a value of another shape makes the call a send.
 const NUMBER = (v: unknown) => typeof v === "number" ? Number.isSafeInteger(v) && v >= 0 && v < 1e9 : typeof v === "string" && /^\d{1,9}$/.test(v);
+// (A size or a time of zero is no limit in most servers: a bound is above zero.)
+const BOUND = (v: unknown) => NUMBER(v) && Number(v) > 0;
 const SWITCH = (v: unknown) => typeof v === "boolean" || v === "true" || v === "false";
 const WORD = (v: unknown) => typeof v === "string" && /^[a-z0-9_-]{1,20}$/.test(v);
-const WORDS = (v: unknown) => WORD(v) || (Array.isArray(v) && v.length <= 8 && v.every(WORD));
 const READ_ONLY: Record<string, (v: unknown) => boolean> = {
-  max_chars: NUMBER, max_length: NUMBER, max_tokens: NUMBER, max_bytes: NUMBER, start_index: NUMBER, grep_context: NUMBER,
-  timeout: NUMBER, limit: NUMBER, offset: NUMBER,
+  max_chars: BOUND, max_length: BOUND, max_tokens: BOUND, max_bytes: BOUND, start_index: NUMBER, grep_context: NUMBER,
+  timeout: BOUND, limit: BOUND, offset: NUMBER,
   raw: SWITCH, only_main_content: SWITCH, markdown: SWITCH, html: SWITCH, text: SWITCH,
-  format: WORD, formats: WORDS,
+  format: WORD, formats: WORD,
 };
 // What a tool searches a page for, or pulls out of it: the model's own text, short, checked by the gate for the session's data.
 const TEXT_MAX = 200;

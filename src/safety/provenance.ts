@@ -36,7 +36,7 @@ import { resolve } from "node:path";
 import { ownerPrompt } from "../core/owner.ts";
 import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
 import { name as baseName, unwrap } from "./risk-words.ts";
-import { groupOf, readerAnswered } from "./addresses.ts";
+import { groupOf, readerAnswered, withScheme } from "./addresses.ts";
 import { bareFetch } from "./bare-fetch.ts";
 
 export type TargetKind = "host" | "email" | "remote" | "branch";
@@ -87,11 +87,12 @@ const trim = (u: string): string => {
 };
 
 export const hostTarget = (h: string, pathq?: string): Target => ({ kind: "host", key: `host:${h}`, shown: h, ...(pathq !== undefined ? { pathq } : {}) });
-// What follows the host of an address, as a request sends it: the path and the query, a trailing slash dropped.
-export const pathqOf = (pathname: string, search: string): string => {
-  const p = pathname.replace(/\/+$/, "");
-  return `${p || "/"}${search}`;
-};
+// What follows the host of an address, as a request sends it: the path and the query, as written (a trailing slash and a
+// bare `?` are part of the address: a page's link vouches for that address, not for the others a call could spell with
+// more of them, each a number the call chooses).
+export const pathqOf = (pathname: string, search: string): string => `${pathname || "/"}${search}`;
+// A URL's query as written: `?` alone is a query the parser drops.
+const searchOf = (u: URL, raw: string): string => u.search || (raw.replace(/#.*$/s, "").includes("?") ? "?" : "");
 export const emailTarget = (e: string): Target => ({ kind: "email", key: `email:${e.toLowerCase()}`, shown: e });
 export const branchTarget = (b: string): Target => ({ kind: "branch", key: `branch:${b}`, shown: b });
 // A remote by where it lives: host and path, with no `.git`, no trailing slash, the host in lower case.
@@ -110,14 +111,16 @@ const viaOf = (user: string, port: string | undefined): string => `${user}${port
 
 // The targets a URL names: its host, and the remote it is when it reads as one (a `.git` path, the ssh and git
 // schemes, a forge's repository).
-function urlTargets(raw: string): Target[] {
+// `exact`: the address is one word a call wrote, so none of it is punctuation (in a text, the full stop that ends a sentence is).
+function urlTargets(raw: string, exact = false): Target[] {
   let u: URL;
-  try { u = new URL(trim(raw)); } catch { return []; }
+  const written = exact ? raw.trim() : trim(raw);
+  try { u = new URL(written); } catch { return []; }
   const scheme = u.protocol.slice(0, -1).toLowerCase();
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
   if (!validHost(host, true)) return [];
   // A user name, a password or a port of its own is part of the address: a listing of the host without them does not cover it.
-  const pathq = viaOf(u.username || u.password ? `${u.username}:${u.password}@` : "", u.port) + pathqOf(u.pathname, u.search);
+  const pathq = viaOf(u.username || u.password ? `${u.username}:${u.password}@` : "", u.port) + pathqOf(u.pathname, searchOf(u, written));
   const out = [hostTarget(host, pathq)];
   const segs = u.pathname.split("/").filter(Boolean);
   const dotGit = /\.git$/i.test(u.pathname);
@@ -241,6 +244,10 @@ function pushTargets(args: string[], named: (remote: string) => string | undefin
   return out;
 }
 
+// Whether a word is an address with a user name or a password in front of its host and no scheme (`u:p@host/x`,
+// `//u@host/x`, `u@host/x`); `user@host` alone is a mail or an ssh address.
+const withUserInfo = (w: string): boolean => /^(?:\/\/)?[^/?#@=\s]+@[^/?#@\s]/.test(w) && !/^[\w.+-]{1,64}@[a-z0-9][a-z0-9.-]*(?::\d+)?$/i.test(w) && !/^[\w.+-]{1,64}@[a-z0-9][a-z0-9.-]*\.[a-z]{2,24}:(?!\d+$)/i.test(w);
+
 // What one word of a command is, when the whole word is a place: a URL, a user@host (with a path or not), a host
 // with a port or a path, an IP. A word that holds a place among other text (a JSON body, a message) is data, not a target.
 // `remote`: the word is a git remote, so a path after a host is a repository.
@@ -248,13 +255,16 @@ export function wholeTargets(word: string, remote = false): Target[] {
   let w = word.replace(/^--(?:url|proxy|to|repo)=/, "");
   if (!w || w.startsWith("-") || w.length > 2048) return [];
   w = w.replace(/^["']|["']$/g, "");
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(w)) return urlTargets(w);
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(w)) return urlTargets(w, true);
   const scp = /^(?:[\w.+-]{1,64}@)?([a-z0-9][a-z0-9.-]*\.(?:[a-z]{2,24}|xn--[a-z0-9-]{1,59})):(?!\d+$)([\w./~%+-][^\s]*)$/i.exec(w);
   if (scp && validHost(scp[1]!.toLowerCase(), true)) {
     const host = scp[1]!.toLowerCase();
     const r = remote || /\.git$/i.test(scp[2]!) ? remoteTarget(host, scp[2]!) : null;
     return [hostTarget(host), ...(r ? [r] : [])];
   }
+  // A user name (and a password) in front of a host, with a path or a password after it: an address with another authority
+  // than the host's own, whatever program reads it (curl reads `u@host/x` and `//u@host/x` as http).
+  if (withUserInfo(w)) return urlTargets(withScheme(w), true);
   const user = /^[\w.+-]{1,64}@([a-z0-9][a-z0-9.-]*)$/i.exec(w);
   if (user && validHost(user[1]!.toLowerCase().replace(/\.$/, ""), true)) return [hostTarget(user[1]!.toLowerCase().replace(/\.$/, "")), ...(/@[^@]+\.[a-z]{2,24}$/i.test(w) ? [emailTarget(w)] : [])];
   // A host alone, with a port or a path, a trailing dot, an IPv4 or an IPv6 literal.
@@ -359,7 +369,12 @@ export function inputTargets(input: unknown): Target[] {
   let chars = 0;
   const walk = (v: unknown, depth: number) => {
     if (++seen > 4000 || depth > 8 || chars > MAX_TEXT) return;
-    if (typeof v === "string") { chars += v.length; for (const t of extractTargets(v)) if (t.kind !== "branch") out.set(t.key, t); }
+    if (typeof v === "string") {
+      chars += v.length;
+      for (const t of extractTargets(v)) if (t.kind !== "branch") out.set(t.key, t);
+      // A value that is itself an address with a user name and no scheme (the text scan reads it as a mail address).
+      if (v.length <= 2048 && withUserInfo(v.trim())) for (const t of wholeTargets(v.trim())) out.set(t.key, t);
+    }
     else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
     else if (v && typeof v === "object") for (const x of Object.values(v)) walk(x, depth + 1);
   };
@@ -371,7 +386,7 @@ export function inputTargets(input: unknown): Target[] {
 // `plain`: whether an address carries nothing of the session (the gate asks addresses.ts for it).
 export function fetchReaches(addresses: string[], plain: (address: string) => boolean = () => false): Reach[] {
   const out: Reach[] = [];
-  for (const a of addresses) for (const t of urlTargets(a)) if (t.kind === "host") out.push({ target: t, how: "fetch", word: a, ...(plain(a) ? { plain: true as const } : {}) });
+  for (const a of addresses) for (const t of urlTargets(withScheme(a), true)) if (t.kind === "host") out.push({ target: t, how: "fetch", word: a, ...(plain(a) ? { plain: true as const } : {}) });
   return out;
 }
 

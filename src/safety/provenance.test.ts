@@ -156,7 +156,7 @@ test("a host a scheme or an ssh form gives is read with any top-level domain; a 
 test("what an address asks for besides the page is told from the page", () => {
   expect(wholeTargets("https://found.example/thing?q=1#top")[0]!.pathq).toBe("/thing?q=1");
   expect(wholeTargets("found.example")[0]!.pathq).toBe("/");
-  expect(wholeTargets("found.example/a/")[0]!.pathq).toBe("/a");
+  expect(wholeTargets("found.example/a/")[0]!.pathq).toBe("/a/");
   const f = { cwd: "/w" };
   expect(shellReaches("curl -H 'X-Key: abc' https://found.example/thing", f).map((r) => r.how)).toEqual(["send"]);
   expect(shellReaches("curl -A 'secret-agent' https://found.example/thing", f).map((r) => r.how)).toEqual(["send"]);
@@ -243,7 +243,7 @@ test("what an MCP server's web tool is, from its name and one call", () => {
   // A key counts as written and by the shape of its value: a count, a switch or one short word.
   for (const input of [{ url: "https://a.example", MaxChars: 5 }, { url: "https://a.example", "max-chars": 5 }, { url: "https://a.example", max_chars: "all the text of the session" }, { url: "https://a.example", max_chars: -1 }, { url: "https://a.example", max_chars: 1.5 }, { url: "https://a.example", raw: "yes" }, { url: "https://a.example", format: "text of the session" }, { url: "https://a.example", format: "x".repeat(21) }, { url: "https://a.example", formats: ["a b"] }, { url: "https://a.example", grep: { a: 1 } }, { url: "https://a.example", grep: "x".repeat(201) }, { url: "https://a.example", extract: [1] }])
     expect([JSON.stringify(input), webShape("srv__fetch_url", input)]).toEqual([JSON.stringify(input), undefined]);
-  expect(webShape("srv__fetch_url", { url: "https://a.example", max_chars: "500", raw: "false", formats: ["markdown", "html"] })).toEqual({ fetch: "https://a.example" });
+  expect(webShape("srv__fetch_url", { url: "https://a.example", max_chars: "500", raw: "false", formats: "markdown" })).toEqual({ fetch: "https://a.example" });
   expect(webShape("firecrawl__firecrawl_scrape", { url: "https://a.example/x", formats: "markdown" })).toEqual({ fetch: "https://a.example/x" });
   // A saved output has no input: the name says what it was.
   expect(webShape("mcp__harness-web__webfetch", {})).toEqual({ fetch: "" });

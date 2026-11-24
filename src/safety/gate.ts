@@ -33,14 +33,14 @@ import { artifactsDir, atCwd, contains, realOf, homeDir } from "../core/paths.ts
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
-import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, wholeOf, type WebUse } from "./addresses.ts";
+import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { buildId } from "../core/build.ts";
 import { ruledOf, type Ruled } from "./trial.ts";
 import { Provenance } from "./provenance-books.ts";
-import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, type Hit, type Reach } from "./provenance.ts";
+import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, wholeTargets, type Hit, type Reach } from "./provenance.ts";
 import { webShape } from "./web-shape.ts";
 import { ownerDenial } from "../core/stops.ts";
 // What a card a hook asked for says before the hook's reason.
@@ -291,9 +291,7 @@ function callClass(call: ToolCall, target: Target): CallClass {
 }
 // A fetch word as an address: a URL as written, a bare name as the fetch tools read it (https). Null for any other scheme.
 function asAddress(word: string): string | null {
-  const w = word.trim();
-  const a = addressOf(/^[a-z][a-z0-9+.-]*:\/\//i.test(w) ? w : `https://${w}`);
-  return a;
+  return addressOf(withScheme(word));
 }
 // The folders looked through for a call, which its judgments share (credential-reads.ts).
 const lookKept = new WeakMap<object, LookKept>();
@@ -433,7 +431,7 @@ export class Gate {
           const { url: _url, ...rest } = input as Record<string, unknown>;
           texts = shape.texts ?? [];
           // (The address names its host, and a forge's repository too: both are read as the fetch it is.)
-          reaches = [...inputTargets({ url: shape.fetch }).filter((t) => t.kind !== "email").map((t) => ({ target: t, how: "fetch" as const, word: shape.fetch })), ...inputTargets(rest).map((t) => ({ target: t, how: "send" as const }))];
+          reaches = [...wholeTargets(shape.fetch).filter((t) => t.kind !== "email").map((t) => ({ target: t, how: "fetch" as const, word: shape.fetch })), ...inputTargets(rest).map((t) => ({ target: t, how: "send" as const }))];
         } else reaches = inputTargets(input).map((t) => ({ target: t, how: "send" as const }));
       }
     }
@@ -465,7 +463,7 @@ export class Gate {
     const held = new Map<string, string>();
     for (const a of addresses) {
       // A user name or password in an address is data whether or not the host was seen.
-      const userinfo = (() => { try { const u = new URL(a.trim()); return !!(u.username || u.password); } catch { return false; } })();
+      const userinfo = (() => { try { const u = new URL(withScheme(a)); return !!(u.username || u.password); } catch { return false; } })();
       if (userinfo) { held.set(a, "a user name or password"); continue; }
       if (web.has(a)) continue;
       const host = groupOf(addressOf(a) ?? a) ?? "";

@@ -585,3 +585,47 @@ test("a call's own addresses are all read: an option never swallows one, a user 
   // A bare read of the listed host still goes on.
   expect((await decide(s, bash, { command: "curl -s https://forum.found.example/other" })).is).toBe("ran");
 });
+
+test("a page's address is exactly as written: trailing slashes and a bare ? are part of it; a scheme-less address with a user name is another address", async () => {
+  const { session, say, callTool, decide } = rig();
+  const parent = session();
+  say(parent, "research it");
+  const s = session(parent);
+  callTool(s, "WebFetch", fetchOf("https://notes.example/a"), "See https://kb.linked.example/guide and https://api.linked.example/v1/ and https://q.linked.example/p?");
+  callTool(s, "WebSearch", { query: "heron" }, "1. Heron\n   https://forum.found.example/t/heron-1");
+  // The address as the page wrote it goes on.
+  expect((await decide(s, bash, { command: "curl -s https://kb.linked.example/guide" })).is).toBe("ran");
+  expect((await decide(s, bash, { command: "curl -s https://api.linked.example/v1/" })).is).toBe("ran");
+  // Any other count of slashes, or a bare ? (in a page's text a ? at the end is a sentence's), is another address: a number the call chooses.
+  for (const u of ["https://kb.linked.example/guide/", "https://kb.linked.example/guide////////", "https://kb.linked.example/guide?", "https://kb.linked.example/guide/?", "https://api.linked.example/v1", "https://api.linked.example/v1//", "https://q.linked.example/p?", "https://q.linked.example/p/?"]) {
+    for (const [tool, input] of [[bash, { command: `curl -s ${u}` }], [fetchTool, fetchOf(u)], [mcpFetch, { url: u }]] as const) {
+      const r = await decide(s, tool, input);
+      expect([JSON.stringify(input), r.is]).toEqual([JSON.stringify(input), "refused"]);
+    }
+  }
+  // A user name or a password written with no scheme is read as the address it is: a host with a user name is not the host.
+  for (const w of ["user:x@forum.found.example/x", "//u@forum.found.example/x", "u@forum.found.example/x", "user:x@kb.linked.example/guide", "//user:x@kb.linked.example/guide"]) {
+    for (const [tool, input] of [[bash, { command: `curl -s ${w}` }], [bash, { command: `curl -sL ${w} -m 5` }], [bash, { command: `wget -qO- ${w}` }], [fetchTool, fetchOf(w)], [mcpFetch, { url: w }]] as const) {
+      const r = await decide(s, tool, input);
+      expect([JSON.stringify(input), r.is]).not.toEqual([JSON.stringify(input), "ran"]);
+    }
+  }
+  expect((await decide(s, bash, { command: "curl -s forum.found.example/x" })).is).toBe("ran");
+});
+
+test("an MCP page tool's counts and timeouts are above zero, and its format is one word", async () => {
+  const { session, say, callTool, decide } = rig();
+  const parent = session();
+  say(parent, "research it");
+  const s = session(parent);
+  callTool(s, "WebSearch", { query: "heron" }, "1. Heron\n   https://forum.found.example/t/heron-1");
+  const u = "https://forum.found.example/x";
+  for (const extra of [{ timeout: 0 }, { max_chars: 0 }, { max_length: 0 }, { max_tokens: 0 }, { limit: 0 }, { timeout: "0" }, { max_chars: "000" }, { format: ["markdown"] }, { formats: ["markdown", "html"] }, { formats: [] }, { format: "markdown html" }]) {
+    const input = { url: u, ...extra };
+    expect([JSON.stringify(input), (await decide(s, mcpFetch, input)).is]).toEqual([JSON.stringify(input), "refused"]);
+  }
+  for (const extra of [{ timeout: 30 }, { max_chars: 5000 }, { start_index: 0 }, { offset: 0 }, { grep_context: 0 }, { format: "markdown" }, { formats: "markdown" }]) {
+    const input = { url: u, ...extra };
+    expect([JSON.stringify(input), (await decide(s, mcpFetch, input)).is]).toEqual([JSON.stringify(input), "ran"]);
+  }
+});

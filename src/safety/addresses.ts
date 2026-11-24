@@ -39,6 +39,13 @@ import { domainToUnicode } from "node:url";
 // unlisted page, a gist, a presigned address). `fromOwner`: whether an address is one the owner wrote.
 export type WebUse = { search: true } | { fetches(input: any): string[]; links: boolean; public?(input: any, fromOwner: (address: string) => boolean): boolean };
 
+// A word as an address: the scheme it names, else https (a bare name, `//host/x`, and `user:x@host/x`, which is a user name and
+// a host, never a scheme `user`).
+export const withScheme = (raw: string): string => {
+  const w = String(raw).trim();
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(w) ? w : w.startsWith("//") ? `https:${w}` : `https://${w}`;
+};
+
 // An address as the fetch tools read it, or null when no fetch tool would send anything for it.
 export function addressOf(raw: string): string | null {
   let u: URL;
