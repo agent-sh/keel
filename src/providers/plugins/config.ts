@@ -7,9 +7,9 @@
 // keel-bun reads <config>/plugins.toml; without one it reads the Rust Keel's
 // ~/.config/keel/plugins.toml (read only), so existing plugins work unchanged.
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "../config.ts";
+import { homeDir } from "../../core/paths";
 
 export type PluginEntry = {
   id: string;
@@ -31,7 +31,7 @@ const PROVIDER_KEYS = new Set(["enabled", "label", "catalog", "system_prompt", "
 export function pluginsFile(): string | null {
   const own = join(configDir(), "plugins.toml");
   if (existsSync(own)) return own;
-  const keel = join(process.env.XDG_CONFIG_HOME?.startsWith("/") ? process.env.XDG_CONFIG_HOME : join(homedir(), ".config"), "keel", "plugins.toml");
+  const keel = join(process.env.XDG_CONFIG_HOME?.startsWith("/") ? process.env.XDG_CONFIG_HOME : join(homeDir(), ".config"), "keel", "plugins.toml");
   return existsSync(keel) ? keel : null;
 }
 
@@ -57,7 +57,7 @@ export function readPlugins(): { file: string | null; entries: PluginEntry[]; er
     if (raw?.enabled !== undefined && typeof raw.enabled !== "boolean") problems.push("`enabled` is not true or false");
     const env = Array.isArray(raw?.env) ? raw.env.filter((n: any) => typeof n === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) : [];
     let command = String(raw?.command ?? "");
-    if (command.startsWith("~/")) command = join(homedir(), command.slice(2));
+    if (command.startsWith("~/")) command = join(homeDir(), command.slice(2));
     entries.push({
       id,
       command,

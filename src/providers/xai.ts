@@ -7,7 +7,6 @@
 // Requests use the Responses API on the documented API first; a plan the API
 // refuses moves the grant to the Grok CLI's proxy once, and the choice is saved.
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "./config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
@@ -18,6 +17,7 @@ import { getJson, fetchFailure, ProviderError, scrub } from "./http.ts";
 import { neverSent } from "./unreachable.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { responsesWire } from "./wires/responses.ts";
+import { homeDir } from "../core/paths";
 
 const ISSUER = process.env.KEEL_XAI_ISSUER ?? "https://auth.x.ai";
 const CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
@@ -255,7 +255,7 @@ export class XaiProvider implements Provider {
   private clientVersion(g: Grant): string {
     if (g.client_version) return g.client_version;
     try {
-      const v = JSON.parse(readFileSync(join(homedir(), ".grok/models_cache.json"), "utf8")).grok_version;
+      const v = JSON.parse(readFileSync(join(homeDir(), ".grok/models_cache.json"), "utf8")).grok_version;
       if (/^[\d.]{1,32}$/.test(v)) return v;
     } catch {}
     return "1.0.13";

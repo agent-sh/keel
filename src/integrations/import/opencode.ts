@@ -21,7 +21,6 @@
 // Opened read-only; nothing here writes.
 import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { ATTACHMENT_MAX } from "../../engine/attachments.ts";
 import { OWNER_MEDIA_BYTES } from "../../engine/compact.ts";
@@ -29,8 +28,9 @@ import { fitImage, imageKey } from "../../engine/image-fit.ts";
 import { STORE } from "../../providers/image-limits.ts";
 import type { ImageBlock } from "../../core/types.ts";
 import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
+import { homeDir } from "../../core/paths";
 
-export const opencodeHome = () => process.env.KEEL_IMPORT_OPENCODE_DIR ?? join(process.env.XDG_DATA_HOME?.startsWith("/") ? process.env.XDG_DATA_HOME : join(homedir(), ".local", "share"), "opencode");
+export const opencodeHome = () => process.env.KEEL_IMPORT_OPENCODE_DIR ?? join(process.env.XDG_DATA_HOME?.startsWith("/") ? process.env.XDG_DATA_HOME : join(homeDir(), ".local", "share"), "opencode");
 export const opencodeDb = () => join(opencodeHome(), "opencode.db");
 
 let open: { path: string; ino: number; db: Database } | null = null;

@@ -5,12 +5,12 @@
 // parent and names the record it follows (logicalParentUuid), so the chain
 // goes on through it, and its summary is a checkpoint in the copy.
 import { readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Builder, clip, resultText, type Found, type Read } from "./types.ts";
 import { damageNotes, headTail, readLines, scanBack, scanFor } from "./files.ts";
+import { homeDir } from "../../core/paths";
 
-export const claudeRoot = () => process.env.KEEL_IMPORT_CLAUDE_DIR ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
+export const claudeRoot = () => process.env.KEEL_IMPORT_CLAUDE_DIR ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homeDir(), ".claude"), "projects");
 
 // Every transcript file with its size and time (no file is opened).
 export function* claudeFiles(root = claudeRoot()): Generator<{ path: string; size: number; mtime: number }> {

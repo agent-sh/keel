@@ -35,11 +35,11 @@
 // through an include is not followed.
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
 import { offerToSandbox } from "./sandbox-view.ts";
 import type { Shared } from "./shared-branches.ts";
+import { homeDir } from "../core/paths";
 
 export const refGuardRoot = () => join(dirname(gitViewsDir()), "ref-guard");
 // A confined command runs the hook too: its folder is shown read-only in every sandbox.
@@ -68,7 +68,7 @@ export function hooksPathIn(text: string): string | undefined {
 
 // The config files git reads for a checkout, in its order (git-config(1), FILES).
 function configFiles(common: string, gitDir: string, env: Record<string, string | undefined>): string[] {
-  const home = env.HOME ?? homedir();
+  const home = env.HOME ?? homeDir();
   const files: string[] = [];
   if (!env.GIT_CONFIG_NOSYSTEM) files.push(env.GIT_CONFIG_SYSTEM ?? "/etc/gitconfig");
   if (env.GIT_CONFIG_GLOBAL !== undefined) files.push(env.GIT_CONFIG_GLOBAL);
@@ -92,7 +92,7 @@ function hooksOf(s: Shared, env: Record<string, string | undefined>): string {
     if (v !== undefined) found = v;
   }
   if (found === undefined || found === "") return join(s.common, "hooks");
-  const home = env.HOME ?? homedir();
+  const home = env.HOME ?? homeDir();
   return found === "~" ? home : found.startsWith("~/") ? join(home, found.slice(2)) : found;
 }
 

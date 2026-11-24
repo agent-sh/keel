@@ -11,9 +11,8 @@
 // parent's yes is a message to the agent that names the path in its `writes`
 // (SendMessage, send_input). A question is owed in its own table until its
 // prompt is stored in the parent's session, so a restart tells it once.
-import { homedir } from "node:os";
 import type { Session } from "../core/types.ts";
-import { realOf } from "../core/paths.ts";
+import { realOf, homeDir } from "../core/paths.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { isReviewer, parseWrites, scopes, type Given } from "../safety/write-scope.ts";
 import { capture, D, deliver, isPending } from "./core.ts";
@@ -61,7 +60,7 @@ export async function forSpawn(parent: Session, writes: unknown, a: { type?: str
     : given(parent.id) ? "this session has a write scope of its own, and an agent it starts writes no more than it may"
     : undefined;
   if (!why) return { json: null, left: [] };
-  const parsed = parseWrites(writes ?? [], a.cwd, realOf(homedir()));
+  const parsed = parseWrites(writes ?? [], a.cwd, realOf(homeDir()));
   if ("error" in parsed) throw new Error(parsed.error);
   const left: string[] = [];
   const places: Spawned["places"] = [];
@@ -166,7 +165,7 @@ export async function allow(fromSessionId: string, agentSessionId: string, write
   if (s.parent_id !== fromSessionId) throw new Error("writes widens the scope of an agent you started; this agent was started by another session");
   const from = store.session(fromSessionId)!;
   if (!given(agentSessionId)) throw new Error("this agent has no write scope (its spawn named no writes, its type is no reviewer's and you have no scope yourself): it writes wherever its permissions let it. Send the message without writes");
-  const parsed = parseWrites(writes, s.workspace, realOf(homedir()));
+  const parsed = parseWrites(writes, s.workspace, realOf(homeDir()));
   if ("error" in parsed) throw new Error(parsed.error);
   if (!parsed.places.length) return "";
   for (const p of parsed.places) {

@@ -7,7 +7,6 @@
 // in ~/.codex, Gemini in ~/.gemini), and npx or uvx their package caches.
 import { configRefused } from "../core/named-config.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
@@ -16,6 +15,7 @@ import type { SessionPerm } from "../safety/gate.ts";
 import type { AcpAgent } from "./agents.ts";
 import { readOptsFor } from "../safety/sandbox-config.ts";
 import { programPaths, sandboxScope, type ReadOpts } from "../safety/sandbox-view.ts";
+import { homeDir } from "../core/paths";
 
 const withOwn = (o: ReadOpts, own: string[]): ReadOpts => (own.length ? { ...o, own: [...(o.own ?? []), ...own] } : o);
 const withProgram = (o: ReadOpts, ...argvs: string[][]): ReadOpts => ({ ...o, read: [...(o.read ?? []), ...argvs.flatMap((a) => programPaths(a))] });
@@ -26,7 +26,7 @@ const HARNESSES = ["opencode", "kimi", "claude", "codex", "gemini", "qwen", "goo
 // The folders under home the agent may write: its own (by id, program name and
 // the harness it is), each where it already exists; the XDG data and state
 // folders are made for an agent named here so a first run can write them.
-export function agentFolders(agent: Pick<AcpAgent, "id" | "run">, make = true, home = homedir()): string[] {
+export function agentFolders(agent: Pick<AcpAgent, "id" | "run">, make = true, home = homeDir()): string[] {
   const prog = agent.run ? basename(agent.run.command) : "";
   const args = agent.run?.args.join(" ") ?? "";
   const names = new Set([agent.id, prog, ...HARNESSES.filter((h) => `${agent.id} ${prog} ${args}`.toLowerCase().includes(h))].filter((n) => n && !["npx", "uvx", "node", "bun", "python", "python3"].includes(n)));
@@ -62,12 +62,12 @@ export function writeFolders(agents: Record<string, string[]>, path = foldersPat
   writeOwnFile(path, JSON.stringify({ agents }, null, 2) + "\n");
 }
 
-const expandHome = (p: string, home = homedir()) => (p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p);
-const tilde = (p: string, home = homedir()) => (p.startsWith(home + "/") ? `~${p.slice(home.length)}` : p);
+const expandHome = (p: string, home = homeDir()) => (p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p);
+const tilde = (p: string, home = homeDir()) => (p.startsWith(home + "/") ? `~${p.slice(home.length)}` : p);
 
 // A folder the owner may give an agent: absolute or under ~, and never the
 // root, the home folder itself or a folder above it (that would open all of home).
-export function checkFolder(p: string, home = homedir()): { path: string; error?: undefined } | { error: string } {
+export function checkFolder(p: string, home = homeDir()): { path: string; error?: undefined } | { error: string } {
   const t = p.trim();
   if (!t) return { error: "a folder is needed" };
   const full = expandHome(t, home);
@@ -79,7 +79,7 @@ export function checkFolder(p: string, home = homedir()): { path: string; error?
 
 // The folders the agent writes: the owner's list when set, else the guess.
 // An owner's folder that does not exist yet is made when the agent starts.
-export function writableOf(agent: Pick<AcpAgent, "id" | "run" | "folders">, make = true, home = homedir()): string[] {
+export function writableOf(agent: Pick<AcpAgent, "id" | "run" | "folders">, make = true, home = homeDir()): string[] {
   if (!agent.folders) return agentFolders(agent, make, home);
   const out = agent.folders.map((f) => expandHome(f, home));
   if (make) for (const f of out) try { mkdirSync(f, { recursive: true }); } catch {}

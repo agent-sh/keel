@@ -5,7 +5,6 @@
 import { zoned, zonedStamp } from "../core/clock.ts";
 import { rankLines } from "../admin/turn-compare.ts";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { unitFor, updateUnit } from "../admin/unit.ts";
@@ -14,7 +13,7 @@ import { restartSummary, restartTurnLine, type RestartTurn } from "../admin/life
 import { parseBind } from "../core/bind.ts";
 import { configDir } from "../providers/config.ts";
 import { authHeaders, clean, findDaemon, refusal } from "./client.ts";
-import { defaultStateDir } from "../core/paths.ts";
+import { defaultStateDir, homeDir } from "../core/paths.ts";
 
 const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
 // --url, KEEL_URL, the address the state folder's daemon recorded, the default bind.
@@ -405,7 +404,7 @@ const service = wrap(SERVICE_USAGE,
     const compiled = process.argv[1]?.startsWith("/$bunfs/");
     const command = v.exec ? [resolve(v.exec)] : compiled ? [process.execPath] : [process.execPath, resolve(process.argv[1]!)];
     const unit = unitFor({ command, bind: v.bind, workspace: v.workspace ? resolve(v.workspace) : undefined, stateDir: v["state-dir"] ? resolve(v["state-dir"]) : undefined });
-    const path = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd/user/keel-bun.service");
+    const path = join(process.env.XDG_CONFIG_HOME ?? join(homeDir(), ".config"), "systemd/user/keel-bun.service");
     if (pos[0] === "update") {
       // The unit as it is installed, with the owner's own lines: only what this build owns is set.
       if (!existsSync(path)) throw new Error(`no unit at ${path}: keel service install writes one`);

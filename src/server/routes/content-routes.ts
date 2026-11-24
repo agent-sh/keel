@@ -4,11 +4,11 @@
 // src/safety/content-routes.ts). The rows are summed and the sessions above them read on the read
 // thread; the default window is the last 30 days. The rule itself is read and changed through
 // /api/settings.
-import { homedir } from "node:os";
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
 import { realFolder, routeRule } from "../../safety/content-routes.ts";
 import { seenBy, type SeenRow, type SeenSession } from "../../safety/route-seen.ts";
+import { homeDir } from "../../core/paths";
 
 const DAYS_30 = 30 * 86_400_000;
 
@@ -33,7 +33,7 @@ export const contentRouteRoutes: RouteModule = ({ store }) => ({
       if (!has) return Response.json({ since_ms: since, rule, calls: 0, crossing: 0, folders: [] });
       const reads = readsOf(store);
       const [rows, sessions] = await Promise.all([reads.sql<SeenRow>(ROWS, [since, until]), reads.sql<SeenSession>(SESSIONS(wt), [since, until])]);
-      return Response.json({ since_ms: since, rule, ...seenBy(rows, sessions, rule, homedir(), realFolder) });
+      return Response.json({ since_ms: since, rule, ...seenBy(rows, sessions, rule, homeDir(), realFolder) });
     },
   },
 });

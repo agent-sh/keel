@@ -112,3 +112,11 @@ test("the daemon's own log lines carry no prompt, command, output or note", () =
   });
   expect(lines).toEqual([]);
 });
+
+// os.homedir() reads $HOME once, when the process starts, so a scratch HOME set
+// later (a test preload, a probe) is not seen by it, and a daemon read the
+// owner's folders from it. The home is homeDir() in src/core/paths.ts.
+test("the home folder is homeDir() from src/core/paths.ts, never os.homedir() or os.userInfo().homedir", () => {
+  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !/core\/paths(\.test)?\.ts$|conventions\.test\.ts$/.test(f));
+  expect(offenders(src, /\bhomedir\b|userInfo\(\)\.homedir/)).toEqual([]);
+});

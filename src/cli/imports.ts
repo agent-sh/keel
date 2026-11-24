@@ -1,12 +1,12 @@
 // keel import: sessions of other harnesses (Claude Code, Codex, the Rust
 // Keel) from a terminal, over the daemon's import routes.
 import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { KEEL_FILE_MAX, sizeText } from "../core/keel-file.ts";
 import { ago, ApiError, type Client, command, EXIT, line, printJson, usageError } from "./client.ts";
+import { homeDir } from "../core/paths";
 
-const home = homedir();
+const home = homeDir();
 const tilde = (p?: string) => (p ? (p.startsWith(home) ? "~" + p.slice(home.length) : p) : "");
 const size = (b: number) => (b < 1 << 20 ? `${Math.round(b / 1024)}K` : `${(b / (1 << 20)).toFixed(1)}M`);
 

@@ -4,7 +4,6 @@
 // by the hosted AI indexes, spill of long pages. Without them a small built-in
 // path fetches the page itself and searches through Exa's keyless MCP index.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { registerCatalog, type CatalogTool } from "./catalog.ts";
 import { sendShown } from "../safety/addresses.ts";
@@ -15,8 +14,9 @@ import { chunks, readText } from "../core/proc.ts";
 import { privateHost } from "../core/hosts.ts";
 import { noteOutward } from "../safety/egress.ts";
 import { endpointOf, requestBytes } from "../safety/egress-count.ts";
+import { homeDir } from "../core/paths";
 
-const HOME = homedir();
+const HOME = homeDir();
 const findBin = (name: string, env?: string) =>
   [env && process.env[env], Bun.which(name), join(HOME, ".local/bin", name)].find((p): p is string => !!p && existsSync(p));
 

@@ -16,7 +16,6 @@
 // where they are (a root or a plugin reference, not a copy), so an update in
 // the other harness reaches Keel without another import.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { configDir, inConfigDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
@@ -34,6 +33,7 @@ import type { RuleKind } from "../safety/policy.ts";
 import { Database } from "bun:sqlite";
 import { claudeAllow, overlaps, parseRule, rustRule, type Mapped } from "./port-permissions.ts";
 import { keelDb } from "./import/keel.ts";
+import { homeDir } from "../core/paths";
 
 export type Area = "instructions" | "memory" | "skills" | "plugins" | "mcp" | "hooks" | "permissions" | "sessions" | "settings";
 export const AREAS: Area[] = ["instructions", "memory", "skills", "plugins", "mcp", "hooks", "permissions", "sessions", "settings"];
@@ -59,10 +59,10 @@ export type PortDeps = {
 
 // The home whose harness folders are read (a scratch home for tests).
 export const portHome = importHome;
-const realHome = () => portHome() === homedir();
+const realHome = () => portHome() === homeDir();
 
 const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8"));
-const tilde = (p: string) => (p.startsWith(homedir() + "/") ? "~" + p.slice(homedir().length) : p);
+const tilde = (p: string) => (p.startsWith(homeDir() + "/") ? "~" + p.slice(homeDir().length) : p);
 const list = (d: string) => { try { return readdirSync(d).sort(); } catch { return []; } };
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -128,7 +128,7 @@ export function instructionBlocks(own: string, ownPath: string, srcs: InstrSourc
   take(expandImports(outside, ownPath), "Keel's own instructions");
   const refs = new Set<string>();
   const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-  for (const m of outside.matchAll(/^@(\S+)[ \t]*$/gm)) refs.add(real(m[1]!.startsWith("~/") ? join(homedir(), m[1]!.slice(2)) : m[1]!));
+  for (const m of outside.matchAll(/^@(\S+)[ \t]*$/gm)) refs.add(real(m[1]!.startsWith("~/") ? join(homeDir(), m[1]!.slice(2)) : m[1]!));
   return srcs.map((src) => {
     const text = (src.text ?? "").replace(/<!--[\s\S]*?-->/g, "");
     const lines: string[] = [];
@@ -299,8 +299,8 @@ function planMemory(items: Planned[], store: Store) {
 
 // ---- skills and plugins ------------------------------------------------------
 
-const codexDir = () => (process.env.KEEL_IMPORT_HOME ? join(portHome(), ".codex") : process.env.CODEX_HOME ?? join(homedir(), ".codex"));
-const rustConfig = () => (process.env.KEEL_IMPORT_HOME ? join(portHome(), ".config", "keel") : join(process.env.XDG_CONFIG_HOME?.startsWith("/") ? process.env.XDG_CONFIG_HOME : join(homedir(), ".config"), "keel"));
+const codexDir = () => (process.env.KEEL_IMPORT_HOME ? join(portHome(), ".codex") : process.env.CODEX_HOME ?? join(homeDir(), ".codex"));
+const rustConfig = () => (process.env.KEEL_IMPORT_HOME ? join(portHome(), ".config", "keel") : join(process.env.XDG_CONFIG_HOME?.startsWith("/") ? process.env.XDG_CONFIG_HOME : join(homeDir(), ".config"), "keel"));
 const skillDirs = (d: string) => list(d).filter((n) => !n.startsWith(".") && existsSync(join(d, n, "SKILL.md")));
 
 function addRoot(dir: string, label: string, extra: Partial<SkillRoot> = {}) {
@@ -667,7 +667,7 @@ function claudeFiles(deps: PortDeps): ClaudeFile[] {
     }
   };
   read(H);
-  for (const r of knownRoots(deps)) if (r !== H && r !== homedir()) read(r, r);
+  for (const r of knownRoots(deps)) if (r !== H && r !== homeDir()) read(r, r);
   return out;
 }
 const rulesOf = (p: any, k: string): string[] => (p && Array.isArray(p[k]) ? p[k].filter((x: unknown) => typeof x === "string") : []);

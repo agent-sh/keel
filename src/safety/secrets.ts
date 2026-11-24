@@ -9,8 +9,9 @@
 // seen again after a restart gets its old placeholder, and a call naming one
 // whose value is gone is refused by name instead of running with its text.
 import { createHmac, randomBytes } from "node:crypto";
-import { homedir, hostname, userInfo } from "node:os";
+import { hostname, userInfo } from "node:os";
 import { messageFacts } from "../core/message-facts.ts";
+import { homeDir } from "../core/paths";
 
 // `ordinary`: why ordinary text holds the value as it is (ordinaryValue), when it does.
 export type SecretMeta = { id: string; kind: string; name?: string; source: Source; sessions: string[]; created: number; placeholder: string; ordinary?: string };
@@ -104,7 +105,7 @@ function machineNames(): string[] {
   const out: (string | undefined)[] = [process.env.USER, process.env.LOGNAME];
   try { out.push(userInfo().username); } catch {}
   try { const host = hostname(); out.push(host, host.split(".")[0]); } catch {}
-  try { out.push(...homedir().split(/[\\/]/)); } catch {}
+  try { out.push(...homeDir().split(/[\\/]/)); } catch {}
   return out.filter((n): n is string => !!n);
 }
 

@@ -47,7 +47,6 @@
 // restarts less often.
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { countsOf } from "../checks/counts.ts";
 import { inputsOf, keyOf, onTree, record, repoOf, settingFor, treeOf } from "../checks/ledger.ts";
@@ -60,6 +59,7 @@ import { git as worktreeGit } from "../worktree/manager.ts";
 import type { Overlaps } from "../worktree/overlap-scan.ts";
 import { afterTask, baseLines, rebaseTask, TRIES, type ConflictAt, type Stop } from "./resolve.ts";
 import { buildOrder, checksToRun, failureText, leftWhy, outcomeText, queueWarning, readLand, tailOf, type LandRules, type Left, type Outcome, type Push, type ToRun } from "./rules.ts";
+import { homeDir } from "../core/paths";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS landing_queue (
@@ -319,7 +319,7 @@ export class LandingQueue {
     let rules: QueueView["rules"];
     if (base) {
       const r = await this.rulesOf(repo, base);
-      const run = r ? checksToRun(r.rules, r.named, homedir()) : undefined;
+      const run = r ? checksToRun(r.rules, r.named, homeDir()) : undefined;
       if (r) rules = { checks: run && "run" in run ? run.run.map((c) => c.command === c.check.run ? c.check.name : `${c.check.name} ${c.command.slice(c.check.run.length).trim()}`.trim()) : [], ...(r.rules.push ? { push: r.rules.push } : {}), ...(r.rules.after ? { after: r.rules.after } : {}), method: r.rules.method, problems: [...r.rules.problems, ...(run && "problem" in run ? [run.problem] : [])] };
     }
     return { repo, base: base ? short(base) : null, entries, running: this.running.has(repo), ...(rules ? { rules } : {}) };
@@ -427,7 +427,7 @@ export class LandingQueue {
     }
     const from = (await git(repo, ["rev-parse", "-q", "--verify", base], { read: true })).out.trim();
     const r = await this.rulesOf(repo, base, from);
-    const plan = r ? checksToRun(r.rules, r.named, homedir()) : { problem: "the repository names no checks (.keel/checks.json), so nothing is known to pass" };
+    const plan = r ? checksToRun(r.rules, r.named, homeDir()) : { problem: "the repository names no checks (.keel/checks.json), so nothing is known to pass" };
     let problem = "problem" in plan ? plan.problem : r!.rules.problems[0];
     // The push goes to a remote the repository names, never to a path or address of the rules' own.
     if (!problem && r!.rules.push && (await git(repo, ["remote", "get-url", "--push", r!.rules.push], { read: true })).code !== 0) problem = `land.push names ${r!.rules.push}, which is not a remote of the repository`;
@@ -707,7 +707,7 @@ export class LandingQueue {
 
   private async checkNames(repo: string, base: string, from: string): Promise<string[]> {
     const r = await this.rulesOf(repo, base, from);
-    const plan = r ? checksToRun(r.rules, r.named, homedir()) : undefined;
+    const plan = r ? checksToRun(r.rules, r.named, homeDir()) : undefined;
     return plan && "run" in plan ? plan.run.map((c) => c.check.name) : [];
   }
 

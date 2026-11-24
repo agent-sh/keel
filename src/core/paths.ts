@@ -14,10 +14,23 @@ export function ownersFolder(what: string, variable: string) {
   if (process.env.NODE_ENV === "test") throw new Error(`NODE_ENV is "test" and ${variable} is not set: under a test the owner's ${what} is never the default. Set ${variable} to a scratch folder (bun test does, when run from the repository root), or unset NODE_ENV.`);
 }
 
+// The home folder, the one place it is decided: $HOME as the process has it now
+// (a scratch daemon is started with a scratch HOME, and a test preload sets one),
+// else the account's. os.homedir() is not used anywhere else in src/ (a test in
+// src/conventions.test.ts holds to it): it reads $HOME once, when the process
+// starts, so a HOME set later in the process is not seen by it. Under `bun test`
+// a run that skipped the preload (no KEEL_TEST_HOME) stops here rather than read
+// the owner's own home.
+export function homeDir(): string {
+  if (process.env.NODE_ENV === "test" && !process.env.KEEL_TEST_HOME) ownersFolder("home folder", "KEEL_TEST_HOME");
+  const h = process.env.HOME;
+  return h && isAbsolute(h) ? h : homedir();
+}
+
 // The daemon's state folder: --state-dir, else KEEL_STATE_DIR, else the XDG state home.
 export const defaultStateDir = () => {
   if (!process.env.KEEL_STATE_DIR) ownersFolder("state folder", "KEEL_STATE_DIR");
-  return resolve(process.env.KEEL_STATE_DIR || join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "keel-bun"));
+  return resolve(process.env.KEEL_STATE_DIR || join(process.env.XDG_STATE_HOME ?? join(homeDir(), ".local/state"), "keel-bun"));
 };
 
 // Where a session puts files made for the owner to look at (its artifacts):

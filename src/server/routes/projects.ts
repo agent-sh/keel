@@ -7,13 +7,13 @@
 // other sessions share never changes); a change has the members' prompts made
 // again at their next turn, where the kept prompt names the changed block.
 import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Session } from "../../core/types.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { asksLess, isMode } from "../../safety/policy.ts";
 import { registerListFilter, registerSessionPatch, type RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
+import { homeDir } from "../../core/paths";
 
 export type ProjectDefaults = { model?: string; mode?: string };
 export type Project = { id: string; name: string; instructions: string; folders: string[]; files: string[]; defaults: ProjectDefaults; pos: number; created: number; updated: number };
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, in
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
 const refuse = (message: string, status = 400) => Object.assign(new Error(message), { status });
-const expand = (p: string) => resolve(p.replace(/^~(?=$|\/)/, homedir()));
+const expand = (p: string) => resolve(p.replace(/^~(?=$|\/)/, homeDir()));
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
 // One line of text: a name.

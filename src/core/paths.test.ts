@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { contains } from "./paths.ts";
+import { homedir, tmpdir } from "node:os";
+import { contains, homeDir } from "./paths.ts";
 
 test("contains: root, children, siblings, parents", () => {
   expect(contains("/w", "/w")).toBe(true);
@@ -9,4 +10,25 @@ test("contains: root, children, siblings, parents", () => {
   expect(contains("/w", "/")).toBe(false);
   expect(contains("/w/a", "/w/b")).toBe(false);
   expect(contains("/", "/anything")).toBe(true);
+});
+
+test("homeDir reads HOME as it is now, not as the process started", () => {
+  const before = process.env.HOME;
+  try {
+    process.env.HOME = "/scratch/one";
+    expect(homeDir()).toBe("/scratch/one");
+    process.env.HOME = "/scratch/two";
+    expect(homeDir()).toBe("/scratch/two");
+    // A relative HOME is not a home: the account's is used.
+    process.env.HOME = "relative/home";
+    expect(homeDir()).toBe(homedir());
+  } finally {
+    if (before === undefined) delete process.env.HOME; else process.env.HOME = before;
+  }
+});
+
+test("the preload gives every test a scratch home", () => {
+  expect(process.env.KEEL_TEST_HOME).toBeTruthy();
+  expect(homeDir()).toBe(process.env.KEEL_TEST_HOME!);
+  expect(homeDir().startsWith(tmpdir())).toBe(true);
 });

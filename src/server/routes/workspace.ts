@@ -2,18 +2,17 @@
 // (recent folders, browsing inside the home directory) and the file search
 // behind @-mentions in the message box.
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { RouteModule } from "../app.ts";
 import { heldFile } from "../../core/store-files.ts";
 import { git } from "../../core/git.ts";
-import { contains } from "../../core/paths.ts";
+import { contains, homeDir } from "../../core/paths.ts";
 import { rankFolders } from "../../core/folder-match.ts";
 import { findRoots, folderIndex } from "../folder-index.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
-const HOME = homedir();
+const HOME = homeDir();
 const SKIP = new Set([".git", "node_modules", ".venv", "target", "dist", ".cache", "__pycache__", ".next", "build"]);
 const MAX_FILES = 50_000;
 

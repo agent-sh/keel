@@ -6,10 +6,10 @@
 //   gh        the user gh is signed in as on each host (gh's hosts.yml, read as a file; no request is made)
 //   npm       the scopes his .npmrc maps to a registry
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { hostnameOf, remotesIn } from "./looked.ts";
 import { parseNamespace, repoOf, say } from "./accounts.ts";
+import { homeDir } from "../core/paths";
 
 export type Candidate = { namespace: string; why: string; count?: number };
 
@@ -35,7 +35,7 @@ export const npmScopes = (text: string): string[] => [...text.matchAll(/^\s*(@[A
 
 const readIf = (path: string) => { try { return existsSync(path) ? readFileSync(path, "utf8").slice(0, 262_144) : ""; } catch { return ""; } };
 
-export async function learnNamespaces(folders: string[], home = homedir(), env: Record<string, string | undefined> = process.env): Promise<Candidate[]> {
+export async function learnNamespaces(folders: string[], home = homeDir(), env: Record<string, string | undefined> = process.env): Promise<Candidate[]> {
   const found = new Map<string, Candidate>();
   const add = (namespace: string, why: string, count?: number) => {
     const n = parseNamespace(namespace);

@@ -5,9 +5,8 @@
 // listed as not found. The owner's settings add an entry, change one or turn
 // one off (`diagnostics.servers`); a built-in one is the same shape.
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join } from "node:path";
-import { contains, realOf } from "../core/paths.ts";
+import { contains, realOf, homeDir } from "../core/paths.ts";
 
 // One way to start the server. `bin`: a program name, looked for in the
 // `node_modules/.bin` of the project root and of the folders between it and
@@ -188,7 +187,7 @@ const versionAtLeast = (have: string, min: string) => {
 };
 
 const isFile = (p: string) => { try { return statSync(p).isFile(); } catch { return false; } };
-const home = (p: string) => (p === "~" || p.startsWith("~/") ? join(homedir(), p.slice(1)) : p);
+const home = (p: string) => (p === "~" || p.startsWith("~/") ? join(homeDir(), p.slice(1)) : p);
 // A package's version, from a manifest of ordinary size (a file of the workspace is never read whole unseen).
 function versionOf(pkg: string): string {
   try {

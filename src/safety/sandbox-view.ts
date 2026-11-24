@@ -44,10 +44,10 @@
 //
 // Research: ~/.cache/keel-work/bun/research/sandbox-network-and-secrets.md.
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { gitSync, gitViewsDir, locate } from "../core/git.ts";
-import { contains, realOf } from "../core/paths.ts";
+import { contains, realOf, homeDir } from "../core/paths.ts";
 import { readText } from "../core/proc.ts";
 import { configDir } from "../providers/config.ts";
 import { sandboxRoot, sandboxScope, SCOPE_ORIGIN, scopeDir } from "./sandbox-scope.ts";
@@ -164,7 +164,7 @@ export const CREDENTIALS = HIDDEN;
 // (Where a path is, as the kernel walks it: src/core/paths.ts. Never by its text.)
 const real = (p: string) => realOf(p);
 // The owner's home as their programs know it: HOME, which a command inherits.
-export const ownerHome = () => real(process.env.HOME && isAbsolute(process.env.HOME) ? process.env.HOME : homedir());
+export const ownerHome = () => real(homeDir());
 const kind = (p: string): "dir" | "file" | "link" | "other" | "none" => {
   try {
     const st = lstatSync(p);
@@ -781,7 +781,7 @@ export function readView(workspace: string, profile: "workspace-write" | "read-o
   if (!homeIsWorkspace) {
     before.push("--tmpfs", home);
     // (A home reached through a link keeps that name.)
-    const named = resolve(process.env.HOME && isAbsolute(process.env.HOME) ? process.env.HOME : homedir());
+    const named = resolve(homeDir());
     if (named !== home) before.push("--symlink", home, named);
   }
   // What is shown of the real machine as it is, read-only: the owner's list, the toolchains, the repository's other

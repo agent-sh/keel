@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { homedir } from "node:os";
 import { claudeAllow, overlaps, rustRule } from "./port-permissions.ts";
+import { homeDir } from "../core/paths";
 
 // What maps one to one, what is already so in Keel, and what stays out.
 test("Claude Code allow rules map only where the meaning is the same", () => {
@@ -15,7 +15,7 @@ test("Claude Code allow rules map only where the meaning is the same", () => {
     ["Bash(ls*)", { kind: "shell", pattern: "ls*" }],
     ["Bash(git * main)", { kind: "shell", pattern: "git * main" }],
     ["Edit(//srv/app/**)", { kind: "edit", pattern: "/srv/app" }],
-    ["Edit(~/notes/**)", { kind: "edit", pattern: `${homedir()}/notes` }],
+    ["Edit(~/notes/**)", { kind: "edit", pattern: `${homeDir()}/notes` }],
     ["mcp__github__get_issue", { kind: "tool", pattern: "github__get_issue" }],
     // INT-S12: a whole server, and a glob of its tools after its literal name.
     ["mcp__github", { kind: "tool", pattern: "github__*" }],

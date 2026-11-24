@@ -3,7 +3,6 @@ import { outward } from "../safety/egress.ts";
 import { timed } from "../admin/stall.ts";
 import { heldFile } from "../core/store-files.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
 import { crossing, crossingIn, routeOf, RouteRefused, sayCrossing } from "../safety/content-routes.ts";
@@ -64,6 +63,7 @@ import { unreachable } from "../providers/unreachable.ts";
 import { reportedUsage } from "../providers/reported.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
+import { homeDir } from "../core/paths";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
 export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
@@ -290,7 +290,7 @@ export function instructionPaths(cwd: string, marks?: Marks): { path: string; sc
     if (marks) for (const n of ["AGENTS.md", "CLAUDE.md"]) noteMark(marks, join(dir, n));
     const name = ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
     if (name) found.unshift({ path: join(dir, name), scope: dir === cwd ? "folder" : "parent" });
-    if (dirname(dir) === dir || dir === homedir()) break;
+    if (dirname(dir) === dir || dir === homeDir()) break;
   }
   const own = join(configDir(), "AGENTS.md");
   noteMark(marks, own);
@@ -326,7 +326,7 @@ export function expandMapped(text: string, from: string, depth = 0, seen = new S
     const cr = line.endsWith("\r") ? "\r" : "";
     const m = /^@(\S+)[ \t]*$/.exec(cr ? line.slice(0, -1) : line);
     const ref = m?.[1];
-    const p = ref ? (ref.startsWith("~/") ? join(homedir(), ref.slice(2)) : resolve(dirname(from), ref)) : "";
+    const p = ref ? (ref.startsWith("~/") ? join(homeDir(), ref.slice(2)) : resolve(dirname(from), ref)) : "";
     if (ref && !seen.has(real(p)) && !rootOf(dirname(p)) && !heldFile(p)) {
       noteMark(marks, p);
       let t: string | undefined;

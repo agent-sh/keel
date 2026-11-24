@@ -14,11 +14,11 @@
 // whole server (`mcp__server`, `mcp__server__*`), or a glob of its tools after
 // a literal `mcp__server__` prefix; a server's name there has `_` for every
 // character other than a letter, digit, `_` or `-`.
-import { homedir } from "node:os";
 import type { RuleKind } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
 import { WRAPPERS } from "../safety/risk-words.ts";
 import { RESERVED } from "../mcp/config.ts";
+import { homeDir } from "../core/paths";
 
 export type Mapped = { kind: RuleKind; pattern: string } | { done: string } | { skip: string };
 
@@ -65,7 +65,7 @@ function edit(spec: string | undefined, base?: string): Mapped {
   if (spec === undefined || spec === "*" || spec === "**") return { kind: "edit", pattern: base ?? "/" };
   const m = spec.match(base ? /^(\/\/|~\/|\/)(.*?)\/\*\*$/ : /^(\/\/|~\/)(.*?)\/\*\*$/);
   if (!m || /[*?[\]!]/.test(m[2]!) || m[2]!.split("/").includes("..")) return { skip: `only a folder written from the root (//path/**)${base ? ", the project (/path/**)" : ""} or the home (~/path/**) maps to Keel's edit rules, which cover a folder and all below it` };
-  const dir = m[1] === "//" ? `/${m[2]}` : m[1] === "~/" ? `${homedir()}/${m[2]}` : `${base}/${m[2]}`;
+  const dir = m[1] === "//" ? `/${m[2]}` : m[1] === "~/" ? `${homeDir()}/${m[2]}` : `${base}/${m[2]}`;
   return { kind: "edit", pattern: dir.replace(/\/+$/, "") || "/" };
 }
 

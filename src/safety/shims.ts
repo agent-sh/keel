@@ -6,8 +6,8 @@
 // SHIMMED), before it decides. The disk is read off the loop and within a
 // deadline; nothing is kept between calls.
 import { open, realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
+import { homeDir } from "../core/paths";
 
 // Where the managers keep their shims, under the home folder, and the folders
 // a profile commonly adds. A login shell's profile may put one of these first
@@ -51,7 +51,7 @@ async function inFolder(dir: string, prog: string, named: RegExp): Promise<boole
 // deadline: the call then asks.
 export async function realPrograms(names: string[], o: { path?: string; home?: string; deadlineMs?: number } = {}): Promise<Map<string, boolean>> {
   const out = new Map(names.map((n) => [n, false]));
-  const home = o.home ?? homedir();
+  const home = o.home ?? homeDir();
   const dirs = [...new Set([...(o.path ?? process.env.PATH ?? "").split(":"), ...PROFILE_DIRS.map((d) => join(home, d))])];
   const shims = SHIM_DIRS.map((d) => join(home, d));
   if ([...dirs, ...shims].some((d) => !isAbsolute(d) || stuck.has(d))) return out;

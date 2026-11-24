@@ -16,7 +16,6 @@
 //   writes task_started / task_complete records; its state is otherwise only
 //   on its app-server connection. Its shell tools run in sessions of their own.
 import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { pidHolds } from "../core/pid.ts";
 import { readText } from "../core/proc.ts";
@@ -26,6 +25,7 @@ import { codexFiles, codexFound, codexHome, readCodex } from "../integrations/im
 import { linesBack } from "../integrations/import/files.ts";
 import { cursorGiven, CursorError, offered, page as pageOf, scrub, tail as lastMessages } from "../integrations/import/offer.ts";
 import type { Found, Harness } from "../integrations/import/types.ts";
+import { homeDir } from "../core/paths";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -132,7 +132,7 @@ function claudeListed(): Promise<Listed[]> {
 async function claudeSessions(): Promise<Listed[]> {
   {
     const by = new Map<number, Listed>();
-    const dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "sessions");
+    const dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homeDir(), ".claude"), "sessions");
     let names: string[] = [];
     try { names = readdirSync(dir); } catch {}
     for (const n of names) {

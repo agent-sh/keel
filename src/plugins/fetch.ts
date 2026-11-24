@@ -6,10 +6,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { cp, readdir, readFile, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { git } from "../core/git.ts";
-import { contains } from "../core/paths.ts";
+import { contains, homeDir } from "../core/paths.ts";
 
 export type Source = { path: string } | { git: string; ref?: string };
 
@@ -24,7 +23,7 @@ export function parseSource(input: string, cwd: string): Source | { error: strin
   if (!t) return { error: "give a folder, a git URL or owner/repo" };
   const [base, ref] = t.includes("#") && !t.startsWith("/") && !t.startsWith("~") && !t.startsWith(".") ? [t.slice(0, t.lastIndexOf("#")), t.slice(t.lastIndexOf("#") + 1)] : [t, undefined];
   if (GIT_URL.test(base!)) return { git: base!, ...(ref ? { ref } : {}) };
-  const p = t.startsWith("~/") ? join(homedir(), t.slice(2)) : isAbsolute(t) ? t : resolve(cwd, t);
+  const p = t.startsWith("~/") ? join(homeDir(), t.slice(2)) : isAbsolute(t) ? t : resolve(cwd, t);
   if (existsSync(p)) {
     let dir = false;
     try { dir = statSync(p).isDirectory(); } catch {}

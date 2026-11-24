@@ -4,11 +4,11 @@
 // operation on one shadow runs one at a time.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { addAll, git, gitSync, innerHead } from "../core/git.ts";
 import { capPatch } from "./patch.ts";
 import { timed } from "../admin/stall.ts";
+import { homeDir } from "../core/paths";
 
 export type FileChange = { path: string; status: string; added: number; removed: number; outside?: boolean };
 // truncated: the patch was cut at DIFF_CAP bytes after a whole line; partial
@@ -49,7 +49,7 @@ export class Shadow {
       if (state === "" || state === ".") { this.mode = "written"; this.reason = "the workspace is Keel's own state folder"; }
       else if (!state.startsWith("..") && !isAbsolute(state)) this.own = `/${state.split(sep).join("/")}/`;
     }
-    const huge = workspace === homedir() || workspace === "/" || dirname(workspace) === workspace;
+    const huge = workspace === homeDir() || workspace === "/" || dirname(workspace) === workspace;
     if (this.mode !== "written") this.mode = huge ? "written" : "tree";
     if (huge) this.reason = "the workspace is the home or root directory, too large to snapshot whole";
   }

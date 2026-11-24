@@ -11,7 +11,6 @@ import { sayAt, waitEndLine, waitSetLine } from "../admin/daemon-log.ts";
 import { timed } from "../admin/stall.ts";
 import { localTime, zonedClock } from "../core/clock.ts";
 import { waitsFor } from "../core/state-words.ts";
-import { homedir } from "node:os";
 import { addressBytes, carried as mappedV4 } from "../core/hosts.ts";
 import { conceal } from "../core/conceal.ts";
 import { endNoticeOwed, findJob, jobHasProcesses, jobLive, jobPidsOf, jobsOf, running, type Job } from "../tools/jobs.ts";
@@ -19,6 +18,7 @@ import { CARRY_MAX, carryText, HELD_ON_FILE, jobLine, opensForWrite, othersText,
 import type { Session } from "../core/types.ts";
 import { shownTo } from "../safety/sandbox-view.ts";
 import { socketRows } from "../safety/egress.ts";
+import { homeDir } from "../core/paths";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -209,7 +209,7 @@ function linkJob(w: WaitRecord, now = Date.now()): Job | undefined {
   const path = (w.spec as { path: string }).path;
   let found: Job | undefined;
   if (kept || noWriter.get(w.id) !== newest) {
-    const home = homedir();
+    const home = homeDir();
     found = jobs.filter((j) => j.started <= now && (running(j) || (j.ended ?? 0) >= w.created) && (!kept || j.started > kept.started) && (j.log === path || writesPath(j.command, j.cwd, home, path))).sort((a, b) => b.started - a.started)[0];
     if (!found && !kept) {
       if (noWriter.size > 512) noWriter.clear();

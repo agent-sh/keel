@@ -4,8 +4,8 @@ process.env.KEEL_CONFIG_DIR ??= `${process.env.TMPDIR ?? "."}/keel-hook-events-c
 // the hook answers does what the README says.
 import { afterAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { homeDir } from "../core/paths";
 
 const { Store } = await import("../core/store.ts");
 const { Bus } = await import("../core/bus.ts");
@@ -423,7 +423,7 @@ test("a hook that fails is captured once with what it is, and runs in the home f
     const gone = store.createSession({ model: "fixture:m", workspace: join(dir, "no-such-folder") });
     gate.setPerm(gone.id, { mode: "full-auto", sandbox: "off" });
     const denied = await run(gone, "echo anything").result;
-    expect(denied).toMatchObject({ is_error: true, content: `A hook blocked this call: ${homedir()}` });
+    expect(denied).toMatchObject({ is_error: true, content: `A hook blocked this call: ${homeDir()}` });
   } finally {
     writeFileSync(hooksFile, whole);
   }

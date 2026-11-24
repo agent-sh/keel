@@ -8,7 +8,6 @@
 // The Codex CLI reloads the file on a 401 before it refreshes, so it keeps
 // working on what keel-bun wrote.
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { BrokerAddress, directBrokerOrigin } from "./broker-address.ts";
 import { fingerprint } from "./creds.ts";
@@ -18,6 +17,7 @@ import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } fr
 import { responsesWire } from "./wires/responses.ts";
 import { fromChatgptUsage, type WindowReading } from "./limits.ts";
 import { ResponsesSockets, WsUnavailable } from "./responses-ws.ts";
+import { homeDir } from "../core/paths";
 
 const REFRESH_MARGIN = 5 * 60_000;
 // The Codex CLI's public client id, used only when the file names none.
@@ -62,7 +62,7 @@ export class CodexProvider implements Provider {
   readonly label = "ChatGPT sign-in";
   readonly wire = "openai_responses" as const;
   readonly family = "gpt" as const;
-  private home = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  private home = process.env.CODEX_HOME ?? join(homeDir(), ".codex");
   private file = join(this.home, "auth.json");
   readonly broker = new BrokerAddress("KEEL_CODEX_BASE_URL", process.env.KEEL_CODEX_BASE_URL);
   private get base() { return (this.broker.value ?? "https://chatgpt.com/backend-api/codex").replace(/\/$/, ""); }

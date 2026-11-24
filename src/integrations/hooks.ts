@@ -18,9 +18,8 @@
 // asyncRewake one that exits with code 2 wakes the session.
 import { configRefused, sessionFoldersOf } from "../core/named-config.ts";
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { contains, realOf } from "../core/paths.ts";
+import { contains, realOf, homeDir } from "../core/paths.ts";
 import { locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
@@ -341,7 +340,7 @@ export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Gr
 // `skillDir`: a skill's hooks, whose ${CLAUDE_SKILL_DIR} (and $KEEL_SKILL_DIR) is that folder.
 export function scriptsOf(root: string, groups: Partial<Record<HookEvent, Group[]>>, skillDir?: string): string[] {
   const out = new Set<string>();
-  const home = homedir();
+  const home = homeDir();
   for (const list of Object.values(groups)) for (const g of list ?? []) for (const h of g.hooks) {
     if (h.type !== "command") continue;
     for (const raw of [h.command, ...(h.args ?? [])].join(" ").split(/[\s;|&<>()=]+/).slice(0, 200)) {
@@ -988,7 +987,7 @@ const PLUGIN_ENV = new WeakMap<object, { env: Record<string, string>; plugin: st
 async function runHook(h: Extract<Handler, { type: "command" }>, input: string, folder: string, ms: number, started?: (pid: number) => void): Promise<Out> {
   const root = projectRoot(folder);
   // A session whose folder is gone, or is on another machine, still runs its hooks (one that denies must still deny): in the home folder.
-  const cwd = existsSync(folder) ? folder : homedir();
+  const cwd = existsSync(folder) ? folder : homeDir();
   // With `args` the program runs as given, no shell: each argument is one word, and the project folder's placeholders are filled in.
   const own = PLUGIN_ENV.get(h);
   const opts = own ? hookOptions(own.plugin) : { text: {}, env: {} };

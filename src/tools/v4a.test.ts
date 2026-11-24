@@ -2,11 +2,11 @@
 // (which follow openai/codex apply-patch's reference cases).
 import { afterAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { anchorText, applyPatch, buildDiff, extractShellApplyPatch, parsePatch, parseShellApplyPatch, patchTargetPaths, patchTargets, seekSequence } from "./v4a.ts";
+import { homeDir } from "../core/paths";
 
-const SCRATCH = join(homedir(), ".cache/keel-work/bun/tools-lane/v4a-scratch");
+const SCRATCH = join(homeDir(), ".cache/keel-work/bun/tools-lane/v4a-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const made: string[] = [];
 const tmp = () => { const d = mkdtempSync(join(SCRATCH, "t-")); made.push(d); return d; };

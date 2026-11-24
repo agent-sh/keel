@@ -3,12 +3,12 @@
 // turn_context, response_item (the model's history: messages, function and
 // custom tool calls with their outputs, encrypted reasoning) and event_msg.
 import { readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { damageNotes, headTail, readLines, scanFor } from "./files.ts";
 import { Builder, clip, FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN, resultText, type Found, type Read } from "./types.ts";
+import { homeDir } from "../../core/paths";
 
-export const codexHome = () => process.env.KEEL_IMPORT_CODEX_DIR ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
+export const codexHome = () => process.env.KEEL_IMPORT_CODEX_DIR ?? process.env.CODEX_HOME ?? join(homeDir(), ".codex");
 
 export function* codexFiles(home = codexHome()): Generator<{ path: string; size: number; mtime: number }> {
   const walk = function* (dir: string, depth: number): Generator<{ path: string; size: number; mtime: number }> {

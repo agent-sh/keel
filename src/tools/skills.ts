@@ -3,7 +3,6 @@
 // description once (frozen, so cached); the body loads only when the model
 // calls the skill tool, with Claude Code's argument substitution.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
@@ -18,6 +17,7 @@ import { offerToSandbox } from "../safety/sandbox-view.ts";
 import { holdChoice } from "./skill-turn.ts";
 import { contains } from "../core/paths.ts";
 import { yamlWithin } from "../core/yaml-bound.ts";
+import { homeDir } from "../core/paths";
 
 export type Skill = {
   name: string;
@@ -144,7 +144,7 @@ function topOf(cwd: string, stop?: string): string {
 }
 
 export function skillRoots(cwd: string, stop?: string): { dir: string; scope: Skill["scope"] }[] {
-  const home = homedir();
+  const home = homeDir();
   const roots: { dir: string; scope: Skill["scope"] }[] = [
     { dir: join(home, ".claude/skills"), scope: "personal" },
     { dir: join(home, ".agents/skills"), scope: "personal" },
@@ -162,7 +162,7 @@ export function skillRoots(cwd: string, stop?: string): { dir: string; scope: Sk
 // read and run from: a sandboxed command sees them, read-only (the project's
 // are in the workspace already).
 offerToSandbox(() => [
-  join(homedir(), ".claude/skills"), join(homedir(), ".agents/skills"), join(configDir(), "skills"), join(homedir(), ".claude/commands"), join(configDir(), "commands"),
+  join(homeDir(), ".claude/skills"), join(homeDir(), ".agents/skills"), join(configDir(), "skills"), join(homeDir(), ".claude/commands"), join(configDir(), "commands"),
   // The other folders the owner had Keel read skills from, and the plugins it carries.
   ...(skillsConfig().roots ?? []).map((r) => r.dir).filter((d): d is string => typeof d === "string" && d.startsWith("/")),
   ...carriedPlugins().map((p) => p.dir),
@@ -197,7 +197,7 @@ export const foreignSkill = (name: string, description: string, body: string) =>
 // (<folder>/<name>.md, the same frontmatter): the owner's, then the
 // project's from the working directory up to the repository root.
 export function commandRoots(cwd: string, stop?: string): { dir: string; scope: Skill["scope"] }[] {
-  const home = homedir();
+  const home = homeDir();
   const roots: { dir: string; scope: Skill["scope"] }[] = [
     { dir: join(home, ".claude/commands"), scope: "personal" },
     { dir: join(configDir(), "commands"), scope: "personal" },

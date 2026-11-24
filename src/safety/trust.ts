@@ -7,8 +7,7 @@
 // first sight unless the owner asks to review new ones too.
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { contains, realOf } from "../core/paths.ts";
-import { homedir } from "node:os";
+import { contains, realOf, homeDir } from "../core/paths.ts";
 import { dirname, join, relative } from "node:path";
 import type { Store } from "../core/store.ts";
 import { timed } from "../admin/stall.ts";
@@ -38,7 +37,7 @@ const sha = (b: string | Buffer) => createHash("sha256").update(b).digest("hex")
 
 // The repository root of a folder: the nearest ancestor with .git, never the home itself.
 export function rootOf(dir: string): string | null {
-  const home = homedir();
+  const home = homeDir();
   for (let d = dir; ; d = dirname(d)) {
     if (d !== home && existsSync(join(d, ".git"))) return d;
     if (dirname(d) === d) return null;
@@ -80,7 +79,7 @@ function fileSha(p: string): string {
 export const SKILL_SCAN = { files: 400, depth: 4, bytes: 2_000_000 };
 type Scan = { digest: string; outside: string[]; refused?: string };
 function skillScan(dir: string): Scan | null {
-  return timed(() => `trust: scan skill ${relative(homedir(), dir)}`, () => scanSkill(dir));
+  return timed(() => `trust: scan skill ${relative(homeDir(), dir)}`, () => scanSkill(dir));
 }
 function scanSkill(dir: string): Scan | null {
   if (!existsSync(join(dir, "SKILL.md"))) return null;

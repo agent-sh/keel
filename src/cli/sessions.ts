@@ -3,7 +3,6 @@
 // running daemon.
 import { nested } from "../core/agent-tree.ts";
 import { zoned } from "../core/clock.ts";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
 import { stuckText, type After, type StuckItem } from "../core/stuck.ts";
@@ -17,8 +16,9 @@ import { holdSaid, type CardForm } from "../safety/card.ts";
 import { spelled } from "../safety/chars.ts";
 import { pairText } from "./pair-text.ts";
 import { exitOf, heldNote, resultObject, RUN_OPTIONS, RUN_USAGE, runPrompt, watch, worktreeArg } from "./run.ts";
+import { homeDir } from "../core/paths";
 
-const home = homedir();
+const home = homeDir();
 const tilde = (p: string) => (p.startsWith(home) ? "~" + p.slice(home.length) : p);
 const modelName = (id: string) => id.replace(/^[\w-]+:/, "").replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|openai|google|meta|mistral)\./, "");
 

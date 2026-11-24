@@ -3,8 +3,8 @@ process.env.KEEL_CONFIG_DIR ??= `${process.env.TMPDIR ?? "."}/keel-hook-rewrite-
 // then judges, what runs, and what the model, the owner and the trace are told.
 import { afterAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { homeDir } from "../core/paths";
 
 const { Store } = await import("../core/store.ts");
 const { Bus } = await import("../core/bus.ts");
@@ -104,7 +104,7 @@ test("a hook's allow answers the card the owner would have got, for a call insid
   // (A delete outside the session's folder is high risk, which no hook answers.)
   expect((await outcome(bash("rm -rf /var/lib/thing"))).what).toBe("card high");
   // A command whose plain shape writes a start file is the owner's alone: a card no grant is offered on.
-  const start = await outcome(bash(`echo x >> ${homedir()}/.bashrc`));
+  const start = await outcome(bash(`echo x >> ${homeDir()}/.bashrc`));
   expect([start.what, start.card?.suggest]).toEqual(["card high", []]);
   expect((await outcome(run("mcp__mail__send", { to: "someone" }))).what).toBe("card low");
   // A command the sandbox confines runs, confined.
@@ -116,7 +116,7 @@ test("a hook's allow answers the card the owner would have got, for a call insid
   // What is the owner's alone stays theirs, hook or no hook: Keel's own config, a shell's start file, the login keys, a file the repository runs.
   for (const m of ["ask", "auto-edits"]) {
     mode(m);
-    for (const p of [join(configDir(), "hooks.json"), join(configDir(), "mcp.json"), join(homedir(), ".bashrc"), join(homedir(), ".ssh/authorized_keys"), join(ws, ".git/hooks/pre-commit")]) {
+    for (const p of [join(configDir(), "hooks.json"), join(configDir(), "mcp.json"), join(homeDir(), ".bashrc"), join(homeDir(), ".ssh/authorized_keys"), join(ws, ".git/hooks/pre-commit")]) {
       const o = await outcome(write(p));
       expect([m, p, o.what, o.card?.suggest]).toEqual([m, p, "card high", []]);
     }

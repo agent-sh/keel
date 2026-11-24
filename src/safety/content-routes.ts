@@ -12,12 +12,12 @@
 // providers of every folder no entry names, or null for any) and `folders`
 // (a folder, absolute or under ~, to its providers).
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { allHooks } from "../engine/hooks.ts";
 import type { Session } from "../core/types.ts";
 import { allowedFor, allows, checkRule, crossingText, originOf, providerOf, type Allowed, type Crossing, type RoutePurpose, type RouteRule, type Spell } from "./route-rule.ts";
+import { homeDir } from "../core/paths";
 
 registerSettings("content_routes", { default: null, folders: {} }, checkRule);
 
@@ -64,12 +64,12 @@ export function chainOf(store: Sessions, id: string): string[] {
 
 // What the rule allows for the session now; null when every provider is.
 export function routeOf(store: Sessions, id: string, rule = routeRule()): Allowed {
-  return unset(rule) ? null : allowedFor(rule, chainOf(store, id), homedir(), realFolder);
+  return unset(rule) ? null : allowedFor(rule, chainOf(store, id), homeDir(), realFolder);
 }
 
 // A folder the rule decides by itself (a session about to be made there).
 export function routeOfFolder(folder: string, rule = routeRule()): Allowed {
-  return unset(rule) ? null : allowedFor(rule, [folder], homedir(), realFolder);
+  return unset(rule) ? null : allowedFor(rule, [folder], homeDir(), realFolder);
 }
 
 // The crossing a call of `purpose` to `model` would make, or undefined when the rule allows it.

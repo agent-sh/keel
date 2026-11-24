@@ -4,9 +4,9 @@
 // keyring read costs the keyring daemon CPU) and a rotated key is picked up soon.
 // A key is never logged, never written, never put in an error.
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { readText } from "../core/proc.ts";
+import { homeDir } from "../core/paths";
 
 const TTL = 5 * 60_000;
 const cache = new Map<string, { value: string; at: number }>();
@@ -19,7 +19,7 @@ export type KeySource = { env?: string; cred?: string };
 // helper is never run for it).
 function credGet(): string {
   if (process.env.KEEL_CRED_GET) return process.env.KEEL_CRED_GET;
-  const local = join(homedir(), ".local/bin/cred-get");
+  const local = join(homeDir(), ".local/bin/cred-get");
   return existsSync(local) ? local : "cred-get";
 }
 
@@ -51,7 +51,7 @@ export async function deleteKey(name: string): Promise<boolean> {
 async function helper(name: string): Promise<string> {
   const bin = credGet();
   if (bin === "cred-get" && !Bun.which("cred-get")) return "";
-  const p = Bun.spawn([bin, name], { stdin: "ignore", stdout: "pipe", stderr: "ignore", cwd: homedir() });
+  const p = Bun.spawn([bin, name], { stdin: "ignore", stdout: "pipe", stderr: "ignore", cwd: homeDir() });
   const timer = setTimeout(() => p.kill(), 20_000);
   const out = (await readText(p.stdout)).split("\n")[0]!.trim();
   clearTimeout(timer);

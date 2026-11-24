@@ -3,7 +3,6 @@ import { allowedOnly, allows, providerOf } from "../safety/route-rule.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { bareBy } from "../core/bare-index.ts";
 import { git as gitRun } from "../core/git.ts";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
@@ -26,7 +25,7 @@ import { git, Worktrees } from "../worktree/manager.ts";
 import { git as gitRead, locate } from "../core/git.ts";
 import { matchableTips, namedIn, reviewsInput } from "../board/rules.ts";
 import * as leftovers from "./leftovers.ts";
-import { contains, realOf } from "../core/paths.ts";
+import { contains, realOf, homeDir } from "../core/paths.ts";
 import { isReviewer, parseWrites } from "../safety/write-scope.ts";
 import * as writeAsks from "./write-asks.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
@@ -580,10 +579,10 @@ export function defFor(defs: readonly AgentDef[], type: string | undefined): Age
 // project file never takes a built-in's name.
 export function definitions(cwd: string): AgentDef[] {
   const byName = new Map<string, AgentDef>(BUILTIN.map((d) => [d.name, d]));
-  const config = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
+  const config = process.env.XDG_CONFIG_HOME ?? join(homeDir(), ".config");
   // The owner's: the Rust Keel's folder, Claude Code's, then keel-bun's own (it wins a name).
-  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-  for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readCodexDir(join(codexHome, "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
+  const codexHome = process.env.CODEX_HOME ?? join(homeDir(), ".codex");
+  for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readCodexDir(join(codexHome, "agents"), "owner"), ...readDir(join(homeDir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
   // Agents of the plugins Keel installed (while enabled) and of the Claude Code
   // plugins the owner carried, as Claude Code names them (<plugin>:<agent>).
   // Its settings fill ${user_config.KEY} in the agent's text, a sensitive one as a placeholder (src/plugins/options.ts).
@@ -595,7 +594,7 @@ export function definitions(cwd: string): AgentDef[] {
   const dirs: string[] = [];
   for (let d = cwd; ; d = dirname(d)) {
     dirs.unshift(d);
-    if (existsSync(join(d, ".git")) || dirname(d) === d || d === homedir()) break;
+    if (existsSync(join(d, ".git")) || dirname(d) === d || d === homeDir()) break;
   }
   for (const d of dirs) {
     const here = [...readCodexDir(join(d, ".codex", "agents"), "project"), ...[".claude/agents", ".agents/agents", ".keel/agents"].flatMap((sub) => readDir(join(d, sub), "project"))];
@@ -929,7 +928,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   }
   parseBudget(input.budget); // refused before anything is made
   { const capped = caps.refusal(rootSession(parentId)); if (capped) throw Object.assign(new Error(capped), { status: 409 }); }
-  { const w = parseWrites(input.writes ?? [], parent.workspace, realOf(homedir())); if ("error" in w) throw new Error(w.error); }
+  { const w = parseWrites(input.writes ?? [], parent.workspace, realOf(homeDir())); if ("error" in w) throw new Error(w.error); }
   { const bad = apiRefusal(parentId, input.api); if (bad) throw new Error(bad); }
   const root = rootSession(parentId);
   for (;;) {
@@ -2710,7 +2709,7 @@ export function gate(sessionId: string, toolName: string, input?: any, names: st
   }
   // A skill's disallowed-tools the agent was started under: a plain name takes the tool, a rule with a
   // pattern (`Bash(git push *)`) holds as a hook's `if` does, a shell command or a file's path.
-  const ws = () => D().store.session(sessionId)?.workspace ?? homedir();
+  const ws = () => D().store.session(sessionId)?.workspace ?? homeDir();
   const rule = def.skillDisallowed?.find((r) => /^[\w.-]+$/.test(r.trim()) ? names.some((n) => n.toLowerCase() === r.trim().toLowerCase()) : ifHolds(r, names, input, ws()));
   if (rule) return `${names[0]} is not allowed for this agent: the skill it was started under disallows ${rule}.`;
   return undefined;

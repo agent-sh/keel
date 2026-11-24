@@ -4,9 +4,8 @@
 // one's result says whether it is red on the base too, or flaky. The owner's
 // own commands (the terminal pane) are recorded the same way, never answered.
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { homedir } from "node:os";
 import { conceal } from "../core/conceal.ts";
-import { realOf } from "../core/paths.ts";
+import { realOf, homeDir } from "../core/paths.ts";
 import type { Session, ToolResultBlock } from "../core/types.ts";
 import type { ToolCall, ToolGate } from "../engine/hooks.ts";
 import { toolEnv, type Job } from "../tools/jobs.ts";
@@ -46,7 +45,7 @@ export function commandOf(call: ToolCall): string | undefined {
 // Which checks a command run in `folder` runs, with the repository they are of: the one its leading
 // `cd`s go to, else the folder's own. `sessionId`: whose shell runs it (the environment its commands get).
 export function checksIn(folder: string, command: string, sessionId?: string): { repo: Repo; matches: Match[] } | undefined {
-  const home = homedir();
+  const home = homeDir();
   const repo = repoOf(firstFolder(command, folder, home)) ?? repoOf(folder);
   if (!repo) return undefined;
   const named = namedFor(repo);

@@ -6,11 +6,11 @@
 // Opened read-only; nothing here writes.
 import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { Builder, clip, type Found, type Kind, type Read } from "./types.ts";
+import { homeDir } from "../../core/paths";
 
-export const hermesHome = () => process.env.KEEL_IMPORT_HERMES_DIR ?? join(homedir(), ".hermes");
+export const hermesHome = () => process.env.KEEL_IMPORT_HERMES_DIR ?? join(homeDir(), ".hermes");
 export const hermesDb = () => join(hermesHome(), "state.db");
 
 // Sources nobody sat at: schedules, one-shot runs, the board, helpers, and

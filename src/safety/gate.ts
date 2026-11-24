@@ -5,7 +5,6 @@
 // again and waits on the same card, and an answer given before that is kept.
 import { heldFile } from "../core/store-files.ts";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { lstat, readdir } from "node:fs/promises";
 import type { Bus } from "../core/bus.ts";
@@ -27,7 +26,7 @@ import { guardEnv } from "./ref-guard.ts";
 import { setCallEnv } from "../tools/jobs.ts";
 import type { Shared } from "./shared-branches.ts";
 import { configDir } from "../providers/config.ts";
-import { artifactsDir, atCwd, contains, realOf } from "../core/paths.ts";
+import { artifactsDir, atCwd, contains, realOf, homeDir } from "../core/paths.ts";
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
@@ -275,7 +274,7 @@ const inputSha = (input: unknown) => new Bun.CryptoHasher("sha256").update(JSON.
 function callClass(call: ToolCall, target: Target): CallClass {
   // (A reading tool known only by its flag, an MCP server's among them, is a read of the files its input names.)
   // Its path keys, and every string anywhere in the input that is a path or a file: URL by itself.
-  const reads = (input: unknown): CallClass => { const paths = [...new Set([...readPaths(input, cwdOf(call) ?? call.ctx.cwd), ...pathsNamed(input).map((p) => atCwd(call.ctx.cwd, p.replace(/^~(?=\/|$)/, homedir())))])]; return paths.length ? { kind: "read", paths } : { kind: "read", unnamed: true }; };
+  const reads = (input: unknown): CallClass => { const paths = [...new Set([...readPaths(input, cwdOf(call) ?? call.ctx.cwd), ...pathsNamed(input).map((p) => atCwd(call.ctx.cwd, p.replace(/^~(?=\/|$)/, homeDir())))])]; return paths.length ? { kind: "read", paths } : { kind: "read", unnamed: true }; };
   const cls = target ? target.cls ?? (target.readOnly ? reads(target.input) : { kind: "other" }) : classifyCall(call);
   // A tool the gate knows only by name is given the paths its input names (an MCP file server's write).
   if (cls.kind === "other" && !cls.paths) {
@@ -683,7 +682,7 @@ export class Gate {
       const path = g.glob ? g.path : realOf(g.path);
       if (!list.some((x) => x.path === path)) list.push({ path, from: "writes", ...(g.glob ? { glob: true as const } : {}) });
     }
-    const home = realOf(homedir());
+    const home = realOf(homeDir());
     const keel = ownFolders();
     const words = await this.placeWords(session);
     const parent = session.parent_id && words.some((w) => w.from === "parent") ? this.store.session(session.parent_id) : undefined;
@@ -768,7 +767,7 @@ export class Gate {
     if (session.machine || !scopes.of?.(session.id)) return undefined;
     let paths: string[] = [], refs: string[] = [];
     if (cls.kind === "edit") paths = cls.paths;
-    else if (cls.kind === "shell") ({ paths, refs } = shellWrites(cls.command, cls.cwd ?? session.workspace, realOf(homedir())));
+    else if (cls.kind === "shell") ({ paths, refs } = shellWrites(cls.command, cls.cwd ?? session.workspace, realOf(homeDir())));
     else if (cls.kind === "other" && cls.paths?.length && !call.tool.readOnly) paths = cls.paths;
     if (!paths.length && !refs.length) return undefined;
     const kept = this.placesKept.get(session.id);
@@ -833,7 +832,7 @@ export class Gate {
   private async ownerOpens(session: Session, path: string, base: Base): Promise<boolean> {
     const ids: { id: string; since: number }[] = [{ id: session.id, since: 0 }];
     for (let up = session, n = 0; up.parent_id && n < 32; n++) { ids.push({ id: up.parent_id, since: session.created }); up = this.store.session(up.parent_id) ?? up; }
-    const home = realOf(homedir());
+    const home = realOf(homeDir());
     for (const { id, since } of ids) {
       type Row = { kind: string | null; origin: string | null; text: string | null; ts: number };
       let rows: Row[] = [];
@@ -919,7 +918,7 @@ export class Gate {
       let at = p;
       if (!existsSync(p)) {
         const up = dirname(p);
-        if (existsSync(up) && statSync(up).isDirectory() && up !== realOf(homedir()) && !contains(up, realOf(homedir()))) at = up;
+        if (existsSync(up) && statSync(up).isDirectory() && up !== realOf(homeDir()) && !contains(up, realOf(homeDir()))) at = up;
         else try { mkdirSync(p, { recursive: true }); } catch { continue; } // not there and not made: the command is told when it tries
       }
       if (!out.some((x) => contains(x, at))) out.push(at);
@@ -1188,7 +1187,7 @@ export class Gate {
   markFacts(session: Session): Pick<MarkArgs, "workspace" | "scope" | "machine" | "home" | "config" | "bins" | "rules" | "shell"> {
     const local = !session.machine;
     return {
-      workspace: session.workspace, scope: this.scope(session), machine: !local, home: realOf(homedir()),
+      workspace: session.workspace, scope: this.scope(session), machine: !local, home: realOf(homeDir()),
       config: local ? [...ownConfig(), ...(this.hookFiles?.(session) ?? [])] : [],
       bins: local ? workspaceBins(process.env.PATH ?? "", this.rootOf(session)) : [],
       rules: this.rules(session), shell: process.env.SHELL,
@@ -1231,7 +1230,7 @@ export class Gate {
       // pinned repository's hooks run: no pin holds one outside .keel/. Read
       // once, and only for a call that names a file to change.
       ...(session.machine ? {} : { own: () => (own ??= {
-        home: realOf(homedir()), config: [...ownConfig(), ...(this.hookFiles?.(session) ?? [])],
+        home: realOf(homeDir()), config: [...ownConfig(), ...(this.hookFiles?.(session) ?? [])],
         // The PATH the session's commands get is the daemon's own (toolEnv).
         bins: workspaceBins(process.env.PATH ?? "", this.rootOf(session)),
         land: (x: string) => [...new Set([x, join(realOf(dirname(x)), basename(x)), realOf(x)])],
@@ -1746,7 +1745,7 @@ export class Gate {
       // The rules settle git's own forms from the repository's state. A line that is high risk for anything else goes
       // to the judge, and is not read again here.
       const parts = this.checking.get(callKey(session.id, call.id))?.settles ? splitCommand(cls.command) : null;
-      const rule = parts ? preAllow(parts, cls.cwd ?? session.workspace, homedir(), lookRepo) : null;
+      const rule = parts ? preAllow(parts, cls.cwd ?? session.workspace, homeDir(), lookRepo) : null;
       if (rule) return ran("rule", rule), { cls };
     }
     // What is judged is what runs, whole: the judge is sent the start of a
@@ -1786,7 +1785,7 @@ export class Gate {
     let settled: string | undefined;
     if (auto && high && cls.kind === "shell" && auto.ask.risks?.length && places.length) {
       const parts = splitCommand(cls.command);
-      const s = parts ? settleOwn({ parts, risks: auto.ask.risks, cwd, home: homedir(), places, look: readRepo }) : null;
+      const s = parts ? settleOwn({ parts, risks: auto.ask.risks, cwd, home: homeDir(), places, look: readRepo }) : null;
       if (s && "deny" in s) {
         const b = this.block({ ...base, calls: [call.id], reason: s.deny, risk: "high", model: "", key, by: "rule" });
         record({ by: "rule", decision: "deny", blocked_id: b.id });
@@ -1794,7 +1793,7 @@ export class Gate {
       }
       if (s) { high = false; settled = `${s.allow} The rules flagged it because the command ${why.replace(/^the command /, "")}.`; }
     }
-    const repo = high && cls.kind === "shell" ? repoContext(cls.command, cwd, homedir(), session, places) : undefined;
+    const repo = high && cls.kind === "shell" ? repoContext(cls.command, cwd, homeDir(), session, places) : undefined;
     // (The writes with the owner's accounts the command makes, and whose namespaces they are in.)
     const accounts = high && cls.kind === "shell" ? accountContext(cls.command, cwd, this.checking.get(callKey(session.id, call.id))?.looked, accountNames()) : "";
     const facts = repo === undefined ? undefined : accounts ? `${repo}\n${accounts}` : repo;

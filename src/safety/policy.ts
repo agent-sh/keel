@@ -1,6 +1,6 @@
 // The permission decision for one tool call, from the session's mode and the
 // standing answers that apply. Pure: the gate supplies the facts.
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { accountFacts, foreign, foreignAll, namedOwners, namespaceOf, ownsOwner, say, whyForeign, writesOf as writesToAccounts, type Namespace, type Write } from "./accounts.ts";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
@@ -12,7 +12,7 @@ import type { PartRisk } from "./own-places.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
-import { atCwd, contains } from "../core/paths.ts";
+import { atCwd, contains, homeDir } from "../core/paths.ts";
 import { RESERVED } from "../mcp/config.ts";
 import type { ToolKind } from "../tools/types.ts";
 import type { WebUse } from "./addresses.ts";
@@ -296,7 +296,7 @@ function ownerOnlyEdit(p: string, f: Facts, does = "changes"): OwnerOnly | null 
   const o = f.own?.();
   const own = (f.config ?? o?.config)?.find((c) => contains(c, p));
   if (own) return { rule: "Keel's own configuration", why: `it ${does} ${p}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox` };
-  const home = f.home ?? o?.home ?? homedir();
+  const home = f.home ?? o?.home ?? homeDir();
   if (contains(home, p) && HOME_RUNS_LATER.test(relative(home, p))) return { rule: homeClass(relative(home, p)), why: `it ${does} ${p}, which runs at every login or shell start, or lets someone log in` };
   // A file of a folder commands are found in by name (an entry of the
   // session's PATH inside its workspace): its text runs at the next command,
@@ -313,7 +313,7 @@ function ownerOnlyEdit(p: string, f: Facts, does = "changes"): OwnerOnly | null 
 // `shell`: the path is written by a command of the session's shell, which a sandbox confines (see `sandboxHolds`),
 // and the word surely names it (`sureWord` in decideShell).
 function ownerOnlyNamed(w: string, cwd: string, f: Facts, does: string, shell = false): OwnerOnly | null {
-  const p = spelled(w, cwd, f.home ?? homedir());
+  const p = spelled(w, cwd, f.home ?? homeDir());
   if (!p) return null;
   for (const q of f.own?.().land(p) ?? [p]) { const why = ownerOnlyEdit(q, f, does); if (why && !(shell && why.rule === RUNS_LATER_RULE && sandboxHolds(q, f))) return why; }
   return null;
@@ -330,7 +330,7 @@ function sandboxHolds(p: string, f: Facts): boolean {
   // (The kernel's own trees lead back in: /proc/self/cwd is the session's folder.)
   if (/^\/(proc|dev|sys)(\/|$)/.test(p)) return false;
   if (["/tmp", "/var/tmp", "/dev/shm", tmpdir(), ...(f.scratch ?? [])].some((t) => contains(t, p))) return false;
-  const home = f.home ?? homedir();
+  const home = f.home ?? homeDir();
   return !(contains(home, p) && HOME_OWN.test(relative(home, p)));
 }
 
@@ -429,7 +429,7 @@ const PATTERN_KEY = /^(pattern|patterns|glob|include|includes)$/i;
 const MANY_KEY = /^(paths|files)$/i;
 export function readPaths(input: unknown, cwd: string): string[] {
   const out = new Set<string>();
-  const whole = (v: string) => (v === "~" ? homedir() : v.startsWith("~/") ? join(homedir(), v.slice(2)) : v);
+  const whole = (v: string) => (v === "~" ? homeDir() : v.startsWith("~/") ? join(homeDir(), v.slice(2)) : v);
   // `pattern`: the value came from a pattern key: it is read up to its first wildcard (the folder the pattern looks
   // in). A path key's value is a path whole, whatever characters its names hold (a link can be named `l[x`).
   const add = (v: unknown, base = cwd, pattern = false) => {
@@ -689,7 +689,7 @@ const hardLinked = (p: string) => `it changes ${p}, a file that has another name
 // Why a path a command or a tool's input names is one of Keel's own files, where it lands.
 function keelNamed(w: string, cwd: string, f: Facts, does: string, of: Facts["keel"]): string | null {
   if (!of) return null;
-  const p = spelled(w, cwd, f.home ?? homedir());
+  const p = spelled(w, cwd, f.home ?? homeDir());
   if (!p) return null;
   for (const q of f.own?.().land(p) ?? [p]) { const why = of(q); if (why) return why.replace(/^it changes/, `it ${does}`); }
   return null;
@@ -760,7 +760,7 @@ export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: 
     else if (first === "eval") script = run.words.slice(1).join(" ");
     if (script !== undefined) {
       const inner = depth < 2 ? splitCommand(script) : null;
-      if (inner) out.push(...accountWrites(inner, laid(inner, pre.dirs[i] ?? null, f.home ?? homedir()), f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added }));
+      if (inner) out.push(...accountWrites(inner, laid(inner, pre.dirs[i] ?? null, f.home ?? homeDir()), f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added }));
       else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: "the script it runs is nested deeper than the rules read, or not one they can read" });
     }
     // What this part gives the parts after it.
@@ -788,7 +788,7 @@ export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: 
 }
 
 // What the judge is told of a line's writes with the owner's accounts, and whose namespaces they are in; "" when it makes none.
-export function accountContext(command: string, cwd: string, looked: Looked | undefined, names: Namespace[], home: string = homedir()): string {
+export function accountContext(command: string, cwd: string, looked: Looked | undefined, names: Namespace[], home: string = homeDir()): string {
   const parts = splitCommand(command);
   if (!parts) return "";
   return accountFacts(accountWrites(parts, laid(parts, cwd, home), { looked, home }), names);

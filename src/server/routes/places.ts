@@ -3,11 +3,10 @@
 // worktree of its own, open one of its files in the owner's editor, serve an
 // image from its folder, and the repositories the folder picker offers.
 import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { heldFile } from "../../core/store-files.ts";
 import { gitSync } from "../../core/git.ts";
-import { contains } from "../../core/paths.ts";
+import { contains, homeDir } from "../../core/paths.ts";
 import type { Session } from "../../core/types.ts";
 import { instructionFilter } from "../../engine/turn.ts";
 import { jobsOf, running, toolEnv } from "../../tools/jobs.ts";
@@ -17,7 +16,7 @@ import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
-const HOME = homedir();
+const HOME = homeDir();
 const expand = (p: string) => resolve(p.replace(/^~(?=$|\/)/, HOME));
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 const isRepo = (p: string) => existsSync(join(p, ".git"));
@@ -250,7 +249,7 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
         const files: Record<string, string> = {};
         for (const p of b.paths.slice(0, 500)) {
           if (typeof p !== "string") continue;
-          const real = fileOf(s, p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+          const real = fileOf(s, p.startsWith("~/") ? join(homeDir(), p.slice(2)) : p);
           if (typeof real === "string") files[p] = relative(root, real);
         }
         return json({ files });

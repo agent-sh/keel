@@ -4,10 +4,10 @@
 // reads the lock to find the daemon. Nothing of the daemon itself is imported
 // here: a client command loads this file, not the daemon (src/cli/index.ts).
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { claimState, hasClaim } from "./claim.ts";
 import { pidBorn, pidHolds, pidLive, pidState } from "./pid.ts";
+import { homeDir } from "./paths";
 
 export { claimState };
 
@@ -17,7 +17,7 @@ const LOCK = "daemon.lock";
 // whatever state folder its unit names: it leaves a note in the user's runtime
 // folder so a bare client command finds it without --url or --state-dir.
 export const serviceNote = () =>
-  join(process.env.XDG_RUNTIME_DIR || join(homedir(), ".cache"), "keel-bun", "service.json");
+  join(process.env.XDG_RUNTIME_DIR || join(homeDir(), ".cache"), "keel-bun", "service.json");
 
 export function servicedDaemon(): { pid: number; url: string; state_dir: string } | undefined {
   try {

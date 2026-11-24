@@ -20,7 +20,6 @@
 // POST  /api/report                        { session_id?, note?, dry_run? } -> { includes, path?, summary }
 import { checkpointerOf } from "../../core/checkpoint.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
 import { Daemon } from "../../admin/daemon.ts";
@@ -40,6 +39,7 @@ import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
 import { runMode } from "../../core/runmode.ts";
 import { buildId } from "../../core/build.ts";
+import { homeDir } from "../../core/paths";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const body = async (req: Request) => (await req.json().catch(() => undefined)) as any;
@@ -53,7 +53,7 @@ const SECRET = /(sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pous
 // Keel's own placeholder ([secret:1a2b3c4d]) holds no value: it stays, with the text after it.
 const KEYED = /((?:api[_-]?key|token|secret|password|passwd|authorization|bearer|cookie)["']?\s*[:=]\s*["']?)(?![0-9a-f]{8}\])[^\s"',}]{6,}/gi;
 export function redact(v: unknown): unknown {
-  const home = homedir();
+  const home = homeDir();
   const walk = (x: any): any => {
     if (typeof x === "string") return x.replace(KEYED, "$1[redacted]").replace(SECRET, "[redacted]").split(home).join("~");
     if (Array.isArray(x)) return x.map(walk);
@@ -166,7 +166,7 @@ export const adminRoutes: RouteModule = (deps) => {
         running: daemon.runningSessions().length,
         // The store's disk does not answer (src/core/checkpoint.ts): the page says so across its top.
         store: daemon.status().store,
-        home: homedir(),
+        home: homeDir(),
         default_cwd: deps.workspace,
         recent_cwds: store.db.query<{ workspace: string }, []>("SELECT workspace FROM sessions WHERE parent_id IS NULL GROUP BY workspace ORDER BY MAX(updated) DESC LIMIT 20").all().map((r) => r.workspace),
         settings: settings(),

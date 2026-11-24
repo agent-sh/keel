@@ -5,12 +5,12 @@
 // every caller is told which file is missing. Neither the key, the access token
 // nor a push token is ever logged or returned.
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "../../providers/config.ts";
 import { sha256Hex } from "./sig.ts";
 import { outward } from "../../safety/egress.ts";
 import type { MobileStore, PushRecord } from "./store.ts";
+import { homeDir } from "../../core/paths";
 
 const FILE = "fcm-service-account.json";
 const SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
@@ -19,7 +19,7 @@ export function accountPath(): string {
   const own = join(configDir(), FILE);
   if (existsSync(own)) return own;
   const x = process.env.XDG_CONFIG_HOME;
-  const shared = join(x?.startsWith("/") ? x : join(homedir(), ".config"), "keel", FILE);
+  const shared = join(x?.startsWith("/") ? x : join(homeDir(), ".config"), "keel", FILE);
   return existsSync(shared) ? shared : own;
 }
 export const configured = () => existsSync(accountPath());

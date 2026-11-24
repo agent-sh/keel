@@ -16,14 +16,13 @@
 //   KEEL_CONFIG);
 // - a system file of the same kind (/etc/shadow, a host's private ssh key).
 import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { timed } from "../admin/stall.ts";
-import { contains as inside, realOf } from "../core/paths.ts";
+import { contains as inside, realOf, homeDir } from "../core/paths.ts";
 import { credentialName as secretName, entropy } from "./secrets.ts";
 
 // The owner's home as their programs know it: HOME, which a command inherits (as the sandbox reads it).
-export const homeOf = () => (process.env.HOME && isAbsolute(process.env.HOME) ? process.env.HOME : homedir());
+export const homeOf = () => homeDir();
 
 
 // The credential stores of a home, relative to it: a folder whose files are all

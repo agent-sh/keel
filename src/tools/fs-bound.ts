@@ -16,10 +16,10 @@
 // asks about a few at a time.
 import { readFileSync } from "node:fs";
 import { lstat, readlink, stat } from "node:fs/promises";
-import { availableParallelism, homedir } from "node:os";
+import { availableParallelism } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { registerSettings, settings } from "../admin/settings.ts";
-import { atCwd } from "../core/paths.ts";
+import { atCwd, homeDir } from "../core/paths.ts";
 import { classify, pathsNamed } from "../safety/policy.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 
@@ -233,6 +233,6 @@ export function callPaths(call: Pick<ToolCall, "tool" | "input" | "ctx">, input:
   const cls = classify(call.tool, input, cwd);
   if (cls.kind === "shell") return [...out];
   if ((cls.kind === "read" || cls.kind === "edit" || cls.kind === "other") && cls.paths) for (const p of cls.paths) out.add(p);
-  for (const p of pathsNamed(input)) out.add(atCwd(call.ctx.cwd, p.replace(/^~(?=\/|$)/, homedir())));
+  for (const p of pathsNamed(input)) out.add(atCwd(call.ctx.cwd, p.replace(/^~(?=\/|$)/, homeDir())));
   return [...out];
 }

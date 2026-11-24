@@ -3,7 +3,6 @@
 // the failing request's shape and wire facts, the transcript around it, the
 // daemon's log at the time, and where to look further. Keys, tokens and the
 // home folder are redacted. Built for one error, or for a session's turn.
-import { homedir } from "node:os";
 import { zoned, zoneNote } from "../core/clock.ts";
 import type { Store } from "../core/store.ts";
 import { leafOf, lineage } from "../core/tree.ts";
@@ -12,6 +11,7 @@ import type { ErrorRecord, StoredEvent, TurnStatus } from "../core/types.ts";
 import { redact } from "../server/routes/admin.ts";
 import { logDir, type LogLine, logLines } from "./logs.ts";
 import { type Span, SPAN_DAYS, traceIdOf, type Tracer } from "./trace.ts";
+import { homeDir } from "../core/paths";
 
 const LOG_WINDOW_MS = 2 * 60_000;
 const LOG_LINES = 80;
@@ -199,7 +199,7 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     more.push("- Keel's source is a Bun and TypeScript daemon: provider HTTP in `src/providers/http.ts`, the turn loop in `src/engine/turn.ts`, error capture in `src/core/errors.ts`, routes in `src/server/routes/`, the UI in `ui/src/`.");
   }
 
-  const md = `${String(redact(out.join("\n")))}${more.length ? `\n${more.join("\n")}` : ""}`.split(homedir()).join("~");
+  const md = `${String(redact(out.join("\n")))}${more.length ? `\n${more.join("\n")}` : ""}`.split(homeDir()).join("~");
   return { markdown: md + "\n", title, trace_id: traceId };
 }
 
