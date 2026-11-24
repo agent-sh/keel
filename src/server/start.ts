@@ -152,7 +152,9 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // answer, a job's stop, a drain or a restart. Those act in memory and owe their writes.
   // A request from a session's own command has that session's authority only (peer-scope.ts).
   // (Asked when a session's command calls: the grants are the agents module's, its table made after this line runs.)
-  watchSessionCallers((id) => listReach(store.db, id));
+  // And a session another harness runs exists for the owner only (peer-scope.ts blindTo): one indexed read by its id.
+  const outsideOne = store.db.query<{ x: number }, [string]>("SELECT 1 AS x FROM sessions WHERE id = ? AND outside IS NOT NULL");
+  watchSessionCallers((id) => listReach(store.db, id), (id) => !!outsideOne.get(id));
   addAdmission((req, path) => {
     if (!checkpointer.refusing || req.method === "GET" || req.method === "HEAD" || STORE_PASSES.test(path)) return;
     return Response.json({ error: checkpointer.refusalSays ?? STORE_REFUSES, store_refusing: true }, { status: 503 });

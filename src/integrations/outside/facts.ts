@@ -1,0 +1,316 @@
+// What a session another harness runs says of itself, read forward from its
+// own records as they are written: its state (working while a turn is open,
+// waiting while it asks the owner, done when its turn ended), its usage by
+// model, the files its tool calls changed, and the calls that failed. A reader
+// keeps only what the next record can change (the calls still open, the
+// replies whose usage may still grow), so a file is read once from its start
+// and after that only by what it gained (src/integrations/outside/service.ts).
+// Pure: no file is opened here.
+import { isAbsolute, resolve } from "node:path";
+import { addUsage, emptyUsage, type Usage } from "../../core/types.ts";
+import { clip } from "../import/types.ts";
+
+export type OutsideHarness = "claude" | "codex";
+export type OutsideState = "working" | "waiting" | "done" | "stale";
+export type Failed = { tool: string; kind: "tool" | "provider"; text: string; ts: number };
+
+export type Facts = {
+  state: OutsideState;
+  // What it waits for, in a few words, while it waits.
+  waiting_for?: string;
+  model?: string;
+  // Since when the state holds (the record that set it).
+  since: number;
+  last_ts: number;
+  // Usage by the model that spent it, as Keel counts it: `input` without the cached parts.
+  usage: Record<string, Usage>;
+  files: string[];
+};
+
+export type Reader = {
+  push(r: any): void;
+  facts(): Facts;
+  // The failures read since the last take, oldest first.
+  takeFailures(): Failed[];
+};
+
+const tsOf = (r: any) => Date.parse(r?.timestamp ?? "") || 0;
+
+// One line of what a file gained may be cut where the writer has not finished
+// it: the whole lines are records, the rest waits for the next read.
+export function splitGrown(rest: string, chunk: string): { records: any[]; rest: string; bad: number } {
+  const lines = (rest + chunk).split("\n");
+  const left = lines.pop() ?? "";
+  const records: any[] = [];
+  let bad = 0;
+  for (const l of lines) {
+    if (!l.trim()) continue;
+    try { records.push(JSON.parse(l)); } catch { bad++; }
+  }
+  return { records, rest: left, bad };
+}
+
+// Usage of one Claude message (`message.usage`), in Keel's terms.
+export function claudeUsage(u: any): Usage {
+  const n = (x: any) => (typeof x === "number" && x > 0 ? x : 0);
+  const hour = n(u?.cache_creation?.ephemeral_1h_input_tokens);
+  return { input: n(u?.input_tokens), output: n(u?.output_tokens), cache_read: n(u?.cache_read_input_tokens), cache_write: n(u?.cache_creation_input_tokens), ...(hour ? { cache_write_1h: hour } : {}) };
+}
+
+// Codex counts cached input inside input_tokens; Keel's `input` is the part that was not cached.
+export function codexUsage(u: any): Usage {
+  const n = (x: any) => (typeof x === "number" && x > 0 ? x : 0);
+  const cached = n(u?.cached_input_tokens);
+  return { input: Math.max(0, n(u?.input_tokens) - cached), output: n(u?.output_tokens), cache_read: cached, cache_write: 0 };
+}
+
+const minus = (a: Usage, b: Usage): Usage => ({ input: Math.max(0, a.input - b.input), output: Math.max(0, a.output - b.output), cache_read: Math.max(0, a.cache_read - b.cache_read), cache_write: Math.max(0, a.cache_write - b.cache_write) });
+
+// Tools that change a file named in their input, as Claude Code names them.
+const CLAUDE_EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+// Tools that ask the owner where the harness runs.
+const CLAUDE_ASKS: Record<string, string> = { AskUserQuestion: "your answer to a question", ExitPlanMode: "your approval of a plan" };
+const CLAUDE_INTERRUPTED = /^\[Request interrupted by user( for tool use)?\]$/;
+// A result the owner gave by refusing the call: not a failure of the call.
+const REFUSED = /^(The user doesn't want to proceed|\[Request interrupted by user)/;
+
+const textOf = (c: any): string => typeof c === "string" ? c : Array.isArray(c) ? c.filter((b) => b?.type === "text").map((b) => b.text ?? "").join("\n") : "";
+const absolute = (p: string, cwd?: string) => (isAbsolute(p) || !cwd ? p : resolve(cwd, p));
+
+class Files {
+  private seen = new Set<string>();
+  list: string[] = [];
+  add(p: string) { if (p && !this.seen.has(p)) { this.seen.add(p); this.list.push(p); } }
+}
+
+// Claude Code: a turn opens with the owner's prompt and ends with its
+// turn_duration (or stop hook) record, a reply that stopped by itself, or an
+// interruption. A call is open until its tool_result; a call that asks the
+// owner (a question, a plan) is a wait. One reply is written as several
+// records with the same message id, each carrying the reply's usage so far:
+// the last one counts.
+export function claudeReader(): Reader {
+  let state: OutsideState = "done";
+  let since = 0, last = 0;
+  let waiting: string | undefined;
+  let model: string | undefined;
+  let cwd: string | undefined;
+  const open = new Map<string, { name: string; path?: string }>();
+  const replies = new Map<string, { model: string; usage: Usage }>();
+  const settled: Record<string, Usage> = {};
+  const files = new Files();
+  let failures: Failed[] = [];
+  const set = (s: OutsideState, ts: number, w?: string) => {
+    if (s !== state || w !== waiting) since = ts || since;
+    state = s;
+    waiting = w;
+  };
+  const asking = () => {
+    for (const c of open.values()) if (CLAUDE_ASKS[c.name]) return CLAUDE_ASKS[c.name];
+    return undefined;
+  };
+  // Replies are settled once a newer one began: their usage no longer changes, and the map stays small.
+  const settle = (keep?: string) => {
+    for (const [id, r] of replies) {
+      if (id === keep) continue;
+      settled[r.model] = addUsage(settled[r.model] ?? emptyUsage(), r.usage);
+      replies.delete(id);
+    }
+  };
+  return {
+    push(r) {
+      if (!r || typeof r !== "object") return;
+      const ts = tsOf(r);
+      if (ts) last = Math.max(last, ts);
+      cwd = typeof r.cwd === "string" ? r.cwd : cwd;
+      if (r.isSidechain) return;
+      if (r.type === "system" && (r.subtype === "turn_duration" || r.subtype === "stop_hook_summary")) { open.clear(); set("done", ts); return; }
+      const c = r.message?.content;
+      const blocks: any[] = Array.isArray(c) ? c : [];
+      if (r.type === "user") {
+        const text = textOf(c).trim();
+        if (CLAUDE_INTERRUPTED.test(text)) { open.clear(); set("done", ts); return; }
+        for (const b of blocks) {
+          if (b?.type !== "tool_result") continue;
+          const call = open.get(b.tool_use_id);
+          open.delete(b.tool_use_id);
+          const said = textOf(b.content) || (typeof b.content === "string" ? b.content : "");
+          if (b.is_error) {
+            if (!REFUSED.test(said.trim())) failures.push({ tool: call?.name ?? "tool", kind: "tool", text: clip(said || "the call failed", 400), ts });
+          } else if (call?.path) files.add(absolute(call.path, cwd));
+        }
+        if (!r.isMeta && !r.isCompactSummary) set(asking() ? "waiting" : "working", ts, asking());
+        return;
+      }
+      if (r.type !== "assistant") return;
+      const m = r.message ?? {};
+      if (typeof m.model === "string" && m.model && m.model !== "<synthetic>") model = m.model;
+      if (m.usage && typeof m.id === "string" && model) {
+        settle(m.id);
+        replies.set(m.id, { model: m.model && m.model !== "<synthetic>" ? m.model : model, usage: claudeUsage(m.usage) });
+      }
+      if (r.isApiErrorMessage) failures.push({ tool: "model", kind: "provider", text: clip(textOf(c) || "the model request failed", 400), ts });
+      const uses = blocks.filter((b) => b?.type === "tool_use" && typeof b.id === "string");
+      for (const u of uses) {
+        const p = CLAUDE_EDITS.has(u.name) ? u.input?.file_path ?? u.input?.notebook_path : undefined;
+        open.set(u.id, { name: String(u.name ?? "tool"), path: typeof p === "string" ? p : undefined });
+      }
+      const stop = m.stop_reason;
+      if (!uses.length && !open.size && (stop === "end_turn" || stop === "stop_sequence")) set("done", ts);
+      else set(asking() ? "waiting" : "working", ts, asking());
+    },
+    facts() {
+      const usage: Record<string, Usage> = { ...settled };
+      for (const r of replies.values()) usage[r.model] = addUsage(usage[r.model] ?? emptyUsage(), r.usage);
+      return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage, files: [...files.list] };
+    },
+    takeFailures() { const f = failures; failures = []; return f; },
+  };
+}
+
+// The paths an apply_patch body names (added, changed, deleted or moved to).
+export function patchPaths(patch: string): string[] {
+  const out: string[] = [];
+  for (const m of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)) out.push((m[1] ?? m[2]!).trim());
+  return out;
+}
+
+// The exit code a Codex command's output names: its JSON metadata, or the
+// "Exit code: N" line newer versions write. Undefined when it names none.
+export function exitCodeOf(out: unknown): number | undefined {
+  if (typeof out !== "string") return undefined;
+  const line = /^Exit code: (-?\d+)/m.exec(out);
+  if (line) return Number(line[1]);
+  try { const j = JSON.parse(out); const c = j?.metadata?.exit_code; return typeof c === "number" ? c : undefined; } catch { return undefined; }
+}
+
+// What a command printed: the JSON's output, or the part after the header newer versions write.
+const outputText = (out: unknown): string => {
+  if (typeof out !== "string") return textOf(out);
+  try { const j = JSON.parse(out); if (typeof j?.output === "string") return j.output; } catch {}
+  const m = /^Exit code: [^\n]*\n(?:Wall time: [^\n]*\n)?Output:\n([\s\S]*)$/.exec(out);
+  return m ? m[1]! : out;
+};
+
+// Codex: a turn is between task_started and task_complete (or turn_aborted);
+// a call is open until its output; a request for the owner's input is a wait,
+// and so is an approval the rollout records. Its token_count records carry
+// the session's running total: what each adds is the model's of that turn.
+export function codexReader(): Reader {
+  let state: OutsideState = "done";
+  let since = 0, last = 0;
+  let waiting: string | undefined;
+  let model: string | undefined;
+  let cwd: string | undefined;
+  let total: Usage = emptyUsage();
+  const usage: Record<string, Usage> = {};
+  const open = new Map<string, { name: string; paths: string[] }>();
+  const approvals = new Set<string>();
+  const files = new Files();
+  let failures: Failed[] = [];
+  const set = (s: OutsideState, ts: number, w?: string) => {
+    if (s !== state || w !== waiting) since = ts || since;
+    state = s;
+    waiting = w;
+  };
+  const working = (ts: number) => {
+    const asks = [...open.values()].some((c) => c.name === "request_user_input");
+    if (asks) set("waiting", ts, "your answer to a question");
+    else if (approvals.size) set("waiting", ts, "your approval of a command");
+    else set("working", ts);
+  };
+  return {
+    push(r) {
+      if (!r || typeof r !== "object") return;
+      const ts = tsOf(r);
+      if (ts) last = Math.max(last, ts);
+      const p = r.payload;
+      if (!p) return;
+      if (r.type === "session_meta") { cwd = p.cwd ?? cwd; return; }
+      if (r.type === "turn_context") { model = p.model ?? model; cwd = p.cwd ?? cwd; return; }
+      if (r.type === "event_msg") {
+        if (p.type === "task_started" || p.type === "turn_started" || p.type === "user_message") return working(ts);
+        if (p.type === "task_complete" || p.type === "turn_complete" || p.type === "turn_aborted") { open.clear(); approvals.clear(); return set("done", ts); }
+        if (typeof p.type === "string" && p.type.endsWith("_approval_request")) { approvals.add(String(p.call_id ?? p.id ?? p.type)); return working(ts); }
+        if (p.type === "token_count" && p.info?.total_token_usage) {
+          const now = codexUsage(p.info.total_token_usage);
+          const add = minus(now, total);
+          total = now;
+          const by = model ?? "unknown";
+          if (add.input || add.output || add.cache_read) usage[by] = addUsage(usage[by] ?? emptyUsage(), add);
+          return;
+        }
+        if (p.type === "error" && typeof p.message === "string") { failures.push({ tool: "model", kind: "provider", text: clip(p.message, 400), ts }); return; }
+        if (p.type === "patch_apply_end" && p.success && p.changes && typeof p.changes === "object") for (const k of Object.keys(p.changes)) files.add(absolute(k, cwd));
+        return;
+      }
+      if (r.type !== "response_item") return;
+      if (p.type === "function_call" || p.type === "custom_tool_call" || p.type === "local_shell_call") {
+        const name = p.type === "local_shell_call" ? "shell" : String(p.name ?? "tool");
+        let input: any = p.type === "custom_tool_call" ? p.input : p.type === "local_shell_call" ? { command: p.action?.command } : p.arguments;
+        if (typeof input === "string" && p.type === "function_call") { try { input = JSON.parse(input); } catch {} }
+        const cmd = Array.isArray(input?.command) ? input.command : Array.isArray(input?.cmd) ? input.cmd : undefined;
+        const patch = name === "apply_patch" ? (typeof input === "string" ? input : input?.input ?? input?.patch) : cmd?.[0] === "apply_patch" ? cmd[1] : undefined;
+        if (typeof p.call_id === "string") open.set(p.call_id, { name, paths: typeof patch === "string" ? patchPaths(patch) : [] });
+        return working(ts);
+      }
+      if (typeof p.type === "string" && p.type.endsWith("_output") && typeof p.call_id === "string") {
+        const call = open.get(p.call_id);
+        open.delete(p.call_id);
+        approvals.delete(p.call_id);
+        const text = outputText(p.output);
+        const code = exitCodeOf(p.output);
+        const failed = (code !== undefined && code !== 0) || /^apply_patch verification failed/m.test(text);
+        if (failed) failures.push({ tool: call?.name ?? "tool", kind: "tool", text: clip(text || `exit code ${code}`, 400), ts });
+        else for (const f of call?.paths ?? []) files.add(absolute(f, cwd));
+        return working(ts);
+      }
+      if (p.type === "message" && p.role === "assistant") return working(ts);
+    },
+    facts() {
+      return { state, ...(waiting ? { waiting_for: waiting } : {}), model, since, last_ts: last, usage: { ...usage }, files: [...files.list] };
+    },
+    takeFailures() { const f = failures; failures = []; return f; },
+  };
+}
+
+export const readerOf = (h: OutsideHarness): Reader => (h === "codex" ? codexReader() : claudeReader());
+
+// Claude Code keeps a record of each running session (<config>/sessions/<pid>.json)
+// with its own word for its state: busy, waiting (on a permission prompt or
+// another ask, `waitingFor`), idle. While that process runs, its word wins over
+// what the transcript leaves open: a permission prompt writes nothing to it.
+export function withOwnWord(f: Facts, own: { status?: string; waitingFor?: string } | undefined, at = Date.now()): Facts {
+  if (!own?.status) return f;
+  const s: OutsideState | undefined = own.status === "busy" ? "working" : own.status === "waiting" ? "waiting" : own.status === "idle" ? "done" : undefined;
+  if (!s) return f;
+  const waiting_for = s === "waiting" ? (own.waitingFor ? clip(own.waitingFor, 120) : f.waiting_for ?? "your answer") : undefined;
+  if (s === f.state && waiting_for === f.waiting_for) return f;
+  const { waiting_for: _w, ...rest } = f;
+  return { ...rest, state: s, ...(waiting_for ? { waiting_for } : {}), since: at };
+}
+
+// The whole usage of a session, and its cost where every model's price is known.
+export function total(usage: Record<string, Usage>, price: (model: string) => ((u: Usage) => number | undefined)): Usage {
+  let sum = emptyUsage();
+  let cost = 0, priced = 0, unpriced = 0;
+  for (const [model, u] of Object.entries(usage)) {
+    sum = addUsage(sum, u);
+    const c = price(model)(u);
+    if (c === undefined) unpriced++;
+    else { cost += c; priced++; }
+  }
+  // An unknown cost is never shown as zero.
+  const { cost: _c, unpriced: _u, ...counts } = sum;
+  return { ...counts, ...(priced ? { cost } : {}), ...(unpriced ? { unpriced } : {}) };
+}
+
+// A session that works or waits with no record for `staleMs`, and no running process that vouches
+// for it, is stale: its harness may have ended without a word (a closed terminal, a killed run).
+// `seen`: its last record or the file's last change, whichever is later. The next record makes it
+// what that record says again.
+export function aged(f: Facts, seen: number, staleMs: number, vouched: boolean, now = Date.now()): Facts {
+  if (vouched || (f.state !== "working" && f.state !== "waiting") || now - seen < staleMs) return f;
+  const { waiting_for: _w, ...rest } = f;
+  return { ...rest, state: "stale", since: seen };
+}

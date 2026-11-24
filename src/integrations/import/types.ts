@@ -57,9 +57,17 @@ export const FAILED_LABEL = "[Keel: this call failed]";
 export class Builder {
   events: ImportedEvent[] = [];
   counts = emptyCounts();
+  // A copy followed as its source grows (src/integrations/outside/service.ts) stores an event before
+  // the source is done with it when the source goes quiet: that event never grows after. `sealed`:
+  // the items (a reply's blocks, a round's results) each such event held, by its place counted from
+  // the first event this builder made; `base`: the place of `events[0]` (the copy lets go of events).
+  sealed = new Map<number, number>();
+  base = 0;
   private last(kind: EventKind) {
     const e = this.events[this.events.length - 1];
-    return e && e.kind === kind ? e : undefined;
+    if (!e || e.kind !== kind) return undefined;
+    const held = this.sealed.get(this.base + this.events.length - 1);
+    return held !== undefined && held === itemsOf(e) ? undefined : e;
   }
   user(text: string, ts: number, images: any[] = []) {
     // Stored as Keel stores a prompt's images (the providers' wires read that shape).
@@ -75,18 +83,20 @@ export class Builder {
     if (!blocks.length) return;
     const prev = newMessage ? undefined : this.last("assistant");
     for (const b of blocks) if (b.type === "tool_use") this.counts.tool_calls++;
-    if (prev) prev.data.blocks.push(...blocks);
+    let e = prev;
+    if (e) e.data.blocks.push(...blocks);
     else {
       this.counts.assistant_messages++;
-      this.events.push({ kind: "assistant", data: { blocks: [...blocks], model, stop: blocks.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn", imported: true }, ts });
+      this.events.push((e = { kind: "assistant", data: { blocks: [...blocks], model, stop: blocks.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn", imported: true }, ts }));
     }
-    const e = this.last("assistant")!;
     e.data.stop = stop ?? (e.data.blocks.some((b: any) => b.type === "tool_use") ? "tool_use" : "end_turn");
   }
   // The source says its last reply was stopped before completion.
   interrupted() {
-    const e = this.events.findLast((x) => x.kind === "assistant" || x.kind === "user");
-    if (e?.kind === "assistant") e.data.stop = "interrupted";
+    const at = this.events.findLastIndex((x) => x.kind === "assistant" || x.kind === "user");
+    const e = this.events[at];
+    // (A reply already stored as it was stays so.)
+    if (e?.kind === "assistant" && !this.sealed.has(this.base + at)) e.data.stop = "interrupted";
   }
   result(r: { tool_use_id: string; content: any; is_error?: boolean }, ts: number) {
     const prev = this.last("tool_result");
@@ -106,6 +116,10 @@ export class Builder {
     this.events.push({ kind: "note", data: { text, model: model || undefined, imported: true }, ts });
   }
 }
+
+// What an event holds that a later record of the same source can add to (see Builder.sealed).
+export const itemsOf = (e: ImportedEvent): number | undefined =>
+  e.kind === "assistant" ? e.data.blocks.length : e.kind === "tool_result" ? e.data.results.length : undefined;
 
 // A read event as it is stored. A compaction that kept the source's newest
 // events verbatim says how many (`tail`); stored, it names the event before

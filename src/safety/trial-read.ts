@@ -78,7 +78,7 @@ export async function trialRead(db: Database, a: TrialAsk, o: TrialOpts = {}): P
   const sc = cols(db, "sessions");
   const parentCol = sc.has("parent_id"), machineCol = sc.has("machine");
   const sessions = db.query<{ id: string; workspace: string; parent_id: string | null; machine: string | null }, [number]>(
-    `SELECT id, workspace, ${parentCol ? "parent_id" : "NULL AS parent_id"}, ${machineCol ? "machine" : "NULL AS machine"} FROM sessions WHERE updated > ? ORDER BY updated DESC`).all(since);
+    `SELECT id, workspace, ${parentCol ? "parent_id" : "NULL AS parent_id"}, ${machineCol ? "machine" : "NULL AS machine"} FROM sessions WHERE updated > ?${sc.has("outside") ? " AND outside IS NULL" : ""} ORDER BY updated DESC`).all(since);
   const parents = new Map(parentCol ? db.query<{ id: string; parent_id: string }, []>("SELECT id, parent_id FROM sessions WHERE parent_id IS NOT NULL").all().map((r) => [r.id, r.parent_id]) : []);
   const treeRoot = (id: string) => { let at = id; for (let n = 0; n < 64 && parents.has(at); n++) at = parents.get(at)!; return at; };
   const perms = new Map(has(db, "perm_sessions") ? db.query<{ session_id: string; mode: string; sandbox: string }, []>("SELECT session_id, mode, sandbox FROM perm_sessions").all().map((r) => [r.session_id, r]) : []);

@@ -9,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
+import { isOutside } from "../core/outside.ts";
 import type { Engine } from "../engine/turn.ts";
 import { findBin, runBounded } from "./tacit.ts";
 
@@ -50,7 +51,8 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     const pending = new Set(asks.keys());
     return {
       ok: true,
-      sessions: c.store.sessions({}).map((s) => ({
+      // (A session another harness runs is only shown in Keel: src/core/outside.ts.)
+      sessions: c.store.sessions({}).filter((s) => !isOutside(s)).map((s) => ({
         key: `keel:${s.id}`,
         session_id: s.id,
         tool: "keel",
@@ -71,7 +73,7 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     const text = String(cmd.text ?? "");
     if (!["queue", "steer", "interrupt"].includes(action)) return { ok: false, code: "bad_action", error: "action must be queue, steer or interrupt" };
     const s = typeof session_id === "string" ? c.store.session(session_id) : null;
-    if (!s) return { ok: false, code: "not_found", error: "unknown session" };
+    if (!s || isOutside(s)) return { ok: false, code: "not_found", error: "unknown session" };
     if (action === "interrupt") {
       void c.engine.interrupt(s.id, "supervisor");
       return { ok: true, accepted: action };

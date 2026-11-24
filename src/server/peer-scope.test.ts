@@ -2,7 +2,7 @@
 // The e2e (test/e2e/session-authority.spec.ts) shows a command refused; these are the cases it cannot
 // stage: a process that ended, a pid used again, a kernel that does not say.
 import { expect, test } from "bun:test";
-import { peerAuthority, peerVerdict, sessionMay, type Authority, type ListReach, type PeerFacts } from "./peer-scope.ts";
+import { blindTo, namedSessions, peerAuthority, peerVerdict, sessionMay, type Authority, type ListReach, type PeerFacts } from "./peer-scope.ts";
 
 const scopes = new Map<bigint, string>([[101n, "s-a"], [102n, "s-b"]]);
 const of = (o: Partial<PeerFacts>): PeerFacts => ({ facts: { uid: 1000, inode: 55, cgroup: 9n }, linux: true, cgroups: scopes, loose: false, holder: () => null, ...o });
@@ -88,4 +88,29 @@ test("the door: a session by its standing, a socket of no maker refused, the tok
   expect(peerVerdict({ kind: "unknown" }, req("GET", "/api/health", { ownAuth: true }), tops)).toEqual({ account: true });
   expect(peerVerdict({ kind: "ended" }, req("GET", "/api/health", { ownAuth: true }), tops)).toMatchObject({ refuse: expect.any(String) });
   expect(peerVerdict({ kind: "owner" }, req("PUT", "/api/settings"), tops)).toEqual({ account: true });
+});
+
+// A session another harness runs exists for the owner only: for a session's command, a request another machine
+// forwarded and the phone, every request that names one is answered as for no such session.
+test("the door: a session another harness runs does not exist for anyone but the owner", () => {
+  const req = (path: string, o: Partial<{ search: string; linked: boolean; ownAuth: boolean }> = {}) => ({ method: "GET", path, ownAuth: false, open: false, ...o });
+  const s: Authority = { kind: "session", session: "s-a", by: "cgroup" };
+  const owner: Authority = { kind: "owner" };
+  const tops = (): ListReach => ({ reads: "top" });
+  const out = (id: string) => id === "o-1";
+  for (const [path, search] of [["/api/sessions/o-1", ""], ["/api/sessions/o-1/events", ""], ["/api/sessions/o-1/timeline", ""], ["/api/sessions/o-1/hours", ""], ["/api/sessions/o-1/agents", ""],
+    ["/api/errors", "?session=o-1"], ["/api/resources", "?session_id=o-1"], ["/api/overview", "?of=o-1"], ["/api/usage", "?children_of=o-1"], ["/api/sessions/o%2D1", ""]] as const) {
+    expect({ path, search, v: peerVerdict(s, req(path, { search }), tops, out) }).toEqual({ path, search, v: { absent: "no such session" } });
+    expect({ path, search, v: peerVerdict(owner, req(path, { search, linked: true }), tops, out) }).toEqual({ path, search, v: { absent: "no such session" } });
+    expect({ path, search, v: peerVerdict(owner, req(path, { search }), tops, out) }).toEqual({ path, search, v: { account: true } });
+  }
+  // The phone's signed API is blind too (its own routes leave them out: src/integrations/mobile/v1.ts).
+  expect(blindTo(owner, { path: "/v1/chats" })).toBe(true);
+  // Another session, and the lists, as before.
+  expect(peerVerdict(s, req("/api/sessions/s-b/events"), tops, out)).toEqual({ pass: true });
+  expect(peerVerdict(s, req("/api/sessions"), tops, out)).toEqual({ pass: true });
+  expect(blindTo(s, { path: "/api/sessions" })).toBe(true);
+  expect(blindTo(owner, { path: "/api/sessions", linked: true })).toBe(true);
+  expect(blindTo(owner, { path: "/api/sessions" })).toBe(false);
+  expect(namedSessions("/api/fleet/linked/sessions/o-1/events", "?of=x&session=y")).toEqual(["o-1", "y", "x"]);
 });

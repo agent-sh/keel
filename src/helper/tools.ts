@@ -1,6 +1,7 @@
 // The helper's own tools: read-only views over Keel, its remembered list,
 // and mail and calendar. Only the helper session gets them
 // (registerSessionTools); every other session's tools are unchanged.
+import { isOutside } from "../core/outside.ts";
 import * as alerts from "../automation/alerts.ts";
 import { clip } from "../automation/core.ts";
 import { agentCounts, sessionState } from "../automation/state.ts";
@@ -40,7 +41,8 @@ function find(ref: string): Session {
   const { store } = H!.deps;
   const r = ref.trim();
   const exact = store.session(r);
-  if (exact) return exact;
+  // A session another harness runs is none of the helper's to read (src/core/outside.ts).
+  if (exact && !isOutside(exact)) return exact;
   const hits = store.sessions().filter((s) => !s.settings.helper && s.title.toLowerCase().includes(r.toLowerCase()));
   if (hits.length === 1) return hits[0]!;
   throw new Error(hits.length ? `"${r}" names ${hits.length} sessions: ${hits.slice(0, 8).map((s) => `${s.id} (${s.title})`).join(", ")}` : `no session ${r}`);
@@ -226,7 +228,11 @@ const calendar: Tool = {
 const memory = memoryTools(() => H!.records);
 const ALL = [...memory, sessions, sessionRead, activity, mailSearch, mailRead, mailLabel, mailSend, calendar];
 
+// The helper whose deps the tools read (a test gives its own and puts back undefined).
+export function useHelper(h: Helper | undefined) { H = h; }
+export const helperTool = (name: string) => ALL.find((t) => t.name === name);
+
 export function bindHelperTools(h: Helper) {
-  H = h;
+  useHelper(h);
   registerSessionTools("helper", (id) => (H?.isHelper(id) ? ALL : []));
 }

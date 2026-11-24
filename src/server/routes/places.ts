@@ -13,6 +13,7 @@ import { jobsOf, running, toolEnv } from "../../tools/jobs.ts";
 import { GitError, Worktrees } from "../../worktree/manager.ts";
 import { lineage } from "../../core/tree.ts";
 import type { RouteModule } from "../app.ts";
+import { outsideRefusal } from "../../core/watch.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -199,6 +200,8 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
       POST: async (req: any) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
+        // Another harness's session goes on in Keel through its continue (a copy from its source, kept up to date).
+        if (s.outside) return bad(outsideRefusal(s), 409);
         const b = ((await req.json().catch(() => null)) ?? {}) as any;
         try {
           return json(await clone(s, b), 201);

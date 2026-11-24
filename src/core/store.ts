@@ -317,11 +317,12 @@ const within = <T>(p: Promise<T>, ms: number): Promise<T | false> => {
 
 export type ColdReads = { n: number; rows: number; ms: number; by: { who: string; n: number; rows: number; ms: number }[] };
 export type BodyReads = { n: number; rows: number; bytes: number; ms: number; by: { who: string; n: number; rows: number; bytes: number; ms: number }[] };
-type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
+type SessionRow = Omit<Session, "archived" | "usage" | "settings" | "outside"> & { archived: number; usage: string; settings: string; outside?: string | null };
 
-function rowToSession(r: SessionRow): Session {
+function rowToSession({ outside, ...r }: SessionRow): Session {
   const s: Session = {
     ...r,
+    ...(outside ? { outside: JSON.parse(outside) } : {}),
     head: r.head ?? null,
     archived: !!r.archived,
     usage: { ...emptyUsage(), ...JSON.parse(r.usage || "{}") },
@@ -798,6 +799,8 @@ export class Store {
     if (!this.columnExists("sessions", "rev")) this.db.exec("ALTER TABLE sessions ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");
     // Who wrote the title: a title the owner or the session's maker gave ('') is never replaced by a made one.
     if (!this.columnExists("sessions", "title_by")) this.db.exec("ALTER TABLE sessions ADD COLUMN title_by TEXT NOT NULL DEFAULT ''");
+    // A session another harness runs, shown here read-only (src/integrations/outside/service.ts): what its records say of it.
+    if (!this.columnExists("sessions", "outside")) this.db.exec("ALTER TABLE sessions ADD COLUMN outside TEXT");
     for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"], ["span_id", "TEXT"], ["read_ts", "INTEGER"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
@@ -889,9 +892,12 @@ export class Store {
     return r ? this.phased(rowToSession(r)) : undefined;
   }
 
-  sessions(opts: { archived?: boolean } = {}): Session[] {
+  // The sessions of Keel's own. A session another harness runs (src/core/outside.ts) is in the set
+  // only for a caller that asks for it (`outside: true`): what a set feeds (a model, a peer, a hook)
+  // never gets one by default. The callers that ask are listed in src/core/outside.test.ts.
+  sessions(opts: { archived?: boolean; outside?: true } = {}): Session[] {
     const all = this.db
-      .query<SessionRow, [number]>("SELECT * FROM sessions WHERE archived = ? ORDER BY updated DESC")
+      .query<SessionRow, [number]>(`SELECT * FROM sessions WHERE archived = ?${opts.outside ? "" : " AND outside IS NULL"} ORDER BY updated DESC`)
       .all(opts.archived ? 1 : 0)
       .map(rowToSession);
     return this.phases.size ? all.map((s) => this.phased(s)) : all;
@@ -917,7 +923,7 @@ export class Store {
   // `updated` is the session's last activity (lists sort by it, "the last
   // session" is the newest by it): a rename or a settings change is not work,
   // so it moves `rev` only.
-  updateSession(id: string, patch: Partial<Pick<Session, "title" | "title_by" | "model" | "phase" | "archived" | "usage" | "workspace" | "head" | "settings">>): Session {
+  updateSession(id: string, patch: Partial<Pick<Session, "title" | "title_by" | "model" | "phase" | "archived" | "usage" | "workspace" | "head" | "settings" | "outside">>): Session {
     const sets: string[] = ["rev = rev + 1"];
     const vals: (string | number)[] = [];
     let activity = false;
@@ -926,7 +932,7 @@ export class Store {
       sets.push(`${k} = ?`);
       if (k !== "title" && k !== "title_by" && k !== "settings") activity = true;
       if (k === "title") { vals.push(this.redact(id, "title", v)); continue; }
-      vals.push(k === "usage" || k === "settings" ? JSON.stringify(v) : k === "archived" ? (v ? 1 : 0) : (v as string));
+      vals.push(k === "usage" || k === "settings" || k === "outside" ? JSON.stringify(v) : k === "archived" ? (v ? 1 : 0) : (v as string));
     }
     if (activity) {
       sets.push("updated = ?");

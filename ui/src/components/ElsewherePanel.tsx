@@ -9,6 +9,7 @@ import { copyable, takeOver, TOOL } from "./TakeOver.tsx";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { composing } from "../lib/keys.ts";
+import { OutsideSettings } from "./OutsideSettings.tsx";
 
 type List = { configured: boolean; sessions: Row[]; not_listed?: string[]; at?: number };
 type Read = { session: Row; turns?: Turn[]; lines?: string[]; prompt: ReadPrompt | null };
@@ -370,7 +371,9 @@ export function ElsewhereSettings() {
   };
   return (
     <div className="flex flex-col gap-5" data-testid="elsewhere-settings">
-      <p className="text-ui text-muted">
+      <OutsideSettings />
+      <h3 className="text-base font-medium">Your agent view</h3>
+      <p className="-mt-3 text-ui text-muted">
         Keel reaches your sessions of other harnesses through one program, your agent view. It lists them (<code className="font-mono text-caption">list -a --json</code>) and reads, answers and queues messages (<code className="font-mono text-caption">rpc</code>). Keel never types into a terminal itself.
       </p>
       <label className="flex flex-col gap-1.5">

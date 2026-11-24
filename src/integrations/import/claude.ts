@@ -121,43 +121,27 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
   };
 }
 
-export async function readClaude(path: string): Promise<Read> {
-  const st = statSync(path);
-  const found = claudeFound(path, st.size, st.mtimeMs);
-  if (!found) throw new Error("this transcript holds no conversation");
-  const lines = readLines(await Bun.file(path).text());
-  const records = lines.records;
-  const byId = new Map<string, any>();
-  let leaf: any;
-  // Every record with a uuid is a link of the chain (attachments and progress
-  // records sit between messages); only messages are converted.
-  for (const r of records) {
-    if (!r.uuid) continue;
-    byId.set(r.uuid, r);
-    if ((r.type === "user" || r.type === "assistant") && !r.isMeta && !r.isSidechain) leaf = r;
-  }
-  if (!leaf) for (const r of records) if (r.uuid && (r.type === "user" || r.type === "assistant")) leaf = r; // a subagent's file is all sidechain
-  const chain: any[] = [];
-  const seen = new Set<string>();
-  // A compaction's boundary starts a chain of its own (no parent): the record it
-  // follows is its logical parent, so the history before it is read too.
-  const up = (r: any) => (r.parentUuid ? byId.get(r.parentUuid) : r.type === "system" && r.subtype === "compact_boundary" && r.logicalParentUuid ? byId.get(r.logicalParentUuid) : undefined);
-  for (let r = leaf; r && !seen.has(r.uuid); r = up(r)) {
-    seen.add(r.uuid);
-    chain.push(r);
-  }
-  chain.reverse();
-  found.model = chain.map(modelOf).findLast(Boolean) ?? found.model;
-  // The fast listing samples the file, not its active branch. Only this
-  // branch's recorded mode can set the new session's permissions.
-  found.perm_mode = chain.map(permOf).findLast(Boolean);
-  const b = new Builder();
-  const notes: string[] = [];
-  let lastMsg: string | undefined;
-  let trigger: string | undefined, compactions = 0;
-  for (const r of chain) {
-    const ts = Date.parse(r.timestamp) || st.mtimeMs;
-    if (r.type === "system" && r.subtype === "compact_boundary") { trigger = r.compactMetadata?.trigger; continue; }
+// A record's chain parent. A compaction's boundary starts a chain of its own
+// (no parent): the record it follows is its logical parent, so the history
+// before it is read too.
+const parentOf = (r: any): string | undefined =>
+  r.parentUuid ?? (r.type === "system" && r.subtype === "compact_boundary" && r.logicalParentUuid ? r.logicalParentUuid : undefined);
+
+// A message record that can end the branch shown (the newest such is its leaf).
+const leafLike = (r: any) => !!r.uuid && (r.type === "user" || r.type === "assistant") && !r.isMeta && !r.isSidechain;
+
+// The records of a branch, in order, converted to events one at a time: a
+// whole read converts its chain at once, a transcript followed as it grows
+// converts each part its new leaf chains onto (ClaudeChain).
+export class ClaudeConvert {
+  b = new Builder();
+  compactions = 0;
+  private lastMsg: string | undefined;
+  private trigger: string | undefined;
+  push(r: any, fallbackTs: number) {
+    const b = this.b;
+    const ts = Date.parse(r.timestamp) || fallbackTs;
+    if (r.type === "system" && r.subtype === "compact_boundary") { this.trigger = r.compactMetadata?.trigger; return; }
     if (r.type === "user") {
       const c = r.message?.content;
       // A meta message is model-visible and not the owner's words: a note the model reads.
@@ -165,21 +149,22 @@ export async function readClaude(path: string): Promise<Read> {
         const t = typeof c === "string" ? c : Array.isArray(c) ? c.filter((x: any) => x?.type === "text").map((x: any) => x.text).join("\n") : "";
         if (t.trim()) b.note(t, ts, true);
         else b.counts.skipped++;
-        continue;
+        return;
       }
       // Claude Code's marker of a reply the owner stopped.
-      if (typeof c === "string" ? INTERRUPTED.test(c) : Array.isArray(c) && c.length === 1 && c[0]?.type === "text" && INTERRUPTED.test(c[0].text ?? "")) { b.interrupted(); continue; }
+      if (typeof c === "string" ? INTERRUPTED.test(c) : Array.isArray(c) && c.length === 1 && c[0]?.type === "text" && INTERRUPTED.test(c[0].text ?? "")) { b.interrupted(); return; }
       if (r.isCompactSummary) {
         const text = typeof c === "string" ? c : resultText(c);
+        const trigger = this.trigger;
         b.compacted(typeof text === "string" ? text : text.filter((x: any) => x.type === "text").map((x: any) => x.text).join("\n"), ts, { trigger: trigger === "auto" ? "threshold" : trigger === "manual" ? "owner" : undefined });
-        compactions++;
-        trigger = undefined;
-        continue;
+        this.compactions++;
+        this.trigger = undefined;
+        return;
       }
       if (typeof c === "string") {
-        if (/^<(local-command-stdout|command-stdout|bash-stdout)/.test(c.trim())) { b.counts.skipped++; continue; }
+        if (/^<(local-command-stdout|command-stdout|bash-stdout)/.test(c.trim())) { b.counts.skipped++; return; }
         b.user(commandText(c), ts);
-        continue;
+        return;
       }
       const texts: string[] = [];
       const images: any[] = [];
@@ -197,11 +182,83 @@ export async function readClaude(path: string): Promise<Read> {
         else if (blk?.type === "tool_use") blocks.push({ type: "tool_use", id: blk.id, name: blk.name, input: blk.input ?? {} });
         else if (blk?.type === "thinking" || blk?.type === "redacted_thinking") b.counts.thoughts_dropped++;
       }
-      if (!blocks.length) continue;
-      b.assistant(blocks, ts, m.model, m.id !== lastMsg || b.events[b.events.length - 1]?.kind !== "assistant", shortStop(m.stop_reason));
-      lastMsg = m.id;
+      if (!blocks.length) return;
+      b.assistant(blocks, ts, m.model, m.id !== this.lastMsg || b.events[b.events.length - 1]?.kind !== "assistant", shortStop(m.stop_reason));
+      this.lastMsg = m.id;
     }
   }
+}
+
+// The branch of a transcript followed as the file grows. Records are pushed as
+// they are read; `advance` gives the records the newest leaf adds to the
+// branch, in order, when that leaf chains back to the branch's last leaf.
+// Only records after that leaf are kept (a child is written after its parent,
+// so nothing before it can join the branch). A leaf that does not chain back
+// (the owner rewound and went on from an earlier message) says so: the caller
+// reads the file again from its start.
+export class ClaudeChain {
+  private leaf: string | undefined;
+  private after: any[] = [];
+  push(records: any[]) {
+    for (const r of records) if (r?.uuid) this.after.push(r);
+  }
+  advance(): any[] | "rewound" {
+    const at = this.after.findLastIndex(leafLike);
+    if (at < 0) return [];
+    const byId = new Map<string, any>();
+    for (let i = 0; i <= at; i++) byId.set(this.after[i].uuid, this.after[i]);
+    const seg: any[] = [];
+    const seen = new Set<string>();
+    let reached = this.leaf === undefined;
+    for (let r: any = this.after[at]; r && !seen.has(r.uuid); ) {
+      seen.add(r.uuid);
+      seg.push(r);
+      const up = parentOf(r);
+      if (this.leaf !== undefined && up === this.leaf) { reached = true; break; }
+      r = up ? byId.get(up) : undefined;
+    }
+    // The branch's start (the first leaf) chains to nothing it holds; a later leaf must reach the last one.
+    if (!reached) return "rewound";
+    seg.reverse();
+    this.leaf = this.after[at].uuid;
+    this.after = this.after.slice(at + 1);
+    return seg;
+  }
+}
+
+export async function readClaude(path: string): Promise<Read> {
+  const st = statSync(path);
+  const found = claudeFound(path, st.size, st.mtimeMs);
+  if (!found) throw new Error("this transcript holds no conversation");
+  const lines = readLines(await Bun.file(path).text());
+  const records = lines.records;
+  const byId = new Map<string, any>();
+  let leaf: any;
+  // Every record with a uuid is a link of the chain (attachments and progress
+  // records sit between messages); only messages are converted.
+  for (const r of records) {
+    if (!r.uuid) continue;
+    byId.set(r.uuid, r);
+    if (leafLike(r)) leaf = r;
+  }
+  if (!leaf) for (const r of records) if (r.uuid && (r.type === "user" || r.type === "assistant")) leaf = r; // a subagent's file is all sidechain
+  const chain: any[] = [];
+  const seen = new Set<string>();
+  const up = (r: any) => { const p = parentOf(r); return p ? byId.get(p) : undefined; };
+  for (let r = leaf; r && !seen.has(r.uuid); r = up(r)) {
+    seen.add(r.uuid);
+    chain.push(r);
+  }
+  chain.reverse();
+  found.model = chain.map(modelOf).findLast(Boolean) ?? found.model;
+  // The fast listing samples the file, not its active branch. Only this
+  // branch's recorded mode can set the new session's permissions.
+  found.perm_mode = chain.map(permOf).findLast(Boolean);
+  const conv = new ClaudeConvert();
+  const b = conv.b;
+  const notes: string[] = [];
+  for (const r of chain) conv.push(r, st.mtimeMs);
+  const compactions = conv.compactions;
   if (compactions) notes.push(`Claude Code compacted this conversation ${compactions === 1 ? "once" : `${compactions} times`}: all of it is here, and the model reads from the last summary on, as it did there.`);
   notes.push(...damageNotes(lines));
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} thinking block${b.counts.thoughts_dropped === 1 ? " is" : "s are"} not carried: signatures belong to the model that wrote them.`);

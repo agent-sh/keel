@@ -174,6 +174,14 @@ export function toolChanges(db: Database, since: number): Map<string, number> {
   return out;
 }
 
+// A session another harness runs (src/core/outside.ts) is none of the lessons': its failures and its
+// trees are left out. (A store made before the column has none.)
+function keelOnly(db: Database, col = "s.id"): string {
+  const has = tried(() => db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM pragma_table_info('sessions') WHERE name = 'outside'").all())[0]?.n;
+  if (!has) return "";
+  return col === "s.id" ? " AND s.outside IS NULL" : ` AND ${col} NOT IN (SELECT id FROM sessions WHERE outside IS NOT NULL)`;
+}
+
 export function hitsOf(db: Database, since: number): Hit[] {
   const out: Hit[] = [];
   const changed = toolChanges(db, since);
@@ -189,7 +197,7 @@ export function hitsOf(db: Database, since: number): Hit[] {
     return agentSession.get(id) || undefined;
   };
   for (const r of tried(() => db.query<{ session_id: string; fp: string; kind: string; cls: string; sample: string; count: number; last_ts: number; refs: string }, [number, number]>(
-    "SELECT session_id, fp, kind, cls, sample, count, last_ts, refs FROM session_failures WHERE last_ts >= ? AND kind NOT IN ('tool', 'provider', 'message') ORDER BY last_ts DESC LIMIT ?").all(since, ROWS))) {
+    `SELECT session_id, fp, kind, cls, sample, count, last_ts, refs FROM session_failures WHERE last_ts >= ? AND kind NOT IN ('tool', 'provider', 'message')${keelOnly(db, "session_id")} ORDER BY last_ts DESC LIMIT ?`).all(since, ROWS))) {
     const base = { source: "failure" as const, key: failureKey(r.fp), label: `${r.kind} ${r.cls}`, example: r.sample };
     const refs = (json(r.refs) ?? []) as { id: string; n?: number; ts?: number }[];
     let named = 0;
@@ -376,7 +384,7 @@ export const decidable = (c: Pick<Candidate, "trial_days">) => c.trial_days !== 
 export type Census = { trees: number; a_day: number };
 export function treesOf(db: Database, since: number, now: number, root: (dir: string) => string | null): Map<string, Census> {
   const rows = tried(() => db.query<{ id: string }, [number]>(
-    "SELECT s.id FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_id WHERE s.created >= ? AND (s.parent_id IS NULL OR p.parent_id IS NULL)").all(since));
+    `SELECT s.id FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_id WHERE s.created >= ? AND (s.parent_id IS NULL OR p.parent_id IS NULL)${keelOnly(db)}`).all(since));
   if (!rows.length) return new Map();
   const sessions = sessionsOf(db, rows.map((r) => r.id));
   const oldest = tried(() => db.query<{ t: number | null }, []>("SELECT MIN(created) AS t FROM sessions").all())[0]?.t ?? since;

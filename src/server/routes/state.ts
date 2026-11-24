@@ -22,6 +22,7 @@ import { joinPulse } from "../../core/pulse.ts";
 import type { SessionState } from "../../core/watch.ts";
 import { registerSettings } from "../../admin/settings.ts";
 import { timed } from "../../admin/stall.ts";
+import { seesOutside } from "../admission.ts";
 import { factsOf, lens, progressOf, sessionState, stuckAfter, type Lens } from "../../automation/state.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
@@ -78,10 +79,11 @@ export class StateBoard {
     return st;
   }
 
-  all(): Record<string, SessionState> {
+  // `outside`: with the sessions another harness runs, for a view of the owner's own (src/core/outside.ts).
+  all(opts: { outside?: true } = {}): Record<string, SessionState> {
     const l = lens(this.from());
     const out: Record<string, SessionState> = {};
-    for (const s of this.deps.store.sessions()) {
+    for (const s of this.deps.store.sessions(opts.outside ? { outside: true } : {})) {
       const st = this.read(s.id, l)!;
       out[s.id] = st;
       this.note(s.id, st);
@@ -219,8 +221,9 @@ export const stateRoutes: RouteModule = (deps) => {
   // On the daemon's one tick: while it is idle the sweep comes only while a session is not at rest.
   joinPulse("state sweep", () => b.sweep(), { every: SWEEP_MS, due: (now) => (b.restless() ? now : undefined) });
   return {
-    "/api/state": { GET: () => {
-      const states = b.all();
+    "/api/state": { GET: (req: Request) => {
+      // The page's list and home show every session; another machine asking is shown none another harness runs.
+      const states = seesOutside(req) ? b.all({ outside: true }) : b.all();
       const queued = queuedFor(states, deps.engine.queuedCounts());
       return Response.json({ states, queued, rev: deps.bus.rev() });
     } },

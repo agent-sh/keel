@@ -47,7 +47,7 @@ export function sessionFoldersOf(store: Store): string[] {
   const have = kept.get(store);
   if (have && Date.now() - have.at < 2_000) return have.list;
   let list: string[] = [];
-  try { list = [...new Set(store.db.query<{ workspace: string }, []>("SELECT DISTINCT workspace FROM sessions WHERE archived = 0").all().map((r) => realOf(r.workspace)))]; } catch {} // no table yet
+  try { list = [...new Set(store.db.query<{ workspace: string }, []>("SELECT DISTINCT workspace FROM sessions WHERE archived = 0 AND outside IS NULL").all().map((r) => realOf(r.workspace)))]; } catch {} // no table yet
   kept.set(store, { at: Date.now(), list });
   return list;
 }

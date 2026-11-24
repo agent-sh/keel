@@ -33,7 +33,8 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, timeBucket, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, WAITS_ON_YOU, FAILED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, WAITS_ON_YOU, FAILED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
+import { OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
@@ -326,6 +327,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       {/* The first line's end: the tag, the marks, the time, and under the pointer the row's actions in the time's place. */}
       <span className="k-row-end">
         {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
+        {s.outside && <OutsideTag o={s.outside} />}
         <SessionBadges sessionId={s.id} />
         {/* What it needs is under a look: its pane shows another session for now. */}
         {under && <span className="k-row-under" data-testid="row-under" role="img" aria-label={`${STATE_WORD.need}, under a look`} title={`${STATE_WORD.need} while its pane shows another session for now`}><Layers2 aria-hidden="true" /></span>}
@@ -1363,5 +1365,16 @@ export function Sidebar({ open }: { open: boolean }) {
         </button>
       </div>
     </aside>
+  );
+}
+
+// A row of a session another harness runs: which one. A stale one (no record for a while, nothing to vouch for it) says so.
+export function OutsideTag({ o }: { o: NonNullable<Session["outside"]> }) {
+  const where = OUTSIDE_LABEL[o.harness] ?? o.harness;
+  const stale = o.state === "stale";
+  return (
+    <span className="k-row-outside" data-testid="row-outside" data-state={o.state} title={stale ? `Runs in ${where}: no record${o.since ? ` since ${hhmm(o.since)}` : ""}, read-only here` : `Runs in ${where}: read-only here`}>
+      {where}{stale && <span className="k-row-outside-stale"> · {STALE_WORD.toLowerCase()}</span>}
+    </span>
   );
 }

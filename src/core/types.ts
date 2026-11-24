@@ -129,6 +129,22 @@ export type Session = {
   machine?: string | null;
   // The session's folder is not on this machine's disk any more.
   workspace_gone?: true;
+  // A session another harness runs on this machine, shown here as it goes
+  // (src/integrations/outside/service.ts): read-only, nothing is sent to it.
+  outside?: OutsideMark;
+};
+
+// What a list shows of an outside session, from its own records. The rest
+// (its files, its usage by model) is read with GET /api/sessions/:id/outside.
+export type OutsideMark = {
+  harness: "claude" | "codex";
+  source_id: string;
+  state: "working" | "waiting" | "done" | "stale";
+  waiting_for?: string;
+  since: number;   // when the state began
+  model?: string;  // the model its harness names
+  files: number;   // files its tool calls changed
+  failures: number;
 };
 
 // Per-session turn settings. Values come from the model's listing (efforts) or

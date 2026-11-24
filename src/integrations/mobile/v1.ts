@@ -13,6 +13,7 @@ import { TEXT_MEDIA } from "../../engine/compact.ts";
 import { imageType } from "../../engine/images.ts";
 import type { Server } from "bun";
 import type { ErrorRecord, Session, StoredEvent } from "../../core/types.ts";
+import { isOutside, outsideIds } from "../../core/outside.ts";
 import { closedWhy, type Approval, type Gate } from "../../safety/gate.ts";
 import { cardLines, fromSaid, type CardForm } from "../../safety/card.ts";
 import { spelled } from "../../safety/chars.ts";
@@ -436,9 +437,13 @@ const approvalMsg = (a: { id: string; chat_id: string; kind: string; command: st
 
 export function mobileApi(ctx: MobileCtx) {
   const { store, bus, engine, providers, errors, mobile } = ctx;
+  // A session another harness runs is only shown in Keel (src/core/outside.ts): the phone gets nothing of it,
+  // not its row, its messages, its questions or its state. Every read of a session here is through these.
+  const sessionShown = (sid: string) => { const s = store.session(sid); return s && !isOutside(s) ? s : undefined; };
+  const sessionsShown = (o?: { archived?: boolean }) => store.sessions(o).filter((s) => !isOutside(s));
   const limiter = new PairLimiter();
   const lastSeq = (sid: string) => store.db.query<{ n: number | null }, [string]>("SELECT MAX(seq) AS n FROM events WHERE session_id = ?").get(sid)!.n ?? 0;
-  const allSessions = () => [...store.sessions(), ...store.sessions({ archived: true })];
+  const allSessions = () => [...sessionsShown(), ...sessionsShown({ archived: true })];
   // When the running turn started: the phone's elapsed timer counts from it,
   // whatever the turn stored since.
   // A turn that has not stored its start yet (the session just went working)
@@ -446,8 +451,8 @@ export function mobileApi(ctx: MobileCtx) {
   // (Each is one seek of the turn index: this runs for every working session at each hello.)
   const turnBounds = (sid: string) => ({ st: newestMark(store, sid, "turn_start"), en: newestMark(store, sid, "turn_end") });
   const since = (s: Session) => { const b = turnBounds(s.id); return secs(b.st !== null && (b.en === null || b.st > b.en) ? b.st : s.updated); };
-  const working = () => store.sessions().filter((s) => engine.isRunning(s.id)).map((s) => ({ chat_id: s.id, since: since(s) }));
-  const msgCtx: MessageCtx = { titleOf: (sid) => store.session(sid)?.title, parentOf: (sid) => store.session(sid)?.parent_id ?? null };
+  const working = () => sessionsShown().filter((s) => engine.isRunning(s.id)).map((s) => ({ chat_id: s.id, since: since(s) }));
+  const msgCtx: MessageCtx = { titleOf: (sid) => sessionShown(sid)?.title, parentOf: (sid) => sessionShown(sid)?.parent_id ?? null };
   const toMsg = (e: StoredEvent, gseq: number) => messageOf(e, gseq, msgCtx);
   // Everything one event shows on the phone: its words, then its tool calls.
   const msgsOf = (e: StoredEvent, gseq: number): any[] => [toMsg(e, gseq), traceOf(e, gseq)].filter(Boolean);
@@ -536,7 +541,7 @@ export function mobileApi(ctx: MobileCtx) {
   const questionId = (sessionId: string, callId: string, asked?: string) => `q-${sessionId}.${callId}${asked ? `-${asked}` : ""}`;
   // The pending question a card id is for.
   function questionFor(aid: string): { s: Session; callId: string; asked?: string } | undefined {
-    for (const s of store.sessions()) for (const callId of pendingQuestions(s.id)) {
+    for (const s of sessionsShown()) for (const callId of pendingQuestions(s.id)) {
       const asked = askedOf(s.id, callId)?.id;
       if (questionId(s.id, callId, asked) === aid) return { s, callId, asked };
     }
@@ -569,7 +574,7 @@ export function mobileApi(ctx: MobileCtx) {
   // A question that stopped waiting, with what was picked (by question id), as
   // the desktop shows it: from this daemon's record, else the stored result.
   function closedQuestion(q: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers; question?: string }) {
-    const s = store.session(q.session_id);
+    const s = sessionShown(q.session_id);
     // (A server's question is gone once it closed: its card closes by its id, with nothing of another question in it.)
     const base = s && !q.question ? questionCard(s, q.call_id) : { id: questionId(q.session_id, q.call_id, q.question), chat_id: q.session_id, session_key: q.session_id, kind: "question", command: "", description: "", options: [], questions: [] };
     let answers = q.answers;
@@ -581,7 +586,7 @@ export function mobileApi(ctx: MobileCtx) {
   }
   function questions(sessionId?: string) {
     const out: any[] = [];
-    for (const s of sessionId ? [store.session(sessionId)].filter(Boolean) as Session[] : store.sessions()) {
+    for (const s of sessionId ? [sessionShown(sessionId)].filter(Boolean) as Session[] : sessionsShown()) {
       for (const callId of pendingQuestions(s.id)) out.push(questionCard(s, callId));
     }
     return out;
@@ -597,7 +602,7 @@ export function mobileApi(ctx: MobileCtx) {
   const pendingApprovals = (sessionId?: string) => {
     const gate = ctx.gate();
     const asks = gate?.approvals({ session: sessionId, pending: true }) ?? [];
-    const qs = (sessionId ? [store.session(sessionId)].filter(Boolean) as Session[] : store.sessions()).flatMap((s) => pendingQuestions(s.id).map((callId) => ({ s, callId })));
+    const qs = (sessionId ? [sessionShown(sessionId)].filter(Boolean) as Session[] : sessionsShown()).flatMap((s) => pendingQuestions(s.id).map((callId) => ({ s, callId })));
     const ps = plansWaiting().filter((p) => !sessionId || p.session_id === sessionId);
     if (!asks.length && !qs.length && !ps.length) return [];
     const now = Date.now();
@@ -841,7 +846,7 @@ export function mobileApi(ctx: MobileCtx) {
           const branch = (sid: string) => {
             const m = mobile.branchSeq(sid);
             if (m <= (marks.get(sid) ?? base)) return;
-            const s = store.session(sid);
+            const s = sessionShown(sid);
             const page = s ? chatMessages(s, RESET_PAGE) : null;
             if (s && page && send({ type: "chat_reset", seq: m, chat_id: sid, messages: page.messages, older: page.older, chat: chatFull(s) })) marks.set(sid, m);
           };
@@ -850,8 +855,9 @@ export function mobileApi(ctx: MobileCtx) {
           off = bus.on((f) => {
             try {
               if (f.t === "event") {
+                const s = sessionShown(f.event.session_id);
+                if (!s) return;
                 const gseq = mobile.gseqOf(f.event.id);
-                const s = store.session(f.event.session_id);
                 branch(f.event.session_id);
                 const out = msgsOf(f.event, gseq);
                 const chat = s ? chatFull(s) : null;
@@ -864,12 +870,13 @@ export function mobileApi(ctx: MobileCtx) {
                 }
               } else if (f.t === "delta" && f.kind === "text") send({ type: "delta", chat_id: f.session_id, delta: f.text });
               else if (f.t === "session") {
+                if (isOutside(f.session)) return;
                 // Gone on the desktop: the phone drops it. Renamed, archived or
                 // pinned there: the phone's row follows without a sync.
                 if (f.deleted) send({ type: "chat_removed", chat_id: f.session.id, seq: mobile.globalSeq() });
                 else {
                   branch(f.session.id);
-                  const s = store.session(f.session.id);
+                  const s = sessionShown(f.session.id);
                   if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
                   send({ type: "working", chat_id: f.session.id, working: f.session.phase === "working", since: since(f.session) });
                 }
@@ -879,7 +886,7 @@ export function mobileApi(ctx: MobileCtx) {
                 const a = f.data.data;
                 const asker = a.data.open_session ?? a.session_id;
                 if (closedQuestions(0).some((q) => q.call_id === a.data.call_id && q.session_id === asker)) return;
-                const s = store.session(asker);
+                const s = sessionShown(asker);
                 if (s) {
                   const q = questionCard(s, a.data.call_id);
                   send({ type: "approval", seq: mobile.globalSeq(), approval: q });
@@ -890,13 +897,13 @@ export function mobileApi(ctx: MobileCtx) {
               else if (f.t === "feature" && f.name === "agents_now") {
                 // What agents are doing now (at most a line every 15 s an agent): their rows follow.
                 for (const l of ((f.data as { lines?: NowLine[] })?.lines ?? [])) {
-                  const s = store.session(l.session_id);
+                  const s = sessionShown(l.session_id);
                   if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
                 }
               }
               else if (f.t === "feature" && f.name === "automation" && f.data?.kind === "agent" && f.data.data?.parent_id) {
                 // An agent started or ended: its parent's row says whether it still works.
-                const s = store.session(f.data.data.parent_id);
+                const s = sessionShown(f.data.data.parent_id);
                 if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
               // (A plan parked with its turn by a stopping daemon is closed with no end: nothing is said of it.)
@@ -905,7 +912,7 @@ export function mobileApi(ctx: MobileCtx) {
                 const a = planCardOf(f.data.card, f.data.end);
                 send({ type: "approval", seq: mobile.globalSeq(), approval: a });
                 if (a.state === "pending") send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(a) });
-                const s = store.session(a.chat_id);
+                const s = sessionShown(a.chat_id);
                 if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
               else if (f.t === "error") {
@@ -921,7 +928,7 @@ export function mobileApi(ctx: MobileCtx) {
                 send({ type: "approval", seq: mobile.globalSeq(), approval: a });
                 if (a.state === "pending") send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(a) });
                 // The chat's row says it needs the owner, then that it does not.
-                const s = store.session(a.chat_id);
+                const s = sessionShown(a.chat_id);
                 if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
             } catch (e) {
@@ -1030,9 +1037,10 @@ export function mobileApi(ctx: MobileCtx) {
     const whole = since === 0 || !!reload;
     const u = unread();
     const all = allSessions();
-    const moved = whole ? [] : mobile.branchesAfter(since).map((id) => store.session(id)).filter((s): s is Session => !!s)
+    const moved = whole ? [] : mobile.branchesAfter(since).map((id) => sessionShown(id)).filter((s): s is Session => !!s)
       .map((s) => ({ id: s.id, page: chatMessages(s, RESET_PAGE)! }));
     const reset = new Set(moved.map((m) => m.id));
+    const away = page.length ? outsideIds(store.db) : new Set<string>();
     // Cards that closed since the cursor's time, or within a push's lifetime.
     const from = Math.min(Date.now() - 15 * 60_000, whole ? Infinity : (mobile.tsOfGseq(since) ?? 0));
     const rows = all.map((s) => chatFull(s, u));
@@ -1050,7 +1058,7 @@ export function mobileApi(ctx: MobileCtx) {
       ...(reload ? { reload } : {}),
       chats: diff ? rows.filter((r) => stale.has(bucketOf(r.id as string, n))) : rows,
       ...(diff ? { buckets: { n, of: [...stale] } } : {}),
-      messages: whole ? store.sessions().sort((a, b) => b.updated - a.updated).slice(0, FIRST_CHATS).flatMap(recent) : [...page.filter((e) => !reset.has(e.session_id)).flatMap((e) => msgsOf(e, e.gseq)), ...moved.flatMap((m) => m.page.messages)],
+      messages: whole ? sessionsShown().sort((a, b) => b.updated - a.updated).slice(0, FIRST_CHATS).flatMap(recent) : [...page.filter((e) => !reset.has(e.session_id) && !away.has(e.session_id)).flatMap((e) => msgsOf(e, e.gseq)), ...moved.flatMap((m) => m.page.messages)],
       ...(moved.length ? { reset: moved.map((m) => ({ chat_id: m.id, older: m.page.older ?? null })) } : {}),
       approvals: [...pendingApprovals(), ...closedCards(from)],
       working: working(),
@@ -1064,7 +1072,7 @@ export function mobileApi(ctx: MobileCtx) {
   // session is there to open (`sessions`: in how many it happened, when more than one).
   const errorRow = (e: ErrorRecord) => {
     const at = e.sites?.[0]?.session_id ?? e.session_id;
-    const s = at ? store.session(at) : undefined;
+    const s = at ? sessionShown(at) : undefined;
     return {
       id: e.id, message: e.message, source: e.source, count: e.count ?? 1, first: secs(e.first_ts ?? e.ts), last: secs(e.ts),
       read: !!e.read_ts, recovered: !!e.recovered_ts,
@@ -1079,13 +1087,13 @@ export function mobileApi(ctx: MobileCtx) {
     return { errors: rows, unread: rows.filter((r) => !r.read && !r.recovered).length };
   };
 
-  const chat = (sid: string) => store.session(sid);
+  const chat = (sid: string) => sessionShown(sid);
   // The chat, for a handler that reads its events: one that is not in memory is brought in off
   // the loop first, a part at a time (its rows; these routes are not under /api/sessions/:id,
   // where every request does this).
   const warmed = async (sid: string) => {
-    if (!store.isKept(sid) && store.session(sid)) await store.warm(sid, false);
-    return store.session(sid);
+    if (!store.isKept(sid) && sessionShown(sid)) await store.warm(sid, false);
+    return sessionShown(sid);
   };
 
   // The receipt of a prompt already stored, as it stands now: the committed
@@ -1120,7 +1128,7 @@ export function mobileApi(ctx: MobileCtx) {
     "/v1/me": {
       GET: signed(async (_r, dev) => {
         const models = providers.marked(await providers.models().catch(() => [])).filter((m) => !m.hidden).map((m) => m.id);
-        const model = (await providers.defaultModel().catch(() => "")) || store.sessions()[0]?.model || null;
+        const model = (await providers.defaultModel().catch(() => "")) || sessionsShown()[0]?.model || null;
         return json({
           device: { id: dev.id, name: dev.name, created: dev.created }, name: host(), profile: "keel", model, agent_name: "Keel", user_name: "owner",
           models, profiles: ["default"], public_url: mobile.setting("public_url") ?? "",
@@ -1150,7 +1158,7 @@ export function mobileApi(ctx: MobileCtx) {
         const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
         if (!q) return json({ query: "", hits: [] });
         if (!ctx.search) return err("this daemon does not search", 409);
-        const r = await ctx.search(new Request(`http://keel/api/search?${new URLSearchParams({ q, limit: String(SEARCH_HITS), sessions: "1" })}`));
+        const r = await ctx.search(new Request(`http://keel/api/search?${new URLSearchParams({ q, limit: String(SEARCH_HITS), sessions: "1", outside: "0" })}`));
         const out: any = await r.json();
         if (!r.ok) return json({ error: String(out.error ?? "the search failed"), ...(out.limit ? { limit: true } : {}) }, r.status);
         // One row a session: in the place of its first hit (a title's, when the title holds the words),
@@ -1254,7 +1262,7 @@ export function mobileApi(ctx: MobileCtx) {
         const listed = providers.marked(await providers.models().catch(() => [])).filter((m) => !m.hidden);
         const model = (await providers.defaultModel().catch(() => "")) || "";
         const seen = new Map<string, number>();
-        for (const s of [...store.sessions(), ...store.sessions({ archived: true })]) {
+        for (const s of [...sessionsShown(), ...sessionsShown({ archived: true })]) {
           if (s.machine || s.parent_id) continue;
           seen.set(s.workspace, Math.max(seen.get(s.workspace) ?? 0, s.updated));
         }
@@ -1269,7 +1277,7 @@ export function mobileApi(ctx: MobileCtx) {
       }),
     },
     "/v1/chats": {
-      GET: signed(() => { const u = unread(); return json({ chats: store.sessions().map((s) => chatFull(s, u)), working: working() }); }),
+      GET: signed(() => { const u = unread(); return json({ chats: sessionsShown().map((s) => chatFull(s, u)), working: working() }); }),
       // A new session: on the default model in the daemon's folder, or as the start sheet chose (`model`,
       // `workspace`, `machine`), and with its first message (`text`) when one is given.
       POST: signed(withBody(async (_r, dev, b) => {
@@ -1292,7 +1300,7 @@ export function mobileApi(ctx: MobileCtx) {
           const r = await start({ machine, model, title, ...(typeof b.workspace === "string" && b.workspace ? { workspace: b.workspace } : {}) });
           const out: any = await r.json();
           if (!r.ok) return err(String(out.error ?? "the session was not started there"), r.status);
-          s = store.session(out.session.id)!;
+          s = sessionShown(out.session.id)!;
         } else {
           const ws = typeof b.workspace === "string" && b.workspace ? b.workspace : ctx.workspace;
           if (!isAbsolute(ws)) return err("give the folder as an absolute path on this machine", 400);
@@ -1306,7 +1314,7 @@ export function mobileApi(ctx: MobileCtx) {
             return json({ chat: chatFull(s), error: "This phone has no screen lock, so it can only prompt chats where every tool call asks" }, 403);
           engine.send(s.id, text, { mode: "send" });
         }
-        return json({ chat: chatFull(store.session(s.id)!) });
+        return json({ chat: chatFull(sessionShown(s.id)!) });
       })),
     },
     "/v1/chats/:cid": {
@@ -1318,7 +1326,7 @@ export function mobileApi(ctx: MobileCtx) {
         const archived = flag(b.archived), pinned = flag(b.pinned);
         if (title === undefined && archived === undefined && pinned === undefined) return err("no supported fields", 400);
         if (pinned !== undefined) store.mergeSettings(s.id, { pinned_ms: pinned ? (s.settings.pinned_ms ?? Date.now()) : null });
-        const next = title !== undefined || archived !== undefined ? store.updateSession(s.id, { title, ...(title !== undefined ? { title_by: "" as const } : {}), archived }) : store.session(s.id)!;
+        const next = title !== undefined || archived !== undefined ? store.updateSession(s.id, { title, ...(title !== undefined ? { title_by: "" as const } : {}), archived }) : sessionShown(s.id)!;
         bus.emit({ t: "session", session: next });
         return json({ chat: chatFull(next) });
       })),
@@ -1487,7 +1495,7 @@ export function mobileApi(ctx: MobileCtx) {
     // where it is from: a fact Keel keeps, the agent's own words, or a fact that is missing.
     "/v1/chats/:cid/lane": {
       GET: signed(async (req) => {
-        const s = store.session(req.params.cid!);
+        const s = sessionShown(req.params.cid!);
         const a = s?.parent_id ? agentByChild(s.id) : undefined;
         if (!s || !a) return err("not an agent's chat", 404);
         const l = await laneOf(a.id);
@@ -1549,7 +1557,7 @@ export function mobileApi(ctx: MobileCtx) {
     },
     "/v1/pulse": {
       GET: signed(() => {
-        return json({ ...pulse(), working: working(), live_sessions: store.sessions(), approvals: pendingApprovals(), ...(ctx.live ? { live: liveData(ctx.live()) } : {}) });
+        return json({ ...pulse(), working: working(), live_sessions: sessionsShown(), approvals: pendingApprovals(), ...(ctx.live ? { live: liveData(ctx.live()) } : {}) });
       }),
     },
     // The owner's helper: turned on and off, what it was told lately, and its memory, seen and pruned
@@ -1607,7 +1615,7 @@ export function mobileApi(ctx: MobileCtx) {
         return h.records.forget(key) ? json({ ok: true }) : err("no such record", 404);
       }),
     },
-    "/v1/sessions": { GET: signed(() => json({ sessions: store.sessions() })) },
+    "/v1/sessions": { GET: signed(() => json({ sessions: sessionsShown() })) },
     "/v1/commands": { GET: signed(() => json({ commands: [{ name: "stop", description: "Interrupt the running turn", args: "", category: "Core" }] })) },
     "/v1/devices": {
       GET: signed((_r, dev) => json({ devices: mobile.devices().map(({ pub, apub, ...d }) => d), this: dev.id })),

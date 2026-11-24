@@ -15,6 +15,7 @@ import { jobOfCall, listJobs, logPath, ownerNote, ownerRun, readJobLog, stopOne,
 import type { RouteModule } from "../app.ts";
 import { fleet } from "./fleet.ts";
 import { presence } from "./permissions.ts";
+import { outsideRefusal } from "../../core/watch.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -203,6 +204,7 @@ export const terminalRoutes: RouteModule = (deps) => {
       POST: (req: any) => guard(async () => {
         const s = store.session(req.params.id);
         if (!s) return json({ error: "no such session" }, 404);
+        if (s.outside) return json({ error: outsideRefusal(s), code: "outside" }, 409);
         if (presence && !presence.allows(req, "terminal-run")) return json({ error: "this needs your passkey from a remote device", presence: { action: "terminal-run" } }, 428);
         const b = ((await req.json().catch(() => ({}))) ?? {}) as { command?: string; cwd?: string };
         const command = String(b.command ?? "").trim();

@@ -24,6 +24,8 @@
 // the moves the last one left running and closes them: the session is on one
 // side with both its machine and its folder, and its transcript says where the
 // move stopped and what it kept.
+import { isOutside } from "../core/outside.ts";
+import { outsideRefusal } from "../core/watch.ts";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitReach, type GitFetch } from "../core/git.ts";
 import { basename, join } from "node:path";
@@ -492,6 +494,8 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
     const carry = (b.carry ?? "git") as Handoff["carry"];
     if (!["git", "none"].includes(carry)) throw new MoveError(400, "carry is git or none");
     if (s.archived) throw new MoveError(409, "the session is archived");
+    // Another harness runs it here (src/core/outside.ts): nothing of it moves to another machine.
+    if (isOutside(s)) throw new MoveError(409, outsideRefusal(s));
     if (s.parent_id) throw new MoveError(409, "a subagent moves with its parent");
     if (this.moving.has(s.id)) throw new MoveError(409, "the session is being moved");
     const fromId = s.machine ?? "local";

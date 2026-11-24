@@ -13,7 +13,7 @@ import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, leftText, jobLive, stopJobs } from "../tools/jobs.ts";
-import { admit, initAccess } from "./admission.ts";
+import { admit, initAccess, seesOutside } from "./admission.ts";
 import { agentsUnder, leanSessions } from "./session-list.ts";
 import { Live } from "./live.ts";
 import { sessionTopic } from "./scope.ts";
@@ -35,6 +35,7 @@ import { moduleTook } from "../core/start-trace.ts";
 import { routeTable } from "./stable-api.ts";
 import { onProxyTrouble, ownPort } from "../safety/net-proxy.ts";
 import { onConfigRefused, refusedSentence, sessionFoldersOf, setSessionFolders } from "../core/named-config.ts";
+import { outsideRefusal } from "../core/watch.ts";
 
 // The rows of the index one Find reads at most (a word in every reply of a long history).
 const FIND_ROWS = 5000;
@@ -118,6 +119,32 @@ function routeOf(req: Request & { params?: Record<string, string> }): string {
   return `${req.method} ${parts.join("/")}`;
 }
 
+// What a request may do to a session another harness runs (src/core/outside.ts), past reading it:
+// copy it into Keel, archive or delete it, and the owner's own marks on its row and its alerts
+// (local to this list, nothing of its text goes anywhere). Every other request that changes a
+// session or acts in it (a turn, a summary, a review, a clear, an export into a harness's folder,
+// a handoff, a terminal) is refused: one guard, so a route added later is refused too.
+const OUTSIDE_ACTS = new Set([
+  "POST /api/sessions/:id/outside/copy",
+  "DELETE /api/sessions/:id",
+  "POST /api/sessions/:id/marks",
+  "POST /api/sessions/:id/unread",
+  "PUT /api/sessions/:id/snooze",
+  "DELETE /api/sessions/:id/snooze",
+  // (A read sent as a POST for its body: which of the paths the page shows are files.)
+  "POST /api/sessions/:id/files/exist",
+]);
+export async function outsideRefused(req: Request, route: string): Promise<boolean> {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS" || !route.startsWith(`${req.method} /api/sessions/:id`)) return false;
+  if (OUTSIDE_ACTS.has(route)) return false;
+  // A PATCH of the session itself only archives it or brings it back.
+  if (route === "PATCH /api/sessions/:id") {
+    const b = await req.clone().json().catch(() => null);
+    return !(b && typeof b === "object" && Object.keys(b).length && Object.keys(b).every((k) => k === "archived"));
+  }
+  return true;
+}
+
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 // The size of the parts a whole session's answer is sent in.
 const WHOLE_PART = 1 << 20;
@@ -171,6 +198,10 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       try {
         const refused = await admit(req, srv);
         if (refused) return refused;
+        if (typeof req.params?.id === "string") {
+          const s = store.session(req.params.id);
+          if (s?.outside && (await outsideRefused(req, routeOf(req)))) return json({ error: outsideRefusal(s), code: "outside" }, 409);
+        }
         // A request that names a session reads it, most of them whole and in
         // one piece (its branch, its events). One that is not in memory is
         // brought in first, off the loop and a part at a time (store.warm),
@@ -267,7 +298,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const fs = [...listFilters.values()];
           // `level`: how far the list had moved when it was read (the socket's hello says the same of its open).
           // `rev`: the last frame the list reflects, so a page keeps what a newer frame told it of a row.
-          const all = store.sessions({ archived: q.has("archived") }).filter((s) => fs.every((f) => f(s, q)));
+          // Only the owner is shown the sessions another harness runs (peer-scope.ts blindTo).
+          const all = (seesOutside(req) ? store.sessions({ archived: q.has("archived"), outside: true }) : store.sessions({ archived: q.has("archived") })).filter((s) => fs.every((f) => f(s, q)));
           const at = { level: bus.sessionsLevel(), rev: bus.rev() };
           // Agents' sessions at rest are left out and counted (session-list.ts); the archive and `agents=all` carry every row.
           const of = q.get("agents_of");
@@ -367,6 +399,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (!s) return bad("no such session", 404);
           const body = (await req.json()) as any;
           if (body.title !== undefined && !String(body.title).trim()) return bad("the title cannot be empty");
+          // A session another harness runs takes its model and settings from there (src/integrations/outside/service.ts).
+          if (s.outside && (body.model !== undefined || body.settings !== undefined)) return bad(outsideRefusal(s), 409);
           // The whole change is checked before anything is written: a refused
           // request leaves the model, the settings and the history as they were.
           const moving = body.model && body.model !== s.model ? await resolveSwitchModel(providers, body.model) : undefined;

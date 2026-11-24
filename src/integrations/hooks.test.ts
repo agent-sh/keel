@@ -310,3 +310,21 @@ test("the home folder is never a project root, so the owner's dot folder there i
     if (was === undefined) delete process.env.HOME; else process.env.HOME = was;
   }
 });
+
+// A session another harness runs is only shown here (src/core/outside.ts): no hook of the owner's hears of it.
+test("no hook runs for an outside session, a session of Keel's beside it is told", async () => {
+  const dir = scratch("keel-hooks-outside-");
+  const path = join(dir, "hooks.json");
+  const before = process.env.KEEL_HOOKS;
+  process.env.KEEL_HOOKS = path;
+  try {
+    writeFileSync(path, JSON.stringify({ hooks: { SessionEnd: [{ hooks: [{ type: "command", command: "echo told" }] }] } }));
+    const h = new Hooks(new Store(scratch("keel-hooks-state-")));
+    const mine = { id: "mine", workspace: dir, model: "x:y", title: "t" } as any;
+    const out = { ...mine, id: "out", outside: { harness: "codex", source_id: "s", state: "done", since: 1, files: 0, failures: 0 } };
+    expect((await h.run("SessionEnd", mine, { reason: "other" })).ran).toBe(1);
+    expect(await h.run("SessionEnd", out, { reason: "other" })).toEqual({ context: [], ran: 0 });
+  } finally {
+    if (before === undefined) delete process.env.KEEL_HOOKS; else process.env.KEEL_HOOKS = before;
+  }
+});

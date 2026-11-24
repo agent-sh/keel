@@ -1697,3 +1697,26 @@ describe("permission cards", () => {
     for (const id of ["apr-risky", "apr-marked", "apr-wide", "apr-far"]) expect((await answer(id, { choice: "deny" })).status).toBe(200);
   });
 });
+
+// A session another harness runs is only shown in Keel (src/core/outside.ts): the paired phone gets nothing of it.
+test("the phone gets nothing of an outside session: no row, no message, no frame", async () => {
+  const cursor = mobile.globalSeq();
+  const out = session("Elsewhere CANARY-PHONE");
+  store.updateSession(out.id, { outside: { harness: "claude", source_id: "src-phone", state: "working", since: Date.now(), files: 0, failures: 0 } });
+  const said = store.append(out.id, "user", { text: "CANARY-PHONE words typed in the other harness" });
+  const mine = session("Mine on the phone");
+  const st = await openStream(mobile.globalSeq());
+  bus.emit({ t: "session", session: store.session(out.id)! } as any);
+  bus.emit({ t: "event", event: said } as any);
+  const reply = store.append(mine.id, "assistant", { blocks: [{ type: "text", text: "mine" }] });
+  bus.emit({ t: "event", event: reply } as any);
+  await st.read((f) => f.some((x) => x.type === "message" && x.message?.chat_id === mine.id));
+  await st.close();
+  const answers = [st.frames, (await call("GET", "/v1/chats")).body, (await call("GET", "/v1/sync?since=0")).body, (await call("GET", `/v1/sync?since=${cursor}`)).body, (await call("GET", "/v1/sessions")).body];
+  for (const a of answers) {
+    expect(JSON.stringify(a)).not.toContain("CANARY-PHONE");
+    expect(JSON.stringify(a)).not.toContain(out.id);
+  }
+  expect(JSON.stringify(answers[3])).toContain(mine.id);
+  expect((await call("GET", `/v1/chats/${out.id}/messages`)).status).toBe(404);
+});

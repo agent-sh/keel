@@ -73,6 +73,7 @@ import { reportedUsage } from "../providers/reported.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
 import { homeDir } from "../core/paths";
+import { outsideRefusal } from "../core/watch.ts";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
 export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
@@ -1216,7 +1217,14 @@ export class Engine {
   // `key`: the sender's own name for this input (a tool call, a send id).
   // The same key again stores nothing: the claim is one write with the prompt
   // or the queued row, so a sender that asks twice is delivered once.
+  // A session another harness runs is shown here read-only: what is sent to it would go nowhere.
+  private refuseOutside(id: string) {
+    const s = this.store.session(id);
+    if (s?.outside) throw Object.assign(new Error(outsideRefusal(s)), { status: 409, code: "outside" });
+  }
+
   send(id: string, text: string, opts: { mode?: "send" | "steer" | "queue"; images?: any[]; meta?: Record<string, unknown>; key?: string } = {}): Sent {
+    this.refuseOutside(id);
     this.refuseInput(id);
     if (opts.key) {
       const { key, ...rest } = opts;
@@ -1299,6 +1307,7 @@ export class Engine {
   // release, which are the stops it made itself; any other hold stays.
   // `key`, `fp`: as for claim.
   message(id: string, text: string, meta: Record<string, unknown>, opts: { key?: string; fp?: string; releases?: readonly string[] } = {}): Sent {
+    this.refuseOutside(id);
     this.refuseInput(id);
     return this.store.atomic(id, () => {
       if (opts.key && !this.claim(id, opts.key, opts.fp)) return { duplicate: true };
@@ -3561,8 +3570,10 @@ export class Engine {
     this.prompts.dropCopies(Date.now() - LONGEST_KEEP_MS);
     const routes = new Map<string, Promise<{ provider: Provider; info: ModelInfo }>>();
     const route = (model: string) => routes.get(model) ?? routes.set(model, this.providers.resolve(model)).get(model)!;
-    for (const { id } of this.store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated > ? AND archived = 0").all(since)) {
+    // (A session another harness runs is not Keel's to plan or compact: src/integrations/outside/service.ts.)
+    for (const { id } of this.store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated > ? AND archived = 0 AND outside IS NULL").all(since)) {
       const s = this.store.session(id);
+      if (s?.outside) continue;
       // A session parked on a wait gets its cache plan again (its step is built for it: few wait).
       if (s && !this.running.has(id) && !this.held.has(id) && this.waitShape?.(id)) {
         let planned = false;

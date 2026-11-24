@@ -77,6 +77,7 @@ export const overviewRoutes: RouteModule = ({ store, engine }) => {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
         const of = q.get("of");
+        // (One another harness runs is no such session for any caller but the owner: peer-scope.ts blindTo.)
         if (of && !store.session(of)) return bad("no such session", 404);
         const max = q.get("max");
         if (max !== null && !/^[1-9]\d*$/.test(max)) return bad("max is a whole number of sessions from 1 up");

@@ -131,7 +131,7 @@ export class ErrorSites {
     for (let i = 0; i < ids.length; i += 400) {
       const part = ids.slice(i, i + 400);
       const rows = this.db
-        .query<Row, string[]>(`SELECT p.*, s.title AS title FROM error_sites p JOIN sessions s ON s.id = p.session_id WHERE p.error_id IN (SELECT value FROM json_each(?)) ORDER BY p.ts DESC`)
+        .query<Row, string[]>(`SELECT p.*, s.title AS title FROM error_sites p JOIN sessions s ON s.id = p.session_id AND s.outside IS NULL WHERE p.error_id IN (SELECT value FROM json_each(?)) ORDER BY p.ts DESC`)
         .all(JSON.stringify(part));
       for (const r of rows) (out.get(r.error_id) ?? out.set(r.error_id, []).get(r.error_id)!).push(siteOf(r));
     }

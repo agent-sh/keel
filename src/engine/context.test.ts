@@ -462,6 +462,27 @@ test("a restart sets the idle timers from kept facts and reads no session's even
   }
 });
 
+// A session another harness runs (src/integrations/outside/service.ts) is not Keel's to compact: a
+// start reads none of its events and sets it no timer, however long its copied context.
+test("a restart sets no idle timer for a session another harness runs", async () => {
+  const { spyOn } = await import("bun:test");
+  const r = rig();
+  const real = globalThis.setTimeout;
+  const out: number[] = [];
+  const usage = { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 };
+  const id = r.session(BIG.id);
+  r.store.updateSession(id, { settings: { compact_at: 2_000 }, outside: { harness: "claude", source_id: "c1", state: "done", since: Date.now(), files: 0, failures: 0 } });
+  r.store.append(id, "user", { text: "read the big file" });
+  r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(8_000) }], model: BIG.id, stop: "end_turn", usage });
+  const next = new Engine(r.store, new Bus(), (r.engine as any).providers, (r.engine as any).errors, join(r.dir, "spill"));
+  const read = spyOn(r.store, "lineage");
+  (globalThis as any).setTimeout = (_f: unknown, ms: number) => { if (ms >= 1000) out.push(ms); return real(() => {}, 0); };
+  try { await next.resumeIdle(); } finally { globalThis.setTimeout = real; }
+  expect(out).toEqual([]);
+  expect(read).toHaveBeenCalledTimes(0);
+  read.mockRestore();
+});
+
 // Every reply moves a model's learned bytes a token a little. The store keeps
 // it for the next daemon, written when it moved by a hundredth, not at each step.
 test("a learned ratio is written when it has moved by a hundredth, and at once after a refusal", () => {

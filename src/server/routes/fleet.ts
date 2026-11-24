@@ -39,6 +39,7 @@ import { reachInto } from "../../safety/net-proxy.ts";
 import { sandboxScope, scopeDir } from "../../safety/sandbox-scope.ts";
 import { skillHome } from "../../tools/skills.ts";
 import { peerSkills } from "../../fleet/skills.ts";
+import { forPeers } from "../../core/outside.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -284,6 +285,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   // `others`: the other machines alone. A page holds this daemon's own
   // sessions already (its session list), and reads no list of recents: it is
   // not sent every local session twice more with each view.
+  // (A session another harness runs is in no list of this view: src/core/outside.ts.)
   const fleetView = (showQuestions: boolean, others = false) => {
     const local = others ? [] : store.sessions();
     const machines: any[] = others ? [] : [{ id: "local", name: f.name, state: "ready", sessions: local }];
@@ -761,6 +763,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         let ping: Timer | undefined;
         const enc = new TextEncoder();
         const mine = (readers[c.daemonId] ??= { feeds: new Set(), stalled: 0 });
+        // A session another harness runs is only shown here (src/core/outside.ts): nothing of it goes to another machine.
+        const shared = forPeers(store.db);
         const frame = (x: unknown) => enc.encode(`data: ${JSON.stringify(x)}\n\n`);
         // The opening frames are as large as this daemon's session list: they never cut a reader.
         const feed = boundedFeed((stalled) => {
@@ -771,13 +775,14 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         }, {
           last: enc.encode(": stalled\n\n"),
           // The sessions, then each one's state (src/core/watch.ts) and the questions that wait: what the other daemon's pages show at once.
-          open: [frame({ t: "snapshot", sessions: store.sessions(), ping_ms: RELAY_PING_MS }), frame({ t: "states", states: board?.all() ?? {}, rev: bus.rev() }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
+          open: [frame({ t: "snapshot", sessions: shared.sessions(store.sessions()), ping_ms: RELAY_PING_MS }), frame({ t: "states", states: shared.states(board?.all() ?? {}), rev: bus.rev() }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
         });
         mine.feeds.add(feed);
         const send = (x: unknown) => feed.send(frame(x));
         off = bus.on((fr) => {
           if (fr.t === "feature" && fr.name === "fleet_outbox") { if (fr.data?.daemon_id === c.daemonId) send(fr); return; }
           if (fr.t === "error" || (fr.t === "feature" && fr.name.startsWith("fleet_"))) return; // never relay a relay
+          if (!shared.pass(fr)) return;
           send(fr);
         });
         ping = setInterval(() => feed.send(enc.encode(": ping\n\n")), RELAY_PING_MS);
@@ -815,6 +820,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       const url = new URL(req.url);
       const rest = url.pathname.slice("/api/fleet/linked/".length);
       if (/^fleet\/(machines|linked)\b/.test(decodeURIComponent(rest))) return bad("not through to a third daemon");
+      // (A session another harness runs does not exist for the forwarded request: peer-scope.ts blindTo.)
       // The caller's standing over there, as it signed it; none (an older
       // daemon) or a bad signature counts as a remote device with passkeys.
       const st = standingFrom(req, c);

@@ -35,6 +35,7 @@ import { enabledUnits, type Unit } from "../plugins/registry.ts";
 import { substitute } from "../plugins/options.ts";
 import { hookOptions, waiting } from "../plugins/settings.ts";
 import { scrubbedEnv } from "../safety/env-secret.ts";
+import { isOutside } from "../core/outside.ts";
 
 // The events Keel fires, the ones existing hook files use most first. What
 // each carries and what its hooks can answer: README, Hooks.
@@ -783,6 +784,8 @@ export class Hooks {
   // event's matcher is tested on (none: the event takes no matcher).
   async run(event: HookEvent, s: Session, payload: Record<string, unknown> | (() => Record<string, unknown>), match?: string[], srcs?: Source[]): Promise<HookResult> {
     const res: HookResult = { context: [], ran: 0 };
+    // A session another harness runs is only shown here: none of it goes to a hook (src/core/outside.ts).
+    if (isOutside(s)) return res;
     // An event no file names reads no covered script: the events of every model request would otherwise read them all each time.
     if (!srcs && !this.namesFor(s, event)) return res;
     srcs ??= this.sources(s.workspace, true, s.id);

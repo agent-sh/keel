@@ -26,6 +26,7 @@ import { Under } from "./ToolCall.tsx";
 import { CALL_STOPPED, NEEDS_ANSWER } from "../lib/work.ts";
 import { WaitMark } from "./WaitMark.tsx";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
+import { OUTSIDE_LABEL } from "../../../src/core/watch.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import type { Asked, AskedLink, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
@@ -122,6 +123,8 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
   const qs = questions(use.name, use.input);
   const answered = !!result && !result.is_error;
   const open = useStore((s) => !result && !!sessionId && !!s.questionCalls[sessionId]?.includes(use.id));
+  // A session another harness runs asks there: Keel cannot answer it, so its question is a record here, never a card to answer.
+  const outside = useStore((s) => (sessionId && !result ? s.sessions[sessionId]?.outside : undefined));
   // What the owner answered, by question (stored with the result); older records have only the result text.
   // `ruling`: a standing ruling answered it, with no card. `offer`: the owner answered it, and can keep the answer.
   const shown = (result as (ToolResultBlock & { shown?: Shown }) | undefined)?.shown;
@@ -144,11 +147,12 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
   const said = first && given ? [...(given[first.id]?.picked ?? []), ...(given[first.id]?.other?.trim() ? [given[first.id]!.other!.trim()] : [])].join(", ") : "";
   const ended = result?.is_error ? stopKind(result.content) : undefined;
   return (
-    <Collapsible.Root open={show} onOpenChange={setShow} className="k-tool-call k-question" data-testid="question" data-state={answered ? "answered" : "closed"}>
+    <Collapsible.Root open={show} onOpenChange={setShow} className="k-tool-call k-question" data-testid="question" data-state={answered ? "answered" : outside ? "elsewhere" : "closed"}>
       <Collapsible.Trigger className="k-line">
         <span className="k-line-text">
-          <span className="k-line-verb">{answered ? "Asked" : "Question"}</span>{" "}
-          {!answered && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"}>{ended === "cut" ? "cut by a restart" : ended === "stopped" ? CALL_STOPPED : "not answered"}</span>{" "}</>}
+          <span className="k-line-verb">{answered ? "Asked" : outside ? "Asks" : "Question"}</span>{" "}
+          {!answered && outside && <><span className="k-line-state" data-tone={outside.state === "waiting" ? "need" : "idle"} data-testid="question-elsewhere">{outside.state === "waiting" ? `waits in ${OUTSIDE_LABEL[outside.harness]}` : `no answer recorded in ${OUTSIDE_LABEL[outside.harness]}`}</span>{" "}</>}
+          {!answered && !outside && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"}>{ended === "cut" ? "cut by a restart" : ended === "stopped" ? CALL_STOPPED : "not answered"}</span>{" "}</>}
           <span className="k-line-what" data-words="">{first?.question ?? ""}</span>
           {qs.length > 1 && <>{" "}<span className="k-line-rest">+{qs.length - 1}</span></>}
           {said && <>{" "}<span className="k-line-answer" data-testid="question-line-answer">{said}</span></>}

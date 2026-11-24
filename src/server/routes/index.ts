@@ -32,6 +32,7 @@ import { contentRouteRoutes } from "./content-routes.ts";
 import { searchRoutes } from "./search.ts";
 import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
+import { outsideRoutes } from "./outside.ts";
 import { portRoutes } from "./port.ts";
 import { takeoverRoutes } from "./takeover.ts";
 import { resumeRoutes } from "./resume.ts";
@@ -148,6 +149,7 @@ const modules: Record<string, RouteModule> = {
   importRoutes,
   portRoutes, // bring the setup of the other harnesses over
   takeoverRoutes, // taking over a session another harness runs
+  outsideRoutes, // the sessions another harness runs here, read-only in the list while they run
   resumeRoutes, // the same for a conversation on an ssh machine: its state, wait or resume now
   hookRoutes,
   surfaceRoutes, // Settings: skills, agent files, instruction files, the hooks file, plugins.toml

@@ -294,7 +294,7 @@ export function SessionHeader({ session }: { session: Session }) {
 
   // In the row's order; the rank says which stays longest when the row is short. `rest`: it has a place in
   // the row (the rest are in the menu, in this order).
-  const tools: Tool[] = [
+  const every: Tool[] = [
     { id: "permissions", label: "Permissions", rank: 6, rest: true, node: <Suspense fallback={null}><PermissionMenu sessionId={session.id} /></Suspense> },
     { id: "worktree", label: "Worktree", rank: 5, rest: true, node: <Suspense fallback={null}><WorktreeChip session={session} /></Suspense> },
     // What the session cost, one figure; the tokens behind it are in its title and the Usage panel it opens.
@@ -324,6 +324,8 @@ export function SessionHeader({ session }: { session: Session }) {
       item: (close: () => void) => <button type="button" data-testid={`header-action-${a.id}`} onClick={() => { close(); a.run(session); }} className="k-stow-item">{a.icon}{a.label}</button>,
     })),
   ];
+  // A session another harness runs takes no setting of Keel's (it is read-only here): what it cost is all its row has.
+  const tools = session.outside ? every.filter((t) => t.id === "usage") : every;
   const { head, list, out, later } = useFit(tools, editing ? TITLE_ROOM : 0);
   const folded = tools.filter((t) => out.includes(t.id));
   const bg = useBackgroundLive(session.id);

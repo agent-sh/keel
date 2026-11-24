@@ -26,7 +26,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { socketFacts, socketUid, type SocketFacts } from "./sockdiag.ts";
-import { cgroupIds, peerAuthority, peerVerdict, type Authority, type ListReach } from "./peer-scope.ts";
+import { blindTo, cgroupIds, peerAuthority, peerVerdict, PHONE_API, type Authority, type ListReach } from "./peer-scope.ts";
+import { forwardedPeer } from "../safety/presence.ts";
 
 type Check = (req: Request, path: string) => Response | undefined;
 const checks: Check[] = [];
@@ -79,15 +80,19 @@ export const forwarded = (req: Request) => FORWARDING.some((h) => req.headers.ha
 
 const LOOPBACK_IP = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
 // What admit learned about a request's socket, for isLocal (safety/presence.ts).
-const peers = new WeakMap<Request, { loopback: boolean; session?: string }>();
+const peers = new WeakMap<Request, { loopback: boolean; session?: string; blind?: boolean }>();
 export const peerIsRemote = (req: Request) => peers.get(req)?.loopback === false;
 // The session whose command made this request (peer-scope.ts), or null: the owner's page, the command line, a peer.
 export const callerSession = (req: Request) => peers.get(req)?.session ?? null;
+// Whether this caller is shown the sessions another harness runs (peer-scope.ts blindTo): the owner's page
+// and command line are; a session's command, a request another machine forwarded and the phone are not.
+export const seesOutside = (req: Request) => !peers.get(req)?.blind && forwardedPeer(req) === null && !PHONE_API.test(new URL(req.url).pathname);
 
 // Where sessions' commands run, as the jobs code holds them (src/server/caller.ts gives it at the start).
 // `lists`: whether a session's commands read the daemon's read-only lists (a top-level session's, an agent's
 // its parent granted them to), asked at each request so a revoke takes effect at the next one.
-export type ScopeSource = { cgroups(): Map<string, string>; loose(): boolean; holder(inode: number): string | null | Promise<string | null>; lists(session: string): ListReach };
+// `outside`: whether a session is one another harness runs (src/core/outside.ts).
+export type ScopeSource = { cgroups(): Map<string, string>; loose(): boolean; holder(inode: number): string | null | Promise<string | null>; lists(session: string): ListReach; outside?(session: string): boolean };
 let scopes: ScopeSource | undefined;
 export const useSessionScopes = (s: ScopeSource | undefined) => void (scopes = s);
 // The daemon's own end of a loopback connection: the address it listens on, else the one the client reached it at.
@@ -368,9 +373,12 @@ export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined):
   // A session's command first, whatever it carries: the token does not make it the owner (it can read the token's file).
   const scope = peerScope({ address: ip.address, port: ip.port }, { hostname: srv.hostname, port: srv.port });
   const decide = (a: Authority) => {
-    if (a.kind === "session") peers.set(req, { loopback, session: a.session });
-    const v = peerVerdict(a, { method: req.method, path, ownAuth: OWN_AUTH.test(path), open: SESSION_OPEN.test(path) }, (s) => scopes?.lists(s) ?? { reads: false, why: "" });
-    return "refuse" in v ? refuse(v.refuse) : "pass" in v ? undefined : account();
+    const linked = forwardedPeer(req) !== null;
+    const blind = blindTo(a, { path, linked });
+    if (a.kind === "session") peers.set(req, { loopback, session: a.session, blind });
+    else if (blind) peers.set(req, { loopback, blind });
+    const v = peerVerdict(a, { method: req.method, path, ownAuth: OWN_AUTH.test(path), open: SESSION_OPEN.test(path), search: new URL(req.url).search, linked }, (s) => scopes?.lists(s) ?? { reads: false, why: "" }, (s) => !!scopes?.outside?.(s));
+    return "refuse" in v ? refuse(v.refuse) : "absent" in v ? Response.json({ error: v.absent }, { status: 404 }) : "pass" in v ? undefined : account();
   };
   return scope instanceof Promise ? scope.then(decide) : decide(scope);
 }

@@ -20,6 +20,8 @@ import { groupsOf } from "./failures.ts";
 import { exampleOf, OTHERS, SELF } from "./failure-groups.ts";
 import { handShell, shellShows, tellShells } from "../server/shell.ts";
 import { costLine, costs, rankWaiting, type WaitCost, type WaitNow } from "../core/wait-rank.ts";
+import { isOutside } from "../core/outside.ts";
+import { OUTSIDE_LABEL } from "../core/watch.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -557,6 +559,8 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     if (incident) { silent = true; data = { ...(data as object), in_incident: incident }; }
     const s = sessionId ? store.session(sessionId) : undefined;
     if (sessionId && !s) return undefined;
+    // A session another harness runs raises nothing: an alert's words go to the phone and other machines (src/core/outside.ts).
+    if (isOutside(s)) return undefined;
     // A subagent's alerts belong to its parent's session in the inbox, with the
     // agent named so two agents' alerts never read alike.
     const sid = s?.parent_id ?? sessionId;
@@ -1103,9 +1107,13 @@ export function markSessionUnread(sessionId: string): boolean {
   const last = store.db.query<{ id: string }, [string]>(`SELECT id FROM alerts WHERE session_id = ? AND kind NOT IN (${ASK_KINDS.map((k) => `'${k}'`).join(", ")}) AND json_extract(data, '$.child_session') IS NULL ORDER BY ts DESC, id DESC LIMIT 1`).get(sessionId);
   if (last) return markUnread(last.id);
   const failed = !!s.settings.failed_ms;
+  // A session another harness runs: nothing of its text goes into an alert, which other machines and the phone
+  // are told (src/core/outside.ts); its harness's name and the mark only.
+  const away = isOutside(s);
   const a: Alert = {
     id: Bun.randomUUIDv7(), ts: Date.now(), kind: failed ? "failed" : "finished", session_id: sessionId, read: false,
-    title: clip(scrub(failed ? `Failed: ${s.title || "Session"}` : s.title || "Session"), 200), body: lastLine(sessionId).line || "Marked unread.", data: { marked: true }, channels: [], rev: nextRev(), kept: true,
+    title: away ? `${OUTSIDE_LABEL[s.outside!.harness] ?? "Another harness"} session` : clip(scrub(failed ? `Failed: ${s.title || "Session"}` : s.title || "Session"), 200),
+    body: away ? "Marked unread." : lastLine(sessionId).line || "Marked unread.", data: { marked: true }, channels: [], rev: nextRev(), kept: true,
   };
   store.db.query("INSERT INTO alerts (id, ts, kind, session_id, title, body, read, data, channels, delivery, rev, kept) VALUES (?, ?, ?, ?, ?, ?, 0, ?, '[]', NULL, ?, 1)")
     .run(a.id, a.ts, a.kind, sessionId, a.title, a.body, JSON.stringify(a.data), a.rev);

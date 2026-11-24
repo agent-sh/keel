@@ -15,6 +15,7 @@ import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import { gitSync } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
+import type { OutsideMark } from "../core/types.ts";
 import { logOf, witnessed } from "../core/log-pages.ts";
 import { storeFd, storePath } from "../core/store-files.ts";
 import type { Engine } from "../engine/turn.ts";
@@ -84,6 +85,7 @@ async function du(paths: string[]): Promise<Map<string, number>> {
 }
 
 export type StorageReport = Awaited<ReturnType<Storage["measure"]>>;
+type OutsideHarness = OutsideMark["harness"];
 type ScanRow = { id: string; title: string; archived: number; updated: number; parent_id: string | null; bytes: number; attach: number };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
 
@@ -123,6 +125,23 @@ export class Storage {
   // when) and everything on disk as it is now, and the events are read
   // again behind it, once a start.
   report(refresh = false): Promise<StorageReport> {
+    return this.reportOf(refresh).then((r) => this.tagged(r));
+  }
+
+  // Which of the largest sessions are copies of another harness's session (src/integrations/outside/), as
+  // their rows say now: read at each report, since a report's sessions are kept from an earlier read.
+  private tagged(r: StorageReport): StorageReport {
+    const ids = r.by_session.map((s) => s.id);
+    if (!ids.length) return r;
+    let of: Map<string, OutsideHarness>;
+    try {
+      of = new Map(this.store.db.query<{ id: string; h: OutsideHarness }, [string]>(
+        "SELECT id, json_extract(outside, '$.harness') AS h FROM sessions WHERE outside IS NOT NULL AND id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)).map((x) => [x.id, x.h]));
+    } catch { return r; }
+    return { ...r, by_session: r.by_session.map((s) => ({ ...s, outside: of.get(s.id) })) };
+  }
+
+  private reportOf(refresh: boolean): Promise<StorageReport> {
     if (!this.last && !refresh && !this.rescanned && !this.measuring) {
       this.rescanned = true;
       const kept = this.keptScan();
@@ -230,7 +249,7 @@ export class Storage {
         .map((r) => {
           const spill = sizes.get(join(this.dir, "spill", r.id)) ?? 0;
           const cp = cpOf.get(r.id) ?? { count: 0, bytes: 0 };
-          return { id: r.id, title: r.title, archived: !!r.archived, subagent: !!r.parent_id, transcript_bytes: r.bytes, spill_bytes: spill, checkpoints: cp.count, checkpoint_bytes: cp.bytes, bytes: r.bytes + spill + cp.bytes, updated_ms: r.updated };
+          return { id: r.id, title: r.title, archived: !!r.archived, subagent: !!r.parent_id, outside: undefined as OutsideHarness | undefined, transcript_bytes: r.bytes, spill_bytes: spill, checkpoints: cp.count, checkpoint_bytes: cp.bytes, bytes: r.bytes + spill + cp.bytes, updated_ms: r.updated };
         })
         .sort((a, b) => b.bytes - a.bytes)
         .slice(0, 50),
@@ -384,7 +403,8 @@ export class Storage {
     let archived = 0, deleted = 0;
     if (p.archive_idle_days) {
       const cut = Date.now() - p.archive_idle_days * DAY;
-      for (const s of this.store.sessions()) {
+      // (The owner's archive policy is over the owner's list, which holds the sessions another harness runs.)
+      for (const s of this.store.sessions({ outside: true })) {
         if (s.parent_id || s.phase === "working" || this.engine.isRunning(s.id) || s.updated > cut) continue;
         this.bus.emit({ t: "session", session: this.store.updateSession(s.id, { archived: true }) });
         archived++;

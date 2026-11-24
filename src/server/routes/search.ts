@@ -10,6 +10,7 @@ import { board } from "./state.ts";
 import { initSearchIndex, keepIndexed } from "./search-index.ts";
 import { startFill } from "./search-fill.ts";
 import { passesSettled } from "../../admin/stall.ts";
+import { seesOutside } from "../admission.ts";
 
 export { TOOL_EXCERPT, initSearchIndex, keepIndexed } from "./search-index.ts";
 
@@ -99,8 +100,11 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
         if (roots) scope.push(`${pid} IS NULL`);
         if (arch === "0" || arch === "1") { scope.push("s.archived = ?"); args.push(Number(arch)); }
         if (cwd) { scope.push("s.workspace = ?"); args.push(cwd); }
+        // `outside=0` (the phone's search), and any caller but the owner (peer-scope.ts blindTo): no session another harness runs.
+        if (u.searchParams.get("outside") === "0" || !seesOutside(req)) scope.push("s.outside IS NULL");
         // The sessions in the state asked for, as the daemon tells it now.
-        const inState = lim.state ? Object.entries(board?.all() ?? {}).filter(([, st]) => st.watch === lim.state).map(([id]) => id) : undefined;
+        // (Every session's state: the scope above leaves out the ones the asker is not shown.)
+        const inState = lim.state ? Object.entries(board?.all({ outside: true }) ?? {}).filter(([, st]) => st.watch === lim.state).map(([id]) => id) : undefined;
         if (inState) {
           if (!inState.length) return Response.json({ query: q, hits: [], limits: lim.said });
           scope.push("s.id IN (SELECT value FROM json_each(?))");

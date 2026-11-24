@@ -438,7 +438,7 @@ export type By = { session_id: string; title: string; how: "keel" | "found" };
 
 // The sessions that are not archived, read on the read thread (the whole table).
 type Row = { id: string; title: string; workspace: string; machine: string | null };
-const openSessions = (store: Store) => readsOf(store).sql<Row>(`SELECT id, title, workspace, ${store.columnExists("sessions", "machine") ? "machine" : "NULL AS machine"} FROM sessions WHERE archived = 0`).catch(() => [] as Row[]);
+const openSessions = (store: Store) => readsOf(store).sql<Row>(`SELECT id, title, workspace, ${store.columnExists("sessions", "machine") ? "machine" : "NULL AS machine"} FROM sessions WHERE archived = 0 AND outside IS NULL`).catch(() => [] as Row[]);
 
 type Ag = { id: string; session_id: string; status: string; parent_id: string };
 async function agentsBy(store: Store): Promise<Map<string, Ag>> {

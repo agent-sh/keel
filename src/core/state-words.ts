@@ -121,9 +121,12 @@ export const agentsWorking = (st: Stated) => Math.max(0, (st.agents ?? 0) - (st.
 //   { word: "Working", what: "command in background", phrase: "Working: command in background" }
 //   { word: "Failed", what: "billing", phrase: "Failed: billing" }
 export type Said = { watch: Watch; word: string; what: string; phrase: string };
+// A session another harness runs that worked or waited and has written nothing for a while
+// (src/integrations/outside/settings.ts, stale_minutes): at rest as far as its records tell, not done.
+export const STALE_WORD = "Stale";
 export function stateWords(st: Stated): Said {
   const w = st.watch;
-  const word = STATE_WORD[w];
+  const word = w === "idle" && st.why === "outside" ? STALE_WORD : STATE_WORD[w];
   const out = (what: string, join = ": "): Said => ({ watch: w, word, what, phrase: what ? `${word}${join}${what}` : word });
   if (w === "need") return out(NEEDS[st.why ?? ""] ?? "");
   if (w === "work") return out(st.why === "command" ? commandWhat(st) : agentsWorking(st) > 0 ? plural(agentsWorking(st)) : "");

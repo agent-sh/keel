@@ -471,3 +471,19 @@ test("search words match by stem, the rows with more of them first, and a date w
   expect(await hits(get, 'compression "today"')).toMatchObject([{ session_id: both.id, missing: ["today"] }]);
   store.db.close();
 });
+
+// A session another harness runs is only shown in Keel (src/core/outside.ts): the phone's search (`outside=0`)
+// and a search another machine forwards find nothing of it, by its words or its title; the page's own finds it.
+test("a search for the phone or another machine leaves out an outside session", async () => {
+  const { store, start } = open();
+  const get = start();
+  const mine = talk(store, "zebracanary");
+  const out = talk(store, "zebracanary");
+  store.updateSession(out, { title: "zebracanary elsewhere", outside: { harness: "codex", source_id: "x", state: "done", since: 1, files: 0, failures: 0 } });
+  const { innerHeaders } = await import("../../safety/presence.ts");
+  const ids = async (req: Request) => [...new Set(((await (await get(req)).json()).hits as any[]).map((h) => h.session_id))].sort();
+  const url = "http://keel/api/search?q=zebracanary&limit=100";
+  expect(await ids(new Request(url))).toEqual([mine, out].sort());
+  expect(await ids(new Request(`${url}&outside=0`))).toEqual([mine]);
+  expect(await ids(new Request(url, { headers: innerHeaders({ local: false, enrolled: true, present: null }, "far box") }))).toEqual([mine]);
+});

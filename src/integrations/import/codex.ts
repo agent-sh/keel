@@ -97,26 +97,26 @@ function toolLines(tools: unknown): string[] {
 
 const HISTORY_ONLY = "Shown as they were then; history only, not tools available now.";
 
-export async function readCodex(path: string): Promise<Read> {
-  const st = statSync(path);
-  const found = codexFound(path, st.size, st.mtimeMs);
-  if (!found) throw new Error("this rollout holds no conversation");
-  const b = new Builder();
-  const notes: string[] = [];
+// A rollout's records converted to events one at a time, in order: a whole
+// read converts them all, a rollout followed as it grows converts what it gained.
+export class CodexConvert {
+  b = new Builder();
+  model: string | undefined;
+  compacted = false;
   // Why each skipped item was left out, counted per reason for the report.
-  const skips = new Map<string, number>();
-  const skip = (why: string) => { b.counts.skipped++; skips.set(why, (skips.get(why) ?? 0) + 1); };
+  skips = new Map<string, number>();
   // A native tool search, kept as a note for the model: its query, then the
   // tools its answer loaded (by call id).
-  const searches = new Map<string, { data: any }>();
+  private searches = new Map<string, { data: any }>();
   // Prompt media the file only refers to (an uploaded file id, a link).
-  const missing: string[] = [];
-  let model = found.model;
-  const lines = readLines(await Bun.file(path).text());
-  for (const r of lines.records) {
-    const ts = Date.parse(r.timestamp) || st.mtimeMs;
+  missing: string[] = [];
+  constructor(model?: string) { this.model = model; }
+  private skip = (why: string) => { this.b.counts.skipped++; this.skips.set(why, (this.skips.get(why) ?? 0) + 1); };
+  push(r: any, fallbackTs: number) {
+    const b = this.b;
+    const ts = Date.parse(r.timestamp) || fallbackTs;
     const p = r.payload ?? {};
-    if (r.type === "turn_context" && p.model) model = p.model;
+    if (r.type === "turn_context" && p.model) this.model = p.model;
     if (r.type === "compacted") {
       // Codex replaces the model's history here: with its summary (`message`)
       // and the owner's messages it kept, else with the items it names. The
@@ -125,14 +125,15 @@ export async function readCodex(path: string): Promise<Read> {
       const said = items.filter((i) => i?.type === "message" && i.role === "user").map((i) => textOf(i.content)).filter((t) => t.trim() && !injected(t));
       const summary = String(p.message ?? "").trim() || said.pop() || "";
       b.compacted(summary || "Codex replaced the conversation before this point with what follows.", ts, { owner_messages: said.filter((t) => !summary || !t.includes(summary)) });
-      for (const item of items) if (!(item?.type === "message" && (item.role === "user" || item.role === "developer" || item.role === "system"))) take(item, ts);
-      if (!notes.includes(COMPACTED)) notes.push(COMPACTED);
-      continue;
+      for (const item of items) if (!(item?.type === "message" && (item.role === "user" || item.role === "developer" || item.role === "system"))) this.take(item, ts);
+      this.compacted = true;
+      return;
     }
     if (r.type === "event_msg" && p.type === "turn_aborted") b.interrupted();
-    if (r.type === "response_item") take(p, ts);
+    if (r.type === "response_item") this.take(p, ts);
   }
-  function take(p: any, ts: number) {
+  private take(p: any, ts: number) {
+    const b = this.b, skip = this.skip, searches = this.searches, missing = this.missing, model = this.model;
     switch (p.type) {
       case "message": {
         const text = textOf(p.content);
@@ -206,6 +207,18 @@ export async function readCodex(path: string): Promise<Read> {
         skip(`items of a kind Keel does not import (${p.type ?? "untyped"})`);
     }
   }
+}
+
+export async function readCodex(path: string): Promise<Read> {
+  const st = statSync(path);
+  const found = codexFound(path, st.size, st.mtimeMs);
+  if (!found) throw new Error("this rollout holds no conversation");
+  const conv = new CodexConvert(found.model);
+  const b = conv.b, skips = conv.skips, missing = conv.missing;
+  const notes: string[] = [];
+  const lines = readLines(await Bun.file(path).text());
+  for (const r of lines.records) conv.push(r, st.mtimeMs);
+  if (conv.compacted) notes.push(COMPACTED);
   notes.push(...damageNotes(lines));
   for (const [why, n] of skips) notes.push(`${n} skipped: ${why}.`);
   if (missing.length) notes.push(`Prompt media the file does not hold, not imported: ${missing.join(", ")}.`);

@@ -2,6 +2,7 @@
 // (a list first, then the delete), leftovers of deleted sessions, the archive
 // policy, how long spilled output and usage records are kept (with what is
 // past it now, and when the daily cleanup next runs) and the backups.
+import { OUTSIDE_LABEL } from "../../../src/core/watch.ts";
 import { useCallback, useEffect, useState } from "react";
 import { composing } from "../lib/keys.ts";
 import { api, reportError } from "../lib/store.ts";
@@ -17,7 +18,7 @@ type Report = {
   spilled_output_bytes: number; checkpoints_bytes: number; worktrees_bytes: number; reports_bytes: number; backups_bytes: number; plugins_bytes: number;
   memory_transcripts_bytes: number; uploads_bytes: number; artifacts_bytes: number; logs_bytes: number; other_bytes: number;
   leftovers: { count: number; bytes: number };
-  by_session: { id: string; title: string; archived: boolean; subagent: boolean; transcript_bytes: number; spill_bytes: number; checkpoints: number; checkpoint_bytes: number; bytes: number; updated_ms: number }[];
+  by_session: { id: string; title: string; archived: boolean; subagent: boolean; outside?: "claude" | "codex"; transcript_bytes: number; spill_bytes: number; checkpoints: number; checkpoint_bytes: number; bytes: number; updated_ms: number }[];
   checkpoint_folders: { workspace: string; bytes: number; checkpoints: number; sessions: number; session_list: CheckpointSession[] }[];
   orphan_checkpoints: number;
 };
@@ -361,7 +362,11 @@ export function StoragePanel() {
         <List label="Largest sessions" dense>
           {(allSessions ? r.by_session : r.by_session.slice(0, 15)).map((x) => (
             <Item key={x.id} testid="storage-session" name={x.title || "Untitled"} onOpen={x.subagent ? undefined : () => navigate({ name: "session", id: x.id })}
-              status={x.archived ? archivedTag : x.subagent ? subTag : undefined}
+              // A session another harness runs: its transcript here is a copy of that harness's, made to be read.
+              status={x.outside ? <>
+                <Status testid="storage-outside" title={`A copy of a session ${OUTSIDE_LABEL[x.outside]} runs; its own transcript stays in ${OUTSIDE_LABEL[x.outside]}'s folder`}>{OUTSIDE_LABEL[x.outside]}</Status>
+                {x.archived && archivedTag}
+              </> : x.archived ? archivedTag : x.subagent ? subTag : undefined}
               meta={<>
                 {x.checkpoints > 0 && (
                   <button type="button" data-testid="session-checkpoints" title={`${x.checkpoints} checkpoints, about ${fmtBytes(x.checkpoint_bytes)}. Drop them.`}

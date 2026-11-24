@@ -64,7 +64,7 @@ export const sourceMachine = (path: string) => /^(m[0-9a-f]{8}):\//.exec(path)?.
 // as Keel stores an attached file, once by its content, and the prompt keeps
 // the reference (src/engine/attachments.ts). A file stored for a copy that is
 // then undone stays: another prompt may hold the same bytes.
-function filesStored(data: any): any {
+export function filesStored(data: any): any {
   const files = data?.images;
   if (!Array.isArray(files) || !files.some((f: any) => f?.type === "attachment" && typeof f.data === "string")) return data;
   const images = files.flatMap((f: any) => {

@@ -518,7 +518,7 @@ export class Telemetry {
           json_extract(e.data, '$.usage.cost'), CASE WHEN json_extract(e.data, '$.usage.unpriced') > 0 THEN 1 ELSE 0 END,
           'ok', json_extract(e.data, '$.stop')
         FROM events e JOIN sessions s ON s.id = e.session_id
-        WHERE e.kind = 'assistant' AND ${first}`);
+        WHERE e.kind = 'assistant' AND s.outside IS NULL AND ${first}`);
       // A session's calls, oldest first: the newest step that holds a call id names it (callEvent).
       const calls = db.query<{ id: string; model: string | null; call: string | null; name: string | null }, [string]>(
         `SELECT e.id, json_extract(e.data, '$.model') AS model, json_extract(b.value, '$.id') AS call, json_extract(b.value, '$.name') AS name
@@ -625,7 +625,7 @@ export class Telemetry {
     if (q.until !== undefined) { where.push("e.ts < ?"); args.push(q.until); }
     // Found by their kind among every event stored: read off the loop.
     const rows = await readsOf(this.store).sql<{ id: string; session_id: string; ts: number; seq: number; data: string; title: string | null }>(
-      `SELECT e.id, e.session_id, e.ts, e.seq, e.data, s.title FROM events e LEFT JOIN sessions s ON s.id = e.session_id WHERE ${where.join(" AND ")} ORDER BY e.ts DESC`, args);
+      `SELECT e.id, e.session_id, e.ts, e.seq, e.data, s.title FROM events e LEFT JOIN sessions s ON s.id = e.session_id WHERE s.outside IS NULL AND ${where.join(" AND ")} ORDER BY e.ts DESC`, args);
     // The turn requests after a compaction are the ones that carried it (the
     // compaction their branch had when sent); rows from before that was
     // recorded fall back to the session's next requests in time.

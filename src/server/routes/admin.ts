@@ -40,6 +40,8 @@ import { resources } from "./resources.ts";
 import { runMode } from "../../core/runmode.ts";
 import { buildId } from "../../core/build.ts";
 import { homeDir } from "../../core/paths";
+import { seesOutside } from "../admission.ts";
+import { outsideIds } from "../../core/outside.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const body = async (req: Request) => (await req.json().catch(() => undefined)) as any;
@@ -168,7 +170,7 @@ export const adminRoutes: RouteModule = (deps) => {
         store: daemon.status().store,
         home: homeDir(),
         default_cwd: deps.workspace,
-        recent_cwds: store.db.query<{ workspace: string }, []>("SELECT workspace FROM sessions WHERE parent_id IS NULL GROUP BY workspace ORDER BY MAX(updated) DESC LIMIT 20").all().map((r) => r.workspace),
+        recent_cwds: store.db.query<{ workspace: string }, []>("SELECT workspace FROM sessions WHERE parent_id IS NULL AND outside IS NULL GROUP BY workspace ORDER BY MAX(updated) DESC LIMIT 20").all().map((r) => r.workspace),
         settings: settings(),
       }),
     },
@@ -188,7 +190,11 @@ export const adminRoutes: RouteModule = (deps) => {
     },
 
     "/api/storage": {
-      GET: async (req: Request) => json(await storage.report(new URL(req.url).searchParams.has("refresh"))),
+      GET: async (req: Request) => {
+        const r = await storage.report(new URL(req.url).searchParams.has("refresh"));
+        // A copy of another harness's session is named to the owner only (peer-scope.ts blindTo).
+        return json(seesOutside(req) ? r : { ...r, by_session: r.by_session.filter((s) => !s.outside) });
+      },
     },
     "/api/storage/cleanup": {
       POST: async (req: Request) => {
@@ -197,7 +203,8 @@ export const adminRoutes: RouteModule = (deps) => {
         const days = b?.older_than_days;
         if (!Number.isInteger(days) || days < 1) return json({ error: "older_than_days is a whole number of at least 1" }, 400);
         if (b.sessions === undefined) {
-          const list = storage.candidates(days);
+          const away = seesOutside(req) ? new Set<string>() : outsideIds(store.db);
+          const list = storage.candidates(days).filter((s) => !away.has(s.id));
           return json({ sessions: list, bytes: list.reduce((n, s) => n + s.bytes, 0), deleted: [], skipped: [] });
         }
         if (!Array.isArray(b.sessions) || b.sessions.some((s: any) => typeof s?.id !== "string" || typeof s?.updated_ms !== "number" || (s.family_updated_ms !== undefined && typeof s.family_updated_ms !== "number"))) {

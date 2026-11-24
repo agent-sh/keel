@@ -1285,3 +1285,26 @@ test("a shell command a stored rule forbids is refused with the rule; a deny tha
     if (before === undefined) delete process.env.TACIT_STATE_DIR; else process.env.TACIT_STATE_DIR = before;
   }
 }, { quietAfter: 3, sampleEvery: 1000 }), 60_000);
+
+// A session another harness runs is only shown here (src/core/outside.ts): the store hears nothing of it,
+// not when it appears, not when it is archived, and its switches say so. A session of Keel's beside it is the control.
+test("an outside session sends nothing to the memory store: no start, no pre-compact on archive, both switches off", () => inWorld("outside", async (w, st, dir) => {
+  const mark = { harness: "claude" as const, source_id: "src-1", state: "working" as const, since: Date.now(), files: 0, failures: 0 };
+  const out = w.store.createSession({ title: "Elsewhere CANARY", model: "p:m", workspace: dir });
+  w.store.updateSession(out.id, { outside: mark });
+  w.store.append(out.id, "user", { text: "CANARY words typed in the other harness" });
+  const mine = w.session();
+  expect(w.tacit.flags(out.id)).toEqual({ use_memory: false, feed_memory: false });
+  expect(w.tacit.flags(mine)).toEqual({ use_memory: true, feed_memory: true });
+  // Its first frame (a fresh session with no events would ask for its start) and its archive (a dream of it).
+  const fresh = w.store.createSession({ title: "Elsewhere too", model: "p:m", workspace: dir });
+  w.bus.emit({ t: "session", session: w.store.updateSession(fresh.id, { outside: mark }) });
+  w.bus.emit({ t: "session", session: w.store.updateSession(out.id, { archived: true }) });
+  w.store.append(mine, "user", { text: "mine" });
+  w.bus.emit({ t: "session", session: w.store.updateSession(mine, { archived: true }) });
+  await until(() => st.calls("pre-compact").some((l) => l.includes(mine)));
+  const all = st.calls();
+  expect(all.filter((l) => l.includes(out.id) || l.includes(fresh.id))).toEqual([]);
+  expect(existsSync(join(w.store.stateDir, "transcripts", `${out.id}.jsonl`))).toBe(false);
+  expect(w.tacit.transcriptPath(w.store.session(out.id)!)).not.toContain(out.id);
+}), 30_000);

@@ -62,6 +62,7 @@ export { tacitToolCall };
 import { DenyKeys, stoppable } from "./deny-keys.ts";
 import { afterAnswer, afterAsk, callFamilies, callTopics, freshYield, hitFamilies, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
 import { mayReadHome } from "../core/paths";
+import { isOutside } from "../core/outside.ts";
 
 // A call is known by its session and its id: ids are unique within a session only.
 const preKey = (session: string, call: string) => `${session}\0${call}`;
@@ -448,7 +449,9 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   }
 
   // A session's own switches; an agent with none of its own has its parent's.
+  // A session another harness runs has both off, whatever was set (src/core/outside.ts).
   flags(id: string, depth = 0): Flags {
+    if (depth === 0 && isOutside(this.store.session(id))) return { use_memory: false, feed_memory: false };
     const r = this.store.db.query<{ use_memory: number; feed_memory: number }, [string]>("SELECT use_memory, feed_memory FROM memory_flags WHERE session_id = ?").get(id);
     if (r) return { use_memory: !!r.use_memory, feed_memory: !!r.feed_memory };
     const parent = depth < 64 ? this.store.session(id)?.parent_id : undefined;
@@ -946,7 +949,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   // Before compaction, and when a session is archived: tacit dreams it. The
   // compaction waits for it so long; the process may go on.
   async preCompact(s: Session) {
-    if (!this.bin || !this.flags(s.id).use_memory || !this.flags(s.id).feed_memory) return;
+    if (!this.bin || isOutside(s) || !this.flags(s.id).use_memory || !this.flags(s.id).feed_memory) return;
     await this.warmTranscript(s);
     await this.transcriptInParts(s);
     await within(running(this.hook("pre-compact", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) })), this.waitOf("pre-compact"));
@@ -1408,7 +1411,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
       },
     });
     this.bus.on((f) => {
-      if (f.t !== "session" || !this.bin) return;
+      if (f.t !== "session" || !this.bin || isOutside(f.session)) return;
       if (f.session.archived) {
         this.forget(f.session.id);
         if (!this.store.session(f.session.id)) return; // deleted: nothing left to dream

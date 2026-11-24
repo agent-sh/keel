@@ -112,8 +112,30 @@ export const sessionRefusal = (session: string, method: string, path: string, re
 // authentication of its own (the phone's signed API, health); `open`: one a session's command may reach
 // (the portal, under its capability key); `lists`: whether a session's command reads the daemon's lists. "account": the account
 // and token checks decide, as for any of the owner's requests.
-export type PeerVerdict = { pass: true } | { account: true } | { refuse: string };
-export function peerVerdict(a: Authority, req: { method: string; path: string; ownAuth: boolean; open: boolean }, lists: (session: string) => ListReach): PeerVerdict {
+export type PeerVerdict = { pass: true } | { account: true } | { refuse: string } | { absent: string };
+
+// A session another harness runs (src/core/outside.ts) exists for the owner only: the owner's page and the
+// owner's command line on a terminal. For a session's own command, a request another machine forwarded
+// (`linked`) and the phone's signed API, it does not exist: a request that names one is answered as for
+// no such session, and a list leaves it out (seesOutside in admission.ts tells a route which caller it has).
+export const PHONE_API = /^\/v1\//;
+export const blindTo = (a: Authority, req: { path: string; linked?: boolean }): boolean => a.kind === "session" || !!req.linked || PHONE_API.test(req.path);
+// The sessions a request names: by its path (a segment after `sessions/`, wherever it stands) and by the
+// parameters routes read a session from.
+const NAMING = ["session", "session_id", "of", "children_of", "agents_of"];
+export function namedSessions(path: string, search = ""): string[] {
+  const out: string[] = [];
+  let p = path;
+  try { p = decodeURIComponent(path); } catch {} // a path that does not decode names what it spells
+  for (const m of p.matchAll(/\/sessions\/([^/]+)/g)) out.push(m[1]!);
+  const q = new URLSearchParams(search);
+  for (const k of NAMING) for (const v of q.getAll(k)) if (v) out.push(v);
+  return out;
+}
+export const ABSENT = "no such session";
+
+export function peerVerdict(a: Authority, req: { method: string; path: string; ownAuth: boolean; open: boolean; search?: string; linked?: boolean }, lists: (session: string) => ListReach, outside: (session: string) => boolean = () => false): PeerVerdict {
+  if (blindTo(a, req) && namedSessions(req.path, req.search).some(outside)) return { absent: ABSENT };
   if (a.kind === "session") {
     const reach = lists(a.session);
     return sessionMay(req.method, req.path, a.session, !!reach.reads) || req.open ? { pass: true } : { refuse: sessionRefusal(a.session, req.method, req.path, reach) };

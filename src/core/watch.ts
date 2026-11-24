@@ -26,7 +26,7 @@
 // An agent's own session keeps its own state.
 // The words are the vocabulary's (src/core/state-words.ts): one word per
 // state, for a session and an agent alike, on the page and in a tool's answer.
-import type { Session, StoredEvent, TurnStatus } from "./types.ts";
+import type { OutsideMark, Session, StoredEvent, TurnStatus } from "./types.ts";
 import { classOfText } from "../admin/classes.ts";
 import { COMMAND_IN_BACKGROUND, STATE_WORD, UNREACHABLE, WAITS_FOR, agentsWait, failWord, stateLabel, unreachableSince, waitsFor } from "./state-words.ts";
 
@@ -333,6 +333,19 @@ export function stateLine(st: SessionState, now = Date.now()): string {
   return [`${stateLabel(why ? { watch: st.watch } : st).toLowerCase()}${cls}${why ? `: ${why}` : ""}`, time].filter(Boolean).join(", ");
 }
 
+export const OUTSIDE_LABEL: Record<OutsideMark["harness"], string> = { claude: "Claude Code", codex: "Codex" };
+// Why a session another harness runs refuses what would act on it here (a prompt, a command, a model, a clone).
+export const outsideRefusal = (s: { outside?: OutsideMark }) =>
+  `this session runs in ${OUTSIDE_LABEL[s.outside?.harness ?? "claude"]} and is read-only here: copy it into Keel to act on it`;
+function outsideState(o: OutsideMark, agents: number): SessionState {
+  const where = OUTSIDE_LABEL[o.harness] ?? o.harness;
+  if (o.state === "waiting") return { watch: "need", agents, why: "outside", text: `Waits in ${where} for ${o.waiting_for ?? "your answer"}`, asks: 1, ...(o.since ? { since: o.since } : {}) };
+  if (o.state === "working") return { watch: "work", agents, why: "outside", text: `Working in ${where}`, ...(o.since ? { since: o.since } : {}) };
+  // No record for a long while and no process that vouches for it: counted as neither working nor waiting.
+  if (o.state === "stale") return { watch: "idle", agents, why: "outside", text: `No record from ${where} since then`, ...(o.since ? { since: o.since } : {}) };
+  return { watch: "done", agents };
+}
+
 // The session's own state and how its last turn ended, from its events when
 // they are loaded, else from the marks the daemon keeps on it (failed_ms, last_end).
 function own(s: Session, events: StoredEvent[] | undefined): { watch: Watch; end?: string; by?: string } {
@@ -358,6 +371,8 @@ const queued = (n: number) => `${n} queued prompt${n === 1 ? "" : "s"} wait${n =
 
 export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchFacts = {}): SessionState {
   const agents = f.agents ?? 0;
+  // A session another harness runs is in the state its own records say: it waits on the owner there.
+  if (s.outside) return outsideState(s.outside, agents);
   // What waits on the owner comes first, oldest first: nothing else moves until they answer.
   // A turn a restart cut that Keel did not continue is one of those things.
   const asks = [...(f.asks ?? []), ...(f.held ? [{ kind: "resume" as const, ...f.held }] : [])].sort((a, b) => (a.since ?? Infinity) - (b.since ?? Infinity));

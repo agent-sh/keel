@@ -85,8 +85,9 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
   // the table (a picker asks at every pause in typing), not every session parsed. A session placed
   // on another machine (the fleet's column) names a folder there.
   const usedFolders = (n: number): string[] => {
-    const here = store.columnExists("sessions", "machine") ? "WHERE machine IS NULL" : "";
-    return store.db.query<{ workspace: string }, [number]>(`SELECT workspace FROM sessions ${here} GROUP BY workspace ORDER BY MAX(updated) DESC LIMIT ?`).all(n).map((r) => r.workspace);
+    // (Not the folders of sessions another harness runs: src/core/outside.ts.)
+    const here = store.columnExists("sessions", "machine") ? "AND machine IS NULL" : "";
+    return store.db.query<{ workspace: string }, [number]>(`SELECT workspace FROM sessions WHERE outside IS NULL ${here} GROUP BY workspace ORDER BY MAX(updated) DESC LIMIT ?`).all(n).map((r) => r.workspace);
   };
 
   return {

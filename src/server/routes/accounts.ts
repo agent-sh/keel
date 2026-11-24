@@ -10,7 +10,7 @@ export const accountRoutes: RouteModule = ({ store }) => ({
   "/api/accounts/candidates": {
     GET: async () => {
       // (Off the loop: the sessions table can be long.)
-      const rows = await readsOf(store).sql<{ workspace: string }>("SELECT workspace FROM sessions ORDER BY updated DESC LIMIT 300");
+      const rows = await readsOf(store).sql<{ workspace: string }>("SELECT workspace FROM sessions WHERE outside IS NULL ORDER BY updated DESC LIMIT 300");
       const folders = [...new Set(rows.map((r) => r.workspace))].slice(0, 120);
       const have = new Set(accountNames().map(say));
       const candidates = (await learnNamespaces(folders)).filter((c) => !have.has(c.namespace));

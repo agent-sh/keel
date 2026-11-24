@@ -43,9 +43,10 @@ function freshPids(): Promise<Map<number, string>> {
 // The admission check learns where sessions' commands run from the jobs code, and from the
 // sessions' table whether a session's commands read the daemon's lists (`lists`: a top-level session's,
 // an agent's its parent granted them to, src/automation/api-grant.ts).
-export function watchSessionCallers(lists: (session: string) => ListReach) {
+export function watchSessionCallers(lists: (session: string) => ListReach, outside?: (session: string) => boolean) {
   useSessionScopes({
     lists,
+    outside,
     cgroups: sessionCgroups,
     loose: sessionLooseProcesses,
     // Among the processes the daemon holds first, then among every process that is a session's

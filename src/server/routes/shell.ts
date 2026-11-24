@@ -39,7 +39,8 @@ export const shellRoutes: RouteModule = (deps) => {
   const topLevel = (id: string) => { const s = deps.store.session(id); return !!s && !s.parent_id; };
   const fill = () => {
     needs.clear();
-    for (const [id, st] of Object.entries(board?.all() ?? {})) if (st.watch === "need" && topLevel(id)) needs.set(id, st.asks ?? 1);
+    // (The tray is the owner's own view: a session another harness runs that waits counts.)
+    for (const [id, st] of Object.entries(board?.all({ outside: true }) ?? {})) if (st.watch === "need" && topLevel(id)) needs.set(id, st.asks ?? 1);
   };
   // The top-level sessions a stop of the daemon would cut: their own turn, or an agent of theirs, at work.
   const running = () => {
