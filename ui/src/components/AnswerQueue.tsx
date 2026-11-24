@@ -45,6 +45,7 @@
 // would, and the last answer leads back where they came from. Time spent on a
 // card does not make it reading there (a phone has no pane to read beside);
 // a press outside what it asks, typing or a selection still does.
+import { ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { announce } from "../lib/announce.ts";
@@ -366,17 +367,18 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
       : <button type="button" onClick={goNextOther} className={cn(chip, "hover:bg-accent-soft/70 focus-visible:ring-2 focus-visible:ring-accent/40 outline-none")} data-testid="waiting-elsewhere" aria-label={`${n}. Go to the next`} title={`${n}. Alt A goes to the next.`}><span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />{others} more {others === 1 ? "waits" : "wait"}</button>, slot);
   }
   // One line of a fixed height, cut where the pane ends: its height never depends on the pane's width.
-  // (A finger's screen has no key to name: there the way to the next is a button, a finger's size tall.
-  // It stands beside the words, out of their live region: a screen reader tells the words as they
-  // change, and a control read out inside a status is told as more of it.)
+  // (A finger's screen has no key to name: there the row is one target, a finger's height at least, that goes
+  // to the next, its words at the size of the page's captions and wrapped, not cut. The button lies over
+  // the whole row, out of the words' live region: a screen reader tells the words as they change, and a
+  // control read out inside a status is told as more of it.)
   return (
-    <div className="k-waiting-elsewhere mb-1.5 flex h-ctl-sm items-center gap-x-1.5 overflow-hidden whitespace-nowrap pl-0.5 text-micro text-faint pointer-coarse:h-tap" data-testid="waiting-elsewhere" data-on={on || undefined} title={words}>
-      <p className="flex min-w-0 items-center gap-x-1.5" role="status">
+    <div className="k-waiting-elsewhere relative mb-1.5 flex h-ctl-sm items-center gap-x-1.5 overflow-hidden whitespace-nowrap pl-0.5 text-micro text-faint pointer-coarse:h-auto pointer-coarse:min-h-tap pointer-coarse:whitespace-normal pointer-coarse:rounded-lg pointer-coarse:bg-accent-soft pointer-coarse:py-1 pointer-coarse:pl-3 pointer-coarse:text-caption pointer-coarse:text-fg" data-testid="waiting-elsewhere" data-on={on || undefined} title={words}>
+      <p className={cn("flex min-w-0 items-center gap-x-1.5", !on && "pointer-coarse:pr-[8.5rem]")} role="status">
         <span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />
-        {on ? <span className="min-w-0 truncate"><span className="text-muted">Answering in sequence.</span> {n}: the next opens when this is answered.</span>
-          : <><span className="min-w-0 truncate">{n}.</span><Kbd keys={KEYS} className="shrink-0" /><span className="shrink-0 pointer-coarse:hidden">goes to the next.</span></>}
+        {on ? <span className="min-w-0 truncate pointer-coarse:overflow-visible pointer-coarse:whitespace-normal"><span className="text-muted">Answering in sequence.</span> {n}: the next opens when this is answered.</span>
+          : <><span className="min-w-0 truncate pointer-coarse:overflow-visible pointer-coarse:whitespace-normal">{n}.</span><Kbd keys={KEYS} className="shrink-0 pointer-coarse:hidden" /><span className="shrink-0 pointer-coarse:hidden">goes to the next.</span></>}
       </p>
-      {!on && <button type="button" data-testid="waiting-next" onClick={goNextOther} className="hidden shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft pointer-coarse:inline-flex pointer-coarse:items-center">Go to the next</button>}
+      {!on && <button type="button" data-testid="waiting-next" onClick={goNextOther} className="absolute inset-0 hidden items-center justify-end gap-0.5 rounded-lg pr-2.5 text-caption font-medium text-accent-ink pointer-coarse:flex">Go to the next<ChevronRight className="size-4" aria-hidden="true" /></button>}
     </div>
   );
 }

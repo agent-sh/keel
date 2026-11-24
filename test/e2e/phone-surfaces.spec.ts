@@ -920,6 +920,41 @@ for (const size of SIZES) {
         await request.delete("/api/acp/agents/children-p");
       }
     });
+    test("the row that says other sessions wait is one finger-high target, in readable words, that goes to the next", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      await settle(request);
+      // A plan card has no header to hold the count as a chip: the count is a row above the cards.
+      const a = await create(request, "Phone waits plan", folder("phone-waits-a"));
+      const b = await create(request, "Phone waits question", folder("phone-waits-b"));
+      try {
+        await ask(request, a, "plan");
+        await ask(request, b, "question");
+        for (const scale of [1, 1.5]) {
+          await page.goto(`/s/${a}`);
+          await page.evaluate((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+          await page.reload();
+          const row = page.getByTestId("waiting-elsewhere");
+          await expect(row).toBeVisible();
+          await expect(row).toContainText(/waits? for you/);
+          await row.scrollIntoViewIfNeeded();
+          await shoot(page, `phone-surfaces-28-waiting-row-${size.width}-${scale * 100}`);
+          const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+          const words = await row.locator("p span").first().evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
+          expect(words, `the words are at least 13px at ${scale * 100}% (0.8125 rem)`).toBeGreaterThanOrEqual(0.8125 * rem - 0.5);
+          const next = row.getByTestId("waiting-next");
+          const r = (await row.boundingBox())!, n = (await next.boundingBox())!;
+          expect(n.height, "the row is a finger's height").toBeGreaterThanOrEqual(2.75 * rem - 1);
+          expect(n.width, "the whole row goes to the next, not a word at its end").toBeGreaterThanOrEqual(r.width * 0.9);
+          await noSideScroll(page);
+          // A press on its words, far from the label, goes to the next.
+          await row.tap({ position: { x: 12, y: r.height / 2 } });
+          await expect(page).not.toHaveURL(new RegExp(`/s/${a}$`));
+        }
+      } finally {
+        await page.evaluate(() => localStorage.removeItem("keel.textScale")).catch(() => {});
+        await drop(request, a, b);
+      }
+    });
     test("the head's reason for a state is read whole: it wraps under the word, never cut by an ellipsis", async ({ page, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
       const id = await start(request, "Phone head reason");
