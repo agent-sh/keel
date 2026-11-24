@@ -75,6 +75,8 @@ export function route(f: Frame): Route {
       if (f.name === "overlap" && f.session_id) return one(f.session_id);
       // The landing queue of the session's repository changed: its Branches panel reads it.
       if (f.name === "landing" && f.session_id) return one(f.session_id);
+      // A session's PR Steward watch changed (src/steward/watch.ts): its worktree chip reads it.
+      if (f.name === "steward" && f.session_id) return one(f.session_id);
       // Branches of the session's tree were checked together (src/landing/together.ts): its Board reads it.
       if (f.name === "pairs" && f.session_id) return one(f.session_id);
       // A plan of lanes of the session changed (src/automation/lane-plans.ts): its Lane plan panel reads it.

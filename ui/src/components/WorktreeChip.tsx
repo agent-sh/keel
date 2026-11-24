@@ -1,5 +1,5 @@
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, ExternalLink, GitBranch, GitMerge, GitPullRequest, MoveLeft, ShieldAlert, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, Eye, ExternalLink, GitBranch, GitMerge, GitPullRequest, MoveLeft, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, failed } from "../lib/store.ts";
@@ -7,6 +7,8 @@ import { cn } from "../lib/utils.ts";
 import { isGitFolder, loadBranches, loadWorktree, setStartBase, setStartInWorktree, setStartPr, startBase, useHead, useStartBase, useStartInWorktree, useStartPr, useWorktree, type BranchList } from "../lib/worktree.ts";
 import { loadOverlap, mineOf, useOverlap } from "../lib/overlap.ts";
 import { OverlapList } from "./BranchesPanel.tsx";
+import { StewardRow } from "./StewardRow.tsx";
+import { stewardWord, useSteward } from "../lib/steward.ts";
 import { stoppingShells } from "../lib/shells.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { popupClass } from "./ui.tsx";
@@ -58,6 +60,8 @@ export function WorktreeChip({ session }: { session: Session }) {
   const wt = useWorktree(session.id);
   const overlap = useOverlap(session.id);
   const clashes = mineOf(overlap);
+  const steward = useSteward(session.id)?.watch ?? null;
+  const stewarding = steward && steward.state !== "ended" ? stewardWord(steward) : null;
   const [pr, setPr] = useState<{ pr: Pr | null; available: boolean; error?: string } | null>(null);
   const [form, setForm] = useState<{ title: string; body: string; draft: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -112,6 +116,12 @@ export function WorktreeChip({ session }: { session: Session }) {
             <GitMerge className="size-3" />{clashes.length}
           </span>
         )}
+        {stewarding && (
+          <span data-testid="steward-mark" data-state={steward!.state} title={`PR Steward: ${steward!.note ?? stewarding.word}`}
+            className={cn("inline-flex h-[1.125rem] shrink-0 items-center rounded-md px-1 text-accent", steward!.state === "fixing" ? "bg-accent/12" : "bg-hover")}>
+            <Eye className="size-3" />
+          </span>
+        )}
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner align="end" sideOffset={6} className="z-50">
@@ -156,6 +166,7 @@ export function WorktreeChip({ session }: { session: Session }) {
                 </ul>
               </details>
             )}
+            {wt.state === "active" && <StewardRow sessionId={session.id} open={pr?.pr?.state === "OPEN"} />}
             {wt.state === "active" && pr && !pr.available && <p className="mt-3 text-caption text-faint" data-testid="pr-unavailable">Pull requests: {pr.error}</p>}
 
             {form && (

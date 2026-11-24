@@ -87,6 +87,7 @@ const hardLink = (path: string): boolean => {
   try { const st = lstatSync(path); return (st.isFile() && st.nlink > 1) || !!heldFile(path); } catch { return false; }
 };
 import { attachmentsGiven } from "../engine/attachments.ts";
+import { commandRefusal as stewardCommand, stewards, toolRefusal as stewardTool } from "../steward/guard.ts";
 
 // (Where an edit lands is read in marks.ts, which the read thread loads too.)
 export { landing };
@@ -1762,6 +1763,12 @@ export class Gate {
       const r = this.scopeRefusal(session, call, cls);
       const out = typeof r === "object" ? await r : r;
       if (out) return (this.ruled(session, call, "agent write scope"), { deny: out });
+    }
+    // A turn PR Steward started merges, approves and pushes nowhere but its own branch, in every mode (src/steward/guard.ts).
+    const stewarded = stewards.of?.(session.id);
+    if (stewarded) {
+      const r = cls.kind === "shell" ? stewardCommand(cls.command, stewarded.branch) : stewardTool(name === "mcp_call" ? String(call.input?.tool ?? "") : name, stewarded.branch);
+      if (r) return (this.ruled(session, call, "pr steward"), { deny: r });
     }
     const mode = this.perm(session.id).mode;
     const dir = mode === "auto" ? localShellDir(session, call, target, cls) : undefined;

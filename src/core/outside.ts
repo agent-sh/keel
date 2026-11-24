@@ -36,7 +36,7 @@ const OF_SESSION = [
   "agents_now", "approval", "artifacts", "blocked", "checkpoints", "code_call", "draft", "fails_before", "handoff_progress",
   "handoff_waiting", "heavy", "jobs", "judged", "landing", "lane_plan", "mcp-session", "mcp_app_call", "memory", "outage",
   "overlap", "pairs", "perm", "pictures", "plan", "pr-reviews", "quarantine", "readers", "recap", "reviews", "rulings", "secret",
-  "state", "trust", "tree_review", "voice", "worktree",
+  "state", "steward", "trust", "tree_review", "voice", "worktree",
 ];
 // The automation's frames say what they are about inside (src/automation/core.ts emit): an agent, a wait,
 // a loop, an alert, the inbox read, an activity line, a snooze, a goal, a checklist.

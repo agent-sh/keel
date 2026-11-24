@@ -289,6 +289,16 @@ export function InputNotice({ e }: { e: StoredEvent }) {
       </Shell>
     );
   }
+  // The turn PR Steward started (src/steward/watch.ts): what failed or was said, which it acts on.
+  if (kind === "steward") {
+    const body = text.replace(/^\[harness\] PR Steward on\s*/, "");
+    const [head, ...rest] = body.split("\n");
+    return (
+      <Shell icon={Eye} label="PR Steward" sub={head?.replace(/\.$/, "")} testid="steward-notice" defaultOpen>
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-code p-2.5 font-mono text-caption text-muted">{rest.join("\n").trim()}</pre>
+      </Shell>
+    );
+  }
   if (kind === "landing") {
     return (
       <Shell icon={GitMerge} label="Landing queue" testid="landing-notice" defaultOpen>

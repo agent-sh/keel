@@ -43,6 +43,7 @@ import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
 import { overlapRoutes } from "./overlaps.ts";
 import { landingRoutes } from "./landing.ts";
+import { stewardRoutes } from "./steward.ts";
 import { boardRoutes } from "./board.ts";
 import { treeReviewRoutes } from "./tree-review.ts";
 import { lanePlanRoutes } from "./lane-plans.ts";
@@ -134,6 +135,7 @@ const modules: Record<string, RouteModule> = {
   adminRoutes,
   observeRoutes, // after admin: it reads the settings admin loads
   automationRoutes,
+  stewardRoutes, // after automation: its turns are delivered through the automation's inputs, and its notice is an alert
   rulingRoutes, // after automation: a ruling's use is a row of the activity list
   integrationRoutes,
   helperRoutes, // after integrations: its note for a prompt follows the tacit memory note

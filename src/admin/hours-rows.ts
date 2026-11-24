@@ -133,7 +133,7 @@ export function openerClass(o: Opener | undefined, agent: boolean): HourClass {
   if (key === "provider_wait") return "provider";
   if (key === "subagent") return "agents";
   if (key === "restart") return "restart";
-  if (["harness", "hook", "failures", "diagnostic", "helper_digest", "momentum"].includes(key)) return "keel";
+  if (["harness", "hook", "failures", "diagnostic", "helper_digest", "momentum", "steward"].includes(key)) return "keel";
   return agent ? "review" : "owner";
 }
 
