@@ -63,7 +63,7 @@ export const tasks = {
   // The work board of a session's tree (src/board/board.ts): its agents and what is known of their branches,
   // and the check runs on their heads' trees.
   "board.facts": (db: Database, a: { root: string }) => boardFacts(db, a),
-  "board.checks": (db: Database, a: { trees: string[]; heads?: string[] }) => boardChecks(db, a),
+  "board.checks": (db: Database, a: { trees: string[]; heads?: { head: string; session: string }[] }) => boardChecks(db, a),
   // One branch head's diff against the base, parsed for the tree review (src/board/tree-review.ts).
   "tree.parse": (_db: Database, a: { text: string }) => parseDiff(a.text),
   "board.pictures": (db: Database, a: { heads: string[] }) => boardPictures(db, a),

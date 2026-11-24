@@ -130,19 +130,22 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
   return { total, agents, reviews, queue, deploys, pairs };
 }
 
-export type TreeRun = { tree: string; head: string | null; name: string; command: string; dir: string; result: string; ended: number };
+export type TreeRun = { tree: string; head: string | null; session_id: string; name: string; command: string; dir: string; result: string; ended: number };
 
 // The passes and failures of every check on each tree given (an index on tree, src/checks/ledger.ts), and
-// the runs made with one of the heads given checked out: those on another tree ran on files that were not
-// committed (the head's commit plus what the worktree changed).
-export function boardChecks(db: Database, a: { trees: string[]; heads?: string[] }): TreeRun[] {
+// the runs a session made with one of its heads checked out: those on another tree ran on files that were not
+// committed (the head's commit plus what the worktree changed). Only the row's own session's runs count: another
+// session's run at the same head (the owner's checkout at the base tip, another agent) says nothing of this
+// agent's files. Each pair is read through the index on head and session, at most 100 runs of it.
+export function boardChecks(db: Database, a: { trees: string[]; heads?: { head: string; session: string }[] }): TreeRun[] {
   const out: TreeRun[] = [];
-  const st = (() => { try { return db.prepare<TreeRun, [string]>("SELECT tree, head, name, command, dir, result, ended FROM check_runs WHERE tree = ? AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT 100"); } catch { return undefined; } })();
+  const COLS = "tree, head, session_id, name, command, dir, result, ended";
+  const st = (() => { try { return db.prepare<TreeRun, [string]>(`SELECT ${COLS} FROM check_runs WHERE tree = ? AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT 100`); } catch { return undefined; } })();
   if (!st) return out;
   try { for (const t of a.trees.slice(0, MAX_ROWS)) out.push(...st.all(t)); } finally { st.finalize(); }
   if (a.heads?.length) {
-    const on = tried(() => db.query<TreeRun, [string]>("SELECT tree, head, name, command, dir, result, ended FROM check_runs WHERE head IN (SELECT value FROM json_each(?)) AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT 1000").all(JSON.stringify(a.heads!.slice(0, MAX_ROWS))));
-    out.push(...on);
+    const on = (() => { try { return db.prepare<TreeRun, [string, string]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_head WHERE head = ? AND session_id = ? AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT 100`); } catch { return undefined; } })();
+    if (on) try { for (const h of a.heads.slice(0, MAX_ROWS)) out.push(...on.all(h.head, h.session)); } finally { on.finalize(); }
   }
   return out;
 }

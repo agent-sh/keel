@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS check_anyway (session_id TEXT NOT NULL, key TEXT NOT 
 CREATE INDEX IF NOT EXISTS check_runs_key_tree ON check_runs(key, tree, ended);
 CREATE INDEX IF NOT EXISTS check_runs_session ON check_runs(session_id, ended, id);
 CREATE INDEX IF NOT EXISTS check_runs_tree ON check_runs(tree, ended);
+CREATE INDEX IF NOT EXISTS check_runs_head ON check_runs(head, session_id, ended);
 `;
 
 let store: Store | undefined;

@@ -212,7 +212,7 @@ export class WorkBoard {
     await pool(work, AT_ONCE, (f) => f());
 
     // The checks on each head's tree, by the names its repository gives them.
-    const runs = trees.size ? await reads.run("board.checks", { trees: [...new Set(trees.values())], heads: [...trees.keys()] }) as TreeRun[] : [];
+    const runs = trees.size ? await reads.run("board.checks", { trees: [...new Set(trees.values())], heads: [...rows.values()].filter((r) => r.head && r.branch).map((r) => ({ head: r.head!, session: r.session_id })) }) as TreeRun[] : [];
     const runsOf = new Map<string, TreeRun[]>();
     for (const r of runs) runsOf.set(r.tree, [...(runsOf.get(r.tree) ?? []), r]);
     const named = new Map<string, ReturnType<typeof namedFor>>();
@@ -221,7 +221,7 @@ export class WorkBoard {
       if (!named.has(r.repo)) { const at = repoOf(r.repo); named.set(r.repo, at ? namedFor(at) : undefined); }
       const n = named.get(r.repo)?.checks ?? [];
       const tree = r.head ? trees.get(r.head) : undefined;
-      r.checks = checksOf(n, tree, tree ? runsOf.get(tree) ?? [] : [], r.head ? runs.filter((x) => x.head === r.head && x.tree !== tree) : []);
+      r.checks = checksOf(n, tree, tree ? runsOf.get(tree) ?? [] : [], r.head ? runs.filter((x) => x.head === r.head && x.session_id === r.session_id && x.tree !== tree) : []);
     }
 
     // The before and after pictures of each head, by its repository (its main checkout or its common git directory).
