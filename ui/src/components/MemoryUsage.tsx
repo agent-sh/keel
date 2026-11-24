@@ -102,8 +102,9 @@ function UsageTable({ since }: { since: number }) {
       <Table
         head={["Path", "Recalls", "Tokens added", "Notes named (estimate)", "Rules", "Not added again", "Time added"]}
         rows={[...r.paths.map((p) => cells(pathLabel(p.path), p)), ...(r.paths.length > 1 ? [cells(<span className="font-medium">All memory</span>, r.total)] : [])]}
-        // A phone keeps what the table is opened for: how often memory was added, what it cost, whether it was used.
-        wide={[5, 6]}
+        // A phone keeps what the table is opened for: how often memory was added, what it cost, whether it was used
+        // (the rules, the repeats and the time are in the wider table and the Never named view).
+        wide={[4, 5, 6]}
       />
       <p className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="memory-notes">
         Notes named is an estimate: a recall counts when the reply or a tool call of its turn spells the name of one of its notes, or three of its words in a row. It reads low: a note can shape a reply without being named. A rule works by what the model leaves undone, so it is judged on the call it forbids: followed while that call is not made in the session after the rule was given, broken once it is; a call the store refused is the rule acting, and a rule that names no call is not counted either way. A fact the context already holds is not added again; one its block has no room for follows with the next step.
