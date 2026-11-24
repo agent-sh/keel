@@ -212,7 +212,7 @@ function Card({ r, below, indent, w, st }: { r: BoardRow; below: Board["rows"]; 
         <StateMark w={w} />
         <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
         <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
-        
+
       </div>
       {r.branch ? (
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption">
