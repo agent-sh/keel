@@ -137,7 +137,7 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await page.getByTestId("confirm").getByRole("button", { name: "Remove" }).click();
   // The count is what went: three records, though each also changed the usage rollup.
   await expect(panel.getByTestId("retention-done")).toContainText("Removed 2 files");
-  await expect(panel.getByTestId("retention-done")).toContainText("and 3 usage records");
+  await expect(panel.getByTestId("retention-done")).toContainText("3 usage records");
   await expect(dueNow).toContainText("Nothing is past these now.");
   expect([existsSync(oldOut), existsSync(jobLog), existsSync(newOut)]).toEqual([false, false, true]);
   await dueNow.scrollIntoViewIfNeeded();
