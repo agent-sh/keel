@@ -158,7 +158,8 @@ const at = (s: Src, line: number, what: string) => `${s.file}:${line}: ${what}`;
 // phone (iOS zooms under 16 px) and the math faces (set by eye). A superscript
 // or subscript is sized against its line.
 function sheetSizes(list: Src[]): string[] {
-  const size = /^(var\(--text-[a-z]+\)|inherit|0|calc\(17px \* var\(--ui-scale, 1\)\)|max\(16px, 1rem\) !important|1\.08em)$/;
+  // (A size that moves with the width between two steps of the scale is the scale's: min(step, max(step, Nvw)).)
+  const size = /^(var\(--text-[a-z]+\)|min\(var\(--text-[a-z]+\), max\(var\(--text-[a-z]+\), [\d.]+vw\)\)|inherit|0|calc\(17px \* var\(--ui-scale, 1\)\)|max\(16px, 1rem\) !important|1\.08em)$/;
   const out: string[] = [];
   for (const s of list) for (const r of rules(s.text)) for (const d of r.decls) {
     if (d.prop === "font-size" && !size.test(d.value) && !(/(^|[\s>+~,])su[pb]\b/.test(r.selector) && /^[\d.]+em$/.test(d.value))) out.push(at(s, d.line, `font-size: ${d.value}`));

@@ -1160,8 +1160,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-compose-tools[data-busy] .k-compose-send { gap: 0.125rem; }
   .k-station-head { padding: 0.625rem 0.875rem 0.5rem 1rem; }
   .k-station-title { font-size: var(--text-read); }
-  /* (The helm's title too: the head's size cut a long title at large text on a phone, and the scale has no size
-     between: the reading size keeps it whole.) */
+  /* The helm's title in the head's size until that is more than a phone's width allows, then in the reading size. */
+  .k-station[data-helm] .k-station-title { font-size: min(var(--text-head), max(var(--text-read), 5.2vw)); }
   .k-station-tools .k-tool-move { display: none; }
   .k-station-tools { opacity: 1; }
   .k-dock {
