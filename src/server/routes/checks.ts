@@ -17,8 +17,10 @@ import { bindLedger, KEEP, list, namedFor, repoOf, setKeep } from "../../checks/
 import { FILE, readChecks } from "../../checks/named.ts";
 import { afterCall, beforeCall, dropCall, jobDone, jobStarted } from "../../checks/runs.ts";
 import { bindBefore, latest, startFor } from "../../checks/before-run.ts";
-import { afterCall as besideCall, afterStep as besideStep, afterTurn as besideTurn, bindBeside, checkSetting as besideSetting, forget as besideForget } from "../../checks/beside-run.ts";
+import { agentChanged as besideAgent, afterCall as besideCall, afterStep as besideStep, afterTurn as besideTurn, bindBeside, checkSetting as besideSetting, forget as besideForget } from "../../checks/beside-run.ts";
 import * as agents from "../../automation/agents.ts";
+import * as failures from "../../automation/failures.ts";
+import type { AgentState } from "../../checks/beside.ts";
 import { gate } from "./permissions.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { readsOf } from "../reads.ts";
@@ -36,16 +38,38 @@ registerSettings("checks", { repos: {}, keep_runs: KEEP, beside: { window_s: 30,
   return besideSetting(v.beside);
 });
 
-export const checkRoutes: RouteModule = ({ store, errors, bus }) => {
+export const checkRoutes: RouteModule = ({ store, errors, bus, engine }) => {
   bindLedger(store);
   void bindBefore({ store, bus, perm: (id) => gate?.perm(id), confine: (id, workspace, tool, shown) => gate?.confineFor(id, workspace, tool, shown), capture: (e, ctx) => errors.capture("server", e, ctx) });
-  // The checks beside an agent (src/checks/beside-run.ts): a red one is told to the agent as a message of the harness's.
-  const agentOf = (id: string) => { try { const a = agents.byChild(id); return a ? { live: !agents.isEnded(a) } : undefined; } catch { return undefined; } };
+  // The checks beside an agent (src/checks/beside-run.ts): a red one is told to a working agent as a message of the
+  // harness's, and of a finished one to the session that started it, in its failures notice (it starts no turn).
+  const agentOf = (id: string): AgentState | undefined => {
+    try {
+      const a = agents.byChild(id);
+      if (!a) return undefined;
+      // The owner's Stop holds every agent below it as the owner's.
+      if (agents.ownerHolds(a.session_id)) return "held";
+      if (agents.isEnded(a)) return a.status === "stopped" && agents.isOwnerHold(a.stopped_by) ? "held" : "ended";
+      return engine.isRunning(a.session_id) ? "working" : "parked";
+    } catch { return undefined; } // no agents table: a store the automation never opened
+  };
   bindBeside({
-    store, capture: (e, ctx) => errors.capture("server", e, ctx), perm: (id) => gate?.perm(id), confine: (id, workspace, tool) => gate?.confineFor(id, workspace, tool), agentOf,
-    tell: async (id, text, key) => { const a = agents.byChild(id); if (a) await agents.send(a.id, text, false, key, undefined, undefined, "checks_beside"); },
+    store, capture: (e, ctx) => errors.capture("server", e, ctx), perm: (id) => gate?.perm(id), confine: (id, workspace, tool, shown) => gate?.confineFor(id, workspace, tool, shown), agentOf,
+    tellAgent: async (id, text, key) => {
+      if (agentOf(id) !== "working") return false;
+      await agents.send(agents.byChild(id)!.id, text, false, key, undefined, undefined, "checks_beside");
+      return true;
+    },
+    tellParent: (id, cls, message) => {
+      const a = agents.byChild(id);
+      if (a) failures.record(a.parent_id, { kind: "check", cls, message, ref: { id: a.id, label: a.title }, tell: "ride" }, a.session_id);
+    },
   });
-  bus.on((f) => { if (f.t === "session" && (f.deleted || f.session.archived)) besideForget(f.session.id); });
+  bus.on((f) => {
+    if (f.t === "session" && (f.deleted || f.session.archived)) besideForget(f.session.id);
+    // An agent's record changed: where a red kept for it goes (src/automation/core.ts emit).
+    if (f.t === "feature" && f.name === "automation" && (f.data as any)?.kind === "agent") { const sid = (f.data as any).data?.session_id; if (typeof sid === "string") besideAgent(sid); }
+  });
   setKeep(settings().checks?.keep_runs ?? KEEP);
   onSettings((s) => setKeep(s.checks?.keep_runs ?? KEEP));
   const quiet = (at: string, f: () => void) => { try { f(); } catch (e) { errors.capture("server", e, { at }); } };

@@ -1,6 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SCRIPTED, shoot } from "./shots.ts";
 
@@ -12,14 +13,18 @@ const BROKEN = "add() { echo $(($1 - $2)); }\n";
 // (Not the base's own bytes: a change that only goes back to the base is no change of the agent's, and is not checked.)
 const FIXED = "add() { echo $(( $1 + $2 )); }\n";
 
+// (Not the base's either, and another failure than BROKEN's: a failure is told once.)
+const BROKEN_AGAIN = "add() { echo $(($1 * $2)); }\n";
+
 // Feature: checks beside the agent. A repository marks its fast checks `beside`
 // in .keel/checks.json; after an agent's change Keel runs them by itself on a
 // copy of the agent's files (a check that takes test files gets the tests the
 // change touches), keeps each run in the check ledger by its tree, and tells
 // the agent when one fails: one harness input, read at the agent's next step.
 // A pass says nothing, and the agent's own run of the same command on the same
-// files is answered from the ledger.
-test("checks beside the agent: an edit that breaks a test is told at its next step, a fix says nothing, and its own run is answered", async ({ page, request }) => {
+// files is answered from the ledger. A red found after the agent ended gives it
+// no new work: the session that started it is told in its failures notice.
+test("checks beside the agent: an edit that breaks a test is told at its next step, a fix says nothing, its own run is answered, and a finished agent is not woken", async ({ page, request, baseURL }) => {
   test.skip(!SCRIPTED, "drives exact edits through the scripted stand-in");
   const repo = join(DEV, `beside-${Date.now()}`);
   mkdirSync(join(repo, ".keel"), { recursive: true });
@@ -35,12 +40,19 @@ test("checks beside the agent: an edit that breaks a test is told at its next st
   git(repo, "add", "-A");
   git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "first");
 
+  // The window of steps taken together, none here: a run starts after the step that changed the files.
+  const was = (await (await request.get("/api/settings")).json()).checks;
+  expect((await request.patch("/api/settings", { data: { checks: { ...was, beside: { ...was?.beside, window_s: 0 } } } })).ok()).toBe(true);
+  test.info().attach("checks setting before", { body: JSON.stringify(was) });
+  try {
   const { session } = await (await request.post("/api/sessions", { data: { workspace: repo } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   await page.goto(`/s/${session.id}`);
-  // The agent breaks the sum and ends its turn. The run beside it is red, and the input that tells it is
-  // answered from its own text: the lines with these words, as a model that read it does.
-  const task = `${calls([{ name: "Read", input: { file_path: "lib.sh" } }, { name: "Write", input: { file_path: "lib.sh", content: BROKEN } }])}\nscript:then-find adds gave`;
+  // The agent breaks the sum, then waits in a command until Keel's notice is in its queue (the run beside it
+  // went red while it worked). Its next step carries the notice, and its reply is the notice's own lines, as
+  // a model that read it gives.
+  const queued = `for i in $(seq 600); do curl -s "${baseURL}/api/sessions/$KEEL_SESSION/queue" | grep -q checks_beside && exit 0; sleep 0.1; done; exit 1`;
+  const task = `${calls([{ name: "Read", input: { file_path: "lib.sh" } }, { name: "Write", input: { file_path: "lib.sh", content: BROKEN } }, { name: "Bash", input: { command: queued } }])}\nscript:then-find adds gave`;
   await page.getByTestId("composer").fill(calls([{ name: "spawn_agent", input: { message: `Change the sum\n${task}` } }]));
   await page.keyboard.press("Enter");
   const agentsOf = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents;
@@ -64,6 +76,8 @@ test("checks beside the agent: an edit that breaks a test is told at its next st
     return evs.slice(at + 1).filter((e) => e.kind === "assistant").flatMap((e) => e.data.blocks).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
   }, { timeout: 60_000 }).toContain("error: add 1 2 gave -1, not 3");
   await expect.poll(async () => (await agentsOf())[0]?.status, { timeout: 60_000 }).toBe("completed");
+  // One turn did all of it: the notice was read in the turn that broke the sum, and started none of its own.
+  expect((await eventsOf()).filter((e) => e.kind === "turn_end")).toHaveLength(1);
 
   // The agent's page: the notice is a card of its own, open.
   await page.goto(`/s/${agent.session_id}`);
@@ -91,4 +105,25 @@ test("checks beside the agent: an edit that breaks a test is told at its next st
   // The fix made no notice of its own.
   await expect.poll(async () => (await agentsOf())[0]?.status, { timeout: 60_000 }).toBe("completed");
   expect(await told()).toHaveLength(1);
+
+  // It breaks the sum again and ends before the run beside it does: it is given no new work (no notice, no
+  // turn); the session that started it is told in its failures, which go with its next input.
+  const turns = (await eventsOf()).filter((e) => e.kind === "turn_end").length;
+  await send(calls([{ name: "Write", input: { file_path: "lib.sh", content: BROKEN_AGAIN } }]));
+  const checkFailures = async () => ((await (await request.get(`/api/errors?session=${session.id}`)).json()).failures as any[]).filter((g) => g.kind === "check");
+  await expect.poll(async () => (await checkFailures()).length, { timeout: 90_000 }).toBe(1);
+  const [group] = await checkFailures();
+  expect(group).toMatchObject({ cls: "unit" });
+  expect(group.refs.find((r: any) => r.id === agent.id).eg).toContain("error: add 1 2 gave 2, not 3");
+  expect((await ledger())[0]).toMatchObject({ by: "beside", result: "fail" });
+  expect((await agentsOf())[0]?.status).toBe("completed");
+  expect(await told()).toHaveLength(1);
+  expect((await eventsOf()).filter((e) => e.kind === "turn_end")).toHaveLength(turns + 1);
+  // Its copy of the files went with the end of its turn.
+  const state = (await (await request.get("/api/daemon")).json()).state_dir as string;
+  const copy = join(state, "checks", "beside", createHash("sha256").update(agent.session_id).digest("hex").slice(0, 16));
+  await expect.poll(() => existsSync(copy), { timeout: 30_000 }).toBe(false);
+  } finally {
+    await request.patch("/api/settings", { data: { checks: was } });
+  }
 });

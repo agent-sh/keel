@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { changed, commandOf, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, noticeText, NOTICE_MAX, placeOf, started, testFilesOf, testsFor, toTell, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
+import { changed, commandOf, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
 import { parseChecks } from "./named.ts";
 
 test("the steps of a window are one run, one run at a time, and a turn's end runs what waits at once", () => {
@@ -24,6 +24,32 @@ test("the steps of a window are one run, one run at a time, and a turn's end run
   expect(dueAt(turnEnded(l))).toBeNull(); // nothing waits: the end starts nothing
 });
 
+test("the copy goes once the turn ended and nothing runs or waits, and the next change keeps it", () => {
+  // A run that ended while the agent worked, then the turn's end with nothing waiting: the copy goes then.
+  let l = finished(started(changed(fresh(), 1_000)), "t1");
+  expect(sweepable(l)).toBe(false);
+  l = turnEnded(l);
+  expect(sweepable(l)).toBe(true);
+  // A turn that ended with a change waiting: it runs first, and the copy goes at that run's end.
+  l = turnEnded(changed(fresh(), 1_000));
+  expect(sweepable(l)).toBe(false);
+  l = started(l);
+  expect(sweepable(l)).toBe(false);
+  expect(sweepable(finished(l, "t2"))).toBe(true);
+  // A step after the end (the agent was given more work) keeps it.
+  expect(sweepable(changed(finished(l, "t2"), 5_000))).toBe(false);
+});
+
+test("a red is told to a working agent, kept for one that waits, given to the parent of a finished one, and to nobody past the owner's stop", () => {
+  expect(toWhom("working")).toBe("agent");
+  expect(toWhom("parked")).toBe("later");
+  expect(toWhom("ended")).toBe("parent");
+  expect(toWhom("held")).toBe("none");
+  expect(toWhom(undefined)).toBe("none");
+  const w = parentWords([{ name: "unit", command: "bun test ./a.test.ts", exit: 1, pass: 1, fail: 1, failure: { names: ["a > b"], first: ["error: boom"] } }], "0123456789abcdef");
+  expect(w).toEqual({ cls: "unit", message: "unit (a > b) failed after it ended: error: boom (tree 012345678)" });
+});
+
 test("a failure is told once, and again only after a pass", () => {
   const red = (first: string, names = ["a > b"]): Red => ({ name: "unit", command: "bun test ./a.test.ts", exit: 1, pass: 1, fail: 1, failure: { names, first: [first] } });
   let l = fresh();
@@ -42,7 +68,7 @@ test("a failure is told once, and again only after a pass", () => {
   expect(fingerprint([red("x"), { ...red("y"), name: "typecheck" }])).toBe(fingerprint([{ ...red("y"), name: "typecheck" }, red("x")]));
 });
 
-test("the tests a change touches: its own tests, the tests of its folders and the tests that import it", () => {
+test("the tests a change touches: its own tests, the tests of its folders and the tests that import it, the most direct first", () => {
   const tests = ["src/a/x.test.ts", "src/a/y.test.ts", "src/b/z.test.ts", "src/c/w.test.ts", "src/c/v.test.ts", "test/i.test.ts"];
   const text: Record<string, string> = {
     "src/b/z.test.ts": `import { f } from "../a/lib.ts";\n`,
@@ -50,17 +76,31 @@ test("the tests a change touches: its own tests, the tests of its folders and th
     "src/c/v.test.ts": `import "./other.ts";\n`,
     "test/i.test.ts": `export { g } from "../src/d/mod/index.ts";\n`,
   };
-  expect(testsFor(["src/a/lib.ts"], tests, (p) => text[p])).toEqual(["src/a/x.test.ts", "src/a/y.test.ts", "src/b/z.test.ts"]);
+  const refsOf = (p: string) => (text[p] ? refsIn(text[p]!, p) : undefined);
+  expect(testsFor(["src/a/lib.ts"], tests, refsOf)).toEqual(["src/a/x.test.ts", "src/a/y.test.ts", "src/b/z.test.ts"]);
   // An import without its extension, and of a folder's index.
-  expect(testsFor(["src/d/mod.ts"], tests, (p) => text[p])).toEqual(["src/c/w.test.ts"]);
-  expect(testsFor(["src/d/mod/index.ts"], tests, (p) => text[p])).toEqual(["src/c/w.test.ts", "test/i.test.ts"]);
-  expect(testsFor(["test/i.test.ts", "docs/x.md"], tests, (p) => text[p])).toEqual(["test/i.test.ts"]);
+  expect(testsFor(["src/d/mod.ts"], tests, refsOf)).toEqual(["src/c/w.test.ts"]);
+  expect(testsFor(["src/d/mod/index.ts"], tests, refsOf)).toEqual(["src/c/w.test.ts", "test/i.test.ts"]);
+  expect(testsFor(["test/i.test.ts", "docs/x.md"], tests, refsOf)).toEqual(["test/i.test.ts"]);
   // A test that reads the source tree under its place reads every file there.
   const walker = `const ROOT = join(import.meta.dir, "..", "ui/src");\nfor (const f of new Bun.Glob("**/*.tsx").scanSync(ROOT)) check(f);\n`;
   expect(treeReadsOf(walker, "src/conv.test.ts")).toEqual(["src", "ui/src"]);
-  expect(testsFor(["ui/src/components/Panel.tsx"], ["src/conv.test.ts", "src/other.test.ts"], (p) => (p === "src/conv.test.ts" ? walker : "readdirSync(tmp)"))).toEqual(["src/conv.test.ts"]);
+  expect(testsFor(["ui/src/components/Panel.tsx"], ["src/conv.test.ts", "src/other.test.ts"], (p) => refsIn(p === "src/conv.test.ts" ? walker : "readdirSync(tmp)", p))).toEqual(["src/conv.test.ts"]);
   expect(treeReadsOf(`readdirSync(tmpdir())`, "src/x.test.ts")).toEqual([]);
   expect(importsOf(`import a from "./a"; const b = require( '../b.js' ); import x from "pkg";`, "s/t.test.ts")).toEqual(["s/a", "b.js"]);
+  // The order: a changed test and the ones still red, the changed file's own test, the tests that read the tree
+  // under it, its folder's other tests, then the tests that import it, the nearest first.
+  const many = ["src/core/types.test.ts", "src/core/aa.test.ts", "src/conv.test.ts", "src/x/far.test.ts", "src/core/sub/near.test.ts", "src/y/red.test.ts", "src/z/mine.test.ts"];
+  const imp = refsIn(`import { T } from "../core/types.ts";`, "src/x/far.test.ts");
+  const refs: Record<string, ReturnType<typeof refsIn>> = { "src/conv.test.ts": refsIn(walker, "src/conv.test.ts"), "src/x/far.test.ts": imp, "src/core/sub/near.test.ts": refsIn(`import { T } from "../types.ts";`, "src/core/sub/near.test.ts") };
+  expect(testsFor(["src/core/types.ts", "src/z/mine.test.ts"], many, (p) => refs[p], ["src/y/red.test.ts"])).toEqual(["src/z/mine.test.ts", "src/y/red.test.ts", "src/core/types.test.ts", "src/conv.test.ts", "src/core/aa.test.ts", "src/core/sub/near.test.ts", "src/x/far.test.ts"]);
+});
+
+test("a run's time limit is sized from its test files, and a run longer than a result beside the work is worth is not made", () => {
+  expect(limitOf(1)).toBe(60_000);
+  expect(limitOf(20, 2_000)).toBe(120_000);
+  expect(limitOf(20, 5_000)).toBe(300_000);
+  expect(limitOf(20, RUN_MAX_MS / 20 + 1)).toBeNull();
 });
 
 test("a beside check is named in the file, and what it runs", () => {

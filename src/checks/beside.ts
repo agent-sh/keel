@@ -22,16 +22,21 @@ export const WINDOW_MS = 30_000;
 
 // Where an agent stands. `first`: when the oldest change no run has covered was
 // made (null: none waits). `ended`: its turn ended since, so no step follows that
-// would add to the change (it runs as soon as it may). `running`: a run of it is
-// going. `tree`: the tree its last run checked. `told`: the failure it was told
-// last (a fingerprint), cleared by a green run.
-export type Lane = { first: number | null; ended: boolean; running: boolean; tree: string | null; told: string | null };
-export const fresh = (): Lane => ({ first: null, ended: false, running: false, tree: null, told: null });
+// would add to the change (it runs as soon as it may). `over`: its turn ended and
+// no step came since (its copy of the files can go once nothing runs or waits).
+// `running`: a run of it is going. `tree`: the tree its last run checked. `told`:
+// the failure it was told last (a fingerprint), cleared by a green run. `carry`:
+// the test files of the last red run, run again with the next selection until
+// they pass (a later step's change may not touch them). `owed`: a red not told
+// yet, kept while the agent waits on a wait of its own (see toWhom).
+export type Owed = { text: string; key: string; cls: string; message: string };
+export type Lane = { first: number | null; ended: boolean; over: boolean; running: boolean; tree: string | null; told: string | null; carry: string[]; owed: Owed | null };
+export const fresh = (): Lane => ({ first: null, ended: false, over: false, running: false, tree: null, told: null, carry: [], owed: null });
 
 // A step changed files (or may have: a shell call).
-export const changed = (l: Lane, now: number): Lane => ({ ...l, first: l.first ?? now });
+export const changed = (l: Lane, now: number): Lane => ({ ...l, first: l.first ?? now, over: false });
 // Its turn ended: what waits runs now, with no more of the window.
-export const turnEnded = (l: Lane): Lane => (l.first === null ? l : { ...l, ended: true });
+export const turnEnded = (l: Lane): Lane => ({ ...l, over: true, ended: l.first !== null });
 // When a run is due: never while one runs, else at the end of the window (or now, after the turn's end).
 export function dueAt(l: Lane, windowMs = WINDOW_MS): number | null {
   if (l.first === null || l.running) return null;
@@ -40,6 +45,20 @@ export function dueAt(l: Lane, windowMs = WINDOW_MS): number | null {
 export const started = (l: Lane): Lane => ({ ...l, first: null, ended: false, running: true });
 // A run ended (or found nothing to do): the tree it checked, and the failure it told (undefined: as it was).
 export const finished = (l: Lane, tree: string | null, told?: string | null): Lane => ({ ...l, running: false, tree: tree ?? l.tree, ...(told !== undefined ? { told } : {}) });
+// The copy of the files can go: the agent's turn ended, and no run goes or waits (the next change makes it again).
+export const sweepable = (l: Lane) => l.over && !l.running && l.first === null;
+
+// Who is told a red result, by where the agent stands when it is known. A
+// working agent reads it at its next step (a message of the harness's to its
+// running turn). One that waits on a wait of its own is told when it works
+// again: a message now would start a turn for it. A finished agent is never
+// given new work by it: the session that started it is told in its failures
+// notice, which goes with its next input and starts no turn (the agent's
+// report has the run in its proof line when it ended after the run). Nobody
+// is told of an agent the owner stopped, or one below an owner's stop.
+export type AgentState = "working" | "parked" | "ended" | "held";
+export const toWhom = (state: AgentState | undefined): "agent" | "later" | "parent" | "none" =>
+  state === "working" ? "agent" : state === "parked" ? "later" : state === "ended" ? "parent" : "none";
 
 // --- the checks a change touches
 
@@ -84,25 +103,67 @@ export function treeReadsOf(text: string, from: string): string[] {
 }
 const under = (folder: string, file: string) => folder === "." || file.startsWith(`${folder}/`);
 
-// The test files a change touches, of one check that runs test files: the
-// changed tests themselves, the tests in the folder of any changed file, the
-// tests that import a changed file, and the tests that read the source tree
-// under a changed file (treeReadsOf). `tests`: the check's test files in the
-// tree, from the top; `textOf`: a test file's text (undefined: not read).
-export function testsFor(changed: readonly string[], tests: readonly string[], textOf: (path: string) => string | undefined): string[] {
+// What a test file reaches, read from its text once per content (the runner keeps it by the file's blob).
+export type Refs = { imports: string[]; reads: string[] };
+export const refsIn = (text: string, from: string): Refs => ({ imports: importsOf(text, from), reads: treeReadsOf(text, from) });
+
+// The test files a change touches, of one check that runs test files, the most
+// direct first: the changed tests themselves and the ones still red from the
+// last run (`carry`), then a changed file's own test (`x.test.ts` beside
+// `x.ts`), the tests that read the source tree under a changed file
+// (treeReadsOf: a convention test imports none of the files it checks), the
+// other tests in a changed file's folder, and last the tests that import a
+// changed file. Within each, the nearest to a changed file first. `tests`: the
+// check's test files in the tree, from the top; `refsOf`: what a test reaches
+// (undefined: not read).
+const stem = (p: string) => posix.basename(p).replace(/\.(?:test|spec)(?=\.)/, "").replace(/\.[^.]+$/, "");
+const apart = (a: string, b: string) => {
+  const x = posix.dirname(a).split("/"), y = posix.dirname(b).split("/");
+  let i = 0;
+  while (i < x.length && i < y.length && x[i] === y[i]) i++;
+  return x.length + y.length - 2 * i;
+};
+export function testsFor(changed: readonly string[], tests: readonly string[], refsOf: (path: string) => Refs | undefined, carry: readonly string[] = []): string[] {
   const folders = new Set(changed.map((f) => dirname(f)));
-  const touched = new Set(changed);
-  const out: string[] = [];
-  for (const t of [...tests].sort()) {
-    if (touched.has(t) || folders.has(dirname(t))) { out.push(t); continue; }
-    const text = textOf(t);
-    if (!text) continue;
-    if (importsOf(text, t).some((spec) => changed.some((f) => names(spec, f)))) { out.push(t); continue; }
-    const reads = treeReadsOf(text, t);
-    if (reads.some((r) => changed.some((f) => under(r, f)))) out.push(t);
+  const touched = new Set([...changed, ...carry]);
+  const ranked: { t: string; rank: number; near: number }[] = [];
+  for (const t of tests) {
+    const near = changed.length ? Math.min(...changed.map((f) => apart(t, f))) : 0;
+    const at = (rank: number) => ranked.push({ t, rank, near });
+    if (touched.has(t)) { at(0); continue; }
+    if (changed.some((f) => dirname(f) === dirname(t) && stem(f) === stem(t))) { at(1); continue; }
+    const refs = refsOf(t);
+    if (refs?.reads.some((r) => changed.some((f) => under(r, f)))) { at(2); continue; }
+    if (folders.has(dirname(t))) { at(3); continue; }
+    if (refs?.imports.some((spec) => changed.some((f) => names(spec, f)))) at(4);
   }
-  return out;
+  return ranked.sort((a, b) => a.rank - b.rank || a.near - b.near || (a.t < b.t ? -1 : a.t > b.t ? 1 : 0)).map((r) => r.t);
 }
+
+// How many test files one run takes: the most direct of what a change touches.
+// A change to a file imported nearly everywhere touches hundreds; run whole,
+// those take minutes, and their result comes when the agent is long past the
+// change (or never, past its time limit), while the agent's own run of the
+// suite is the check it is. Measured on this repository (see FIND-M23): the
+// first 20 of a wide change's ranked tests still hold the review-found failures
+// the whole selection held, and run in under a minute where the whole took 3 to 8.
+export const PICK_MAX = 20;
+// What one test file takes, before any run of the check here says (measured: 1.3 s a file for a
+// narrow change, up to 3 s a file for a wide one on a loaded machine).
+export const FILE_MS = 2_000;
+// The longest run worth starting: a result later than this comes when the agent is past the change.
+export const RUN_MAX_MS = 120_000;
+// The time limit of a run of `files` test files at `msPerFile` (from the check's earlier runs here), or
+// null when it would take longer than RUN_MAX_MS: then it is not run, and the agent's own run is the check.
+// Three times what it should take, at least a minute (a loaded machine is slower than the runs it learned from).
+export function limitOf(files: number, msPerFile = FILE_MS): number | null {
+  const expect = files * msPerFile;
+  if (expect > RUN_MAX_MS) return null;
+  return Math.max(60_000, 3 * expect);
+}
+// What a file took in a run: its time over its files (a stopped run took at least its whole limit).
+export const perFile = (ms: number, files: number) => (files > 0 ? Math.round(ms / files) : undefined);
+
 // The test files of a check in the tree: the files its globs name, in its folder.
 export function testFilesOf(check: Check, files: readonly string[]): string[] {
   if (!check.tests?.length) return [];
@@ -200,6 +261,19 @@ export function noticeText(reds: readonly Red[], o: { tree: string; at: string; 
     if (t.length <= NOTICE_MAX) return t;
   }
   return body(0).slice(0, NOTICE_MAX);
+}
+
+// What the session that started a finished agent is told of a red run beside it (its failures notice,
+// src/automation/failures.ts, which shows about 200 characters of it): the cause is the checks that failed;
+// the words, what failed and how the first failure began, then the tree (the ledger has the rest).
+export function parentWords(reds: readonly Red[], tree: string): { cls: string; message: string } {
+  const first = reds.find((r) => r.failure.first.length);
+  const what = reds.map((r) => `${r.name}${r.failure.names.length ? ` (${r.failure.names.slice(0, 2).join("; ")}${r.failure.names.length > 2 ? `; ${r.failure.names.length - 2} more` : ""})` : ""}${r.base ? `, ${r.base}` : ""}`).join("; ");
+  const line = first?.failure.first[0]?.trim() ?? "";
+  return {
+    cls: reds.map((r) => r.name).join(", "),
+    message: `${what} failed after it ended${line ? `: ${line.length > 120 ? `${line.slice(0, 119)}…` : line}` : ""} (tree ${tree.slice(0, 9)})`,
+  };
 }
 
 // --- where a run goes

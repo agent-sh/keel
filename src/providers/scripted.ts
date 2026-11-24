@@ -542,10 +542,11 @@ export class ScriptedProvider implements Provider {
           return { ...r, stop: "refusal", stop_details: { category: "cyber", explanation: "Scripted refusal for the test." } };
         }
         // `script:then-find <word> ...` on a later line: an input that comes after the calls (a wait's
-        // wake) is answered from its own text, as a model that read it does: for each word, its line
-        // there, or "Not in the request." (it makes no call to read anything).
+        // wake, or a steer that came with the last call's result) is answered from its own text, as a model
+        // that read it does: for each word, its line there, or "Not in the request." (it makes no call to read anything).
         const thenFind = owner.match(/\nscript:then-find[ \t]+([^\n]+)/)?.[1];
-        if (thenFind && last?.role === "user" && !lastResult) {
+        const steered = (last?.content as any[] | undefined)?.some((b) => b.type === "text" && carried(b).length);
+        if (thenFind && last?.role === "user" && (!lastResult || steered)) {
           const lines = (last.content as any[]).flatMap(carried).flatMap((t) => t.split("\n"));
           return reply(thenFind.split(/\s+/).filter(Boolean).map((w: string) => lines.find((l: string) => l.includes(w))?.trim().slice(0, 240) ?? "Not in the request.").join("\n"));
         }

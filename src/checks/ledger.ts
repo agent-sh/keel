@@ -294,11 +294,12 @@ export function record(r: Omit<Run, "id" | "inputs" | "top"> & { repo: string; c
 export const onTree = (key: string, tree: string, inputs: string | null = null): Run[] =>
   !tree ? [] : db()?.query<Run, [string, string, string | null]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_key_tree WHERE key = ? AND tree = ? AND inputs IS ? AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT 50`).all(key, tree, inputs) ?? [];
 
-// The passes and failures of a check on any of these trees.
+// The passes and failures of a check on any of these trees (the base's history), by the owner or a session:
+// a run Keel made by itself beside an agent ran on its copy, in its sandbox, and is no evidence of the base.
 export function onTrees(key: string, trees: string[]): Run[] {
   const d = db();
   if (!d || !trees.length) return [];
-  return d.query<Run, string[]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_key_tree WHERE key = ? AND tree IN (SELECT value FROM json_each(?)) AND result IN ('pass', 'fail')`).all(key, JSON.stringify(trees));
+  return d.query<Run, string[]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_key_tree WHERE key = ? AND tree IN (SELECT value FROM json_each(?)) AND result IN ('pass', 'fail') AND by != 'beside'`).all(key, JSON.stringify(trees));
 }
 
 export const run = (id: number): Run | undefined => db()?.query<Run, [number]>(`SELECT ${COLS} FROM check_runs WHERE id = ?`).get(id) ?? undefined;
