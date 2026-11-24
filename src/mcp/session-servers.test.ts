@@ -137,6 +137,8 @@ test("a session's command runs where the session's sandbox says, is started agai
   profile = "off";
   m.setSessionServers("s1", [{ name: "slow", config: { command: "sh", args: ["-c", `echo again >> ${runs}; echo $$ > ${pid}; exec sleep 60`] } }], { cwd: d });
   expect(await until(() => readFileSync(runs, "utf8").endsWith("write\nagain\n"))).toBe(true);
+  // (The command writes its pid after its first line: read it once it is not the earlier one, and not a file the shell just emptied.)
+  expect(await until(() => Number(readFileSync(pid, "utf8")) > 0 && Number(readFileSync(pid, "utf8")) !== second)).toBe(true);
   const third = Number(readFileSync(pid, "utf8"));
   profile = "none here";
   m.sessionPermChanged("s1");

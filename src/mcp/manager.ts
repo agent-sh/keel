@@ -26,6 +26,7 @@ import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validat
 import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles, sourced } from "./sources.ts";
 import { ClientRefused, OAuthStore, type Forgotten } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
+import { Links } from "./links.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { appUriOf, visibleTo } from "./apps.ts";
@@ -246,6 +247,9 @@ type Entry = {
   holder?: string;
   // The session's sandbox the command was started in (its profile and network).
   sandbox?: string;
+  // What a session's own command is, whoever holds it: the config and the argv that confines it, under Keel's key.
+  // Its kept tool list is under this name, and sessions with the same one share a connection (src/mcp/links.ts).
+  spec?: string;
   // Ends a connection attempt under way when the server is dropped.
   abort?: AbortController;
   // It connected at least once: its end is told.
@@ -279,7 +283,7 @@ type Entry = {
 type Kept = { key: string; tools: McpTool[]; instructions: string | null; caps: { resources: boolean; prompts: boolean }; prompts?: any[] };
 
 // What a session's own server is: the session, the name it knows it by, the editor's name for it, who holds it.
-type Own = { session: string; label: string; given: string; holder?: string; project?: string };
+type Own = { session: string; label: string; given: string; holder?: string; project?: string; spec?: string };
 
 // A server an editor named, as a name Keel's tools can carry: the characters a
 // server name takes, and never one a shared server already has.
@@ -421,6 +425,9 @@ const SSE_TRY_MS = 4000;
 // minutes a job scope of an ended session idles before it is stopped (src/automation/leftover-rules.ts), long
 // enough for the next step of a task and short of holding a browser's memory for hours.
 const IDLE_PASS_MS = 60_000;
+
+// How many tool lists of the servers sessions own are kept (the newest; the owner's own servers' lists are not counted).
+const SESSION_KEPT = 200;
 // The minutes a command server may sit with no call before its process is ended (its tool list stays, the next call
 // starts it again): 30. Long enough that a server a task uses now and then is not started again in the middle of it,
 // short enough that one used once is not held for the rest of the day. A server called every few minutes would restart
@@ -450,6 +457,10 @@ export type AppCall = { raw(r: McpCallResult): void };
 
 export class McpManager {
   private entries = new Map<string, Entry>();
+  // The connections of the servers sessions own, one for each spec however many sessions hold it.
+  private links = new Links();
+  // How many connections a session's own servers have up, and how many holders each has.
+  sharedStats() { return this.links.stats(); }
   private cfg: McpConfigFile = { servers: {} };
   readonly oauth: OAuthStore;
   private disposed = false;
@@ -609,13 +620,22 @@ export class McpManager {
       const held = config.command ? this.sessionSandbox?.(session, [config.command, ...(config.args ?? [])]) : undefined;
       if (held && "refuse" in held) { out.push({ name: s.name, error: held.refuse }); continue; }
       const key = `${label}@${session}`;
-      this.addEntry(key, config, undefined, { session, label, given: s.name, holder: opts.holder, ...(opts.project ? { project: opts.project } : {}) });
+      const spec = config.command ? this.specOf(config, held) : undefined;
+      const e = this.addEntry(key, config, undefined, { session, label, given: s.name, holder: opts.holder, ...(spec ? { spec } : {}), ...(opts.project ? { project: opts.project } : {}) });
       keep.add(key);
       out.push({ name: s.name, label });
-      this.ensure(key).catch(() => {}); // its state says why it failed
+      // (One with a tool list kept from its last run waits for its first call, or a search that finds one of its tools.)
+      if (!e.cold) this.ensure(key).catch(() => {}); // its state says why it failed
     }
     for (const e of mine()) if (!keep.has(e.name)) this.drop(e.name);
     return out;
+  }
+
+  // What a session's own command is, for its kept tool list: the config (its environment's values too) and the argv
+  // that runs it in the session's sandbox, under Keel's key so that no value of it can be read from the digest.
+  private specOf(config: McpServerConfig, held: { argv: string[]; as: string } | { refuse: string } | undefined): string {
+    const argv = held && "argv" in held && held.as !== "off" ? held.argv : null;
+    return `~${createHmac("sha256", this.bindKey).update(canon({ config, argv })).digest("hex").slice(0, 40)}`;
   }
 
   // The MCP servers of an installed plugin: the whole list each time (none
@@ -689,8 +709,11 @@ export class McpManager {
   // started again under the new one.
   sessionPermChanged(session: string) {
     for (const e of [...this.entries.values()]) {
-      if (e.session !== session || !e.config.command || e.sandbox === undefined) continue;
-      const now = this.sessionSandbox?.(session, [e.config.command]);
+      if (e.session !== session || !e.config.command) continue;
+      const now = this.sessionSandbox?.(session, [e.config.command, ...(e.config.args ?? [])]);
+      // Its kept list is under what it runs as now.
+      if (e.spec) e.spec = this.specOf(e.config, now);
+      if (e.sandbox === undefined) continue;
       if (now && "as" in now && now.as === e.sandbox) continue;
       // The attempt under way, if any, is ended and is not this entry's any more.
       e.abort?.abort();
@@ -807,8 +830,8 @@ export class McpManager {
     this.markUpgrade();
     // A kept listing of a server that is no longer here and was never accepted (no pin) is of no use: dropped.
     // (A plugin's server is added later and is kept; one gone later is dropped when it goes.)
-    if (!runMode.client && Object.keys(this.kept).some((n) => !this.entries.has(n) && !this.pins[n])) {
-      for (const n of Object.keys(this.kept)) if (!this.entries.has(n) && !this.pins[n]) delete this.kept[n];
+    if (!runMode.client && Object.keys(this.kept).some((n) => !n.startsWith("~") && !this.entries.has(n) && !this.pins[n])) {
+      for (const n of Object.keys(this.kept)) if (!n.startsWith("~") && !this.entries.has(n) && !this.pins[n]) delete this.kept[n];
       this.writeKept();
     }
     if (!runMode.client) {
@@ -899,16 +922,18 @@ export class McpManager {
     return !!e.cold && (e.state === "idle" || e.state === "connecting");
   }
 
-  // A command server of the owner's or a plugin's that may have no process: not one Keel brings, not a session's,
+  // A command server of the owner's, a plugin's or a session's that may have no process: not one Keel brings,
   // not one the owner keeps running, not one whose events the owner takes (it must be there to push them).
   private sleeps(e: Entry): boolean {
-    return !e.bundled && !e.session && !!e.config.command && !e.config.url && !e.config.keep_running && !this.channelOn(e);
+    return !e.bundled && (!e.session || !!e.spec) && !!e.config.command && !e.config.url && !e.config.keep_running && !this.channelOn(e);
   }
 
   // Whether a listing is one the owner already accepted: every tool it names is pinned as it is, and its instructions are
   // the pinned ones. Only such a listing is a server's while it has no process: a change is the owner's to review from
   // what the server itself lists, never from a file.
   private accepted(e: Entry, tools: McpTool[], instructions: string | null): boolean {
+    // A session's own server is nobody's to accept: its list is what it listed under this spec, signed as kept.
+    if (e.session) return true;
     const p = this.pinOf(e);
     return !!p && !diffTools(p.tools, tools).changes.length && !instructionsChange(p.instructions, instructions);
   }
@@ -916,7 +941,7 @@ export class McpManager {
   // A server with a kept listing under this config that the owner accepted (a pin): it starts asleep.
   private useKept(e: Entry) {
     if (e.state === "disabled" || !this.sleeps(e)) return;
-    const k = this.kept[e.name];
+    const k = this.kept[this.keptAs(e)];
     if (!k || k.key !== keptKey(e.config) || !this.accepted(e, k.tools, k.instructions)) return;
     e.tools = k.tools;
     e.instr = k.instructions;
@@ -925,16 +950,28 @@ export class McpManager {
     e.state = "idle";
   }
 
+  // The name a server's kept listing is under: its own, or for a session's server its spec (any session that is given
+  // the same server finds it, and it is no other's).
+  private keptAs(e: Entry): string {
+    return e.spec ?? e.name;
+  }
   // The listing just taken, kept for the next start. Written only when it changed.
   private keep(e: Entry, prompts?: any[]) {
-    if (e.bundled || e.session || !e.config.command || e.config.url || !e.client) return;
+    if (e.bundled || (e.session && !e.spec) || !e.config.command || e.config.url || !e.client) return;
+    const at = this.keptAs(e);
     const caps = { resources: !!e.client.capabilities.resources, prompts: !!e.client.capabilities.prompts };
-    const was = this.kept[e.name];
+    const was = this.kept[at];
     const key = keptKey(e.config);
     const next: Kept = { key, tools: e.tools, instructions: e.instr ?? null, caps, ...((prompts ?? (was?.key === key ? was.prompts : undefined)) ? { prompts: prompts ?? was!.prompts } : {}) };
     if (was && canon(was) === canon(next)) return;
-    this.kept[e.name] = next;
-    this.writeKept(e.name);
+    // (A session's lists are the newest ones: the oldest go past SESSION_KEPT.)
+    if (e.session) {
+      delete this.kept[at];
+      const old = Object.keys(this.kept).filter((n) => n.startsWith("~"));
+      for (const n of old.slice(0, Math.max(0, old.length + 1 - SESSION_KEPT))) delete this.kept[n];
+    }
+    this.kept[at] = next;
+    this.writeKept(at);
   }
 
   // The file is written off the loop, one write at a time: a change that comes while one is under way is written
@@ -1089,9 +1126,13 @@ export class McpManager {
         const timeout = (e.config.timeout_secs ?? 30) * 1000;
         // What the server asks outside any call is answered for the folder it was started in.
         const outside = (q: InputRequest) => this.inputOutside(t.kind === "stdio" && t.cwd ? t.cwd : this.workspace, q);
+        // A session's own server is one connection for every session given the same one.
+        const open = (tt: Transport, era: "modern" | "legacy" | undefined, within?: number) => e.session
+          ? this.links.open(tt, (sig) => McpClient.connect(tt, timeout, era, sig, within, outside), abort.signal)
+          : McpClient.connect(tt, timeout, era, abort.signal, within, outside);
         let client: McpClient;
         try {
-          client = await McpClient.connect(t, timeout, e.era, abort.signal, undefined, outside);
+          client = await open(t, e.era);
         } catch (err) {
           // A server that refuses the request with a 4xx may speak only the
           // older HTTP with SSE transport, at the same address: asked that
@@ -1099,7 +1140,7 @@ export class McpManager {
           // neither). What the first try said stands when that fails too.
           if (t.kind !== "http" || t.sse || e.noSse || abort.signal.aborted || !/^HTTP 4\d\d/.test((err as Error).message)) throw err;
           try {
-            client = await McpClient.connect({ ...t, sse: true }, timeout, undefined, abort.signal, Math.min(timeout, SSE_TRY_MS), outside);
+            client = await open({ ...t, sse: true }, undefined, Math.min(timeout, SSE_TRY_MS));
           } catch {
             if (!abort.signal.aborted) e.noSse = true;
             throw err;
@@ -1128,7 +1169,7 @@ export class McpManager {
           // written: the row counts them anyway, and a server that logs fast would make a write of every line.
           if (!severe(line.level) || Date.now() - (e.logCaptured ?? 0) < 1000) return;
           e.logCaptured = Date.now();
-          this.errors.capture("server", new Error(`MCP server ${e.label ?? name} logged ${line.level === "error" ? "an error" : `a ${line.level} line`}${line.logger ? ` (${line.logger})` : ""}: ${line.text.slice(0, 500)}`), { mcp: name, at: "mcp log", level: line.level, ...(line.logger ? { logger: line.logger } : {}) }, { group: `mcp log\u0000${name}\u0000${line.logger ?? ""}\u0000${line.level}` });
+          this.errors.capture("server", new Error(`MCP server ${e.label ?? name} logged ${line.level === "error" ? "an error" : `a ${line.level} line`}${line.logger ? ` (${line.logger})` : ""}: ${line.text.slice(0, 500)}`), { mcp: name, at: "mcp log", level: line.level, ...(line.logger ? { logger: line.logger } : {}) }, { group: `mcp log\u0000${e.spec ?? name}\u0000${line.logger ?? ""}\u0000${line.level}` });
         };
         // Watched from the start: a server that exits during discovery is not ready.
         let gone: string | undefined;
@@ -1363,6 +1404,8 @@ export class McpManager {
       e.state = "idle";
       e.cold = true;
       e.error = undefined;
+      // (A session is told its server ended, and that it started when it does again.)
+      if (e.session && e.ran) { this.told(e, "ended"); e.ran = false; }
       stopped.push(e.name);
       try { this.onIdleStop?.(e.name, now - since); } catch { /* the feed is not the stop */ }
     }
