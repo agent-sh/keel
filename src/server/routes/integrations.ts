@@ -4,7 +4,9 @@ import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { draftPresent } from "./drafts.ts";
 import { deliver } from "../../automation/core.ts";
 import { momentumReport, momentumSocketPath, startMomentumSocket } from "../../integrations/momentum.ts";
-import { memoryMeter } from "../../integrations/memory-meter.ts";
+import { raise } from "../../automation/alerts.ts";
+import { memoryMeter, MEMORY_PATHS } from "../../integrations/memory-meter.ts";
+import { watchFell } from "../../integrations/memory-fell.ts";
 import { isWriter, MemoryStore, memoryWriter as writer } from "../../integrations/memory-store.ts";
 import { readsOf } from "../reads.ts";
 import { memoryRoutes } from "./memory.ts";
@@ -30,6 +32,21 @@ export const integrationRoutes: RouteModule = (deps) => {
     g.__keelMomentum = undefined;
     errors.capture("server", e, { at: "momentum socket" });
   }
+
+  // A fall of the store's recall is one alert, looked for every ten minutes (a reload replaces the last timer).
+  store.migrate("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const meta = (path: string) => `memory_fell:${path}`;
+  const looks = () => void watchFell({
+    standing: () => memoryMeter(store).standingOn(readsOf(store)),
+    open: () => new Set(MEMORY_PATHS.filter((p) => store.db.query("SELECT 1 FROM admin_meta WHERE key = ?").get(meta(p)))),
+    mark: (path, on) => void (on ? store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES (?, ?)").run(meta(path), String(Date.now())) : store.db.query("DELETE FROM admin_meta WHERE key = ?").run(meta(path))),
+    raise: (f, t) => void raise("regression", null, t.title, t.body, { metric: "memory_recall", path: f.path, recent: f.recent, day: f.day }),
+  }).catch((e) => errors.capture("server", e, { at: "memory recall check" }));
+  const fl = globalThis as { __keelFellTimer?: ReturnType<typeof setInterval>; __keelFellFirst?: ReturnType<typeof setTimeout> };
+  clearInterval(fl.__keelFellTimer); clearTimeout(fl.__keelFellFirst);
+  fl.__keelFellTimer = setInterval(looks, 600_000);
+  fl.__keelFellFirst = setTimeout(looks, 60_000);
+  fl.__keelFellTimer.unref?.(); fl.__keelFellFirst.unref?.();
 
   // The memory switches are fields of the session too (PATCH /api/sessions/:id).
   registerSessionPatch({

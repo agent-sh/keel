@@ -211,6 +211,9 @@ export const FELL_MIN_ASKS = 20;
 export const FELL_MIN_HITS = 10;
 export type Window = { answered: number; hits: number };
 export type Fell = { path: MemoryPath; recent: Window; day: Window };
+// A path's windows with its fall, if any. `recovered`: both windows hold enough answers and the recent share is back above half of the day's.
+export type Standing = { path: MemoryPath; recent: Window; day: Window; fell: Fell | null };
+export const recovered = (w: Standing): boolean => !w.fell && w.recent.answered >= FELL_MIN_ASKS && w.day.answered >= FELL_MIN_ASKS && w.day.hits >= FELL_MIN_HITS;
 export function recallFell(path: MemoryPath, recent: Window, day: Window): Fell | null {
   if (recent.answered < FELL_MIN_ASKS || day.answered < FELL_MIN_ASKS || day.hits < FELL_MIN_HITS) return null;
   return recent.hits / recent.answered <= day.hits / day.answered / 2 ? { path, recent, day } : null;
@@ -472,13 +475,22 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
       FROM telemetry_memory WHERE ts >= ? AND ts < ? AND path IN ('store_start', 'store_prompt', 'store_tool') GROUP BY path, recent`;
     return { sql, args: [recentFrom, recentFrom - FELL_DAY_MS, now] };
   }
-  private fellOf(rows: { path: MemoryPath; recent: number; answered: number; hits: number }[]): Fell[] {
+  // Each path's two windows and whether its recall fell.
+  private windowsOf(rows: { path: MemoryPath; recent: number; answered: number; hits: number }[]): Standing[] {
     const none = (): Window => ({ answered: 0, hits: 0 });
-    return MEMORY_PATHS.flatMap((path) => {
+    return MEMORY_PATHS.map((path) => {
       const at = (recent: number) => rows.find((r) => r.path === path && r.recent === recent) ?? none();
-      const fell = recallFell(path, at(1), at(0));
-      return fell ? [fell] : [];
+      const recent = at(1), day = at(0);
+      return { path, recent, day, fell: recallFell(path, recent, day) };
     });
+  }
+  private fellOf(rows: { path: MemoryPath; recent: number; answered: number; hits: number }[]): Fell[] {
+    return this.windowsOf(rows).flatMap((w) => (w.fell ? [w.fell] : []));
+  }
+  // Every path's standing at `now`, on the read thread (what the alert for a fall reads).
+  async standingOn(reads: Reads, now = Date.now()): Promise<Standing[]> {
+    const q = this.fellSql(now);
+    return this.windowsOf(await reads.sql<any>(q.sql, q.args));
   }
   fell(now = Date.now()): Fell[] {
     const q = this.fellSql(now);
