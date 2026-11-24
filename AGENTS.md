@@ -235,6 +235,17 @@ under `~/.cache/keel-work/bun/research/`.
   and is a row of the session's timeline; Settings > Rulings lists and revokes
   them. A permission card, a server's question and an answer marked just this
   once never reach a ruling.
+- A route that is out does not hold an agent for as long as it lasts when the owner said otherwise
+  (`route_change` in the settings, Settings > Models, `src/engine/route-change.ts`): a rule names an
+  agent type (or every agent), a number of minutes, a listed model of another provider and optionally
+  the provider it leaves. An agent whose provider has been unreachable that long (counted from when
+  the outage began), or whose model has answered overloaded that long, goes on on that model in the
+  same session at its next request, which is a step boundary: its history goes to the other model as
+  at any model switch, with the new model's own tools and prompt. Only agents, never a session of
+  the owner's; only to a model that lists, takes tools, is on a provider the session's folder allows,
+  and is itself reachable, not overloaded and not shut; never back (the agent finishes where it moved);
+  its transcript says so and its parent hears one line. A target that cannot take the work leaves the
+  agent waiting, said once in its failures.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

@@ -103,6 +103,13 @@ export type TurnHooks = {
   // A turn's request has been answered overloaded as many times as the counted retries and is
   // still tried (src/engine/retry.ts overloaded): `ms` since the model first said so. Once a request.
   capacityWaiting?: (s: Session, model: string, ms: number) => void;
+  // An agent's route stayed out for as long as the owner's rule says, and the agent went on on
+  // another model for good (src/engine/route-change.ts). `from`, `to`: the models' names.
+  routeChanged?: (s: Session, c: { why: "outage" | "overloaded"; from: string; to: string; ms: number; fromModel: string; toModel: string; extra?: number; effort?: { from?: string; to?: string } }) => void;
+  // Asked before the owner's rule moves an agent to `to`: words when a limit the hook keeps would not
+  // hold there (a dollar budget or cap, which a model with no listed price never reaches). The agent
+  // then keeps waiting, and the words are said once in its failures.
+  moveRefused?: (s: Session, to: { id: string; name: string; price?: unknown }) => string | undefined;
   // A model call for the session would go to a provider its folder does not allow, and was not
   // made (src/safety/content-routes.ts). `tell`: its model is to hear of it with its next input.
   routeRefused?: (s: Session, c: Crossing, tell: boolean) => void;

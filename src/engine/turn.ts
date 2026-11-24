@@ -47,7 +47,7 @@ import { cleanTitle, firstReply, modelTitles, ownerPrompts, TITLE_OUTPUT, TITLE_
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { derived } from "../core/message-facts.ts";
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedFits, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, fixedContext } from "./compact.ts";
-import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
+import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention, switchWarning } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
 import { cacheState, capsuleText, decideFollowUp, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
@@ -61,6 +61,10 @@ import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-l
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, movesToFallback, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep, type MoveWhy } from "./retry.ts";
 import { OUTAGE } from "../providers/outage.ts";
+import { settings as ownerSettings } from "../admin/settings.ts";
+import { dueIn, judge, judgeMove, noteText as routeNote, ruleFor, type Rule as RouteChangeRule, type Why as RouteWhy } from "./route-change.ts";
+import { ASK_USD_DEFAULT, carriedEffort } from "./switch-rule.ts";
+import { carrySettings } from "../server/switch.ts";
 import { laneOf, rateLimited, type Lane } from "../providers/admission.ts";
 import { depthOf } from "../core/agent-tree.ts";
 import { unreachable } from "../providers/unreachable.ts";
@@ -540,6 +544,15 @@ class MovedToFallback extends Error {
   }
 }
 
+// A request of an agent that leaves the route that is out for the model the owner's rule names
+// (src/engine/route-change.ts): the agent goes on on `step` and stays there.
+class MovedByRule extends Error {
+  constructor(readonly step: Step, readonly why: RouteWhy, readonly ms: number, cause: unknown, readonly extra?: number) {
+    super(`moved to ${step.info.id} by the owner's rule`, { cause });
+    this.name = "MovedByRule";
+  }
+}
+
 // A prompt in the owner's own words: typed, steered, queued or said by the owner, with nothing that
 // marks it as another sender's (a harness input, an agent's task, another session's message).
 const OWNER_ORIGINS = new Set([undefined, "owner", "steer", "queued", "voice"]);
@@ -557,6 +570,9 @@ export class Engine {
   // The unspent retry budget of a request parked in an outage, for its first
   // call on the same route and purpose in the continued turn.
   private resumedProviderRetry = new Map<string, { model: string; purpose: "turn" | "summary"; spent: number }>();
+  // When the model first answered overloaded to a request a daemon stop parked, for the same
+  // model's first request in the continued turn: the owner's rule counts its minutes from there.
+  private resumedBusy = new Map<string, { model: string; since: number }>();
   // The turn_start event of each running turn, from its first event to its end.
   private turns = new Map<string, string>();
   // Sessions whose queue a stop holds: stored, so the hold (and its Resume)
@@ -1641,6 +1657,7 @@ export class Engine {
         this.running.delete(id);
         this.unsaved.delete(id);
         this.resumedProviderRetry.delete(id);
+        this.resumedBusy.delete(id);
         this.status(id, { kind: "idle" });
         // (Owed when the store takes no writes: the turn is over in memory either way.)
         if (!this.store.orLater("a session's phase", () => { if (this.store.session(id)) this.setPhase(id, "idle"); })) {
@@ -2077,6 +2094,64 @@ export class Engine {
     return new MovedToFallback(to, why, f.overloadedMs, cause);
   }
 
+  // The agent's type, when the session is an agent (the agents table is the automation's).
+  private roleOf(session: Session): string | undefined {
+    if (!session.parent_id) return undefined;
+    try { return this.store.db.query<{ type: string }, [string]>("SELECT type FROM agents WHERE session_id = ? LIMIT 1").get(session.id)?.type; } catch { return undefined; }
+  }
+
+  // The owner's rule for moving this agent off the route its request is on (src/engine/route-change.ts).
+  // Never for a session of the owner's, and never for a request that is not a turn's step.
+  private routeRule(session: Session, st: Step): RouteChangeRule | undefined {
+    if (!session.parent_id) return undefined;
+    const rules: RouteChangeRule[] = ownerSettings().route_change?.rules ?? [];
+    return rules.length ? ruleFor(rules, this.roleOf(session), st.provider.id) : undefined;
+  }
+
+  // The agent leaves its route for the model the rule names, when that is somewhere it can go on now:
+  // listed, on another provider, taking tools, its provider reachable and not overloaded, its route
+  // taking work, and its provider one the session's folder allows. Not so: it keeps waiting, and
+  // why is said once in its failures.
+  private async ruleMove(id: string, session: Session, st: Step, rule: RouteChangeRule, why: RouteWhy, ms: number, cause: unknown): Promise<MovedByRule | undefined> {
+    const skip = (words: string) => {
+      this.errors.capture("provider", new Error(`The owner's rule to move this agent to ${rule.to} was not applied: ${words}. It keeps waiting.`), { session: id, at: "route change", to: rule.to }, { group: `route change skipped: ${rule.to}: ${words}`, quietLog: true });
+      return undefined;
+    };
+    const now = Date.now();
+    const models = await this.providers.models();
+    const fact = judge(rule, models, {
+      out: st.provider.id,
+      down: this.providers.outages.list().map((o) => o.provider),
+      busy: [...this.busyModels].filter(([, b]) => now - b.last < OUTAGE.flapMs).map(([m]) => m),
+      shut: shutWords(this.providers.shut(rule.to)),
+    });
+    if (!fact.ok) return skip(fact.why);
+    const cross = crossing(this.store, id, "fallback", rule.to, fact.model.provider);
+    if (cross) { sayCrossing(this.store.session(id) ?? session, cross); return skip(`its provider is not allowed for this session's folder`); }
+    const info = models.find((m) => m.id === rule.to)!;
+    // A dollar budget or cap that holds the agent would not hold on a model with no listed price.
+    for (const h of allHooks()) {
+      let no: string | undefined;
+      try { no = h.moveRefused?.(session, { id: info.id, name: info.name, price: info.price }); } catch (e) { this.errors.capture("server", e, { hook: "moveRefused", session: id }); }
+      if (no) return skip(no);
+    }
+    // The effort goes with it to the nearest level the target lists, as in the owner's own switch.
+    const want = this.store.session(id)?.settings.effort ?? session.settings.effort;
+    const effort = want ? carriedEffort(want, info.efforts) : undefined;
+    let to: Step;
+    try { to = await this.step(session, rule.to, effort); } catch (e) { return skip(errorText(e)); }
+    // What it costs and whether it fits, judged as the owner's own switch is, with nobody to ask.
+    const events = this.lineage(id);
+    const ranOn: string = events.findLast((e) => e.kind === "assistant" && e.data.usage)?.data.model ?? st.info.id;
+    const wire = (model: string) => this.providers.get(model.slice(0, model.indexOf(":")))?.wire ?? "anthropic_messages";
+    const lost = switchWarning({ lineage: events, now, to: info, toEffort: effort, from: this.providers.cachedModel(ranOn), toWire: wire(info.id), fromWire: wire(ranOn) });
+    const limit = session.settings.compact_at ?? Math.floor(to.info.context * COMPACT_SHARE);
+    const askUsd = Number(ownerSettings().model_switch?.ask_usd);
+    const move = judgeMove({ warning: lost.warning, over: this.whole(events, to) >= limit, askUsd: Number.isFinite(askUsd) && askUsd >= 0 ? askUsd : ASK_USD_DEFAULT }, info.name);
+    if (!move.ok) return skip(move.why);
+    return new MovedByRule(to, why, ms, cause, move.extra);
+  }
+
   // Where a request stands in its account's line: the owner's own turn first, then a session a page
   // shows, then agents by depth; what no turn waits on at once (a reader, a title, a summary made
   // ahead, a side answer) last. A summary the running turn waits on is the turn's.
@@ -2173,10 +2248,14 @@ export class Engine {
     // When the model first answered that it is overloaded, for a request that waits it out.
     let busySince: number | undefined;
     let busyTries = 0;
+    // The owner's rule for a route that is out was applied to this request's wait (once: src/engine/route-change.ts).
+    let ruleSpent = false;
     // A request the turn cannot go on without waits for a provider that cannot be reached; a call its
     // caller can go on without (a reader, a side answer, a summary made ahead) fails at once.
     const running = this.running.get(id);
     const outages = purpose === "turn" || (purpose === "summary" && running?.abort.signal === signal) ? this.providers.outages : undefined;
+    const kept = outages && purpose === "turn" ? this.resumedBusy.get(id) : undefined;
+    if (kept && kept.model === st.info.id) { busySince = kept.since; this.resumedBusy.delete(id); }
 
     // The caller's count plus what the request gained since, at the model's bytes a token.
     const fits = () => {
@@ -2373,13 +2452,29 @@ export class Engine {
           } else if (!down) retried.push(this.errors.capture("provider", e, { session: id, provider: st.provider.id, retry: 1, wait_ms: 0 }, { group: `provider unreachable: ${st.provider.id}`, quietLog: true }));
           down = true;
           const retry = { model: st.info.id, purpose: purpose === "summary" ? "summary" as const : "turn" as const, spent: attempt };
-          const back = outages.wait(st.provider.id, e, signal, { session: id, retry });
-          if (!quiet) this.status(id, { kind: "retry", attempt: 0, max: 0, at: 0, message: errorText(e), unreachable: outages.of(id)?.since ?? Date.now() });
+          // An agent's wait is as long as the owner's rule for its type lets it (src/engine/route-change.ts):
+          // the rule's time is counted from when the route went out, and the wait is left at that time,
+          // once, whether or not the agent can move then.
+          const rule = purpose === "turn" && !ruleSpent ? this.routeRule(session, st) : undefined;
+          const leave = new AbortController();
+          const back = outages.wait(st.provider.id, e, rule ? AbortSignal.any([signal, leave.signal]) : signal, { session: id, retry });
+          const outSince = outages.of(id)?.since ?? Date.now();
+          if (!quiet) this.status(id, { kind: "retry", attempt: 0, max: 0, at: 0, message: errorText(e), unreachable: outSince });
           const waitStart = performance.now();
           if (running) running.providerWaiting = true;
+          const due = rule ? setTimeout(() => leave.abort(), dueIn(rule, outSince, Date.now())) : undefined;
           try {
             await back;
           } catch (gone) {
+            if (rule && leave.signal.aborted && !signal.aborted) {
+              ruleSpent = true;
+              const moved = await this.ruleMove(id, session, st, rule, "outage", Date.now() - outSince, e);
+              if (moved) {
+                this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: 0, then: `this agent went on on ${moved.step.info.id} by the owner's rule` }, { group: `provider unreachable: ${st.provider.id}`, quietLog: true });
+                throw moved;
+              }
+              continue;
+            }
             if (!signal.aborted) throw gone; // the wait's ceiling: the failure itself
             // A restart parks the turn while it waits: said, so the next daemon reads a wait and not a stall.
             if (this.parking.has(id)) this.append(id, "note", {
@@ -2389,6 +2484,7 @@ export class Engine {
             else outages.left(id);
             throw abortError();
           } finally {
+            clearTimeout(due);
             const ms = Math.round(performance.now() - waitStart);
             this.measure(id, (h) => h.requestWaitEnded?.(session, req, ms));
             if (running) {
@@ -2409,7 +2505,16 @@ export class Engine {
         if (waitsOut) busySince ??= Date.now();
         const busyFor = full ? this.overloadSeen(st.info.id, busySince) : 0;
         const counted = attempt - busyTries;
-        const wait = backoffMs(waitsOut ? busyTries : counted, e);
+        // An agent's rule for an overloaded route (src/engine/route-change.ts): it moves once the model
+        // has answered overloaded for the rule's time, and its tries are not spaced past that time.
+        const rule = waitsOut && purpose === "turn" ? this.routeRule(session, st) : undefined;
+        const ruleMs = rule ? Math.round(rule.minutes * 60_000) : 0;
+        const wait = rule && busyFor < ruleMs ? Math.min(backoffMs(busyTries, e), ruleMs - busyFor + 250) : backoffMs(waitsOut ? busyTries : counted, e);
+        const ruled = rule && busyFor >= ruleMs ? await this.ruleMove(id, session, st, rule, "overloaded", busyFor, e) : undefined;
+        if (ruled) {
+          this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: 0, then: `this agent went on on ${ruled.step.info.id} by the owner's rule` });
+          throw ruled;
+        }
         // A turn's request on the session's own model may go on on its fallback (retry.ts movesToFallback).
         const moved = waitsOut && purpose === "turn" ? await this.overloadMove(id, session, st, req, fit, { tries: busyTries, overloadedMs: busyFor, nextWaitMs: wait, asked: retryAfterMs(e) !== undefined }, e) : undefined;
         if (moved) {
@@ -2436,7 +2541,14 @@ export class Engine {
         // Where the counted retries would have ended the turn, the session that started it hears
         // that it still waits (once a request), so it can stop it or move the work to another model.
         if (waitsOut && busyTries === RETRY.max - 1) this.measure(id, (h) => h.capacityWaiting?.(session, st.info.id, Date.now() - busySince!));
-        await sleep(wait, signal);
+        try {
+          await sleep(wait, signal);
+        } catch (stopped) {
+          // A stop for a restart parks the turn in this wait: the wait's start is kept, so the next
+          // daemon counts the owner's rule from it, not from its own first try.
+          if (waitsOut && signal.aborted && this.parking.has(id) && purpose === "turn") this.append(id, "note", { kind: "overload_wait", model: st.info.id, since: busySince, text: `${st.info.name} was answering that it is overloaded when the daemon restarted: this turn goes on and keeps counting the wait.` });
+          throw stopped;
+        }
         if (waitsOut) busyTries++;
         attempt++;
       }
@@ -2868,6 +2980,25 @@ export class Engine {
         } catch (e) {
           // The session's model stayed overloaded: this turn goes on on its fallback, once, and the
           // next turn tries its own model first (its turn_start names it; tellSwitch tells each model).
+          // The agent's route stayed out past the owner's rule: it goes on on the model the rule names, for good.
+          if (e instanceof MovedByRule && signal.aborted) throw e.cause;
+          if (e instanceof MovedByRule) {
+            const now = this.store.session(id) ?? session;
+            const from = now.model;
+            const fromName = `${st.info.name} (${st.info.provider})`;
+            const wasEffort = now.settings.effort;
+            st = e.step;
+            // The model and what it keeps of the session's settings (effort, speed) move together.
+            const settings = carrySettings(now.settings, st.info);
+            if (wasEffort) { const x = carriedEffort(wasEffort, st.info.efforts); if (x) settings.effort = x; }
+            this.store.updateSession(id, { model: st.info.id, settings });
+            this.emitSession(id);
+            ownModel = st.info.id;
+            const change = { why: e.why, from: fromName, to: `${st.info.name} (${st.info.provider})`, ms: e.ms, ...(e.extra ? { extra: e.extra } : {}), ...(wasEffort !== settings.effort ? { effort: { from: wasEffort, to: settings.effort } } : {}) };
+            this.append(id, "note", { kind: "fallback", route_change: true, why: e.why, from, to: st.info.id, waited_ms: e.ms, text: routeNote(change) });
+            this.measure(id, (h) => h.routeChanged?.(session, { ...change, fromModel: from, toModel: st.info.id }));
+            continue;
+          }
           if (e instanceof MovedToFallback && (signal.aborted || movedOn)) throw e.cause;
           if (e instanceof MovedToFallback) {
             movedOn = true;
@@ -4338,6 +4469,8 @@ export class Engine {
     if (owed && unreadRestart(line)) return true;
     const cut = line.slice(line.findLastIndex((e) => e.kind === "turn_start"));
     const parked = cut.findLast((e) => e.kind === "note" && e.data.kind === "provider_wait");
+    const busy = cut.findLast((e) => e.kind === "note" && e.data.kind === "overload_wait");
+    if (busy && typeof busy.data.model === "string" && Number.isFinite(busy.data.since)) this.resumedBusy.set(id, { model: busy.data.model, since: busy.data.since });
     const retry = parked?.data.retry ?? end.data.provider_retry;
     if (retry && typeof retry.model === "string" && (retry.purpose === "turn" || retry.purpose === "summary") &&
         Number.isSafeInteger(retry.spent) && retry.spent > 0) {

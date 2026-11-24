@@ -11,6 +11,7 @@ import { everyCommand, composing } from "../lib/keys.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
 import { SmallModels } from "./SmallModels.tsx";
 import { NewModelCards } from "./NewModels.tsx";
+import { RouteChange } from "./RouteChange.tsx";
 import { Seg } from "./Seg.tsx";
 
 // Settings building blocks other lanes reuse for their sections: the kit (components/settings/kit.tsx).
@@ -148,6 +149,7 @@ function Models() {
           </button>
         </SettingRow>
       </Card>
+      <RouteChange />
       {byProvider.map(([p, list]) => (
         <Card key={p}>
           <div className="flex items-center py-3 text-ui font-medium">{p}<span className="ml-2 font-normal text-faint">{list.length}</span></div>
@@ -181,7 +183,7 @@ function About() {
 
 settingsSections.add(
   { id: "general", label: "General", words: "theme dark light mode font text size zoom scale send enter", icon: <SlidersHorizontal className="size-4" />, order: 0, component: General },
-  { id: "models", label: "Models", words: "providers listing default model effort reasoning thinking small models", icon: <Bot className="size-4" />, order: 10, component: Models },
+  { id: "models", label: "Models", words: "providers listing default model effort reasoning thinking small models route out outage unreachable overloaded move agents another provider", icon: <Bot className="size-4" />, order: 10, component: Models },
   { id: "keyboard", label: "Keyboard", words: "shortcuts keys hotkeys", icon: <Keyboard className="size-4" />, order: 80, component: ShortcutList, find: () => everyCommand().filter((c) => c.keys).map((c) => c.label) },
   { id: "about", label: "About", words: "version daemon", icon: <Info className="size-4" />, order: 100, component: About },
 );

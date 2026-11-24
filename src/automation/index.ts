@@ -125,6 +125,7 @@ function init(deps: Deps) {
   registerHooks(waitAckHooks);
   registerHooks(messageHooks);
   registerHooks(failures.hooks);
+  registerHooks({ routeChanged: (s, c) => agents.routeChanged(s, c), moveRefused: (s, to) => agents.moveRefusal(s.id, to.id, to.price) });
   registerHooks({
     // The owner's task-list edits since the last request, as one note.
     beforeRequest: (s, req) => {

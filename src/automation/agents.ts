@@ -42,6 +42,7 @@ import { isWay, WAY_WORDS, type Way } from "../engine/follow-up.ts";
 import { readerFor, readRunsOf } from "../engine/read-run.ts";
 import { smallModels } from "../engine/readers.ts";
 import { trialModel } from "../engine/model-trial.ts";
+import { parentLine as routeLine } from "../engine/route-change.ts";
 import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, parentLine, successorOrder, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
 import { firstOpen, skippedWords } from "../providers/account.ts";
 import { routeShut } from "./incidents.ts";
@@ -2934,4 +2935,27 @@ function loopsEnded(sessionId: string): string {
     capture(e, { at: "agent loops end", session: sessionId });
     return "";
   }
+}
+
+// Whether the owner's rule may move this agent to `model`: not when a dollar budget of its own, of an
+// agent above it or a cap on the session at the top holds, and the model lists no price (its dollars
+// would never be counted there: the same refusal a spawn with a budget in dollars gets).
+export function moveRefusal(sessionId: string, model: string, price: unknown): string | undefined {
+  const a = byChild(sessionId);
+  if (!a) return undefined;
+  const held = [a, ...ancestorsOf(a)].some((x) => !isEnded(x) && x.budget?.usd !== undefined) || !!caps.capOf(D().store.session(rootSession(sessionId)));
+  return usdRefusal(held ? { usd: 0 } : undefined, model, price);
+}
+
+// An agent's route stayed out for as long as the owner's rule says and the engine moved it to the model the
+// rule names (src/engine/route-change.ts). The agent's record follows its session; its parent hears one
+// line with its next input (nothing for it to act on), a silent agent's parent none.
+export function routeChanged(session: Session, c: { why: "outage" | "overloaded"; from: string; to: string; ms: number; fromModel: string; toModel: string; extra?: number; effort?: { from?: string; to?: string } }) {
+  const a = byChild(session.id);
+  if (!a) return;
+  D().store.db.query("UPDATE agents SET model = ? WHERE id = ?").run(c.toModel, a.id);
+  activity.record("agent", "route_change", a.parent_id, `Agent "${a.title}" went on on ${c.toModel}: ${c.from} was out (${c.why}) past the owner's rule`, { agent_id: a.id, session: a.session_id, from: c.fromModel, to: c.toModel, why: c.why, ms: c.ms });
+  emit("agent", brief(get(a.id)!));
+  if (isSilent(a.id)) return;
+  deliver(a.parent_id, routeLine({ title: attr(a.title), id: a.id, why: c.why, from: c.from, to: c.toModel, ms: c.ms, extra: c.extra, effort: c.effort }), { kind: "harness", agent_id: a.id, route_change: true }, { ride: true });
 }

@@ -23,11 +23,18 @@
 //   script:outage-at <n> <kind> <ms> on a later line of any prompt: the same,
 //                                    from its request number <n> on (0 is the
 //                                    first; 1 follows the first tool result)
+//   ... <ms> on <provider>           either of them with "on <provider id>" after the
+//                                    time: only that provider is out, the others
+//                                    (the second scripted provider) answer
 //   script:outage-mid <kind> <ms>    half a reply streams, the stream breaks,
 //                                    and the provider is gone for <ms>
 //   script:outage-count              how many requests and listings the last
 //                                    outage refused
 //   script:outage-end                the provider is back now
+//   script:overloaded <ms> [on <provider id>]
+//                                    every request of the provider answers 529 overloaded
+//                                    for <ms> from this prompt's first request on (in
+//                                    memory: a restart ends it)
 // A listing that changes while the daemon runs (for the e2e of a model that lists later):
 //   script:list-model <id>           the provider lists one more model, <id>, from the next listing on
 //                                    (an id ending in -plain lists no price)
@@ -162,6 +169,8 @@ export class ScriptedProvider implements Provider {
     return FAMILY_STAND_INS.find((m) => m.model === model)?.wire;
   }
 
+  // `script:overloaded`: until when every request answers overloaded, and the prompts that began it.
+  private busy = { until: 0, started: new Set<string>() };
   private outage: OutageState = { kind: "dns", until: 0, started: [], requests: 0, listings: 0 };
   // Each account's rate limit (`script:account-limit`): until when it is spent, the requests it
   // refused, the answers since it ended, and the prompts that started one.
@@ -444,15 +453,25 @@ export class ScriptedProvider implements Provider {
     // An outage the prompt asks for, at the request it names. Its start is this request's own failure.
     const ownerAt = msgs.findLastIndex((m) => m.role === "user" && own(m) === owner);
     const round = msgs.slice(ownerAt + 1).filter((m) => m.role === "assistant").length;
-    const asked = scenario === "outage" ? owner.match(/script:outage[ \t]+([a-z]+)[ \t]+(\d+)/) : null;
-    const later = owner.match(/\nscript:outage-at[ \t]+(\d+)[ \t]+([a-z]+)[ \t]+(\d+)/);
-    const due = asked ? { n: 0, kind: asked[1]!, ms: Number(asked[2]) } : later ? { n: Number(later[1]), kind: later[2]!, ms: Number(later[3]) } : undefined;
-    if (due && round === due.n && this.begin(String(Bun.hash(`${req.sessionKey}\u0000${owner}`)), due.kind, due.ms)) throw this.down("requests")!;
+    const asked = scenario === "outage" ? owner.match(/script:outage[ \t]+([a-z]+)[ \t]+(\d+)(?:[ \t]+on[ \t]+([\w-]+))?/) : null;
+    const later = owner.match(/\nscript:outage-at[ \t]+(\d+)[ \t]+([a-z]+)[ \t]+(\d+)(?:[ \t]+on[ \t]+([\w-]+))?/);
+    const due = asked ? { n: 0, kind: asked[1]!, ms: Number(asked[2]), on: asked[3] } : later ? { n: Number(later[1]), kind: later[2]!, ms: Number(later[3]), on: later[4] } : undefined;
+    if (due && (!due.on || due.on === this.id) && round === due.n && this.begin(String(Bun.hash(`${req.sessionKey}\u0000${owner}`)), due.kind, due.ms)) throw this.down("requests")!;
+    // An overload the prompt asks for: the provider answers 529 to every request for a while.
+    const over = scenario === "overloaded" ? owner.match(/script:overloaded[ \t]+(\d+)(?:[ \t]+on[ \t]+([\w-]+))?/) : null;
+    const overKey = String(Bun.hash(`${req.sessionKey}\u0000${owner}`));
+    if (over && (!over[2] || over[2] === this.id) && !this.busy.started.has(overKey)) {
+      this.busy.started.add(overKey);
+      this.busy.until = Date.now() + Math.min(Number(over[1]), 600_000);
+    }
+    if (Date.now() < this.busy.until) throw new ProviderError("overloaded", "Scripted: 529 overloaded", 529);
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 
     switch (scenario) {
       case "outage":
         return reply("Answered after the outage.");
+      case "overloaded":
+        return reply("Answered after the overload.");
       case "outage-end":
         return reply("The provider is back.");
       case "outage-mid": {
