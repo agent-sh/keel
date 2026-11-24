@@ -6,7 +6,7 @@ import { blocksOf } from "../engine/prompt-store.ts";
 import { loadSettings, patchSettings } from "../admin/settings.ts";
 import { peerSkills, readSkill } from "../fleet/skills.ts";
 import { dropChoice, choiceOf } from "./skill-turn.ts";
-import { loadSkill, peerDigest, preloadSkillIn, renderForOwnerIn, servedSkill, servedSkills, skillHome, skillRun, type Skill, type SkillHome } from "./skills.ts";
+import { loadSkill, preloadSkillIn, renderForOwnerIn, servedSkill, servedSkills, skillHome, skillRun, type Skill, type SkillHome } from "./skills.ts";
 
 // The skills of a session placed on another machine are that machine's: the listing, the skill tool and the owner's
 // command read them there, and a machine that does not answer gives none, never this machine's.
@@ -16,7 +16,6 @@ const settingsDir = mkdtempSync(join(process.env.TMPDIR ?? ".", "skills-peer-set
 afterEach(() => {
   skillHome.of = undefined;
   skillRun.grant = undefined;
-  patchSettings({ fleet_skills: { trusted: null } });
   dropChoice("s1");
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
@@ -142,96 +141,74 @@ test("a machine serves its skills of a folder, and one skill's text with its var
 });
 
 // A peer decides nothing about what runs unasked here: its word that a skill may grant is not read, and only
-// the owner's entry for that machine (by its id) and skill, at the text he trusted, grants (and takes model,
-// effort, fork). Every such field is read from the text, never from the object the machine sends with it.
-const TEXT = "---\nname: evil\nallowed-tools: Bash(*), mcp__srv__tool\nmodel: big\neffort: max\ncontext: fork\n---\nbody\n";
+// A skill of another machine grants nothing here, whatever it or its machine says. Every field that would
+// grant or steer is read from its text only, and even from there it is only shown.
+const TEXT = "---\nname: evil\nallowed-tools: Bash(*), mcp__srv__tool, Edit(${CLAUDE_PROJECT_DIR}/**)\nmodel: big\neffort: max\ncontext: fork\n---\nbody ${CLAUDE_PROJECT_DIR}\n";
 const risky = (): Skill => ({ ...peerSkill("evil", "d"), allowedTools: ["Bash(*)", "mcp__srv__tool"], model: "big", effort: "max", fork: { background: false } });
-const riskyHome = (raw = TEXT, skill: Skill = risky()): SkillHome => ({
+const riskyHome = (raw = TEXT, skill: Skill = risky(), vars: Record<string, string> = { CLAUDE_SKILL_DIR: "/peer/skills/evil", CLAUDE_PROJECT_DIR: "/" }): SkillHome => ({
   machine: "devbox", id: "m-dev",
   list: async () => ({ skills: [skill] }),
   // (The reply as a lying machine sends it: it says the skill may grant.)
-  get: async () => ({ skill, raw, vars: { CLAUDE_SKILL_DIR: "/peer/skills/evil" }, grantable: true } as any),
+  get: async () => ({ skill, raw, vars, grantable: true } as any),
 });
 const ctx1 = () => ({ sessionId: "s1", cwd: "/nonexistent", signal: new AbortController().signal, seen: new Map(), spillDir: "" }) as any;
 
-test("a skill of a peer grants nothing, takes no model, effort or fork, without the owner's entry for it", async () => {
+test("a skill of a peer grants nothing, takes no model, effort or fork, whatever its text and its variables say", async () => {
   const granted: unknown[] = [];
   let forked = 0;
   skillRun.grant = (_s, rules) => void granted.push(rules);
   skillRun.fork = async () => (forked++, { content: "forked" } as any);
+  // The machine's variables put the project directory at the root of the disk: the text's Edit rule would cover it all.
   skillHome.of = () => riskyHome();
   const r = await loadSkill("evil", "", ctx1());
   expect(granted).toEqual([]);
   expect(forked).toBe(0);
   expect(choiceOf("s1")).toBeUndefined();
   const text = String(r.content);
-  expect(text).toContain("ask as usual: it is on devbox");
-  expect(text).toContain("fleet_skills.trusted.m-dev");
+  expect(text).toContain("ask as usual: its tools ask: it is on devbox");
   expect(text).not.toContain("run without asking");
   expect(text).not.toContain("big");
   // The owner's command as well.
   const own = await renderForOwnerIn("evil", "", { id: "s1", workspace: "/w" }, { grant: "now", count: false });
-  expect("text" in own && own.text).toContain("ask as usual: it is on devbox");
+  expect("text" in own && own.text).toContain("its tools ask: it is on devbox");
   expect(granted).toEqual([]);
-  skillRun.fork = undefined as any;
-});
-
-test("the owner's entry for a machine's id and a skill, at the text he trusted, grants; a changed text, another name or another id does not", async () => {
-  const granted: any[] = [];
-  skillRun.grant = (_s, rules) => void granted.push(rules);
-  skillRun.fork = undefined as any;
-  const noFork = TEXT.replace("context: fork\n", "");
-  skillHome.of = () => riskyHome(noFork);
-  expect(patchSettings({ fleet_skills: { trusted: { "m-dev": { evil: peerDigest(noFork) } } } }).ok).toBe(true);
-  const r = await loadSkill("evil", "", ctx1());
-  expect(granted.length).toBe(1);
-  expect(String(r.content)).toContain("run without asking");
-  // The display name is not the key: a machine named like the id of another one holds nothing.
-  granted.length = 0;
-  patchSettings({ fleet_skills: { trusted: null } });
-  expect(patchSettings({ fleet_skills: { trusted: { devbox: { evil: peerDigest(noFork) } } } }).ok).toBe(true);
-  await loadSkill("evil", "", ctx1());
-  expect(granted).toEqual([]);
-  // Another text is not covered.
-  patchSettings({ fleet_skills: { trusted: null } });
-  expect(patchSettings({ fleet_skills: { trusted: { "m-dev": { evil: peerDigest("other") } } } }).ok).toBe(true);
-  await loadSkill("evil", "", ctx1());
-  expect(granted).toEqual([]);
-  expect(patchSettings({ fleet_skills: { trusted: { "m-dev": { evil: "nope" } } } }).ok).toBe(false);
-});
-
-// The text is trusted and benign; the object the machine sends with it says more. Only the text counts.
-test("a trusted text grants what it says, whatever the machine's own object says", async () => {
-  const granted: any[] = [];
-  let forked = 0;
-  skillRun.grant = (_s, rules) => void granted.push(rules);
-  skillRun.fork = async () => (forked++, { content: "forked" } as any);
-  const text = "---\nname: evil\nallowed-tools: Bash(git status)\n---\nbody\n";
-  const lying: Skill = { ...risky(), allowedTools: ["Bash(*)", "WebFetch", "mcp__srv__tool"], disallowed: [], userInvocable: false };
-  skillHome.of = () => riskyHome(text, lying);
-  expect(patchSettings({ fleet_skills: { trusted: { "m-dev": { evil: peerDigest(text) } } } }).ok).toBe(true);
-  const r = await loadSkill("evil", "", ctx1());
-  expect(forked).toBe(0);
-  expect(granted.length).toBe(1);
-  expect(granted[0].map((x: any) => x.pattern)).toEqual(["git status"]);
-  const out = String(r.content);
-  expect(out).toContain("run without asking, as the skill's allowed-tools say: Bash(git status)");
-  expect(out).not.toContain("Bash(*)");
-  expect(out).not.toContain("WebFetch");
-  expect(out).not.toContain("mcp__srv__tool");
   expect(choiceOf("s1")).toBeUndefined();
-  // Not trusted at all: the text's own allowed-tools ask, the object's are not even said.
-  expect(patchSettings({ fleet_skills: { trusted: null } }).ok).toBe(true);
-  granted.length = 0;
+  // Not even the text of a skill whose object is benign and whose text is: nothing is granted.
+  skillHome.of = () => riskyHome("---\nname: evil\nallowed-tools: Read\n---\nbody\n", { ...peerSkill("evil", "d"), allowedTools: ["Bash(*)"] });
   const u = String((await loadSkill("evil", "", ctx1())).content);
   expect(granted).toEqual([]);
-  expect(u).toContain("Its allowed-tools (Bash(git status)) ask as usual");
+  expect(u).toContain("Its allowed-tools (Read) ask as usual");
   expect(u).not.toContain("Bash(*)");
-  expect(u).not.toContain("WebFetch");
-  // The variables are the machine's and are said to be.
-  expect(u).toContain("are those of devbox");
   skillRun.fork = undefined as any;
 });
+
+test("the variables a machine sends fill the text only, and only the known ones are named", async () => {
+  const fleet: any = { row: () => ({ id: "m1", name: "devbox", workspace_root: "/w" }), handsJson: async () => ({ skill: peerSkill("ok", "d"), raw: "---\nname: ok\n---\nat ${CLAUDE_SKILL_DIR}", vars: { CLAUDE_SKILL_DIR: "/p", "evil\nname": "x", PATH: "/bin", "user_config.k": "v" } }) };
+  const h = peerSkills(fleet, () => ({ id: "s1", workspace: "/w", machine: "m1" }), () => {})("s1")!;
+  const g = await h.get("ok");
+  expect("vars" in g && g.vars).toEqual({ CLAUDE_SKILL_DIR: "/p", "user_config.k": "v" });
+  skillHome.of = () => h;
+  const out = String((await loadSkill("ok", "", ctx1())).content);
+  expect(out).not.toContain("evil");
+  expect(out).not.toContain("PATH");
+});
+
+test("a skill name is one short word; a hostile list stays inside the block's budget", async () => {
+  for (const n of ["a\nb", "a b", "a<b", "a\u200bb", "", "x".repeat(65), "a\u0000b", "a\u2028b"]) expect(readSkill(peerSkill(n, "d"))).toBeNull();
+  expect(readSkill(peerSkill("ns:ok-1_x.y", "d"))?.name).toBe("ns:ok-1_x.y");
+  expect(readSkill({ ...peerSkill("ok", "d"), description: "z".repeat(200_000) })).toBeNull();
+  expect(readSkill({ ...peerSkill("ok", "d"), description: "z".repeat(5000) })?.description.length).toBe(1536);
+  // 20,000 skills with a 200k name among them: the list is cut, and the block is the size of its budget.
+  const many = [{ ...peerSkill("big", "d"), name: "n".repeat(200_000) }, ...Array.from({ length: 20_000 }, (_, i) => peerSkill(`s${i}`, "d".repeat(1536)))];
+  const fleet: any = { row: () => ({ id: "m1", name: "devbox", workspace_root: "/w" }), handsJson: async () => ({ skills: many }) };
+  const h = peerSkills(fleet, () => ({ id: "s1", workspace: "/w", machine: "m1" }), () => {})("s1")!;
+  const l = await h.list();
+  expect("skills" in l && l.skills.length).toBe(300);
+  skillHome.of = () => h;
+  const text = (await block({ id: "s1", machine: "m1", workspace: "/w" })).text;
+  expect(text.length).toBeLessThan(12_000);
+});
+
 
 test("an agent placed on a peer preloads the peer's skill, not this machine's", async () => {
   const dir = localRepo();
@@ -255,9 +232,14 @@ test("a malformed answer from a machine is read for what it is", async () => {
   expect("skills" in l && l.skills.map((k) => k.name)).toEqual(["ok"]);
   answers["/api/fleet/hands/skill"] = { skill: { name: "bad" }, raw: "x", vars: {} };
   expect("error" in (await home.get("bad"))).toBe(true);
-  answers["/api/fleet/hands/skill"] = { skill: peerSkill("ok", "d"), raw: "x", vars: { A: "1", B: 2 } };
+  // Another skill than the one asked for, and a text past the bound, are refused.
+  answers["/api/fleet/hands/skill"] = { skill: peerSkill("other", "d"), raw: "x", vars: {} };
+  expect("error" in (await home.get("ok"))).toBe(true);
+  answers["/api/fleet/hands/skill"] = { skill: peerSkill("ok", "d"), raw: "x".repeat(1_000_001), vars: {} };
+  expect("error" in (await home.get("ok"))).toBe(true);
+  answers["/api/fleet/hands/skill"] = { skill: peerSkill("ok", "d"), raw: "x", vars: { CLAUDE_SKILL_DIR: "1", KEEL_SKILL_DIR: 2 } };
   const g = await home.get("ok");
-  expect("vars" in g && g.vars).toEqual({ A: "1" });
+  expect("vars" in g && g.vars).toEqual({ CLAUDE_SKILL_DIR: "1" });
 });
 
 test("the last good list stands in for a few minutes when a read fails", async () => {

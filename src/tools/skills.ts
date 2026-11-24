@@ -3,9 +3,7 @@
 // description once (frozen, so cached); the body loads only when the model
 // calls the skill tool, with Claude Code's argument substitution.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { registerSettings, settings } from "../admin/settings.ts";
 import { basename, dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
@@ -464,27 +462,13 @@ export type SkillHome = {
 };
 export const skillHome: { of?: (sessionId: string) => SkillHome | null } = {};
 // A skill as the machine that holds it read it: its text and the variables of its text.
-// What it may do on this machine is decided here, never by that machine (see peerTrusted).
+// What it may do on this machine is decided here, never by that machine.
 export type PeerSkill = { skill: Skill; raw: string; vars: Record<string, string> };
 
-// The owner's own word on a skill of another machine: the digest of its text he trusted, by the machine's
-// id and skill name (`fleet_skills.trusted`). With none, or with the text changed since, its allowed-tools
-// ask as usual and the model, effort and fork it names are not taken. The machine's own answer about it
-// counts for nothing: it is the one a skill would have to talk past.
-registerSettings("fleet_skills", { trusted: {} as Record<string, Record<string, string>> }, (v) => {
-  if (!v.trusted || typeof v.trusted !== "object" || Array.isArray(v.trusted)) return "trusted maps a machine to the skills trusted on it";
-  for (const [m, skills] of Object.entries(v.trusted as Record<string, unknown>)) {
-    if (!skills || typeof skills !== "object" || Array.isArray(skills)) return `trusted: ${m} maps a skill name to the digest of its text`;
-    for (const [k, d] of Object.entries(skills)) if (typeof d !== "string" || !/^[0-9a-f]{64}$/.test(d)) return `trusted: ${m}: ${k} is not a sha-256 digest`;
-  }
-  return undefined;
-});
-export const peerDigest = (raw: string) => createHash("sha256").update(raw).digest("hex");
-export function peerTrusted(machineId: string, name: string, raw: string): boolean {
-  const d = (settings().fleet_skills?.trusted as Record<string, Record<string, string>> | undefined)?.[machineId]?.[name];
-  return typeof d === "string" && d === peerDigest(raw);
-}
-const peerHeld = (machine: string, id: string) => `it is on ${machine}, and the owner has not trusted it from here (fleet_skills.trusted.${id} in Settings)`;
+// A skill of another machine grants nothing here, ever: its allowed-tools are shown and ask as usual,
+// its model, effort and fork are never taken and its hooks are never registered. What this machine
+// would grant to it is not a thing a machine can be asked.
+const peerHeld = (machine: string) => `its tools ask: it is on ${machine}`;
 
 // What a machine serves of its skills to a session placed on it (the hands routes): what it
 // discovers for the folder, under its own trust and scan rules, and a skill's text with its variables.
@@ -506,29 +490,20 @@ export function servedSkill(cwd: string, name: string, sessionId: string, stop?:
 const heldText = (h: { name: string; dir: string }) => `The skill "${h.name}" is this repository's and does not load: ${(skillFilter.held?.(h.dir) ?? "the owner has not trusted it").replace(/\.?$/, ".")}`;
 
 // A skill found for a session: here, or on the machine its tools run on.
-// `held`: why its allowed-tools ask (a skill of another machine the owner has not trusted from here).
+// `held`: why its allowed-tools ask (a skill of another machine).
 type Found = PeerSkill & { grantable: boolean; machine?: string; held?: string };
 
 // A skill of another machine as this one takes it. Its text and variables are the machine's own. What
-// the text says it may do and how it runs (allowed-tools, disallowed-tools, model, effort, fork, who may
-// invoke it) is read here, from the text, by the same reading as a skill on this machine: the machine's
-// own account of those fields is never used, only what a trusted text says. Whether its allowed-tools
-// run unasked, and its model, effort and fork, are the owner's word kept here (`peerTrusted`); without it
-// the skill is plain text that asks for what it needs.
+// the text says (allowed-tools to show, disallowed-tools, who may invoke it) is read here, from the
+// text, by the same reading as a skill on this machine; the machine's own account of those fields is
+// never used. Nothing it names raises what runs unasked, or steers the turn: no grant, no model, no
+// effort, no fork.
 export function adoptPeer(home: { machine: string; id: string }, r: PeerSkill): Found {
-  const { data } = frontmatter(r.raw);
-  const { allowedTools, model, effort, fork, disallowed, userInvocable, modelInvocable } = frontFields(data);
-  const trusted = peerTrusted(home.id, r.skill.name, r.raw);
-  const skill: Skill = {
-    ...r.skill,
-    userInvocable, modelInvocable,
-    // Only descriptive fields of the machine's own object are kept; none of these can grant or steer.
-    model: undefined, effort: undefined, fork: undefined, allowedTools: undefined, disallowed: undefined,
-    ...(allowedTools ? { allowedTools } : {}), ...(disallowed ? { disallowed } : {}),
-    ...(trusted ? { ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(fork ? { fork } : {}) } : {}),
-  };
+  const { allowedTools, disallowed, userInvocable, modelInvocable } = frontFields(frontmatter(r.raw).data);
+  const skill: Skill = { ...r.skill, userInvocable, modelInvocable, model: undefined, effort: undefined, fork: undefined, allowedTools: undefined, disallowed: undefined,
+    ...(allowedTools ? { allowedTools } : {}), ...(disallowed ? { disallowed } : {}) };
   for (const k of ["model", "effort", "fork", "allowedTools", "disallowed"] as const) if (skill[k] === undefined) delete skill[k];
-  return { ...r, skill, grantable: trusted, machine: home.machine, ...(trusted ? {} : { held: peerHeld(home.machine, home.id) }) };
+  return { ...r, skill, grantable: false, machine: home.machine, held: peerHeld(home.machine) };
 }
 async function findSkill(ctx: { sessionId: string; cwd: string }, name: string): Promise<{ found: Found } | { error: string }> {
   const home = skillHome.of?.(ctx.sessionId);
@@ -554,9 +529,9 @@ async function findSkill(ctx: { sessionId: string; cwd: string }, name: string):
 // The hooks a skill of another machine names are not registered here: they run commands on this machine.
 function peerHooksSaid(raw: string, machine: string, vars: Record<string, string> = {}): string {
   const { hooks, problem } = hooksOf(raw);
-  const names = Object.keys(vars);
   // The variables are the machine's: they name its paths, and are put into the skill's text only.
-  const said = names.length ? ` Its variables (${names.join(", ")}) are those of ${machine}, put into its text only.` : "";
+  const known = Object.keys(vars).filter((k) => /^(CLAUDE_SKILL_DIR|KEEL_SKILL_DIR|CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|CLAUDE_PROJECT_DIR|CLAUDE_SESSION_ID|KEEL_SESSION_ID|user_config\.[A-Za-z0-9_.-]{1,64})$/.test(k));
+  const said = known.length ? ` Its variables (${known.join(", ")}) are those of ${machine}, put into its text only.` : "";
   if (problem) return `Its hooks are not registered: ${problem}.${said}`;
   return (hooks ? `Its hooks are not registered: the skill is on ${machine}, and hooks run on this machine.` : "") + (hooks ? said : said.trim());
 }
