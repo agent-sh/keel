@@ -34,6 +34,8 @@ sealed class Route {
     data class Session(val id: String, val back: Route? = null) : Route()
     /** The search across sessions. */
     object Search : Route()
+    /** What broke on the daemon: its open errors, as the page's Errors panel lists them. */
+    object Errors : Route()
     /** What a session changed. */
     data class Changes(val id: String) : Route()
     /** One file's diff, of one turn (`turn`) or since the session's first (null); `label` names which. */

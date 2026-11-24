@@ -11,7 +11,7 @@ import { bodyOf } from "../../mcp/channel.ts";
 import { TEXT_MEDIA } from "../../engine/compact.ts";
 import { imageType } from "../../engine/images.ts";
 import type { Server } from "bun";
-import type { Session, StoredEvent } from "../../core/types.ts";
+import type { ErrorRecord, Session, StoredEvent } from "../../core/types.ts";
 import { closedWhy, type Approval, type Gate } from "../../safety/gate.ts";
 import { cardLines, fromSaid, type CardForm } from "../../safety/card.ts";
 import { spelled } from "../../safety/chars.ts";
@@ -71,6 +71,8 @@ const UNASKED = new Set(["auto-edits", "auto", "full-auto"]);
 // What the phone's start sheet offers: the folders this machine's sessions worked in, newest first,
 // at most this many (the daemon's own folder always among them).
 const START_FOLDERS = 12;
+// The open errors the phone lists: the page's Errors panel reads as many (src/server/routes/errors.ts).
+const ERRORS_LISTED = 200;
 
 export type MobileCtx = Deps & {
   mobile: MobileStore; gate: () => Gate | undefined; changed: () => void; checkpoints?: () => Checkpoints | undefined;
@@ -1034,6 +1036,26 @@ export function mobileApi(ctx: MobileCtx) {
     };
   }
 
+  // One kind of failure as the phone lists it: its whole message, where it came from, how often and
+  // when, read or not, healed by a retry or not, and the session it last happened in while that
+  // session is there to open (`sessions`: in how many it happened, when more than one).
+  const errorRow = (e: ErrorRecord) => {
+    const at = e.sites?.[0]?.session_id ?? e.session_id;
+    const s = at ? store.session(at) : undefined;
+    return {
+      id: e.id, message: e.message, source: e.source, count: e.count ?? 1, first: secs(e.first_ts ?? e.ts), last: secs(e.ts),
+      read: !!e.read_ts, recovered: !!e.recovered_ts,
+      ...(s ? { chat_id: s.id, title: s.title || "New chat" } : {}),
+      ...((e.sites?.length ?? 0) > 1 ? { sessions: e.sites!.length } : {}),
+    };
+  };
+  // What is open, the newest first: the failures the store could not take lead, as on the page.
+  // `unread`: what the page's badge counts (open, not read, not healed by a retry).
+  const errorList = () => {
+    const rows = [...errors.unwritten(), ...errors.list(ERRORS_LISTED, { resolved: false })].map(errorRow);
+    return { errors: rows, unread: rows.filter((r) => !r.read && !r.recovered).length };
+  };
+
   const chat = (sid: string) => store.session(sid);
   // The chat, for a handler that reads its events: one that is not in memory is brought in off
   // the loop first, a part at a time (its rows; these routes are not under /api/sessions/:id,
@@ -1128,6 +1150,26 @@ export function mobileApi(ctx: MobileCtx) {
     "/v1/away": {
       GET: signed(() => { const d = ctx.away?.(); return json({ away: d ? awayOf(d) : null }); }),
       DELETE: signed(() => { ctx.awaySeen?.(); return json({ ok: true }); }),
+    },
+    // What broke on the daemon, as the page's Errors panel lists it: the open kinds of failure.
+    "/v1/errors": { GET: signed(() => json(errorList())) },
+    // Read (out of the count, still listed), unread again, or resolved (off the list), as on the page.
+    "/v1/errors/:eid/:action": {
+      POST: signed((req) => {
+        const id = req.params.eid!, action = req.params.action;
+        if (action !== "read" && action !== "unread" && action !== "resolve") return err("the action is read, unread or resolve", 400);
+        // One the store never took is only in memory: read or resolved, it is let go.
+        if (id.startsWith("unwritten-")) {
+          if (action === "unread") return err("this error was never stored; it can only be let go", 400);
+          const gone = errors.dismiss(id);
+          return gone ? json({ row: errorRow(gone) }) : err("no such error", 404);
+        }
+        if (!store.error(id)) return err("no such error", 404);
+        if (action === "resolve") errors.resolve(id, true); else store.readError(id, action === "read");
+        const rec = errors.get(id)!;
+        bus.emit({ t: "error", error: rec });
+        return json({ row: errorRow(rec) });
+      }),
     },
     // The owner is at the phone: its last touch this long ago (the end of an absence, as a page's report is).
     "/v1/presence": {

@@ -87,7 +87,7 @@ object Hub {
 
     fun reset() {
         live?.cancel(); live = null; saver?.cancel(); dirty = false
-        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L; away.value = null
+        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L; away.value = null; errors.value = null
         note.value = ""; conn.value = Conn.OFF
     }
 
@@ -124,7 +124,7 @@ object Hub {
             override fun onOpen(eventSource: EventSource, response: Response) { conn.value = Conn.LIVE; opened() }
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 when (val step = feed.take(data)) {
-                    is Took.Applied -> { if (step.synced) { note.value = ""; readAway() }; changed() }
+                    is Took.Applied -> { if (step.synced) { note.value = ""; readAway(); readErrors() }; changed() }
                     is Took.CatchUp -> catchUp(eventSource)
                     // What the frame carried was not applied: the stream ends here and the next one opens from the cursor.
                     is Took.Broken -> { broke = step.reason; note.value = step.reason; eventSource.cancel() }
@@ -192,6 +192,16 @@ object Hub {
     fun seenAway() { away.value = null; scope.launch { runCatching { Api.delete("/v1/away") } } }
     /** The owner touched the app `idleMs` ago: the end of an absence, as a page in use says. */
     suspend fun present(idleMs: Long) { Api.post("/v1/presence", JSONObject().put("idle_ms", idleMs)) }
+    /** The daemon's open errors (the page's Errors panel): read when the phone is level, while the list shows, and in the Errors view. */
+    val errors = MutableStateFlow<ErrorList?>(null)
+    fun readErrors() { scope.launch { runCatching { errorList() } } }
+    suspend fun errorList(): ErrorList = ErrorList.of(Api.get("/v1/errors")).also { errors.value = it }
+    /** Read (out of the count), unread again, or resolved (off the list), on the page too. */
+    suspend fun markError(id: String, action: String) {
+        val row = ErrorList.row(Api.post("/v1/errors/${Uri.encode(id)}/$action"))
+        // One the store never took is let go when read or resolved: it leaves the list.
+        errors.value = errors.value?.marked(id, if (action == "resolve" || id.startsWith("unwritten-")) null else row)
+    }
     suspend fun search(q: String): SearchResult = SearchResult.of(Api.get("/v1/search?q=${Wire.enc(q)}"))
     suspend fun startOffer(): Start = Start.of(Api.get("/v1/start"))
 

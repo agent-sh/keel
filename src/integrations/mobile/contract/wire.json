@@ -7,7 +7,8 @@
   "examples: per shape, answers and frames as the daemon sends them (for send and answer: bodies as the app sends them).",
   "Both directions are checked. The daemon sends every field of every shape under its name and type. The app has a reader for every field, and reads no field of the daemon's that no shape names: its JSON reading is in Wire.kt and Feed.kt only, and ContractTest reads those sources.",
   "The daemon may add fields to any shape; the app ignores a field it does not know. Renaming or dropping a listed field, or changing the signed bytes, breaks one of the checks.",
-  "The shapes by route: sync (GET /v1/sync, and `sync` in the stream's hello), page (GET /v1/chats/:id/messages?paged=1), receipt (POST /v1/chats/:id/messages), created (POST /v1/chats), resolved (POST /v1/approvals/:id), pulse (GET /v1/pulse), usage (GET /v1/chats/:id/usage), me (GET /v1/me), push_config (GET /v1/push-config), paired (POST /v1/pair), revoked (DELETE /v1/devices/:id), error (the body of any refusal), push (the data of one push), and the frames of GET /v1/events by their type.",
+  "The shapes by route: sync (GET /v1/sync, and `sync` in the stream's hello), page (GET /v1/chats/:id/messages?paged=1), receipt (POST /v1/chats/:id/messages), created (POST /v1/chats), resolved (POST /v1/approvals/:id), pulse (GET /v1/pulse), usage (GET /v1/chats/:id/usage), me (GET /v1/me), push_config (GET /v1/push-config), paired (POST /v1/pair), revoked (DELETE /v1/devices/:id), errors (GET /v1/errors), error_marked (POST /v1/errors/:id/read, /unread or /resolve), error (the body of any refusal), push (the data of one push), and the frames of GET /v1/events by their type.",
+  "errors lists the daemon's open errors as the page's Errors panel does, the newest first: each kind of failure once with its whole message, `count` the times it happened, `first` and `last` in seconds, `read` out of the count, `recovered` healed by a retry, and the session it last happened in (`chat_id`, `title`) while that session is there; `sessions` says in how many it happened when more than one. `unread` is the page's badge: open, not read, not recovered. An `unwritten-` id is one the store could not take yet; read or resolved, it is let go, and it cannot be marked unread.",
   "sync.more is false from this daemon; an app reads it for a daemon that pages its catch-up.",
   "upload and upload_ref are the daemon's side of attaching a file: the answer to POST /v1/upload?name=<name>&mime=<type> with the file's bytes as the body (the example is the answer for a 1x1 PNG named photo.png), and how a prompt names it in `attachments`. The app uploads each file when it is picked and sends a prompt that names the uploads (send.attachments, each an upload_ref). It checks a file against me.uploads.max_bytes before it sends the bytes, and scales a photo to me.uploads.image_edge on its long edge (the edge the daemon stores a photo at). The stored message lists what it carried in meta.attachments, an image under a `media` id that GET /v1/media/<media> serves.",
   "A permission card that waits carries what the read-first rule needs (src/safety/card.ts, the one form every client gets): `text` is the whole text to judge with each hidden character written as its code point, `notes` say why it is asked, where it runs, what in the text can mislead and whether only its start is here, `rtl` says it holds letters written right to left, and `hold` says why Allow needs the text shown whole first (long, cut, marked, risk, where). An empty `hold` means one line shows all of it. The app sends `seen: \"whole\"` with an allow once all of `text` was on its screen. An allow of a held card without `seen` is answered 409 with the sentence to show in `error`, and the card stays open: an app from before these fields shows that sentence. `grants` are the rules a standing answer would store: the session action's label names them, and the app's button does (\"Allow echo * for this session\"). The action is offered only where there is a rule. `line` is what a notification says of the request (the tool, where it runs when not here, the text), and `glance` says that a collapsed notification shows all of that line: only then may a notification carry Allow once. A push says the same: its `body` is that line, its `opts` hold `once` only for such a request, and `hold` gives the reasons a request is held (comma separated; empty when none). An answer given from a notification says `via: \"notification\"`: it never counts as having shown the text, it allows once only what `glance` covers, and it gives no standing answer (409 with the sentence). A closed card says where it was answered in `from`. An answer to a card that was already answered is a 409 whose `error` says how it ended, who answered and how long ago (\"this approval is already allowed (once) from the page, 3 s ago\"), with the closed card in `approval`.",
@@ -470,6 +471,26 @@
    "value": "string",
    "topics": "array",
    "updated": "number"
+  },
+  "errors": {
+   "errors": "array",
+   "unread": "number"
+  },
+  "error_row": {
+   "id": "string",
+   "message": "string",
+   "source": "string",
+   "count": "number",
+   "first": "number",
+   "last": "number",
+   "read": "boolean",
+   "recovered": "boolean",
+   "chat_id": "string?",
+   "title": "string?",
+   "sessions": "number?"
+  },
+  "error_marked": {
+   "row": "object"
   }
  },
  "examples": {
@@ -2856,6 +2877,106 @@
     "value": "Notify only for failures and mail that needs an answer.",
     "topics": [],
     "updated": 1795180000.0
+   }
+  ],
+  "error_row": [
+   {
+    "id": "01a2-0b2b-8043",
+    "message": "HTTP 402: the account has no credit left. Add credit to the account or switch the session to another model.",
+    "source": "provider",
+    "count": 4,
+    "first": 1795195000.0,
+    "last": 1795195003.5,
+    "read": false,
+    "recovered": false,
+    "chat_id": "s-1",
+    "title": "Billing check",
+    "sessions": 2
+   },
+   {
+    "id": "01a2-0b2b-8044",
+    "message": "The loop was held for 3.2 s: a read of the ledger on the main thread",
+    "source": "server",
+    "count": 1,
+    "first": 1795195060.0,
+    "last": 1795195060.0,
+    "read": true,
+    "recovered": false
+   },
+   {
+    "id": "01a2-0b2b-8045",
+    "message": "HTTP 529: overloaded",
+    "source": "provider",
+    "count": 2,
+    "first": 1795194000.0,
+    "last": 1795194100.0,
+    "read": true,
+    "recovered": true,
+    "chat_id": "s-2",
+    "title": "Review"
+   }
+  ],
+  "errors": [
+   {
+    "errors": [
+     {
+      "id": "01a2-0b2b-8043",
+      "message": "HTTP 402: the account has no credit left. Add credit to the account or switch the session to another model.",
+      "source": "provider",
+      "count": 4,
+      "first": 1795195000.0,
+      "last": 1795195003.5,
+      "read": false,
+      "recovered": false,
+      "chat_id": "s-1",
+      "title": "Billing check",
+      "sessions": 2
+     },
+     {
+      "id": "01a2-0b2b-8044",
+      "message": "The loop was held for 3.2 s: a read of the ledger on the main thread",
+      "source": "server",
+      "count": 1,
+      "first": 1795195060.0,
+      "last": 1795195060.0,
+      "read": true,
+      "recovered": false
+     },
+     {
+      "id": "01a2-0b2b-8045",
+      "message": "HTTP 529: overloaded",
+      "source": "provider",
+      "count": 2,
+      "first": 1795194000.0,
+      "last": 1795194100.0,
+      "read": true,
+      "recovered": true,
+      "chat_id": "s-2",
+      "title": "Review"
+     }
+    ],
+    "unread": 1
+   },
+   {
+    "errors": [],
+    "unread": 0
+   }
+  ],
+  "error_marked": [
+   {
+    "row": {
+     "id": "01a2-0b2b-8043",
+     "message": "HTTP 402: the account has no credit left. Add credit to the account or switch the session to another model.",
+     "source": "provider",
+     "count": 4,
+     "first": 1795195000.0,
+     "last": 1795195003.5,
+     "read": true,
+     "recovered": false,
+     "chat_id": "s-1",
+     "title": "Billing check",
+     "sessions": 2
+    }
    }
   ]
  },

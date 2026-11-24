@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../../core/bus.ts";
 import { Store } from "../../core/store.ts";
+import { ErrorTracker } from "../../core/errors.ts";
 import { setDeps } from "../../automation/core.ts";
 import * as agents from "../../automation/agents.ts";
 import * as alerts from "../../automation/alerts.ts";
@@ -98,7 +99,9 @@ const helperOn = async () => {
   return helper;
 };
 let fleetStart: (b: any) => Response = () => Response.json({ error: "no fleet in this test" }, { status: 409 });
-const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts,
+// The daemon's errors, as the Errors panel reads them.
+const tracker = new ErrorTracker(store, bus);
+const routes: any = mobileApi({ store, bus, engine, providers, errors: tracker, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts,
   fleetMachines: async () => fleetRows, startFleetSession: async (b: any) => fleetStart(b),
   away: () => awayDigest, awaySeen: () => { awayDigest = null; }, ownerSeen: (ms: number) => void seenAt.push(ms),
   search: (r: Request) => searchGet()(r), helper: () => helper, live: () => liveStatus([{ title: "Review", running: true, since: 1795195000500, needs: 0 }]) } as any);
@@ -547,6 +550,51 @@ describe("away", () => {
     expect((await call("POST", "/v1/presence", { idle_ms: 4000 })).status).toBe(200);
     expect(seenAt.at(-1)).toBe(4000);
     expect((await call("POST", "/v1/presence", {})).status).toBe(400);
+  });
+});
+
+describe("errors", () => {
+  // What broke on the daemon, on the phone: the page's open list, each kind whole.
+  const fail = (source: "provider" | "server", message: string, sid?: string) => {
+    const quiet = console.error;
+    console.error = () => {};
+    try { return tracker.capture(source, new Error(message), undefined, sid ? { session_id: sid } : {}); } finally { console.error = quiet; }
+  };
+  test("the open errors reach the phone whole, with their counts, times and session, and are read and resolved there", async () => {
+    const s = session("Billing check 1");
+    setSystemTime(T0);
+    const long = `HTTP 402: the account has no credit left. ${"Add credit to the account or switch the session to another model. ".repeat(8)}`.trim();
+    // Four times, a second apart, then a stall a minute later; the clock is put back after.
+    let billing = fail("provider", long, s.id);
+    for (let i = 1; i <= 3; i++) { setSystemTime(T0 + i * 1000); billing = fail("provider", long, s.id); }
+    setSystemTime(T0 + 60_000);
+    const stall = fail("server", "The loop was held for 3.2 s: a read of the ledger on the main thread");
+    const done = fail("server", "An error the owner already resolved");
+    setSystemTime();
+    tracker.resolve(done.id, true);
+    const list = (await call("GET", "/v1/errors")).body;
+    const mine = list.errors.filter((e: any) => [billing.id, stall.id, done.id].includes(e.id));
+    expect(mine.map((e: any) => [e.id, e.message, e.source, e.count, e.read, e.recovered, e.chat_id ?? null, e.title ?? null])).toEqual([
+      [stall.id, "The loop was held for 3.2 s: a read of the ledger on the main thread", "server", 1, false, false, null, null],
+      [billing.id, long, "provider", 4, false, false, s.id, "Billing check 1"],
+    ]);
+    expect([mine[1].first, mine[1].last, mine[0].first]).toEqual([T0 / 1000, T0 / 1000 + 3, T0 / 1000 + 60]);
+    const unread0 = list.unread;
+    expect(unread0).toBeGreaterThanOrEqual(2);
+    // Read on the phone is read on the page: it leaves the count and stays on the list.
+    const read = await call("POST", `/v1/errors/${billing.id}/read`);
+    expect([read.status, read.body.row.id, read.body.row.read]).toEqual([200, billing.id, true]);
+    expect(store.error(billing.id)!.read_ts).toBeGreaterThan(0);
+    const after = (await call("GET", "/v1/errors")).body;
+    expect(after.unread).toBe(unread0 - 1);
+    expect(after.errors.find((e: any) => e.id === billing.id).read).toBe(true);
+    expect((await call("POST", `/v1/errors/${billing.id}/unread`)).body.row.read).toBe(false);
+    // Resolved, it leaves the open list.
+    expect((await call("POST", `/v1/errors/${stall.id}/resolve`)).status).toBe(200);
+    expect(store.error(stall.id)!.resolved_ts).toBeGreaterThan(0);
+    expect((await call("GET", "/v1/errors")).body.errors.some((e: any) => e.id === stall.id)).toBe(false);
+    expect((await call("POST", `/v1/errors/${stall.id}/forget`)).status).toBe(400);
+    expect((await call("POST", "/v1/errors/no-such-error/read")).status).toBe(404);
   });
 });
 
@@ -1135,6 +1183,7 @@ describe("the wire contract", () => {
     start: [["models", "start_model"], ["folders", "start_folder"], ["machines", "start_machine"]],
     search: [["hits", "search_hit"]],
     away: [["away.sessions", "away_session"]],
+    errors: [["errors", "error_row"]], error_marked: [["row", "error_row"]],
   };
   // What a value breaks of its shape's fields, the shapes inside it included; `seen` collects the fields it has.
   function broken(shape: string, v: any, seen = new Set<string>(), out: string[] = []) {
@@ -1254,6 +1303,15 @@ describe("the wire contract", () => {
     awayDigest = DIGEST;
     take("away", (await call("GET", "/v1/away")).body);
     awayDigest = null;
+    // The open errors: one kind in two sessions, one of the daemon's own.
+    const quiet = console.error;
+    console.error = () => {};
+    const both = tracker.capture("provider", new Error("HTTP 402: no credit (contract)"), undefined, { session_id: s.id });
+    tracker.capture("provider", new Error("HTTP 402: no credit (contract)"), undefined, { session_id: parent.id });
+    tracker.capture("server", new Error("The loop was held (contract)"));
+    console.error = quiet;
+    take("errors", (await call("GET", "/v1/errors")).body);
+    take("error_marked", (await call("POST", `/v1/errors/${both.id}/read`)).body);
     (providers as any).models = listing;
     fleetRows = [];
     take("error", (await call("POST", `/v1/chats/${s.id}/messages`, { text: "" })).body);

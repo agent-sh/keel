@@ -19,6 +19,36 @@ import org.junit.Test
 
 // Pure logic of the app. What it shares with the daemon (signed bytes, shapes) is in ContractTest.
 class WireTest {
+    @Test fun theDaemonsErrorsAreListedWholeAndCountedAsThePageCountsThem() {
+        val body = JSONObject("""{"errors":[
+            {"id":"e1","message":"HTTP 402: the account has no credit left. Add credit or switch the session to another model.","source":"provider","count":4,"first":100,"last":160,"read":false,"recovered":false,"chat_id":"s-1","title":"Billing check","sessions":3},
+            {"id":"e2","message":"The loop was held for 3.2 s","source":"server","count":1,"first":200,"last":200,"read":true,"recovered":false},
+            {"id":"e3","message":"HTTP 529: overloaded","source":"provider","count":2,"first":50,"last":60,"read":true,"recovered":true,"chat_id":"s-2","title":""}
+        ],"unread":1}""")
+        val l = ErrorList.of(body)
+        assertEquals(listOf("e1", "e2"), l.open.map { it.id })
+        assertEquals(listOf("e3"), l.healed.map { it.id })
+        val e1 = l.rows[0]
+        // The whole message, its source and count, where it happened.
+        assertEquals("HTTP 402: the account has no credit left. Add credit or switch the session to another model.", e1.message)
+        assertEquals("Provider · 4x", e1.meta)
+        assertEquals("Server", l.rows[1].meta)
+        assertEquals("In Billing check and 2 other sessions", e1.where)
+        assertEquals("", l.rows[1].where)
+        assertEquals("In a session", l.rows[2].where)
+        assertEquals(listOf(100.0, 160.0), listOf(e1.first, e1.last))
+        assertEquals(1, l.unread)
+        // Read: it leaves the count and stays listed. Resolved: it leaves the list.
+        val read = l.marked("e1", e1.copy(read = true))
+        assertEquals(listOf(0, 3), listOf(read.unread, read.rows.size))
+        val again = read.marked("e2", l.rows[1].copy(read = false))
+        assertEquals(1, again.unread)
+        assertEquals(listOf("e1", "e3"), again.marked("e2", null).rows.map { it.id })
+        assertEquals(ErrorList(emptyList(), 0), ErrorList.of(JSONObject("{}")))
+        assertEquals("e1", ErrorList.row(JSONObject().put("row", body.getJSONArray("errors").getJSONObject(0)))?.id)
+        assertNull(ErrorList.row(JSONObject()))
+    }
+
     @Test fun aSendKeepsItsIdForTheSameWords() {
         var n = 0
         val fresh = { "id-${++n}" }

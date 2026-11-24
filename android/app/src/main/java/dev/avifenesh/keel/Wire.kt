@@ -551,6 +551,51 @@ data class Away(
     }
 }
 
+/**
+ * One kind of failure on the daemon, as the page's Errors panel lists it: its whole message, where it came from
+ * (`source`: provider, server, tool, client), how many times and when (seconds), read or not, healed by a retry
+ * or not, and the session it last happened in while that session is there (`chatId`, empty when none; `sessions`:
+ * in how many it happened, when more than one).
+ */
+data class ErrorRow(
+    val id: String, val message: String, val source: String, val count: Int, val first: Double, val last: Double,
+    val read: Boolean, val recovered: Boolean, val chatId: String = "", val title: String = "", val sessions: Int = 0,
+) {
+    /** Counted in the badge: open, not read, not healed by a retry. */
+    val unread get() = !read && !recovered
+    /** "Provider · 4x": where it came from, and how often when more than once. */
+    val meta get() = source.replaceFirstChar { it.uppercase() } + if (count > 1) " · ${count}x" else ""
+    /** Where it happened, in words: "In Fix the build", "In Fix the build and 2 other sessions"; empty with no session. */
+    val where get() = if (chatId.isBlank()) "" else "In ${title.ifBlank { "a session" }}" +
+        if (sessions > 1) " and ${sessions - 1} other session${if (sessions == 2) "" else "s"}" else ""
+    companion object {
+        fun of(o: JSONObject) = ErrorRow(
+            o.str("id"), o.str("message"), o.str("source"), o.optInt("count", 1), o.optDouble("first", 0.0), o.optDouble("last", 0.0),
+            o.optBoolean("read"), o.optBoolean("recovered"), o.str("chat_id"), o.str("title"), o.optInt("sessions", 0),
+        )
+    }
+}
+
+/** GET /v1/errors: the daemon's open errors, the newest first, and how many the page's badge counts. */
+data class ErrorList(val rows: List<ErrorRow>, val unread: Int) {
+    /** Open and not healed: what the list shows first. */
+    val open get() = rows.filter { !it.recovered }
+    val healed get() = rows.filter { it.recovered }
+    /** After one was marked: its row as the daemon answered (`row`), or gone when resolved (`row` null). */
+    fun marked(id: String, row: ErrorRow?): ErrorList {
+        val next = if (row == null) rows.filter { it.id != id } else rows.map { if (it.id == id) row else it }
+        return ErrorList(next, next.count { it.unread })
+    }
+    companion object {
+        fun of(o: JSONObject) = ErrorList(
+            o.optJSONArray("errors")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty().map(ErrorRow::of),
+            o.optInt("unread"),
+        )
+        /** POST /v1/errors/<id>/<action>: the row as it is now. */
+        fun row(o: JSONObject): ErrorRow? = o.optJSONObject("row")?.let(ErrorRow::of)
+    }
+}
+
 /** One thing the helper was told: about a session (`chatId`), or mail (no session). */
 data class HelperEvent(val id: String, val ts: Double, val chatId: String?, val title: String, val body: String)
 

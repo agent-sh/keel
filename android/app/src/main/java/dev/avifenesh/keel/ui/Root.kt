@@ -77,6 +77,10 @@ fun Root(act: MainActivity) {
                 BackHandler { Ui.route.value = Route.Tabs(0) }
                 SearchScreen()
             }
+            is Route.Errors -> {
+                BackHandler { Ui.route.value = Route.Tabs(0) }
+                ErrorsScreen()
+            }
             is Route.Changes -> {
                 BackHandler { Ui.route.value = Route.Session(r.id) }
                 ChangesScreen(r.id)
