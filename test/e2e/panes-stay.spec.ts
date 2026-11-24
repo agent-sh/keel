@@ -350,9 +350,11 @@ test("the start page lists what needs the owner in a pane beside others, and a p
   await wheelUp(page, 0);
   const before = await look(page);
 
-  // The coordinator's header: its title whole, the reason beside or under it, cut where the pane ends.
+  // The coordinator's header: its title whole and its state, cut where the pane ends. It waits on an approval whose
+  // card is under it, so the head does not say the call again.
   const head = slot(page, 1).getByTestId("station-head");
-  await expect(head.getByTestId("station-why")).toBeVisible();
+  await expect(head.getByTestId("station-word")).toBeVisible();
+  await expect(head.getByTestId("station-why")).toHaveCount(0);
   expect(await head.getByTestId("station-title").evaluate((el) => el.scrollWidth <= el.clientWidth + 1), "the title is cut").toBe(true);
   expect(await head.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
 
@@ -518,16 +520,16 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await expect(slot(page, 1)).toHaveAttribute("data-station", coord);
   await slot(page, 0).getByTestId("composer").click();
 
-  // Two panes of 800 px: the coordinator's title is whole beside a long reason.
+  // Two panes of 800 px: the coordinator's title is whole beside its state.
   await open(page, [reader, coord]);
   const head = slot(page, 1).getByTestId("station-head");
-  await expect(head.getByTestId("station-why")).toContainText("Approve Bash");
-  // The card under the head shows the command whole: the head names the call, and does not say the command again.
+  await expect(head.getByTestId("station-word")).toContainText("Needs you");
+  // The card under the head shows the command whole: the head says the state and its clock, not the call again.
   await expect(cardIn(page, coord, "approval")).toContainText("echo release > release.txt");
-  await expect(head.getByTestId("station-why")).toHaveText("Approve Bash");
+  await expect(head.getByTestId("station-why")).toHaveCount(0);
   expect(await head.getByTestId("station-title").evaluate((el) => el.scrollWidth <= el.clientWidth + 1), "the title is cut").toBe(true);
-  // The whole reason is its tooltip, and the keys on the header's tools show both whole.
-  expect(await head.getByTestId("station-why").getAttribute("title")).toContain("echo release > release.txt");
+  // The whole reason is the state's tooltip, and the keys on the header's tools show both whole.
+  expect(await head.getByTestId("station-word").getAttribute("title")).toContain("echo release > release.txt");
   await row(page, q).click();
   await expect(slot(page, 0)).toHaveAttribute("data-look", "");
   expect(await headsFit(), "a header spills from its pane").toBe(true);
@@ -554,13 +556,15 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await expect(phone.getByTestId("station-why")).toBeHidden();
   await expect(phone.locator('.k-question[data-state="open"]')).toBeVisible();
   await shoot(page, "panes-stay-10-phone");
-  // With no question open the reason stays where a phone's head puts it: under the title, in the page's width.
+  // With no question open the state stays where a phone's head puts it: under the title, in the page's width
+  // (the approval's card says what is asked).
   await page.goto(`/s/${coord}`);
   const calm = page.locator(`section.k-station[data-station="${coord}"]`);
   await expect.poll(async () => Math.round((await calm.boundingBox())!.x)).toBe(0);
   await expect(calm).not.toHaveAttribute("data-question", /.*/);
-  const reason = calm.getByTestId("station-why");
-  await expect(reason).toHaveText("Approve Bash");
+  await expect(calm.getByTestId("station-why")).toHaveCount(0);
+  const reason = calm.getByTestId("station-word");
+  await expect(reason).toContainText("Needs you");
   const [under, above] = [(await reason.boundingBox())!, (await calm.getByTestId("station-title").boundingBox())!];
   expect(under.y, "the reason is under the title").toBeGreaterThanOrEqual(above.y + above.height - 1);
   expect(under.x + under.width, "the reason is in the page's width").toBeLessThanOrEqual(390);
@@ -1041,7 +1045,10 @@ test("the row tab is said, stays out of the bar's way and points at a pane out o
   const ws = folder("ps");
   const reader = await long(request, "Spike: full-text search", ws);
   const coord = await create(request, "Coordinator: release train 2.4", ws);
-  await ask(request, coord, "approval", "release");
+  // At work on a long command: no card says what it does, so its header has a reason to fit.
+  await request.put(`/api/sessions/${coord}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 300; echo release train notes for the 2.4 branch > release.txt" } }]) } });
+  await expect.poll(() => phase(request, coord), { timeout: 30_000 }).toBe("working");
   const other = await long(request, "Draft the 2.4 changelog", ws);
   const more = [await long(request, "Bench the cache under load", ws), await long(request, "Port the parser", ws), await long(request, "Review pull request 212", ws), await long(request, "Wait for the staging deploy", ws)];
   await open(page, [reader, coord]);

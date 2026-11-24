@@ -160,21 +160,53 @@ test("a head with a long title and a long reason is still one bar, the brand row
   const model = models.find((m) => m.id === "scripted:stand-in")?.id;
   test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
   const title = "A session with a rather long title that keeps going on and on across the bar";
-  const { session } = await (await request.post("/api/sessions", { data: { model, title } })).json();
+  const command = "echo a long command line that keeps going on and on so the reason does not fit beside the title > top-edge-long-reason.txt";
+  const made: string[] = [];
+  const make = async (mode: string, input: Record<string, unknown>) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model, title } })).json();
+    made.push(session.id);
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode } });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input }])}` } });
+    return session as { id: string; workspace: string };
+  };
   try {
-    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
-    // An approval it waits on (never given): the head's reason is long, and the band is the thicker one of a state that calls the owner.
-    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo a long command line that keeps going on and on so the reason does not fit beside the title > top-edge-long-reason.txt" } }])}` } });
-    const pane = page.getByTestId("station").and(page.locator(`[data-station="${session.id}"]`));
+    // An approval it waits on (never given): the card under the head says what is asked, so the bar does not say
+    // it again. The bar is the title, the state with its glyph and clock, and the tools: the folder is the title's
+    // tooltip, the whole reason the state's, and the session's menu wears no dot.
+    const asks = await make("ask", { command });
+    const pane = page.getByTestId("station").and(page.locator(`[data-station="${asks.id}"]`));
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${asks.id}`);
+    await expect(pane).toHaveAttribute("data-watch", "need", { timeout: 15_000 });
+    await expect(pane.locator(".k-approval")).toBeVisible();
+    const head = pane.getByTestId("station-head");
+    await expect(head.getByTestId("station-word")).toContainText("Needs you");
+    await expect(head.getByTestId("station-clock")).toBeVisible();
+    await expect(head.getByTestId("station-why"), "the bar says again what the approval card says").toHaveCount(0);
+    expect(await head.getByTestId("station-word").getAttribute("title")).toContain("top-edge-long-reason.txt");
+    await expect(head.locator(".k-station-meta"), "the folder is a chip of the bar").toBeHidden();
+    expect(await head.getByTestId("station-title").getAttribute("title")).toBe(`${title}\n${asks.workspace}`);
+    await expect(pane.getByTestId("session-header").getByTestId("head-folder")).toBeHidden();
+    await expect(pane.getByTestId("session-menu").locator("span")).toHaveCount(0);
+    // The clock is part of the state: the word's size, not a figure of its own.
+    const sizes = await head.evaluate((h) => [h.querySelector(".k-station-word")!, h.querySelector(".k-station-clock")!].map((e) => getComputedStyle(e).fontSize));
+    expect(sizes[1], "the clock is larger than the state's word").toBe(sizes[0]);
+    await page.mouse.move(1000, 700);
+    await shoot(page, "top-edge-03-approval-1920");
+
+    // At work on a long command: no card says what it does, so the reason is in the bar, with room.
+    const busy = await make("full-auto", { command: `sleep 30; ${command}` });
+    const work = page.getByTestId("station").and(page.locator(`[data-station="${busy.id}"]`));
     // Below 1400 the bar is one too (it once was two rows there, 125px against the brand row's 60).
     for (const width of [1920, 1440, 1366, 1200, 1050]) {
       await page.setViewportSize({ width, height: 1040 });
-      await page.goto(`/s/${session.id}`);
-      await expect(pane).toHaveAttribute("data-watch", "need", { timeout: 15_000 });
+      await page.goto(`/s/${busy.id}`);
+      await expect(work).toHaveAttribute("data-watch", "work", { timeout: 15_000 });
       await page.mouse.move(1000, 700);
-      const head = pane.getByTestId("station-head");
+      const head = work.getByTestId("station-head");
+      await expect(head.getByTestId("station-why")).toBeVisible();
       const h = (await head.boundingBox())!, brand = (await page.locator(".k-rail-brand").boundingBox())!;
-      const t = (await pane.getByTestId("session-header").boundingBox())!;
+      const t = (await work.getByTestId("session-header").boundingBox())!;
       expect(Math.abs(t.y - h.y), `at ${width} the tools are a row under the head`).toBeLessThan(1);
       expect(Math.abs(h.y + h.height - (brand.y + brand.height)), `at ${width} the bar and the brand row end apart`).toBeLessThanOrEqual(1);
       // The reason has room for about twenty characters at least: beside a title shown whole, or on the
@@ -192,6 +224,9 @@ test("a head with a long title and a long reason is still one bar, the brand row
       if (width === 1440 || width === 1050) await shoot(page, `top-edge-03-long-${width}`);
     }
   } finally {
-    await request.delete(`/api/sessions/${session.id}`);
+    for (const id of made) {
+      await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+      await request.delete(`/api/sessions/${id}`).catch(() => {});
+    }
   }
 });

@@ -196,8 +196,9 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
     // the owner's double press, not a Stop (lib/looks.ts, lib/overlay.ts).
     <Popover.Root open={open} onOpenChange={setOpen} modal>
       <Popover.Trigger ref={button} data-more="" aria-label={live ? `Session actions, ${live}` : "Session actions"} title={live ? `Session actions. ${live}: its list is here` : "Session actions"} data-testid="session-menu" className={cn(iconButton, "relative")}>
+        {/* (Background work folded into it is in its name and its tooltip, and in its Background row; no dot
+            marks the button: an unnamed dot on the bar read as noise.) */}
         <Ellipsis className="size-4" />
-        {live && <span className="k-menu-live" data-testid="more-live" role="img" aria-label={live} title={live} />}
       </Popover.Trigger>
       <Popover.Portal keepMounted>
         <Popover.Positioner data-stow="" sideOffset={6} align="end" className="z-50 outline-none">
@@ -331,7 +332,7 @@ export function SessionHeader({ session }: { session: Session }) {
   const hand = useHandPanels(session);
   const folded = tools.filter((t) => out.includes(t.id));
   const bg = useBackgroundLive(session.id);
-  // What the dot at the menu counts, in words (a title is not shown on touch: the name has it).
+  // The background work folded into the menu, in words: the menu's name and tooltip say it.
   const live = bg.live > 0 && out.includes("background") ? `${bg.words} in the background` : "";
   // Its subagents' sessions go with it: the dialog says how many before anything is removed.
   // (The list leaves out the ones at rest and counts them under the session it carries.)

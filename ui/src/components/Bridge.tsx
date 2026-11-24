@@ -33,8 +33,6 @@ import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
-import { useSafety } from "../lib/safety.ts";
-import { askBrief } from "../../../src/core/watch.ts";
 import { COUNTERS, OFFLINE, STATE_WORD, asOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
@@ -130,6 +128,8 @@ const StationTools = memo(function StationTools({ id, helm, pinned, focus, panes
   );
 });
 
+// The asks whose card the pane draws (src/core/watch.ts names them).
+const CARDED = new Set(["approval", "question", "plan", "secret"]);
 function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: boolean }) {
   // What it last did is shown in a pane that is not the helm: only such a pane reads its events,
   // and works the line out when they changed, not at each tick of its clock.
@@ -149,8 +149,11 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // An approval whose card this pane draws under its head (above the message box, the agents' too):
   // the head names the call and the card says it whole, so the command is not said twice. The
   // whole reason is the head's tip.
-  const cardTool = useSafety((x) => (w === "need" && st.why === "approval" ? x.approvals[st.child ?? s.id]?.[0]?.tool ?? "" : ""));
-  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : cardTool ? askBrief(st, cardTool) : st.text ? briefText(st, now) : "";
+  // What a card of this pane says (an approval, a question, a plan or a secret it asks for, above the
+  // message box, the agents' too; a declined request in the transcript) the head does not say again: it
+  // keeps the state and its clock, and the whole reason is its tooltip.
+  const carded = (w === "need" && CARDED.has(st.why ?? "")) || w === "declined";
+  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : carded ? "" : st.text ? briefText(st, now) : "";
   // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
   // Alone there is nothing for them to do that the session's menu and the keys do not (focus changes nothing,
   // a close only empties the pane): they rest only where there are panes to choose between. A pinned session
@@ -158,17 +161,18 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const tools = panes > 1 ? 3 : pinned ? 1 : 0;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}
-      style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
+      style={{ "--k-tools": tools } as CSSProperties} data-whole={why || (carded && told) ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
       {/* The title first, in the width it needs. The state and its reason beside it when they fit, else on the line under it. */}
       <div className="k-station-row k-station-identity">
         {/* An agent's way up its tree, before its own title: the root and each agent between, each a link. */}
         {s.parent_id && <Crumbs s={s} />}
-        <h2 className="k-station-title" data-testid="station-title" title={s.title}>{s.title || "New session"}</h2>
+        {/* Its folder is the title's tooltip: the bar keeps the title, the state and the tools. */}
+        <h2 className="k-station-title" data-testid="station-title" title={`${s.title || "New session"}\n${s.workspace}`}>{s.title || "New session"}</h2>
         {/* Another machine's session names it beside the title, at any width of the pane (the folder and model give way first). */}
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
         <span className="k-station-state">
-          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
+          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={carded && told ? told : undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
           {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
           {timed(st) && !offline && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
           {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}

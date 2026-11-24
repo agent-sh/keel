@@ -332,11 +332,10 @@ test.describe("a crowded toolbar", () => {
       await expect(more).toBeInViewport({ ratio: 1 });
       await shoot(page, "workbench-toolbar-390");
       // The menu says that folded background work is running, and how much: in its name (a touch has no
-      // title to hover) and in the dot's own.
+      // title to hover) and its tooltip. No unnamed dot marks the button.
       await expect(more).toHaveAccessibleName("Session actions, 1 loop in the background");
-      await expect(more.getByTestId("more-live")).toBeVisible();
-      await expect(more.getByTestId("more-live")).toHaveAccessibleName("1 loop in the background");
-      await expect(more.getByTestId("more-live")).toHaveAttribute("title", "1 loop in the background");
+      await expect(more).toHaveAttribute("title", /1 loop in the background/);
+      await expect(more.getByTestId("more-live")).toHaveCount(0);
       await more.tap();
       await expect(menu).toBeVisible();
       for (const t of phone.inMenu) await expect(menu.getByTestId(t)).toBeInViewport({ ratio: 1 });
