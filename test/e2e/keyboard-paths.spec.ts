@@ -160,7 +160,7 @@ test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ 
   await expect(esc.getByTestId("shortcut-case")).toHaveText([
     "Close the panel over the conversation, while one is open",
     "Back to the session the pane holds, from a look or the start page",
-    "Stop the turn, while a turn works",
+    "Stop the turn, while a turn works or a compaction is written",
     "Back to the session that started this agent, in an agent's session",
     "Deny an approval with a reason, on its card",
   ]);
