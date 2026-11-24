@@ -23,7 +23,7 @@ import { askFor, DECLINED } from "../tools/interact.ts";
 import type { Asked } from "../core/types.ts";
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles, sourced } from "./sources.ts";
-import { OAuthStore } from "./oauth.ts";
+import { OAuthStore, type Forgotten } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
@@ -1962,7 +1962,7 @@ export class McpManager {
     const { [name]: _gone, ...rest } = this.cfg.servers;
     this.save(rest);
     this.drop(name);
-    this.oauth.forget(name);
+    this.revoked(name, this.oauth.forget(name));
     if (this.pins[name]) {
       delete this.pins[name];
       this.writePins(name);
@@ -2099,8 +2099,17 @@ export class McpManager {
     return name;
   }
 
+  // The tokens are forgotten here already; the authorization server is told in
+  // the background, and a refusal is said once.
+  private revoked(name: string, gone: Forgotten | undefined) {
+    if (!gone) return;
+    detached(() => void this.oauth.revoke(gone).then((failed) => {
+      if (failed.length) this.errors.capture("server", new Error(`MCP server ${name}: its tokens are forgotten here, but the authorization server did not confirm revoking them (${failed.join("; ")})`), { at: "mcp oauth revoke", mcp: name });
+    }));
+  }
+
   signOut(name: string) {
-    this.oauth.signOut(name);
+    this.revoked(name, this.oauth.signOut(name));
     const e = this.entries.get(name);
     if (e) {
       e.client?.close();

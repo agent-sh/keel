@@ -102,3 +102,88 @@ test("a newer sign-in during a refresh keeps its tokens", async () => {
   expect(await call).toBe("at-signin");
   expect(file().servers.s.tokens.refresh_token).toBe("rt-signin");
 });
+
+// Sign-out and removal revoke at the authorization server (RFC 7009) when it advertises
+// a revocation_endpoint, then the tokens are forgotten either way.
+const revoked: { auth: string | null; form: Record<string, string> }[] = [];
+let revokeStatus = 200;
+const rev = Bun.serve({
+  port: 0,
+  hostname: "127.0.0.1",
+  async fetch(req) {
+    revoked.push({ auth: req.headers.get("authorization"), form: Object.fromEntries(new URLSearchParams(await req.text())) });
+    return new Response(null, { status: revokeStatus });
+  },
+});
+afterAll(() => rev.stop(true));
+
+const signedIn = (revocation_endpoint?: string, secret?: string) => writeFileSync(join(dir, "mcp-oauth.json"), JSON.stringify({
+  servers: { s: { issuer: "http://127.0.0.1:1", token_endpoint: endpoint, ...(revocation_endpoint === undefined ? {} : { revocation_endpoint }), resource: "https://r", client: { ...client, client_secret: secret }, tokens: { access_token: "at-0", refresh_token: "rt-0" } } },
+  clients: {},
+  pending: {},
+}));
+
+test("a sign-out revokes the refresh token, then the access token, as the client registered", async () => {
+  revoked.length = 0;
+  revokeStatus = 200;
+  signedIn(`http://127.0.0.1:${rev.port}/revoke`, "sec");
+  const store = new OAuthStore(dir);
+  const gone = store.signOut("s");
+  expect(store.signedIn("s")).toBe(false);
+  expect(await store.revoke(gone!)).toEqual([]);
+  expect(revoked.map((r) => r.form)).toEqual([
+    { token: "rt-0", token_type_hint: "refresh_token", client_id: "c" },
+    { token: "at-0", token_type_hint: "access_token", client_id: "c" },
+  ]);
+  expect(revoked[0]!.auth).toBe(`Basic ${btoa("c:sec")}`);
+});
+
+test("a refused revoke is reported and the tokens stay forgotten", async () => {
+  revoked.length = 0;
+  revokeStatus = 503;
+  signedIn(`http://127.0.0.1:${rev.port}/revoke`);
+  const store = new OAuthStore(dir);
+  const gone = store.forget("s");
+  expect(file().servers).toEqual({});
+  expect(await store.revoke(gone!)).toEqual(["refresh_token: HTTP 503", "access_token: HTTP 503"]);
+  expect(revoked.length).toBe(2);
+});
+
+test("a server that names no revocation endpoint is only forgotten", async () => {
+  revoked.length = 0;
+  signedIn("");
+  const store = new OAuthStore(dir);
+  const gone = store.signOut("s");
+  expect(store.signedIn("s")).toBe(false);
+  expect(await store.revoke(gone!)).toEqual([]);
+  expect(revoked).toEqual([]);
+  expect(store.signOut("s")).toBeUndefined();
+});
+
+test("a sign-in keeps the revocation endpoint its metadata advertises", async () => {
+  revoked.length = 0;
+  revokeStatus = 200;
+  const as = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(req) {
+      const u = new URL(req.url);
+      const o = u.origin;
+      if (u.pathname === "/.well-known/oauth-authorization-server") return Response.json({ issuer: o, authorization_endpoint: `${o}/authorize`, token_endpoint: `${o}/token`, registration_endpoint: `${o}/register`, revocation_endpoint: `${o}/revoke` });
+      if (u.pathname === "/register") return Response.json({ client_id: "reg" });
+      if (u.pathname === "/token") return Response.json({ access_token: "at-x", refresh_token: "rt-x" });
+      if (u.pathname === "/revoke") revoked.push({ auth: null, form: Object.fromEntries(new URLSearchParams(await req.text())) });
+      return new Response(null, { status: u.pathname === "/revoke" ? 200 : 404 });
+    },
+  });
+  try {
+    const store = new OAuthStore(dir);
+    const url = new URL(await store.begin("s", `http://127.0.0.1:${as.port}/mcp`, null, "http://127.0.0.1/cb"));
+    await store.finish(new URLSearchParams({ state: url.searchParams.get("state")!, code: "k" }));
+    expect(file().servers.s.revocation_endpoint).toBe(`http://127.0.0.1:${as.port}/revoke`);
+    expect(await store.revoke(store.signOut("s")!)).toEqual([]);
+    expect(revoked.map((r) => r.form.token)).toEqual(["rt-x", "at-x"]);
+  } finally {
+    as.stop(true);
+  }
+});

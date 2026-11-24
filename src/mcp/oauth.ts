@@ -12,8 +12,11 @@ import { writeOwnFile } from "../core/ownfile.ts";
 
 type Client = { client_id: string; client_secret?: string; redirect_uri: string };
 type Tokens = { access_token: string; refresh_token?: string; expires_at?: number; scope?: string; token_type?: string };
-type ServerAuth = { issuer: string; token_endpoint: string; resource: string; client: Client; tokens?: Tokens };
-type PendingSignIn = { server: string; verifier: string; issuer: string; token_endpoint: string; resource: string; client: Client; at: number };
+// revocation_endpoint: the server's own, "" when its metadata names none (an older file has no field: asked again at sign-out).
+type ServerAuth = { issuer: string; token_endpoint: string; revocation_endpoint?: string; resource: string; client: Client; tokens?: Tokens };
+type PendingSignIn = { server: string; verifier: string; issuer: string; token_endpoint: string; revocation_endpoint?: string; resource: string; client: Client; at: number };
+// What a sign-out or removal forgot, kept to revoke at the authorization server.
+export type Forgotten = ServerAuth & { tokens: Tokens };
 type File = { servers: Record<string, ServerAuth>; clients: Record<string, Client>; pending: Record<string, PendingSignIn> };
 
 export type OAuthConfig = { client_id?: string; client_secret_env?: string; scopes?: string[] };
@@ -51,20 +54,50 @@ export class OAuthStore {
     return !!this.read().servers[server]?.tokens;
   }
 
-  signOut(server: string) {
+  // Both forget the tokens at once and hand back what they held: `revoke` of it
+  // tells the authorization server (the forget never waits on, or fails with, that).
+  signOut(server: string): Forgotten | undefined {
     const f = this.read();
+    const a = f.servers[server];
     delete f.servers[server];
     this.write(f);
+    return a?.tokens ? { ...a, tokens: a.tokens } : undefined;
   }
 
   // A removed server takes its tokens and its client registration with it
   // (as Claude Code does): the next server at that address registers anew, so
   // a client the provider has since forgotten is never offered again.
-  forget(server: string) {
+  forget(server: string): Forgotten | undefined {
     const f = this.read();
+    const a = f.servers[server];
     delete f.servers[server];
     for (const k of Object.keys(f.clients)) if (k.startsWith(`${server} `)) delete f.clients[k];
     this.write(f);
+    return a?.tokens ? { ...a, tokens: a.tokens } : undefined;
+  }
+
+  // RFC 7009: the refresh token first (the grant), then the access token, each
+  // with the client's own authentication. Nothing when the authorization server
+  // names no revocation_endpoint. Returns what failed, one line each.
+  async revoke(a: Forgotten): Promise<string[]> {
+    let endpoint = a.revocation_endpoint;
+    if (endpoint === undefined) {
+      try { endpoint = (await authServerMetadata(a.issuer)).revocation_endpoint ?? ""; } catch { endpoint = ""; }
+    }
+    if (!endpoint) return [];
+    const failed: string[] = [];
+    const sent: [string, string][] = [];
+    if (a.tokens.refresh_token) sent.push([a.tokens.refresh_token, "refresh_token"]);
+    sent.push([a.tokens.access_token, "access_token"]);
+    for (const [token, hint] of sent) {
+      try {
+        const r = await revokeRequest(endpoint, a.client, token, hint);
+        if (!r.ok) failed.push(`${hint}: HTTP ${r.status}`);
+      } catch (e) {
+        failed.push(`${hint}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return failed;
   }
 
   // A valid access token, refreshed when it is about to expire. One refresh
@@ -156,7 +189,7 @@ export class OAuthStore {
     if (scope) q.set("scope", scope);
     // drop stale sign-ins (older than 15 minutes)
     for (const [k, p] of Object.entries(f.pending)) if (Date.now() - p.at > 15 * 60_000) delete f.pending[k];
-    f.pending[state] = { server, verifier, issuer: as.issuer, token_endpoint: as.token_endpoint, resource, client, at: Date.now() };
+    f.pending[state] = { server, verifier, issuer: as.issuer, token_endpoint: as.token_endpoint, revocation_endpoint: as.revocation_endpoint ?? "", resource, client, at: Date.now() };
     this.write(f);
     const auth = new URL(as.authorization_endpoint);
     for (const [k, v] of q) auth.searchParams.set(k, v);
@@ -184,17 +217,25 @@ export class OAuthStore {
       resource: p.resource,
     });
     const g = this.read();
-    g.servers[p.server] = { issuer: p.issuer, token_endpoint: p.token_endpoint, resource: p.resource, client: p.client, tokens };
+    g.servers[p.server] = { issuer: p.issuer, token_endpoint: p.token_endpoint, revocation_endpoint: p.revocation_endpoint, resource: p.resource, client: p.client, tokens };
     this.write(g);
     return p.server;
   }
 }
 
-async function tokenRequest(endpoint: string, client: Client, params: Record<string, string>): Promise<Tokens> {
+// A form post as the client registered: its secret as Basic, else its id in the form.
+function clientPost(endpoint: string, client: Client, params: Record<string, string>) {
   const body = new URLSearchParams({ ...params, client_id: client.client_id });
   const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded", accept: "application/json" };
   if (client.client_secret) headers.authorization = `Basic ${btoa(`${encodeURIComponent(client.client_id)}:${encodeURIComponent(client.client_secret)}`)}`;
-  const r = await fetch(endpoint, { method: "POST", headers, body, signal: AbortSignal.timeout(20_000) });
+  return fetch(endpoint, { method: "POST", headers, body, signal: AbortSignal.timeout(20_000) });
+}
+
+const revokeRequest = (endpoint: string, client: Client, token: string, hint: string) =>
+  clientPost(endpoint, client, { token, token_type_hint: hint });
+
+async function tokenRequest(endpoint: string, client: Client, params: Record<string, string>): Promise<Tokens> {
+  const r = await clientPost(endpoint, client, params);
   const text = await r.text();
   let d: any;
   try { d = JSON.parse(text); } catch { d = Object.fromEntries(new URLSearchParams(text)); }
@@ -261,7 +302,7 @@ async function authServerMetadata(issuer: string) {
     const d = await getJson(t);
     if (!d?.authorization_endpoint || !d.token_endpoint) continue;
     if (d.issuer && d.issuer.replace(/\/$/, "") !== issuer.replace(/\/$/, "")) continue;
-    return d as { issuer: string; authorization_endpoint: string; token_endpoint: string; registration_endpoint?: string };
+    return d as { issuer: string; authorization_endpoint: string; token_endpoint: string; registration_endpoint?: string; revocation_endpoint?: string };
   }
   // Servers from before discovery existed: the spec's default endpoints.
   return {
