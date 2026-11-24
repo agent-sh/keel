@@ -845,6 +845,9 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
     // so it asks nobody. One it shows (the session's own folder's `.env`, a folder the owner opened) runs without a
     // card: what it prints is given to the secrets vault first (the gate does, with the paths), so it reaches no
     // model. An agent's command that shows one outside its own folder is refused.
+    // (A folder the look did not finish is not known to hold none: it asks, in the sandbox too.)
+    const unread = cred.hits.find((h) => h.unread);
+    if (unread) return credentialRead(unread.what, f, unread.by, unread.api);
     const shown = f.confinedShown ? cred.hits.filter((h) => f.confinedShown!(h.path).shown) : null;
     // (A link to one of the owner's files is not the folder's own, whatever it is called or where it stands.)
     const outside = shown?.find((h) => h.foreign || !contains(f.workspace, h.path));

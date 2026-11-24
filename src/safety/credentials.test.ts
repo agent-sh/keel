@@ -4,6 +4,7 @@ import { CREDENTIALS } from "./sandbox-view.ts";
 import { mkdirSync, mkdtempSync, linkSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { diskLook, namedUnder } from "./credential-reads.ts";
 import { decide, shellCredentialReads, type Facts } from "./policy.ts";
 import { splitCommand } from "./shell.ts";
 
@@ -224,6 +225,31 @@ test("in the sandbox: what it hides asks nobody; what it shows runs, and an agen
   expect(cmd(`cat ${mine}`, { ...shows(mine), agent: true })).toBe("runs");
   // Without the sandbox's view (off, or the command leaves it) the owner is asked.
   expect(cmd(`cat ${mine}`, {})).toBe("owner");
+});
+
+test("a search of a folder walks it once for the call, and a walk that runs out of time asks, in the sandbox too, and never reads as a folder with nothing", () => {
+  const h = realpathSync(mkdtempSync(join(tmpdir(), "keel-walk-")));
+  for (let d = 0; d < 5; d++) for (let f = 0; f < 20; f++) { mkdirSync(join(h, `p/d${d}`), { recursive: true }); writeFileSync(join(h, `p/d${d}/f${f}.ts`), "x\n"); }
+  writeFileSync(join(h, "p/d1/server.key"), "k\n");
+  let calls = 0;
+  const is = () => ({ by: (p: string) => { calls++; return credentialAt(p, { home: h }); }, link: () => null });
+  const kept = new Map();
+  const run = (look = diskLook(is, undefined, kept)) => shellCredentialReads(splitCommand("grep -r TOKEN .")!, join(h, "p"), h, (p) => credentialAt(p, { home: h }), undefined, look);
+  // Judged again for each mode, for the card and for the values it reads: one walk.
+  expect(run()?.hits.map((x) => x.path)).toEqual([join(h, "p/d1/server.key")]);
+  const first = calls;
+  expect(first).toBeGreaterThanOrEqual(100);
+  run(); run(diskLook(is, undefined, kept));
+  expect(calls).toBe(first);
+  // A look with no time left says what it did not see.
+  expect(namedUnder(join(h, "p"), { by: () => null, link: () => null }, -1)).toEqual([{ path: join(h, "p"), unread: true }]);
+  const late = shellCredentialReads(splitCommand("grep -r TOKEN .")!, join(h, "p"), h, () => null, undefined, { named: () => [{ path: join(h, "p"), unread: true }] });
+  expect(late?.by).toBe("the command searches");
+  expect(late?.hits[0]?.unread).toBe(true);
+  expect(late?.paths).toEqual([]);
+  const cmd = (f: Partial<Facts>) => verdict(decide({ kind: "shell", command: "grep -r TOKEN .", cwd: join(h, "p") }, facts("auto-edits", { tool: "Bash", sandboxed: true, home: h, look: { named: () => [{ path: join(h, "p"), unread: true }] }, ...f })));
+  expect(cmd({ confinedShown: () => ({ shown: true }) })).toBe("owner");
+  expect(cmd({ confinedShown: () => ({ shown: true }), agent: true })).toBe("refused");
 });
 
 test("the list of the listed files by identity is not made again on the loop each few seconds: the last one answers while a new one is made in slices", async () => {

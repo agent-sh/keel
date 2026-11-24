@@ -96,13 +96,14 @@ export function wildNames(last: string): string[] {
 // `hits`: each place the command reads that is a credential, where it is (a file, a store, or the folder a search
 // walks that holds some): what a sandbox that hides it keeps the command from, whatever the command is.
 // `foreign`: the file is another name for one of the owner's credentials (a link): never its folder's own.
-export type Hit = { path: string; what: string; by: string; api?: string; foreign?: true };
+export type Hit = { path: string; what: string; by: string; api?: string; foreign?: true; unread?: true };
 export type Reads = { what: string; by: string; paths: string[]; api?: string; hits: Hit[] };
 // What the gate can add from the disk: the names of the files under a folder that hold credentials by their names
 // (a bounded look), and the files a pattern names. Without them, a command is judged by its words alone.
 const EXPANDED_MAX = 500;
 // A file a look found: `foreign` when it is a link to one of the owner's credentials, not a file named like one.
-export type Found = { path: string; foreign?: true };
+// `unread`: the look of this folder did not finish in its time (a very slow disk): what it holds is not known.
+export type Found = { path: string; foreign?: true; unread?: true };
 export type DiskLook = { named?: (folder: string) => (string | Found)[]; // the files under a folder that hold credentials (by their names, by where they are, by being a link to one), as full paths
    expand?: (pattern: string, dir: string) => string[];
    own?: () => string[] }; // Keel's own folders (state, config), as named and where they land
@@ -185,7 +186,15 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
       const folders = [folder, ...(look.own?.() ?? []).filter((o) => o !== folder && contains(folder, o))];
       const all = new Map<string, Found>();
       for (const f of folders.flatMap((x) => look.named!(x))) { const g = typeof f === "string" ? { path: f } as Found : f; all.set(g.path, g); }
-      const found = [...all.values()]
+      const unread = [...all.values()].filter((f) => f.unread);
+      // (A look that ran out of time says so: the command asks, as for a file that holds credentials. It is never taken as a look that found none.)
+      if (unread.length) {
+        const what = `${where}, which could not be looked through in time for files that hold credentials. Search a smaller folder, or name the files you need`;
+        for (const f of unread) hits.push({ path: f.path, what, by, unread: true });
+        first ??= { what, by };
+        hit = true;
+      }
+      const found = [...all.values()].filter((f) => !f.unread)
         .filter((f) => !except(basename(f.path)) && (hidden || !basename(f.path).startsWith(".")) && !stores.some((st) => contains(st, f.path)));
       if (found.length) {
         const names = found.map((f) => basename(f.path));
@@ -352,6 +361,12 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
 // a project reaches them, and holds thousands of files that are nobody's credentials).
 const NOT_ENTERED = new Set([".git", "node_modules"]);
 const LOOK_ENTRIES = 4000, LOOK_NAMES = 20;
+// What one command's look may take of the loop's time, all its folders together (a warm disk takes a third of it).
+const LOOK_MS = 60;
+// A look kept for the call it was made for: the same command is judged several times (each mode, the card, the values
+// it reads), and the folder is not walked again for each. It is not kept past a few seconds.
+const KEPT_MS = 10_000;
+export type LookKept = Map<string, { at: number; found: Found[] }>;
 
 // How the walk of a folder tells a credential: `by`, where a path is and what it is called (a pure look at the
 // path); `link`, whether the file is another name for a listed one (a hard link, a link that lands in them).
@@ -366,18 +381,24 @@ export const classifierOf = (): Classifier => {
 // The files under a folder (full paths) that hold credentials, as far as a look of a few thousand entries goes (a
 // folder is read, then those in it, level by level): by their names or where they are (Keel's own files among
 // them), and the links to a listed file, which no name gives away: a hard link (a file with more than one name that
-// the disk keeps as one of the listed files) and a link that lands in one.
-export function namedUnder(folder: string, is: Classifier = classifierOf()): Found[] {
+// the disk keeps as one of the listed files) and a link that lands in one. The look runs on the loop, so it has
+// `ms` of its own time: past it, the files found so far come back with the folder itself as `unread`, and the
+// command asks as for a folder that holds credentials.
+export function namedUnder(folder: string, is: Classifier = classifierOf(), ms = LOOK_MS): Found[] {
   return timed(() => "a look for the credential files under a folder", () => {
     const names = new Map<string, Found>();
-    let seen = 0;
-    for (let level = [folder]; level.length && seen < LOOK_ENTRIES && names.size < LOOK_NAMES; ) {
+    const end = performance.now() + ms;
+    let seen = 0, late = false;
+    for (let level = [folder]; level.length && seen < LOOK_ENTRIES && names.size < LOOK_NAMES && !late; ) {
       const next: string[] = [];
       for (const d of level) {
+        if (performance.now() > end) { late = true; break; }
         let entries: Dirent[] = [];
         try { entries = readdirSync(d, { withFileTypes: true }); } catch { continue; }
         for (const e of entries) {
           if (seen++ >= LOOK_ENTRIES) break;
+          // (The clock is read now and then, not at every entry.)
+          if ((seen & 63) === 0 && performance.now() > end) { late = true; break; }
           const p = join(d, e.name);
           if (e.isDirectory()) { if (!NOT_ENTERED.has(e.name)) next.push(p); continue; }
           let foreign = false;
@@ -387,10 +408,11 @@ export function namedUnder(folder: string, is: Classifier = classifierOf()): Fou
           if (foreign) names.set(p, { path: p, foreign: true });
           else if (is.by(p)) names.set(p, { path: p });
         }
+        if (late) break;
       }
       level = next;
     }
-    return [...names.values()];
+    return [...names.values(), ...(late ? [{ path: folder, unread: true as const }] : [])];
   });
 }
 
@@ -407,7 +429,22 @@ export function expanded(pattern: string): string[] {
   return out;
 }
 
-export const diskLook = (is?: () => Classifier, own?: () => string[]): DiskLook => {
-  let kept: Classifier | undefined;
-  return { named: (folder) => namedUnder(folder, (kept ??= is?.() ?? classifierOf())), expand: expanded, ...(own ? { own } : {}) };
+export const diskLook = (is?: () => Classifier, own?: () => string[], kept: LookKept = new Map()): DiskLook => {
+  let how: Classifier | undefined;
+  let left = LOOK_MS;
+  return {
+    named: (folder) => {
+      const now = performance.now();
+      const key = `${homeOf()}\0${folder}`;
+      const had = kept.get(key);
+      if (had && now - had.at < KEPT_MS) return had.found;
+      const t = now;
+      const found = namedUnder(folder, (how ??= is?.() ?? classifierOf()), Math.max(left, 0));
+      left -= performance.now() - t;
+      kept.set(key, { at: performance.now(), found });
+      if (kept.size > 64) for (const k of kept.keys()) { kept.delete(k); if (kept.size <= 32) break; }
+      return found;
+    },
+    expand: expanded, ...(own ? { own } : {}),
+  };
 };

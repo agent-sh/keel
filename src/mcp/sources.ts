@@ -289,6 +289,23 @@ export function maskedUrl(url: string): string {
     return text.replace(/(:\/\/[^:/@\s]+:)[^@\s]+@/, `$1${KEPT}@`).replace(/([?&#][^=&\s]*(?:key|token|secret|pass|auth|sig)[^=&\s]*=)[^&\s]+/gi, `$1${KEPT}`);
   }
 }
+// A connection string, `Server=db;User Id=app;Password=X;`: the values whose names say they are secret are left out.
+const pairsMasked = (v: string): string | null => {
+  if (!v.includes(";") || !v.includes("=")) return null;
+  const segs = v.split(";");
+  const used = segs.filter((g) => g.trim() !== "");
+  if (used.length < 2 || !used.every((g) => /^\s*[A-Za-z][\w .-]*=/.test(g))) return null;
+  let changed = false;
+  const out = segs.map((g) => {
+    const at = g.indexOf("=");
+    if (at < 0) return g;
+    const key = g.slice(0, at), val = g.slice(at + 1);
+    if (val.trim() === "" || placeholder(val.trim()) || !(SENSITIVE.test(key) || /^\s*pwd\s*$/i.test(key))) return g;
+    changed = true;
+    return `${key}=${KEPT}`;
+  });
+  return changed ? out.join(";") : null;
+};
 const isUrl = (w: string) => /^[a-z][a-z0-9+.-]*:\/\/\S/i.test(w);
 export function maskedArgs(words: string[]): string[] {
   const out: string[] = [];
@@ -298,6 +315,9 @@ export function maskedArgs(words: string[]): string[] {
     const next = words[i + 1];
     if (isUrl(w)) out.push(maskedUrl(w));
     else if (eq && isUrl(eq[2]!)) out.push(`${eq[1]}=${maskedUrl(eq[2]!)}`);
+    else if (eq && /^-{0,2}(?:H|headers?)$/.test(eq[1]!) && headerLine(eq[2]!)) { const h = headerLine(eq[2]!)!; out.push(secretHeader(h[1]!, h[2]!) ? `${eq[1]}=${h[1]}: ${KEPT}` : w); }
+    else if (eq && pairsMasked(eq[2]!)) out.push(`${eq[1]}=${pairsMasked(eq[2]!)}`);
+    else if (pairsMasked(w)) out.push(pairsMasked(w)!);
     else if (eq) out.push(!placeholder(eq[2]!) && !pathLike(eq[2]!) && !placeOption(eq[1]!) && (SENSITIVE.test(eq[1]!) || tokenLike(eq[2]!)) ? `${eq[1]}=${KEPT}` : w);
     else if (/^(?:-H|--header|--headers|-header)$/.test(w) && next !== undefined) {
       const h = headerLine(next);
@@ -307,7 +327,7 @@ export function maskedArgs(words: string[]): string[] {
     else if (headerLine(w) && secretHeader(headerLine(w)![1]!, headerLine(w)![2]!) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(w)) out.push(`${headerLine(w)![1]}: ${KEPT}`);
     else if (/^--?[A-Za-z][\w-]*$/.test(w) && next !== undefined && !next.startsWith("-") && !placeholder(next) && !placeOption(w) && !pathLike(next) && SENSITIVE.test(w)) { out.push(w, KEPT); i++; }
     else if (/^--?[A-Za-z][\w-]*$/.test(w) && next !== undefined && isUrl(next)) { out.push(w, maskedUrl(next)); i++; }
-    else out.push(w);
+    else out.push(pairsMasked(w) ?? w);
   }
   return out;
 }

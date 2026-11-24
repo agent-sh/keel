@@ -129,6 +129,7 @@ export const isFolder = (p: string) => { try { return statSync(p).isDirectory();
 
 // The credential a path is, or is in. The path is absolute; links are the caller's to resolve (it asks for the
 // path as named and for where it lands).
+const FIRST = new Set(STORES.flatMap((s) => { const t = s.split("/")[0]!; return [t, lower(t)]; }));
 export function credentialAt(path: string, at: CredentialPlaces): Credential | null {
   if (!isAbsolute(path)) return null;
   const p = resolve(path);
@@ -149,7 +150,9 @@ export function credentialAt(path: string, at: CredentialPlaces): Credential | n
   }
   if (home && is(home, p) && lower(p) !== lower(home)) {
     const rel = part(home, p);
-    for (const s of STORES) {
+    // (A path whose first folder is none a store starts with is in none: the list is not run through for it.)
+    const top = rel.indexOf("/") < 0 ? rel : rel.slice(0, rel.indexOf("/"));
+    for (const s of FIRST.has(fold ? lower(top) : top) ? STORES : []) {
       const [r, x] = fold ? [lower(rel), lower(s)] : [rel, s];
       if (r !== x && !r.startsWith(x + "/")) continue;
       if (s === ".ssh" && r !== x && SSH_PUBLIC.test(r.slice(x.length + 1))) break;

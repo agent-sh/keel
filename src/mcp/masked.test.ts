@@ -30,6 +30,9 @@ test("the list of servers carries no value of the file's: not in a target, not i
 test("a password in an option's address, a header's credential and a token in an address's path or fragment are hidden; a place named like a secret is not", () => {
   expect(maskedArgs([`--db=postgres://user:${token}@db.invalid/app`, "--header", `Authorization: Bearer ${token}`, "-H", "Content-Type: application/json", `X-Api-Key: ${token}`, "serve"]))
     .toEqual(["--db=postgres://user:***@db.invalid/app", "--header", "Authorization: ***", "-H", "Content-Type: application/json", "X-Api-Key: ***", "serve"]);
+  // The same in the `=` form, and in a connection string.
+  expect(maskedArgs([`--header=X-Api-Key: ${token}`, `--header=Authorization: Bearer ${token}`, "--header=Accept: application/json", `--connection-string=Server=db.invalid;Database=app;User Id=app;Password=${token};`, `Server=db.invalid;Pwd=${token}`, "--conn", `Host=h;AccountKey=${token}`, "Server=db.invalid;Password=${user_config.pw}", "--mode=a;b"]))
+    .toEqual(["--header=X-Api-Key: ***", "--header=Authorization: ***", "--header=Accept: application/json", "--connection-string=Server=db.invalid;Database=app;User Id=app;Password=***;", "Server=db.invalid;Pwd=***", "--conn", "Host=h;AccountKey=***", "Server=db.invalid;Password=${user_config.pw}", "--mode=a;b"]);
   expect(maskedUrl(`https://host.invalid/hook/${token}/run`)).toBe("https://host.invalid/hook/***/run");
   expect(maskedUrl(`https://host.invalid/bot12345:${token}/send`)).toBe("https://host.invalid/***/send");
   expect(maskedUrl(`https://host.invalid/v1/token/${token.slice(0, 9)}`)).toBe("https://host.invalid/v1/token/***");

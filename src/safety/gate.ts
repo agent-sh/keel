@@ -41,7 +41,7 @@ import { landing, type MarkArgs } from "./marks.ts";
 import { readOptsFor } from "./sandbox-config.ts";
 import { bindable, globBase, judgeWrite, ownerOpens, refusedWrites, scopes, shellWrites, type Base } from "./write-scope.ts";
 import { overlays, ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
-import { diskLook, type DiskLook } from "./credential-reads.ts";
+import { diskLook, type DiskLook, type LookKept } from "./credential-reads.ts";
 import { credentialAt, credentialValues, foreignAt, homeOf, linkedCredential, placesOf, type Credential, type CredentialPlaces } from "./credentials.ts";
 
 // Whether a file is, by its inode, one of the files Keel keeps at the top of its state or config folders (and one
@@ -281,6 +281,8 @@ function callClass(call: ToolCall, target: Target): CallClass {
   if ((landed.kind === "edit" || landed.kind === "read" || landed.kind === "other") && landed.paths?.length) lookedAt.set(landed, landed.paths.map(look));
   return landed;
 }
+// The folders looked through for a call, which its judgments share (credential-reads.ts).
+const lookKept = new WeakMap<object, LookKept>();
 const lookedAt = new WeakMap<object, { path: string; id: string | null; linked: boolean }[]>();
 // (One stat for both answers: two would be two moments.)
 function look(path: string): { path: string; id: string | null; linked: boolean } {
@@ -1158,7 +1160,7 @@ export class Gate {
       ...((cls.kind === "shell" || cls.kind === "edit") && session.parent_id && !session.machine ? { shared: this.sharedOf(session) } : {}),
       // Where credentials are kept, as a path is named and where it lands, with Keel's own folders (credentials.ts).
       // An agent reads none. (A session on another machine is judged by the names and the home's stores alone.)
-      ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: this.look() }),
+      ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: this.look(cls) }),
       ...(session.parent_id ? { agent: true as const } : {}),
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
       // (A command that runs in the sandbox: what its sandbox shows it, read as the file tools' own view of it.)
@@ -1211,12 +1213,14 @@ export class Gate {
   }
 
   // What a search of a folder looks at on the disk (credential-reads.ts): this gate's own places.
-  private look(): DiskLook {
+  private look(cls: object): DiskLook {
+    let kept = lookKept.get(cls);
+    if (!kept) lookKept.set(cls, kept = new Map());
     const bare = (x: CredentialPlaces) => ({ ...x, dir: undefined });
     return diskLook(() => {
       const { as, at } = this.credentialPlaces();
       return { by: (p) => credentialAt(p, bare(as)) ?? credentialAt(p, bare(at)), link: (p) => foreignAt(p, at) };
-    }, () => { const { as, at } = this.credentialPlaces(); return [...new Set([as.state, as.config, at.state, at.config].filter((x): x is string => !!x))]; });
+    }, () => { const { as, at } = this.credentialPlaces(); return [...new Set([as.state, as.config, at.state, at.config].filter((x): x is string => !!x))]; }, kept);
   }
 
   // A read of where credentials are kept that is about to run (the owner allowed it, or Full auto runs it): the
@@ -1228,7 +1232,7 @@ export class Gate {
     if (cls.kind === "read") paths = (cls.paths ?? []).map((p) => this.credentialOf(p)?.path).filter((p): p is string => !!p);
     else if (cls.kind === "shell" && cls.interpreter === undefined) {
       const parts = splitCommand(cls.command);
-      const reads = parts ? shellCredentialReads(parts, cls.cwd ?? session.workspace, homeOf(), (p) => this.credentialOf(p), undefined, this.look()) : null;
+      const reads = parts ? shellCredentialReads(parts, cls.cwd ?? session.workspace, homeOf(), (p) => this.credentialOf(p), undefined, this.look(cls)) : null;
       paths = reads?.paths ?? [];
       const links = new Set(reads?.hits.filter((h) => h.foreign).map((h) => h.path));
       // A command in the sandbox reads what the sandbox shows: its own folder's `.env` and kin as they always were,
