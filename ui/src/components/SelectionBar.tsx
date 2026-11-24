@@ -40,6 +40,9 @@ export const SelectionBar = memo(function SelectionBar({ sid, root, working }: {
   const commenting = comment !== null;
   const now = useRef({ pick, commenting });
   now.current = { pick, commenting };
+  // The words Escape put away: a read that was already on its way (the one after the page cut the selection to
+  // its words) must not offer them again. A new gesture of the pointer, or other words, lifts it.
+  const away = useRef<{ text: string; where: string } | null>(null);
 
   const close = () => { setPick(null); setComment(null); };
   const quote = () => { if (pick) { boxOf(sid)?.quote(pick.text); getSelection()?.removeAllRanges(); close(); } };
@@ -70,13 +73,16 @@ export const SelectionBar = memo(function SelectionBar({ sid, root, working }: {
       }
       const text = range ? (s?.toString() ?? "") : "";
       const where = range && at && el?.contains(at) && !at.closest(".k-compose, input, textarea, [contenteditable], [data-selbar]") && text.trim() ? whereOf(range) : null;
-      if (!range || !where) return setPick((p) => (p ? null : p));
+      if (!range || !where) { away.current = null; return setPick((p) => (p ? null : p)); }
+      if (away.current && away.current.text === text && away.current.where === where) return setPick((p) => (p ? null : p));
+      away.current = null;
       const copy = range.cloneRange();
       const ends = endsOf(copy);
       setPick((p) => (p && p.text === text && p.where === where && p.ends.first.top === ends.first.top && p.ends.first.left === ends.first.left && p.ends.last.bottom === ends.last.bottom ? p : { text, where, range: copy, ends }));
     };
     const later = () => { clearTimeout(timer); timer = setTimeout(read, 150); };
     const onDown = (e: PointerEvent) => {
+      away.current = null;
       if (e.pointerType === "mouse") down = true;
       if (now.current.commenting && !(e.target instanceof Element && e.target.closest("[data-selbar]"))) { setComment(null); setPick(null); }
     };
@@ -101,7 +107,7 @@ export const SelectionBar = memo(function SelectionBar({ sid, root, working }: {
     const f = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || composing(e)) return;
       if (e.target instanceof Element && e.target.closest(OWNS_ESCAPE)) return;
-      e.preventDefault(); e.stopPropagation(); setPick(null);
+      e.preventDefault(); e.stopPropagation(); const at = now.current.pick; away.current = at ? { text: at.text, where: at.where } : null; setPick(null);
     };
     addEventListener("keydown", f, true);
     return () => removeEventListener("keydown", f, true);

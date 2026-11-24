@@ -60,7 +60,11 @@ test("a selection is quoted or commented, and a comment steers or queues like a 
   await page.keyboard.press("Escape");
   await expect(bar).toHaveCount(0);
   expect(await page.evaluate(() => getSelection()!.toString().trim())).toBe(SAID);
+  // A read of the selection already on its way (the page cuts a selection to its words, and that changes it once
+  // more) does not offer the words Escape put away again.
+  await page.evaluate(() => document.dispatchEvent(new Event("selectionchange")));
   await page.waitForTimeout(500);
+  await expect(bar).toHaveCount(0);
   expect(await phase()).toBe("working");
 
   // Comment from the keyboard (Alt+C after the selection), queued with the queue key.
@@ -161,6 +165,10 @@ test("a selection is quoted or commented, and a comment steers or queues like a 
 
   // A phone: the offer is under the words, inside the window.
   await page.setViewportSize({ width: 390, height: 844 });
+  // The transcript draws only the blocks near the view, and on this narrow page the first reply is far from
+  // the end: bring it to the view and wait for the page to draw it before it is picked.
+  await page.evaluate(() => { document.querySelector<HTMLElement>(".k-reading")!.scrollTop = 0; });
+  await expect(page.getByTestId("assistant-text").first()).toHaveText(SAID);
   await pick(page);
   await expect(bar).toBeVisible();
   const [b, w] = await Promise.all([bar.boundingBox(), page.getByTestId("assistant-text").first().boundingBox()]);
