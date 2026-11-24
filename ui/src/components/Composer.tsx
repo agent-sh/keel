@@ -1317,6 +1317,8 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
       onAsking?.(w.offsetHeight > 0);
       // Said on the pane, which a phone's style sheet reads: an open question there takes the room of the session's tools row.
       el.closest(".k-station")?.toggleAttribute("data-question", w.offsetHeight > 0 && !!c.querySelector('.k-question[data-state="open"]'));
+      // And any card that waits there takes the room of the tools row and of the line of the other sessions that wait.
+      el.closest(".k-station")?.toggleAttribute("data-card", w.offsetHeight > 0);
       // The scroll bar sits in the column's side padding: the cards keep the box's edges.
       const bar = el.offsetWidth - el.clientWidth;
       el.style.marginRight = bar ? `calc(-0.25rem - ${bar}px)` : "";

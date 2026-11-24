@@ -701,7 +701,7 @@ test.describe("on a phone at a large text size, the head", () => {
     const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
     test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
     const tag = Math.random().toString(36).slice(2, 6);
-    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Clean the docs cache ${tag}` } })).json();
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Clean the docs cache of the whole checkout ${tag}` } })).json();
     try {
       await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
       await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch clean.txt" } }])}` } });
