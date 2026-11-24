@@ -104,7 +104,7 @@ case "$2" in
     fi ;;
   # A command with standin:rule gets a rule that forbids a command (a RULE line, as the store marks one), any other the note.
   pre-tool) case "$input" in
-    *standin:rule*) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"- RULE standin-rule: never run `standin-banned` in this workspace"}}' ;;
+    *standin:rule*) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"- RULE standin-rule: never run `git stash` in this workspace"}}' ;;
     *) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"- echo-rule: echo commands in tests are fine"}}' ;;
   esac ;;
   pre-compact) ;;

@@ -173,7 +173,7 @@ test("memory usage: a path whose recall fell against its day says so", async ({ 
 
 // A rule works by what the model leaves undone, so naming it says nothing: the store marks it a RULE, and
 // it is followed while the call its words forbid is not made in the session after it was given, broken once
-// it is. A note is used when the model names it. The stand-in gives a rule that forbids `standin-banned`
+// it is. A note is used when the model names it. The stand-in gives a rule that forbids `git stash`
 // with a command holding standin:rule.
 test("memory usage: a rule is followed until the call it forbids is made, a note is used when named", async ({ page, request }) => {
   const info = await (await request.get("/api/integrations")).json();
@@ -190,11 +190,11 @@ test("memory usage: a rule is followed until the call it forbids is made, a note
   const report = async () => ((await (await request.get(`/api/telemetry/memory?session_id=${session.id}`)).json()).paths as any[]).find((p) => p.path === "store_tool");
   expect(await report()).toMatchObject({ rules: 1, followed: 1, broken: 0, used: 0 });
   // A later turn makes the call: broken, and the numbers follow.
-  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: 'script:calls [{"name":"Bash","input":{"command":"standin-banned --now"}}]' } });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: 'script:calls [{"name":"Bash","input":{"command":"git stash list"}}]' } });
   await ended(request, session.id, 2);
   await expect.poll(async () => (await rule())?.held, { timeout: 15_000 }).toBe(0);
   expect(await report()).toMatchObject({ rules: 1, followed: 0, broken: 1 });
-  for (const word of ["standin-banned", "never run"]) expect(JSON.stringify(await (await request.get(`/api/memory/given?session_id=${session.id}`)).json())).not.toContain(word);
+  for (const word of ["git stash", "never run"]) expect(JSON.stringify(await (await request.get(`/api/memory/given?session_id=${session.id}`)).json())).not.toContain(word);
 
   // Where the owner looks: a rule is listed as followed or broken, never as a note nobody named.
   await page.goto("/settings/usage");
