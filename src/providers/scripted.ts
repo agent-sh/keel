@@ -368,18 +368,20 @@ export class ScriptedProvider implements Provider {
     //                         is refused, naming no image
     //   script:image-none     one with any image is refused, naming no image
     //   script:image-large    one with any image gets a 413 the first time
+    //   script:image-cap N    one with more than N images gets a 413, every time
     //   script:image-always   every request is refused in an image's words
     // Each of them, and script:images, replies with the sizes of the images
     // the request carried, how many were left out as notes, and how often
     // that same request was sent.
     const pics = (msgs as any[]).flatMap((m) => (m.role !== "user" ? [] : m.content.flatMap((b: any) => (b.type === "image" ? [b] : b.type === "tool_result" && Array.isArray(b.content) ? b.content.filter((c: any) => c.type === "image") : []))));
-    const rule = (req.purpose === "summary" ? lastText : owner).match(/script:image-(limit|bad|none|large|always)(?:\s+(\d+))?/);
+    const rule = (req.purpose === "summary" ? lastText : owner).match(/script:image-(limit|bad|none|large|cap|always)(?:\s+(\d+))?/);
     if (rule && (pics.length || rule[1] === "always")) {
       const refuse = (message: string, status = 400) => classify("Scripted", status, new Headers(), JSON.stringify({ type: "error", error: { type: status === 413 ? "request_too_large" : "invalid_request_error", message } }));
       const at = "messages.0.content.0.image.source.base64.data";
       const limit = Number(rule[2] ?? 0);
       if (rule[1] === "limit" && pics.some((b) => { const z = imageSize(b.data); return !z || z.w > limit || z.h > limit; })) throw refuse(`${at}: At least one of the image dimensions exceed max allowed size for many-image requests: ${limit} pixels`);
       if (rule[1] === "none" || rule[1] === "always") throw refuse(`${at}: Could not process image`);
+      if (rule[1] === "cap" && pics.length > limit) throw refuse("Request exceeds the maximum size", 413);
       if (rule[1] === "large" && attempt === 0) throw refuse("Request exceeds the maximum size", 413);
       if (rule[1] === "bad") {
         for (const b of pics) {
@@ -833,7 +835,7 @@ export class ScriptedProvider implements Provider {
         return reply(`Growing. ${"dolor sit amet ".repeat(280)}`.trim());
       case "fill":
         return reply(`Filling the context. ${"lorem ipsum dolor sit amet ".repeat(1_100)}`.trim());
-      case "images": case "image-limit": case "image-bad": case "image-none": case "image-large": {
+      case "images": case "image-limit": case "image-bad": case "image-none": case "image-large": case "image-cap": {
         const left = (msgs as any[]).flatMap((m) => (m.role !== "user" ? [] : m.content.flatMap((b: any) => (b.type === "tool_result" && Array.isArray(b.content) ? b.content : [b])))).filter((b: any) => b.type === "text" && String(b.text).startsWith("[Image left out")).length;
         return reply(`Images: ${pics.map((b) => { const z = imageSize(b.data); return z ? `${z.w}x${z.h}` : "unreadable"; }).join(", ") || "none"}. Left out: ${left}. Attempt ${attempt + 1}.`);
       }

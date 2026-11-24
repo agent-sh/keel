@@ -148,3 +148,28 @@ test("a refusal that names no image leaves out the damaged one, then all, and th
   await ask("script:images", "Images: 300x200, 600x400. Left out: 0. Attempt 1.");
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+test("a request over the provider's byte cap leaves out the oldest images and keeps the newest", async ({ request }) => {
+  const s = await create(request);
+  const sizes = [[500, 500], [400, 400], [300, 300], [200, 200], [100, 100]];
+  const calls = sizes.map(([w, h], i) => {
+    const file = join(s.workspace, `cap-${i}-${s.id}.png`);
+    writeFileSync(file, png(w!, h!));
+    return { name: "Read", input: { file_path: file } };
+  });
+  await turn(request, s.id, `script:calls ${JSON.stringify(calls)}`);
+  // The provider answers 413 while the request holds more than three images.
+  const said = await turn(request, s.id, "What is on these pages? script:image-cap 3");
+  const kept = /^Images: (.+)\. Left out: (\d+)\./.exec(said);
+  expect(kept, said).not.toBeNull();
+  const shown = kept![1]!.split(", "), out = Number(kept![2]);
+  // The newest are still sent, in order; only the oldest are notes.
+  expect(shown).toEqual(sizes.slice(-shown.length).map(([w, h]) => `${w}x${h}`));
+  expect(shown.length).toBeGreaterThanOrEqual(1);
+  expect(shown.length).toBeLessThanOrEqual(3);
+  expect(out).toBe(sizes.length - shown.length);
+  const note = (await events(request, s.id)).findLast((e) => e.kind === "note" && e.data.kind === "images");
+  expect(note.data.left_out).toBe(out);
+  expect((await settings(request, s.id)).images_out).toHaveLength(out);
+  await request.delete(`/api/sessions/${s.id}`);
+});

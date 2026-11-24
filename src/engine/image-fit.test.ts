@@ -268,3 +268,17 @@ test("a session's prompts are handed on in the order they came, however long an 
   await expect(fitted("s1", [], () => { throw new Error("refused"); })).rejects.toThrow("refused");
   expect(await fitted("s1", [], () => "sent")).toBe("sent");
 });
+
+test("after a refusal as too large the oldest images are left out until half the bytes are, the newest stay", async () => {
+  const { imageKeys, oldestForSize } = await import("./image-fit.ts");
+  const a = block(png(40, 40, true)), b = block(png(40, 41, true)), c = block(png(40, 42, true)), d = block(png(40, 43, true));
+  const messages: Message[] = [{ role: "user", content: [a, b, c, d] }];
+  const keys = imageKeys(messages);
+  const drop = oldestForSize(messages, keys);
+  expect(drop).toEqual(keys.slice(0, drop.length));
+  expect(drop.length).toBeGreaterThanOrEqual(1);
+  expect(drop.length).toBeLessThan(keys.length);
+  // Asked again with what is left, and down to the last one.
+  expect(oldestForSize(messages, keys.slice(-2))).toEqual([keys[2]!]);
+  expect(oldestForSize(messages, keys.slice(-1))).toEqual([keys[3]!]);
+});

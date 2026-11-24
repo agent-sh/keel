@@ -224,7 +224,7 @@ function remember(key: string, v: ImageBlock | TextBlock | "same") {
 // What the copies kept come to (for the storage view and the tests).
 export const copiesHeld = () => ({ copies: copies.size, bytes: held });
 
-export const LEFT_OUT = "[Image left out: the provider refused a request over this session's images, so the ones sent until then are no longer sent. If it is needed, make a smaller copy of its file with a tool and read that.]";
+export const LEFT_OUT = "[Image left out: the provider refused a request over this session's images, so this one is no longer sent. If it is needed, make a smaller copy of its file with a tool and read that.]";
 
 async function wireCopy(b: ImageBlock, l: ImageLimits, sig: string): Promise<ImageBlock | TextBlock> {
   const key = `${imageKey(b.data)}|${sig}`;
@@ -249,6 +249,26 @@ export const anyOver = (messages: Message[], edge: number) => images(messages).s
 
 // The identities of the images a request would carry.
 export const imageKeys = (messages: Message[]): string[] => [...new Set(images(messages).map((b) => imageKey(b.data)))];
+
+// The images to leave out after a provider refused a request as too large in
+// bytes and named none: the oldest, until what they held is half of the bytes
+// of the images still sent (at least one), so the newest stay and a few more
+// requests find the cap. `left` are the identities still sent, oldest first;
+// the last one alone is dropped only when it is all that is left.
+export function oldestForSize(messages: Message[], left: readonly string[]): string[] {
+  const bytes = new Map<string, number>();
+  for (const b of images(messages)) bytes.set(imageKey(b.data), b.data.length);
+  const sizes = left.map((k) => bytes.get(k) ?? 0);
+  const half = sizes.reduce((a, n) => a + n, 0) / 2;
+  const drop: string[] = [];
+  let dropped = 0;
+  for (let i = 0; i < left.length; i++) {
+    if (drop.length && (dropped >= half || i === left.length - 1)) break;
+    drop.push(left[i]!);
+    dropped += sizes[i]!;
+  }
+  return drop;
+}
 
 // The images of `messages`, less those in `skip`, that do not decode in full.
 // A file cut short passes a read of its header, which is all an image within

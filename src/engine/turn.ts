@@ -56,7 +56,7 @@ import { priceCompaction, residual, type PriceVerdict, type Residual } from "./p
 import { PriceFacts } from "./price-facts.ts";
 import type { WaitShape } from "./cache-plan.ts";
 import { withoutImages } from "./images.ts";
-import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
+import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys, oldestForSize } from "./image-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, movesToFallback, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep, type MoveWhy } from "./retry.ts";
@@ -2162,7 +2162,7 @@ export class Engine {
     const preparing = quiet ? undefined : () => this.status(id, { kind: "model", since: Date.now(), model: st.info.name, preparing: "images" });
     req.messages = await fitForWire(whole, limits, out, preparing);
     // What an image refusal changed for this request; kept for the session once it passes.
-    let fixed: { cause: unknown; edge?: number; out?: string[] } | undefined;
+    let fixed: { cause: unknown; edge?: number; out?: string[]; large?: boolean } | undefined;
     let resent = false;
     // Tools this request was sent again without the parameters of (a provider refused their schema).
     let schemaResends = 0;
@@ -2353,9 +2353,11 @@ export class Engine {
             // (a file cut short passes the header read it was stored on) go
             // first; all of them only when none is damaged, or when the
             // request was refused again without the damaged ones.
-            const bad = fixed?.out ? [] : await damagedImages(whole, out);
-            const drop = bad.length && bad.length < left.length ? bad : left;
-            fixed = { cause: fixed?.cause ?? e, edge: fixed?.edge, out: [...(fixed?.out ?? []), ...drop] };
+            // A refusal as too large in bytes that names no image leaves out the
+            // oldest only (oldestForSize); a request refused again drops more.
+            const bad = fixed?.out || large ? [] : await damagedImages(whole, out);
+            const drop = large ? oldestForSize(whole, left) : bad.length && bad.length < left.length ? bad : left;
+            fixed = { cause: fixed?.cause ?? e, edge: fixed?.edge, out: [...(fixed?.out ?? []), ...drop], ...(large ? { large: true } : {}) };
             out = new Set([...out, ...drop]);
           }
           req = { ...req, messages: await fitForWire(whole, limits, out, preparing) };
@@ -2444,7 +2446,7 @@ export class Engine {
   // A request passed after the provider refused it over an image: what made
   // it pass holds for the session from here (the same bytes on every later
   // request), the refusal is captured once, and the transcript says it.
-  private imagesFixed(id: string, fixed: { cause: unknown; edge?: number; out?: string[] }, purpose: ProviderRequest["purpose"]) {
+  private imagesFixed(id: string, fixed: { cause: unknown; edge?: number; out?: string[]; large?: boolean }, purpose: ProviderRequest["purpose"]) {
     const s = this.store.session(id);
     if (!s) return;
     this.store.mergeSettings(id, {
@@ -2453,7 +2455,7 @@ export class Engine {
     });
     const n = fixed.out?.length ?? 0;
     const note = n
-      ? { text: `${n === 1 ? "One image" : `${n} images`} left out of what the model reads: the provider refused a request over this session's images.`, left_out: n, detail: errorText(fixed.cause) }
+      ? { text: `${n === 1 ? "One image" : `${n} images`} left out of what the model reads: ${fixed.large ? "the provider refused a request as too large, so the oldest images of this session are no longer sent." : "the provider refused a request over this session's images."}`, left_out: n, detail: errorText(fixed.cause) }
       : { text: `Images over ${fixed.edge} px a side are sent scaled down: the provider stated that limit.`, detail: errorText(fixed.cause) };
     this.errors.capture("provider", fixed.cause, { session: id, then: n ? `${n} images left out for this session` : `images scaled to ${fixed.edge} px for this session` });
     this.imageNotes.set(id, note);
