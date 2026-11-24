@@ -86,6 +86,7 @@ import type { Store } from "../core/store.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { repoRoot } from "../core/repo-root.ts";
 import { registerHooks } from "../engine/hooks.ts";
+import { registerTrialRunning } from "../engine/model-trial.ts";
 import { registerToolsOff } from "../tools/registry.ts";
 import { assignArm, diffInterval, labelBet, meanInterval, msprt, type Interval, type Unit } from "./stats.ts";
 
@@ -580,6 +581,7 @@ export class Experiments {
   constructor(private store: Store, private onStop: (e: Experiment) => void = () => {}) {
     experimentTables(store);
     registerToolsOff("experiments", (sid) => this.armFor(sid)?.tools_off ?? []);
+    registerTrialRunning((id) => this.get(id)?.state === "running");
     registerHooks({
       turnStart: (s) => this.assign(s),
       // After the cache split: the prefix every session shares stays the same in both arms.
@@ -606,14 +608,16 @@ export class Experiments {
     return e;
   }
 
-  create(body: Partial<Experiment> & { template?: string }): Experiment {
-    const base = body.template ? [...TEMPLATES, LESSON_TEMPLATE].find((t) => t.id === body.template)?.make() : undefined;
-    if (body.template && !base) throw bad(`no template ${body.template}`);
+  // `own`: an experiment a feature makes for itself (a model trial): it names its own id, so its arms can hold it,
+  // and its own kind in `template`, which is not one of the owner's templates.
+  create(body: Partial<Experiment> & { template?: string }, own?: { id: string; kind: string }): Experiment {
+    const base = body.template && !own ? [...TEMPLATES, LESSON_TEMPLATE].find((t) => t.id === body.template)?.make() : undefined;
+    if (body.template && !own && !base) throw bad(`no template ${body.template}`);
     const merged = { ...base, ...Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== undefined && k !== "template")) } as Partial<Experiment>;
     merged.guards ??= [];
     merged.stop ??= {};
     validate(merged);
-    return this.save({ ...(merged as Experiment), template: body.template ?? merged.template, id: Bun.randomUUIDv7(), state: "draft", created_ms: Date.now() });
+    return this.save({ ...(merged as Experiment), template: own?.kind ?? body.template ?? merged.template, id: own?.id ?? Bun.randomUUIDv7(), state: "draft", created_ms: Date.now() });
   }
 
   update(id: string, patch: Partial<Experiment>): Experiment {

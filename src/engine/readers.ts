@@ -34,6 +34,8 @@ export type ReaderHost = {
   capture(e: unknown, context: Record<string, unknown>): void;
   progress?(p: ReadProgress): void;
   env?: Record<string, string | undefined>;
+  // The small models that read first, best first (default: the owner's setting). A session in a trial of a new model has it ahead.
+  small?: string[];
   // Why a model's route takes no work now (out of credit, suspended, signed out: src/providers/account.ts), else nothing.
   shut?(m: ModelInfo): string | undefined;
 };
@@ -71,10 +73,10 @@ const needFor = (chars: number, cur: ModelInfo) => Math.ceil(Math.min(chars, REA
 // same one the job then picks. The readers tool gathers no more than this.
 // (Material under one part may go to a smaller reader with a cap of its own,
 // which the job applies and names.)
-export async function readBudget(host: Pick<ReaderHost, "models" | "current" | "listPrice" | "env">): Promise<number> {
+export async function readBudget(host: Pick<ReaderHost, "models" | "current" | "listPrice" | "env" | "small">): Promise<number> {
   const [models, cur] = await Promise.all([host.models(), host.current()]);
   const list = (m: ModelInfo) => host.listPrice?.(m);
-  return materialCap(cur, readerChoices(models, cur, needFor(READ_CHUNK_CHARS, cur), host.env ?? process.env, list, smallModels())[0]!, list);
+  return materialCap(cur, readerChoices(models, cur, needFor(READ_CHUNK_CHARS, cur), host.env ?? process.env, list, host.small ?? smallModels())[0]!, list);
 }
 
 export async function readMaterial(host: ReaderHost, items: Material[], question: string, signal: AbortSignal): Promise<ReadOutcome> {
@@ -83,7 +85,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   const list = (m: ModelInfo) => host.listPrice?.(m);
   const total = items.reduce((n, m) => n + m.text.length, 0);
   // Choices that hold one full part; the first one sizes the parts.
-  const choices = readerChoices(models, cur, needFor(total, cur), env, list, smallModels());
+  const choices = readerChoices(models, cur, needFor(total, cur), env, list, host.small ?? smallModels());
   const first = choices[0]!;
   const unread: string[] = [];
   // Past the cap the material is not read: named, so the working model knows.

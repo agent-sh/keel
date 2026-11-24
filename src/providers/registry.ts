@@ -10,6 +10,7 @@ import { Catalog } from "./catalog.ts";
 import { CodexProvider } from "./codex.ts";
 import { endpoints } from "./config.ts";
 import { familyOf } from "./family.ts";
+import { dismiss, freshModels, noteListing, type Seen } from "./first-seen.ts";
 import { EndpointProvider } from "./endpoint.ts";
 import { MISSING_RECHECK_MS } from "./creds.ts";
 import { GeminiProvider, OpenAIProvider } from "./keyed.ts";
@@ -77,6 +78,8 @@ export class Providers {
   readonly plugins: Plugins;
   private builtins: Provider[];
   private listings = new Map<string, Listing>();
+  // The day each provider first listed each model (first-seen.ts): what tells a new model from the old ones.
+  private firstSeen = new Map<string, Seen>();
   private refreshedAt = 0;
   // Per provider: the newest refresh started, and the newest whose answer was
   // applied. A slower, older answer never replaces a newer one.
@@ -119,6 +122,7 @@ export class Providers {
     this.plugins = new Plugins(stateDir, (e, ctx) => this.capture(e, ctx));
     this.xai.onSignedIn = () => void this.refresh("grok");
     this.loadSaved();
+    this.loadFirstSeen();
     try { for (const [k, v] of Object.entries<Problem>(JSON.parse(readFileSync(this.problemsFile, "utf8")))) this.problems.set(k, v); } catch {}
   }
 
@@ -282,6 +286,46 @@ export class Providers {
     }
   }
 
+  private get seenFile() { return join(this.stateDir, "model-first-seen.json"); }
+
+  private loadFirstSeen() {
+    try {
+      if (existsSync(this.seenFile)) for (const [id, v] of Object.entries<Seen>(JSON.parse(readFileSync(this.seenFile, "utf8")))) this.firstSeen.set(id, v);
+    } catch (e) {
+      this.capture(e, { at: "reading model-first-seen.json" });
+    }
+  }
+
+  private saveFirstSeen() {
+    try {
+      const tmp = `${this.seenFile}.tmp`;
+      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.firstSeen)));
+      renameSync(tmp, this.seenFile);
+    } catch (e) {
+      this.capture(e, { at: "saving model-first-seen.json" });
+    }
+  }
+
+  // The models a provider's listing returned that it had never listed before, newest first, joined with
+  // what the listing and the catalog say of each (window, price, efforts). News for a while, or until put away.
+  newModels(now = Date.now()): (ModelInfo & { first_seen: number })[] {
+    const all = this.current();
+    return [...this.firstSeen].flatMap(([pid, seen]) => freshModels(seen, now).flatMap((f) => {
+      const m = all.find((x) => x.provider === pid && x.model === f.model);
+      return m ? [{ ...m, first_seen: f.first_seen }] : [];
+    })).sort((a, b) => b.first_seen - a.first_seen);
+  }
+
+  // Puts a new model away: it is news no more.
+  dismissNew(id: string): boolean {
+    const m = this.current().find((x) => x.id === id);
+    const seen = m && this.firstSeen.get(m.provider);
+    if (!m || !seen) return false;
+    this.firstSeen.set(m.provider, dismiss(seen, m.model));
+    this.saveFirstSeen();
+    return true;
+  }
+
   private persist() {
     const out: Record<string, { fetched?: number; error?: string; models: ListedModel[]; identity?: string }> = {};
     for (const [id, l] of this.listings) if (l.models.length || l.error) out[id] = { fetched: l.fetched, error: l.error, models: l.models, identity: l.identity };
@@ -370,6 +414,11 @@ export class Providers {
       if ((this.applied.get(p.id) ?? 0) > seq) return { ok: true };
       this.applied.set(p.id, seq);
       this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
+      // An empty answer says nothing about which models exist.
+      if (models.length) {
+        const noted = noteListing(this.firstSeen.get(p.id), models.map((m) => m.model), Date.now(), identity);
+        if (noted.seen !== this.firstSeen.get(p.id)) { this.firstSeen.set(p.id, noted.seen); this.saveFirstSeen(); }
+      }
       this.cleared(p.id, "listing");
       this.brokerAnswered(p, base);
       if (base === p.broker?.value && !(p instanceof EndpointProvider && p.cfg.listing === false)) {

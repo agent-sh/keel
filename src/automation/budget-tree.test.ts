@@ -62,6 +62,12 @@ test("calls with no listed price are counted apart, and a dollar limit is refuse
   expect(agents.usdRefusal({ usd: 1 }, "plan:model", undefined)).toContain("budget.usd cannot be counted on plan:model");
   expect(agents.usdRefusal({ steps: 3 }, "plan:model", undefined)).toBeUndefined();
   expect(agents.usdRefusal({ usd: 1 }, "p:m", { input: 1, output: 2 })).toBeUndefined();
+  // A tree's builder trial does not move a spawn with a dollar budget to a model that lists no price.
+  const listed = [{ id: "p:priced", price: { input: 1, output: 2 } }, { id: "p:plain" }];
+  expect(agents.triedBuilder("p:plain", listed, { usd: 1 })).toBeUndefined();
+  expect(agents.triedBuilder("p:plain", listed, { steps: 3 })).toBe("p:plain");
+  expect(agents.triedBuilder("p:priced", listed, { usd: 1 })).toBe("p:priced");
+  expect(agents.triedBuilder("p:gone", listed, undefined)).toBeUndefined();
 });
 
 test("the reads of what a task used plan on the ledger's session index", () => {

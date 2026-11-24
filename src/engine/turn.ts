@@ -39,6 +39,7 @@ import { isDeferError, keepReferenced, loadsNatively, referenced, refuseDefer, u
 import { allHooks, cacheBreaks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
+import { trialModel } from "./model-trial.ts";
 import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successor.ts";
 import { cleanTitle, firstReply, modelTitles, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
@@ -1073,6 +1074,13 @@ export class Engine {
     return kept;
   }
 
+  // The small models a request of the session's tree reads through first: the owner's, with the model the
+  // tree is trying in this role (src/engine/model-trial.ts) ahead of them.
+  private ownSmall(id: string, role: "reader" | "small"): string[] {
+    const t = trialModel(role, this.store.session(id), (x) => this.store.session(x));
+    return t ? [t, ...smallModels().filter((x) => x !== t)] : smallModels();
+  }
+
   // One request for the title, through the owner's small models in order (the
   // readers' choices: src/engine/reader.ts), each at its lowest effort. The
   // title is saved only if nobody renamed the session meanwhile.
@@ -1084,8 +1092,9 @@ export class Engine {
     // The session's own model is a reader's last choice, never a title's (unless the owner named it a
     // small model): a title is not worth a request at the working model's price. With no other
     // choice the session keeps its first prompt's words.
-    const named = [...smallModels(), process.env.KEEL_READER_MODEL];
-    const choices = this.allowedModels(id, "title", readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + TITLE_OUTPUT, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels())
+    const own = this.ownSmall(id, "small");
+    const named = [...own, process.env.KEEL_READER_MODEL];
+    const choices = this.allowedModels(id, "title", readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + TITLE_OUTPUT, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, own)
       .filter((m) => m.id !== cur.id || named.includes(m.id)));
     // No choice now is no choice at the next turn's end either: not looked for again until a start.
     if (!choices.length) { this.untitled.add(id); return; }
@@ -1127,7 +1136,7 @@ export class Engine {
   // is taken; undefined when none did (each failure is captured once, under `at`).
   async small(id: string, model: string, o: { system: string; prompt: string; out: number; signal: AbortSignal; at: string; holds: (text: string) => boolean }): Promise<{ text: string; model: string } | undefined> {
     const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(model).then((r) => r.info)]);
-    const choices = this.allowedModels(id, "reader", readerChoices(models, cur, Math.ceil(o.prompt.length / bytesPerToken(cur.id)) + o.out, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels()));
+    const choices = this.allowedModels(id, "reader", readerChoices(models, cur, Math.ceil(o.prompt.length / bytesPerToken(cur.id)) + o.out, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, this.ownSmall(id, "small")));
     const s = this.store.session(id);
     if (!s) return undefined;
     for (const m of choices) {
@@ -4410,6 +4419,7 @@ export class Engine {
       // Only models of the providers the session's folder allows read for it (src/safety/content-routes.ts).
       models: async () => allowedOnly(routeOf(this.store, id), await this.providers.models()),
       current: async () => (await this.providers.resolve(session.model)).info,
+      small: this.ownSmall(id, "reader"),
       shut: (m) => shutWords(this.providers.shut(m.id)),
       listPrice: (m) => this.providers.catalog.lookup(m.model)?.price,
       capture: (e, c) => this.errors.capture("provider", e, { session: id, ...c }),
@@ -4420,7 +4430,7 @@ export class Engine {
         if (!told) {
           told = true;
           const all = await this.providers.models();
-          const named = [...smallModels(), process.env.KEEL_READER_MODEL].flatMap((n) => all.filter((x) => x.id === n));
+          const named = [...this.ownSmall(id, "reader"), process.env.KEEL_READER_MODEL].flatMap((n) => all.filter((x) => x.id === n));
           const at = named.findIndex((x) => x.id === m.id);
           this.allowedModels(id, "reader", at < 0 ? named : named.slice(0, at));
         }

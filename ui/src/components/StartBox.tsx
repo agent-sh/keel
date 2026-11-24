@@ -14,6 +14,7 @@ import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { usePhoneWidth } from "../lib/list-hold.ts";
 import { HelperAsk } from "./HelperAsk.tsx";
+import { NewModelNews } from "./NewModels.tsx";
 import { WatchHeadline, WatchLists, openWaiting, useAttended } from "./HomeWatch.tsx";
 import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
 import { MachineBlocked, MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
@@ -104,6 +105,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
           {/* On a phone the helper comes first: ask it across the sessions, by voice or typed. */}
           {phone && <HelperAsk />}
           <WatchHeadline />
+          <NewModelNews />
           {beside && !autoThere && <WatchLists className="min-w-0" />}
           <h2 className={cn("k-pane-empty-word mb-2.5", beside ? "mt-8" : "mt-5")}>Start a session{machine && <span>{autoThere ? `on ${place!.machine}, in its granted directory` : sshMachine ? `on ${sshMachine.name}` : machine !== "auto" ? `on ${pickedName ?? "the machine you picked"}, in its granted directory` : ""}</span>}</h2>
           {/* Where it starts, as one line of quiet pickers whose words line up with the box (styles.css, .k-chip-pick). */}

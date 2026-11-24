@@ -41,6 +41,7 @@ import { checkpointAt } from "../engine/compact.ts";
 import { isWay, WAY_WORDS, type Way } from "../engine/follow-up.ts";
 import { readerFor, readRunsOf } from "../engine/read-run.ts";
 import { smallModels } from "../engine/readers.ts";
+import { trialModel } from "../engine/model-trial.ts";
 import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, parentLine, successorOrder, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
 import { firstOpen, skippedWords } from "../providers/account.ts";
 import { routeShut } from "./incidents.ts";
@@ -632,6 +633,18 @@ async function exploreModel(parent: Session): Promise<string> {
   return readerFor(models, info, process.env, (m) => providers.catalog?.lookup(m.model)?.price, smallModels())?.id ?? parent.model;
 }
 
+// The model the parent's tree is trying as its builder (src/engine/model-trial.ts), when it is listed:
+// the agents it starts with no model named run on it. A spawn with a budget in dollars is not moved to
+// a model that lists no price: its dollars could not be counted there (`usdRefusal`).
+async function trialBuilder(parent: Session, budget: Budget | undefined): Promise<string | undefined> {
+  const id = trialModel("builder", D().store.session(parent.id) ?? parent, (x) => D().store.session(x));
+  return id ? triedBuilder(id, await D().providers.models(), budget) : undefined;
+}
+export function triedBuilder(id: string, listed: readonly { id: string; price?: unknown }[], budget: Budget | undefined): string | undefined {
+  const m = listed.find((x) => x.id === id);
+  return m && !usdRefusal(budget, m.id, m.price) ? m.id : undefined;
+}
+
 async function pickModel(parent: Session, want?: string): Promise<string> {
   if (!want || want === "inherit") return parent.model;
   const models = await D().providers.models();
@@ -987,7 +1000,9 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const { store, bus, engine } = D();
   const parentId = parent.id;
   // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
+  const tried = !input.fork && !input.model && !def.model && !(def.name === "Explore" && def.source === "built-in") ? await trialBuilder(parent, mergeBudget(def.budget, parseBudget(input.budget))) : undefined;
   let model = input.fork ? parent.model
+    : tried ? tried
     : !input.model && def.format === "codex" ? await pickModel(parent, def.model).catch(() => parent.model)
     : !input.model && !def.model && def.name === "Explore" && def.source === "built-in" && readRunsOf(parent, (id) => D().store.session(id)) === "reader"
       ? await exploreModel(parent).catch(() => parent.model)

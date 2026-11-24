@@ -10,6 +10,7 @@ import { findSettings } from "../lib/settings-match.ts";
 import { everyCommand, composing } from "../lib/keys.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
 import { SmallModels } from "./SmallModels.tsx";
+import { NewModelCards } from "./NewModels.tsx";
 import { Seg } from "./Seg.tsx";
 
 // Settings building blocks other lanes reuse for their sections.
@@ -135,6 +136,7 @@ function Models() {
   }, [models]);
   return (
     <div className="flex flex-col gap-4">
+      <NewModelCards />
       <Card>
         <SettingRow label="Default model" hint="New sessions start on it. It comes from the daemon's configuration.">
           <span className="text-ui text-muted">{models.find((m) => m.id === def)?.name ?? (def || "None")}</span>

@@ -7,7 +7,10 @@ import { useCallback, useEffect, useState } from "react";
 import { api, reportError } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
+import { fmtMetric } from "../lib/metric.ts";
 import { fmtPct, Panel } from "./UsagePanel.tsx";
+
+export { fmtMetric };
 
 type Interval = { estimate: number; lo: number; hi: number; n: number; method: string };
 type Metric = string;
@@ -40,16 +43,6 @@ const primaryBtn = cn(btn, "bg-accent text-accent-fg hover:bg-accent-hover");
 const quietBtn = cn(btn, "border border-line bg-raised text-fg hover:bg-hover");
 const field = "k-field";
 
-// A metric value in its own unit.
-export function fmtMetric(unit: string, v: number | null | undefined, signed = false) {
-  if (v === null || v === undefined || !Number.isFinite(v)) return "none";
-  const s = signed && v > 0 ? "+" : "";
-  if (unit === "usd") return `${s}${v < 0 ? "-" : ""}$${Math.abs(v) < 0.01 ? Math.abs(v).toFixed(5) : Math.abs(v).toFixed(4)}`;
-  if (unit === "share") return `${s}${(v * 100).toFixed(Math.abs(v) < 0.1 && v !== 0 ? 1 : 0)}${signed ? " pt" : "%"}`;
-  if (unit === "ms") return `${s}${(v / 1000).toFixed(1)} s`;
-  if (unit === "tokens") return `${s}${Math.abs(v) >= 10_000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v)}`;
-  return `${s}${v.toFixed(v % 1 ? 2 : 0)}`;
-}
 // The estimate, with its interval under it. `of`: the arm's units; when
 // fewer of them have the metric (a cost with no price is left out, not
 // counted as zero), the cell says how many it is over.

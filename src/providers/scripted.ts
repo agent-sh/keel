@@ -28,6 +28,10 @@
 //   script:outage-count              how many requests and listings the last
 //                                    outage refused
 //   script:outage-end                the provider is back now
+// A listing that changes while the daemon runs (for the e2e of a model that lists later):
+//   script:list-model <id>           the provider lists one more model, <id>, from the next listing on
+//                                    (an id ending in -plain lists no price)
+//   script:unlist-model <id>         it lists it no more
 // <kind>: dns (EAI_AGAIN), gateway (a broker's 502 naming a DNS failure), refused, tls.
 // Kept in the state folder, so an outage survives a restart and starts once per prompt.
 //
@@ -136,7 +140,12 @@ export class ScriptedProvider implements Provider {
   // `stateDir`: where an outage is kept across a daemon restart.
   constructor(private stateDir?: string, readonly id = "scripted", readonly label = "Scripted (test)") {
     try { if (stateDir) this.outage = JSON.parse(readFileSync(join(stateDir, this.outageFile), "utf8")); } catch {}
+    try { if (stateDir) this.listed = JSON.parse(readFileSync(join(stateDir, this.listedFile), "utf8")); } catch {}
   }
+
+  // Models `script:list-model` added to the listing, kept across a restart.
+  private listed: string[] = [];
+  private get listedFile() { return `${this.id}-listed.json`; }
 
   private get outageFile() { return `${this.id}-outage.json`; }
 
@@ -209,6 +218,7 @@ export class ScriptedProvider implements Provider {
       // Says it reads no images: the composer holds a new screenshot for it.
       { model: "stand-in-text", name: "Scripted text only", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, images: false },
       ...FAMILY_STAND_INS.map(({ model, name, family }) => ({ model, name, family, context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" as const } })),
+      ...this.listed.map((model) => ({ model, name: `Scripted ${model}`, context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price: model.endsWith("-plain") ? undefined : price, billing: { kind: "per_token" as const } })),
     ];
   }
 
@@ -223,6 +233,10 @@ export class ScriptedProvider implements Provider {
     const lastText = textOf(last);
     // `script:outage-end` as the newest message: the provider is back at once (a spec ends what it began).
     if (/^script:outage-end\b/.test(lastText) && this.outage.until) { this.outage.until = 0; this.saveOutage(); }
+    for (const [, verb, model] of lastText.matchAll(/\bscript:(list|unlist)-model[ \t]+([\w.-]+)/g)) {
+      this.listed = verb === "list" ? [...new Set([...this.listed, model!])] : this.listed.filter((m) => m !== model);
+      try { if (this.stateDir) writeFileSync(join(this.stateDir, this.listedFile), JSON.stringify(this.listed)); } catch {}
+    }
     const gone = this.down("requests");
     if (gone) throw gone;
     // An account that is spent refuses every request on it, whatever it asks.
