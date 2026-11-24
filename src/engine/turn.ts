@@ -34,6 +34,7 @@ import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QU
 import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { closestNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
+import { answers, callPaths, stoppedWaiting, unansweredText } from "../tools/fs-bound.ts";
 import { isDeferError, keepReferenced, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
 import { allHooks, cacheBreaks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
@@ -2975,8 +2976,26 @@ export class Engine {
       this.verdicts.set(r, "denied");
       return told(r);
     };
+    // A path on a mount that stopped answering holds the loop for whoever stats it, a Stop included: the paths
+    // a call names are asked about off the loop first, within a limit and the turn's signal (src/tools/fs-bound.ts).
+    // A call that runs on another machine names that machine's paths.
+    let asked: unknown;
+    const answering = async (input: unknown): Promise<ToolResultBlock | undefined> => {
+      if (session.machine || asked === input) return undefined;
+      asked = input;
+      const none = await answers(callPaths(call, input), { signal: ctx.signal });
+      if (!none) return undefined;
+      if (none.why === "stopped" || ctx.signal.aborted) {
+        const r = interrupted();
+        // A stop that came while a path had not answered says so: the read did not finish, and why.
+        if (typeof r.content === "string" && none.waited_ms >= 1000) r.content += ` ${stoppedWaiting(none)}`;
+        return r;
+      }
+      return denied(unansweredText(none));
+    };
     let thrown: Error | undefined;
     try {
+      { const no = await answering(call.input); if (no) return no; }
       // The owner's hooks first: every gate after them judges the input they left.
       for (const h of allHooks()) {
         if (!h.prepareTool) continue;
@@ -2989,6 +3008,8 @@ export class Engine {
         if (g.input !== undefined) { call.hook = { ...call.hook, from: call.hook?.from ?? call.input }; call.input = g.input; }
         if (g.allow !== undefined) call.hook = { ...call.hook, allowed: g.allow };
       }
+      // (A hook may have named other paths.)
+      { const no = await answering(call.input); if (no) return no; }
       const authorizations: ToolAuthorization[] = [];
       for (const h of allHooks()) {
         if (!h.beforeTool) continue;
@@ -3012,6 +3033,7 @@ export class Engine {
       }
       let input = call.input;
       for (const h of allHooks()) { const x = h.execInput?.(session, call); if (x !== undefined) input = x; }
+      { const no = await answering(input); if (no) return no; }
       const authorizationError = authorizations.length ? () => authorizations.find((a) => !a.valid(call, input))?.deny : undefined;
       const deny = authorizationError?.();
       if (deny) return denied(deny);

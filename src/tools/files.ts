@@ -8,6 +8,7 @@ import { atCwd, canonical, contains, realOf } from "../core/paths.ts";
 import { heldFile, heldWrite } from "../core/store-files.ts";
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { notFound } from "./missing.ts";
+import { mtimes } from "./fs-bound.ts";
 import type { ToolContext } from "./types.ts";
 import { removedNote } from "./spill.ts";
 import { readText } from "../core/proc.ts";
@@ -211,6 +212,9 @@ export function hold(given: string, ctx: HoldContext, how: "read" | "write" | "f
         if (how === "read") { close(); return absent(); }
         if (typeof judged === "string") { close(); return moved(p, "it is gone"); }
         // Made here and only here: a name that appeared meanwhile, a link among them, is not written through.
+        // (A synchronous create, like every open of `hold`: the call's paths were asked about off the loop first
+        // (fs-bound.ts), so the folder is in the kernel's caches. A mount that stalls between that answer and this
+        // open still holds the loop; making `hold` asynchronous is the remedy, filed as its own item.)
         try { fd = openSync(beside(base), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o666); } catch (e) {
           close();
           return (e as NodeJS.ErrnoException).code === "EEXIST" ? moved(p, "something took its name while the call ran") : { refused: `${p} could not be made: ${(e as Error).message}` };
@@ -713,7 +717,7 @@ async function globHeld(pattern: string, root: string, at: string, cwd: string, 
   let st;
   try { st = statSync(at); } catch { return { error: notFound(root, cwd, "Directory") }; }
   if (!st.isDirectory()) return { error: `${root} is a file, not a directory. Search in ${dirname(root)}.` };
-  const files: { p: string; m: number }[] = [];
+  const files: { p: string; m: number; at: string }[] = [];
   let stopped: string | undefined;
   let ceiling: string | undefined;
   try {
@@ -726,11 +730,16 @@ async function globHeld(pattern: string, root: string, at: string, cwd: string, 
         ceiling = `The scan stopped after ${GLOB_SCAN_MAX} matches, before it had examined them all: files that match may be missing here, and newest first holds only among the ${GLOB_SCAN_MAX} examined. Use a narrower path or pattern.`;
         break;
       }
-      files.push({ p: f, m: mtime(found) });
+      files.push({ p: f, m: 0, at: found });
     }
   } catch (e) {
     stopped = `The search stopped before it covered every folder, so this list is incomplete: ${(e as Error).message}`;
   }
+  // Their times come from the pool, not the loop, and within a limit: a file on a mount that stopped answering
+  // after it was listed holds a stat, and it must hold neither the loop nor the call.
+  const late = await mtimes(files.map((f) => f.at));
+  files.forEach((f, i) => { f.m = late.times[i] ?? -1; });
+  if (late.stalled) stopped = `${stopped ? stopped + " " : ""}${late.stalled}`;
   files.sort((a, b) => b.m - a.m);
   // A match reached through a folder that is a link (a literal part of the pattern that became one) is not in
   // this folder: it is left out.
