@@ -19,7 +19,7 @@ test("a worktree of a repository keeps its approvals under the main checkout", (
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "keel-project-")));
   const main = join(dir, "main"), wt = join(dir, "wt");
   mkdirSync(join(main, "sub"), { recursive: true });
-  const git = (...a: string[]) => execFileSync("git", a, { stdio: "ignore" });
+  const git = (...a: string[]) => execFileSync("git", a, { cwd: dir, stdio: "ignore" });
   git("init", "-q", main);
   writeFileSync(join(main, ".mcp.json"), "{}");
   git("-C", main, "add", "-A");

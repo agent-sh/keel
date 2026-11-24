@@ -120,3 +120,23 @@ test("the home folder is homeDir() from src/core/paths.ts, never os.homedir() or
   const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !/core\/paths(\.test)?\.ts$|conventions\.test\.ts$/.test(f));
   expect(offenders(src, /\bhomedir\b|userInfo\(\)\.homedir/)).toEqual([]);
 });
+
+// A test that runs git in the checkout it was started from works on the repository the lanes share: a
+// `git worktree add`, `repair` or `prune` there rewrote the `gitdir` of another lane's worktree once. A
+// test makes a repository of its own (mkdtemp, `git init`) and runs git there. What the checkout is called
+// in a test: process.cwd(), import.meta.dir, __dirname, and the ROOT or HERE a file takes from them.
+test("no test runs git in the checkout it was started from", () => {
+  const tests = [...files(join(ROOT, "src"), /\.test\.ts$/), ...files(join(ROOT, "scripts"), /\.test\.ts$/)].filter((f) => !f.endsWith("conventions.test.ts"));
+  const here = String.raw`(?:process\.cwd\(\)|import\.meta\.dir(?:name)?|__dirname|import\.meta\.url|\bROOT\b|\bHERE\b|\bREPO_ROOT\b)`;
+  // A helper called with the checkout first (git(ROOT, ...), g(HERE, ...)), a cwd or -C naming it, a -C in a shell line.
+  const named = new RegExp(String.raw`\b(?:git|g|gitIn|must|raw|sh|run)\(\s*${here}|\bcwd:\s*${here}|["'\`]-C["'\`]\s*,\s*${here}|git -C \$\{${here}`);
+  const found = tests.flatMap((f) => readFileSync(f, "utf8").split("\n").flatMap((l, i) => (/\bgit\b|["'`]-C["'`]/.test(l) && named.test(l.replace(/\/\/.*$/, "")) ? [`${relative(ROOT, f)}:${i + 1}`] : [])));
+  expect(found).toEqual([]);
+  // And git spawned with no folder at all runs in the checkout: only for the programs that touch no repository
+  // (`--version`, `init <folder>`, `clone` to a folder).
+  const bare = tests.flatMap((f) => readFileSync(f, "utf8").split("\n").flatMap((l, i) => {
+    if (!/(spawn|spawnSync|execFile|execFileSync|exec|execSync)\(\s*\[?\s*["'`]git["'`]/.test(l) || /cwd|"-C"/.test(l)) return [];
+    return /["'`](--version|init|clone)["'`]/.test(l) ? [] : [`${relative(ROOT, f)}:${i + 1}`];
+  }));
+  expect(bare).toEqual([]);
+});
