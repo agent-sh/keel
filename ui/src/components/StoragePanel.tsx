@@ -9,7 +9,7 @@ import { navigate } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { fmtBytes } from "./ResourcesPanel.tsx";
-import { Card, SettingRow } from "./Settings.tsx";
+import { Empty, Group, Item, List, More, Page, SettingRow, Status } from "./settings/kit.tsx";
 
 type Report = {
   measured_ms: number; scanned_ms?: number; state_dir: string; total_bytes: number; database_bytes: number; attachments_bytes: number;
@@ -180,24 +180,21 @@ export function StoragePanel() {
   };
   const spared = due ? [due.spill.busy_sessions ? count(due.spill.busy_sessions, "working session") : "", due.spill.pinned_sessions ? count(due.spill.pinned_sessions, "pinned session") : ""].filter(Boolean).join(" and ") : "";
 
-  if (!r) return <div className="text-ui text-faint">Measuring.</div>;
+  if (!r) return <Empty>Measuring.</Empty>;
   // The rows add up to the total, which is what du says of the folder.
   const other = r.plugins_bytes + r.reports_bytes + r.logs_bytes + r.other_bytes;
+  const archivedTag = <Status>archived</Status>, subTag = <Status>subagent</Status>;
   return (
-    <div className="flex flex-col gap-4" data-testid="storage-panel">
+    <Page testid="storage-panel">
       {unreadable !== undefined && <UnreadableSettings why={unreadable} onReset={resetSettings} />}
-      <Card>
-        {/* The total keeps a width of its own: when the note and the button do not fit beside it they go under it. */}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line py-4">
-          <div className="min-w-[min(100%,12rem)] flex-1">
-            <div className="text-title font-semibold tabular-nums tracking-[-0.01em]" data-testid="storage-total">{fmtBytes(r.total_bytes)}</div>
-            <div className="truncate font-mono text-caption text-faint" title={r.state_dir}>{r.state_dir}</div>
-          </div>
-          <span className="text-caption text-faint" title={when(r.measured_ms)}>measured {ago(r.measured_ms) === "now" ? "just now" : `${ago(r.measured_ms)} ago`}</span>
+      <Group title={<span className="text-title font-semibold tabular-nums tracking-[-0.01em]" data-testid="storage-total">{fmtBytes(r.total_bytes)}</span>}
+        hint={<>
+          <span className="block truncate font-mono" title={r.state_dir}>{r.state_dir}</span>
+          <span title={when(r.measured_ms)}>measured {ago(r.measured_ms) === "now" ? "just now" : `${ago(r.measured_ms)} ago`}</span>
           {/* The sessions' sizes come from a read of every event, made once a start and kept: when that read is older than the sizes on disk, it says so. */}
-          {r.scanned_ms !== undefined && r.measured_ms - r.scanned_ms > 120_000 && <span className="text-caption text-faint" title={when(r.scanned_ms)} data-testid="storage-scanned">sessions read {ago(r.scanned_ms)} ago</span>}
-          <button type="button" className={cn(btn, "ml-auto")} disabled={busy} onClick={() => load(true)}>{busy ? "Measuring" : "Measure again"}</button>
-        </div>
+          {r.scanned_ms !== undefined && r.measured_ms - r.scanned_ms > 120_000 && <span title={when(r.scanned_ms)} data-testid="storage-scanned">, sessions read {ago(r.scanned_ms)} ago</span>}
+        </>}
+        actions={<button type="button" className={btn} disabled={busy} onClick={() => load(true)}>{busy ? "Measuring" : "Measure again"}</button>}>
         <Bars rows={[
           { label: "Conversations", bytes: r.database_bytes, hint: `${r.sessions.count} sessions, ${r.archived_sessions.count} archived, ${r.subagent_sessions.count} subagents; ${fmtBytes(r.attachments_bytes)} of attachments` },
           { label: "Checkpoints", bytes: r.checkpoints_bytes, hint: "file snapshots per turn, for rewind" },
@@ -208,62 +205,60 @@ export function StoragePanel() {
           { label: "Backups", bytes: r.backups_bytes },
           { label: "Other", bytes: other, hint: "plugin data, reports, logs, settings and listing files" },
         ]} />
-      </Card>
+      </Group>
 
-      <Card>
-        <div className="py-4">
-          <div className="text-base font-medium">Delete old archived sessions</div>
-          <div className="mt-0.5 text-ui text-muted">Lists the sessions archived at least this long ago. Nothing is deleted until you confirm the list.</div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <label className="flex h-8 items-center gap-2 rounded-md border border-line-strong bg-raised px-2.5 text-ui">
-              <span className="text-muted">Archived</span>
-              <input aria-label="Days archived" data-testid="cleanup-days" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !composing(e) && find().catch(reportError)} className="w-12 bg-transparent text-right tabular-nums outline-none" />
-              <span className="text-muted">days ago or more</span>
-            </label>
-            <button type="button" className={btn} onClick={() => find().catch(reportError)} data-testid="cleanup-find">Find</button>
-            {done && <span className="text-ui text-muted" data-testid="cleanup-done">{done}</span>}
-          </div>
-          {found && (
-            <div className="mt-3 rounded-md border border-line" data-testid="cleanup-list">
-              {found.sessions.length === 0 && <p className="k-empty px-3 py-3">No archived session is that old.</p>}
-              {found.sessions.slice(0, 12).map((s) => (
-                <div key={s.id} className="flex h-9 items-center gap-3 border-b border-line/60 px-3 text-ui last:border-0">
-                  <span className="min-w-0 flex-1 truncate">{s.title || "Untitled"}</span>
-                  {s.subagents.length > 0 && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted" data-testid="cleanup-subagents" title={s.subagents.map((x) => x.title || x.id).join("\n")}>+{s.subagents.length} subagent{s.subagents.length > 1 ? "s" : ""}</span>}
-                  <span className="text-caption tabular-nums text-faint" title={when(s.updated_ms)}>{ago(s.updated_ms)}</span>
-                  <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(s.bytes)}</span>
-                </div>
-              ))}
-              {found.sessions.length > 12 && <p className="px-3 py-2 text-caption text-faint">and {found.sessions.length - 12} more</p>}
-              {found.sessions.length > 0 && (
-                <div className="flex items-center justify-end gap-3 border-t border-line px-3 py-2">
-                  <span className="text-caption text-muted">{found.sessions.length} sessions, {fmtBytes(found.bytes)}</span>
-                  <button type="button" onClick={() => remove().catch(reportError)} data-testid="cleanup-delete" className="h-8 rounded-md bg-danger px-3 text-ui font-medium text-accent-fg hover:opacity-90">Delete {found.sessions.length}</button>
-                </div>
-              )}
-            </div>
-          )}
+      <Group title="Delete old archived sessions" hint="Lists the sessions archived at least this long ago. Nothing is deleted until you confirm the list.">
+        <div className="flex flex-wrap items-center gap-2 py-4">
+          <label className="flex h-8 items-center gap-2 rounded-md border border-line-strong bg-raised px-2.5 text-ui">
+            <span className="text-muted">Archived</span>
+            <input aria-label="Days archived" data-testid="cleanup-days" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !composing(e) && find().catch(reportError)} className="w-12 bg-transparent text-right tabular-nums outline-none" />
+            <span className="text-muted">days ago or more</span>
+          </label>
+          <button type="button" className={btn} onClick={() => find().catch(reportError)} data-testid="cleanup-find">Find</button>
+          {done && <span className="text-ui text-muted" data-testid="cleanup-done">{done}</span>}
         </div>
-        {r.leftovers.count > 0 && (
-          <SettingRow label="Leftovers" hint={`${fmtBytes(r.leftovers.bytes)} of spilled output from ${r.leftovers.count} sessions that were deleted.`}>
-            <button type="button" className={btn} onClick={() => api("/api/storage/cleanup", { method: "POST", body: JSON.stringify({ leftovers: true }) }).then(() => load(true)).catch(reportError)}>Remove</button>
-          </SettingRow>
+        {found && (
+          <div className="-mx-5 border-t border-line" data-testid="cleanup-list">
+            {found.sessions.length === 0 ? <Empty>No archived session is that old.</Empty> : (
+              <List label="Archived sessions found" dense>
+                {found.sessions.slice(0, 12).map((s) => (
+                  <Item key={s.id} name={s.title || "Untitled"}
+                    status={s.subagents.length > 0 ? <Status testid="cleanup-subagents" title={s.subagents.map((x) => x.title || x.id).join("\n")}>+{s.subagents.length} subagent{s.subagents.length > 1 ? "s" : ""}</Status> : undefined}
+                    meta={<><span className="text-faint" title={when(s.updated_ms)}>{ago(s.updated_ms)}</span><span className="w-16 text-right">{fmtBytes(s.bytes)}</span></>} />
+                ))}
+                {found.sessions.length > 12 && <More><span className="text-caption text-faint">and {found.sessions.length - 12} more</span></More>}
+                <More>
+                  <div className="flex flex-wrap items-center justify-end gap-3">
+                    <span className="text-caption text-muted">{found.sessions.length} sessions, {fmtBytes(found.bytes)}</span>
+                    <button type="button" onClick={() => remove().catch(reportError)} data-testid="cleanup-delete" className="h-8 rounded-md bg-danger px-3 text-ui font-medium text-accent-fg hover:opacity-90">Delete {found.sessions.length}</button>
+                  </div>
+                </More>
+              </List>
+            )}
+          </div>
         )}
-      </Card>
+        {r.leftovers.count > 0 && (
+          <div className="-mx-5 border-t border-line px-5">
+            <SettingRow label="Leftovers" hint={`${fmtBytes(r.leftovers.bytes)} of spilled output from ${r.leftovers.count} sessions that were deleted.`}>
+              <button type="button" className={btn} onClick={() => api("/api/storage/cleanup", { method: "POST", body: JSON.stringify({ leftovers: true }) }).then(() => load(true)).catch(reportError)}>Remove</button>
+            </SettingRow>
+          </div>
+        )}
+      </Group>
 
       {settings && (
-        <Card>
+        <Group title="Archiving">
           <SettingRow label="Archive idle sessions" hint="A session nobody touched for this long moves to Archived. Empty is never.">
             <DaysField label="Archive idle sessions after days" testid="archive-idle" value={settings.archive.archive_idle_days} onSave={(v) => patch({ archive: { archive_idle_days: v } })} />
           </SettingRow>
           <SettingRow label="Delete archived sessions" hint="An archived session is deleted this long after it was archived. Empty is never.">
             <DaysField label="Delete archived sessions after days" testid="archive-delete" value={settings.archive.delete_archived_days} onSave={(v) => patch({ archive: { delete_archived_days: v } })} />
           </SettingRow>
-        </Card>
+        </Group>
       )}
 
       {settings && (
-        <Card>
+        <Group title="Retention">
           <SettingRow label="Keep spilled output" hint="Long tool output, command logs and fetched pages go this long after their session was last used. A pinned session and one that is working keep theirs. Empty is never.">
             <DaysField label="Keep spilled output for days" testid="retention-spill" value={(acted ? acted.spill_days : settings.retention.spill_days) || null} onSave={(v) => patch({ retention: { spill_days: v ?? 0 } }).then(loadDue)} />
           </SettingRow>
@@ -301,126 +296,89 @@ export function StoragePanel() {
               <button type="button" className={btn} data-testid="retention-remove" disabled={due.spill.files + records + due.egress.rows === 0} onClick={() => removeDue().catch(reportError)}>Remove now</button>
             </div>
           )}
-        </Card>
+        </Group>
       )}
 
-      <Card>
-        <div className="flex items-center gap-3 border-b border-line py-4">
-          <div className="min-w-0 flex-1">
-            <div className="text-base font-medium">Backups</div>
-            <div className="mt-0.5 text-ui text-muted">A checked copy of the conversations, their attached files and the settings{settings?.backup.before_restart ? ", made before every restart" : ""}. The last {settings?.backup.keep ?? 5} are kept; one that holds only what changed keeps the full backup it is read over. Restore with <span className="font-mono text-caption">keel restore NAME</span> while the daemon is stopped.</div>
-          </div>
-          <button type="button" className={btn} data-testid="backup-now" onClick={() => api("/api/backups", { method: "POST" }).then(() => load(true)).catch(reportError)}>Back up now</button>
-        </div>
-        {backupsFailed && <p className="py-4 text-ui text-danger" data-testid="backups-failed">The list of backups could not be read.</p>}
-        {!backupsFailed && owed && (
-          <div className="flex h-10 items-center gap-3 border-b border-line/60 text-ui" data-testid="backup-owed" title={`The restart at ${when(owed.since_ms)} did not wait for it: ${owed.why}.`}>
-            <span className="tabular-nums">{when(owed.since_ms)}</span>
-            <span className="min-w-0 truncate text-caption text-muted">a full backup is owed: made after the start</span>
-          </div>
-        )}
-        {!backupsFailed && !owed && backups?.length === 0 && <p className="k-empty py-4">No backups yet.</p>}
-        {backups?.map((b) => (
-          <div key={b.name} className="flex h-10 items-center gap-3 border-b border-line/60 text-ui last:border-0" data-testid="backup-row">
-            <span className="tabular-nums">{b.created_ms ? when(b.created_ms) : b.name}</span>
-            {b.unreadable ? (
-              <span className="min-w-0 truncate text-caption text-danger" title={b.unreadable} data-testid="backup-unreadable">manifest unreadable; not checked, never pruned</span>
-            ) : (
-              <>
-                <span className="text-caption text-faint">{b.reason}</span>
-                {b.failed ? <span className="min-w-0 truncate text-caption text-danger" title={b.failed} data-testid="backup-failed">not known whole: failed its check</span>
-                  : b.checked === "pages" && !b.base_missing && <span className="text-caption text-faint" title="Its pages were checked when it was made. It is read back whole over its full backup a little later." data-testid="backup-pages">pages checked</span>}
-                {b.base_missing ? <span className="min-w-0 truncate text-caption text-danger" title={`It holds the changes since ${b.base}, which is gone.`} data-testid="backup-base-missing">its full backup is gone; cannot be restored</span>
-                  : b.base && <span className="min-w-0 truncate text-caption text-faint" title={`The changes since ${b.base}`} data-testid="backup-delta">changes only</span>}
-                {b.newest_whole && <span className="text-caption text-muted" title="The newest backup that was read back whole and is the database that was backed up." data-testid="backup-newest-whole">newest known whole</span>}
-                <span className="ml-auto text-caption tabular-nums text-muted">{b.sessions} sessions</span>
-                <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(b.bytes ?? 0)}</span>
-              </>
-            )}
-          </div>
-        ))}
-      </Card>
-
-      <Card>
-        <div className="flex items-center gap-3 border-b border-line py-4">
-          <div className="min-w-0 flex-1">
-            <div className="text-base font-medium">Checkpoints</div>
-            <div className="mt-0.5 text-ui text-muted">Snapshots of each folder before and after every turn, so a turn can be rewound. Dropping a session's checkpoints frees what no other session needs; its turns can no longer be rewound.</div>
-          </div>
-          {r.by_session.some((s) => s.archived && s.checkpoints) || r.orphan_checkpoints ? (
-            <button type="button" className={btn} data-testid="checkpoints-archived" onClick={() => dropCheckpoints({ archived: true }, "of every archived session").catch(reportError)}>
-              Drop archived
-            </button>
-          ) : null}
-        </div>
-        {cpDone && <p className="pt-3 text-ui text-muted" data-testid="checkpoints-done">{cpDone}</p>}
-        {r.checkpoint_folders.length === 0 && <p className="k-empty py-4">No checkpoints yet.</p>}
-        {r.checkpoint_folders.map((f) => (
-          <div key={f.workspace} className="border-b border-line/60 last:border-0" data-testid="checkpoint-folder">
-            <button
-              type="button"
-              aria-expanded={openFolder === f.workspace}
-              onClick={() => setOpenFolder(openFolder === f.workspace ? null : f.workspace)}
-              className="flex h-10 w-full items-center gap-3 text-left text-ui hover:bg-hover"
-            >
-              <span aria-hidden className={cn("w-3 text-caption text-faint transition-transform", openFolder === f.workspace && "rotate-90")}>›</span>
-              <span className="min-w-0 flex-1 truncate font-mono text-caption" title={f.workspace}>{f.workspace}</span>
-              <span className="text-caption tabular-nums text-faint">{f.sessions} sessions, {f.checkpoints} checkpoints</span>
-              <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(f.bytes)}</span>
-            </button>
-            {openFolder === f.workspace && (
-              <div className="mb-2 max-h-80 overflow-y-auto rounded-md border border-line bg-sunken/40" data-testid="checkpoint-sessions">
-                {f.session_list.map((s) => (
-                  <div key={s.id} className="flex h-9 items-center gap-3 border-b border-line/60 px-3 text-ui last:border-0" data-testid="checkpoint-session" data-id={s.id}>
-                    <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="k-link min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
-                    {s.archived && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>}
-                    {s.subagent && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">subagent</span>}
-                    <span className="text-caption tabular-nums text-faint">{s.checkpoints} checkpoints, about {fmtBytes(s.checkpoint_bytes)}</span>
-                    <span className="w-16 text-right text-caption tabular-nums text-faint" title={when(s.updated_ms)}>{ago(s.updated_ms)}</span>
-                    <button type="button" data-testid="checkpoint-drop" className="k-btn" onClick={() => dropCheckpoints({ sessions: [s.id] }, `of ${s.title || "this session"}`).catch(reportError)}>
-                      Drop
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </Card>
-
-      <Card>
-        <div className="flex items-center py-4 text-base font-medium">
-          Largest sessions
-          <span className="ml-auto text-caption font-normal text-faint">transcript, spilled output and its share of checkpoints</span>
-        </div>
-        <div className="-mx-5 border-t border-line">
-          {(allSessions ? r.by_session : r.by_session.slice(0, 15)).map((s) => (
-            <div key={s.id} className="group flex h-9 w-full items-center gap-3 border-b border-line/60 px-5 text-ui last:border-0 hover:bg-hover" data-testid="storage-session">
-              <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="k-link min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
-              {s.archived && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>}
-              {s.subagent && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">subagent</span>}
-              {s.checkpoints > 0 && (
-                <button
-                  type="button"
-                  data-testid="session-checkpoints"
-                  title={`${s.checkpoints} checkpoints, about ${fmtBytes(s.checkpoint_bytes)}. Drop them.`}
-                  onClick={() => dropCheckpoints({ sessions: [s.id] }, `of ${s.title || "this session"}`).catch(reportError)}
-                  className="rounded-xs px-1.5 text-micro tabular-nums text-faint hover:bg-sunken hover:text-fg"
-                >
-                  {fmtBytes(s.checkpoint_bytes)} checkpoints
-                </button>
+      <Group title="Backups" count={backups?.length || undefined}
+        hint={<>A checked copy of the conversations, their attached files and the settings{settings?.backup.before_restart ? ", made before every restart" : ""}. The last {settings?.backup.keep ?? 5} are kept; one that holds only what changed keeps the full backup it is read over. Restore with <span className="font-mono">keel restore NAME</span> while the daemon is stopped.</>}
+        actions={<button type="button" className={btn} data-testid="backup-now" onClick={() => api("/api/backups", { method: "POST" }).then(() => load(true)).catch(reportError)}>Back up now</button>}>
+        {backupsFailed ? <p className="py-4 text-ui text-danger" data-testid="backups-failed">The list of backups could not be read.</p>
+          : !owed && backups?.length === 0 ? <Empty>No backups yet.</Empty>
+          : (
+            <List label="Backups" dense>
+              {owed && (
+                <Item testid="backup-owed" title={`The restart at ${when(owed.since_ms)} did not wait for it: ${owed.why}.`} name={when(owed.since_ms)}
+                  status={<Status tone="warn">a full backup is owed: made after the start</Status>} />
               )}
-              <span className="text-caption tabular-nums text-faint" title={when(s.updated_ms)}>{ago(s.updated_ms)}</span>
-              <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(s.bytes)}</span>
-            </div>
+              {backups?.map((b) => (
+                <Item key={b.name} testid="backup-row" name={<span className="tabular-nums">{b.created_ms ? when(b.created_ms) : b.name}</span>}
+                  sub={b.unreadable ? undefined : b.reason}
+                  status={b.unreadable ? <Status tone="broken" title={b.unreadable} testid="backup-unreadable">manifest unreadable; not checked, never pruned</Status> : undefined}
+                  meta={b.unreadable ? undefined : <>
+                    {b.failed ? <Status tone="broken" title={b.failed} testid="backup-failed">not known whole: failed its check</Status>
+                      : b.checked === "pages" && !b.base_missing && <span className="text-faint" title="Its pages were checked when it was made. It is read back whole over its full backup a little later." data-testid="backup-pages">pages checked</span>}
+                    {b.base_missing ? <Status tone="broken" title={`It holds the changes since ${b.base}, which is gone.`} testid="backup-base-missing">its full backup is gone; cannot be restored</Status>
+                      : b.base && <span className="text-faint" title={`The changes since ${b.base}`} data-testid="backup-delta">changes only</span>}
+                    {b.newest_whole && <Status tone="ok" title="The newest backup that was read back whole and is the database that was backed up." testid="backup-newest-whole">newest known whole</Status>}
+                    <span>{b.sessions} sessions</span>
+                    <span className="w-16 text-right">{fmtBytes(b.bytes ?? 0)}</span>
+                  </>} />
+              ))}
+            </List>
+          )}
+      </Group>
+
+      <Group title="Checkpoints" count={r.checkpoint_folders.length || undefined}
+        hint="Snapshots of each folder before and after every turn, so a turn can be rewound. Dropping a session's checkpoints frees what no other session needs; its turns can no longer be rewound."
+        actions={r.by_session.some((s) => s.archived && s.checkpoints) || r.orphan_checkpoints ? (
+          <button type="button" className={btn} data-testid="checkpoints-archived" onClick={() => dropCheckpoints({ archived: true }, "of every archived session").catch(reportError)}>Drop archived</button>
+        ) : undefined}>
+        {cpDone && <p className="pt-3 text-ui text-muted" data-testid="checkpoints-done">{cpDone}</p>}
+        {r.checkpoint_folders.length === 0 ? <Empty>No checkpoints yet.</Empty> : (
+          <List label="Checkpoints by folder">
+            {r.checkpoint_folders.map((f) => (
+              <Item key={f.workspace} testid="checkpoint-folder" mono name={f.workspace} title={f.workspace}
+                open={openFolder === f.workspace} onOpen={() => setOpenFolder(openFolder === f.workspace ? null : f.workspace)}
+                lead={<span aria-hidden className={cn("text-caption transition-transform", openFolder === f.workspace && "rotate-90")}>›</span>}
+                meta={<><span className="text-faint">{f.sessions} sessions, {f.checkpoints} checkpoints</span><span className="w-16 text-right">{fmtBytes(f.bytes)}</span></>}>
+                <div className="max-h-80 overflow-y-auto rounded-md border border-line bg-raised" data-testid="checkpoint-sessions">
+                  <List label={`Sessions of ${f.workspace}`} dense>
+                    {f.session_list.map((x) => (
+                      <Item key={x.id} testid="checkpoint-session" data-id={x.id} name={x.title || "Untitled"} onOpen={x.subagent ? undefined : () => navigate({ name: "session", id: x.id })}
+                        status={x.archived ? archivedTag : x.subagent ? subTag : undefined}
+                        meta={<><span className="text-faint">{x.checkpoints} checkpoints, about {fmtBytes(x.checkpoint_bytes)}</span><span className="w-14 text-right text-faint" title={when(x.updated_ms)}>{ago(x.updated_ms)}</span></>}
+                        actions={<button type="button" data-testid="checkpoint-drop" className="k-btn" onClick={() => dropCheckpoints({ sessions: [x.id] }, `of ${x.title || "this session"}`).catch(reportError)}>Drop</button>} />
+                    ))}
+                  </List>
+                </div>
+              </Item>
+            ))}
+          </List>
+        )}
+      </Group>
+
+      <Group title="Largest sessions" hint="Transcript, spilled output and its share of checkpoints.">
+        <List label="Largest sessions" dense>
+          {(allSessions ? r.by_session : r.by_session.slice(0, 15)).map((x) => (
+            <Item key={x.id} testid="storage-session" name={x.title || "Untitled"} onOpen={x.subagent ? undefined : () => navigate({ name: "session", id: x.id })}
+              status={x.archived ? archivedTag : x.subagent ? subTag : undefined}
+              meta={<>
+                {x.checkpoints > 0 && (
+                  <button type="button" data-testid="session-checkpoints" title={`${x.checkpoints} checkpoints, about ${fmtBytes(x.checkpoint_bytes)}. Drop them.`}
+                    onClick={() => dropCheckpoints({ sessions: [x.id] }, `of ${x.title || "this session"}`).catch(reportError)}
+                    className="rounded-xs px-1.5 text-micro tabular-nums text-faint hover:bg-sunken hover:text-fg">
+                    {fmtBytes(x.checkpoint_bytes)} checkpoints
+                  </button>
+                )}
+                <span className="text-faint" title={when(x.updated_ms)}>{ago(x.updated_ms)}</span>
+                <span className="w-16 text-right">{fmtBytes(x.bytes)}</span>
+              </>} />
           ))}
           {r.by_session.length > 15 && (
-            <button type="button" data-testid="storage-sessions-more" onClick={() => setAllSessions(!allSessions)} className="h-9 w-full px-5 text-left text-caption text-muted hover:bg-hover hover:text-fg">
-              {allSessions ? "Show the largest 15" : `${r.by_session.length - 15} more`}
-            </button>
+            <More><button type="button" className="k-btn" data-testid="storage-sessions-more" onClick={() => setAllSessions(!allSessions)}>{allSessions ? "Show the largest 15" : `${r.by_session.length - 15} more`}</button></More>
           )}
-        </div>
-      </Card>
-    </div>
+        </List>
+      </Group>
+    </Page>
   );
 }

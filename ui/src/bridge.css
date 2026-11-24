@@ -1493,7 +1493,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* A share drawn under an item's name: how much of the most this one is. */
 .k-set-bar { display: block; height: 0.25rem; margin-top: 0.3125rem; border-radius: 999px; background: var(--sunken); overflow: hidden; }
 .k-set-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--series-1); }
-.k-set-detail { padding: 0.75rem 1.25rem; border-bottom: 1px solid color-mix(in oklch, var(--line) 60%, transparent); background: var(--sunken); }
+.k-set-detail { grid-column: 1 / -1; grid-row: auto; padding: 0.25rem 0 0.5rem; }
 .k-set-more { padding: 0.75rem 1.25rem; border-top: 1px solid color-mix(in oklch, var(--line) 60%, transparent); }
 /* Narrow: the name takes the line beside its status, and figures and actions go under it. */
 @container set-box (max-width: 34rem) {

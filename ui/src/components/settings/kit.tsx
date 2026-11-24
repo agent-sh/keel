@@ -86,21 +86,20 @@ export function Item({ lead, name, mono, wrap, title, sub, clip, meta, status, a
   open?: boolean; onOpen?: () => void; children?: ReactNode; testid?: string; className?: string;
 } & Data) {
   return (
-    <>
-      <div className={cn("k-set-item", className)} role="listitem" data-lead={lead !== undefined || undefined} data-open={open || undefined} data-testid={testid} {...data}>
-        {lead !== undefined && <span className="k-set-lead">{lead}</span>}
-        <div className="k-set-main">
-          {onOpen
-            ? <button type="button" className="k-set-name k-link max-w-full text-left hover:underline" data-mono={mono || undefined} title={title} aria-expanded={!!open} onClick={onOpen}>{name}</button>
-            : <span className="k-set-name" data-mono={mono || undefined} data-wrap={wrap || undefined} title={title}>{name}</span>}
-          {sub && <div className="k-set-sub" data-clip={clip || undefined} title={clip && typeof sub === "string" ? sub : undefined}>{sub}</div>}
-        </div>
-        <div className="k-set-meta">{meta}</div>
-        {status}
-        <div className="k-set-act">{actions}</div>
+    <div className={cn("k-set-item", className)} role="listitem" data-lead={lead !== undefined || undefined} data-open={open || undefined} data-testid={testid} {...data}>
+      {lead !== undefined && <span className="k-set-lead">{lead}</span>}
+      <div className="k-set-main">
+        {onOpen
+          ? <button type="button" className="k-set-name k-link max-w-full text-left hover:underline" data-mono={mono || undefined} title={title} aria-expanded={!!open} onClick={onOpen}>{name}</button>
+          : <span className="k-set-name" data-mono={mono || undefined} data-wrap={wrap || undefined} title={title}>{name}</span>}
+        {sub && <div className="k-set-sub" data-clip={clip || undefined} title={clip && typeof sub === "string" ? sub : undefined}>{sub}</div>}
       </div>
+      <div className="k-set-meta">{meta}</div>
+      {status}
+      <div className="k-set-act">{actions}</div>
+      {/* The detail of an open item is part of it: a row of its own across the item. */}
       {open && children !== undefined && <div className="k-set-detail">{children}</div>}
-    </>
+    </div>
   );
 }
 
