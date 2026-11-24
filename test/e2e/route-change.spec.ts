@@ -75,14 +75,14 @@ test("an agent whose provider stays out past the owner's rule goes on on another
     await expect(box.getByTestId("route-rule")).toContainText("Any agent");
     expect((await api("/api/settings")).settings.route_change.rules).toEqual([{ role: "", minutes: MINUTES, to: OTHER, from: "scripted" }]);
     await shoot(page, "route-change-02-rule");
-    // On a phone the rule's row keeps its arrow with the model, and its remove button on the row.
+    // On a phone the rule's row keeps its arrow with the model, and its remove button inside the row (under its words).
     await page.setViewportSize({ width: 390, height: 844 });
     await box.getByTestId("route-rule").scrollIntoViewIfNeeded();
     await expect(box.getByTestId("route-rule")).toBeVisible();
     const row = (await box.getByTestId("route-rule").boundingBox())!;
     const cut = (await box.getByTestId("route-rule").getByRole("button").boundingBox())!;
     expect(cut.x + cut.width).toBeLessThanOrEqual(row.x + row.width + 1);
-    expect(cut.y).toBeLessThan(row.y + 40);
+    expect(cut.y + cut.height).toBeLessThanOrEqual(row.y + row.height + 1);
     await shoot(page, "route-change-02b-rule-phone");
     await page.setViewportSize({ width: 1920, height: 1040 });
     // A rule that names no model is refused by the daemon too.

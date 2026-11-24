@@ -482,8 +482,6 @@ const NOT_ON_KIT = [
   "components/MemoryUsage.tsx", "components/NewModels.tsx", "components/ProviderModels.tsx", "components/ResumeFrom.tsx", "components/TakeOver.tsx",
   "components/surfaces/PluginUnits.tsx",
   "components/ProvidersPanel.tsx", "components/SafetySettings.tsx", "components/Settings.tsx",
-  // (Landed beside the kit's stricter rule: the route-change card of Models and the rule trial card of Safety.)
-  "components/RouteChange.tsx", "components/RuleTrialCard.tsx",
 ];
 // The module each registered section shows: a lazy import's file, a component imported by name, or the file that registers it.
 function sectionFiles(list: Src[]): string[] {

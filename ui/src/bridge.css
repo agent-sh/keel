@@ -1553,7 +1553,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-table tr[data-act]:hover > td { background: var(--hover); }
 .k-set-table tr[data-open] > td { background: var(--sunken); }
 /* A row's open area: across the table, wrapping. The figures of the columns a narrow box dropped are listed
-   in it (a Row, components/settings/kit.tsx); wide, they are in the row and the area holds the detail only. */
+   in it (a Row, components/settings/kit.tsx); wide, they are in the row and the area holds the detail only
+   (a row with no detail has no area then). */
 .k-set-table tr.k-set-open > td { white-space: normal; padding-block: 0.5rem 0.625rem; }
 .k-set-dropped { display: none; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: 0.5rem 1rem; margin: 0 0 0.5rem; font-size: var(--text-caption); }
 .k-set-dropped:last-child { margin-bottom: 0; }
@@ -1564,6 +1565,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 @container set-box (max-width: 52rem) {
   .k-set-table [data-minor] { display: none; }
   .k-set-dropped { display: grid; }
+  .k-set-table tr.k-set-open[data-bare] { display: table-row; }
   .k-set-table tr[data-fig] > td { border-bottom: 0; }
 }
 /* A phone's box: the name column keeps room to be read. */
@@ -1572,7 +1574,6 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-set-table :is(th, td):first-child { padding-left: 1rem; }
   .k-set-table :is(th, td):last-child { padding-right: 1rem; }
   .k-set-table td[data-grow] { min-width: 6rem; }
-  .k-set-table tr.k-set-open[data-bare] { display: table-row; }
 }
 
 /* ---------- Micro-interactions ---------- */

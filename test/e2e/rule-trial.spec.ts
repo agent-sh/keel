@@ -66,6 +66,11 @@ test("an edit of the owner's rules shows its replay over the stored calls before
   await expect(result.getByTestId("trial-summary")).toContainText("1 allowed", { timeout: 60_000 });
   await expect(result.locator('[data-testid="trial-tools"] [data-testid="trial-row"][data-key="Bash"]')).toBeVisible();
   await expect(result.locator('[data-testid="trial-classes"] [data-testid="trial-row"][data-key="writes beyond your accounts"]')).toBeVisible();
+  // The figures the narrow table dropped are listed under the row, not lost: Allowed, Asked and Had succeeded.
+  const dropped = result.locator('[data-testid="trial-tools"] .k-set-dropped');
+  await expect(dropped).toBeVisible();
+  await expect(dropped).toContainText("Allowed");
+  await expect(dropped).toContainText("Had succeeded");
   const row = result.getByTestId("trial-call");
   await expect(row).toHaveCount(1);
   await expect(row).toContainText("asked about to allowed");
