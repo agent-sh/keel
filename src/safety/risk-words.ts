@@ -290,7 +290,9 @@ export function valuesOf(parts: Simple[], runs: Run[], home?: string): Values {
       const how = p.how?.[p.dyn?.indexOf(k) ?? -1];
       if (!how) {
         if (!WRITTEN.test(v)) return;
-        out.set(n, { text: home && (v === "~" || v.startsWith("~/")) ? home + v.slice(1) : v, at });
+        // A `~` that is quoted or escaped is a plain character; `~` is the home only where nothing set or read HOME before it.
+        const tilde = home && !count.has("HOME") && !bare.has("HOME") && !p.quotes?.includes(k) && (v === "~" || v.startsWith("~/"));
+        out.set(n, { text: tilde ? home + v.slice(1) : v, at });
         return;
       }
       if (home && !count.has("HOME") && !bare.has("HOME") && !how.subs.length && how.vars.length === 1 && how.vars[0]!.name === "HOME" && !how.rest) {

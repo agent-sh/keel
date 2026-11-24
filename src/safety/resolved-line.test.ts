@@ -198,3 +198,25 @@ test("a variable set to a path under the home, or used as a redirect target, is 
   // A redirect's target the line does not show whole keeps the variable unwritten.
   for (const line of ["S=/abs; echo '> $S/x'; $S/a", "S=/abs; $S/a > ${S:-y}/x", "S=/abs; $S/a > \\$S/x"]) expect([line, resolvedLine(line, home)]).toEqual([line, null]);
 });
+
+// `~` is the home only where bash makes it so: unquoted, unescaped, and with HOME not changed earlier on the line.
+test("a tilde that is quoted, or a home the line changed, is not written out", () => {
+  const home = "/home/u";
+  for (const line of [
+    "HOME=/e; S=~/x; $S/start.sh",
+    "HOME=/r/.git; S=~/HEAD; git log --output=$S",
+    "read HOME <<< /r/.git; S=~/HEAD; git log --output=$S",
+    "printf -v HOME %s /r/.git; S=~/HEAD; git log --output=$S",
+    "unset HOME; S=~/HEAD; git log --output=$S",
+    "S=\"~/x\"; $S/start.sh",
+    "S='~/x'; $S/start.sh",
+    "S=\\~/x; $S/start.sh",
+    "mkdir '~'; S='~/../../.git/HEAD'; git log --output=$S",
+    "S=~/x; S=~/y; $S/start.sh",
+    "S=~/x\\ y; $S/start.sh",
+  ]) expect([line, resolvedLine(line, home)]).toEqual([line, null]);
+  // Not looser than before: the lines that write into the git store stay held where they were.
+  for (const line of ["HOME=/r/.git; S=~/HEAD; git log --output=$S", "mkdir '~'; S='~/../../.git/HEAD'; git log --output=$S"]) {
+    expect([line, verdicts(line).slice(0, 4).some((k) => k === "allow")]).toEqual([line, false]);
+  }
+});

@@ -20,7 +20,7 @@ import { name, unwrap } from "./risk-words.ts";
 // ends it when that is not `;` or a newline. `flow`: a loop, a conditional, a
 // group or an assigning expansion stands before it in the line, so a variable
 // may not hold what the line's first words gave it.
-export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; sep?: string; flow?: true };
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; quotes?: number[]; sep?: string; flow?: true };
 
 // What is known of a word an expansion makes. `one`: it stays one word (every
 // expansion in it is inside double quotes, and no glob or brace is). `lead`:
@@ -92,6 +92,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
   let depth = 0;
   let inputs: string[] = [];
   let targets: Made["vars"] = []; // the variables the targets of its redirects name
+  let quotes: number[] = []; // the words that have a quoted or escaped character
   let param = 0; // ${ ... } still open: what stands in it is its text, whatever it looks like
   let want: Redirect | null = null; // a redirect operator waiting for its target word
   let bad = false;
@@ -111,6 +112,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
       // A `case` pattern ends in a `)` that closes nothing: inside a substitution, where that one ends is then not known.
       if (inner && !quoted && word === "case" && (!words.length || CONTROL.test(words[0]!) || /^(coproc|function)$/.test(words[0]!))) unknown = true;
       if (made) { dyn.push(words.length); how.push({ one: !cur.open, lead: word.slice(0, cur.lead), subs: cur.subs, vars: cur.vars, rest: cur.rest }); }
+      if (quoted) quotes.push(words.length);
       words.push(word);
     }
     word = "";
@@ -136,6 +138,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     while (lead < words.length && CONTROL.test(words[lead]!)) lead++;
     if (lead) flow = true;
     words = words.slice(lead);
+    const quoteds = quotes.map((n) => n - lead).filter((n) => n >= 0 && n < words.length);
     const kept = dyn.map((n, k) => ({ n: n - lead, m: how[k]! })).filter((d) => d.n >= 0 && d.n < words.length);
     dyn = kept.map((d) => d.n);
     how = kept.map((d) => d.m);
@@ -144,7 +147,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         words, text: text.trim(), redirects,
         ...(depth > 0 ? { nested: true as const } : {}), ...(unknown ? { unknown: true as const } : {}),
         ...(dyn.length ? { dyn, how } : {}), ...(dyn.length && splits ? { splits: true as const } : {}), ...(inputs.length ? { inputs } : {}),
-        ...(targets.length ? { targets } : {}),
+        ...(targets.length ? { targets } : {}), ...(quoteds.length ? { quotes: quoteds } : {}),
         ...(sep && sep !== ";" && sep !== "\n" ? { sep } : {}), ...(flow ? { flow: true as const } : {}),
       });
     words = [];
@@ -152,6 +155,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
     how = [];
     inputs = [];
     targets = [];
+    quotes = [];
     splits = false;
     text = "";
     redirects = false;
