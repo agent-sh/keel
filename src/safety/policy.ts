@@ -78,7 +78,10 @@ const toolSuggest = (f: Facts, tool: string): Suggest[] => (tool.includes("*") ?
 
 // What an MCP server says a tool of its does (its annotations), as far as the gate reads it.
 // Untrusted (the server's word, 2025-11-25 server/tools): no hint lets a call run that would ask.
-export type ToolHints = { destructive?: true; openWorld?: true };
+// `interaction`: the server marks the tool as one the owner answers on every call (tools/list
+// _meta "anthropic/requiresUserInteraction" is exactly true). Unlike the others it is not a hint that
+// raises care: it is a rule the gate holds the call to (see decide).
+export type ToolHints = { destructive?: true; openWorld?: true; interaction?: true };
 
 export type CallClass =
   // `paths`: the files and folders a read names (readPaths), for the one
@@ -105,7 +108,8 @@ export type CallClass =
   // makes the gate more careful: a destructive one is high risk, an open-world one says so on its card.
   // `account`: the tool writes with an account its MCP server holds (the server's name), src/safety/accounts.ts.
   // `input`: what the call was given, which the owners it names are read from.
-  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints; account?: { server: string; name?: string; tool?: string; input?: unknown } }
+  // `reads`: the owner marked the tool a read (only read-only mode needs to know, for a tool that asks every call).
+  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints; reads?: true; account?: { server: string; name?: string; tool?: string; input?: unknown } }
   // A message, answer or model command into another session. `resource` names
   // the tool and the target (keel__session_message:claude:abc); `owner` says why
   // only the owner may allow it.
@@ -129,7 +133,8 @@ export type CallClass =
 // facts can settle of one part, own-places.ts).
 // `account`: a write with the owner's account beyond his namespaces (the namespace, or "" when it is not known): the owner's
 // alone in every mode, Full auto included, where it opens a card and does not go to the judge.
-export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; mine?: string; readTool?: { server: string; tool: string }; notice?: string; settles?: true; risks?: PartRisk[] };
+// `interaction`: the tool's server requires the owner's answer on every call: his card opens in every mode, Full auto too.
+export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; interaction?: true; mine?: string; readTool?: { server: string; tool: string }; notice?: string; settles?: true; risks?: PartRisk[] };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
@@ -660,6 +665,15 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "other") for (const w of c.paths ?? []) {
     const why = keelNamed(w, f.workspace, f, "names", f.keel);
     if (why) return { deny: keelRefusal(why) };
+  }
+  // A tool whose server requires the owner's answer on every call (requiresUserInteraction): his card in every mode,
+  // Full auto included, for this call only (no Always allow). No rule, grant, hook or mode settles it: it is decided
+  // before they are read. An agent has nobody to ask and is refused.
+  if (c.kind === "other" && c.hints?.interaction) {
+    const why = `${f.tool}'s server requires your answer on every call (requiresUserInteraction)`;
+    if (f.agent) return { deny: `Refused: ${why}. An agent has nobody to ask, and nothing else allows it. Report to your parent what you wanted it to do and go on with the rest: the session that started you can call it and ask the owner.` };
+    if (f.mode === "read-only" && !c.reads) return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
+    return { ask: { risk: "high", why, rule: "its server requires the owner's answer on every call", suggest: [], ownerOnly: true, interaction: true } };
   }
   // A tool that writes with an account its server holds (Slack, mail, a forge): the owner's in every mode, unless its input
   // names an owner who is among his namespaces. An agent is refused.

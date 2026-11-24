@@ -975,6 +975,10 @@ export class McpManager {
     // (src/mcp/class.ts: the owner's word, else the credential its config sends). A tool whose accepted definition says
     // it only reads (readOnlyHint, taken here for this and nothing else) is not held.
     const account = !readOnly && !e.bundled && t.annotations?.readOnlyHint !== true;
+    // A tool its server marks as one the owner answers on every call (tools/list _meta, exactly true: any other value
+    // is ignored). It is a rule the gate holds the call to (src/safety/policy.ts), so it is part of what the call is
+    // judged by and of the shape a card's answer is for.
+    const interaction = !e.bundled && t._meta?.["anthropic/requiresUserInteraction"] === true;
     return {
       server,
       name: t.name,
@@ -987,8 +991,9 @@ export class McpManager {
       description: t.description ?? t.title ?? "",
       input_schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
       readOnly,
-      ...(hints ? { hints } : {}),
+      ...(hints || interaction ? { hints: { ...hints, ...(interaction ? { interaction: true as const } : {}) } } : {}),
       judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input)
+        : interaction ? async (input: any) => ({ kind: "other" as const, hints: { ...careful, interaction: true as const }, ...(readOnly ? { reads: true as const } : {}), ...(account && this.classOf(e.name)?.account.yes ? { account: { server, name: e.name, tool: t.name, input } } : {}) })
         : careful || account ? async (input: any) => ({ kind: "other" as const, ...(careful ? { hints: careful } : {}), ...(account && this.classOf(e.name)?.account.yes ? { account: { server, name: e.name, tool: t.name, input } } : {}) }) : undefined,
       run: (input: any, ctx: ToolContext) => this.call(e.name, t.name, input, ctx),
     };

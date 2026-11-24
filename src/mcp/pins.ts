@@ -12,13 +12,20 @@
 // the description, the input schema and the annotations (a changed
 // readOnlyHint or openWorldHint changes how a call is judged). The output
 // schema and the execution hints are the client's business, not the model's.
+// The flag a server sets for a tool whose every call the owner answers
+// (_meta "anthropic/requiresUserInteraction", exactly true) is pinned too: it
+// is a rule the gate holds the call to, so a server that drops it changes how
+// the tool is judged, and that is a change the owner reviews. A tool is held to
+// the flag if either the accepted definition or the listing carries it.
 import { createHash } from "node:crypto";
 import type { McpTool } from "./client.ts";
 
-export type ToolDef = Pick<McpTool, "name" | "title" | "description" | "inputSchema" | "annotations">;
+export type ToolDef = Pick<McpTool, "name" | "title" | "description" | "inputSchema" | "annotations"> & { requiresUserInteraction?: true };
+export const INTERACTION = "anthropic/requiresUserInteraction";
+const flagged = (t: McpTool | ToolDef) => ("_meta" in t ? t._meta?.[INTERACTION] === true : false) || ("requiresUserInteraction" in t && t.requiresUserInteraction === true);
 
 // One field per thing a change can touch, as the owner is shown it.
-export type ToolField = "title" | "description" | "input_schema" | "annotations";
+export type ToolField = "title" | "description" | "input_schema" | "annotations" | "interaction";
 
 // A tool the owner has not accepted: new, or changed in these fields.
 // `was` is the accepted definition (none for a new tool), `now` the listed one.
@@ -31,6 +38,7 @@ export const defOf = (t: McpTool | ToolDef): ToolDef => ({
   ...(t.description !== undefined && { description: t.description }),
   ...(t.inputSchema !== undefined && { inputSchema: t.inputSchema }),
   ...(t.annotations !== undefined && { annotations: t.annotations }),
+  ...(flagged(t) && { requiresUserInteraction: true as const }),
 });
 
 // JSON with object keys sorted, so a server that sends the same schema with
@@ -41,7 +49,7 @@ function canon(v: unknown): string {
   return JSON.stringify(v) ?? "null";
 }
 
-const FIELDS: [ToolField, keyof ToolDef][] = [["title", "title"], ["description", "description"], ["input_schema", "inputSchema"], ["annotations", "annotations"]];
+const FIELDS: [ToolField, keyof ToolDef][] = [["title", "title"], ["description", "description"], ["input_schema", "inputSchema"], ["annotations", "annotations"], ["interaction", "requiresUserInteraction"]];
 
 // The fields in which two definitions of one tool differ.
 export function fieldsChanged(was: ToolDef, now: ToolDef): ToolField[] {
@@ -77,7 +85,10 @@ export function offered(pinned: ToolDef[], listed: McpTool[]): McpTool[] {
     if (!fieldsChanged(was, defOf(t)).length) return [t];
     // Only the pinned fields are replaced; one the pin lacks is left out, not taken from the listing.
     const { title: _t, description: _d, inputSchema: _i, annotations: _a, ...rest } = t;
-    return [{ ...rest, ...was }];
+    const { requiresUserInteraction, ...def } = was;
+    // The flag holds when either side has it (a dropped one is held until the owner accepts the drop).
+    const meta = requiresUserInteraction || flagged(t) ? { ...rest._meta, [INTERACTION]: true } : rest._meta;
+    return [{ ...rest, ...def, ...(meta ? { _meta: meta } : {}) }];
   });
 }
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { changeDigest, diffTools, offered } from "./pins.ts";
+import { changeDigest, defOf, diffTools, offered } from "./pins.ts";
 
 const lookup = { name: "lookup", description: "Look up a word.", inputSchema: { type: "object", properties: { word: { type: "string" } }, required: ["word"] } };
 const env = { name: "environment", description: "Its environment.", annotations: { readOnlyHint: true }, inputSchema: { type: "object" } };
@@ -40,4 +40,18 @@ test("a change set has one digest, and another change another", () => {
   const b = diffTools([lookup], [{ ...lookup, description: "Two." }]).changes;
   expect(changeDigest(a)).toBe(changeDigest(diffTools([lookup], [{ ...lookup, description: "One." }]).changes));
   expect(changeDigest(a)).not.toBe(changeDigest(b));
+});
+
+test("the flag that has the owner answer every call is pinned: a server that drops it is a change, and the tool is still held to it", () => {
+  const flag = { "anthropic/requiresUserInteraction": true };
+  const guarded = { ...lookup, _meta: flag };
+  const dropped = { ...lookup, _meta: {} };
+  expect(diffTools([defOf(guarded)], [dropped]).changes.map((c) => [c.name, c.fields])).toEqual([["lookup", ["interaction"]]]);
+  expect(diffTools([defOf(guarded)], [guarded])).toEqual({ changes: [], removed: [] });
+  // Offered under the accepted definition: the flag is still on it.
+  expect(offered([defOf(guarded)], [dropped])[0]!._meta).toEqual(flag);
+  // A flag the server adds is a change too, and holds the tool at once; a value that is not exactly true is no flag.
+  expect(diffTools([lookup], [guarded]).changes[0]!.fields).toEqual(["interaction"]);
+  expect(offered([lookup], [guarded])[0]!._meta).toEqual(flag);
+  expect(diffTools([lookup], [{ ...lookup, _meta: { "anthropic/requiresUserInteraction": "true" } }]).changes).toEqual([]);
 });

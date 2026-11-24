@@ -276,6 +276,9 @@ const ownConfig = () => [configDir(), process.env.KEEL_HOOKS, process.env.KEEL_M
 // The hash a card keeps of the whole input it was opened for (the card itself holds a clipped copy).
 const inputSha = (input: unknown) => new Bun.CryptoHasher("sha256").update(JSON.stringify(input ?? {}) ?? "").digest("hex");
 
+// A card that opens in Full auto too, and goes to no judge: a write with the owner's account beyond his namespaces, and a
+// tool whose server requires his answer on every call.
+const staysOwners = (a: Ask) => a.account !== undefined || !!a.interaction;
 function callClass(call: ToolCall, target: Target): CallClass {
   // (A reading tool known only by its flag, an MCP server's among them, is a read of the files its input names.)
   // Its path keys, and every string anywhere in the input that is a path or a file: URL by itself.
@@ -1802,7 +1805,7 @@ export class Gate {
         : "allow" in d ? { state: "allowed", choice: "once", reason: "settled by a grant or a mode change" } : "deny" in d ? { state: "denied", reason: d.deny } : undefined;
       if (settled) this.finish(back, settled);
       // Now in full auto: the card closes and the call is settled without the owner.
-      if (!settled && back.state === "pending" && "ask" in d && d.ask.account === undefined && !back.once && this.perm(session.id).mode === "full-auto") {
+      if (!settled && back.state === "pending" && "ask" in d && !staysOwners(d.ask) && !back.once && this.perm(session.id).mode === "full-auto") {
         this.finish(back, { state: "cancelled", reason: "settled without the owner in full auto" });
         return this.alone(session, call, name, cls, back.summary, keyOf(name, target, cls, call, back.summary), d.ask.why);
       }
@@ -1852,7 +1855,7 @@ export class Gate {
     // Full auto: nothing waits on the owner. What would ask is high risk; it
     // goes to the rules, then the judge, and is run or refused at once.
     // (A write with an account beyond the owner's namespaces is the exception: his card opens in Full auto too.)
-    if (mode === "full-auto" && d.ask.account === undefined) return this.alone(session, call, name, cls, summary, key, d.ask.why);
+    if (mode === "full-auto" && !staysOwners(d.ask)) return this.alone(session, call, name, cls, summary, key, d.ask.why);
     let notice: string | undefined;
     // Reviewer mode: what would ask goes to the reviewer first; a high-risk
     // action, and anything it cannot judge, still goes to the owner.
@@ -2337,7 +2340,7 @@ export class Gate {
       } else if ("deny" in d) {
         this.finish(a, { state: "denied", reason: d.deny });
         w.resolve({ deny: d.deny });
-      } else if (mode === "full-auto" && !("ask" in d && d.ask.account !== undefined)) {
+      } else if (mode === "full-auto" && !("ask" in d && staysOwners(d.ask))) {
         // The session went to full auto with a card open: the card closes, and
         // the call is settled the way full auto settles it.
         this.finish(a, { state: "cancelled", reason: "settled without the owner in full auto" });

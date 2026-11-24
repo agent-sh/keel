@@ -279,3 +279,69 @@ test("a tool its server calls destructive or open-world asks with more care, nat
     store.db.close();
   }
 });
+
+// A tool its server marks with _meta["anthropic/requiresUserInteraction"] === true asks the owner on every call, in
+// every mode, with no standing answer offered, and nothing but his card lets it run. Any other value is ignored.
+test("a tool that requires user interaction asks in every mode, once, and no rule or grant skips it", async () => {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Gate } = await import("../safety/gate.ts");
+  const { withCatalog } = await import("../tools/defer.ts");
+  installMcpTools({ configured: () => [] } as any);
+  const m = new McpManager({ capture() {} } as any, mkdtempSync(join(tmpdir(), "keel-mcp-")), "/");
+  const entry = { name: "ui", config: { command: "x", read_tools: ["peek"] } };
+  const key = "anthropic/requiresUserInteraction";
+  const listed = [
+    { name: "pay", _meta: { [key]: true } },
+    { name: "peek", _meta: { [key]: true } },
+    { name: "text", _meta: { [key]: "true" } },
+    { name: "one", _meta: { [key]: 1 } },
+    { name: "plain" },
+  ];
+  const tools = listed.map((t) => ({ ...(m as any).catalogTool(entry, { ...t, inputSchema: { type: "object" } }), run: async () => ({ content: "ran" }) }));
+  registerCatalog({ name: "ui", tools: async () => tools, known: () => tools });
+  const dir = mkdtempSync(join(tmpdir(), "keel-mcp-interaction-"));
+  const store = new Store(join(dir, "state")), bus = new Bus(), g = new Gate(store, bus);
+  try {
+    const native = await withCatalog([], "claude", []);
+    const asked = async (mode: any, name: string, opts: { agent?: boolean; allow?: boolean } = {}) => {
+      const parent = store.createSession({ workspace: dir, model: "fixture", title: "p" });
+      const s = opts.agent ? { ...store.createSession({ workspace: dir, model: "fixture", title: "a" }), parent_id: parent.id } : parent;
+      g.setPerm(s.id, { mode });
+      if (opts.allow) g.addRule(s, "tool", `mcp__ui__${name}`, "session");
+      const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, seen: new Map(), spillDir: dir };
+      const shown = new Promise<any>((res) => { const off = bus.on((f: any) => { if (f.name === "approval" && f.data?.state === "pending") { off(); res(f.data); } }); });
+      const run = g.beforeTool(s, { id: crypto.randomUUID(), tool: native.find((x) => x.name === `mcp__ui__${name}`)!, input: {}, ctx } as any);
+      const r = await Promise.race([run.then((x) => ({ done: x })), shown]);
+      if ("done" in r) return r.done === undefined ? "ran" : (r.done as any).deny ? { refused: (r.done as any).deny } : "ran";
+      const standing = g.resolve(r.id, s.id, { choice: "always", seen: "whole" }) as any;
+      const once = g.resolve(r.id, s.id, { choice: "once", seen: "whole" }) as any;
+      await run;
+      return { card: { risk: r.risk, suggest: r.suggest, standing: standing.ok === true, once: once.ok === true } };
+    };
+    for (const mode of ["ask", "auto-edits", "full-auto", "auto", "reviewer"]) {
+      expect([mode, await asked(mode, "pay")]).toEqual([mode, { card: { risk: "high", suggest: [], standing: false, once: true } }]);
+      // A standing allow of the tool does not skip it.
+      expect([mode, await asked(mode, "pay", { allow: true })]).toEqual([mode, { card: { risk: "high", suggest: [], standing: false, once: true } }]);
+      // The owner's mark of the tool as a read does not either.
+      expect([mode, await asked(mode, "peek")]).toEqual([mode, { card: { risk: "high", suggest: [], standing: false, once: true } }]);
+    }
+    // A value that is not exactly true is ignored: the tool keeps its ordinary behaviour.
+    expect(await asked("full-auto", "text")).toBe("ran");
+    expect(await asked("full-auto", "one")).toBe("ran");
+    expect(await asked("full-auto", "plain")).toBe("ran");
+    expect(await asked("ask", "text")).toMatchObject({ card: { risk: "low", standing: true } });
+    // An agent has nobody to ask: refused, in every mode, whatever it was allowed.
+    for (const mode of ["ask", "full-auto"]) {
+      const r: any = await asked(mode, "pay", { agent: true, allow: true });
+      expect([mode, r.refused]).toEqual([mode, expect.stringContaining("requires your answer on every call")]);
+      expect(r.refused).toContain("nobody to ask");
+    }
+    // Read only runs nothing that is not a read; the owner's mark makes it one.
+    expect(await asked("read-only", "pay")).toMatchObject({ refused: expect.stringContaining("read-only") });
+    expect(await asked("read-only", "peek")).toMatchObject({ card: { risk: "high" } });
+  } finally {
+    unregisterCatalog("ui");
+    store.db.close();
+  }
+});

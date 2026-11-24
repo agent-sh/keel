@@ -297,8 +297,9 @@ const HINT_SAYS = {
   open_world: "The server says it reaches services outside this machine.",
   idempotent: "The server says calling it again with the same arguments changes nothing more.",
 } as const;
-const FIELD_WORD: Record<ToolField, string> = { title: "title", description: "description", input_schema: "input schema", annotations: "annotations" };
+const FIELD_WORD: Record<ToolField, string> = { title: "title", description: "description", input_schema: "input schema", annotations: "annotations", interaction: "asks you on every call" };
 const fieldText = (d: ToolDef | undefined, f: ToolField) => {
+  if (f === "interaction") return d?.requiresUserInteraction ? "yes: its server says you answer every call" : "no";
   const v = d?.[f === "input_schema" ? "inputSchema" : f];
   // A schema on one line, wrapped: the two sides read against each other without scrolling.
   return v === undefined ? "(none)" : typeof v === "string" ? v : JSON.stringify(v).replace(/([,:])(?=["{[\w])/g, "$1 ");

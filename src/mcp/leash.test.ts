@@ -5,7 +5,7 @@
 // servers set up before pins are told once, and a pins file that cannot be
 // read holds every server instead of pinning what they list now.
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ownEnv } from "../../test/env.ts";
@@ -217,4 +217,20 @@ test("a server kept in step with another agent's config keeps the variables the 
   } finally {
     if (before === undefined) delete process.env.KEEL_IMPORT_HOME; else process.env.KEEL_IMPORT_HOME = before;
   }
+});
+
+test("a server that drops its requiresUserInteraction flag is held, and the tool is still asked about on every call", async () => {
+  rmSync(flip, { force: true });
+  const m = manager(join(dir, "state-guard"), ["--guard"]);
+  await m.ensure("leash");
+  const lookup = async () => (await catalogTools()).find((t) => t.server === "leash" && t.name === "lookup")!;
+  expect((await lookup()).hints?.interaction).toBe(true);
+  writeFileSync(flip, "");
+  const row = () => m.list().find((s) => s.name === "leash")!;
+  await until(() => !!row().held);
+  // The flag is gone from what the server lists now, and that is part of what the owner reviews.
+  expect(row().held!.changes.find((c) => c.name === "lookup")!.fields).toContain("interaction");
+  expect((await lookup()).hints?.interaction).toBe(true);
+  rmSync(flip, { force: true });
+  m.dispose();
 });
