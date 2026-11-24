@@ -73,5 +73,18 @@ test("modes and panels are grouped and say what they do", async ({ page, request
     await expect(picker).toBeInViewport({ ratio: 1 });
     await shoot(page, "find-04-panels-phone");
     await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.keyboard.press("Escape");
+
+    // The search palette lists a panel once: its own row (the Work board, Landing and Review had that and a
+    // generic "Open the ... panel" row beside it).
+    await page.keyboard.press("Control+k");
+    for (const name of ["work board", "landing", "review the branch"]) {
+      await page.getByTestId("palette-input").fill(name);
+      await expect(page.getByRole("option").filter({ hasText: new RegExp(name, "i") }).first()).toBeVisible();
+      await expect(page.getByRole("option").filter({ hasText: /^Open the .* panel/ }), `"${name}" has no second row`).toHaveCount(0);
+    }
+    await page.getByTestId("palette-input").fill("work board");
+    await shoot(page, "find-05-palette-panels");
+    await page.keyboard.press("Escape");
   } finally { await request.delete(`/api/sessions/${session.id}`); }
 });

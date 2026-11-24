@@ -41,6 +41,8 @@ export const commandsVersion = () => version;
 export const onCommands = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 // Told the id of each command a key runs (what the owner presses is recorded from it: lib/presses.ts).
 export const keyRan = new Set<(id: string) => void>();
+// Whether a command is registered, shown or not (a feature that opens its own panel names it `panel-<id>`).
+export const hasCommand = (id: string) => commands.has(id);
 export const runCommand = (id: string) => commands.get(id)?.run();
 // A command's key as the owner reads it ("Alt P"), or nothing when it has none: for a title that names the key of what it opens.
 export const commandKeys = (id: string) => { const k = commands.get(id)?.keys; return k ? keyLabel(k).join(" ") : ""; };

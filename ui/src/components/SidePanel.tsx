@@ -7,7 +7,7 @@ import { ChevronDown, PanelRight, Pin, PinOff, Search, X } from "lucide-react";
 import { Suspense, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { panels, type Panel } from "../lib/extend.ts";
-import { composing, registerCommand } from "../lib/keys.ts";
+import { composing, hasCommand, registerCommand } from "../lib/keys.ts";
 import { usePanelBeside } from "../lib/rail.ts";
 import { getUI, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
@@ -73,14 +73,15 @@ function atHand(list: Panel[], open: string | null): Panel[] {
   return top;
 }
 
-// Every panel is a palette command.
+// Every panel is one palette row: this one, unless the panel's own feature registered a `panel-<id>` command
+// (its own words, a key), which is then its row (a panel found twice read as two places).
 let registered = "";
 function registerPanelCommands() {
   const all = panels.all();
   const key = all.map((p) => p.id).join();
   if (key === registered) return;
   registered = key;
-  registerCommand(...all.map((p) => ({ id: `panel.${p.id}`, label: `Open the ${p.label} panel`, group: "Panels", words: `panel ${groupOf(p)} ${hintOf(p)}`, run: () => openPanel(p.id), when: () => getUI().route.name === "session" })));
+  registerCommand(...all.map((p) => ({ id: `panel.${p.id}`, label: `Open the ${p.label} panel`, group: "Panels", words: `panel ${groupOf(p)} ${hintOf(p)}`, run: () => openPanel(p.id), when: () => getUI().route.name === "session" && !hasCommand(`panel-${p.id}`) })));
 }
 panels.subscribe(registerPanelCommands);
 registerPanelCommands();
