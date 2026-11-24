@@ -2,7 +2,8 @@ import { zonedStamp } from "../core/clock.ts";
 import { conceal } from "../core/conceal.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { homeDir } from "../core/paths.ts";
+import { chunks } from "../core/proc.ts";
 import { join } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
 import { D, alertHook, capture, deliver, emit, familyOf, flush, inert, withdraw, stopperOf } from "./core.ts";
@@ -715,17 +716,12 @@ const READ_MAX = 64 * 1024;
 export const gateLimit = { ms: GATE_TIMEOUT_MS };
 
 async function readCapped(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
+  const parts: Uint8Array[] = [];
   let n = 0;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (n < READ_MAX) { chunks.push(value.subarray(0, READ_MAX - n)); n += Math.min(value.length, READ_MAX - n); }
-    }
+    for await (const value of chunks(stream)) if (n < READ_MAX) { parts.push(value.subarray(0, READ_MAX - n)); n += Math.min(value.length, READ_MAX - n); }
   } catch {} // the pipe closed under the read
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(parts).toString("utf8");
 }
 
 // The gate command, in the session's folder and inside its sandbox, wrapped as a Bash call of the session is (the

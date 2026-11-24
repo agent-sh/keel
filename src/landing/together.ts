@@ -27,7 +27,7 @@
 // landing, which is minutes away, not at once.
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, rmSync, writeSync } from "node:fs";
-import { homedir } from "node:os";
+import { homeDir } from "../core/paths.ts";
 import { join } from "node:path";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { failedNames } from "../checks/counts.ts";
@@ -416,7 +416,7 @@ export class Together {
         else set({ state: "error", error: built.error, ended: Date.now(), place: runner.place });
         return;
       }
-      const steps: Step[] = j.checks.flatMap((c) => { const cmd = commandOf(c, pairTests(j.rel, built.tree), homedir()); return cmd ? [{ check: c, command: cmd }] : []; });
+      const steps: Step[] = j.checks.flatMap((c) => { const cmd = commandOf(c, pairTests(j.rel, built.tree), homeDir()); return cmd ? [{ check: c, command: cmd }] : []; });
       if (!steps.length) { set({ state: "error", error: "none of the fast checks has anything to run for this pair", ended: Date.now(), place: runner.place }); return; }
       const together = await runner.run(built.together, steps);
       all.push({ on: "together", ran: together });

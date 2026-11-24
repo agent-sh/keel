@@ -21,7 +21,7 @@
 // count is of trees, not sessions: one tree's agents share their task, and a
 // cause they repeat is told to that tree already (src/automation/failures.ts).
 import type { Database } from "bun:sqlite";
-import { homedir } from "node:os";
+import { homeDir } from "../core/paths.ts";
 import { basename } from "node:path";
 import { keyShaped } from "../core/conceal.ts";
 import { repoRoot } from "../core/repo-root.ts";
@@ -98,7 +98,7 @@ export const failureKey = (fp: string) => `failure:${fp}`;
 // A failure's text as one line for the owner and the drafting model: anything shaped like a key hidden
 // (the vault's own values are hidden where a prompt is made, src/automation/lesson-draft.ts), and the
 // paths of the machine folded (foldPaths).
-export function exampleOf(text: string, repo: string | null = null, home = homedir()): string {
+export function exampleOf(text: string, repo: string | null = null, home = homeDir()): string {
   const line = foldPaths(keyShaped(firstLines(text).join(" / ")), repo, home).replace(/[\p{Cc}\u2028\u2029]+/gu, " ");
   return line.length > EXAMPLE_CHARS ? `${line.slice(0, EXAMPLE_CHARS - 1)}…` : line;
 }

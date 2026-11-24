@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { homedir } from "node:os";
+import { homeDir } from "../core/paths.ts";
 import { describe, expect, test } from "bun:test";
 import { FAMILIES_PER_ARM } from "../admin/experiments.ts";
 import { getConcealer, setConcealer } from "../core/conceal.ts";
@@ -206,7 +206,7 @@ describe("what a failure's words carry to a model and the owner", () => {
     expect(c!.examples[0]).toContain("<redacted>");
   });
   test("the prompts a model reads carry the vault's secrets as placeholders, and a plain draft names no path", () => {
-    const home = homedir();
+    const home = homeDir();
     const before = getConcealer();
     setConcealer({ text: (s) => s.split("hunter2-value").join("[secret:1a2b3c4d]"), pairs: () => [] });
     try {

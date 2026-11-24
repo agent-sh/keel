@@ -14,6 +14,7 @@ import { api } from "../lib/store.ts";
 import { isDark } from "../lib/ui.ts";
 import { ContentFrame } from "./ContentFrame.tsx";
 import { Under } from "./ToolCall.tsx";
+import { STATE_WORD } from "../../../src/core/state-words.ts";
 
 export type AppShown = { id: string; server: string; tool: string; uri: string; error?: string };
 
@@ -46,7 +47,7 @@ const context = (width: number) => ({
 export const HANDSHAKE_MS = 10_000;
 
 const STATE: Record<AppCallRow["state"], { name: string; tone?: "fail" | "warn" | "note" }> = {
-  running: { name: "Calling", tone: "note" }, ok: { name: "Called" }, error: { name: "Failed", tone: "fail" }, denied: { name: "Denied", tone: "warn" }, refused: { name: "Refused", tone: "warn" },
+  running: { name: "Calling", tone: "note" }, ok: { name: "Called" }, error: { name: STATE_WORD.fail, tone: "fail" }, denied: { name: "Denied", tone: "warn" }, refused: { name: "Refused", tone: "warn" },
 };
 
 export function McpApp({ sessionId, shown }: { sessionId?: string; shown: AppShown }) {

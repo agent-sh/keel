@@ -1,7 +1,7 @@
 // The words of a lesson (src/automation/lessons.ts): what the drafting model
 // is asked and what of its answer holds, the plain draft a cause has before
 // (or without) one, and the block an agent's task carries. Pure.
-import { homedir } from "node:os";
+import { homeDir } from "../core/paths.ts";
 import { scrubbed } from "../core/conceal.ts";
 import type { Decision } from "../admin/experiments.ts";
 import { DAYS, decidable, EXAMPLES, foldPaths, noPaths, type Candidate } from "./lessons-mine.ts";
@@ -15,7 +15,7 @@ export const LESSON_SYSTEM = "You turn a failure that keeps recurring in a softw
 // What a failure said, as a model may read it: the vault's secrets as their placeholders (the values known
 // to `session` too), anything else shaped like a key hidden, and the machine's folders folded. The miner
 // folded its examples already; a stored candidate from before is folded here as well.
-export const told = (text: string, session: string | null = null, repo: string | null = null) => foldPaths(scrubbed(text, session), repo, homedir());
+export const told = (text: string, session: string | null = null, repo: string | null = null) => foldPaths(scrubbed(text, session), repo, homeDir());
 
 // The words the drafting model reads: what failed, where, how often, and what it said (told).
 export function draftPrompt(c: Candidate, session: string | null = null): string {
