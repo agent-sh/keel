@@ -27,6 +27,7 @@ import { OAuthStore } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
+import { appUriOf, visibleTo } from "./apps.ts";
 import { hintsOf, hintWords } from "./hints.ts";
 import { ASKED, LOG_KEPT, logLine, severe, type LogLine } from "./logs.ts";
 import { conceal } from "../core/conceal.ts";
@@ -378,6 +379,9 @@ const SSE_TRY_MS = 4000;
 const IDLE_PASS_MS = 60_000;
 registerSettings("mcp_idle", { close_browser_min: 10 }, (v) =>
   typeof v.close_browser_min === "number" && Number.isFinite(v.close_browser_min) && v.close_browser_min >= 0 ? undefined : "close_browser_min is a number of minutes, 0 or more (0: never)");
+
+// A call an app made: its server's result as it came (structured content and all).
+export type AppCall = { raw(r: McpCallResult): void };
 
 export class McpManager {
   private entries = new Map<string, Entry>();
@@ -783,7 +787,7 @@ export class McpManager {
         } catch {
           return [];
         }
-        return this.view(e).map((t) => this.catalogTool(e, t));
+        return this.forModel(e).map((t) => this.catalogTool(e, t));
       },
       pending: () => (e.state === "connecting" ? [e.label ?? name] : []),
       failed: () => {
@@ -797,7 +801,7 @@ export class McpManager {
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing") return [];
         if (e.bundled) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
-        return e.state === "ready" ? this.view(e).map((t) => this.catalogTool(e, t)) : [];
+        return e.state === "ready" ? this.forModel(e).map((t) => this.catalogTool(e, t)) : [];
       },
     });
     return e;
@@ -1081,14 +1085,16 @@ export class McpManager {
     return session ? this.entries.get(name)?.bundled?.refuses?.(session) : undefined;
   }
 
-  call(name: string, tool: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> {
+  // `app`: a call an MCP App made of its own server's tool (src/server/routes/mcp-apps.ts): told the
+  // server's result as it came, and keeps no app of its own (the app that called is drawn already).
+  call(name: string, tool: string, input: unknown, ctx: ToolContext, app?: AppCall): Promise<ToolOutput> {
     const e = this.entries.get(name);
     const b = e?.bundled;
     const no = this.refusal(name, ctx.sessionId);
     if (no) return Promise.resolve({ content: no, is_error: true });
     if (e) { e.inflight = (e.inflight ?? 0) + 1; e.used = Date.now(); }
     const done = () => { if (e) { e.inflight = Math.max(0, (e.inflight ?? 1) - 1); e.used = Date.now(); } };
-    const run = () => (b?.call ? b.call(tool, input, ctx, (t, i, m) => this.callRaw(name, t, i, ctx, m)) : this.callRaw(name, tool, input, ctx));
+    const run = () => (b?.call ? b.call(tool, input, ctx, (t, i, m) => this.callRaw(name, t, i, ctx, m)) : this.callRaw(name, tool, input, ctx, undefined, app));
     // (A call that comes while the server's browser is being closed goes on after the close.)
     return (e?.closing ? e.closing.then(run) : run()).finally(done);
   }
@@ -1153,7 +1159,7 @@ export class McpManager {
   onIdleClose?: (name: string, idleMs: number) => void;
   private idleTimer?: ReturnType<typeof setInterval>;
 
-  private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext, meta?: Record<string, unknown>): Promise<ToolOutput> {
+  private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext, meta?: Record<string, unknown>, app?: AppCall): Promise<ToolOutput> {
     const e = this.entries.get(name);
     const shown = e?.label ?? name; // the name the session knows it by
     const config = e?.config;
@@ -1247,7 +1253,43 @@ export class McpManager {
     if (r.isError) envNote();
     // A proxy's user and password the base passed it are masked in what its text says, as in its stderr and log lines.
     if (e && this.stdioOwn(e)) r = maskedText(r);
-    return noted(await toOutput(r, ctx, `${shown}__${tool}`, schema));
+    app?.raw(r);
+    const out = noted(await toOutput(r, ctx, `${shown}__${tool}`, schema));
+    // A tool that names an app (src/mcp/apps.ts): its page is read now, once, and kept with this result.
+    const def = tools?.find((t) => t.name === tool);
+    const uri = !app && def ? appUriOf(def) : undefined;
+    if (uri && e && this.apps) {
+      const kept = await this.apps.keep({ server: name, shown, tool: def!, uri, input, result: r, ctx }).catch((err) => { this.errors.capture("tool", err, { mcp: name, tool, at: "mcp app", session: ctx.sessionId }); return undefined; });
+      if (kept !== undefined) out.shown = { mcp_app: kept };
+    }
+    return out;
+  }
+
+  // MCP Apps: what keeps a tool's app with its result (src/server/routes/mcp-apps.ts sets it).
+  apps?: { keep(at: { server: string; shown: string; tool: McpTool; uri: string; input: unknown; result: McpCallResult; ctx: ToolContext }): Promise<unknown> };
+
+  // A tool an app of this server may call: one the owner accepted (as the
+  // model is offered it), that its server does not keep from apps. `name` is
+  // the server's own entry; nothing of another server is looked at.
+  async appTool(name: string, tool: string, session?: string): Promise<{ tool: CatalogTool; def: McpTool } | { refused: string }> {
+    const e = this.entries.get(name);
+    if (!e || e.bundled) return { refused: `the server ${e?.label ?? name} is not connected any more` };
+    const shown = e.label ?? name;
+    if (e.session && e.session !== session) return { refused: `${shown} is another session's server` };
+    const no = this.refusal(name, session);
+    if (no) return { refused: no };
+    try { await this.ensure(name, 8_000); } catch (err) { return { refused: `${shown} is not available: ${(err as Error).message.split("\n")[0]}` }; }
+    const def = this.view(e).find((t) => t.name === tool);
+    if (!def) return { refused: `${shown} offers no tool ${tool}: an app calls only its own server's tools` };
+    if (!visibleTo(def, "app")) return { refused: `${shown} keeps its tool ${tool} from its apps` };
+    return { tool: this.catalogTool(e, def), def };
+  }
+
+  // An app's page as its server gives it: each content item whole, with its `_meta`.
+  async readApp(name: string, uri: string, signal?: AbortSignal): Promise<{ uri?: string; mimeType?: string; text?: string; blob?: string; _meta?: Record<string, unknown> }[]> {
+    const c = await this.ensure(name, 15_000);
+    const r = await c.readResource(uri, signal);
+    return Array.isArray(r?.contents) ? r.contents : [];
   }
 
   // ---- what a server asks while it works on a call ----
@@ -1786,6 +1828,13 @@ export class McpManager {
   }
 
   // What the model is offered of a server's listing.
+  // What the model is offered of a server: its accepted tools less those its
+  // server keeps for its apps (`_meta.ui.visibility` without "model").
+  private forModel(e: Entry): McpTool[] {
+    const all = this.view(e);
+    return all.some((t) => !visibleTo(t, "model")) ? all.filter((t) => visibleTo(t, "model")) : all;
+  }
+
   private view(e: Entry): McpTool[] {
     if (!this.leashed(e)) return e.tools;
     if (e.view && e.view.from === e.tools && e.view.rev === this.pinsRev) return e.view.tools;

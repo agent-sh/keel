@@ -3003,6 +3003,24 @@ export class Engine {
   private unsaved = new Map<string, { what: string; stopped: boolean }[]>();
   // The calls of each running turn that have not returned yet.
   private inflight = new Map<string, Map<string, ToolUseBlock>>();
+  // A call an MCP App in the transcript made of a tool of its own server
+  // (src/server/routes/mcp-apps.ts): through the owner's hooks and the
+  // permission gate as a model's call goes, under an id of its own. Nothing
+  // of it enters the history; the app's card shows it.
+  runForApp(id: string, tool: Tool, input: unknown, callId: string, signal: AbortSignal): Promise<ToolResultBlock> {
+    const session = this.store.session(id);
+    if (!session) return Promise.resolve({ type: "tool_result", tool_use_id: callId, content: "The session is gone.", is_error: true });
+    const seen = this.seen.get(id) ?? new Map();
+    this.seen.set(id, seen);
+    const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id), parentId: session.parent_id ?? undefined,
+      questionChanged: () => this.bus.emit({ t: "questions", pending: allPendingQuestions() }) };
+    const u: ToolUseBlock = { type: "tool_use", id: callId, name: tool.name, input: input ?? {} };
+    return this.runTool(session, [tool], u, ctx).finally(() => this.shown.delete(callId));
+  }
+
+  // How a call's error result came about: it ran and failed, or a gate refused it.
+  verdictOf(r: ToolResultBlock): "failed" | "denied" | undefined { return this.verdicts.get(r); }
+
   private tracked(id: string, u: ToolUseBlock, run: Promise<ToolResultBlock>): Promise<ToolResultBlock> {
     const calls = this.inflight.get(id) ?? new Map<string, ToolUseBlock>();
     this.inflight.set(id, calls.set(u.id, u));

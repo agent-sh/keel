@@ -9,6 +9,7 @@
 // section says. Most servers in use today are legacy.
 import { chunks, pumpLines, pumpText } from "../core/proc.ts";
 import { CHANNEL_CAP, CHANNEL_METHOD } from "./channel.ts";
+import { APP_MIME, UI_EXTENSION } from "./apps.ts";
 import { vault } from "../safety/secrets.ts";
 import { maskProxy } from "./env.ts";
 
@@ -40,9 +41,11 @@ const CLIENT_INFO = { name: "keel", version: "0.1.0" };
 // tool use nor the servers' context is offered with it.
 const ELICITATION = { elicitation: { form: {}, url: {} }, sampling: {} };
 export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
+// MCP Apps (src/mcp/apps.ts): the host draws a tool's ui:// page, in both eras.
+const APPS = { [UI_EXTENSION]: { mimeTypes: [APP_MIME] } };
 const offered = (t: Transport, era: "modern" | "legacy"): Record<string, object> =>
-  era === "modern" ? { ...ELICITATION, extensions: { [TASKS_EXTENSION]: {} } }
-  : t.kind === "stdio" ? { ...ELICITATION, roots: { listChanged: true } } : ELICITATION;
+  era === "modern" ? { ...ELICITATION, extensions: { [TASKS_EXTENSION]: {}, ...APPS } }
+  : t.kind === "stdio" ? { ...ELICITATION, roots: { listChanged: true }, extensions: APPS } : { ...ELICITATION, extensions: APPS };
 // How long Keel waits between two looks at a task whose server suggests no
 // interval: the reference TypeScript SDK's default (shared/protocol.ts,
 // `task.pollInterval ?? defaultTaskPollInterval ?? 1000`).
@@ -87,7 +90,7 @@ const MODERN_ERRORS = new Set([-32020, -32021, -32022]);
 
 // `outputSchema`: the JSON Schema its structured content conforms to (2025-11-25 server/tools; src/mcp/result.ts checks it).
 // `execution.taskSupport`: whether the tool runs as a task (2025-11-25 server/tools and basic/utilities/tasks).
-export type McpTool = { name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; annotations?: Record<string, unknown>; execution?: { taskSupport?: unknown } };
+export type McpTool = { name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; annotations?: Record<string, unknown>; execution?: { taskSupport?: unknown }; _meta?: Record<string, unknown> };
 export type McpContent =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string }
@@ -417,7 +420,9 @@ export class McpClient {
     const reply = (body: object) => this.answer({ jsonrpc: "2.0", id: msg.id, ...body }, String(msg.method), asker?.input);
     const refuse = (code: number, message: string) => reply({ error: { code, message } });
     const method = String(msg.method);
-    if (!Object.hasOwn(offered(this.t, this.era), method.split("/")[0]!)) return refuse(-32601, `keel does not support ${method}`);
+    // (The extensions a client declares are no methods a server may ask of it.)
+    const head = method.split("/")[0]!;
+    if (head === "extensions" || !Object.hasOwn(offered(this.t, this.era), head)) return refuse(-32601, `keel does not support ${method}`);
     if (origin !== undefined) asker = this.pending.get(origin)?.input ? this.pending.get(origin) : undefined;
     else {
       const calls = [...this.pending.values()].filter((p) => p.input); // oldest first

@@ -1233,6 +1233,40 @@ Parts Keel has no equivalent of (output styles, LSP servers, monitors, themes,
 `bin/`, MCP bundles, npm and archive sources) are named at install as not
 taken, with why.
 
+## MCP Apps
+
+Keel hosts MCP Apps (the `io.modelcontextprotocol/ui` extension, version
+2026-01-26). A tool whose definition names a `ui://` page in
+`_meta.ui.resourceUri` has the page drawn under its call in the transcript.
+
+- The page is read from its server once, when the result comes, and kept with
+  the session. A reload draws the same app at the height it last asked for,
+  even when the server is gone.
+- The frame runs scripts only, in an opaque origin: no same origin, no forms,
+  no popups. Its content policy is sent by the daemon and allows only the
+  origins the server declared in `_meta.ui.csp`. A loopback or private
+  address, a keyword and a wildcard are left out. With nothing declared the
+  page reaches nothing. The daemon refuses every request from an opaque
+  origin, so the page cannot reach the API.
+- The app's messages are the spec's set, read by `src/mcp/apps.ts`. Anything
+  else gets "method not found".
+  - `tools/call` reaches only the app's own server. The tool must be one the
+    owner accepted and its server must not keep it from apps
+    (`_meta.ui.visibility`). The call goes through the hooks and the permission
+    gate as a model's call does. Each call is listed under the app, refused
+    ones too.
+  - `ui/message` reaches the model as an outside input. The transcript shows
+    it as the app's, not the owner's words, and the model reads it framed as
+    data.
+  - `ui/open-link` takes http and https only, and opens nothing until the
+    owner presses Open.
+  - `ui/notifications/size-changed` sizes the frame, from 48 px up to seven
+    tenths of the window.
+- A tool its server keeps for apps only is not offered to the model.
+- Not offered: `resources/read`, `ui/update-model-context`, display modes
+  other than inline, and the device permissions (camera, microphone,
+  geolocation, clipboard).
+
 ## Subagent concurrency
 
 From the machine running the session's daemon, set a limit for that session:

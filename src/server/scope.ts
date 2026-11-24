@@ -63,6 +63,8 @@ export function route(f: Frame): Route {
       if (f.name === "checkpoints" && f.session_id) return one(f.session_id);
       // An answer of the session kept as a standing ruling, marked just this once, or its ruling revoked: its card reads it.
       if (f.name === "rulings" && f.session_id) return one(f.session_id);
+      // A call an MCP App in the session made: its card in the session's view reads it.
+      if (f.name === "mcp_app_call" && f.session_id) return one(f.session_id);
       // A session's tests on its base, without its change: its Review view reads it.
       if (f.name === "fails_before" && f.session_id) return one(f.session_id);
       // A branch of the session conflicts, or no longer does: its chip and its Branches panel read it.

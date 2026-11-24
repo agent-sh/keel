@@ -256,6 +256,21 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-under-what[data-tone="note"] { color: var(--muted); }
 .k-under-where { color: var(--faint); }
 .k-under-act { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; margin-left: auto; color: var(--faint); }
+/* An MCP App beside its call (components/McpApp.tsx): a head that names whose it is, the frame, what it asked and called. */
+.k-mcpapp { display: flex; flex-direction: column; gap: 0.375rem; margin: 0.25rem 0 0.5rem 0.375rem; max-width: 52rem; }
+.k-mcpapp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0 0.5rem; font-size: var(--text-caption); color: var(--faint); }
+.k-mcpapp-name { font-weight: 500; color: var(--muted); }
+.k-mcpapp-uri { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-micro); }
+.k-mcpapp-note { margin-left: auto; }
+.k-mcpapp-frame { position: relative; height: 10rem; overflow: hidden; border-radius: var(--radius-xl); background: var(--raised); transition: height var(--dur-move) ease; }
+.k-mcpapp-frame[data-border] { border: 1px solid var(--line); box-shadow: var(--shadow-1); }
+.k-mcpapp-frame > iframe { border: 0; }
+.k-mcpapp-status { margin: 0; font-size: var(--text-ui); color: var(--muted); }
+.k-mcpapp-status[data-tone="fail"] { color: var(--danger-ink); }
+.k-mcpapp-status[data-tone="warn"] { color: var(--warn-ink); }
+.k-mcpapp-loading { position: absolute; inset: 0; display: grid; place-items: center; background: var(--raised); color: var(--faint); }
+.k-mcpapp-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.5rem; padding: 0.375rem 0.5rem; border-radius: var(--radius-md); background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-ui); color: var(--fg); }
+@media (prefers-reduced-motion: reduce) { .k-mcpapp-frame { transition: none; } }
 /* A question's record: what it offered, with what was chosen marked. */
 .k-opts { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; margin-left: 0.5rem; vertical-align: baseline; }
 .k-opt { padding: 0 0.375rem; border-radius: var(--radius-sm); color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }

@@ -30,6 +30,7 @@ import { cn, fmtWait } from "../lib/utils.ts";
 import { AGENT_TOOLS, AgentCall, toolSummary } from "./automation/TranscriptExtras.tsx";
 import { CodeCall } from "./CodeCall.tsx";
 import { ReadersCall } from "./ReadersCall.tsx";
+import { McpApp, type AppShown } from "./McpApp.tsx";
 import { AskedUnder, QuestionCard } from "./QuestionCard.tsx";
 import { Copyable, CopyButton } from "./CopyButton.tsx";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
@@ -178,8 +179,10 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto,
   const input: any = use.input ?? {};
   if (kind === "ask" && !live) return beside(<QuestionCard use={use} result={result} sessionId={sessionId} />);
   const call = <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} lead={lead} auto={auto} peek={peek} quiet={quiet} hook={hook} asked={asked.input} />;
+  // The app its server drew with the result (an MCP App), under the call.
+  const app = peek ? undefined : (result as (ToolResultBlock & { shown?: { mcp_app?: AppShown } }) | undefined)?.shown?.mcp_app;
   // A server asked the owner something while this call runs: a line says so under the call.
-  return <AskedUnder use={use} sessionId={result ? undefined : sessionId}>{call}</AskedUnder>;
+  return <AskedUnder use={use} sessionId={result ? undefined : sessionId}>{call}{app ? <McpApp sessionId={sessionId} shown={app} /> : null}</AskedUnder>;
 }
 
 // A command longer than this, or of more than one line, is shown whole where the call is opened; a shorter one is all on its line.

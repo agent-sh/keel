@@ -7,7 +7,7 @@ import { flushSync } from "react-dom";
 import { FRAME_ALLOW, STOPPED } from "../lib/frames.ts";
 import { cn } from "../lib/utils.ts";
 
-export function ContentFrame({ what, frameRef, className, ...rest }: IframeHTMLAttributes<HTMLIFrameElement> & { what: "page" | "preview"; frameRef?: Ref<HTMLIFrameElement>; "data-testid"?: string }) {
+export function ContentFrame({ what, frameRef, className, ...rest }: IframeHTMLAttributes<HTMLIFrameElement> & { what: "page" | "preview" | "app"; frameRef?: Ref<HTMLIFrameElement>; "data-testid"?: string }) {
   const [stopped, setStopped] = useState(false);
   const own = useRef<HTMLIFrameElement | null>(null);
   useEffect(() => {
