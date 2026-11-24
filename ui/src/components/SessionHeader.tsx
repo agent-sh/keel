@@ -6,11 +6,11 @@ import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
 import { commandKeys, composing, runCommand } from "../lib/keys.ts";
 import { actions, getState, reportError } from "../lib/store.ts";
-import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
+import { getUI, navigate, phone, savePref, setUI, useUI } from "../lib/ui.ts";
 import { openPlaced } from "../lib/looks.ts";
 import { useStations } from "../lib/stations.ts";
 import { later, useAway } from "../lib/later.ts";
-import { cn, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
+import { cn, fmtSessionCost, fmtTokens, focusBox } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { archive, isPinned } from "../lib/sessops.ts";
 import { auto } from "../lib/automation.ts";
@@ -23,10 +23,41 @@ import { REST_AT } from "../../../src/automation/cap-rules.ts";
 import { CapControl } from "./CapControl.tsx";
 import { useCap } from "../lib/caps.ts";
 import { iconButton } from "./ui.tsx";
+import { safety, useSafety } from "../lib/safety.ts";
 
 // Popovers of the header load after the page (their Base UI parts are large).
-const PermissionMenu = lazy(() => import("./PermissionMenu.tsx").then((m) => ({ default: m.PermissionMenu })));
 const WorktreeChip = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeChip })));
+
+// The session's permission mode in the bar, only where it is not the mode new sessions start in: the choice is
+// in the message box's row, beside the model, so the bar says what is out of the ordinary and takes the owner there.
+// Null while the mode is the usual one (or not read yet): the tool then has no place in the row.
+function useModeWord(sessionId: string) {
+  const perm = useSafety((s) => s.perms[sessionId]);
+  const modes = useSafety((s) => s.modes);
+  const dflt = useSafety((s) => s.defaultMode);
+  useEffect(() => {
+    if (!modes.length) safety.loadSettings().catch(reportError);
+    return safety.watch(sessionId);
+  }, [sessionId]);
+  if (!perm || !dflt || perm.mode === dflt) return null;
+  const word = (id: string) => modes.find((m) => m.id === id)?.name ?? id;
+  return { mode: perm.mode, name: word(perm.mode), usual: word(dflt) };
+}
+
+function ModeWord({ sessionId, word }: { sessionId: string; word: NonNullable<ReturnType<typeof useModeWord>> }) {
+  return (
+    <button
+      type="button"
+      data-testid="head-mode"
+      title={`${word.name}. New sessions start in ${word.usual}. Change it under the message box`}
+      aria-label={`Permission mode: ${word.name}. Change it`}
+      onClick={() => { focusBox(sessionId); setUI({ permMenu: getUI().permMenu + 1 }); }}
+      className={cn("k-head-mode inline-flex h-7 items-center rounded-lg px-2 text-caption hover:bg-hover", word.mode === "full-auto" ? "text-warn" : "text-muted hover:text-fg")}
+    >
+      {word.name}
+    </button>
+  );
+}
 
 export function SidebarButton() {
   const sidebar = useUI((s) => s.sidebar);
@@ -39,8 +70,8 @@ export function SidebarButton() {
   );
 }
 
-// The toolbar rests with what the owner reads or reaches every few minutes: the permission mode (a
-// safety state), the worktree a session has (where its edits land), the Panels chooser and the session's
+// The toolbar rests with what the owner reads or reaches every few minutes: the permission mode when it is
+// not the usual one (the choice itself is in the message box's row), the worktree a session has (where its edits land), the Panels chooser and the session's
 // one menu. Everything else is in that menu, as the same controls in labeled rows over the session's
 // actions: the cost, background work (a dot on the menu while it runs; the head says what runs), the
 // machine (the head names another machine), snooze and the actions of features. A resting tool that has
@@ -284,7 +315,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   const tokenWords = `${fmtTokens(input_)} in (${cached}% cached), ${fmtTokens(u.output)} out`;
   const usageId = useId();
   const folder = session.workspace.split("/").pop();
-  // A cap that is set rests in the row, below the permission mode (a safety state) and above the worktree, once half of it
+  // A cap that is set rests in the row, below the permission mode (when it shows) and above the worktree, once half of it
   // is spent; far from it the chip is quiet, in the menu with the button that sets one.
   // A chip that came to rest stays for this view of the session: Raise or Change can take the share under half
   // mid-press, and the chip leaving the bar would close the popup under the owner's hand. A removed cap lets it go.
@@ -297,8 +328,9 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
 
   // In the row's order; the rank says which stays longest when the row is short. `rest`: it has a place in
   // the row (the rest are in the menu, in this order).
+  const modeWord = useModeWord(session.id);
   const every: Tool[] = [
-    { id: "permissions", label: "Permissions", rank: 6, rest: true, node: <Suspense fallback={null}><PermissionMenu sessionId={session.id} /></Suspense> },
+    ...(modeWord ? [{ id: "mode", label: "Permission mode", rank: 6, rest: true, node: <ModeWord sessionId={session.id} word={modeWord} /> }] : []),
     { id: "worktree", label: "Worktree", rank: 5, rest: true, node: <Suspense fallback={null}><WorktreeChip session={session} /></Suspense> },
     // What the session cost, one figure; the tokens behind it are in its title and the Usage panel it opens.
     // The title is a tip under the pointer and the keyboard (lib/tips.ts), and steps aside while it shows: the

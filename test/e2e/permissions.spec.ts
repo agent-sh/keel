@@ -16,8 +16,16 @@ test("permission gate", async ({ page, request }) => {
   mkdirSync(ws, { recursive: true });
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.put("/api/permissions/settings", { data: { default_mode: "ask" } });
   await page.goto(`/s/${session.id}`);
   await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+  // The mode is chosen in the message box's row, beside the model, and the bar says nothing of it while it is the usual one.
+  const tools = page.getByTestId("composer-tools");
+  await expect(tools.getByTestId("permission-menu")).toBeVisible();
+  await expect(page.getByTestId("session-header").getByTestId("permission-menu")).toHaveCount(0);
+  await expect(page.getByTestId("head-mode")).toHaveCount(0);
+  const [mode, model] = [(await tools.getByTestId("permission-menu").boundingBox())!, (await tools.getByTestId("model-picker").boundingBox())!];
+  expect(mode.x + mode.width, "the mode stands before the model in the row").toBeLessThanOrEqual(model.x + 1);
 
   const say = async (text: string) => {
     await page.getByTestId("composer").fill(text);
@@ -71,7 +79,14 @@ test("permission gate", async ({ page, request }) => {
   await page.getByTestId("permission-menu").click();
   await page.getByTestId("mode-read-only").click();
   await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
+  // Out of the usual mode, the bar says so, and the word takes the owner to the menu.
+  await expect(page.getByTestId("head-mode")).toHaveText("Read only");
   await page.keyboard.press("Escape");
+  await expect(page.getByTestId("mode-ask")).toBeHidden();
+  await page.getByTestId("head-mode").click();
+  await expect(page.getByTestId("mode-ask")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("mode-ask")).toBeHidden();
   await say(ask("Run exactly this Bash command once and nothing else: touch gamma.txt. If it fails, do not retry; reply with one word: refused.", scriptBash("touch gamma.txt")));
   await endsAre(page, 3, 120_000);
   await expect(card).toHaveCount(0);
@@ -83,6 +98,7 @@ test("permission gate", async ({ page, request }) => {
   // 6. Deny with a reason: the model sees it.
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
   await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+  await expect(page.getByTestId("head-mode")).toHaveCount(0);
   await say(ask("Run exactly this Bash command once and nothing else: rm alpha.txt. If it is denied, do not retry; quote the reason you were given.", scriptBash("rm alpha.txt")));
   await expect(card).toBeVisible({ timeout: 60_000 });
   // The card is a named group: what it asks, with its command as the description.

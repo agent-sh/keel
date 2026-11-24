@@ -974,7 +974,6 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-stow-item { display: flex; width: 100%; align-items: center; min-height: 2.5rem; padding: 0 0.625rem; border-radius: var(--radius-md); text-align: left; font-size: var(--text-ui); color: var(--fg); outline: none; }
 /* One right edge: the bare branch name ends where the pills do. The list has room for the mode's name at any width. */
 .k-stow-slot .k-worktree-chip { padding-right: 0; }
-.k-stow-slot .k-permission-mode { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; white-space: nowrap; }
 /* Plain actions follow the controls, under a rule. */
 .k-stow-row + .k-stow-act { margin-top: 0.25rem; padding-top: 0.25rem; border-top: 1px solid var(--line); }
 .k-stow-item { gap: 0.625rem; }
@@ -1262,14 +1261,22 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
      away. The row then holds all its tools, and nothing scrolls or fades. (Past Stop and Send there is no
      room for the names: the model's showed as its first letters under the row's fade.) */
   .k-compose-tools[data-short][data-talk] .k-model-name { max-width: 4.5rem; }
-  .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-compose-lead { flex-shrink: 1; min-width: 0; }
+  /* The lead keeps the attach button, the mode's mark and a little of the model's name. The effort and
+     the context ring fold to their marks beside it, as they do while a turn runs: the row holds the mode, the model,
+     the effort and the context on one line, and a text size with no room for all scrolls it, never overlaps it. */
+  .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-compose-lead { flex-shrink: 1; min-width: 9.5rem; }
+  .k-compose-tools[data-short][data-talk]:not([data-busy]) :is(.k-effort-chev, .k-ctx-num) { display: none; }
+  .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-effort-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-model-pick { min-width: 0; }
   .k-compose-tools[data-busy] .k-compose-lead { display: contents; }
   .k-compose-tools[data-busy] .k-model-pick { order: 5; flex-shrink: 0; }
   .k-compose-tools[data-busy] .k-model-mark { display: block; }
-  .k-compose-tools[data-busy] :is(.k-model-chev, .k-effort-chev, .k-ctx-num) { display: none; }
-  .k-compose-tools[data-busy] :is(.k-model-name, .k-effort-name) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .k-compose-tools[data-busy] :is(.k-model-chev, .k-effort-chev, .k-ctx-num, .k-mode-chev, .k-mode-sandbox) { display: none; }
+  .k-compose-tools[data-busy] :is(.k-model-name, .k-effort-name, .k-mode-name) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .k-compose-tools[data-busy] .k-compose-scroll { padding-right: 0; mask-image: none; }
+  /* The mode's mark takes the room the attach button had: a phone's running row is Stop, the queue button, Send, the ring, and the
+     effort, the model and the mode, a finger each. The attach button is back when the turn ends (a paste or a drop still attaches). */
+  .k-compose-tools[data-busy] .k-attach { display: none; }
   .k-compose-tools[data-busy] .k-compose-send { gap: 0.125rem; }
   .k-station-head { padding: 0.625rem 0.875rem 0.5rem 1rem; }
   .k-station-title { font-size: var(--text-read); }
@@ -1617,7 +1624,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-set-table :is(th, td) { padding-inline: 0.5rem; }
   .k-set-table :is(th, td):first-child { padding-left: 1rem; }
   .k-set-table :is(th, td):last-child { padding-right: 1rem; }
-  .k-set-table td[data-grow] { min-width: 6rem; }
+  .k-set-table td[data-grow] { min-width: 9.5rem; }
 }
 
 /* ---------- Micro-interactions ---------- */

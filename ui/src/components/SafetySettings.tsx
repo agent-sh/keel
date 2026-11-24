@@ -27,7 +27,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
     api<PermSettings>("/api/permissions/settings").then(setPerm).catch(reportError);
     api<{ model: string | null }>("/api/reviews/settings").then((r) => setReviewModel(r.model)).catch(reportError);
   }, []);
-  const putPerm = (patch: Partial<PermSettings>) => api<PermSettings>("/api/permissions/settings", { method: "PUT", body: JSON.stringify(patch) }).then(setPerm).catch(reportError);
+  const putPerm = (patch: Partial<PermSettings>) => api<PermSettings>("/api/permissions/settings", { method: "PUT", body: JSON.stringify(patch) }).then((p) => { setPerm(p); safety.loadSettings().catch(reportError); }).catch(reportError);
   const sameAs = <span className="text-caption text-faint">the session's own model</span>;
 
   return (

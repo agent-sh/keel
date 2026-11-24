@@ -239,11 +239,15 @@ test.describe("on a phone", () => {
       await check("model menu");
       await page.keyboard.press("Escape");
       for (const menu of ["session-menu", "permission-menu", "panel-menu"]) {
+        // (The mode is in the message box's row, which shows its tools while the box is tapped: a tap elsewhere put them away.)
+        if (menu === "permission-menu") await pane.getByTestId("composer").tap();
         await pane.getByTestId(menu).first().tap();
         await expect(page.getByRole("menu").or(page.getByRole("dialog")).first()).toBeVisible();
         await check(menu);
         await page.keyboard.press("Escape");
         await expect(page.getByRole("menu").or(page.getByRole("dialog"))).toHaveCount(0);
+        // (A closed menu gives the focus back to its button a moment after it is gone: a tap in that moment lost its focus to it, and the next menu closed.)
+        await expect(pane.getByTestId(menu).first()).toBeFocused();
       }
       await pane.getByTestId("show-sidebar").tap();
       await expect(page.getByTestId("session-row").first()).toBeInViewport();

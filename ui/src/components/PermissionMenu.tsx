@@ -6,7 +6,6 @@ import { useEffect, useRef, useState } from "react";
 import { safety, useSafety, type ModeGroup, type ModeInfo, type SessionPerm } from "../lib/safety.ts";
 import { filterSaid } from "../lib/seccomp.ts";
 import { reportError } from "../lib/store.ts";
-import { useUI } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { Seg } from "./Seg.tsx";
 
@@ -27,19 +26,20 @@ function grouped(modes: ModeInfo[], groups: ModeGroup[]): { name: string; modes:
   return [...out, ...(rest.length ? [{ name: "Other", modes: rest }] : [])].filter((g) => g.modes.length);
 }
 
-// The session's permission mode and sandbox, in the session header.
-export function PermissionMenu({ sessionId }: { sessionId: string }) {
+// The session's permission mode and sandbox, in the message box's row beside the model, the effort and the
+// context (the box's own tools: what the next turn may do is chosen where it is asked for). On a phone the
+// row folds it to its mark, named for a screen reader and in its menu.
+export function PermissionMenu({ sessionId, openSignal = 0 }: { sessionId: string; openSignal?: number }) {
   const perm = useSafety((s) => s.perms[sessionId]);
   const modes = useSafety((s) => s.modes);
   const groups = useSafety((s) => s.modeGroups);
   const sandbox = useSafety((s) => s.sandbox);
   const filter = filterSaid(sandbox);
   const [grantsOpen, setGrantsOpen] = useState(false);
-  // /permissions with no mode opens this menu.
+  // /permissions with no mode opens this menu (in the box that has the focus: `openSignal` counts the asks).
   const [open, setOpen] = useState(false);
-  const signal = useUI((s) => s.permMenu);
-  const atMount = useRef(signal);
-  useEffect(() => { if (signal !== atMount.current) setOpen(true); }, [signal]);
+  const atMount = useRef(openSignal);
+  useEffect(() => { if (openSignal !== atMount.current) setOpen(true); }, [openSignal]);
   // The mode in use is whole in view as the menu opens. Where the list is longer than its room (large
   // text, a phone, a short window) it scrolls, and the mode in use, the tallest row with its whole
   // description, lay under the list's foot: cut, or out of sight for a mode further down. Measured in
@@ -80,17 +80,17 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
         <Popover.Trigger
           data-testid="permission-menu"
           className={cn(
-            "inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg data-popup-open:bg-hover",
+            "k-mode-pick inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui text-muted transition-colors hover:bg-hover hover:text-fg data-popup-open:bg-hover",
             perm.mode === "full-auto" && "text-warn",
           )}
         >
           <Icon className="size-3.5" />
-          <span data-testid="permission-mode" className="k-permission-mode max-sm:sr-only">{mode?.name ?? perm.mode}</span>
-          {perm.sandbox !== "off" && <span className="rounded bg-accent-soft px-1 text-micro text-accent">sandbox</span>}
-          <ChevronDown className="size-3 opacity-60" />
+          <span data-testid="permission-mode" className="k-mode-name max-w-32 truncate max-sm:sr-only">{mode?.name ?? perm.mode}</span>
+          {perm.sandbox !== "off" && <span className="k-mode-sandbox rounded bg-accent-soft px-1 text-micro text-accent max-sm:hidden">sandbox</span>}
+          <ChevronDown className="k-mode-chev size-3 opacity-60 max-sm:hidden" />
         </Popover.Trigger>
         <Popover.Portal>
-          <Popover.Positioner align="end" sideOffset={6} className="z-50">
+          <Popover.Positioner side="top" align="start" sideOffset={6} className="z-50">
             <Popover.Popup ref={popup} className="max-h-[var(--available-height)] w-[min(22rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] overflow-y-auto rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
               <Popover.Title className="px-2 pt-1 pb-1.5 k-label">Permissions</Popover.Title>
               {/* Grouped by who decides; within a group, from asking most to asking least. Each row says

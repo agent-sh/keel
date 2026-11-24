@@ -267,11 +267,11 @@ test("the focus goes to the message box when a request or Stop goes away", async
 
 // A session that fills the toolbar: it runs in a worktree, has a loop in the
 // background and a second machine to move to, beside the actions every session has.
-const SECONDARY = ["machine-chip", "background-button", "worktree-chip", "permission-menu", "snooze-button", "header-action-export", "header-action-voice"];
+const SECONDARY = ["machine-chip", "background-button", "worktree-chip", "snooze-button", "header-action-export", "header-action-voice"];
 // The tools that have a resting place in the row, the one that stays longest first. The rest are in
 // the session's menu at any width.
-const RANKED = ["permission-menu", "worktree-chip"];
-const OPENS: Record<string, string> = { "permission-menu": "mode-full-auto", "worktree-chip": "worktree-popup", "machine-chip": "move-popup", "background-button": "background-popup", "snooze-button": "snooze-menu" };
+const RANKED = ["worktree-chip"];
+const OPENS: Record<string, string> = { "worktree-chip": "worktree-popup", "machine-chip": "move-popup", "background-button": "background-popup", "snooze-button": "snooze-menu" };
 async function crowded(request: import("@playwright/test").APIRequestContext, model: string) {
   const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `toolbar-${Date.now()}`);
   mkdirSync(repo, { recursive: true });
@@ -296,7 +296,9 @@ async function crowded(request: import("@playwright/test").APIRequestContext, mo
 // screen, and every action the session has is in the row or in the More menu.
 async function reachable(page: Page, station: Locator) {
   const header = station.getByTestId("session-header");
-  await expect(station.getByTestId("permission-menu").or(page.getByTestId("header-more").getByTestId("permission-menu"))).toBeAttached();
+  // The permission mode is in the message box's row, beside the model; the bar holds no control of it.
+  await expect(station.getByTestId("composer-tools").getByTestId("permission-menu")).toBeAttached();
+  await expect(header.getByTestId("permission-menu")).toHaveCount(0);
   await expect(station.getByTestId("session-menu")).toBeInViewport({ ratio: 1 });
   await expect(station.getByTestId("panel-menu")).toBeInViewport({ ratio: 1 });
   expect(await header.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
@@ -368,23 +370,21 @@ test.describe("a crowded toolbar", () => {
       await page.touchscreen.tap(word.x + word.width / 2, word.y + word.height / 2);
       await expect(worktree).toBeHidden();
       await expect(menu).toBeHidden();
-      // The permission modes open from wherever the control is.
-      if (phone.inMenu.includes("permission-menu")) await more.tap();
-      await (phone.inMenu.includes("permission-menu") ? menu : station).getByTestId("permission-menu").tap();
+      // The permission modes open from the message box's row (a phone's resting box shows its tools on a tap).
+      await station.getByTestId("composer-open").tap();
+      await station.getByTestId("permission-menu").tap();
       await expect(page.getByTestId("mode-full-auto")).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(page.getByTestId("mode-full-auto")).toBeHidden();
-      if (phone.inMenu.includes("permission-menu")) await page.keyboard.press("Escape");
       await expect(menu).toBeHidden();
 
-      // Larger text: whatever folds, /permissions opens the modes where the control is (in the menu, not
-      // detached from it), and a pick keeps their popup open.
+      // Larger text: /permissions opens the modes where the control is (in the box's row), and a pick keeps their popup open.
       await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
       await page.reload();
       await expect(more).toBeVisible();
       const large = await reachable(page, station);
       await shoot(page, "workbench-toolbar-390-large-head");
-      const where = large.inMenu.includes("permission-menu") ? menu : station;
+      const where = station;
       await station.getByTestId("composer").fill("/permissions");
       await page.keyboard.press("Enter");
       if (where === menu) await expect(menu).toBeVisible();

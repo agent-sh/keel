@@ -116,7 +116,7 @@ test("a set cap rests below the permission mode in the bar once half of it is sp
     for (const width of [1050, 1366, 1920]) {
       await page.setViewportSize({ width, height: 1040 });
       await page.goto(`/s/${session.id}`);
-      await expect(header.getByTestId("permission-menu")).toBeVisible();
+      await expect(header.getByTestId("head-mode")).toBeVisible();
       await page.mouse.move(width / 2, 900);
       await expect(header.getByTestId("cap-chip"), `at ${width} a cap far from its limit is not in the bar`).toHaveCount(0);
       await header.getByTestId("session-menu").click();
@@ -130,13 +130,13 @@ test("a set cap rests below the permission mode in the bar once half of it is sp
     for (const width of [1050, 1366, 1920]) {
       await page.setViewportSize({ width, height: 1040 });
       await page.goto(`/s/${session.id}`);
-      await expect(header.getByTestId("permission-menu")).toBeVisible();
+      await expect(header.getByTestId("head-mode")).toBeVisible();
       await page.mouse.move(width / 2, 900);
       // The mode is at rest; a chip that has room is beside it, after it.
       const chip = header.getByTestId("cap-chip");
       if (width > 1050) await expect(chip, `at ${width} a set cap rests in the bar`).toBeVisible();
       if (await chip.count()) {
-        const [mode, cap] = [(await header.getByTestId("permission-menu").boundingBox())!, (await chip.boundingBox())!];
+        const [mode, cap] = [(await header.getByTestId("head-mode").boundingBox())!, (await chip.boundingBox())!];
         expect(cap.x, `at ${width} the chip is after the mode`).toBeGreaterThan(mode.x);
       } else {
         // No room: it is in the session's menu, and the mode is still at rest.

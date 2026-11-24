@@ -1,6 +1,6 @@
 import { Menu } from "@base-ui/react/menu";
 import { ArrowUp, ChevronDown, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
-import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import { lazy, memo, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { completedPrompt, loadMcpPrompts } from "../lib/tools-ui.ts";
@@ -38,7 +38,12 @@ import { SETTLE_MS } from "../lib/settle.ts";
 // The box's tools draw again only when what they show changes, not with every render of the box (a
 // turn that starts or ends, a key): a field drawn again is written again (React sets its name and
 // type), and a list of panes that follow busy sessions changed many times a second for nothing.
+// The permission menu's parts (Base UI popover, dialog, switch) load after the page; its place in the row is kept meanwhile.
+const PermissionMenu = lazy(() => import("./PermissionMenu.tsx").then((m) => ({ default: m.PermissionMenu })));
 const Pickers = {
+  Mode: memo(function Mode({ sessionId, openSignal }: { sessionId: string; openSignal: number }) {
+    return <Suspense fallback={<span className="k-mode-pick inline-block h-8 w-9 shrink-0" aria-hidden="true" />}><PermissionMenu sessionId={sessionId} openSignal={openSignal} /></Suspense>;
+  }),
   Model: memo(ModelPicker), Effort: memo(EffortPicker), Speed: memo(SpeedPicker), Fallback: memo(FallbackChip), Limit: memo(LimitChip), Meter: memo(ContextMeter),
 };
 const FileInput = memo(function FileInput({ at, take }: { at: { current: HTMLInputElement | null }; take: { current: (files: File[]) => void } }) {
@@ -206,6 +211,14 @@ const SessionComposer = memo(function SessionComposer({
     if (effortSignal !== lastEffort.current && focus) setEffortOpen((n) => n + 1);
     lastEffort.current = effortSignal;
   }, [effortSignal]);
+  // /permissions, or the word in the top bar, opens the mode menu in the box that has the focus; a phone's resting box shows its tools first.
+  const modeSignal = useUI((s) => s.permMenu);
+  const [modeOpen, setModeOpen] = useState(0);
+  const lastMode = useRef(modeSignal);
+  useEffect(() => {
+    if (modeSignal !== lastMode.current && focus) { setTapped(true); setModeOpen((n) => n + 1); }
+    lastMode.current = modeSignal;
+  }, [modeSignal]);
   const seed = useUI((s) => (s.composerSeed && s.composerSeed.session === session?.id ? s.composerSeed : null)); // only this box's
   const connected = useStore((s) => s.connected);
   // The desktop app's words for the daemon away, where its title bar says them (Stale.tsx).
@@ -1127,11 +1140,13 @@ const SessionComposer = memo(function SessionComposer({
               aria-label="Attach images or files"
               data-testid="attach"
               onClick={() => fileInput.current?.click()}
-              className="grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
+              className="k-attach grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
             >
               <Paperclip className="size-4" />
             </button>
             <FileInput at={fileInput} take={takeFiles} />
+            {/* The mode, the model, the effort and the context stand in one row: what the next turn may do is read where it is asked for. */}
+            {sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
             <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />
           </span>
           {sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}
