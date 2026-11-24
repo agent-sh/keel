@@ -273,9 +273,15 @@ export function valuesOf(parts: Simple[], runs: Run[], home?: string, hist?: Map
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]!, prog = name(runs[i]!.words[0]);
     if (/^(eval|source|\.|declare|typeset|local)$/.test(prog) || (p.dyn && BINDS.test(prog))) { hist?.clear(); return out; }
+    // A name the line can set where its words do not show it: a readonly name (a later assignment fails), a trap or the
+    // prompt command (code that runs between the words).
+    if (hist && (prog === "readonly" || /(^|[\s;&|(])(trap|PROMPT_COMMAND)\b/.test(p.text))) { hist.clear(); return out; }
     for (const [k, w] of p.words.entries()) {
       const m = /^([A-Za-z_][A-Za-z0-9_]*)(\+?=|\[)/.exec(w);
-      if (m) {
+      // `printf -vNAME` sets NAME: a place of its own, with no value known after it.
+      const v = hist ? /^-v([A-Za-z_][A-Za-z0-9_]*)$/.exec(w) : null;
+      if (v) { const l = hist!.get(v[1]!); const e = { at: i, k, text: null }; if (l) l.push(e); else hist!.set(v[1]!, [e]); }
+      else if (m) {
         count.set(m[1]!, (count.get(m[1]!) ?? 0) + 1);
         if (hist) { const l = hist.get(m[1]!); const e = { at: i, k, text: null }; if (l) l.push(e); else hist.set(m[1]!, [e]); }
       }

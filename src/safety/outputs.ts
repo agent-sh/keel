@@ -39,8 +39,10 @@ export function outputsOf(words: string[]): { to: string; at: number }[] {
     for (let k = 1; k < words.length; k++) {
       const a = words[k]!;
       if (a === "--") break;
-      if (a.startsWith("--output=")) out.push({ to: a.slice(9), at: k });
-      else if (a === "--output" || /^-[a-zA-Z]*o$/.test(a)) { if (words[k + 1] !== undefined) out.push({ to: words[k + 1]!, at: k + 1 }); }
+      // (sort takes any abbreviation of a long option that only one option starts with: `--o`, `--out=`, `--outp`.)
+      const long = /^--o(?:u(?:t(?:p(?:u(?:t)?)?)?)?)?(=|$)/.exec(a);
+      if (long?.[1] === "=") out.push({ to: a.slice(a.indexOf("=") + 1), at: k });
+      else if (long || /^-[a-zA-Z]*o$/.test(a)) { if (words[k + 1] !== undefined) out.push({ to: words[k + 1]!, at: k + 1 }); }
       else if (/^-o./.test(a)) out.push({ to: a.slice(2), at: k });
     }
   }
