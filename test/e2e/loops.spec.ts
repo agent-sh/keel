@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, scriptBash, shoot, inHead } from "./shots.ts";
+import { HAIKU, scriptBash, shoot, inHead, leaveHead } from "./shots.ts";
 
 // Feature: `/loop 10m <prompt>` in the composer makes a loop that runs now and
 // again on its interval; the Loops panel lists it with its run history; it can
@@ -22,6 +22,7 @@ test("loops: /loop, history, pause, run now, calendar", async ({ page, request }
   await expect(page.getByTestId("bg-loop")).toContainText("every 10 minutes");
   await shoot(page, "loops-02-background");
   await page.keyboard.press("Escape");
+  await leaveHead(page);
 
   await page.getByTestId("loops-button").click();
   await expect(page.getByTestId("loops-panel")).toBeVisible();

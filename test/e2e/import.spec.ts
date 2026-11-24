@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renam
 import { join } from "node:path";
 import type { APIRequestContext } from "./isolate.ts";
 import { emptyKeel } from "./peer.ts";
-import { HAIKU, shoot, inHead } from "./shots.ts";
+import { HAIKU, shoot, inHead, leaveHead } from "./shots.ts";
 
 // The Claude Code session gains a question and an answer.
 function growClaude(path: string, cwd: string, id: string) {
@@ -748,6 +748,7 @@ test("Update in a copy's Export dialog updates that copy", async ({ page, reques
   await dialog.getByTestId("export-update").click();
   await expect(dialog.getByTestId("export-origin")).not.toContainText("gone on since");
   await page.keyboard.press("Escape");
+  await leaveHead(page);
   // The page shows what the copy gained without a reload.
   await expect(page.getByTestId("transcript").getByText("Yellow.")).toBeVisible();
   expect(await texts(older)).toEqual([`Name a fruit ${tag}`, "Quince.", "And its colour?", "Yellow."]);

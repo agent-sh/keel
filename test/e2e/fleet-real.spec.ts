@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeSite } from "./fixtures/dev-site.ts";
-import { HAIKU, openPanel, shoot, inHead } from "./shots.ts";
+import { HAIKU, openPanel, shoot, inHead, leaveHead } from "./shots.ts";
 
 // Feature: the fleet on real machines. Each machine named in KEEL_REAL_MACHINES
 // (names of enabled machines, reached over ssh, each running its own keel-bun
@@ -71,6 +71,7 @@ test("fleet on real machines: linked, a tool there, a move there and back, a ses
       await page.locator(`[data-testid="move-to"][data-machine="${m.id}"]`).click();
       await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 120_000 });
       await page.keyboard.press("Escape");
+      await leaveHead(page);
       await expect(page.getByTestId("machine-chip")).toContainText(m.name);
       await page.getByTestId("composer").fill("Run this with the Bash tool, one call: echo three >> a.txt && cat a.txt && uname -s. Then reply with the output only.");
       await page.keyboard.press("Enter");
@@ -86,6 +87,7 @@ test("fleet on real machines: linked, a tool there, a move there and back, a ses
       await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done");
       await shoot(page, `fleet-real-03-moved-back-${m.facts.os}`);
       await page.keyboard.press("Escape");
+      await leaveHead(page);
       expect(readFileSync(`${HOME_DIR}/a.txt`, "utf8")).toBe("one\ntwo\nthree\n");
     }
 

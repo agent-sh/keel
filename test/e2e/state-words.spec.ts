@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from ".
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { exited, ownDaemon } from "./peer.ts";
-import { openPanel, shoot, inHead } from "./shots.ts";
+import { openPanel, shoot, inHead, leaveHead } from "./shots.ts";
 
 // Feature: one word per state on every surface. A coordinator with eight
 // agents, one in each state, reads the same on the agents' rows under it, on
@@ -131,6 +131,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     for (const text of said) expect(flat(text)).not.toMatch(/\b(Running|running|Asks you|asks you|Finished)\b/);
     await shoot(page, "state-words-01-coordinator");
     await page.keyboard.press("Escape");
+    await leaveHead(page);
 
     // And in each agent's own pane: the head says the same word.
     for (const l of LANES) {

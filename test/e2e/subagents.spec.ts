@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HAIKU, shoot, SCRIPTED, inHead } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED, inHead, leaveHead } from "./shots.ts";
 
 // Feature: the model starts two background subagents in one step; they run as
 // child sessions shown under the parent, live; their reports come back to the
@@ -49,6 +49,7 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   await expect(page.getByTestId("bg-agent")).toHaveCount(2);
   await shoot(page, "agents-03-background");
   await page.keyboard.press("Escape");
+  await leaveHead(page);
 
   await page.getByTestId("child-session").first().click();
   await expect(page.getByTestId("task-notice")).toBeVisible();

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
-import { ask, HAIKU, shoot, SCRIPTED, inHead } from "./shots.ts";
+import { ask, HAIKU, shoot, SCRIPTED, inHead, leaveHead } from "./shots.ts";
 
 // Feature: zero-token waits. The model schedules a timer wait and a monitor;
 // the session is parked (no model calls) until they fire, then woken with the
@@ -29,6 +29,7 @@ test("waits and monitors wake the session", async ({ page, request }) => {
   await expect(page.getByTestId("bg-wait")).toContainText("fires on the next check");
   await shoot(page, "waits-01-parked");
   await page.keyboard.press("Escape");
+  await leaveHead(page);
   const calls = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "assistant").length;
 
   await expect(page.getByTestId("wake-notice")).toBeVisible({ timeout: 30_000 });

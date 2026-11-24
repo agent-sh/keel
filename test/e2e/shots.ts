@@ -109,3 +109,10 @@ export async function inHead(page: Page, id: string): Promise<Locator> {
   await tool.waitFor({ state: "visible" });
   return tool;
 }
+// After a control opened from the session's menu was closed (Escape), the menu itself is closed too
+// (a menu over the page takes every press outside it until it closes).
+export async function leaveHead(page: Page) {
+  const menu = page.getByTestId("header-more");
+  for (let i = 0; i < 3 && (await menu.isVisible()); i++) await page.keyboard.press("Escape");
+  await menu.waitFor({ state: "hidden" });
+}

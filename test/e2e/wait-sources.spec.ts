@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { HAIKU, shoot, SCRIPTED, inHead } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED, inHead, leaveHead } from "./shots.ts";
 
 // Feature: waits on what lives outside the machine. A pull request's checks
 // (gh with the owner's login, so the gate asks first) wake the session once
@@ -52,6 +52,7 @@ test("pull request checks and a socket feed wake the session", async ({ page, re
   await expect(page.getByTestId("bg-wait")).toContainText(`Checks of ${repo}#${n + 1}`);
   await shoot(page, "wait-sources-02-parked");
   await page.keyboard.press("Escape");
+  await leaveHead(page);
 
   // The running check fails: the wait fires and names it.
   pr(repo, n + 1, { state: "OPEN", statusCheckRollup: [run("lint", "COMPLETED", "SUCCESS"), run("integration", "COMPLETED", "FAILURE")] });

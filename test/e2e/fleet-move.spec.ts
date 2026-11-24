@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { basename } from "node:path";
-import { ask, HAIKU, scriptBash, shoot, inHead } from "./shots.ts";
+import { ask, HAIKU, scriptBash, shoot, inHead, leaveHead } from "./shots.ts";
 
 // Feature: moving a session to another machine with its git state and back.
 // Its uncommitted change travels, the model works on it over there, and coming
@@ -40,6 +40,7 @@ test("fleet move: there with its git state, work there, back home", async ({ pag
     await expect(page.getByTestId("move-progress")).toContainText("Last move");
     await shoot(page, "fleet-move-01-there");
     await page.keyboard.press("Escape");
+    await leaveHead(page);
     await expect(page.getByTestId("machine-chip")).toContainText("devbox");
     await expect(page.getByTestId("note").filter({ hasText: "Moved from" })).toBeVisible();
     // Its folder over there reads as the repository, as it did here.
@@ -61,6 +62,7 @@ test("fleet move: there with its git state, work there, back home", async ({ pag
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done");
     await shoot(page, "fleet-move-02-back");
     await page.keyboard.press("Escape");
+    await leaveHead(page);
     expect(readFileSync(`${HOME_DIR}/a.txt`, "utf8")).toBe("one\ntwo\nthree\n");
     expect(git("status", "--short")).toContain("M a.txt");
 
@@ -237,6 +239,7 @@ test("fleet move: a queue the owner held stays held after the move", async ({ pa
     await page.locator(`[data-testid="move-to"][data-machine="${first.id}"]`).click();
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
     await page.keyboard.press("Escape");
+    await leaveHead(page);
     await expect(page.getByTestId("machine-chip")).toContainText(first.name);
 
     // Moved: the same prompts wait, still held, and none of them started.

@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { openPanel, shoot, inHead } from "./shots.ts";
+import { openPanel, shoot, inHead, leaveHead } from "./shots.ts";
 
 // Feature: ssh machines and remote sessions. A host of the ssh configuration
 // (KEEL_SSH_E2E_HOST) with its aliases as routes, reached and enabled with no
@@ -111,6 +111,7 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 120_000 });
     await shoot(page, "remote-06-moved");
     await page.keyboard.press("Escape");
+    await leaveHead(page);
     await expect(page.getByTestId("machine-chip")).toContainText(HOST);
     const ws = (await (await request.get(`/api/sessions/${mv.id}`)).json()).session.workspace;
     expect(there(`cat ${ws}/a.txt`)).toBe("one\ntwo\n");
@@ -119,6 +120,7 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
     await page.locator('[data-testid="move-to"][data-machine="local"]').click();
     await expect.poll(() => readFileSync(`${LOCAL}/a.txt`, "utf8"), { timeout: 120_000 }).toBe("one\ntwo\nthree\n");
     await page.keyboard.press("Escape");
+    await leaveHead(page);
     await expect(page.getByTestId("machine-chip")).not.toContainText(HOST);
 
     // Switched off once no session uses it: back among the hosts, its helper ended.

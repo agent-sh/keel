@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { openPanel, remoteHeaders, shoot, inHead } from "./shots.ts";
+import { openPanel, remoteHeaders, shoot, inHead, leaveHead } from "./shots.ts";
 
 // Feature: a session's agent slots count the agents that work. An agent that
 // waits on a wait of its own holds none; an agent asked for while every slot
@@ -88,6 +88,7 @@ test("agents that wait hold no slot, and one asked for or woken over the limit w
     await expect(row("Busy 1").getByTestId("bg-agent-state")).toHaveText(/Working/);
     await shoot(page, "agents-slot-line");
     await page.keyboard.press("Escape");
+    await leaveHead(page);
 
     // A slot frees: the wake goes first, then the later one.
     await expect.poll(async () => (await byTitle("Later"))?.status, { timeout: 90_000 }).toBe("completed");
