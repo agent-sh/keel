@@ -1,6 +1,6 @@
 // Keel's design system on the phone, the workbench's "Bridge": steel and ink.
-// Color means state and nothing else: violet is the owner (needs you), amber is
-// work, red is a failure, sea green is done. Buttons are ink. Martian Mono at a
+// Color means state and nothing else, the page's one palette (Palette.kt): yellow
+// needs you, blue works, red failed, green done. Buttons are ink. Martian Mono at a
 // narrow width sets what a glance reads (titles, states, times); Plex Sans sets
 // what the agent writes; JetBrains Mono sets code. The values are the
 // workbench's tokens (ui/src/styles.css) in sRGB.
@@ -33,29 +33,42 @@ data class Tokens(
     val fg: Color, val muted: Color, val faint: Color, val line: Color, val lineStrong: Color,
     val ink: Color, val inkFg: Color, val inkSoft: Color, val ownerInk: Color,
     val danger: Color, val dangerSoft: Color, val code: Color,
+    // A state's mark (a dot, an icon, an edge: 3:1 on every surface) and its word (the -Ink one: text, 4.5:1).
     val need: Color, val work: Color, val fail: Color, val done: Color, val idle: Color,
-    val needSoft: Color, val workSoft: Color,
+    val needInk: Color, val workInk: Color, val failInk: Color, val doneInk: Color,
+    /** The yellow fill (a button, a badge) and the ink on it. */
+    val needFill: Color, val needOn: Color,
+    /** News: the dot at a row's end. */
+    val unread: Color,
+    val needSoft: Color,
     val sea: Color = Color(0xFF0E6A80), val hull: Color = Color(0xFFF4FAF9),
 )
 
+private fun surf(name: String, dark: Boolean) = Color(StatePalette.surface(name, dark))
+private fun pal(name: String, dark: Boolean) = Color(StatePalette.of(name, dark))
+
 val Light = Tokens(
     dark = false,
-    bg = Color(0xFFEBEEF1), panel = Color(0xFFDFE3E8), raised = Color(0xFFF9FAFB), sunken = Color(0xFFE4E8EC), hover = Color(0x99D3D8DE),
+    bg = surf("bg", false), panel = surf("panel", false), raised = surf("raised", false), sunken = surf("sunken", false), hover = Color(0x99D3D8DE),
     fg = Color(0xFF11161F), muted = Color(0xFF464E58), faint = Color(0xFF626A73), line = Color(0xFFCCD1D7), lineStrong = Color(0xFFABB2BA),
     ink = Color(0xFF11161F), inkFg = Color(0xFFF3F5F8), inkSoft = Color(0xFFD5DBE3), ownerInk = Color(0xFF382F5E),
     danger = Color(0xFFCC2827), dangerSoft = Color(0xFFFFE8E6), code = Color(0xFFE7EAED),
-    need = Color(0xFF773CD6), work = Color(0xFFCB7300), fail = Color(0xFFCC2827), done = Color(0xFF26795F), idle = Color(0xFF7A8189),
-    needSoft = Color(0xFFEEE7FB), workSoft = Color(0xFFF8EBD9),
+    need = pal("--st-need", false), work = pal("--st-work", false), fail = pal("--st-fail", false), done = pal("--st-done", false), idle = pal("--st-idle", false),
+    needInk = pal("--st-need-ink", false), workInk = pal("--st-work-ink", false), failInk = pal("--st-fail-ink", false), doneInk = pal("--st-done-ink", false),
+    needFill = pal("--st-need-fill", false), needOn = pal("--st-need-on", false), unread = pal("--dot-unread", false),
+    needSoft = pal("--st-need-fill", false).copy(alpha = 0.22f),
 )
 
 val Dark = Tokens(
     dark = true,
-    bg = Color(0xFF12181E), panel = Color(0xFF0C1117), raised = Color(0xFF181F27), sunken = Color(0xFF0E1319), hover = Color(0x8C272E38),
+    bg = surf("bg", true), panel = surf("panel", true), raised = surf("raised", true), sunken = surf("sunken", true), hover = Color(0x8C272E38),
     fg = Color(0xFFE4E8ED), muted = Color(0xFFA5ACB4), faint = Color(0xFF80878F), line = Color(0xFF262C33), lineStrong = Color(0xFF3C434C),
     ink = Color(0xFFE4E8ED), inkFg = Color(0xFF11161D), inkSoft = Color(0xFF272E38), ownerInk = Color(0xFFC8B7FF),
     danger = Color(0xFFFA695E), dangerSoft = Color(0xFF431F1D), code = Color(0xFF0D1218),
-    need = Color(0xFFB492FF), work = Color(0xFFF8AC3D), fail = Color(0xFFFA695E), done = Color(0xFF6EBDA0), idle = Color(0xFF6C727A),
-    needSoft = Color(0xFF241D38), workSoft = Color(0xFF2B2216),
+    need = pal("--st-need", true), work = pal("--st-work", true), fail = pal("--st-fail", true), done = pal("--st-done", true), idle = pal("--st-idle", true),
+    needInk = pal("--st-need-ink", true), workInk = pal("--st-work-ink", true), failInk = pal("--st-fail-ink", true), doneInk = pal("--st-done-ink", true),
+    needFill = pal("--st-need-fill", true), needOn = pal("--st-need-on", true), unread = pal("--dot-unread", true),
+    needSoft = pal("--st-need-fill", true).copy(alpha = 0.16f),
 )
 
 /** A diff's tints, as the workbench draws them (ui/src/styles.css, .k-diff-line): added on done, removed on danger. */
@@ -64,6 +77,11 @@ val Tokens.delTint get() = dangerSoft.copy(alpha = 0.85f)
 
 fun Tokens.of(s: State): Color = when (s) {
     State.NEEDS -> need; State.WORKING -> work; State.FAILED -> fail; State.DONE -> done; State.STOPPED, State.IDLE -> idle
+}
+
+/** The state's word color: the mark's own hue, dark enough to read as text. A state at rest reads in the muted text color. */
+fun Tokens.inkOf(s: State): Color = when (s) {
+    State.NEEDS -> needInk; State.WORKING -> workInk; State.FAILED -> failInk; State.DONE -> doneInk; State.STOPPED, State.IDLE -> muted
 }
 
 @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)

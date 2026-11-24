@@ -153,7 +153,7 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
             else {
                 if (c.description.isNotBlank()) { Txt(c.description, T.small, k.muted); Spacer(Modifier.height(8.dp)) }
                 // Why it is asked, where it runs, what in the text can mislead, that only its start is kept.
-                for (n in c.notes) { Txt(n, T.small, k.need, Modifier.semantics { contentDescription = "note-${c.id}" }); Spacer(Modifier.height(6.dp)) }
+                for (n in c.notes) { Txt(n, T.small, k.needInk, Modifier.semantics { contentDescription = "note-${c.id}" }); Spacer(Modifier.height(6.dp)) }
                 // The whole request, drawn left to right in the order it is written. A held one gets more room to read in.
                 if (c.shown.isNotBlank()) Box(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.code).border(1.dp, k.line, RoundedCornerShape(S.r))

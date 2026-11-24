@@ -87,9 +87,9 @@ private fun Counts(added: Int, removed: Int) {
     val k = k()
     Row {
         // A count of none is quiet: the eye goes to what changed.
-        Txt("+$added", T.meta, if (added > 0) k.done else k.faint)
+        Txt("+$added", T.meta, if (added > 0) k.doneInk else k.faint)
         Spacer(Modifier.width(6.dp))
-        Txt("−$removed", T.meta, if (removed > 0) k.fail else k.faint)
+        Txt("−$removed", T.meta, if (removed > 0) k.failInk else k.faint)
     }
 }
 
@@ -125,9 +125,9 @@ private fun TurnHead(t: ChangeTurn) {
 private fun FileRow(f: FileChange, onOpen: () -> Unit) {
     val k = k()
     val (word, color) = when (f.status.take(1)) {
-        "A" -> "A" to k.done
-        "D" -> "D" to k.fail
-        else -> f.status.take(1).ifBlank { "M" } to k.work
+        "A" -> "A" to k.doneInk
+        "D" -> "D" to k.failInk
+        else -> f.status.take(1).ifBlank { "M" } to k.workInk
     }
     Row(
         Modifier.fillMaxWidth().press(onOpen).semantics { contentDescription = "file-${f.path}" }.padding(horizontal = S.lg, vertical = 10.dp),
@@ -186,7 +186,7 @@ private fun Line(l: DiffLine, digits: Int) {
             Txt((l.new?.toString() ?: "").padStart(digits), num, k.faint)
         }
         Row(Modifier.weight(1f).padding(start = 6.dp, end = S.md)) {
-            Txt(when (l.kind) { '+' -> "+"; '-' -> "−"; else -> " " }, T.code, if (l.kind == '+') k.done else if (l.kind == '-') k.fail else k.faint)
+            Txt(when (l.kind) { '+' -> "+"; '-' -> "−"; else -> " " }, T.code, if (l.kind == '+') k.doneInk else if (l.kind == '-') k.failInk else k.faint)
             Spacer(Modifier.width(6.dp))
             // As written: no ligature turns => into an arrow in a diff.
             Txt(l.text, T.code.copy(fontFeatureSettings = "liga 0, calt 0"), k.fg, Modifier.weight(1f))

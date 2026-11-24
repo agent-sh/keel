@@ -114,11 +114,11 @@ private fun AgentLine(r: AgentRow, s: State, since: Double?, now: Double, onOpen
                 c.stateWord.isNotBlank() -> c.stateWord
                 else -> s.word
             }
-            Txt(line, T.meta, if (s == State.FAILED) k.fail else k.muted, maxLines = 1)
+            Txt(line, T.meta, if (s == State.FAILED) k.failInk else k.muted, maxLines = 1)
         }
         Spacer(Modifier.width(S.sm))
         Column(horizontalAlignment = Alignment.End) {
-            Txt(if (s == State.WORKING && since != null) elapsed(since, now) else ago(c.updated, now), T.meta, if (s == State.WORKING) k.work else k.faint)
+            Txt(if (s == State.WORKING && since != null) elapsed(since, now) else ago(c.updated, now), T.meta, if (s == State.WORKING) k.workInk else k.faint)
             if (r.below > 0) Txt("${r.below} below", T.meta, k.faint)
         }
     }

@@ -91,7 +91,7 @@ fun LandingCardView(act: androidx.fragment.app.FragmentActivity, c: LandCard) {
             }
             if (c.missing.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
-                Txt("Missing: ${c.missing.joinToString("; ")}", T.small, k.need, Modifier.semantics { contentDescription = "land-missing-${c.key}" })
+                Txt("Missing: ${c.missing.joinToString("; ")}", T.small, k.needInk, Modifier.semantics { contentDescription = "land-missing-${c.key}" })
             }
             Spacer(Modifier.height(14.dp))
             if (back) Column(verticalArrangement = Arrangement.spacedBy(S.sm)) {

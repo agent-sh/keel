@@ -146,8 +146,8 @@ fun TabBar(active: Int) {
                         Box(Modifier.size(22.dp)) {
                             KIcon(icon, if (on) k.fg else k.faint, 22.dp)
                             if (i == 1 && open > 0) Box(
-                                Modifier.wrapContentSize(Alignment.TopStart, unbounded = true).offset(x = 14.dp, y = (-6).dp).clip(RoundedCornerShape(S.rPill)).background(k.need).padding(horizontal = 5.dp, vertical = 1.dp),
-                            ) { Txt("$open", T.label, if (k.dark) k.bg else k.raised) }
+                                Modifier.wrapContentSize(Alignment.TopStart, unbounded = true).offset(x = 14.dp, y = (-6).dp).clip(RoundedCornerShape(S.rPill)).background(k.needFill).padding(horizontal = 5.dp, vertical = 1.dp),
+                            ) { Txt("$open", T.label, k.needOn) }
                         }
                         Spacer(Modifier.height(4.dp))
                         Txt(label, T.label.copy(fontSize = size), if (on) k.fg else k.faint, maxLines = 1)

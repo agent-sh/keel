@@ -108,9 +108,9 @@ fun UsageScreen() {
                     Row {
                         Stat("Turns", "${d.runsToday}", k.fg, Modifier.weight(1f))
                         val f = d.failuresToday
-                        Stat("Failed runs", "$f", if (f > 0) k.fail else k.fg, Modifier.weight(1f))
+                        Stat("Failed runs", "$f", if (f > 0) k.failInk else k.fg, Modifier.weight(1f))
                         val w = d.cards.size
-                        Stat("Waiting", "$w", if (w > 0) k.need else k.fg, Modifier.weight(1f))
+                        Stat("Waiting", "$w", if (w > 0) k.needInk else k.fg, Modifier.weight(1f))
                     }
                 }
             }
@@ -201,7 +201,7 @@ fun SettingsScreen(act: MainActivity) {
                         Txt("THIS PHONE", T.label, k.muted)
                         me?.device?.takeIf { it.isNotBlank() }?.let { Kv("Paired as", it) }
                         Kv("Device", Prefs.deviceId?.take(12).orEmpty(), mono = true)
-                        if (Prefs.noLock) Notice("This phone has no screen lock, so approvals are once only and sessions that run unasked cannot be prompted from it. Set a screen lock, then pair again.", k.work)
+                        if (Prefs.noLock) Notice("This phone has no screen lock, so approvals are once only and sessions that run unasked cannot be prompted from it. Set a screen lock, then pair again.", k.need)
                         else Txt("Approvals ask for your fingerprint or screen lock, and the daemon checks that signature.", T.small, k.muted)
                     }
                 }

@@ -286,11 +286,11 @@ private fun MsgView(act: MainActivity, m: Msg, card: dev.avifenesh.keel.Card?, o
             val s = when { m.outcome == "error" || m.content.startsWith("Failed") -> State.FAILED; m.outcome.isNotBlank() -> State.STOPPED; else -> State.IDLE }
             StateMark(s, 8.dp)
             Spacer(Modifier.width(8.dp))
-            Txt(m.content, T.meta, if (s == State.FAILED) k.fail else k.muted, maxLines = 4)
+            Txt(m.content, T.meta, if (s == State.FAILED) k.failInk else k.muted, maxLines = 4)
         }
         m.mine -> Row(Modifier.fillMaxWidth().padding(start = 56.dp, end = S.md, top = 8.dp, bottom = 8.dp), horizontalArrangement = Arrangement.End) {
             Column(horizontalAlignment = Alignment.End) {
-                if (m.kind == "queued" || m.kind == "steer") Txt(if (m.kind == "queued") "QUEUED" else "STEER", T.label, k.work, Modifier.padding(bottom = 4.dp))
+                if (m.kind == "queued" || m.kind == "steer") Txt(if (m.kind == "queued") "QUEUED" else "STEER", T.label, k.workInk, Modifier.padding(bottom = 4.dp))
                 // What the prompt carried, above its words: its photos as pictures, its files by name.
                 SentFiles(m.attachments, onView)
                 val shape = RoundedCornerShape(topStart = S.rLg, topEnd = S.rLg, bottomStart = S.rLg, bottomEnd = 2.dp)

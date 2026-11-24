@@ -52,14 +52,14 @@ fun ErrorsBtn() {
     val k = k()
     val list by Hub.errors.collectAsState()
     val unread = list?.unread ?: 0
-    val tint = if (unread > 0) k.fail else k.muted
+    val tint = if (unread > 0) k.failInk else k.muted
     Row(
         Modifier.heightIn(min = 40.dp).widthIn(min = 40.dp).clip(RoundedCornerShape(S.r)).press({ Ui.route.value = Route.Errors })
             .semantics { contentDescription = if (unread > 0) "Errors, $unread unread" else "Errors" }.padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center,
     ) {
         KIcon(Ic.TriangleAlert, tint, 20.dp)
-        if (unread > 0) { Spacer(Modifier.width(4.dp)); Txt("$unread", T.uiStrong, k.fail, maxLines = 1) }
+        if (unread > 0) { Spacer(Modifier.width(4.dp)); Txt("$unread", T.uiStrong, k.failInk, maxLines = 1) }
     }
 }
 
@@ -131,14 +131,14 @@ private fun ErrorItem(r: ErrorRow, act: (ErrorRow, String) -> Unit) {
             Column(Modifier.weight(1f)) {
                 // Where from and how often, and when it last happened: wrapped, never cut.
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(S.sm)) {
-                    Txt(r.meta, T.uiStrong.copy(fontSize = T.small.fontSize), if (r.unread) k.fail else k.muted, Modifier.semantics { contentDescription = "error-meta-${r.id}" })
+                    Txt(r.meta, T.uiStrong.copy(fontSize = T.small.fontSize), if (r.unread) k.failInk else k.muted, Modifier.semantics { contentDescription = "error-meta-${r.id}" })
                     Txt(whenText(r), T.meta, k.faint)
                 }
                 Spacer(Modifier.padding(top = 4.dp))
                 // The whole message: the page shows it whole when opened, the phone always.
                 Txt(r.message, T.ui, if (r.unread) k.fg else k.muted, Modifier.semantics { contentDescription = "error-message-${r.id}" })
                 if (r.where.isNotBlank()) Txt(r.where, T.meta, k.muted, Modifier.padding(top = 4.dp))
-                if (r.recovered) Txt("Every time, a retry of the request passed.", T.meta, k.done, Modifier.padding(top = 4.dp))
+                if (r.recovered) Txt("Every time, a retry of the request passed.", T.meta, k.doneInk, Modifier.padding(top = 4.dp))
                 // The buttons' own padding lines their words up with the message.
                 FlowRow(Modifier.padding(top = 4.dp).offset(x = (-12).dp), horizontalArrangement = Arrangement.spacedBy(S.xs)) {
                     if (!r.recovered) Btn(if (r.read) "Mark unread" else "Mark read", { act(r, if (r.read) "unread" else "read") }, Tone.QUIET, compact = true, tag = "error-read-${r.id}")

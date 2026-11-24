@@ -80,14 +80,14 @@ private fun AwayRow(r: AwaySession, onOpen: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Txt(r.title, T.uiStrong, k.fg, Modifier.weight(1f), maxLines = 1)
                 Spacer(Modifier.width(S.sm))
-                Txt(r.state, T.meta, if (s == State.FAILED) k.fail else k.faint, maxLines = 1)
+                Txt(r.state, T.meta, if (s == State.FAILED) k.failInk else k.faint, maxLines = 1)
             }
             // What went wrong in the color of a failure, the rest as it is.
             val text = buildAnnotatedString {
                 val at = if (r.bad.isNotBlank()) r.text.indexOf(r.bad) else -1
                 if (at < 0) append(r.text) else {
                     append(r.text.substring(0, at))
-                    withStyle(SpanStyle(color = k.fail)) { append(r.bad) }
+                    withStyle(SpanStyle(color = k.failInk)) { append(r.bad) }
                     append(r.text.substring(at + r.bad.length))
                 }
             }

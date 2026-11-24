@@ -78,7 +78,7 @@ fun ConnLine() {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics { contentDescription = "conn-$word" }) {
         StateMark(s, 8.dp)
         Spacer(Modifier.width(6.dp))
-        Txt("$name · $word$since", T.meta, if (c == Conn.REVOKED) k.fail else k.muted, maxLines = 1)
+        Txt("$name · $word$since", T.meta, if (c == Conn.REVOKED) k.failInk else k.muted, maxLines = 1)
         // Why, when it is more than being out of reach (which "Offline" says).
         if (c == Conn.RETRYING && note.isNotBlank() && note != dev.avifenesh.keel.OUT_OF_REACH) Txt("  $note", T.meta, k.faint, maxLines = 1)
     }
@@ -159,8 +159,8 @@ fun SessionList(rows: List<Row3>, now: Double, away: dev.avifenesh.keel.Away? = 
             items(list, key = { it.chat.id }) { r -> SessionRow(r, now) }
         }
         section("Helper", helper, k.muted, counted = false)
-        section("Needs you", needs, k.need)
-        section("Working", work, k.work)
+        section("Needs you", needs, k.needInk)
+        section("Working", work, k.workInk)
         section("Recent", rest, k.muted)
         item { Spacer(Modifier.height(S.xl)) }
     }
@@ -183,7 +183,7 @@ private fun SessionRow(r: Row3, now: Double) {
                     State.WORKING -> r.since?.let { elapsed(it, now) } ?: "working"
                     else -> ago(c.updated, now)
                 }
-                Txt(right, T.meta, when (r.state) { State.WORKING -> k.work; State.NEEDS -> k.need; else -> k.faint }, maxLines = 1)
+                Txt(right, T.meta, when (r.state) { State.WORKING -> k.workInk; State.NEEDS -> k.needInk; else -> k.faint }, maxLines = 1)
             }
             Spacer(Modifier.height(3.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -196,11 +196,11 @@ private fun SessionRow(r: Row3, now: Double) {
                     c.lastRole == "user" -> "You: ${c.preview}"
                     else -> c.preview
                 }
-                Txt(line, T.small, when { asks -> k.ownerInk; r.state == State.FAILED -> k.fail; else -> k.muted }, Modifier.weight(1f).semantics { contentDescription = "line-of-${c.title}" }, maxLines = 2)
+                Txt(line, T.small, when { asks -> k.ownerInk; r.state == State.FAILED -> k.failInk; else -> k.muted }, Modifier.weight(1f).semantics { contentDescription = "line-of-${c.title}" }, maxLines = 2)
                 // Agents at work under it, at any depth: the session is busy even between its own turns.
                 if (c.agents > 0) {
                     Spacer(Modifier.width(S.sm))
-                    Txt("${c.agents} agent${if (c.agents == 1) "" else "s"}", T.meta, k.work, maxLines = 1, modifier = Modifier.semantics { contentDescription = "agents-of-${c.title}" })
+                    Txt("${c.agents} agent${if (c.agents == 1) "" else "s"}", T.meta, k.workInk, maxLines = 1, modifier = Modifier.semantics { contentDescription = "agents-of-${c.title}" })
                 }
                 if (c.unread > 0) {
                     Spacer(Modifier.width(S.sm))

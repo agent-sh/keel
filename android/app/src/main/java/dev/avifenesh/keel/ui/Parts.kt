@@ -104,7 +104,7 @@ fun StateMark(s: State, size: Dp = 10.dp, modifier: Modifier = Modifier) {
 fun StateTag(s: State, extra: String = "", only: Boolean = false) = Row(verticalAlignment = Alignment.CenterVertically) {
     StateMark(s, 9.dp)
     Spacer(Modifier.width(6.dp))
-    Txt(if (only) extra else if (extra.isBlank()) s.word else "${s.word} · $extra", T.meta, k().of(s).let { if (s == State.IDLE || s == State.STOPPED) k().muted else it })
+    Txt(if (only) extra else if (extra.isBlank()) s.word else "${s.word} · $extra", T.meta, k().inkOf(s))
 }
 
 fun Modifier.press(onClick: () -> Unit, enabled: Boolean = true, role: Role = Role.Button): Modifier = this.then(
@@ -122,7 +122,7 @@ fun Btn(
     val k = k()
     val (bg, fg, border) = when (tone) {
         Tone.INK -> Triple(k.ink, k.inkFg, Color.Transparent)
-        Tone.NEED -> Triple(k.need, if (k.dark) Color(0xFF14101F) else Color.White, Color.Transparent)
+        Tone.NEED -> Triple(k.needFill, k.needOn, Color.Transparent)
         Tone.LINE -> Triple(k.raised, k.fg, k.lineStrong)
         Tone.QUIET -> Triple(Color.Transparent, k.muted, Color.Transparent)
         Tone.DANGER -> Triple(Color.Transparent, k.danger, k.danger.copy(alpha = 0.45f))
