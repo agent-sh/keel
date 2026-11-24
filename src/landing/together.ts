@@ -40,8 +40,9 @@ import type { Store } from "../core/store.ts";
 import { pool } from "../tools/heavy.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import type { Overlaps } from "../worktree/overlap-scan.ts";
-import { brokenText, commandOf, due, fastChecks, graphOf, HUB_COMMITS, hubsOf, hunksOf, IMPORT_LINES, IMPORT_PATHS, pairKey, pairTests, redText, relatedPairs, testMatcher, verdictOf, type Graph, type Related, type Res, type Side, type Verdict } from "./pairs.ts";
+import { brokenText, commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, IMPORT_PATHS, pairKey, pairTests, redText, relatedPairs, testMatcher, verdictOf, type Graph, type Related, type Res, type Side, type Verdict } from "./pairs.ts";
 import { readTail } from "./queue.ts";
+import { importLines, readTree } from "./repo-map.ts";
 import { readLand } from "./rules.ts";
 
 const SCHEMA = `
@@ -319,14 +320,8 @@ export class Together {
     const k = `${repo}\0${baseTip}`;
     let at = this.graphs.get(k);
     if (!at) {
-      const ls = await git(repo, ["-c", "core.quotePath=false", "ls-tree", "-r", "-z", "--name-only", baseTip], { read: true, timeout: 60_000 });
-      const known = new Set(ls.code === 0 ? ls.out.split("\0").filter(Boolean) : []);
-      // And the base's recent work, for its hub files (pairs.ts hubsOf).
-      const log = await git(repo, ["-c", "core.quotePath=false", "log", "--first-parent", "-n", String(HUB_COMMITS), "--format=format:%x00", "--name-only", "--no-renames", baseTip], { read: true, timeout: 60_000 });
-      const touched = new Map<string, number>();
-      let commits = 0;
-      if (log.code === 0) for (const c of log.out.split("\0")) { if (!c) continue; commits++; for (const f of new Set(c.split("\n").filter(Boolean))) touched.set(f, (touched.get(f) ?? 0) + 1); }
-      at = { known, lines: await this.importLines(repo, baseTip, IMPORT_PATHS), touched, commits };
+      // (And the base's recent work, for its hub files: pairs.ts hubsOf.)
+      at = await readTree(repo, baseTip);
       for (const key of this.graphs.keys()) if (key.startsWith(`${repo}\0`)) this.graphs.delete(key);
       this.graphs.set(k, at);
     }
@@ -335,24 +330,11 @@ export class Together {
     const known = new Set(at.known);
     for (const s of sides) {
       const mine = s.files.filter((f) => IMPORT_PATHS.some((p) => f.endsWith(p.slice(1))));
-      if (mine.length) lines.push(...(await this.importLines(repo, s.tip, mine.map((f) => `:(literal)${f}`))));
+      if (mine.length) lines.push(...(await importLines(repo, s.tip, mine.map((f) => `:(literal)${f}`))));
       for (const f of s.files) known.add(f);
     }
     // (An import is resolved against every file either side may hold.)
     return graphOf(lines, known);
-  }
-
-  private async importLines(repo: string, rev: string, paths: string[]): Promise<{ path: string; line: string }[]> {
-    const r = await git(repo, ["-c", "core.quotePath=false", "grep", "-z", "-I", "--no-color", "-E", IMPORT_LINES, rev, "--", ...paths], { read: true, timeout: 60_000 });
-    if (r.code !== 0) return [];
-    const out: { path: string; line: string }[] = [];
-    const pre = `${rev}:`;
-    for (const l of r.out.split("\n")) {
-      const z = l.indexOf("\0");
-      if (z < 0 || !l.startsWith(pre)) continue;
-      out.push({ path: l.slice(pre.length, z), line: l.slice(z + 1) });
-    }
-    return out;
   }
 
   // ---- running

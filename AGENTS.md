@@ -279,6 +279,20 @@ under `~/.cache/keel-work/bun/research/`.
   the owner's. Agents of one tree message each other through the same queue
   as a parent's message (`agents.send` with its sender), and a peer's message
   releases no hold.
+- A plan of lanes is checked before any of its agents starts
+  (`src/automation/lane-plans.ts`, the pure part in `src/landing/lanes.ts`):
+  each lane's files (declared, named by its brief, their importers), the pairs
+  that meet in a file (a hub file counts: both lanes say they edit it), and a
+  proposed order or merge. A later lane of the order is a stored owed start,
+  taken when the lanes it waits on ended and the base holds their work, and
+  never while the plan's session (or one above it, by the owner) is held. A
+  plan is made on a named branch. A start that fails marks its lane failed,
+  and a lane that waits on one that will not land by itself (failed, stopped,
+  not started, or its work not on the base) is marked blocked by it; the
+  plan's session is told each once (`failures` kind `plan`). A lane whose
+  commits change another lane's files is told once a file, in its next model
+  request. Briefs rarely name the files where lanes collide, so a coordinator
+  declares them.
 - An input a session's sender was told is taken is stored first and delivered
   once. A message (the owner's steer or queued prompt, a parent's message to
   its agent, another session's) is a row of the session's queue or its stored
