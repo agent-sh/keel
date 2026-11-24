@@ -10,10 +10,9 @@ import { acceptLesson, dropLesson, editLesson, listLessons, mineLessons, propose
 import { failed, onFeature, scope, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
-import { Card } from "./Settings.tsx";
+import { Empty, Group, Item, List, Notice, Page, Status } from "./settings/kit.tsx";
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
-const tag = "shrink-0 rounded-xs px-1.5 text-micro";
 // What a cause is, in the owner's words.
 const sourceWords = (l: Lesson) => (l.source === "tool" ? `${l.label} call` : l.source === "review" ? "review finding" : l.label.split(" ")[0] === "agent" ? "agent failure" : `${l.label.split(" ")[0]} failure`);
 const rate = (v: number | null) => (v === null ? "not measured" : `${v === 0 ? "0" : (v * 100).toFixed(v * 100 < 10 ? 1 : 0)} per 100 trees`);
@@ -60,9 +59,9 @@ function Proposal({ l, busy, act }: { l: Lesson; busy: boolean; act: (f: () => P
   useEffect(() => setText(l.text), [l.text]);
   return (
     <div className="space-y-3 border-b border-line py-4 last:border-0" data-testid="lesson-proposal" data-lesson={l.id}>
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <span className="min-w-0 text-ui font-medium [overflow-wrap:anywhere]">{l.repo_name}</span>
-        <span className={cn(tag, "bg-sunken text-muted")}>{sourceWords(l)}</span>
+        <Status>{sourceWords(l)}</Status>
       </div>
       <Evidence l={l} />
       <label className="block space-y-1">
@@ -95,20 +94,20 @@ function InUse({ l, busy, act }: { l: Lesson; busy: boolean; act: (f: () => Prom
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(l.text);
   return (
-    <div className="flex items-start gap-4 border-b border-line py-3.5 last:border-0" data-testid="lesson-live" data-lesson={l.id} data-state={l.state}>
-      <div className="min-w-0 flex-1 space-y-1">
-        {editing
-          ? <textarea className="k-field h-auto min-h-[3.5rem] w-full resize-y py-1.5 leading-snug" value={text} maxLength={600} onChange={(e) => setText(e.target.value)} data-testid="lesson-edit-text" />
-          : <div className="text-ui leading-snug" data-testid="lesson-words">{l.text}</div>}
-        <div className="text-caption text-muted" data-testid="lesson-line">{lineOf(l)}</div>
-        <div className="flex flex-wrap gap-x-3 text-caption text-faint tabular-nums">
+    <Item testid="lesson-live" data-lesson={l.id} data-state={l.state} wrap
+      name={editing
+        ? <textarea className="k-field h-auto min-h-[3.5rem] w-full resize-y py-1.5 font-normal leading-snug" value={text} maxLength={600} onChange={(e) => setText(e.target.value)} data-testid="lesson-edit-text" />
+        : <span className="font-normal leading-snug" data-testid="lesson-words">{l.text}</span>}
+      sub={<>
+        <div className="text-muted" data-testid="lesson-line">{lineOf(l)}</div>
+        <div className="mt-1 flex flex-wrap gap-x-3 tabular-nums">
           <span>{l.repo_name}, {sourceWords(l)}</span>
           <span data-testid="lesson-given">{l.given ? `Told to ${plural(l.given, "agent")}` : "Told to no agent yet"}</span>
           {l.accepted && <span>Accepted {ago(l.accepted)}</span>}
           {l.exp_id && <button type="button" className="k-link hover:underline" onClick={() => navigate({ name: "settings", section: "experiments" })}>Its trial</button>}
         </div>
-      </div>
-      <div className="flex shrink-0 gap-2">
+      </>}
+      actions={<>
         {editing
           ? <>
               <button type="button" className="k-btn" data-ink="" disabled={busy || !text.trim()} onClick={() => act(async () => { await editLesson(l.id, text); setEditing(false); })}>Save</button>
@@ -116,20 +115,32 @@ function InUse({ l, busy, act }: { l: Lesson; busy: boolean; act: (f: () => Prom
             </>
           : l.state !== "trial" && <button type="button" className="k-btn" disabled={busy} onClick={() => setEditing(true)}>Edit</button>}
         <button type="button" className="k-btn" disabled={busy} data-testid="lesson-retire" onClick={() => act(() => dropLesson(l.id))}>Retire</button>
-      </div>
-    </div>
+      </>} />
   );
 }
 
+// A group shown on asking: its head is the button that opens it.
 function Folded({ title, testid, children }: { title: string; testid: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
-    <div data-testid={testid}>
+    <Group testid={testid} title={
       <button type="button" className="k-btn" data-quiet="" aria-expanded={open} onClick={() => setOpen(!open)}>
         <ChevronRight className={cn("transition-transform", open && "rotate-90")} />{title}
       </button>
-      {open && <Card>{children}</Card>}
-    </div>
+    }>
+      {open ? <List label={title}>{children}</List> : undefined}
+    </Group>
+  );
+}
+
+// A cause in a folded list: its repository and kind, an example, its counts, and the one act on it.
+function Cause({ l, line, act, testid }: { l: Lesson; line: ReactNode; act: ReactNode; testid: string }) {
+  return (
+    <Item testid={testid} data-lesson={l.id} name={l.repo_name} status={<Status>{sourceWords(l)}</Status>} actions={act}
+      sub={<>
+        <div className="truncate font-mono text-micro text-muted" title={l.evidence.examples[0]}>{l.evidence.examples[0]}</div>
+        <div className="mt-0.5 tabular-nums">{line}</div>
+      </>} />
   );
 }
 
@@ -153,78 +164,55 @@ export function LessonsPanel() {
   const of = (...states: Lesson["state"][]) => all.filter((l) => states.includes(l.state));
   const open = of("proposed"), drafting = of("drafting"), live = of("trial", "accepted", "undecided", "kept"), waiting = of("waiting"), quiet = of("quiet"), gone = of("dropped");
   return (
-    <div className="flex flex-col gap-4" data-testid="lessons">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
-        <p className="min-w-0 flex-1 text-ui text-muted">
-          A failure that repeats the same way across agent trees of one repository becomes a proposed note for its agents, with the sessions and counts it was read from.
-          An accepted note is told to the repository's agents at their start, never put in a system prompt, and a trial gives it to half of the new agent trees to show whether that failure falls.
-        </p>
-        <div className="flex shrink-0 items-center gap-3">
-          {data?.mine && <span className="text-caption text-faint tabular-nums" data-testid="lessons-mined" title={when(data.mine.ts)}>Read {ago(data.mine.ts)}, {plural(data.mine.found, "cause")} over {data.days} days</span>}
-          <button type="button" className="k-btn" disabled={busy} data-testid="lessons-mine" onClick={() => act(mineLessons)}>Look again</button>
-        </div>
-      </div>
-      {err && <p className="text-ui text-danger" role="alert">{err}</p>}
-      <h3 className="k-label">Proposed</h3>
-      <Card>
-        {data === null ? <p className="py-4 text-ui text-muted">Reading...</p>
-          : !open.length && !drafting.length ? <p className="py-4 text-ui text-muted" data-testid="lessons-none">No lesson to decide. One is proposed when a failure repeats in three agent trees of a repository, often enough for a trial to decide within a week.</p>
+    <Page testid="lessons" intro={<>
+      A failure that repeats the same way across agent trees of one repository becomes a proposed note for its agents, with the sessions and counts it was read from.
+      An accepted note is told to the repository's agents at their start, never put in a system prompt, and a trial gives it to half of the new agent trees to show whether that failure falls.
+    </>}>
+      {err && <Notice tone="broken"><span role="alert">{err}</span></Notice>}
+      <Group title="Proposed" count={open.length + drafting.length || undefined}
+        hint={data?.mine && <span className="tabular-nums" data-testid="lessons-mined" title={when(data.mine.ts)}>Read {ago(data.mine.ts)}, {plural(data.mine.found, "cause")} over {data.days} days.</span>}
+        actions={<button type="button" className="k-btn k-btn-lg" disabled={busy} data-testid="lessons-mine" onClick={() => act(mineLessons)}>Look again</button>}>
+        {data === null ? <Empty>Reading.</Empty>
+          : !open.length && !drafting.length ? <Empty testid="lessons-none">No lesson to decide. One is proposed when a failure repeats in three agent trees of a repository, often enough for a trial to decide within a week.</Empty>
           : <>
               {open.map((l) => <Proposal key={l.id} l={l} busy={busy} act={act} />)}
-              {drafting.map((l) => (
-                <div key={l.id} className="flex items-baseline gap-2 border-b border-line py-3 text-ui text-muted last:border-0" data-testid="lesson-drafting">
-                  <span className="font-medium text-fg">{l.repo_name}</span><span>Drafting a note for a {sourceWords(l)} that failed in {plural(l.evidence.trees, "agent tree")}.</span>
-                </div>
-              ))}
+              {drafting.length > 0 && (
+                <List label="Drafting">
+                  {drafting.map((l) => <Item key={l.id} testid="lesson-drafting" name={l.repo_name} sub={`Drafting a note for a ${sourceWords(l)} that failed in ${plural(l.evidence.trees, "agent tree")}.`} />)}
+                </List>
+              )}
             </>}
-      </Card>
+      </Group>
       {waiting.length > 0 && (
         <Folded title={`${plural(waiting.length, "more cause")}, not drafted`} testid="lessons-waiting">
           {waiting.map((l) => (
-            <div key={l.id} className="flex items-start gap-4 border-b border-line py-3 last:border-0" data-testid="lesson-waiting" data-lesson={l.id}>
-              <div className="min-w-0 flex-1 space-y-1">
-                <div className="flex items-baseline gap-2"><span className="text-ui font-medium">{l.repo_name}</span><span className={cn(tag, "bg-sunken text-muted")}>{sourceWords(l)}</span></div>
-                <div className="truncate font-mono text-micro text-muted" title={l.evidence.examples[0]}>{l.evidence.examples[0]}</div>
-                <div className="text-caption text-faint tabular-nums">{plural(l.evidence.failures, "failure")} in {plural(l.evidence.trees, "agent tree")}. {trialWords(l.evidence)}</div>
-              </div>
-              <button type="button" className="k-btn shrink-0" disabled={busy} onClick={() => act(() => proposeLesson(l.id))}>Draft</button>
-            </div>
+            <Cause key={l.id} l={l} testid="lesson-waiting" line={<>{plural(l.evidence.failures, "failure")} in {plural(l.evidence.trees, "agent tree")}. {trialWords(l.evidence)}</>}
+              act={<button type="button" className="k-btn" disabled={busy} onClick={() => act(() => proposeLesson(l.id))}>Draft</button>} />
           ))}
         </Folded>
       )}
       {live.length > 0 && (
-        <>
-          <h3 className="k-label">In use</h3>
-          <Card>{live.map((l) => <InUse key={l.id} l={l} busy={busy} act={act} />)}</Card>
-        </>
+        <Group title="In use" count={live.length}>
+          <List label="In use">{live.map((l) => <InUse key={l.id} l={l} busy={busy} act={act} />)}</List>
+        </Group>
       )}
       {quiet.length > 0 && (
         <Folded title={`${plural(quiet.length, "cause")} with no lesson to draft`} testid="lessons-quiet">
           {quiet.map((l) => (
-            <div key={l.id} className="flex items-start gap-4 border-b border-line py-3 last:border-0" data-testid="lesson-quiet" data-lesson={l.id}>
-              <div className="min-w-0 flex-1 space-y-1">
-                <div className="flex items-baseline gap-2"><span className="text-ui font-medium">{l.repo_name}</span><span className={cn(tag, "bg-sunken text-muted")}>{sourceWords(l)}</span></div>
-                <div className="truncate font-mono text-micro text-muted" title={l.evidence.examples[0]}>{l.evidence.examples[0]}</div>
-                <div className="text-caption text-faint">{plural(l.evidence.failures, "failure")} in {plural(l.evidence.trees, "agent tree")}{l.why_none ? `. Not drafted: ${l.why_none}` : ""}</div>
-              </div>
-              <button type="button" className="k-btn shrink-0" disabled={busy} onClick={() => act(() => proposeLesson(l.id))}>Propose</button>
-            </div>
+            <Cause key={l.id} l={l} testid="lesson-quiet" line={<>{plural(l.evidence.failures, "failure")} in {plural(l.evidence.trees, "agent tree")}{l.why_none ? `. Not drafted: ${l.why_none}` : ""}</>}
+              act={<button type="button" className="k-btn" disabled={busy} onClick={() => act(() => proposeLesson(l.id))}>Propose</button>} />
           ))}
         </Folded>
       )}
       {gone.length > 0 && (
         <Folded title={`${plural(gone.length, "lesson")} dropped`} testid="lessons-dropped">
           {gone.map((l) => (
-            <div key={l.id} className="flex items-start gap-4 border-b border-line py-3 last:border-0" data-testid="lesson-dropped" data-lesson={l.id}>
-              <div className="min-w-0 flex-1 space-y-1">
-                <div className="text-ui leading-snug">{l.text}</div>
-                <div className="text-caption text-muted">{l.repo_name}, {sourceWords(l)}{l.ended ? `, dropped ${ago(l.ended)}` : ""}{l.outcome ? `. Its trial: ${armLine(l.outcome)}. ${l.outcome.text}` : ""}</div>
-              </div>
-              <button type="button" className="k-btn shrink-0" disabled={busy} onClick={() => act(() => acceptLesson(l.id, l.text))}>Accept again</button>
-            </div>
+            <Item key={l.id} testid="lesson-dropped" data-lesson={l.id} wrap name={<span className="font-normal leading-snug">{l.text}</span>}
+              sub={<span className="text-muted">{l.repo_name}, {sourceWords(l)}{l.ended ? `, dropped ${ago(l.ended)}` : ""}{l.outcome ? `. Its trial: ${armLine(l.outcome)}. ${l.outcome.text}` : ""}</span>}
+              actions={<button type="button" className="k-btn" disabled={busy} onClick={() => act(() => acceptLesson(l.id, l.text))}>Accept again</button>} />
           ))}
         </Folded>
       )}
-    </div>
+    </Page>
   );
 }
