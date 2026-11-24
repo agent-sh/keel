@@ -225,6 +225,9 @@ type Open = { span: string; trace: string; t0: number; first?: number; attempt: 
 export class Tracer {
   private open = new WeakMap<ProviderRequest, Open>();
   private attempts = new WeakMap<ProviderRequest, number>();
+  // A request sent again for a failed span, and the span its measured send made.
+  private replays = new WeakMap<ProviderRequest, string>();
+  private made = new WeakMap<ProviderRequest, string>();
   private kept = new WeakMap<ProviderRequest, string>();
   // Each span as it ends (the OTLP exporter listens).
   private ended = new Map<(s: Span) => void, (() => boolean) | undefined>();
@@ -500,8 +503,9 @@ export class Tracer {
     const model = req.route ?? `${s.model}`;
     this.later("a request's span",
       "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'request', ?, ?, 'running', ?)",
-      [span, trace, parent?.span ?? null, s.id, `chat ${req.model}`, t0, this.began(span, { route: model, model: req.model, attempt, ...(turn ? { turn_event: turn.id } : {}), shape: requestShape(req) })],
+      [span, trace, parent?.span ?? null, s.id, `chat ${req.model}`, t0, this.began(span, { route: model, model: req.model, attempt, ...(turn ? { turn_event: turn.id } : {}), ...(this.replays.has(req) ? { replay_of: this.replays.get(req) } : {}), shape: requestShape(req) })],
     );
+    this.made.set(req, span);
   }
 
   private finish(span: string, patch: { status: SpanStatus; error?: string | null; error_type?: string | null; attrs?: Record<string, unknown>; request?: Uint8Array | null }) {
@@ -628,17 +632,10 @@ export class Tracer {
     return JSON.parse(gunzipSync(r.request).toString("utf8"));
   }
 
-  // A replay: recorded as its own request span in its own trace, pointing at the original.
-  recordReplay(of: Span, route: string, t0: number, out: { ok: boolean; error?: string; error_type?: string; result?: ProviderResult; wire?: Wire; ttft?: number }) {
-    const span = newSpanId();
-    this.store.db.run(
-      "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, NULL, ?, 'request', ?, ?, ?, ?, ?, ?, ?)",
-      [span, hex(16), of.session_id, `chat ${route.split(":").slice(1).join(":") || route}`, t0, Date.now(), out.ok ? "ok" : "error", out.error ? scrubbed(out.error) : null, out.error_type ?? null,
-        JSON.stringify({ route, replay_of: of.span_id, shape: of.attrs.shape, ...(out.wire && Object.keys(out.wire).length ? { wire: out.wire } : {}), ...(out.ttft ? { ttft_ms: out.ttft } : {}), ...(out.result ? { result: resultShape(out.result) } : {}) })],
-    );
-    this.emitEnd(span);
-    return this.span(span)!;
-  }
+  // A request sent again for the span `of`: its own trace, which the measuring hooks make when the request
+  // is sent through `measured` (the ledger books it with them). `spanOf` is the span they made.
+  replaying(req: ProviderRequest, of: Span) { this.replays.set(req, of.span_id); }
+  spanOf(req: ProviderRequest): Span | undefined { const id = this.made.get(req); return id ? this.span(id) : undefined; }
 }
 
 // The request without its signal and callbacks, gzipped; extra headers keep their names only.

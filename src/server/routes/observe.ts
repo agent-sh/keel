@@ -29,7 +29,7 @@ import { agentLine, say, sayAt, stopLine } from "../../admin/daemon-log.ts";
 import { bindStory } from "../../admin/story.ts";
 import { installLogs, LEVELS, logAt, logDir, logLines, onLog } from "../../admin/logs.ts";
 import { newestTurn } from "../../admin/marks.ts";
-import { registerHooks } from "../../engine/hooks.ts";
+import { measured, registerHooks } from "../../engine/hooks.ts";
 import { turnReceipt } from "../../admin/receipt.ts";
 import { endpointOf, headerRefError, headerSourceOf, OtlpExporter, providerName } from "../../admin/otlp.ts";
 import { onLedgerCost } from "../../admin/telemetry.ts";
@@ -40,8 +40,9 @@ import { TRACE_LIST, TRACE_LIST_MAX, traceparent, Tracer } from "../../admin/tra
 import { registerEnv } from "../../tools/jobs.ts";
 import { errorClass } from "../../admin/classes.ts";
 import { errorText } from "../../engine/retry.ts";
-import { type Wire, wireScope } from "../../providers/wiretap.ts";
-import type { ProviderResult } from "../../providers/types.ts";
+import { reportedUsage } from "../../providers/reported.ts";
+import { type Wire, wireOf, wireScope } from "../../providers/wiretap.ts";
+import type { ProviderRequest, ProviderResult } from "../../providers/types.ts";
 import type { RouteModule } from "../app.ts";
 import { buildId } from "./admin.ts";
 
@@ -285,7 +286,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     },
 
     // The request is sent outside any session's history: nothing is appended
-    // and no turn runs. The answer's text comes back clipped.
+    // and no turn runs, but the ledger books it with its session. The answer's text comes back clipped.
     "/api/debug/spans/:id/replay": {
       POST: async (req: Request & { params: { id: string } }) => {
         const of = t.span(req.params.id);
@@ -299,23 +300,28 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         // The request holds the session's content: only to a provider its folder allows (src/safety/content-routes.ts).
         const cross = of.session_id ? crossing(store, of.session_id, "side", resolved.info.id, resolved.provider.id) : undefined;
         if (cross) return json({ error: `provider ${cross.provider} is not allowed for this session's folder (allowed: ${cross.allowed.join(", ") || "none"})` }, 403);
-        const t0 = Date.now();
+        // It is paid for: sent as a request of the span's session, through the measuring hooks, so the ledger
+        // books it (purpose side, what its stream reported and its cost) with the usage and the budgets, and
+        // its span is the one those hooks make, marked as the replay of this one.
+        const owner = store.session(of.session_id);
+        if (!owner) return json({ error: "the session this request belonged to is gone, so a replay has nothing to be booked to" }, 409);
         const tap: Wire = {};
-        let first: number | undefined;
+        const out: ProviderRequest = { ...sent, model: resolved.info.model, route: resolved.info.id, signal: AbortSignal.timeout(300_000), purpose: "side" };
+        wireOf.set(out, tap);
+        t.replaying(out, of);
         let text = "";
+        const spanOf = () => { store.side.flush(); return t.spanOf(out)!; };
         try {
-          const res: ProviderResult = await wireScope.run(tap, () => resolved.provider.stream(
-            { ...sent, model: resolved.info.model, route: resolved.info.id, signal: AbortSignal.timeout(300_000), purpose: "side" },
-            (d) => { first ??= Date.now(); if (d.kind === "text") text += d.text; },
-          ));
+          const res: ProviderResult = await wireScope.run(tap, () => measured(owner, out, (d) => resolved.provider.stream(out, (x) => { d(x); if (x.kind === "text") text += x.text; })));
           // A stream that ends in a refusal did not answer: the same error class a turn's request gets.
           const refused = res.stop === "refusal";
-          const error = refused ? res.stop_details?.explanation ?? "refusal" : undefined;
-          const span = t.recordReplay(of, resolved.info.id, t0, { ok: !refused, ...(refused ? { error, error_type: "refusal" } : {}), result: res, wire: tap, ttft: first ? first - t0 : undefined });
-          return json({ span, ok: !refused, ...(refused ? { error } : {}), text: text.slice(0, 2000), stop: res.stop });
+          store.addUsage(owner.id, res.usage, { keepPlace: true });
+          return json({ span: spanOf(), ok: !refused, ...(refused ? { error: res.stop_details?.explanation ?? "refusal" } : {}), text: text.slice(0, 2000), stop: res.stop });
         } catch (e) {
-          const span = t.recordReplay(of, resolved.info.id, t0, { ok: false, error: errorText(e).slice(0, 4000), error_type: errorClass(e) ?? (e as any)?.kind ?? "error", wire: tap });
-          return json({ span, ok: false, error: errorText(e) });
+          // A request cut or broken mid-stream was billed for what its stream reported.
+          const spent = reportedUsage(e);
+          if (spent) store.addUsage(owner.id, spent, { keepPlace: true });
+          return json({ span: spanOf(), ok: false, error: errorText(e) });
         }
       },
     },
