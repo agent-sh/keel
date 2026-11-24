@@ -5,6 +5,7 @@
 // other route reads it as the user text it was stored as. Sources: the mid-conversation system
 // messages pages of platform.claude.com and docs.aws.amazon.com (Bedrock), and developers.openai.com
 // "Keep the prefix unchanged" (read 2026-11-24).
+import { Database } from "bun:sqlite";
 import { afterAll, expect, test } from "bun:test";
 import type { Message } from "../core/types.ts";
 import { toMessages } from "../engine/turn.ts";
@@ -12,6 +13,7 @@ import { ownEnv } from "../../test/env.ts";
 import { AnthropicProvider } from "./anthropic.ts";
 import { EndpointProvider } from "./endpoint.ts";
 import { OpenAIProvider } from "./keyed.ts";
+import { REFUSAL_TTL_MS, RouteRefusals } from "./route-refusals.ts";
 import type { ProviderRequest } from "./types.ts";
 import { toWire } from "./wires/anthropic.ts";
 import { chatBody } from "./wires/chat.ts";
@@ -105,6 +107,62 @@ for (const id of ["anthropic", "bedrock"] as const) {
     expect(other.bodies.length).toBe(1);
   });
 }
+
+// The refusal of a route, as a driver meets it. A stand-in that answers a system message with the
+// 400 `refuse` says and anything else with a model's reply, after `delay` ms.
+const sysRefusal = (message: string, status = 400) => Response.json({ type: "error", error: { type: status === 400 ? "invalid_request_error" : "overloaded_error", message } }, { status });
+const hasSystem = (body: any) => body.messages.some((m: any) => m.role === "system");
+const anthropicAt = (url: string) => new AnthropicProvider("anthropic", { ANTHROPIC_API_KEY: "test-key", ANTHROPIC_BASE_URL: url });
+
+test("requests in flight together on a route that refuses a system message are each sent again", async () => {
+  const s = server((body) => (hasSystem(body) ? sysRefusal("messages.3.role: system is not supported") : ok()));
+  const p = anthropicAt(s.url);
+  const results = await Promise.allSettled([1, 2, 3, 4].map(() => p.stream({ ...req(withNote), model: "refusing-concurrent" }, () => {})));
+  expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "fulfilled", "fulfilled"]);
+  expect(s.bodies.filter(hasSystem).length).toBe(4);
+  expect(s.bodies.filter((b) => !hasSystem(b)).length).toBe(4);
+});
+
+test("a retry that meets a transient error fails with that error, not the first 400", async () => {
+  const s = server((body) => (hasSystem(body) ? sysRefusal("messages.3.role: system is not supported") : sysRefusal("Overloaded", 529)));
+  await expect(anthropicAt(s.url).stream({ ...req(withNote), model: "refusing-then-busy" }, () => {})).rejects.toMatchObject({ status: 529 });
+  // Nothing was learned from a retry that did not succeed: the next request tries it again.
+  await expect(anthropicAt(s.url).stream({ ...req(withNote), model: "refusing-then-busy" }, () => {})).rejects.toMatchObject({ status: 529 });
+  expect(s.bodies.filter(hasSystem).length).toBe(2);
+});
+
+test("a 400 that does not name the system role is not sent twice", async () => {
+  for (const message of ["prompt is too long: 250000 tokens > 200000 maximum", "messages.0.content.1.image.source.base64: image exceeds 5 MB maximum"]) {
+    const s = server(() => sysRefusal(message));
+    await expect(anthropicAt(s.url).stream({ ...req(withNote), model: "bad-request" }, () => {})).rejects.toMatchObject({ status: 400 });
+    expect(s.bodies.length).toBe(1);
+  }
+});
+
+test("a route's refusal is kept in the store, for a day and for the build that learned it", () => {
+  const store = () => ({ db: shared, migrate: (q: string) => shared.exec(q) });
+  const shared = new Database(":memory:");
+  const first = new RouteRefusals();
+  first.attach(store());
+  const t0 = Date.now();
+  first.add("anthropic:m1", t0);
+  // A start after it reads it.
+  const next = new RouteRefusals();
+  expect(next.has("anthropic:m1")).toBe(false);
+  next.attach(store());
+  expect(next.has("anthropic:m1")).toBe(true);
+  expect(next.has("anthropic:m2")).toBe(false);
+  // Tried again after a day.
+  expect(next.has("anthropic:m1", t0 + REFUSAL_TTL_MS + 1)).toBe(false);
+  // Tried again on another build.
+  shared.query("UPDATE route_refusals SET build = 'older' WHERE route = 'anthropic:m1'").run();
+  const other = new RouteRefusals();
+  other.attach(store());
+  expect(other.has("anthropic:m1")).toBe(false);
+  // A route that took it after all is forgotten, in the store too.
+  next.forget("anthropic:m1");
+  expect(shared.query("SELECT route FROM route_refusals").all()).toEqual([]);
+});
 
 // OpenAI Responses: the developer role, at the end of the input.
 test("the Responses wire sends the tail as a developer message after the items before it", () => {

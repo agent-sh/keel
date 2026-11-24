@@ -21,6 +21,7 @@ import { Store, STORE_REFUSES } from "../core/store.ts";
 import { storeLocked, storeLockedOff } from "../core/store-files.ts";
 import { Engine } from "../engine/turn.ts";
 import { Providers } from "../providers/registry.ts";
+import { routeRefusals } from "../providers/route-refusals.ts";
 import { addAdmission } from "./admission.ts";
 import { watchSessionCallers } from "./caller.ts";
 import { listReach } from "../automation/api-grant.ts";
@@ -94,6 +95,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   const store = new Store(stateDir);
   setOwnTemp(stateDir);
   startMark("store");
+  // What a model route was found to refuse (a system message among the turns) lasts across restarts.
+  if (!opts.client) routeRefusals.attach(store);
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);
   errors.installGlobal();

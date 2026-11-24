@@ -7,6 +7,7 @@ import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { allPages, getJson, type ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
+import { namesSystemMessage, routeRefusals } from "./route-refusals.ts";
 import { anthropicBody, anthropicWire } from "./wires/anthropic.ts";
 
 // The Messages API version the official TypeScript SDK sends.
@@ -123,20 +124,27 @@ export class AnthropicProvider implements Provider {
   // session. A route that does not take the setting goes on without it.
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     const route = `${this.id}:${req.model}`;
+    // Decided before the attempt: requests in flight together on a route that refuses it all
+    // carried one, and each is sent again when the first answer marks the route.
+    const tried = !routeRefusals.has(route) && this.carriesSystem(req);
     try {
-      return await this.bound(req, onDelta);
+      const res = await this.bound(req, onDelta, !tried);
+      if (tried) routeRefusals.forget(route);
+      return res;
     } catch (e) {
       // The harness's own text goes as a system message among the turns, which the API documents on
-      // some models and answers with a 400 on the rest (no listing says which). A request refused as
-      // malformed that carried one is sent again with that text as user text; when that is accepted
-      // the route is known not to take it, and sends none from then on.
-      if ((e as any)?.status !== 400 || midRefused.has(route) || !this.carriesSystem(req)) throw e;
-      midRefused.add(route);
+      // some models and answers with a 400 on the rest (no listing says which). A request refused
+      // for that is sent again with the text as user text; when that is accepted the route is known
+      // not to take it, kept for a day, and sends none from then on.
+      if (!tried || (e as any)?.status !== 400 || !namesSystemMessage(String((e as Error)?.message ?? e))) throw e;
       try {
-        return await this.bound(req, onDelta);
-      } catch {
-        midRefused.delete(route);
-        throw e;
+        const res = await this.bound(req, onDelta, true);
+        routeRefusals.add(route);
+        return res;
+      } catch (again) {
+        // The second request's own failure (an overloaded model, a dropped connection) is the
+        // turn's to retry; a 400 again leaves the first as the cause.
+        throw (again as any)?.status === 400 ? e : again;
       }
     }
   }
@@ -150,25 +158,25 @@ export class AnthropicProvider implements Provider {
     }
   }
 
-  private async bound(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
+  private async bound(req: ProviderRequest, onDelta: (d: Delta) => void, plain: boolean): Promise<ProviderResult> {
     const route = `${this.id}:${req.model}`;
-    if (bindingRefused.has(route)) return this.send(req, onDelta);
+    if (bindingRefused.has(route)) return this.send(req, onDelta, plain);
     const bound = (mode: "error" | "drop_block") => withBeta({ ...req, blockBinding: mode }, BINDING_BETA);
     try {
-      return await this.send(bound(req.dropThinking ? "drop_block" : "error"), onDelta);
+      return await this.send(bound(req.dropThinking ? "drop_block" : "error"), onDelta, plain);
     } catch (e) {
       const text = String((e as Error)?.message ?? e);
       if ((e as any)?.status !== 400) throw e;
-      if (BOUND_ELSEWHERE.test(text) && !req.dropThinking) return { ...(await this.send(bound("drop_block"), onDelta)), binding_refused: text };
+      if (BOUND_ELSEWHERE.test(text) && !req.dropThinking) return { ...(await this.send(bound("drop_block"), onDelta, plain)), binding_refused: text };
       if (!/block_binding|thinking-binding-controls/.test(text)) throw e;
       bindingRefused.add(route);
-      return this.send(req, onDelta);
+      return this.send(req, onDelta, plain);
     }
   }
 
-  private async send(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
+  private async send(req: ProviderRequest, onDelta: (d: Delta) => void, plain: boolean): Promise<ProviderResult> {
     if (!this.auth) throw new Error(`${this.id}: no credentials`);
-    const ctx = { ...ctxFor(this.id, req, []), legacyIsMine: true, midSystem: !midRefused.has(`${this.id}:${req.model}`) };
+    const ctx = { ...ctxFor(this.id, req, []), legacyIsMine: true, midSystem: !plain };
     // Deferred tools and tool_reference blocks: the beta each platform names
     // (Claude Code sends the same two).
     if (req.tools.some((t) => t.defer)) req = withBeta(req, this.id === "bedrock" ? "tool-search-tool-2025-10-19" : "advanced-tool-use-2025-11-20");
@@ -215,8 +223,6 @@ const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 const BOUND_ELSEWHERE = /The block is bound to a different conversation/;
 // Routes that refused the setting (a model or platform without it).
 const bindingRefused = new Set<string>();
-// Routes that refused a system message among the turns (a model without it).
-const midRefused = new Set<string>();
 
 function withBeta(req: ProviderRequest, beta: string): ProviderRequest {
   const have = req.extraHeaders?.["anthropic-beta"];
