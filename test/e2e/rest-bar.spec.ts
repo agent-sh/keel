@@ -166,6 +166,9 @@ test("a pane alone has no tools at rest, its menu has them; beside another pane 
       await pane(page, a).getByTestId("session-menu").click();
       await expect(page.getByTestId("menu-pin")).toBeVisible();
       await expect(page.getByTestId("menu-close")).toBeVisible();
+      // Each row's title says the key that does the same.
+      await expect(page.getByTestId("menu-pin")).toHaveAttribute("title", /\((Alt|⌥) P\)$/);
+      await expect(page.getByTestId("menu-close")).toHaveAttribute("title", /\((Alt|⌥) W\)$/);
       if (width !== 1920) await shoot(page, `rest-bar-05-alone-${width}`);
       await page.keyboard.press("Escape");
       // Pinned and alone, the head keeps the pressed pin and nothing else: it is the pane's one cue that the session is pinned.

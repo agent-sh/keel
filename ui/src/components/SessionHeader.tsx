@@ -4,7 +4,7 @@ import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch,
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
-import { composing, runCommand } from "../lib/keys.ts";
+import { commandKeys, composing, runCommand } from "../lib/keys.ts";
 import { actions, getState, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { openPlaced } from "../lib/looks.ts";
@@ -151,7 +151,7 @@ function useFit(tools: Tool[], reserve: number) {
 // same controls, over the session's actions. The tools stay mounted while it is closed, so a folded
 // control opened from elsewhere (a command, a shortcut) opens the menu with it, and the row measures
 // what they would take back.
-type Act = { id: string; label: string; icon: ReactNode; run: () => void; danger?: boolean; disabled?: boolean; gap?: boolean };
+type Act = { id: string; label: string; icon: ReactNode; run: () => void; danger?: boolean; disabled?: boolean; gap?: boolean; command?: string };
 function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool[]; live: string; list: { current: HTMLElement | null }; changed: () => void; acts: Act[]; button: RefObject<HTMLButtonElement | null> }) {
   const [open, setOpen] = useState(false);
   const [el, setEl] = useState<HTMLDivElement | null>(null);
@@ -216,7 +216,7 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
                 <Fragment key={a.id}>
                   {a.gap && <div role="separator" className="k-stow-rule" />}
                   <button type="button" role="menuitem" data-testid={a.id} disabled={a.disabled} data-danger={a.danger || undefined}
-                    className="k-stow-cmd" onClick={() => { close(); a.run(); }}>
+                    className="k-stow-cmd" title={a.command && commandKeys(a.command) ? `${a.label} (${commandKeys(a.command)})` : undefined} onClick={() => { close(); a.run(); }}>
                     {a.icon}{a.label}
                   </button>
                 </Fragment>
@@ -306,8 +306,8 @@ export function SessionHeader({ session }: { session: Session }) {
   const alone = phone() || panes < 2;
   const acts: Act[] = [
     ...(alone ? [
-      { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, run: () => runCommand("station.pin") },
-      { id: "menu-close", label: "Close the session here", icon: <X />, run: () => runCommand("station.close") },
+      { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, command: "station.pin", run: () => runCommand("station.pin") },
+      { id: "menu-close", label: "Close the session here", icon: <X />, command: "station.close", run: () => runCommand("station.close") },
     ] : []),
     { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) },
     { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },
