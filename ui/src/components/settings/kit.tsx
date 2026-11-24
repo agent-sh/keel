@@ -16,10 +16,12 @@
 //   Empty    nothing to show, where the rows would be.
 //   Notice   what the page cannot do or see, with its tone.
 //   Table    a table that drops its minor columns when narrow and never scrolls the page.
+//   Row      a row of a Table: its name (a button that opens the row when it has a detail), its
+//            cells, and when open the columns a narrow box dropped, then the detail.
 //
 // A section uses these and draws no box, group head, status tag or empty line of
 // its own (src/ui-conventions.test.ts holds it to that).
-import type { ReactNode } from "react";
+import { Children, Fragment, createContext, isValidElement, useContext, type MouseEvent, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../lib/utils.ts";
 
 type Data = Record<`data-${string}`, string | number | boolean | undefined>;
@@ -126,8 +128,9 @@ export function Notice({ tone, title, children, testid }: { tone?: "warn" | "bro
 }
 
 // A column: its head, and how it lays out. `grow` takes what is left and cuts its words short;
-// `end` aligns right (figures); `minor` goes when the box is narrow.
+// `end` aligns right (figures); `minor` goes when the box is narrow (a Row lists it in its open area).
 export type Col = { head: ReactNode; grow?: boolean; end?: boolean; minor?: boolean };
+const Cols = createContext<Col[]>([]);
 export function Table({ cols, children, testid, label }: { cols: Col[]; children: ReactNode; testid?: string; label?: string }) {
   return (
     <div className="k-set-table-wrap">
@@ -135,12 +138,63 @@ export function Table({ cols, children, testid, label }: { cols: Col[]; children
         <thead>
           <tr>{cols.map((c, i) => <th key={i} data-end={c.end || undefined} data-minor={c.minor || undefined}>{c.head}</th>)}</tr>
         </thead>
-        <tbody>{children}</tbody>
+        <tbody><Cols.Provider value={cols}>{children}</Cols.Provider></tbody>
       </table>
     </div>
   );
 }
+type CellProps = { col: Col; children?: ReactNode; title?: string; className?: string };
 // A cell of a Table: the same layout marks as its column.
-export function Cell({ col, children, title, className }: { col: Col; children?: ReactNode; title?: string; className?: string }) {
+export function Cell({ col, children, title, className }: CellProps) {
   return <td className={className} title={title} data-grow={col.grow || undefined} data-end={col.end || undefined} data-minor={col.minor || undefined}>{children}</td>;
+}
+
+// A row of a Table. `name` fills the first column; with `onOpen` it is a button (aria-expanded) and a
+// click anywhere else on the row opens it too. `children` are the cells after the first, in column order.
+// Open, the row has an area of its own across the table: first the figures of the columns a narrow box
+// dropped (each with its head), then `detail`. `after` sits beside the name, outside its button.
+export function Row({ name, after, title, open, onOpen, detail, detailTestid, children, testid, ...data }: {
+  name: ReactNode; after?: ReactNode; title?: string; open?: boolean; onOpen?: () => void; detail?: ReactNode; detailTestid?: string;
+  children?: ReactNode; testid?: string;
+} & Data) {
+  const cols = useContext(Cols);
+  const cells = Children.toArray(children).filter((c): c is ReactElement<CellProps> => isValidElement(c) && (c.props as CellProps).col !== undefined);
+  const dropped = cells.filter((c) => c.props.col.minor && c.props.children !== undefined && c.props.children !== null && c.props.children !== false);
+  const first = cols[0] ?? { head: "" };
+  const click = (e: MouseEvent) => {
+    // Only the name's own button and the row's bare space open it: another button or link in a cell acts for itself.
+    const hit = (e.target as Element).closest("a, button, input, select, textarea");
+    if (!hit || hit.hasAttribute("data-set-opener")) onOpen?.();
+  };
+  const area = !!open && (dropped.length > 0 || detail !== undefined);
+  return (
+    <Fragment>
+      <tr data-act={onOpen ? "" : undefined} data-open={open || undefined} onClick={onOpen ? click : undefined} data-testid={testid} {...data}>
+        <Cell col={first} title={title}>
+          {onOpen
+            ? <button type="button" data-set-opener="" className="k-link max-w-full truncate text-left hover:underline" aria-expanded={!!open}>{name}</button>
+            : name}
+          {after}
+        </Cell>
+        {children}
+      </tr>
+      {area && (
+        <tr className="k-set-open" data-open="" data-bare={detail === undefined || undefined} data-testid={detailTestid}>
+          <td colSpan={Math.max(cols.length, 1)}>
+            {dropped.length > 0 && (
+              <dl className="k-set-dropped">
+                {dropped.map((c, i) => (
+                  <div key={i}>
+                    <dt>{c.props.col.head}</dt>
+                    <dd className={c.props.className?.split(" ").filter((x) => !/^(max-w-|truncate$)/.test(x)).join(" ") || undefined}>{c.props.children}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            {detail}
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
 }

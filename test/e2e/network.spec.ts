@@ -46,9 +46,29 @@ test("network: what left, by host and session", async ({ page, request }) => {
     await expect(row.getByTestId("network-new")).toBeVisible();
     await expect(panel.getByTestId("network-by-session")).toContainText(title);
     await expect(panel.getByTestId("network-unseen")).toContainText(/cannot see|not here/);
-    await row.click();
+    // The host's name is a button: the keyboard opens the row as the mouse does.
+    const opener = row.getByRole("button", { name: host });
+    await expect(opener).toHaveAttribute("aria-expanded", "false");
+    await opener.focus();
+    await page.keyboard.press("Enter");
+    await expect(opener).toHaveAttribute("aria-expanded", "true");
     await expect(panel.getByTestId("network-host-sessions")).toContainText(title);
+    // Wide, the figures are in the row: the open area lists no column.
+    await expect(panel.getByTestId("network-host-sessions").locator("dt").first()).toBeHidden();
     await shoot(page, "network-01-today");
+    // Narrow, the table drops its minor columns and the open row lists them, with their heads.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(panel.getByTestId("network-by-host").locator("th", { hasText: "Ports" })).toBeHidden();
+    const dropped = panel.getByTestId("network-host-sessions").locator("dl > div");
+    await expect(dropped.filter({ hasText: "Ports" })).toBeVisible();
+    await expect(dropped.filter({ hasText: "Sessions" })).toContainText("1");
+    await expect(dropped.filter({ hasText: "By" })).toContainText("WebFetch");
+    await shoot(page, "network-01-narrow");
+    await page.setViewportSize({ width: 1280, height: 720 });
+    // The mouse closes it, too.
+    await row.click();
+    await expect(opener).toHaveAttribute("aria-expanded", "false");
+    await expect(panel.getByTestId("network-host-sessions")).toHaveCount(0);
 
     // The turn's receipt lists the host it went to.
     const tl = await (await request.get(`/api/sessions/${s.id}/timeline`)).json();

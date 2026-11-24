@@ -1,7 +1,7 @@
 // Settings > Network: what left this machine today, by host and by session,
 // from the outward ledger (src/safety/egress.ts). A host first seen today is
 // marked. With the sandbox off the page says what it cannot see.
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { EgressReport } from "../../../src/safety/egress-report.ts";
 import { every } from "../lib/clock.ts";
 import { filterSaid } from "../lib/seccomp.ts";
@@ -9,7 +9,7 @@ import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { clock, fmtSize, when } from "../lib/utils.ts";
 import { Stat, Stats } from "./Stat.tsx";
-import { Cell, Empty, Group, Item, List, Notice, Page, Status, Table, type Col } from "./settings/kit.tsx";
+import { Cell, Empty, Group, Item, List, Notice, Page, Row, Status, Table, type Col } from "./settings/kit.tsx";
 
 type Report = EgressReport & { sandbox: { available: boolean; default: string; reason?: string; seccomp?: boolean; seccompReason?: string } };
 
@@ -33,7 +33,7 @@ export function NetworkPanel() {
   const off = !r.sandbox.available || r.sandbox.default === "off";
   const pairs = (host: string) => r.pairs.filter((p) => p.host === host);
 
-  const H: Record<string, Col> = { host: { head: "Host", grow: true }, ports: { head: "Ports", minor: true }, rows: { head: "Transfers", end: true }, bytes: { head: "Sent out", end: true }, refused: { head: "Refused", end: true }, sessions: { head: "Sessions", end: true, minor: true }, by: { head: "By", minor: true }, last: { head: "Last", end: true } };
+  const H: Record<string, Col> = { host: { head: "Host", grow: true }, ports: { head: "Ports", minor: true }, rows: { head: "Transfers", end: true }, bytes: { head: "Sent out", end: true }, refused: { head: "Refused", end: true }, sessions: { head: "Sessions", end: true, minor: true }, by: { head: "By", minor: true }, last: { head: "Last", end: true, minor: true } };
   const S: Record<string, Col> = { session: { head: "Session", grow: true }, rows: { head: "Transfers", end: true }, bytes: { head: "Sent out", end: true }, refused: { head: "Refused", end: true }, hosts: { head: "Hosts", minor: true } };
 
   return (
@@ -56,36 +56,29 @@ export function NetworkPanel() {
         {!r.hosts.length ? <Empty>Nothing left this machine today.</Empty> : (
           <Table cols={Object.values(H)} label="By host">
             {r.hosts.map((h) => (
-              <Fragment key={h.host}>
-                <tr data-act="" data-open={open === h.host || undefined} onClick={() => setOpen(open === h.host ? null : h.host)} data-testid="network-host" data-host={h.host} data-new={h.new || undefined}>
-                  <Cell col={H.host!} title={h.host}>
-                    <span className="font-mono text-caption">{h.host}</span>
-                    {h.new && <span className="ml-2"><Status tone="new" title="No transfer went to this host before today" testid="network-new">new today</Status></span>}
-                  </Cell>
-                  <Cell col={H.ports!} className="font-mono text-caption text-muted">{ports(h.ports) || "?"}</Cell>
-                  <Cell col={H.rows!}>{h.rows.toLocaleString()}</Cell>
-                  <Cell col={H.bytes!}>{fmtSize(h.bytes)}{h.unknown_bytes > 0 && <span className="text-faint" title={`${plural(h.unknown_bytes, "transfer")} whose bytes are not counted (a git push, a body sent as a stream)`}> +?</span>}</Cell>
-                  <Cell col={H.refused!} className={h.refused ? "text-st-fail" : "text-faint"}>{h.refused || "none"}</Cell>
-                  <Cell col={H.sessions!} className="text-muted">{h.sessions}</Cell>
-                  <Cell col={H.by!} className="max-w-60 truncate text-caption text-muted" title={list(h.tools).join(", ")}>{list(h.tools).join(", ")}</Cell>
-                  <Cell col={H.last!} className="text-caption text-muted">{clock(h.last)}</Cell>
-                </tr>
-                {open === h.host && (
-                  <tr data-open="" data-testid="network-host-sessions">
-                    <td colSpan={8}>
-                      <ul className="flex flex-col gap-1 whitespace-normal text-caption">
-                        {pairs(h.host).map((p) => (
-                          <li key={p.session_id ?? ""} className="flex flex-wrap gap-x-3">
-                            {p.session_id ? <button type="button" className="k-link truncate text-accent hover:underline" onClick={() => navigate({ name: "session", id: p.session_id! })}>{title(p.session_id)}</button> : <span className="text-muted">Keel itself</span>}
-                            <span className="tabular-nums text-muted">{plural(p.rows, "transfer")}, {fmtSize(p.bytes)}{p.refused ? `, ${p.refused} refused` : ""}</span>
-                            <span className="truncate text-faint">{list(p.tools).join(", ")}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
+              <Row key={h.host} testid="network-host" data-host={h.host} data-new={h.new || undefined} title={h.host}
+                name={<span className="font-mono text-caption">{h.host}</span>}
+                after={h.new && <span className="ml-2"><Status tone="new" title="No transfer went to this host before today" testid="network-new">new today</Status></span>}
+                open={open === h.host} onOpen={() => setOpen(open === h.host ? null : h.host)} detailTestid="network-host-sessions"
+                detail={
+                  <ul className="flex flex-col gap-1 text-caption">
+                    {pairs(h.host).map((p) => (
+                      <li key={p.session_id ?? ""} className="flex flex-wrap gap-x-3">
+                        {p.session_id ? <button type="button" className="k-link truncate text-accent hover:underline" onClick={() => navigate({ name: "session", id: p.session_id! })}>{title(p.session_id)}</button> : <span className="text-muted">Keel itself</span>}
+                        <span className="tabular-nums text-muted">{plural(p.rows, "transfer")}, {fmtSize(p.bytes)}{p.refused ? `, ${p.refused} refused` : ""}</span>
+                        <span className="truncate text-faint">{list(p.tools).join(", ")}</span>
+                      </li>
+                    ))}
+                  </ul>
+                }>
+                <Cell col={H.ports!} className="font-mono text-caption text-muted">{ports(h.ports) || "?"}</Cell>
+                <Cell col={H.rows!}>{h.rows.toLocaleString()}</Cell>
+                <Cell col={H.bytes!}>{fmtSize(h.bytes)}{h.unknown_bytes > 0 && <span className="text-faint" title={`${plural(h.unknown_bytes, "transfer")} whose bytes are not counted (a git push, a body sent as a stream)`}> +?</span>}</Cell>
+                <Cell col={H.refused!} className={h.refused ? "text-st-fail" : "text-faint"}>{h.refused || "none"}</Cell>
+                <Cell col={H.sessions!} className="text-muted">{h.sessions}</Cell>
+                <Cell col={H.by!} className="max-w-60 truncate text-caption text-muted" title={list(h.tools).join(", ")}>{list(h.tools).join(", ")}</Cell>
+                <Cell col={H.last!} className="text-caption text-muted">{clock(h.last)}</Cell>
+              </Row>
             ))}
           </Table>
         )}
