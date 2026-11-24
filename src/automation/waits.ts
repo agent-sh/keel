@@ -1218,7 +1218,7 @@ export function dropSpent(sessionId: string): string[] {
   for (const w of rows) {
     const j = linkJob(w);
     if (!j || running(j)) continue;
-    if (!spentAtTurnEnd({ ended: j.ended, alive: jobHasProcesses(j), told: !j.background || !endNoticeOwed(sessionId, j.id) })) continue;
+    if (!spentAtTurnEnd({ ended: j.ended, alive: jobHasProcesses(j, true), told: !j.background || !endNoticeOwed(sessionId, j.id) })) continue;
     // An active one is probed first: a file that holds what it waits for already is kept, to fire (its next probe).
     if (w.status === "active" && holds(w)) continue;
     const why = `job ${j.id} that writes ${(w.spec as { path: string }).path} ended and the agent was told in the turn; nothing of it runs`;

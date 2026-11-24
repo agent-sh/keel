@@ -1400,7 +1400,9 @@ export async function processesOf(list: Job[]): Promise<Map<string, JobProcess[]
 // Whether this daemon, or a process above it, is in the job's cgroup (a daemon a job started): a stop of the
 // whole scope would end it too.
 export const scopeHoldsSelf = (j: Job): boolean => { const self = selfLine(); return cgroupPids(j).some((p) => self.has(p)); };
-export const jobHasProcesses = (j: Job): boolean => jobLive(j) || members(j).length > 0;
+// `fresh`: the process table is read now, not the snapshot the looks of the last few milliseconds share (a decision
+// that a job's end settled something must not see a process the snapshot kept after it ended).
+export const jobHasProcesses = (j: Job, fresh = false): boolean => jobLive(j) || members(j, { fresh }).length > 0;
 // The pids alive of a job, as jobHasProcesses finds them (a wait looks at their open files).
 export const jobPidsOf = (j: Job): number[] => members(j).map((m) => m.pid);
 // The processes of each session's commands that still run, by what the daemon holds each command by: its cgroup

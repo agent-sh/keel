@@ -797,11 +797,24 @@ test("an agent's wake names its other waits; its waits on a writer it was told e
   const out = join(dir, "kid.out");
   // (The wait is set before its writer starts: a writer that ended before a wait was set is not its writer.)
   const spent = waits.create(kid.id, waits.normalize({ kind: "log", path: out, match: "PASSED" }, dir), { timeout_seconds: 600 });
-  const job = startJob({ sessionId: kid.id, command: `echo partial > ${out}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
-  const runs = startJob({ sessionId: kid.id, command: `sleep 5 > ${join(dir, "kid.run")}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
-  const live = waits.create(kid.id, waits.normalize({ kind: "file", path: join(dir, "kid.run"), contains: "x" }, dir), { timeout_seconds: 600 });
-  await waitJob(job, 5000);
-  expect(waits.dropSpent(kid.id)).toEqual([spent.id]);
+  // The command ends when the test lets it. The clock stands still from a look at its process while it
+  // runs to the check at its end, so the process table snapshot that looks share for 15 ms is the one read
+  // while it ran: whatever else reads it just before the command ends does the same.
+  const jobs = await import("../tools/jobs.ts");
+  const go = join(dir, "kid.go");
+  const job = startJob({ sessionId: kid.id, command: `while [ ! -e ${go} ]; do sleep 0.01; done; echo partial > ${out}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
+  let runs: ReturnType<typeof startJob> | undefined;
+  let live: ReturnType<typeof waits.create> | undefined;
+  try {
+    setSystemTime(new Date(Date.now() + 60_000));
+    expect(jobs.jobPidsOf(job).length).toBeGreaterThan(0);
+    writeFileSync(go, "");
+    runs = startJob({ sessionId: kid.id, command: `sleep 5 > ${join(dir, "kid.run")}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
+    live = waits.create(kid.id, waits.normalize({ kind: "file", path: join(dir, "kid.run"), contains: "x" }, dir), { timeout_seconds: 600 });
+    await waitJob(job, 5000);
+    expect(waits.dropSpent(kid.id)).toEqual([spent.id]);
+  } finally { setSystemTime(); }
+  if (!live || !runs) throw new Error("unreachable");
   expect([status(spent.id), status(live.id)]).toEqual(["cancelled", "active"]);
   expect(waits.get(spent.id)!.outcome).toContain(`job ${job.id} that writes ${out} ended and the agent was told in the turn`);
   waits.cancel(live.id);
