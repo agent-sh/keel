@@ -322,7 +322,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {marks.length > 0 && <p className="k-mark-why" data-testid="mark-why">{marks.map((m) => m.why).join(" ")}</p>}
           {lead}
           {/* (A stop's or a restart's words are written for the model, not printed by the command.) */}
-          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} held={held && picked === null && !shell.background} failed={state === "error"} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : undefined} />}
+          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} held={held && picked === null && !shell.background} failed={state === "error"} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : state === "waiting" ? WAITS_FOR_YOU : undefined} />}
           {plan && plan.length > 0 && <div className={rejected ? "opacity-60" : undefined}><PlanCard items={plan} explanation={input.explanation} /></div>}
           {files && (
             <CallDiff files={files} actions={(f) => (
@@ -432,6 +432,8 @@ const CUT = /\n\n\[\.\.\. (\d+) (?:characters|chars) cut[^\]]*\]\n\n/;
 // cannot hold it (several lines, or a long one); `whole`: the line shows all of it already.
 // `held`: the command has ended and its card stays as it stood: the tail of the output it was following.
 // (Not a command that was moved to the background: its result says so, and that is what its card shows.)
+// A command that has not run has no output to be missing: it says why instead of "No output.".
+const WAITS_FOR_YOU = "Not run: waits for your approval";
 // `quiet`: what the output says when the call has ended and printed nothing (who stopped it, if anyone did).
 // `failed`: the command failed: its output opens at the first line that says the error, not at its start or its end.
 function Terminal({ name, input, command, whole: onLine, out, running, held, failed, sessionId, callId, quiet = "No output." }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; held?: boolean; failed?: boolean; sessionId?: string; callId?: string; quiet?: string }) {
