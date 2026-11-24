@@ -89,6 +89,19 @@ export function titleOwed(by: TitleBy | undefined, line: readonly StoredEvent[])
   return true;
 }
 
+// Whether a session's title is only the first prompt's words (or none): a source's title cut from its
+// first prompt, or no title at all. Such a title is a stand-in a model's title replaces; a title the
+// source or the owner gave is not. Compared on the first 40 characters of the prompt's first line (the
+// sources cut a prompt longer or shorter than the first line is); a title shorter than that is not one.
+export function derivedTitle(title: string, firstPrompt: string): boolean {
+  const norm = (t: string) => t.replace(/\s+/g, " ").trim();
+  const t = norm(title);
+  if (!t) return true;
+  const line = norm(firstPrompt.split("\n").find((l) => l.trim()) ?? "");
+  const n = Math.min(40, line.length);
+  return n > 0 && t.length >= n && t.slice(0, n) === line.slice(0, n);
+}
+
 const cut = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)}\u2026`);
 
 // The one request a title takes.

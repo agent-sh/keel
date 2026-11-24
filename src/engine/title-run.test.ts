@@ -95,7 +95,7 @@ test("over the spend limit no title is asked for", async () => {
     // The turn's one request is under the limit when it is sent; its cost takes the day over it.
     engine.send(s.id, "Fix the cart discount rounding");
     await engine.idle(s.id);
-    await waitFor(() => (engine as any).untitled.has(s.id));
+    await waitFor(() => ((engine as any).titleFails.get(s.id) ?? 0) > 0);
     expect(asked.map((r) => r.purpose ?? "turn")).toEqual(["turn"]);
     expect(store.session(s.id)!.title).toBe("Fix the cart discount rounding");
   } finally {
@@ -139,4 +139,93 @@ test("with model titles off no title request is made", async () => {
   } finally {
     patchSettings({ titles: { by_model: true } });
   }
+});
+
+// A prompt that reached the history by another way than `send` (a queued one delivered when its turn
+// came) gave the session no title: the session read "New session" for ever.
+test("a session whose first prompt came by the queue is titled at its first reply's end", async () => {
+  const { engine, s, store, titled } = rig([BIG, SMALL], async () => said("Cart discount rounding"));
+  const q = store.enqueue(s.id, "Fix the cart discount rounding", false, undefined, undefined);
+  (engine as any).deliver(q.id, "queued", { turn: true });
+  expect(store.session(s.id)!.title).toBe("");
+  (engine as any).start(s.id);
+  await engine.idle(s.id);
+  await titled("Cart discount rounding");
+  expect(store.session(s.id)!.title_by).toBe("model");
+});
+
+test("with model titles off a session that never had a title gets its first prompt's line", async () => {
+  const { loadSettings, patchSettings } = await import("../admin/settings.ts");
+  const { engine, s, store } = rig([BIG, SMALL], async () => said("Should not be asked"));
+  loadSettings(store.stateDir, () => {});
+  try {
+    expect(patchSettings({ titles: { by_model: false } }).ok).toBe(true);
+    const q = store.enqueue(s.id, "Fix the cart discount rounding", false, undefined, undefined);
+    (engine as any).deliver(q.id, "queued", { turn: true });
+    (engine as any).start(s.id);
+    await engine.idle(s.id);
+    await waitFor(() => store.session(s.id)!.title === "Fix the cart discount rounding");
+    expect(store.session(s.id)!.title_by).toBe("prompt");
+  } finally {
+    patchSettings({ titles: { by_model: true } });
+  }
+});
+
+// One failed request (a provider that was down for a minute) is not the end of the session's title:
+// the next turn's end asks again. A failure that repeats is given up after a few turn ends.
+test("a failed title request is asked again at a later turn's end, a few times at most", async () => {
+  let fail = true;
+  const { engine, s, store, titled, asked } = rig([BIG, SMALL], async () => { if (fail) throw new Error("provider down"); return said("Cart discounts"); });
+  engine.send(s.id, "Fix the cart discount rounding");
+  await engine.idle(s.id);
+  await waitFor(() => ((engine as any).titleFails.get(s.id) ?? 0) === 1);
+  expect(store.session(s.id)!.title).toBe("Fix the cart discount rounding");
+  expect((engine as any).untitled.has(s.id)).toBe(false);
+  fail = false;
+  engine.send(s.id, "And the tax too");
+  await engine.idle(s.id);
+  await titled("Cart discounts");
+  // A request that fails every time stops after three turn ends.
+  const other = rig([BIG, SMALL], async () => { throw new Error("always down"); });
+  for (let i = 1; i <= 5; i++) {
+    other.engine.send(other.s.id, `Prompt ${i}`);
+    await other.engine.idle(other.s.id);
+    await waitFor(() => !(other.engine as any).titling.has(other.s.id));
+  }
+  expect(other.asked.filter((r) => r.purpose === "title").length).toBeGreaterThanOrEqual(3);
+  expect((other.engine as any).titleFails.get(other.s.id)).toBe(3);
+  expect(asked.filter((r) => r.purpose === "title").length).toBeGreaterThan(0);
+});
+
+// A title the owner gave (title_by empty, not the first prompt's words) is never asked for.
+test("a title the owner set is not replaced by a model's", async () => {
+  const { engine, s, store, asked } = rig([BIG, SMALL], async () => said("Not mine"));
+  store.updateSession(s.id, { title: "Mine", title_by: "" });
+  engine.send(s.id, "Fix the cart discount rounding");
+  await engine.idle(s.id);
+  await Bun.sleep(100);
+  expect(asked.filter((r) => r.purpose === "title")).toEqual([]);
+  expect(store.session(s.id)!.title).toBe("Mine");
+  expect(store.session(s.id)!.title_by).toBe("");
+});
+
+// An import: its exchange exists already. A title that is only the source's first prompt is made again by
+// a model right away; a title the source gave (its own name or AI title) stays.
+test("an imported session with a derived title is titled by a model, one with its own title is left", async () => {
+  const { engine, s, store, titled } = rig([BIG, SMALL], async () => said("Cart discount rounding"));
+  const user = store.append(s.id, "user", { text: "Fix the cart discount rounding in the checkout flow, it is off by a cent" });
+  store.append(s.id, "assistant", { blocks: [{ type: "text", text: "Done." }] }, user.id);
+  store.updateSession(s.id, { title: "Fix the cart discount rounding in the checkout flow, it is off by a cent" });
+  engine.adoptImport(s.id);
+  await titled("Cart discount rounding");
+  expect(store.session(s.id)!.title_by).toBe("model");
+
+  const own = rig([BIG, SMALL], async () => said("Should not be asked"));
+  const u = own.store.append(own.s.id, "user", { text: "Fix the cart discount rounding" });
+  own.store.append(own.s.id, "assistant", { blocks: [{ type: "text", text: "Done." }] }, u.id);
+  own.store.updateSession(own.s.id, { title: "Checkout work (named in Claude Code)" });
+  own.engine.adoptImport(own.s.id);
+  await Bun.sleep(100);
+  expect(own.asked.filter((r) => r.purpose === "title")).toEqual([]);
+  expect(own.store.session(own.s.id)!.title).toBe("Checkout work (named in Claude Code)");
 });

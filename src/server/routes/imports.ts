@@ -32,6 +32,9 @@ export const importRoutes: RouteModule = (deps) => {
   const imports = sharedImports(store);
   imports.insideFailed ??= (e) => deps.errors.capture("server", e, { at: "import search inside" });
   const reads = readsOf(store);
+  // An import has its exchange already: a model titles it now when its title is only the source's first prompt.
+  // (Set again by each app: the index is one per process, the engine is the app's own.)
+  imports.created = (id) => { try { deps.engine.adoptImport(id); } catch (e) { deps.errors.capture("server", e, { session: id, at: "import title" }); } };
   imports.offRead ??= (sql, params) => reads.sql(sql, params);
   const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
   // The source's model when this daemon lists it, else the default one.

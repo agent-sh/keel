@@ -346,3 +346,19 @@ test("a search inside the transcripts reads the files of the index off the loop 
   expect(listed.sessions.map((s) => [s.path, s.in_text])).toEqual([[path, true]]);
   expect(imports.list({ harness: "claude", q: "answer", inside: r.paths!, insideRows: [] }).sessions).toEqual([]);
 });
+
+// The daemon titles a session an import made, once the copy is stored: told on a create only, and an import
+// that works on the told session's id is never failed by what the callback does.
+test("a created session is told to the daemon after its copy is stored, a failing callback does not fail the import", async () => {
+  const { store, imports, grow, found, o } = fixture();
+  const told: { id: string; events: number; title: string }[] = [];
+  imports.created = (id) => { told.push({ id, events: store.events(id).length, title: store.session(id)!.title }); throw new Error("said elsewhere"); };
+  const made = await imports.import(found(), o);
+  expect(made.action).toBe("created");
+  // The copy is whole when it is told (the events and the note), and the title is the source's first prompt.
+  expect(told).toEqual([{ id: made.session.id, events: made.imported_events + 1, title: "First question" }]);
+  grow();
+  expect((await imports.import(found(), { ...o, mode: "update" })).action).toBe("updated");
+  expect((await imports.import(found(), o)).action).toBe("opened");
+  expect(told.length).toBe(1);
+});

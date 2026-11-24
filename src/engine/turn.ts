@@ -44,7 +44,7 @@ import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./re
 import { trialModel } from "./model-trial.ts";
 import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successor.ts";
-import { cleanTitle, firstReply, modelTitles, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
+import { cleanTitle, derivedTitle, firstReply, modelTitles, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { derived } from "../core/message-facts.ts";
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedFits, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, fixedContext } from "./compact.ts";
@@ -1084,8 +1084,13 @@ export class Engine {
   // Sessions whose title a small model is writing now, and those where no
   // choice gave one: they keep the title they have until the daemon starts
   // again (a request a turn after another would fail the same way).
+  // `untitled`: no model could be asked at all (kept until the daemon starts again). `titleFails`: the
+  // requests that failed, per session: one failure (a provider down for a minute) must not cost the
+  // session its title, so the next turn ends ask again, TITLE_TRIES times in all, then the session keeps
+  // the words it has (a failure that repeats, a spend limit or a refusal, is not asked at every turn end).
   private titling = new Set<string>();
   private untitled = new Set<string>();
+  private titleFails = new Map<string, number>();
   // Bumped when the session's task changes under a title request (an edit of
   // the first prompt): that request's title is not saved, and one is asked
   // for the new prompt once its reply is in.
@@ -1096,19 +1101,44 @@ export class Engine {
   // any turn's prefix, and a failure keeps the title the session had. An
   // agent's session keeps the name its parent gave it.
   private retitle(id: string) {
-    const s = this.store.session(id);
-    if (!s || s.parent_id || s.archived || this.titling.has(id) || this.untitled.has(id) || !modelTitles()) return;
+    let s = this.store.session(id);
+    if (!s || s.parent_id || s.archived) return;
+    // A title a model, the owner or the session's maker gave owes nothing (no read of the history for it).
+    if (s.title && s.title_by !== "prompt" && s.title_by !== "start") return;
     const line = this.lineage(id);
+    // A session that reads "New session" with the owner's words in it (their first prompt reached the history
+    // by a way `send` does not title: a queued one) gets the first prompt's line at once. An empty title is
+    // never one the owner gave.
+    if (!s.title) {
+      const first = ownerPrompts(line)[0];
+      if (first) {
+        s = this.store.updateSession(id, { title: firstLineTitle(first), title_by: "prompt" });
+        this.bus.emit({ t: "session", session: s });
+      }
+    }
+    if (this.titling.has(id) || this.untitled.has(id) || (this.titleFails.get(id) ?? 0) >= TITLE_TRIES || !modelTitles()) return;
     if (!titleOwed(s.title_by, line)) return;
     this.titling.add(id);
     const gen = this.titleGen.get(id) ?? 0;
     void this.writeTitle(id, s, line, gen)
-      .catch((e) => { this.untitled.add(id); this.errors.capture("provider", e, { session: id, at: "title" }); })
+      .catch((e) => { this.titleFails.set(id, (this.titleFails.get(id) ?? 0) + 1); this.errors.capture("provider", e, { session: id, at: "title" }); })
       .finally(() => {
         this.titling.delete(id);
         // The task changed meanwhile and its reply may be in already: its title is owed now.
         if ((this.titleGen.get(id) ?? 0) !== gen && !this.running.has(id)) this.retitle(id);
       });
+  }
+
+  // A session an import made: its exchange exists already, so its title is not waited for. A title that is
+  // only the source's first prompt (or none) becomes the first prompt's line and a model writes the real
+  // one now; a title the source gave (its own name, its AI title) is left as it is.
+  adoptImport(id: string) {
+    const s = this.store.session(id);
+    if (!s || s.parent_id || s.title_by) return;
+    const first = ownerPrompts(this.lineage(id))[0];
+    if (!first || !derivedTitle(s.title, first)) return;
+    this.bus.emit({ t: "session", session: this.store.updateSession(id, { ...(s.title ? {} : { title: firstLineTitle(first) }), title_by: "prompt" }) });
+    this.retitle(id);
   }
 
   // The candidates of a choice whose provider the session's folder allows, in their order. The
@@ -4837,6 +4867,7 @@ class Slots {
 
 // A title from the first prompt: its first line, cut at a word before 80
 // characters with an ellipsis, never in the middle of a word.
+const TITLE_TRIES = 3;
 export function firstLineTitle(text: string, max = 80): string {
   const line = (text.split("\n").find((l) => l.trim()) ?? "").replace(/\s+/g, " ").trim();
   if (line.length <= max) return line;

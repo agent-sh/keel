@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cleanTitle, titleOwed, weakStart } from "./title.ts";
+import { cleanTitle, derivedTitle, titleOwed, weakStart } from "./title.ts";
 
 const ev = (kind: string, data: any) => ({ id: Math.random().toString(36), session_id: "s", seq: 0, parent: null, kind, data, ts: 0 }) as any;
 const reply = (text: string) => ev("assistant", { blocks: [{ type: "text", text }] });
@@ -31,4 +31,16 @@ test("a title is owed after the first reply, and once more after a weak start's 
   expect(titleOwed("start", [...first, ev("user", { text: "Fix the cart" }), reply("Fixed.")])).toBe(true);
   // A report or a wake is not the owner's prompt.
   expect(titleOwed("start", [...first, ev("user", { text: "report", kind: "subagent" }), reply("Read it.")])).toBe(false);
+});
+
+test("a title is derived when it is empty or only the first prompt's words", () => {
+  const prompt = "Fix the cart discount rounding in the checkout flow\nsecond line";
+  expect(derivedTitle("", prompt)).toBe(true);
+  expect(derivedTitle("Fix the cart discount rounding in the checkout flow", prompt)).toBe(true);
+  // The source cut it longer or shorter than the first line: its first 40 characters still match.
+  expect(derivedTitle("Fix the cart discount rounding in the checkout flow second line and more", prompt)).toBe(true);
+  expect(derivedTitle("Fix the cart discount rounding in", prompt)).toBe(false);
+  expect(derivedTitle("Checkout rounding (named by the owner)", prompt)).toBe(false);
+  expect(derivedTitle("Fix", "Fix")).toBe(true);
+  expect(derivedTitle("Mine", "Fix")).toBe(false);
 });

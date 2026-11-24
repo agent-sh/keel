@@ -115,6 +115,8 @@ export class Imports {
   private opencodeCache: { at: number; rows: Found[] } | null = null;
   private geminiCache: { at: number; rows: Found[] } | null = null;
   complete = false;
+  // Set by the daemon (routes/imports.ts): a session this index just made from another harness's.
+  created?: (sessionId: string) => void;
   // How many serialized rows of the index were decoded: a page costs its rows, a lookup one.
   decodes = 0;
 
@@ -669,6 +671,9 @@ export class Imports {
       if (found.perm_mode) perm.gate?.setPerm(s.id, { mode: found.perm_mode });
       return s.id;
     })();
+    // Told once the copy is stored: the daemon titles a session whose title is only the source's first prompt.
+    // What it does is its own: a failure there never fails the import (the callback says it).
+    try { this.created?.(id); } catch { /* said by the callback */ }
     return { action: "created", session: this.store.session(id)!, imported_events: r.events.length, read: r };
   }
 }
