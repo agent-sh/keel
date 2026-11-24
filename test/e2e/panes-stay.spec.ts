@@ -544,12 +544,15 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator(`section.k-station[data-station="${q}"]`)).toBeVisible();
   await expect(page.getByTestId("look-bar")).toHaveCount(0);
-  // Opened there, its title is read whole: beside the tools, on a second line when it is long. The reason has the line under it.
+  // Opened there, its title is read whole, on a second line when it is long. It asks a question: on a phone
+  // the state line gives way to the question's card, which says what is asked (bridge.css, data-question).
   await page.goto(`/s/${q}`);
   const phone = page.locator(`section.k-station[data-station="${q}"]`);
   await expect.poll(async () => Math.round((await phone.boundingBox())!.x)).toBe(0);
   expect(await phone.getByTestId("station-title").evaluate((el) => el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1), "the title is cut on a phone").toBe(true);
-  expect(await phone.getByTestId("station-head").evaluate((h) => h.querySelector('[data-testid="station-why"]')!.getBoundingClientRect().top >= h.querySelector('[data-testid="station-title"]')!.getBoundingClientRect().bottom - 1)).toBe(true);
+  await expect(phone).toHaveAttribute("data-question", "");
+  await expect(phone.getByTestId("station-why")).toBeHidden();
+  await expect(phone.locator('.k-question[data-state="open"]')).toBeVisible();
   await shoot(page, "panes-stay-10-phone");
   await page.goto("/");
   await expect(page.getByTestId("home-count-need")).toContainText("2 need you");
