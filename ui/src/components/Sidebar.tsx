@@ -31,9 +31,9 @@ import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from 
 import { opened, openFocus } from "../lib/self-focus.ts";
 import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
-import { ago, clock, cn, folderNames, timeBucket, when } from "../lib/utils.ts";
+import { ago, clock, cn, folderNames, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, WAITS_ON_YOU, FAILED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, WAITS_ON_YOU, FAILED_WORD, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
 import { OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
@@ -190,11 +190,11 @@ function RestLine({ s }: { s: Session }) {
 // A row draws again only for what it shows: its own reads (the session as it is now, its state,
 // its queue) tell it. The list draws again with every change of any session and asks none of
 // its rows to follow: a new session object with the same id and the same archive mark is the same row.
-const Row = memo(RowOf, (a, b) => a.s.id === b.s.id && !!a.s.archived === !!b.s.archived && a.active === b.active && a.where === b.where && a.gone === b.gone && a.calm === b.calm && a.said === b.said);
-// `calm`: a session at rest whose time says nothing the quiet row above it did not (the same bucket,
-// timeBucket): its time is in its tooltip only, and its unread dot stands in the time's place.
+const Row = memo(RowOf, (a, b) => a.s.id === b.s.id && !!a.s.archived === !!b.s.archived && a.active === b.active && a.where === b.where && a.gone === b.gone && a.said === b.said);
+// The row's end is one slot: who a row that calls the owner waits on (you, the failure, declined), else
+// its time, on every row. News is the title's weight (bridge.css), not a dot in that slot.
 // `said`: the time the row says at rest, read on the page's clock by the list (the row is drawn again when the words change).
-function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; active: boolean; where?: boolean; gone?: boolean; calm?: boolean; said?: string }) {
+function RowOf({ s: given, active, where, gone, said }: { s: Session; active: boolean; where?: boolean; gone?: boolean; said?: string }) {
   const live = useStore((x) => x.sessions[given.id]);
   const deleted = useStore((x) => !!x.gone[given.id]);
   const s = live ?? given;
@@ -236,7 +236,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   // A row red for its agents says how many failed; a failure with no class still says so in a word.
   const cls = failWord(st.cls);
   const agents = w === "fail" && st.why === "agents" ? agentsFailedWord(st.agents_failed ?? 1) : "";
-  const on = !narrow && lines === "one" && !offline && !gone ? (w === "need" ? WAITS_ON_YOU : w === "fail" ? agents || cls || FAILED_WORD : "") : "";
+  const on = !narrow && lines === "one" && !offline && !gone ? (w === "need" ? WAITS_ON_YOU : w === "fail" ? agents || cls || FAILED_WORD : w === "declined" ? DECLINED_WORD : "") : "";
   // A menu of the row is the hand on the list: the list is held while one is open.
   const keep = useContext(HandCtx).keep;
   const over = placing || !!menu;
@@ -349,7 +349,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
             </>
           : timed(st)
           ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{rowClock(st, now)}</span>
-          : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-calm={calm || undefined} title={when(s.updated)}>{said ?? ago(s.updated)}</span>}
+          : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{said ?? ago(s.updated)}</span>}
         {/* (A row whose session left has no actions: there is nothing to act on.) */}
         {/* (Pressed with the pointer, it leaves the keyboard where it was: a focus the owner did not give
             the row would hold the list after the pointer left, and the pinned row would not take its place.) */}
@@ -449,24 +449,11 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
   const shown = fluid && drawn.current.key === key && on && !actedOn(on) ? around(fits, drawn.current.ids, on, (s) => s.id) : fits;
   drawn.current = { key, ids: shown.map((s) => s.id) };
   for (const s of shown) kept.current.add(s.id);
-  // A quiet row's time shows where it starts a new bucket after the quiet row above it: a calm list is
-  // not a column of the same "7m". (A live clock, a word in the time's place: always shown.) The column
-  // holds one thing: the time, a word, or the dot of news.
-  // The buckets are read on the page's clock (lib/clock.ts), so a list nobody touched changes with the time.
-  const calm = new Set<string>();
-  let above = -1;
-  for (const s of shown) {
-    // (An unread one shows its dot in the time's place, and no time: bridge.css.)
-    if (!AT_REST.includes(watches[s.id] ?? "idle") || (unread[s.id] ?? 0) > 0) continue;
-    const b = timeBucket(s.updated, now);
-    if (b === above) calm.add(s.id);
-    above = b;
-  }
   return (
     <div className="flex flex-col gap-px">
       {shown.map((s) => (
         <div key={s.id}>
-          <Row s={s} active={current === s.id} where={where} gone={gone.has(s.id)} calm={calm.has(s.id)} said={ago(s.updated, now)} />
+          <Row s={s} active={current === s.id} where={where} gone={gone.has(s.id)} said={ago(s.updated, now)} />
           {/* The agents' line under the row. Its height is held with the list's (see Index). */}
           <div className="k-row-kids" onClickCapture={(e) => { e.currentTarget.style.height = ""; e.currentTarget.style.overflow = ""; }}>
             <SessionChildren parentId={s.id} current={current} />

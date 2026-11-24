@@ -2,9 +2,10 @@ import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a session row says one state, and the bar above a session says its reason in words.
-// The row's mark is its state; every title has one weight. Ink is for the rows that call the owner
-// (needs you, failed) and the open one; what is new has the accent dot alone. A row that calls the
-// owner says who it waits on where its time would be: you, or the failure's class. The time and
+// The row's mark is its state. Ink is for the rows that call the owner (needs you, failed, declined)
+// and the open one; what is new has its title in the heavier weight, and no dot. The row's end is
+// one slot: who a row that calls the owner waits on (you, the failure's class, declined), else its
+// time, on every row. The time and
 // the counts above the list are in the text face, quiet. The note that the
 // list's order changed is a hint for one load. A background command with no description of its own
 // is named in words in the bar, its shell text in the tooltip.
@@ -31,24 +32,26 @@ test("a row says one state, in one weight, and the line above the list is one qu
     const fresh = await make("Quiet rows: one with news");
     const asks = await make("Quiet rows: one that asks");
     const failed = await make("Quiet rows: one that failed");
+    const declined = await make("Quiet rows: one that was declined");
     for (const id of [seen, fresh]) await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say Done." } });
     await request.put(`/api/sessions/${asks}/permissions`, { data: { mode: "ask" } });
     await request.post(`/api/sessions/${asks}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo quiet-rows-asks > quiet-rows-asks.txt" } }])}` } });
     await request.post(`/api/sessions/${failed}/messages`, { data: { text: "script:billing" } });
-    for (const id of [seen, fresh, failed]) await turnEnds(request, id);
+    await request.post(`/api/sessions/${declined}/messages`, { data: { text: "script:refuse" } });
+    for (const id of [seen, fresh, failed, declined]) await turnEnds(request, id);
     // One is opened and read; the other has news.
     await row(page, seen).click();
     await expect(page.getByTestId("station-head").first()).toBeVisible();
     await page.goto("/");
     await expect(row(page, fresh)).toHaveAttribute("data-unread", "true");
     await expect(row(page, seen)).not.toHaveAttribute("data-unread", "true");
-    await expect(row(page, fresh).getByTestId("unread-dot")).toBeVisible();
-
-    // One weight for every title. News has its dot and no ink of its own; ink is for what calls the owner.
-    expect(await style(page, fresh, ".k-row-title", "fontWeight")).toBe(await style(page, seen, ".k-row-title", "fontWeight"));
+    // News is its title's weight: no dot, and the row's end keeps its time.
+    await expect(row(page, fresh).getByTestId("unread-dot")).toHaveCount(0);
+    expect(Number(await style(page, fresh, ".k-row-title", "fontWeight")), "a row with news is not heavier than a read one").toBeGreaterThan(Number(await style(page, seen, ".k-row-title", "fontWeight")));
+    for (const id of [fresh, seen]) await expect(row(page, id).getByTestId("row-time")).toBeVisible();
     await expect(row(page, asks)).toHaveAttribute("data-watch", "need", { timeout: 15_000 });
     await expect(row(page, failed)).toHaveAttribute("data-watch", "fail");
-    expect(await style(page, fresh, ".k-row-title", "color"), "a row with news is in the quiet colour").toBe(await style(page, seen, ".k-row-title", "color"));
+    expect(await style(page, fresh, ".k-row-title", "color"), "a row with news is in the ink").not.toBe(await style(page, seen, ".k-row-title", "color"));
     expect(await style(page, asks, ".k-row-title", "color"), "a row that needs the owner is in ink").not.toBe(await style(page, seen, ".k-row-title", "color"));
     expect(await style(page, failed, ".k-row-title", "color")).toBe(await style(page, asks, ".k-row-title", "color"));
     // Who it waits on, in the time's place: the owner, or what failed. The time is the word's tooltip.
@@ -58,7 +61,14 @@ test("a row says one state, in one weight, and the line above the list is one qu
     await expect(row(page, failed).locator(".k-row-end").getByTestId("row-class")).toHaveText("billing");
     await expect(row(page, failed).locator(".k-row-end").getByTestId("row-class")).toBeVisible();
     await expect(row(page, failed).getByTestId("row-time")).toHaveCount(0);
-    // One state signal: two finished rows wear the same mark, read or not (the dot says which is new).
+    // A declined row says so in the same slot, in the failure's ink.
+    await expect(row(page, declined)).toHaveAttribute("data-watch", "declined");
+    await expect(row(page, declined).getByTestId("row-on")).toHaveText("declined");
+    await expect(row(page, declined).getByTestId("row-time")).toHaveCount(0);
+    // Each row's end shows one thing.
+    const slots = await page.evaluate((ids) => ids.map((id) => document.querySelector<HTMLElement>(`[data-testid="session-row"][data-session="${id}"]`)!).map((r) => [...r.querySelectorAll<HTMLElement>(".k-row-end > *")].filter((e) => e.getClientRects().length && getComputedStyle(e).visibility !== "hidden" && !e.classList.contains("sr-only")).length), made);
+    expect(Math.max(...slots), `a row's end shows more than one thing: ${slots.join(",")}`).toBe(1);
+    // One state signal: two finished rows wear the same mark, read or not (the title's weight says which is new).
     expect(await style(page, fresh, ".k-mark", "backgroundColor")).toBe(await style(page, seen, ".k-mark", "backgroundColor"));
     // The time is in the text face, and so is the line above the list.
     const text = await page.evaluate(() => getComputedStyle(document.body).fontFamily);

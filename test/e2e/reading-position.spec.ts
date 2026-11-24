@@ -440,7 +440,8 @@ test("the rule waits until it was read, says when its row came, and a pane besid
   const beside = await long(request, "Beside: lines nobody is at", ws, 1);
   const marked = (id: string) => pane(page, id).locator("[data-new-since]");
   const jump = (id: string) => pane(page, id).getByTestId("new-since-jump");
-  const dot = (id: string) => row(page, id).getByTestId("unread-dot");
+  // The row's news (its title's weight): the row while it is marked unread.
+  const dot = (id: string) => row(page, id).and(page.locator("[data-unread]"));
   const mark = (id: string) => page.evaluate((id) => JSON.parse(localStorage.getItem("keel.places") ?? "{}")[id]?.read as string | undefined, id);
   const hhmm = (ts: number) => page.evaluate((ts) => new Date(ts).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }), ts);
   const events = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as { id: string; kind: string; ts: number; data: any }[];

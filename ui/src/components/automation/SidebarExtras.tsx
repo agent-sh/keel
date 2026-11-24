@@ -190,9 +190,8 @@ function ChildCap({ id, title }: { id: string; title: string }) {
   return <span className="k-row-cap" data-testid="child-cap" data-level={cap.level} title={capTip(cap, title)}><Gauge aria-hidden="true" />{Math.floor(cap.pct * 100)}%{cap.burn_hour > 0 && <span className="k-row-cap-rate">{dollars(cap.burn_hour)}/h</span>}</span>;
 }
 
-// On a session row: unread alerts and scheduled work.
+// On a session row: scheduled work and a snooze. (What is new is the title's weight, bridge.css.)
 export function SessionBadges({ sessionId }: { sessionId: string }) {
-  const unread = useAuto((s) => s.unread.sessions[sessionId] ?? 0);
   const loops = useAuto((s) => Object.values(s.loops).some((l) => l.session_id === sessionId && l.enabled));
   const snoozed = useAuto((s) => s.snoozes[sessionId]);
   return (
@@ -200,7 +199,6 @@ export function SessionBadges({ sessionId }: { sessionId: string }) {
       {snoozed && !snoozed.suspended && <Moon data-testid="snoozed-mark" className="k-snoozed-mark size-3 shrink-0 text-faint" aria-label={`Snoozed ${snoozeText(snoozed)}`} />}
       {/* A wait is the row's own state (Waiting, with what it waits for); a loop is scheduled work beside it. */}
       {loops && <Repeat className="size-3 shrink-0 text-faint" aria-label="Scheduled work" />}
-      {unread > 0 && <span data-testid="unread-dot" title={`${unread} unread`} className="k-unread-dot size-2 shrink-0 rounded-full bg-accent" />}
     </>
   );
 }

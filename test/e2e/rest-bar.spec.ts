@@ -197,7 +197,7 @@ test("a pane alone has no tools at rest, its menu has them; beside another pane 
   }
 });
 
-test("a row red for its agents says how many failed, and a calm list says a time once", async ({ page, request }) => {
+test("a row red for its agents says how many failed, and every quiet row says its time", async ({ page, request }) => {
   const model = await scripted(request);
   test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
   const made: string[] = [];
@@ -215,41 +215,25 @@ test("a row red for its agents says how many failed, and a calm list says a time
     await expect(row(page, coord)).toHaveAttribute("data-watch", "fail", { timeout: 30_000 });
     await expect(row(page, coord).getByTestId("row-on")).toHaveText("1 failed");
 
-    // Two quiet rows read side by side, both within the hour: the lower one keeps its time in its tooltip.
+    // Two quiet rows read side by side, both within the hour: each says its time (the row's end is one slot, the time, on
+    // every row at rest).
     const one = await make("Rest bar: calm one", "script:say Done.");
     const two = await make("Rest bar: calm two", "script:say Done.");
     for (const id of [one, two]) await expect(row(page, id)).toHaveAttribute("data-watch", "done", { timeout: 30_000 });
     for (const id of [one, two]) await request.post(`/api/sessions/${id}/marks`, { data: { unread: false } });
     await page.reload();
     await expect(row(page, two)).toBeVisible();
-    // In each group, along its quiet rows that were read, a time shows only where its bucket changes.
-    const said = await page.evaluate(() => {
-      const bucket = (t: string) => t === "now" ? 0 : t.endsWith("m") ? 1 : t.endsWith("h") ? 2 : 3;
-      const out: { shown: number; hidden: number; twice: string[] } = { shown: 0, hidden: 0, twice: [] };
-      for (const group of new Set([...document.querySelectorAll('[data-testid="session-row"]')].map((r) => r.parentElement!.parentElement!))) {
-        let above = -1;
-        for (const r of group.querySelectorAll<HTMLElement>(':scope > div > [data-testid="session-row"]')) {
-          if (!["done", "idle", "stop"].includes(r.dataset.watch ?? "") || r.dataset.unread) continue;
-          const t = r.querySelector<HTMLElement>('[data-testid="row-time"]');
-          if (!t) continue;
-          const b = bucket(t.textContent ?? ""), shown = getComputedStyle(t).display !== "none";
-          if (shown) out.shown++; else out.hidden++;
-          if (shown && b === above) out.twice.push(t.textContent ?? "");
-          above = b;
-        }
-      }
-      return out;
-    });
-    expect(said.twice, "a quiet row says the time the quiet row above it said").toEqual([]);
-    expect(said.hidden).toBeGreaterThan(0);
-    // A row with news has its dot in the time's place: one thing in the column.
+    for (const id of [one, two]) await expect(row(page, id).getByTestId("row-time")).toBeVisible();
+    // A row with news keeps its time in that slot; the news is its title's weight, and no dot.
     await request.post(`/api/sessions/${two}/marks`, { data: { unread: true } });
     await expect(row(page, two)).toHaveAttribute("data-unread", "true");
-    await expect(row(page, two).getByTestId("unread-dot")).toBeVisible();
-    await expect(row(page, two).getByTestId("row-time")).toBeHidden();
+    await expect(row(page, two).getByTestId("unread-dot")).toHaveCount(0);
+    await expect(row(page, two).getByTestId("row-time")).toBeVisible();
     await expect(row(page, two).getByTestId("row-time")).toHaveAttribute("title", /\d/);
+    const weight = (id: string) => row(page, id).locator(".k-row-title").evaluate((el) => Number(getComputedStyle(el).fontWeight));
+    expect(await weight(two), "news is the title's weight").toBeGreaterThan(await weight(one));
     // A row at work with news keeps its clock alone: the right column holds one kind of thing in every state
-    // (a word for who it waits on, the clock of a step, a time, or the dot of news).
+    // (a word for who it waits on, the clock of a step, or a time).
     const busy = await make("Rest bar: at work with news", "script:say Done.");
     await expect(row(page, busy)).toHaveAttribute("data-watch", "done", { timeout: 30_000 });
     await request.post(`/api/sessions/${busy}/messages`, { data: { text: `script:hold ${gate()}/never` } });
@@ -259,13 +243,13 @@ test("a row red for its agents says how many failed, and a calm list says a time
     await expect(row(page, busy).getByTestId("row-time")).toHaveAttribute("data-live", "true");
     const kinds = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="session-row"]')].map((r) => ({
       id: r.dataset.session!, watch: r.dataset.watch,
-      kinds: [...r.querySelectorAll<HTMLElement>('.k-row-end [data-testid="row-time"], .k-row-end [data-testid="row-on"], .k-row-end [data-testid="row-class"], .k-row-end [data-testid="unread-dot"]')].filter((e) => { const b = e.getBoundingClientRect(); return getComputedStyle(e).display !== "none" && b.width > 0; }).map((e) => e.dataset.testid),
+      kinds: [...r.querySelectorAll<HTMLElement>('.k-row-end [data-testid="row-time"], .k-row-end [data-testid="row-on"], .k-row-end [data-testid="row-class"]')].filter((e) => { const b = e.getBoundingClientRect(); return getComputedStyle(e).display !== "none" && b.width > 0; }).map((e) => e.dataset.testid),
     })));
     await expect.poll(async () => (await kinds()).filter((r) => r.kinds.length > 1)).toEqual([]);
     expect((await kinds()).find((r) => r.id === busy)!.kinds).toEqual(["row-time"]);
     // The line above the list counts news as the rows show it: a row at work keeps its clock, so its news is not in "new".
-    const dots = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="session-row"] [data-testid="unread-dot"]')].filter((e) => getComputedStyle(e).display !== "none" && e.getBoundingClientRect().width > 0).length);
-    await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the dots the rows show" }).toBe(await dots());
+    const news = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="session-row"][data-unread]:not([data-gone])')].filter((r) => ["done", "idle", "stop"].includes(r.dataset.watch ?? "")).length);
+    await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the rows at rest with news" }).toBe(await news());
     expect((await kinds()).find((r) => r.id === coord)!.kinds).toHaveLength(1);
     await shoot(page, "rest-bar-04-rows");
   } finally {
@@ -273,7 +257,7 @@ test("a row red for its agents says how many failed, and a calm list says a time
   }
 });
 
-test("a calm list's time buckets move with the page's clock, with nothing touched", async ({ page, request }) => {
+test("a quiet row's time moves with the page's clock, with nothing touched", async ({ page, request }) => {
   const model = await scripted(request);
   test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
   const fs = await import("node:fs");
@@ -296,21 +280,19 @@ test("a calm list's time buckets move with the page's clock, with nothing touche
     const gap = n - o;
     expect(gap, "the two sessions ended apart").toBeGreaterThan(20);
     expect(gap).toBeLessThan(40_000);
-    // The page's own clock: both ended a few seconds ago, so both say the same and the older one's time is not repeated.
+    // The page's own clock: both ended a few seconds ago, so both say now.
     await page.clock.install({ time: n + 1000 });
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto("/");
     await expect(row(page, newer)).toBeVisible();
     await page.clock.pauseAt(n + 15_000);
-    await expect(row(page, older).getByTestId("row-time")).toHaveAttribute("data-calm", "true");
-    await expect(row(page, older).getByTestId("row-time")).toBeHidden();
+    await expect(row(page, older).getByTestId("row-time")).toHaveText("now");
     await expect(row(page, newer).getByTestId("row-time")).toHaveText("now");
     // The page's clock moves on to the instant the older one says a minute and the newer one does not yet: its time
-    // shows, with no event, no click and no reload.
+    // changes, with no event, no click and no reload.
     await page.clock.fastForward(59_500 - Math.ceil(gap / 2) - 15_000);
     await expect(row(page, older).getByTestId("row-time")).toBeVisible();
     await expect(row(page, older).getByTestId("row-time")).toHaveText("1m");
-    await expect(row(page, older).getByTestId("row-time")).not.toHaveAttribute("data-calm", /.*/);
     await expect(row(page, newer).getByTestId("row-time")).toHaveText("now");
     await shoot(page, "rest-bar-06-calm-clock");
   } finally {
