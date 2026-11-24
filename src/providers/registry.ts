@@ -21,7 +21,7 @@ import { priceOf } from "./pricing.ts";
 import { reportedUsage, reportUsage } from "./reported.ts";
 import { NoKey, ProviderError } from "./http.ts";
 import { fromHeaders, Limits, type Window } from "./limits.ts";
-import { ScriptedProvider, scriptedEnabled } from "./scripted.ts";
+import { SCRIPTED_SECOND, ScriptedProvider, scriptedEnabled, scriptedSecond } from "./scripted.ts";
 import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus, SpeedOffer } from "./types.ts";
 import { XaiProvider } from "./xai.ts";
 import { AcpProvider } from "../acp/agents.ts";
@@ -100,6 +100,7 @@ export class Providers {
       new AcpProvider(stateDir),
       // Test-only, never listed unless the daemon starts with KEEL_SCRIPTED_PROVIDER=1.
       ...(scriptedEnabled() ? [new ScriptedProvider(stateDir)] : []),
+      ...(scriptedSecond() ? [new ScriptedProvider(stateDir, SCRIPTED_SECOND, "Scripted second (test)")] : []),
     ];
     this.plugins = new Plugins(stateDir, (e, ctx) => this.capture(e, ctx));
     this.xai.onSignedIn = () => void this.refresh("grok");

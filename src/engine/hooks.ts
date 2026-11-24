@@ -1,6 +1,7 @@
 import type { Message, QueueItem, Session, StoredEvent, ToolResultBlock, TurnStatus, Usage } from "../core/types.ts";
 import type { ModelInfo, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
+import type { Crossing } from "../safety/route-rule.ts";
 
 // One tool call as the turn is about to run it.
 // `hook`: what the owner's PreToolUse hooks did to the call before any gate saw
@@ -100,6 +101,9 @@ export type TurnHooks = {
   // A turn's request has been answered overloaded as many times as the counted retries and is
   // still tried (src/engine/retry.ts overloaded): `ms` since the model first said so. Once a request.
   capacityWaiting?: (s: Session, model: string, ms: number) => void;
+  // A model call for the session would go to a provider its folder does not allow, and was not
+  // made (src/safety/content-routes.ts). `tell`: its model is to hear of it with its next input.
+  routeRefused?: (s: Session, c: Crossing, tell: boolean) => void;
   // Each streamed piece of the answer, side answers too (they never reach the bus).
   requestDelta?: (s: Session, req: ProviderRequest, d: { kind: string; text: string }) => void;
   afterResponse?: (s: Session, res: ProviderResult, messages: Message[]) => void | Promise<void>;

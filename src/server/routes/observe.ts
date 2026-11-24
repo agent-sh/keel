@@ -17,6 +17,7 @@
 // POST /api/debug/export/flush                  sends what waits now, the measurements of the open window included -> the same state
 // GET  /api/logs?since_ms=&level=&q=&limit=     the daemon's kept log lines -> { lines, dir }
 // GET  /api/logs/stream?level=                  the same, live, as server-sent events
+import { crossing } from "../../safety/content-routes.ts";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildBundle } from "../../admin/bundle.ts";
@@ -293,6 +294,9 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         const route = String(body.route || sent.route || of.attrs.route);
         let resolved;
         try { resolved = await providers.resolve(route); } catch (e) { return json({ error: errorText(e) }, 400); }
+        // The request holds the session's content: only to a provider its folder allows (src/safety/content-routes.ts).
+        const cross = of.session_id ? crossing(store, of.session_id, "side", resolved.info.id, resolved.provider.id) : undefined;
+        if (cross) return json({ error: `provider ${cross.provider} is not allowed for this session's folder (allowed: ${cross.allowed.join(", ") || "none"})` }, 403);
         const t0 = Date.now();
         const tap: Wire = {};
         let first: number | undefined;

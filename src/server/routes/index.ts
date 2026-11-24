@@ -26,6 +26,7 @@ import { profileRoutes } from "./profile.ts";
 import { pwaRoutes } from "./pwa.ts";
 import { toolRoutes } from "./tools.ts";
 import { usageRoutes } from "./usage.ts";
+import { contentRouteRoutes } from "./content-routes.ts";
 import { searchRoutes } from "./search.ts";
 import { integrationRoutes } from "./integrations.ts";
 import { importRoutes } from "./imports.ts";
@@ -104,6 +105,7 @@ const modules: Record<string, RouteModule> = {
   treeRoutes,
   attachmentRoutes,
   usageRoutes,
+  contentRouteRoutes,
   errorRoutes,
   resourceRoutes,
   adminRoutes,

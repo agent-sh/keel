@@ -1,6 +1,6 @@
 // The safety lane's side panels and commands: what the session changed
 // (checkpoints and rewind) and the branch review. Imported once from main.tsx.
-import { FileDiff, FileLock2, GitMerge, GitPullRequestArrow, Network, ShieldCheck } from "lucide-react";
+import { FileDiff, FileLock2, GitMerge, GitPullRequestArrow, Network, Route, ShieldCheck } from "lucide-react";
 import { lazy } from "react";
 import { panels, settingsSections } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
@@ -42,6 +42,15 @@ panels.add(
     component: lazy(() => import("../components/TrustPanel.tsx").then((m) => ({ default: m.TrustPanel }))),
   },
 );
+
+settingsSections.add({
+  id: "routes",
+  label: "Content routes",
+  words: "content routes providers allowed folder data residency region privacy who saw ledger crossing",
+  icon: <Route className="size-4" />,
+  order: 21,
+  component: lazy(() => import("../components/ContentRoutes.tsx").then((m) => ({ default: () => <m.ContentRoutes /> }))),
+});
 
 settingsSections.add({
   id: "safety",

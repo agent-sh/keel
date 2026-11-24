@@ -1,3 +1,4 @@
+import { pickAllowed } from "../safety/content-routes.ts";
 import type { StoredEvent } from "../core/types.ts";
 import * as activity from "./activity.ts";
 import { D, alertHook, capture, deliver, emit, hasPending, stopperOf } from "./core.ts";
@@ -426,7 +427,8 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
   try {
     const s = D().store.session(sessionId);
     if (!s || s.archived) return void done({ ...g!, status: "paused", status_reason: "the session is archived" });
-    const model = g!.judge_model ?? undefined;
+    // A judge model of a provider the folder does not allow is passed over for the session's own (src/safety/content-routes.ts).
+    const model = pickAllowed(D().store, sessionId, "judge", [g!.judge_model]);
     const res = await D().engine.ask(sessionId, [{ role: "user", content: [{ type: "text", text: JUDGE(g!.objective) }] }], new AbortController().signal, model);
     const text = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n");
     const got = extractJson(text);

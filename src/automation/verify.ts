@@ -4,6 +4,7 @@ import { sandboxStatus } from "../safety/sandbox.ts";
 import { gate } from "../server/routes/permissions.ts";
 import * as agents from "./agents.ts";
 import { D } from "./core.ts";
+import { pickAllowed } from "../safety/content-routes.ts";
 import { check, extractJson } from "./schema.ts";
 
 // The independent check before a goal counts as met. The judge reads the
@@ -183,7 +184,8 @@ export async function verify(sessionId: string, g: Checked, judged: string, onCh
   hook();
   const { store, providers, bus } = D();
   const s = store.session(sessionId)!;
-  const model = g.verifier_model ?? g.judge_model ?? s.model;
+  // The first of them the session's folder allows (src/safety/content-routes.ts); the session's own when none is.
+  const model = pickAllowed(store, sessionId, "verifier", [g.verifier_model, g.judge_model, s.model]) ?? s.model;
   const { info } = await providers.resolve(model);
   if (still && !still()) return { result: { error: "the goal changed before its verifier started" }, child_id: null, tokens: 0 };
   const child = store.createSession({ model, workspace: s.workspace, title: `Verify goal: ${g.objective}`.slice(0, 80) });

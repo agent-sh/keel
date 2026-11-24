@@ -1,3 +1,4 @@
+import { crossing, crossingIn, routeOfFolder } from "../safety/content-routes.ts";
 import { existsSync, rmSync, statSync } from "node:fs";
 import { asAsker } from "../core/asker.ts";
 import { checkpointerOf } from "../core/checkpoint.ts";
@@ -283,7 +284,11 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const model = body.model || (await providers.defaultModel());
           if (!model) return bad("no model is available: no provider has credentials", 409);
           // Nothing is made yet: a model that cannot be used is a refusal, not a failure.
-          try { await providers.resolve(model); } catch (e) { return bad(`${(e as Error).message}: pick another model`, 409); }
+          let made;
+          try { made = await providers.resolve(model); } catch (e) { return bad(`${(e as Error).message}: pick another model`, 409); }
+          // A folder's content goes only to the providers the owner allowed for it (src/safety/content-routes.ts).
+          const cross = crossingIn(routeOfFolder(workspace), "turn", made.info.id, made.provider.id);
+          if (cross) return bad(`provider ${cross.provider} is not allowed for this folder (allowed: ${cross.allowed.join(", ") || "none"}): pick a model of an allowed provider`, 409);
           let s = store.createSession({ model, workspace, title: body.title });
           // Module fields given at creation (tags, max_steps, the memory switches) hold or refuse it.
           const mine = [...patchers.values()].filter((p) => p.fields.some((f) => body[f] !== undefined));
@@ -364,6 +369,12 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // The whole change is checked before anything is written: a refused
           // request leaves the model, the settings and the history as they were.
           const moving = body.model && body.model !== s.model ? await resolveSwitchModel(providers, body.model) : undefined;
+          // A model of a provider the session's folder does not allow is refused (src/safety/content-routes.ts).
+          const crossTo = (m: string, purpose: "turn" | "fallback") => {
+            const c = crossing(store, s.id, purpose, m);
+            return c && `provider ${c.provider} is not allowed for this session's folder (allowed: ${c.allowed.join(", ") || "none"}): pick a model of an allowed provider`;
+          };
+          if (moving) { const why = crossTo(moving.id, "turn"); if (why) return bad(why, 409); }
           // A model switch keeps only what the new model takes (an effort or a
           // speed it does not list is dropped, as the profile POST does).
           let settings = moving ? carrySettings(s.settings, moving) : s.settings;
@@ -379,6 +390,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
               if (typeof settings.fallback !== "string") return bad("fallback must be a model ID");
               try { await providers.resolve(settings.fallback); }
               catch (e) { if (e instanceof ModelLookupError) return bad(e.message); throw e; }
+              const why = body.settings.fallback ? crossTo(settings.fallback, "fallback") : undefined;
+              if (why) return bad(why, 409);
             }
             if (body.settings.speed && info && !speedOffer(info, settings.speed)) return bad(`${info.name} has no ${settings.speed} speed on ${info.provider}`);
             if (settings.compact_at !== undefined && !(Number(settings.compact_at) > 0)) return bad("compact_at must be a number of tokens above 0");

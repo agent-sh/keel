@@ -10,6 +10,7 @@ import { settings } from "../admin/settings.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { measured } from "../engine/hooks.ts";
+import { crossing, sayCrossing } from "./content-routes.ts";
 import type { Providers } from "../providers/registry.ts";
 import { reportedUsage } from "../providers/reported.ts";
 import type { ProviderRequest } from "../providers/types.ts";
@@ -177,9 +178,11 @@ export async function askJudge(providers: Providers, id: string, p: JudgeText, s
   // thinking runs at high effort when the model offers no low one) can spend a small limit on its
   // thinking and end without a verdict, and the call is then refused. A verdict is short; the
   // limit costs nothing that is not written, and the timeout bounds the wait.
+  // The route check is the caller's, before this (makeJudge): a judge on a provider the folder does
+  // not allow never reaches outward() or the ledger.
   const req: ProviderRequest = {
     model: info.model, system: p.system, messages: [{ role: "user", content: [{ type: "text", text: p.text }] }], tools: [],
-    effort, maxTokens: info.output || undefined, signal: AbortSignal.timeout(timeout), sessionKey, purpose: "judge", route: info.id,
+    effort, maxTokens: info.output || undefined, signal: AbortSignal.timeout(timeout), sessionKey, purpose: "judge", route: info.id, cache: false,
   };
   const res = await outward({ tool: "policy judge", via: provider.id }, () => session ? measured(session, req, (d) => provider.stream(req, d)) : provider.stream(req, () => {}));
   const out = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -209,7 +212,15 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
       const left = JUDGE_TIMEOUT_MS * 2 - (Date.now() - t0);
       if (left < 5_000) break;
       try {
-        const r = await askJudge(providers, id, p, `judge-${a.session.id}`, Math.min(JUDGE_TIMEOUT_MS, left), a.session);
+        // A judge on a provider the session's folder does not allow is passed over, said once (src/safety/content-routes.ts).
+        const route = await providers.resolve(id);
+        const cross = crossing(store, a.session.id, "judge", route.info.id, route.provider.id);
+        if (cross) {
+          sayCrossing(store.session(a.session.id) ?? a.session, cross, false);
+          tried.push(`${route.info.name}: provider ${cross.provider} is not allowed for this folder`);
+          continue;
+        }
+        const r = await askJudge(providers, id, p, `judge-${a.session.id}`, Math.min(JUDGE_TIMEOUT_MS, left), store.session(a.session.id) ?? a.session);
         store.addUsage(a.session.id, r.usage);
         if (!r.v) { tried.push(`${r.info.name} gave no allow or deny`); continue; }
         const risk = ["low", "medium", "high", "critical"].includes(r.v.risk) ? r.v.risk : "unknown";

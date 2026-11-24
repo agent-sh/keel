@@ -93,9 +93,12 @@ function outageError(kind: OutageKind): ProviderError {
 }
 type OutageState = { kind: OutageKind; until: number; started: string[]; requests: number; listings: number };
 
+// A second scripted provider (KEEL_SCRIPTED_SECOND=1 with the first): the same models under
+// another provider id, for the e2e and measurements of what goes to which provider.
+export const SCRIPTED_SECOND = "scripted-b";
+export const scriptedSecond = () => scriptedEnabled() && process.env.KEEL_SCRIPTED_SECOND === "1";
+
 export class ScriptedProvider implements Provider {
-  readonly id = "scripted";
-  readonly label = "Scripted (test)";
   readonly family = "other" as const;
   // KEEL_SCRIPTED_CACHE_TTL_MS: a prompt cache that lapses as a real one does
   // (Anthropic's: a request's prefix is kept that long from the request's
@@ -116,9 +119,11 @@ export class ScriptedProvider implements Provider {
   private counted = new Map<string, { requests: number; largest: number; refused: number }>();
 
   // `stateDir`: where an outage is kept across a daemon restart.
-  constructor(private stateDir?: string) {
-    try { if (stateDir) this.outage = JSON.parse(readFileSync(join(stateDir, "scripted-outage.json"), "utf8")); } catch {}
+  constructor(private stateDir?: string, readonly id = "scripted", readonly label = "Scripted (test)") {
+    try { if (stateDir) this.outage = JSON.parse(readFileSync(join(stateDir, this.outageFile), "utf8")); } catch {}
   }
+
+  private get outageFile() { return `${this.id}-outage.json`; }
 
   available() {
     return scriptedEnabled();
@@ -130,7 +135,7 @@ export class ScriptedProvider implements Provider {
 
   private outage: OutageState = { kind: "dns", until: 0, started: [], requests: 0, listings: 0 };
   private saveOutage() {
-    try { if (this.stateDir) writeFileSync(join(this.stateDir, "scripted-outage.json"), JSON.stringify(this.outage)); } catch {}
+    try { if (this.stateDir) writeFileSync(join(this.stateDir, this.outageFile), JSON.stringify(this.outage)); } catch {}
   }
   // The failure of a request or a listing made while the provider is gone, counted.
   private down(what: "requests" | "listings"): ProviderError | undefined {

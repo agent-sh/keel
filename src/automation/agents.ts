@@ -1,3 +1,5 @@
+import { crossingIn, routeOf, RouteRefused, sayCrossing } from "../safety/content-routes.ts";
+import { allowedOnly, allows, providerOf } from "../safety/route-rule.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { bareBy } from "../core/bare-index.ts";
 import { git as gitRun } from "../core/git.ts";
@@ -931,9 +933,19 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const { store, bus, engine } = D();
   const parentId = parent.id;
   // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
-  const model = input.fork ? parent.model
+  let model = input.fork ? parent.model
     : !input.model && def.format === "codex" ? await pickModel(parent, def.model).catch(() => parent.model)
     : await pickModel(parent, input.model ?? def.model);
+  // The agent reads its parent's content: its model's provider must be one the parent's folder allows
+  // (src/safety/content-routes.ts). A model the caller named is refused; a type's own model gives way
+  // to the parent's.
+  const route = routeOf(store, parentId);
+  const cross = crossingIn(route, "agent", model);
+  if (cross) {
+    sayCrossing(parent, cross, false);
+    if (input.model || !allows(route, providerOf(parent.model))) throw Object.assign(new RouteRefused(cross), { status: 409 });
+    model = parent.model;
+  }
   const { info } = await D().providers.resolve(model);
   if (signal?.aborted) throw new Error("cancelled");
   await checkUsd(mergeBudget(def.budget, parseBudget(input.budget)), model, info);
@@ -2157,7 +2169,8 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   if (!plan.go) return { note: givenUpNote({ why: plan.why, lost }) };
   let model = a.model;
   if (plan.switchFamily) {
-    const models = await providers.models();
+    // Only models of the providers the folder allows (src/safety/content-routes.ts).
+    const models = allowedOnly(routeOf(store, a.session_id), await providers.models());
     const other = otherFamily(models.map((m) => ({ id: m.id, provider: m.provider, family: m.family, tools: m.tools, release: m.release })), { current: a.model, avoid: plan.avoid, parent: parent.model, preferred: await providers.namedDefault().catch(() => undefined) });
     if (!other) return { note: givenUpNote({ why: `the model declined it twice, and no listed model of another family than ${plan.avoid.join(" and ")} takes tools`, lost }) };
     model = other;

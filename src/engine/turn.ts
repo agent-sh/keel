@@ -6,6 +6,8 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
+import { crossing, crossingIn, routeOf, RouteRefused, sayCrossing } from "../safety/content-routes.ts";
+import { allowedOnly, type RoutePurpose } from "../safety/route-rule.ts";
 import { DeltaJoin } from "./deltas.ts";
 import type { Bus } from "../core/bus.ts";
 import { asAsker } from "../core/asker.ts";
@@ -1000,6 +1002,21 @@ export class Engine {
       });
   }
 
+  // The candidates of a choice whose provider the session's folder allows, in their order. The
+  // ones left out ahead of the first one kept would have been asked: each is said once (an allowed
+  // one takes its place). With none left the work is done without, and the session's model hears of it.
+  private allowedModels<T extends ModelInfo>(id: string, purpose: RoutePurpose, list: T[]): T[] {
+    const a = routeOf(this.store, id);
+    const kept = allowedOnly(a, list);
+    if (kept.length === list.length) return kept;
+    const s = this.store.session(id);
+    for (const m of list) {
+      if (kept.includes(m)) break;
+      sayCrossing(s, crossingIn(a, purpose, m.id, m.provider)!, !kept.length);
+    }
+    return kept;
+  }
+
   // One request for the title, through the owner's small models in order (the
   // readers' choices: src/engine/reader.ts), each at its lowest effort. The
   // title is saved only if nobody renamed the session meanwhile.
@@ -1012,8 +1029,8 @@ export class Engine {
     // small model): a title is not worth a request at the working model's price. With no other
     // choice the session keeps its first prompt's words.
     const named = [...smallModels(), process.env.KEEL_READER_MODEL];
-    const choices = readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + TITLE_OUTPUT, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels())
-      .filter((m) => m.id !== cur.id || named.includes(m.id));
+    const choices = this.allowedModels(id, "title", readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + TITLE_OUTPUT, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels())
+      .filter((m) => m.id !== cur.id || named.includes(m.id)));
     // No choice now is no choice at the next turn's end either: not looked for again until a start.
     if (!choices.length) { this.untitled.add(id); return; }
     let last: unknown;
@@ -1046,7 +1063,7 @@ export class Engine {
     const prompt = rewordPrompt(task);
     const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(model).then((r) => r.info)]);
     const out = Math.min(READER_OUTPUT, Math.ceil((task.length * 2) / bytesPerToken(cur.id)) + 256);
-    const choices = readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + out, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels());
+    const choices = this.allowedModels(id, "reader", readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + out, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels()));
     const s = this.store.session(id);
     if (!s) return undefined;
     for (const m of choices) {
@@ -1926,6 +1943,14 @@ export class Engine {
     return now - since;
   }
 
+  // Whether the session's fallback model is on a provider its folder does not allow: said once, and
+  // the turn stays on its own model.
+  private fallbackCrosses(id: string, fb: string): boolean {
+    const c = crossing(this.store, id, "fallback", fb);
+    if (c) sayCrossing(this.store.session(id), c);
+    return !!c;
+  }
+
   // Whether this turn's request leaves its overloaded model for the session's fallback now: only
   // on the session's own model (the fallback, once moved to, is waited out like any model), to a
   // fallback that lists and holds the context without compacting (a summary written there would
@@ -1933,6 +1958,7 @@ export class Engine {
   private async overloadMove(id: string, session: Session, st: Step, req: ProviderRequest, fit: Fit | undefined, f: Omit<Parameters<typeof movesToFallback>[0], "cacheMs" | "cachedAt" | "now">, cause: unknown): Promise<MovedToFallback | undefined> {
     const fb = this.store.session(id)?.settings.fallback;
     if (!fb || fb === st.info.id || st.info.id !== session.model) return undefined;
+    if (this.fallbackCrosses(id, fb)) return undefined;
     const now = Date.now();
     const cachedAt = Math.max(lastWarm(this.lineage(id), st.info.id), this.cachePlans.warmedAt(id, st.info.id));
     const why = movesToFallback({ ...f, cacheMs: req.cacheMs, cachedAt, now });
@@ -1956,6 +1982,13 @@ export class Engine {
   // and one over the window is refused here instead of sent.
   private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn", fit?: Fit): Promise<ProviderResult> {
     const counted = fit ? { messages: fit.base ?? messages, tools: toolsBytes(st.tools) } : undefined;
+    // A call to a provider the session's folder does not allow is never sent (src/safety/content-routes.ts).
+    // A turn's, a summary's and a warm read's refusal is told by what fails on it; the rest are told here.
+    const cross = crossing(this.store, id, purpose ?? "turn", st.info.id, st.provider.id);
+    if (cross) {
+      sayCrossing(this.store.session(id) ?? session, cross, !(purpose === "turn" || purpose === "summary" || purpose === "warm"));
+      throw new RouteRefused(cross);
+    }
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
     const bare = purpose === "reader" || purpose === "title";
@@ -2671,7 +2704,7 @@ export class Engine {
           this.append(id, "assistant", { blocks: res.blocks, model: st.info.id, usage: u, stop: "refusal", stop_details: res.stop_details ?? null });
           replies++;
           const fb = session.settings.fallback;
-          if (fb && fb !== st.info.id && !fellBack) {
+          if (fb && fb !== st.info.id && !fellBack && !this.fallbackCrosses(id, fb)) {
             fellBack = true;
             const from = st.info.name;
             st = await this.step(session, fb);
@@ -4110,13 +4143,24 @@ export class Engine {
 
   private readerHost(id: string, callId?: string): ReaderHost {
     const session = this.store.session(id)!;
+    let told = false;
     return {
-      models: () => this.providers.models(),
+      // Only models of the providers the session's folder allows read for it (src/safety/content-routes.ts).
+      models: async () => allowedOnly(routeOf(this.store, id), await this.providers.models()),
       current: async () => (await this.providers.resolve(session.model)).info,
       listPrice: (m) => this.providers.catalog.lookup(m.model)?.price,
       capture: (e, c) => this.errors.capture("provider", e, { session: id, ...c }),
       progress: callId ? (p) => this.bus.emit({ t: "feature", name: "readers", session_id: id, data: { call_id: callId, ...p } }) : undefined,
       ask: async (m, prompt, sig) => {
+        // The job's first request: the owner's named readers ahead of this one that the folder does not
+        // allow would have read instead, and are said once (an allowed reader reads in their place).
+        if (!told) {
+          told = true;
+          const all = await this.providers.models();
+          const named = [...smallModels(), process.env.KEEL_READER_MODEL].flatMap((n) => all.filter((x) => x.id === n));
+          const at = named.findIndex((x) => x.id === m.id);
+          this.allowedModels(id, "reader", at < 0 ? named : named.slice(0, at));
+        }
         const { provider, info } = await this.providers.resolve(m.id);
         const effort = info.efforts.includes("low") ? "low" : undefined;
         const st: Step = { provider, info: { ...info, output: Math.min(info.output || READER_OUTPUT, READER_OUTPUT) }, tools: [], system: READER_SYSTEM, systemSplit: 0, effort };

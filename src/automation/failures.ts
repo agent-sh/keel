@@ -7,6 +7,7 @@ import { errorText } from "../engine/retry.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { D, capture, clip, deliver, isPending, parkedOn, rider, stillRunning, type Pending, heldWhy } from "./core.ts";
 import { cutTurn } from "./waits.ts";
+import { crossingText } from "../safety/route-rule.ts";
 import { acked, add, classOf, cleared, fingerprintOf, merged, render, room, settledBy, split, SELF, type Failure, type FailureGroup, type FailureKind, type Known, type Told } from "./failure-groups.ts";
 
 // A session's own account of what went wrong in its scope, kept so nobody has
@@ -166,6 +167,15 @@ export const hooks: TurnHooks = {
     if (!cls) return;
     const at = scope(s);
     record(at.root, { kind: "provider", cls, message: errorText(err), ref: at.ref }, s.id);
+  },
+  // A call the folder's allowed providers refused: one cause per purpose and provider, counted, in
+  // the errors list too (src/safety/content-routes.ts).
+  routeRefused: (s, c, tell) => {
+    const at = scope(s);
+    const message = crossingText(c);
+    record(at.root, { kind: "provider", cls: `route ${c.purpose} ${c.provider}`, message, ref: at.ref, tell: tell && (at.root === s.id || at.told) ? "ride" : undefined }, s.id);
+    // (A turn's refusal is its failure, captured by the turn itself.)
+    if (c.purpose !== "turn") D().errors.capture("provider", Object.assign(new Error(message), { name: "RouteRefused", kind: "route" }), { session: s.id, purpose: c.purpose, provider: c.provider, model: c.model });
   },
   // An agent whose model has said it is overloaded for as long as the counted retries: its turn
   // goes on trying and holds its slot, so the session that started it is told once (it can stop
