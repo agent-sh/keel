@@ -95,7 +95,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
         {live ? counts : "Background"}
       </Popover.Trigger>
       <Popover.Portal>
-        <Popover.Positioner sideOffset={8} align="end">
+        <Popover.Positioner sideOffset={8} align="end" className="z-50 outline-none">
           <Popover.Popup
             data-testid="background-popup"
             className={cn(
