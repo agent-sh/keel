@@ -48,7 +48,7 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
   const ids = agents.map((x) => x.id);
   for (let i = 0; i < ids.length; i += 100) {
     const part = ids.slice(i, i + 100);
-    for (const v of tried(() => db.query<VerdictRow, string[]>(`SELECT agent_id, commit_sha, branches, land, why, at FROM review_verdicts WHERE agent_id IN (${part.map(() => "?").join(", ")}) ORDER BY at DESC LIMIT 2000`).all(...part)))
+    for (const v of tried(() => db.query<VerdictRow, [string]>("SELECT agent_id, commit_sha, branches, land, why, at FROM review_verdicts WHERE agent_id IN (SELECT value FROM json_each(?)) ORDER BY at DESC LIMIT 2000").all(JSON.stringify(part))))
       given.set(v.agent_id, [...(given.get(v.agent_id) ?? []), v]);
   }
   // Each reviewer's sessions up to the root, from the agents table (not the board's page of rows, which may
@@ -92,9 +92,9 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
   type PanelRow = { id: string; state: string; created: number; branch: string | null; agent_title: string | null; verdict: string | null; summary: string | null; head: string | null; findings: number | null };
   for (let i = 0; i < sessions.length; i += 100) {
     const part = sessions.slice(i, i + 100);
-    const rows = tried(() => db.query<PanelRow, string[]>(`SELECT id, state, created, json_extract(data, '$.agent_branch') AS branch, json_extract(data, '$.agent_title') AS agent_title, json_extract(data, '$.verdict') AS verdict,
+    const rows = tried(() => db.query<PanelRow, [string]>(`SELECT id, state, created, json_extract(data, '$.agent_branch') AS branch, json_extract(data, '$.agent_title') AS agent_title, json_extract(data, '$.verdict') AS verdict,
       json_extract(data, '$.summary') AS summary, json_extract(data, '$.head') AS head, json_array_length(json_extract(data, '$.findings')) AS findings
-      FROM reviews WHERE session_id IN (${part.map(() => "?").join(", ")}) AND json_extract(data, '$.agent_branch') IS NOT NULL ORDER BY created DESC LIMIT 200`).all(...part));
+      FROM reviews WHERE session_id IN (SELECT value FROM json_each(?)) AND json_extract(data, '$.agent_branch') IS NOT NULL ORDER BY created DESC LIMIT 200`).all(JSON.stringify(part)));
     for (const p of rows) {
       if (!p.branch || !branches.has(p.branch)) continue;
       const land = p.verdict === "correct" ? "yes" : p.verdict === "incorrect" ? "no" : undefined;
@@ -113,7 +113,7 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
   const queue: QueueRow[] = [];
   for (let i = 0; i < list.length; i += 100) {
     const part = list.slice(i, i + 100);
-    queue.push(...tried(() => db.query<QueueRow, string[]>(`SELECT id, repo, branch, tip, state, why, landed, updated FROM landing_queue WHERE branch IN (${part.map(() => "?").join(", ")}) ORDER BY updated DESC LIMIT 400`).all(...part)));
+    queue.push(...tried(() => db.query<QueueRow, [string]>("SELECT id, repo, branch, tip, state, why, landed, updated FROM landing_queue WHERE branch IN (SELECT value FROM json_each(?)) ORDER BY updated DESC LIMIT 400").all(JSON.stringify(part))));
   }
   const repos = [...new Set(agents.map((x) => x.repo_root).filter((r): r is string => !!r))];
   const deploys: DeployRow[] = [];
