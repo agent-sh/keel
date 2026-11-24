@@ -251,6 +251,9 @@ so it proves nothing about who built it.
 | `Approve.kt` | the biometric approval and the lock-screen approve activity |
 | `Push.kt` | notifications, Firebase push, the background check |
 | `ui/Theme.kt` | the design tokens (the workbench's colors and type) |
+| `ui/Palette.kt` | the page's state palette (`--st-*`, `--dot-*`) as a table, kept equal to `ui/src/styles.css` by `PaletteTest`; contrast is checked by `ContrastTest` |
+| `Dot.kt` | a row's dot: which state, its form, its ring and its word, from the daemon's `dot`, `dot_ring` and `dot_word` (pure) |
+| `ui/DotMark.kt` | draws the dot: the breathing halo of work (still under reduced motion), the half dot of waiting, the ring of a session that waits on its agents |
 | `ui/` | the screens and their parts |
 
 The connection code is adapted from Hermes for Android; see `NOTICE`.
