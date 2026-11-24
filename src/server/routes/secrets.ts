@@ -28,6 +28,9 @@ const writesFiles = (tool: Tool, input: any): boolean => {
   return typeof cmd === "string" && !!extractShellApplyPatch(cmd);
 };
 
+// The block's name is "Secrets" (blockName). It is a safety instruction, so URGENT marks it (src/core/build.ts).
+export const SECRETS_BLOCK = "Secrets: text like [secret:1a2b3c4d] or [value of $NAME] stands for a secret kept out of the conversation. A placeholder becomes its value in one place: a shell command, when it runs, where it stands for a quoted variable holding the value, so write it as one word, never inside other syntax. Output shows the placeholder again. Every other tool keeps the placeholder as text (a web call or an MCP call sends it as it is), and a file tool refuses an input that holds one: to put a value in a file, write it from a shell command. Named ones are also in your commands' environment as $NAME. To get a secret, use request_secret; never ask for one in the chat.";
+
 export type SecretRequest = { id: string; session_id: string; name: string; purpose?: string; created: number };
 type Waiting = SecretRequest & { resolve: (r: { given: true } | { given: false; reason?: string }) => void };
 const waiting = new Map<string, Waiting>();
@@ -185,8 +188,7 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
   registerShared(RequestSecret);
 
   registerHooks({
-    system: () =>
-      "Secrets: text like [secret:1a2b3c4d] or [value of $NAME] stands for a secret kept out of the conversation. Write it as it is where the value is needed: a tool input that contains it runs with the real value, and output shows the placeholder again. In a shell command it stands for a quoted variable holding the value, so write it as one word, never inside other syntax. Named ones are also in your commands' environment as $NAME. To get a secret, use request_secret; never ask for one in the chat.",
+    system: () => SECRETS_BLOCK,
     // The system prompt (instruction files) is sent redacted too, and no new
     // message of a request carries a known value: whatever path put one there,
     // it does not reach a model. History already sent to that model goes as it

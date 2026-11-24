@@ -53,6 +53,8 @@ export const URGENT: { tools: Record<string, string>; blocks: Record<string, str
     ...testBuild?.urgent?.tools,
   },
   blocks: {
+    // Where a secret's placeholder becomes its value: a shell command only; a file tool refuses one.
+    Secrets: "placeholder-shell-only",
     ...testBuild?.urgent?.blocks,
   },
 };
