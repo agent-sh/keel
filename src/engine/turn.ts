@@ -3136,7 +3136,7 @@ export class Engine {
           const sentWith = () => toMessages(this.lineage(id).filter((e) => e.seq < stored.seq));
           const planned = uses.length && !spent ? this.cachePlans.tool(id, st, events, sentWith, this.toolShape(id, uses), sentAt, u) : undefined;
           try {
-          await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? (closingCap ? CAP_SPENT : AGENT_BUDGET_SPENT) : BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
+          await batch(uses.map((u, index) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? (closingCap ? CAP_SPENT : AGENT_BUDGET_SPENT) : BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, { ...ctx, reply: { seq: stored.seq, index } }))).then(settle(u))));
           } finally { planned?.(); }
           if (cut) await settleNow(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });

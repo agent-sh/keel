@@ -36,6 +36,7 @@ import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, 
 import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { cardOrder } from "./card-order.ts";
 import { timed } from "../admin/stall.ts";
 import { buildId } from "../core/build.ts";
 import { ruledOf, type Ruled } from "./trial.ts";
@@ -159,6 +160,8 @@ export type Approval = {
   reason?: string;
   by?: AnsweredBy;      // who answered it: the kind of client, its name, whether it said it showed the whole text
   created: number;
+  // Where the call stands in the model's reply (its event, its index): the cards of one reply list in call order (card-order.ts).
+  reply?: { seq: number; index: number };
   resolved?: number;
 };
 
@@ -1277,7 +1280,7 @@ export class Gate {
       : opts.pending
         ? db.query<{ data: string }, []>("SELECT data FROM approvals WHERE state = 'pending' ORDER BY created, id").all()
         : db.query<{ data: string }, []>("SELECT data FROM approvals ORDER BY created DESC, id DESC LIMIT 500").all().reverse();
-    return rows.map((r) => JSON.parse(r.data) as Approval);
+    return cardOrder(rows.map((r) => JSON.parse(r.data) as Approval));
   }
 
   approval(id: string): Approval | undefined {
@@ -2115,7 +2118,7 @@ export class Gate {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
       summary, cut: ask.cut, notice: [asker, ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
-      input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
+      input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)), reply: call.ctx.reply,
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls), ...(ask.rule ? { rule: ask.rule } : {}),
       ...(ask.mine ? { mine: ask.mine } : {}), ...(ask.readTool ? { read_tool: ask.readTool } : {}),
     };

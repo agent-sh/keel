@@ -739,3 +739,22 @@ test("each session's sandbox temp folder is under its spill folder", () => {
   // A session on another machine has no sandbox of this one's: nothing is made for it.
   expect(g.readOpts({ ...a, machine: "desk" } as Session, "workspace-write").tmp).toBeUndefined();
 });
+
+test("the cards of one reply list in the order the model wrote the calls, whichever check ends first", async () => {
+  const { g, session, call } = scratchGate();
+  g.setPerm(session.id, { mode: "ask", sandbox: "off", network: true });
+  // The first call's check is the slow one: its card opens after the second's.
+  g.requestHook = async (_s, c) => { if ((c.input as any).command === "touch a.txt") await Bun.sleep(80); };
+  const at = (command: string, index: number): ToolCall => { const c = call(bash, { command }); c.ctx.reply = { seq: 7, index }; return c; };
+  const a = at("touch a.txt", 0), b = at("touch b.txt", 1);
+  const checks = [g.check(session, a), g.check(session, b)];
+  for (let i = 0; i < 200 && g.approvals({ session: session.id, pending: true }).length < 2; i++) await Bun.sleep(10);
+  const listed = g.approvals({ session: session.id, pending: true });
+  expect(listed.map((x) => x.call_id)).toEqual([a.id, b.id]);
+  // Opened the other way round, as the timing made it.
+  expect(listed[0]!.created).toBeGreaterThan(listed[1]!.created);
+  // The same order for the list across sessions.
+  expect(g.approvals({ pending: true }).map((x) => x.call_id)).toEqual([a.id, b.id]);
+  for (const x of listed) g.resolve(x.id, session.id, { choice: "deny" });
+  await Promise.all(checks);
+});

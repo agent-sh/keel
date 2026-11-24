@@ -56,6 +56,9 @@ export type ToolContext = {
   callId?: string;
   // Set on a call a program made (run_code): the id of the turn's call that runs the program.
   nestedIn?: string;
+  // Where the call stands in the model's reply: the reply's event and the call's index in it (set by the
+  // engine). The calls are judged side by side; a card keeps this place so cards list in the model's order.
+  reply?: { seq: number; index: number };
   // Set by a beforeTool hook: runs the call somewhere else (the session's
   // machine) instead of tool.run here.
   dispatch?: (tool: Tool, input: any, ctx: ToolContext) => Promise<ToolOutput>;

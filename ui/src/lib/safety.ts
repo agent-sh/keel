@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { Approval, BatchResult, SessionPerm } from "../../../src/safety/gate.ts";
 import type { Rule, Suggest } from "../../../src/safety/policy.ts";
+import { cardOrder } from "../../../src/safety/card-order.ts";
 import { api, newer, onFeature, readAtOpen, reportError } from "./store.ts";
 
 export type { Approval, Rule, SessionPerm, Suggest };
@@ -36,11 +37,9 @@ export function useSafety<T>(sel: (s: State) => T): T {
   return useSyncExternalStore(subscribe, () => sel(state));
 }
 
-// Cards in the order the daemon reads them: oldest first, ties by id.
-const order = (a: Approval, b: Approval) => a.created - b.created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const put = (list: Approval[], a: Approval) => {
   const rest = list.filter((x) => x.id !== a.id);
-  return a.state === "pending" ? [...rest, a].sort(order) : rest;
+  return a.state === "pending" ? cardOrder([...rest, a]) : rest;
 };
 
 // Receipt order is not decision order: frames that land while a snapshot is
@@ -57,7 +56,7 @@ async function hydrate<T>(load: () => Promise<T>): Promise<[T, Approval[]]> {
   }
 }
 const replay = (list: Approval[], seen: Approval[], session?: string) =>
-  seen.filter((a) => !session || a.session_id === session).reduce(put, [...list].sort(order));
+  seen.filter((a) => !session || a.session_id === session).reduce(put, cardOrder(list));
 
 // Sessions on screen now (counted per view): a reconnect rereads these, not
 // every session this tab has ever shown. The rest come from the global list.
