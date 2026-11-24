@@ -20,7 +20,7 @@ import { name, unwrap } from "./risk-words.ts";
 // ends it when that is not `;` or a newline. `flow`: a loop, a conditional, a
 // group or an assigning expansion stands before it in the line, so a variable
 // may not hold what the line's first words gave it.
-export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; sep?: string; flow?: true };
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; targets?: Made["vars"]; sep?: string; flow?: true };
 
 // What is known of a word an expansion makes. `one`: it stays one word (every
 // expansion in it is inside double quotes, and no glob or brace is). `lead`:
@@ -91,12 +91,14 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
   let unknown = false;
   let depth = 0;
   let inputs: string[] = [];
+  let targets: Made["vars"] = []; // the variables the targets of its redirects name
   let param = 0; // ${ ... } still open: what stands in it is its text, whatever it looks like
   let want: Redirect | null = null; // a redirect operator waiting for its target word
   let bad = false;
   let docs: { delim: string; tabs: boolean; quoted: boolean }[] = [];
 
   const target = (kind: Redirect, w: string) => {
+    if (kind === ">" || kind === ">&" || kind === "<") targets.push(...cur.vars);
     if (kind === ">") redirects ||= made || !SINK.test(w); // >, >>, >|, &>, &>> and <> (opened for writing too)
     else if (kind === ">&") redirects ||= made || (!/^(\d+-?|-)$/.test(w) && !SINK.test(w)); // >&2 copies a descriptor; >&file writes it
     else if (kind === "<") { inputs.push(w); redirects ||= made || /^\/dev\/(tcp|udp)\//.test(w); } // /dev/tcp opens a connection
@@ -142,12 +144,14 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         words, text: text.trim(), redirects,
         ...(depth > 0 ? { nested: true as const } : {}), ...(unknown ? { unknown: true as const } : {}),
         ...(dyn.length ? { dyn, how } : {}), ...(dyn.length && splits ? { splits: true as const } : {}), ...(inputs.length ? { inputs } : {}),
+        ...(targets.length ? { targets } : {}),
         ...(sep && sep !== ";" && sep !== "\n" ? { sep } : {}), ...(flow ? { flow: true as const } : {}),
       });
     words = [];
     dyn = [];
     how = [];
     inputs = [];
+    targets = [];
     splits = false;
     text = "";
     redirects = false;

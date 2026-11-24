@@ -255,7 +255,12 @@ const BINDS = /^(read|declare|typeset|local|export|readonly|unset|printf|mapfile
 // variable is read as a value there, the ones the environment gives included.
 export const LOST: Values = new Map();
 
-export function valuesOf(parts: Simple[], runs: Run[]): Values {
+// With `home` (a written-out folder), a value that starts with `~`, `~/`, `$HOME/` or `${HOME}/` is read as the shell would
+// read it: that folder first. Only these; `~user` stays unread, and so does `$HOME` when the line sets `HOME` itself.
+const HOME_LEAD = /^(?:\$HOME|\$\{HOME\})(\/[A-Za-z0-9_.\/@:+,%^-]*)?$/;
+export function valuesOf(parts: Simple[], runs: Run[], home?: string): Values {
+  // (A home that is not a plain absolute folder is not written out.)
+  if (home !== undefined) home = /^\/[A-Za-z0-9_.\/@:+,%^-]*$/.test(home) && home.length > 1 ? home.replace(/\/+$/, "") : undefined;
   const out: Values = new Map();
   // A value is only ever read into a word an expansion makes: a line with none has none to read.
   if (!parts.some((p) => p.dyn || (p.redirects && p.text.includes("$")))) return out;
@@ -283,7 +288,15 @@ export function valuesOf(parts: Simple[], runs: Run[]): Values {
       const n = w.slice(0, eq), v = w.slice(eq + 1);
       if (count.get(n) !== 1 || bare.has(n)) return;
       const how = p.how?.[p.dyn?.indexOf(k) ?? -1];
-      if (!how) { if (WRITTEN.test(v)) out.set(n, { text: v, at }); return; }
+      if (!how) {
+        if (!WRITTEN.test(v)) return;
+        out.set(n, { text: home && (v === "~" || v.startsWith("~/")) ? home + v.slice(1) : v, at });
+        return;
+      }
+      if (home && !count.has("HOME") && !bare.has("HOME") && !how.subs.length && how.vars.length === 1 && how.vars[0]!.name === "HOME" && !how.rest) {
+        const h = HOME_LEAD.exec(v);
+        if (h) { out.set(n, { text: home + (h[1] ?? ""), at }); return; }
+      }
       const sub = how.subs.length === 1 && !how.vars.length && !how.rest && (v === "$(...)" || v === "`...`") ? how.subs[0]! : null;
       if (!sub) return;
       out.set(n, sub.length === 1 && name(unwrap(sub[0]!.words).words[0]) === "mktemp" ? { made: true, at } : { from: sub, at });

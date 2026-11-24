@@ -819,7 +819,7 @@ function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign
 // of a program hidden in a variable, which the card shows him, and gain the written line's findings besides.
 const SEVERITY = (d: Decision) => ("deny" in d ? 3 : "ask" in d ? (d.ask.risk === "high" ? 2 : 1) : 0);
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
-  const written = interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter) ? resolvedLine(command) : null;
+  const written = interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter) ? resolvedLine(command, f.home ?? homeOf()) : null;
   if (written === null) return decideLine(command, f, cwd, interpreter);
   const beside = !!f.shared;
   const a = decideLine(command, f, cwd, interpreter, beside), b = decideLine(written, f, cwd, interpreter);

@@ -828,7 +828,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
   // outside the session's folder for it, so nothing is left to the sandbox.
   const renamed = !!w.sandboxed && parts.some((s) => !s.heredoc && s.words.some((a) => /^(HOME|PWD|OLDPWD|CDPATH)=/.test(a)));
   w = { ...w, firm, ...(renamed ? { sandboxed: false } : {}) };
-  const values = valuesOf(parts, runs);
+  const values = valuesOf(parts, runs, w.home);
   // A word with the names the line gives a value written out read as that value (f=x.sh; ... $f), before part `at`.
   const expand = (word: string, at: number) => word.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (all, v: string) => { const x = values.get(v); return x?.text !== undefined && x.at < at ? x.text : all; });
   // (Most parts have no risk: a part's list is made when it gets its first.)

@@ -271,7 +271,6 @@ const sharedSet = (s: Shared) => new Set([...s.out.keys(), ...(s.base ? [s.base]
 // Those and every other branch that exists and is not this worktree's: the ones a command may not move, rename or delete.
 const heldSet = (s: Shared) => new Set([...sharedSet(s), ...(s.foreign?.() ?? [])]);
 
-// What a git command run in the agent's own worktree does to a branch it shares, if anything.
 // git archive only reads the repository and writes the archive to its output, so from another checkout it
 // is a read, as git show is: a reviewer builds a candidate's tree with `git archive REV | tar -x -C DIR`.
 // Where the archive goes is judged apart: tar's extraction target by the write rules, and git's own
@@ -286,7 +285,8 @@ function archiveReads(g: Git): boolean {
   return g.sub === "archive" && g.config.every(([k]) => ARCHIVE_SETTING.test(k.toLowerCase())) && g.args.every((a) => !unread(a) && (!a.startsWith("-") || ARCHIVE_OPTION.test(a)));
 }
 
-function movesShared(g: Git, dir: string, home: string, s: Shared): string | null {
+// What a git command run in the agent's own worktree does to a branch it shares, if anything.
+function movesShared(g: Git, dir: string, home: string, s: Shared, resolved = false): string | null {
   const shared = sharedSet(s);
   // `named`: a branch this command may not move, rename or delete. `onto`: one it may not put the worktree on
   // either, which is only what the other checkouts use (a branch left by an agent that is gone can be read).
@@ -297,7 +297,8 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
   // A file the command writes by name (git log --output=FILE, diff, show, format-patch) is no place in the git data.
   // A name with an expansion is not read: it could be the pad or a ref, as it is for a branch name.
   for (const f of valuesOf(args, ["--output"])) {
-    if (unread(f)) return `writes a file it names with an expansion (${f}), which the rules cannot read (--output)`;
+    // (Beside the line written out, which judges the file by its name: there it is read.)
+    if (unread(f)) { if (resolved) continue; return `writes a file it names with an expansion (${f}), which the rules cannot read (--output)`; }
     const at = pathOf(dir, f, home);
     const what = at === null ? null : gitStoreOf(at, s);
     if (what) return `writes ${what} (--output)`;
@@ -664,7 +665,7 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
     const reads = archiveReads(g) || isReadOnly({ words: ["git", g.sub, ...g.args], text: "", redirects: false });
     if (place.at === "other" && !reads) return `runs git ${g.sub} in ${place.folder}, another checkout of this repository`;
     if (place.at === "unknown" && !reads) return `runs git ${g.sub} in ${place.what}, which may be another checkout of this repository`;
-    if (place.at === "own") { const why = movesShared(g, at!, home, s); if (why) return why; }
+    if (place.at === "own") { const why = movesShared(g, at!, home, s, resolved); if (why) return why; }
   }
   return null;
 }

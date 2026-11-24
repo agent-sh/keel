@@ -81,7 +81,11 @@ test("a line the written form would misread keeps being refused", () => {
     "(W=git); $W branch -D keel/agent-2",
     "false || W=git; $W branch -D keel/agent-2",
     "W=$(echo git); $W branch -D keel/agent-2",
-    "W=$HOME/x; $W/spec.sh",
+    "W=~root/x; $W/spec.sh",
+    "W=/a:~/x; $W/spec.sh",
+    "W=$HOMEx/x; $W/spec.sh",
+    "W=$HOME; HOME=/e; $W/spec.sh",
+    "HOME=/e; W=$HOME/x; $W/spec.sh",
     "W=/abs/*; $W/spec.sh",
     "W='/a b'; $W/spec.sh",
     "W=; $W env -i git status",
@@ -146,4 +150,51 @@ test("a line of thousands of variables is written out in one pass", () => {
   expect(out).not.toBeNull();
   expect(out!.includes("$W")).toBe(false);
   expect(performance.now() - t).toBeLessThan(1000); // 4000 variables took 2.7 s when each was looked up in the whole line
+});
+
+// A value that starts with ~ or $HOME is the session's home, written out as bash would; a variable that is also a
+// redirect's target is still shown whole. Each form is judged as the line typed out, in every mode.
+test("a variable set to a path under the home, or used as a redirect target, is judged as written out", () => {
+  const home = "/home/u";
+  for (const [line, typed] of [
+    ["S=~/x; $S/start.sh", "/home/u/x/start.sh"],
+    ["S=~; $S/start.sh", "/home/u/start.sh"],
+    ["S=$HOME/x; $S/start.sh", "/home/u/x/start.sh"],
+    ["S=${HOME}/x; $S/start.sh", "/home/u/x/start.sh"],
+    ["S=/abs; $S/a > $S/d.log", "/abs/a > /abs/d.log"],
+    ["S=/abs; $S/a > $S/d.log 2>&1 < /dev/null", "/abs/a > /abs/d.log 2>&1 < /dev/null"],
+    ["S=~/x; (setsid nohup $S/start.sh > $S/daemon.log 2>&1 < /dev/null &)", "(setsid nohup /home/u/x/start.sh > /home/u/x/daemon.log 2>&1 < /dev/null &)"],
+    ["S=$HOME/x; $S/a > $S/d.log", "/home/u/x/a > /home/u/x/d.log"],
+    ["P=~/x; git diff --output=$P", "git diff --output=/home/u/x"],
+    ["P=/abs/out; git diff --output=$P", "git diff --output=/abs/out"],
+    ["S=~/.ssh; echo x > $S/authorized_keys", "echo x > /home/u/.ssh/authorized_keys"],
+    ["S=$HOME/.ssh; echo x > $S/authorized_keys", "echo x > /home/u/.ssh/authorized_keys"],
+    ["S=~/.bashrc; echo x >> $S", "echo x >> /home/u/.bashrc"],
+  ] as const) {
+    const written = resolvedLine(line, home);
+    expect([line, written !== null && !/\$[A-Z]/.test(written.replace(/^[^;]*; ?/, ""))]).toEqual([line, true]);
+    expect([line, written!.replace(/^[^;]*; ?/, "")]).toEqual([line, typed]);
+    for (const withShared of [true, false]) {
+      const got = verdicts(line, withShared), want = verdicts(written!, withShared);
+      // Never looser than the written line, and an agent in its worktree gets the written line's verdict.
+      expect([line, got.map((k, i) => rank[k]! >= rank[want[i]!]!)]).toEqual([line, modes.map(() => true)]);
+      if (withShared) expect([line, got]).toEqual([line, want]);
+    }
+  }
+  // Written out where the write rules guard it: held as the typed line is, not let through for its variable.
+  for (const [line, typed] of [
+    ["S=~/.ssh; echo x > $S/authorized_keys", "echo x > /home/u/.ssh/authorized_keys"],
+    ["S=$HOME/.ssh; echo x > $S/authorized_keys", "echo x > /home/u/.ssh/authorized_keys"],
+  ] as const) {
+    const bare = verdicts(typed);
+    for (const withShared of [true, false]) {
+      const got = verdicts(line, withShared);
+      expect([line, withShared, got.map((k, i) => rank[k]! >= rank[bare[i]!]!)]).toEqual([line, withShared, modes.map(() => true)]);
+    }
+    expect([line, verdicts(line).slice(0, 4).every((k) => k === "deny" || k === "ask-high")]).toEqual([line, true]);
+  }
+  // Without a home to write them out with, they stay unread.
+  for (const line of ["S=~/x; $S/start.sh", "S=$HOME/x; $S/start.sh"]) expect([line, resolvedLine(line)]).toEqual([line, null]);
+  // A redirect's target the line does not show whole keeps the variable unwritten.
+  for (const line of ["S=/abs; echo '> $S/x'; $S/a", "S=/abs; $S/a > ${S:-y}/x", "S=/abs; $S/a > \\$S/x"]) expect([line, resolvedLine(line, home)]).toEqual([line, null]);
 });

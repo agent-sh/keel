@@ -15,7 +15,8 @@ const NAMED = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
 
 // The line with each variable the line sets to a written-out value written out, or null when there is none to write
 // or the line is not one to rewrite. A variable is written out when
-// - it is set once, to a written-out value (no `$`, glob, space, `~`, `=`; not empty) in the shell that runs the words
+// - it is set once, to a written-out value (no `$`, glob, space, `~`, `=`; not empty; a leading `~` or `$HOME` is the
+//   session's home, `~user` is not read) in the shell that runs the words
 //   that use it: not in a pipeline's stage, a subshell, a substitution, the background or after `||` (`valuesOf` reads
 //   exactly that), and every use is in a word of its own after the assignment (not single-quoted, escaped, in a
 //   here-document, `${W:-x}`) and is the whole of what the text shows.
@@ -23,17 +24,23 @@ const NAMED = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
 // program word it cannot read stays refused. Nothing is rewritten in a line with a loop, a conditional or a group (a name
 // may be rebound where the parts do not show it), `IFS` (a value would split into words), an alias or a function (a name
 // may mean another program), or a positional parameter (`set -- branch -D x; $W "$@"`).
-export function resolvedLine(command: string): string | null {
+// `home`: the folder a leading `~`, `~/` or `$HOME/` in a value stands for, as bash writes it out; without it they stay unread.
+export function resolvedLine(command: string, home?: string): string | null {
   if (!command.includes("$") || /\bIFS\b|\balias\b|\bfunction\b|\(\s*\)|\$[@*0-9]|\$\{[@*0-9]/.test(command)) return null;
   const parts = splitCommand(command);
   if (!parts || parts.some((p) => p.flow || p.unknown)) return null;
   const { runs } = laid(parts, null, "");
-  const vals = valuesOf(parts, runs);
+  const vals = valuesOf(parts, runs, home);
   // The uses the parts show: how many of each name, and the first part that has one. The text's own, once, besides.
   const shown = new Map<string, { n: number; first: number }>();
-  for (let j = 0; j < parts.length; j++) for (const m of parts[j]!.how ?? []) for (const v of m.vars) {
-    const s = shown.get(v.name);
-    if (s) s.n++; else shown.set(v.name, { n: 1, first: j });
+  const see = (name: string, j: number) => {
+    const s = shown.get(name);
+    if (s) s.n++; else shown.set(name, { n: 1, first: j });
+  };
+  // (A redirect's target is a use too, shown in the part's `targets`: `$S/run.sh > $S/run.log`.)
+  for (let j = 0; j < parts.length; j++) {
+    for (const m of parts[j]!.how ?? []) for (const v of m.vars) see(v.name, j);
+    for (const v of parts[j]!.targets ?? []) see(v.name, j);
   }
   const text = new Map<string, number>(), plain = new Map<string, number>();
   for (const m of command.matchAll(ANY)) { const n = m[1] ?? m[2]!; text.set(n, (text.get(n) ?? 0) + 1); }
