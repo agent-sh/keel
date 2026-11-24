@@ -5,7 +5,7 @@ import { shoot } from "./shots.ts";
 // machine. Three controls pressed 3, 2 and 1 times come back most used first
 // under the view they were pressed in, a control drawn and never pressed is in
 // the "never pressed" list, a word typed is nowhere in what is kept, the page
-// on a phone is recorded as a phone, and turning recording off stops it.
+// on a phone is recorded as a phone, turning recording off stops it, and turning it on again resumes a tab that was already open.
 const STAND_IN = "scripted:stand-in";
 
 test("telemetry: what you press, most used first, never a word typed", async ({ page, request }) => {
@@ -21,7 +21,8 @@ test("telemetry: what you press, most used first, never a word typed", async ({ 
   const press = async (id: string, times: number) => {
     for (let i = 0; i < times; i++) {
       await page.getByTestId(id).click();
-      await page.keyboard.press("Escape"); // (a key is no press)
+      // (a key is no press) Escape until the menu is gone: one sent before it opened closes nothing.
+      await expect.poll(async () => { await page.keyboard.press("Escape"); return page.locator("[data-base-ui-inert]").count(); }, { timeout: 15_000 }).toBe(0);
     }
   };
   await press("session-menu", 3);
@@ -41,6 +42,7 @@ test("telemetry: what you press, most used first, never a word typed", async ({ 
   const panel = page.getByTestId("telemetry-panel");
   await expect(panel.getByTestId("press-disclosure")).toContainText("Never a word you type");
   await expect(panel.getByTestId("press-disclosure")).toContainText("not sent");
+  await expect(panel.getByTestId("press-disclosure")).toContainText("plain keys, such as Enter to send, are not counted");
   const view = panel.locator('[data-testid="press-view"][data-view="session"]');
   await expect(view).toBeVisible();
   const rows = view.getByTestId("press-row");
@@ -81,7 +83,24 @@ test("telemetry: what you press, most used first, never a word typed", async ({ 
   await expect(panel.getByTestId("press-empty").or(panel.getByTestId("press-view").first())).toBeVisible();
   expect((await (await request.get("/api/presses")).json()).presses).toBe(before);
   await shoot(page, "presses-03-off");
+  // A second tab learns it is off from its own press, and takes recording up again by itself when it is turned on.
+  const other = await page.context().newPage();
+  const posts = (pg: typeof other, record: boolean, empty: boolean) => pg.waitForResponse(async (r) => {
+    if (!r.url().endsWith("/api/presses") || r.request().method() !== "POST") return false;
+    const body = JSON.parse(r.request().postData() ?? "{}");
+    return (body.presses.length === 0 && body.seen.length === 0) === empty && (await r.json()).record === record;
+  }, { timeout: 45_000 });
+  const off = posts(other, false, false);
+  await other.goto(`/s/${session.id}`);
+  await other.getByTestId("session-menu").click();
+  await off;
   await panel.getByRole("radio", { name: "Record", exact: true }).click();
+  await posts(other, true, true); // its own ask, with no press
+  const again = (await (await request.get("/api/presses")).json()).presses;
+  await other.keyboard.press("Escape");
+  await other.getByTestId("session-menu").click();
+  await expect.poll(async () => (await (await request.get("/api/presses")).json()).presses, { timeout: 30_000 }).toBeGreaterThan(again);
+  await other.close();
   await expect.poll(async () => (await (await request.get("/api/presses")).json()).record).toBe(true);
   await request.delete("/api/sessions/" + session.id);
 });

@@ -1,19 +1,25 @@
 import { expect, test } from "bun:test";
-import { Batcher, BATCH_MAX, FLUSH_MS, nameOf, QUEUE_MAX, SEEN_AGAIN_MS, type Body } from "./press-batch.ts";
+import { ASK_MS, Batcher, BATCH_MAX, FLUSH_MS, isDrawn, nameOf, QUEUE_MAX, SEEN_AGAIN_MS, type Body } from "./press-batch.ts";
 
 // A clock and a beat the test drives; the sender records what it was given.
 function rig(answer: () => Promise<{ record: boolean } | void> = async () => ({ record: true })) {
   let now = 1_000_000;
   const beats = new Set<() => void>();
+  const asks = new Set<() => void>();
   let timers = 0;
   const sent: Body[] = [];
   const b = new Batcher(
     async (body) => { sent.push(body); return answer(); },
-    (ms, f) => { expect(ms).toBe(FLUSH_MS); timers++; beats.add(f); return () => void beats.delete(f); },
+    (ms, f) => {
+      const set = ms === ASK_MS ? asks : beats;
+      if (set === beats) { expect(ms).toBe(FLUSH_MS); timers++; }
+      set.add(f);
+      return () => void set.delete(f);
+    },
     () => "page",
     () => now,
   );
-  return { b, sent, beats, tick: async () => { for (const f of [...beats]) f(); await Promise.resolve(); await Promise.resolve(); }, at: (t: number) => void (now = t), timers: () => timers };
+  return { b, sent, beats, asks, ask: async () => { for (const f of [...asks]) f(); for (let i = 0; i < 4; i++) await Promise.resolve(); }, tick: async () => { for (const f of [...beats]) f(); await Promise.resolve(); await Promise.resolve(); }, at: (t: number) => void (now = t), timers: () => timers };
 }
 
 test("a control's name keeps what names it and drops the digits that name a thing", () => {
@@ -102,4 +108,46 @@ test("the page going away sends what is left at once", async () => {
   await r.b.flush(true);
   expect(r.sent).toHaveLength(1);
   expect(r.beats.size).toBe(0);
+});
+
+test("a tab that was told recording is off asks on a slow beat and resumes when it is on again", async () => {
+  let on = false;
+  const r = rig(async () => ({ record: on }));
+  r.b.press("a", "new");
+  await r.tick();
+  expect(r.b.recording).toBe(false);
+  expect(r.asks.size).toBe(1);
+  // Still off: the ask is an empty batch and the tab stays quiet.
+  await r.ask();
+  expect(r.sent.at(-1)).toEqual({ surface: "page", presses: [], seen: [] });
+  expect(r.b.recording).toBe(false);
+  r.b.press("a", "new");
+  expect(r.b.waiting).toBe(0);
+  // Turned on elsewhere: the next ask brings it back, and the beat is given up.
+  on = true;
+  await r.ask();
+  expect(r.b.recording).toBe(true);
+  expect(r.asks.size).toBe(0);
+  r.b.press("a", "new");
+  expect(r.b.waiting).toBe(1);
+});
+
+test("turning it on by hand gives the ask up, and a failed ask is tried again", async () => {
+  let up = false;
+  const r = rig(async () => { if (!up) throw new Error("down"); return { record: true }; });
+  r.b.recording = false;
+  expect(r.asks.size).toBe(1);
+  await r.ask();
+  expect(r.b.recording).toBe(false);
+  expect(r.asks.size).toBe(1);
+  r.b.recording = true;
+  expect(r.asks.size).toBe(0);
+});
+
+test("a control is drawn when it is shown and not disabled", () => {
+  const el = (o: { disabled?: boolean; aria?: string; rects?: number }) => ({ disabled: o.disabled, getAttribute: (n: string) => (n === "aria-disabled" ? o.aria ?? null : null), getClientRects: () => ({ length: o.rects ?? 1 }) });
+  expect(isDrawn(el({}))).toBe(true);
+  expect(isDrawn(el({ disabled: true }))).toBe(false);
+  expect(isDrawn(el({ aria: "true" }))).toBe(false);
+  expect(isDrawn(el({ rects: 0 }))).toBe(false);
 });

@@ -12,7 +12,7 @@
 // after it changes and after a press), so "never pressed" has something to be
 // measured against.
 import { every } from "./clock.ts";
-import { Batcher, nameOf, type Body } from "./press-batch.ts";
+import { Batcher, isDrawn, nameOf, type Body } from "./press-batch.ts";
 import { keyRan } from "./keys.ts";
 import { shell } from "./shell.ts";
 import { getUI, onUI, phone } from "./ui.ts";
@@ -65,7 +65,7 @@ function scanSoon() {
     for (const el of document.querySelectorAll(CONTROL)) {
       if (++n > SCAN_MAX) break;
       const name = controlName(el);
-      if (name && el.getClientRects().length) batcher.see(name, v);
+      if (name && isDrawn(el as HTMLButtonElement)) batcher.see(name, v);
     }
   }, 1500);
 }
@@ -84,7 +84,11 @@ export function installPresses() {
   }, { capture: true, passive: true });
   let at = viewOf();
   onUI(() => { const v = viewOf(); if (v !== at) { at = v; scanSoon(); } });
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") void batcher.flush(true); else scanSoon(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") void batcher.flush(true);
+    else if (batcher.recording) scanSoon();
+    else void batcher.ask();
+  });
   addEventListener("pagehide", () => void batcher.flush(true));
   keyRan.add((id) => notePress(`key:${id}`));
   scanSoon();

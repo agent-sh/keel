@@ -55,7 +55,7 @@ export default function PressesPanel() {
       <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid="press-disclosure">
         <h3 className="mb-1 text-base font-medium">What this records</h3>
         <p className="text-ui text-muted">
-          Keel notes which control you press: its name, the view, the session in view and the time. Never a word you type and never a value. It is the same in the browser, the desktop app and the page on a phone.
+          Keel notes which control you press: its name, the view, the session in view and the time. Never a word you type and never a value. A command run by its shortcut is counted as key:name; plain keys, such as Enter to send, are not counted. It is the same in the browser, the desktop app and the page on a phone.
           It stays in this machine's own database. It is not sent to Keel's makers, a model provider or anyone else, and it is not part of the OTLP export. It is kept {r.kept_days} days, at most {r.row_cap.toLocaleString()} presses.
           What you press most tells which controls earn their place.
         </p>

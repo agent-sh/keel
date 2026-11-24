@@ -568,6 +568,73 @@ function shoutedStates(list: Src[]): string[] {
   return out;
 }
 
+// A control's test id is its name for the e2e specs and for the record of what the owner presses
+// (lib/press-batch.ts masks only runs of digits and hex, so a name or a title in an id would be kept
+// as it is). A template literal in a test id may interpolate only what is a fixed set: a kind, a
+// key, a state, an id of something the code lists. These are the ones reviewed, by file and by the
+// expression, none of them user data. A new one is a decision: name it here, with the reason in the
+// commit, or put the data in an attribute (data-name, data-value) and keep the id fixed.
+const TEST_ID_PARTS: Record<string, string[]> = {
+  "components/AcpAgentsPanel.tsx": ["a.id"], "components/ArtifactsPanel.tsx": ["f", "v"],
+  "components/automation/ActivityList.tsx": ["k"], "components/automation/AlertSettings.tsx": ["c.id", "k"],
+  "components/automation/Lane.tsx": ["l.key"], "components/automation/SidebarExtras.tsx": ["p.w"], "components/ElsewherePanel.tsx": ["g.id"],
+  "components/ExperimentsPanel.tsx": ["m"], "components/HeavyPool.tsx": ["r.state"],
+  "components/HomeWatch.tsx": ["p.kind"], "components/ImportSheet.tsx": ["h.harness"],
+  "components/ListArrange.tsx": ["g", "l.v", "s.v"], "components/LogsSettings.tsx": ["id"],
+  "components/ObservabilityPanel.tsx": ["g.metric"], "components/Panes.tsx": ["n"],
+  "components/PermissionMenu.tsx": ["m.id", "p.id"], "components/ProviderModels.tsx": ["k"],
+  "components/ResumeFrom.tsx": ["v"], "components/SessionHeader.tsx": ["a.id"],
+  "components/SessionPanel.tsx": ["x.id"], "components/SessionUsage.tsx": ["k"],
+  "components/Settings.tsx": ["Math.round(v * 100)"], "components/Sidebar.tsx": ["c.kind"],
+  "components/SidePanel.tsx": ["p.id"], "components/surfaces/kit.tsx": ["a.id", "kind", "v"],
+  "components/surfaces/PluginUnits.tsx": ["testid"], "components/TerminalPanel.tsx": ["f"],
+  "components/TimelinePanel.tsx": ['v || "all"'], "components/Transcript.tsx": ["a.id"],
+  "components/TurnControls.tsx": ["z.key"], "components/UsagePanel.tsx": ["key"],
+  "components/UsagePast.tsx": ["label"], "components/UsageViews.tsx": ["label"],
+};
+// What a test id's value holds: the template literals written after `data-testid=` or `testid:` /
+// `testid=` (a prop that is handed to one), up to the end of that value.
+function testIdTemplates(text: string): { exprs: string[]; line: number }[] {
+  const src = code(text);
+  const out: { exprs: string[]; line: number }[] = [];
+  for (const m of src.matchAll(/(?<![\w-])(?:data-)?testid\s*(=\s*\{|:)/g)) {
+    let depth = 0, i = m.index! + m[0].length;
+    const found: string[] = [];
+    for (; i < src.length; i++) {
+      const c = src[i]!;
+      if (c === "`") {
+        let j = i + 1, braces = 0;
+        for (; j < src.length && (src[j] !== "`" || braces); j++) {
+          if (src[j] === "\\") j++;
+          else if (src[j] === "$" && src[j + 1] === "{") { braces++; j++; }
+          else if (braces && src[j] === "}") braces--;
+        }
+        for (const e of src.slice(i + 1, j).matchAll(/\$\{([^}]*)\}/g)) found.push(e[1]!.trim());
+        i = j;
+      } else if (c === '"' || c === "'") { i++; while (i < src.length && src[i] !== c && src[i] !== "\n") i += src[i] === "\\" ? 2 : 1; }
+      else if ("({[".includes(c)) depth++;
+      else if (")}]".includes(c)) { if (--depth < 0) break; }
+      else if ((c === "," || c === ";" || c === "\n") && depth === 0) break;
+    }
+    if (found.length) out.push({ exprs: found, line: lineOf(src, m.index!) });
+  }
+  return out;
+}
+function testIds(list: Src[], allowed: Record<string, string[]> = TEST_ID_PARTS): string[] {
+  const out: string[] = [];
+  const used = new Set<string>();
+  for (const s of list) {
+    for (const t of testIdTemplates(s.text)) {
+      for (const e of t.exprs) {
+        used.add(`${s.file}\n${e}`);
+        if (!allowed[s.file]?.includes(e)) out.push(at(s, t.line, `a test id holds \${${e}}: it is recorded as a control's name, so it may hold only a fixed set (a kind, a key, a state). Keep the id fixed and put the data in an attribute, or name the expression in TEST_ID_PARTS`));
+      }
+    }
+  }
+  const gone = Object.entries(allowed).flatMap(([f, es]) => es.filter((e) => !used.has(`${f}\n${e}`)).map((e) => `${f}: no test id holds \${${e}} now: take it off TEST_ID_PARTS`));
+  return list === page ? [...out, ...gone] : out;
+}
+
 // ---------- Over the tree ----------
 
 // What the page does on a beat runs on its one clock (lib/clock.ts), which
@@ -615,6 +682,7 @@ test("every time is on the 24-hour clock", () => {
 test("the look is set by components and tokens, not by test ids or utility names", () => expect(selectors(sheets, page)).toEqual([]));
 test("a label, a picked row and a switch are their shared class", () => expect(shared(page)).toEqual([]));
 test("a state word is written once, in the vocabulary", () => expect(stateLiterals(page)).toEqual([]));
+test("a test id interpolates only a reviewed, fixed set of names", () => expect(testIds(page)).toEqual([]));
 test("a state word is set in sentence case", () => expect(shoutedStates(sheets)).toEqual([]));
 
 // ---------- The checks themselves ----------
@@ -684,6 +752,24 @@ test("each check refuses what it is for", () => {
   expect(stateLiterals(tsx('<span title="Needs You" />\nconst a = "NEEDS YOU";\nconst b = "needs you";\n<i aria-label="Needs you, under a look" />'))).toHaveLength(4);
   // And no rule turns one to capitals.
   expect(shoutedStates(css(".k-row-state { font-weight: 700; text-transform: uppercase; }\n.k-rail .k-sum-word, .k-other { text-transform: uppercase; }"))).toHaveLength(2);
+});
+
+test("a test id may not carry data", () => {
+  // The review's case: a name in an id would be recorded as it is.
+  const bad = testIds(tsx("<button data-testid={`branch-${name}`} />"), {});
+  expect(bad).toHaveLength(1);
+  expect(bad[0]).toContain("components/Thing.tsx:1: a test id holds ${name}");
+  // A prop, an object field, a ternary and a second interpolation are read too.
+  expect(testIds(tsx("<Row testid={`row-${a.title}-${b}`} />"), {})).toHaveLength(2);
+  expect(testIds(tsx("const o = { value: v, testid: `seg-${v}` };\nconst p = { testid: on ? `a-${t}` : 'b' };"), {})).toHaveLength(2);
+  // An expression named for that file passes; the same one in another file does not.
+  expect(testIds(tsx("<b data-testid={`lane-${l.key}`} />"), { "components/Thing.tsx": ["l.key"] })).toEqual([]);
+  expect(testIds(tsx("<b data-testid={`lane-${l.key}`} />", "components/Other.tsx"), { "components/Thing.tsx": ["l.key"] })).toHaveLength(1);
+});
+
+test("a test id that holds no data is let through", () => {
+  expect(testIds(tsx('<b data-testid="where" data-x={`a-${b}`} />\n<i data-testid={on ? "a" : "b"} className={`k-${kind}`} />'), {})).toEqual([]);
+  expect(testIds(tsx("// data-testid={`x-${y}`}\nconst t = { testid: string };\nconst q = `[data-testid=\"${testid}\"]`;"), {})).toEqual([]);
 });
 
 test("each check lets ordinary edits through", () => {
