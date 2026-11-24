@@ -261,12 +261,14 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
         // The bell counts what waits on the owner, in the color of that; other news is a muted dot.
         title={said}
         aria-label={said}
-        className={cn("relative flex h-ctl-md items-center gap-1.5 rounded-md px-2 text-caption hover:bg-raised", need || others ? "text-fg" : "text-faint")}
+        data-held={held || undefined}
+        className={cn("k-foot-named relative flex h-ctl-md items-center gap-1.5 rounded-md px-2 text-caption hover:bg-raised", need || others ? "text-fg" : "text-faint")}
       >
         <span className="relative grid place-items-center">
           {held ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
           {others > 0 && <span data-testid="bell-dot" data-watch={wrong ? "fail" : undefined} className="k-inbox-dot" />}
         </span>
+        <span className="k-foot-word">Inbox</span>
         {need > 0 && <span data-testid="inbox-count" data-watch="need" className="k-inbox-count tabular-nums">{need}</span>}
       </button>
       <button
@@ -276,9 +278,10 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
         // Named by its word, with the count it shows: the count alone named the button "2".
         title={loops > 0 ? `Loops. ${loops} on` : "Loops"}
         aria-label={loops > 0 ? `Loops. ${loops} on` : "Loops"}
-        className="flex items-center gap-1.5 h-ctl-md rounded-md px-2 text-caption text-faint hover:bg-raised hover:text-fg"
+        className="k-foot-named flex items-center gap-1.5 h-ctl-md rounded-md px-2 text-caption text-faint hover:bg-raised hover:text-fg"
       >
         <Repeat className="size-3.5" />
+        <span className="k-foot-word">Loops</span>
         {loops > 0 && <span className="tabular-nums">{loops}</span>}
       </button>
     </>

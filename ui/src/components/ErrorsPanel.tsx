@@ -8,6 +8,7 @@ import { elsewhere, ERROR_STATE, errorState, healedWords } from "../../../src/ad
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
+import { footSheet } from "./ui.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { FailureActions } from "./TurnFailure.tsx";
 import { IncidentList } from "./IncidentBand.tsx";
@@ -307,10 +308,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
         <Dialog.Popup
           data-testid="errors-panel"
           data-float
-          className={cn(
-            "k-surface fixed right-3 top-3 bottom-3 z-50 w-[min(40rem,calc(100vw-1.5rem))]",
-            "transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0",
-          )}
+          className={footSheet()}
         >
           {/* On a phone the note has a line of its own under the title, read whole. */}
           <div className="k-surface-head k-errors-head">

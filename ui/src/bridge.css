@@ -52,8 +52,24 @@
 .k-rail-foot { padding-block: 0.5rem max(0.5rem, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 .k-rail[data-open] .k-rail-foot { flex-direction: row; padding-inline: 0.5rem; }
 .k-rail[data-open] .k-rail-foot .k-theme-toggle { margin-left: auto; }
-/* The foot is a row of glyphs, each named by its tip: a word cut to "Settin..." beside four glyphs said less than the gear. */
+/* The foot: the gear and the theme are glyphs every desk knows, named by their tips; the three places of
+   Keel's own (Inbox, Errors, Loops) are their words, with their counts after them. A row of five unnamed
+   glyphs read as a puzzle. Folded, or in a list too narrow for the words, they are glyphs again. */
 .k-rail[data-open] .k-rail-foot .k-act-word .k-act-label { display: none; }
+.k-foot-word { display: none; }
+.k-rail[data-open] .k-foot-named { gap: 0.3125rem; min-width: 0; padding: 0 0.5rem; font-size: var(--text-caption); font-weight: 500; }
+.k-rail[data-open] .k-foot-named .k-foot-word { display: inline; }
+.k-rail[data-open] .k-foot-named > svg, .k-rail[data-open] .k-foot-named:not([data-held]) > span:first-child > svg { display: none; }
+.k-rail[data-open] .k-foot-named:not([data-held]) > span:first-child { display: contents; }
+.k-rail[data-open] .k-foot-named:not([data-held]) .k-inbox-dot { position: static; order: 3; box-shadow: none; }
+.k-rail[data-open] .k-foot-named .k-foot-word { order: 1; }
+.k-rail[data-open] .k-foot-named :is(.k-inbox-count, .k-act-n) { order: 2; }
+@container rail (max-width: 17.5rem) {
+  .k-rail[data-open] .k-foot-named .k-foot-word { display: none; }
+  .k-rail[data-open] .k-foot-named > svg, .k-rail[data-open] .k-foot-named > span:first-child > svg { display: block; }
+  .k-rail[data-open] .k-foot-named > span:first-child { display: grid; }
+  .k-rail[data-open] .k-foot-named .k-inbox-dot { position: absolute; box-shadow: 0 0 0 0.125rem var(--bg); }
+}
 .k-act {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 0.5625rem;
   min-width: 2.5rem; height: var(--spacing-ctl-xl); padding: 0 0.5625rem; border-radius: var(--radius-md); color: var(--muted); font-size: var(--text-ui);

@@ -1341,10 +1341,11 @@ export function Sidebar({ open }: { open: boolean }) {
         <button type="button" className="k-act k-act-word" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>
           <Settings /><span className="k-act-label">Settings</span>
         </button>
-        <button type="button" className={cn("k-act", errors > 0 && "k-alert")} data-testid="errors-button" aria-label={`Errors. ${COUNTERS.errors(errors)}`} title={`Errors. ${COUNTERS.errors(errors)}`} onClick={() => setUI({ errors: true })}>
-          <Bug />{errors > 0 && <span className="k-act-n">{errors}</span>}
-        </button>
+        {/* What waits on the owner first, then the loops, then the errors. */}
         <AutomationFooter />
+        <button type="button" className={cn("k-act k-foot-named", errors > 0 && "k-alert")} data-testid="errors-button" aria-label={`Errors. ${COUNTERS.errors(errors)}`} title={`Errors. ${COUNTERS.errors(errors)}`} onClick={() => setUI({ errors: true })}>
+          <Bug /><span className="k-foot-word">Errors</span>{errors > 0 && <span className="k-act-n">{errors}</span>}
+        </button>
         <button type="button" className="k-theme-toggle k-act" data-testid="theme-toggle" onClick={() => setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system")} title={`Theme: ${theme}`} aria-label={`Theme: ${theme}. Change`}>
           <ThemeIcon />
         </button>

@@ -184,3 +184,36 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   for (const id of [failed, twin, done]) await request.delete(`/api/sessions/${id}`);
   for (const e of (await (await request.get("/api/errors?resolved=0")).json()).errors) if (e.message.includes("credit balance")) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } });
 });
+
+// The rail's foot names its places in words (Inbox, Errors, Loops; the gear and the theme are glyphs every desk
+// knows, named by their tips), and the three open the same way: a sheet from the rail's side, at one place, one size.
+test("the foot names its places, and they open from one side in one style", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto("/");
+  const foot = page.locator(".k-rail-foot");
+  for (const [id, word] of [["inbox-button", "Inbox"], ["errors-button", "Errors"], ["loops-button", "Loops"]] as const) {
+    const label = foot.getByTestId(id).locator(".k-foot-word");
+    await expect(label, `the ${word} button shows no name`).toBeVisible();
+    await expect(label).toHaveText(word);
+  }
+  for (const id of ["settings-button", "theme-toggle"]) expect(await foot.getByTestId(id).getAttribute("title")).toBeTruthy();
+  // The foot is one row inside the rail.
+  const f = (await foot.boundingBox())!, rail = (await page.getByTestId("sidebar").boundingBox())!;
+  for (const b of await foot.locator(":scope > *").all()) { const r = await b.boundingBox(); if (r) { expect(r.x + r.width, "a foot button spills from the rail").toBeLessThanOrEqual(rail.x + rail.width); expect(Math.abs(r.y + r.height / 2 - (f.y + f.height / 2))).toBeLessThan(4); } }
+  await shoot(page, "rail-08-foot");
+  const boxes: Record<string, { x: number; y: number; height: number }> = {};
+  for (const [id, sheet] of [["inbox-button", "inbox-panel"], ["errors-button", "errors-panel"], ["loops-button", "loops-panel"]] as const) {
+    await foot.getByTestId(id).click();
+    const s = page.getByTestId(sheet);
+    await expect(s).toBeVisible();
+    await expect.poll(async () => (await s.boundingBox())?.x).toBeLessThan(40);
+    await page.waitForTimeout(400);
+    const b = (await s.boundingBox())!;
+    boxes[sheet] = { x: Math.round(b.x), y: Math.round(b.y), height: Math.round(b.height) };
+    await shoot(page, `rail-09-${sheet}`);
+    await page.keyboard.press("Escape");
+    await expect(s).toBeHidden();
+  }
+  const [first, ...rest] = Object.values(boxes);
+  for (const b of rest) expect(b, `the sheets open at different places: ${JSON.stringify(boxes)}`).toEqual(first);
+});

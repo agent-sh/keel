@@ -12,6 +12,7 @@ import { Mark } from "../Mark.tsx";
 import { Select } from "../Select.tsx";
 import { WorkspacePicker } from "../WorkspacePicker.tsx";
 import { ago, clock, cn, fmtTokens } from "../../lib/utils.ts";
+import { footSheet } from "../ui.tsx";
 import { modelOf } from "../Mark.tsx";
 import { Empty, IconButton } from "./bits.tsx";
 import { QUEUED, STATE_WORD } from "../../../../src/core/state-words.ts";
@@ -360,10 +361,7 @@ export function LoopsPanel({ open, onOpenChange }: { open: boolean; onOpenChange
         <Dialog.Popup
           data-testid="loops-panel"
           data-float
-          className={cn(
-            "k-surface fixed left-1/2 top-1/2 z-50 h-[min(44rem,calc(100vh-4rem))] w-[min(60rem,calc(100vw-4rem))] -translate-x-1/2 -translate-y-1/2",
-            "transition-[scale,opacity] duration-(--dur-move) data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:scale-[0.98] data-ending-style:opacity-0",
-          )}
+          className={footSheet(true)}
         >
           <div className="k-surface-head">
             <Repeat className="k-surface-icon" />

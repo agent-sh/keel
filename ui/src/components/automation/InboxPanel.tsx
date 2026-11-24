@@ -7,6 +7,7 @@ import { useToldStates } from "../../lib/watch.ts";
 import { navigate, setUI } from "../../lib/ui.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, cn, when } from "../../lib/utils.ts";
+import { footSheet } from "../ui.tsx";
 import { ActivityList } from "./ActivityList.tsx";
 import { plainLine } from "../../../../src/core/plain.ts";
 import { AwayDigest } from "./AwayDigest.tsx";
@@ -345,10 +346,7 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
         <Dialog.Popup
           data-testid="inbox-panel"
           data-float
-          className={cn(
-            "k-surface fixed left-3 top-3 bottom-3 z-50 w-[min(40rem,calc(100vw-1.5rem))]",
-            "transition-[transform,opacity] duration-(--dur-move) data-starting-style:-translate-x-4 data-starting-style:opacity-0 data-ending-style:-translate-x-4 data-ending-style:opacity-0",
-          )}
+          className={footSheet()}
         >
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="k-surface-head">
