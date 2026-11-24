@@ -73,6 +73,9 @@ test("an agent's processes stop when it ends; what its commands made is listed, 
     await expect(page.locator(`[data-testid="leftover-process"]`).filter({ hasText: `http.server ${port}` })).toHaveCount(0);
     // The one act for the whole list says what goes, the ignored path included.
     await expect(page.getByTestId("leftovers-remove-all")).toContainText("1 ignored path with them");
+    // A row's buttons say which row they act on: a screen reader's list of buttons reads Remove ten times otherwise.
+    await expect(row.getByTestId("leftover-remove")).toHaveAccessibleName(`Remove worktree ${wt}`);
+    await expect(page.locator(`[data-testid="leftover-branch"][data-name="${merged}"]`).getByTestId("leftover-delete")).toHaveAccessibleName(`Delete branch ${merged}`);
     await shoot(page, "leftovers-01-page");
 
     // Remove asks first; the folder goes, its branch stays with the commit and cannot be deleted.
@@ -140,6 +143,8 @@ test("a command's scope left running is listed with its memory and fate, and Kee
     await expect(row.getByTestId("leftover-memory")).toHaveText(/^\d+ MB$/);
     await expect(row).toContainText("command ended");
     await expect(page.getByText(/One with a terminal in it \(tmux, script, an editor\) or a process put in it from outside is kept until you stop it\./)).toBeVisible();
+    await expect(row.getByTestId("leftover-keep")).toHaveAccessibleName(/^Keep .+/);
+    await expect(row.getByTestId("leftover-stop")).toHaveAccessibleName(/^Stop .+/);
     await shoot(page, "leftovers-03-scope");
 
     await row.getByTestId("leftover-keep").click();

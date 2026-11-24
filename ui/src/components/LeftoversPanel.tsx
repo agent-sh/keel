@@ -141,12 +141,12 @@ export function LeftoversPanel() {
                   {age(p.started)}
                 </>}
                 actions={<>
-                  {p.scope && <button type="button" className="k-btn aria-pressed:bg-accent-soft aria-pressed:shadow-[inset_0_0_0_1px_var(--accent)] aria-pressed:text-accent-ink" data-testid="leftover-keep" aria-pressed={p.scope.keep} disabled={busy !== null}
+                  {p.scope && <button type="button" className="k-btn aria-pressed:bg-accent-soft aria-pressed:shadow-[inset_0_0_0_1px_var(--accent)] aria-pressed:text-accent-ink" data-testid="leftover-keep" aria-label={`Keep ${p.command}`} aria-pressed={p.scope.keep} disabled={busy !== null}
                     title={p.scope.keep ? "Kept: Keel does not stop it. Click to let Keel stop it again when it idles." : "Keep it running: Keel will not stop it"}
                     onClick={() => void keep(p, !p.scope!.keep)}>
                     {p.scope.keep ? "Kept" : "Keep"}
                   </button>}
-                  <button type="button" className="k-btn" data-testid="leftover-stop" disabled={busy !== null}
+                  <button type="button" className="k-btn" data-testid="leftover-stop" aria-label={`Stop ${p.command}`} disabled={busy !== null}
                     onClick={() => act(`p:${p.job_id}`, { title: "Stop this command?", body: `${p.command}\n\nEvery process it started is stopped (${p.pids.length}), and nothing else.`, action: "Stop", danger: true }, "/api/leftovers/stop", { session_id: p.session_id, job_id: p.job_id }, "Every process of it has ended.")}>
                     Stop
                   </button>
@@ -173,7 +173,7 @@ export function LeftoversPanel() {
                   </span>
                 </span>}
                 meta={<><Who by={w.by} />{age(w.made)}</>}
-                actions={<button type="button" className="k-btn" data-testid="leftover-remove" disabled={busy !== null || !w.removable} title={w.removable ? undefined : `Kept: ${w.why}`}
+                actions={<button type="button" className="k-btn" data-testid="leftover-remove" aria-label={`Remove worktree ${w.path}`} disabled={busy !== null || !w.removable} title={w.removable ? undefined : `Kept: ${w.why}`}
                   onClick={() => act(`w:${w.path}`, { title: "Remove this worktree?", body: `${w.path}\n\nThe folder goes. ${w.branch ? `Branch ${w.branch} and its commits stay.` : "It is detached and holds no commit of its own."}${w.ignored?.length ? `\n\n${ignoredSay(w.ignored)}` : ""}`, action: "Remove", danger: true }, "/api/leftovers/worktree/remove", { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0 }, "Removed.")}>
                   Remove
                 </button>} />
@@ -194,7 +194,7 @@ export function LeftoversPanel() {
                     : <span className="text-fg">{b.ahead} {b.ahead === 1 ? "commit" : "commits"} not on {b.base}</span>}
                 </span>}
                 meta={<><Who by={b.by} />{age(b.at)}</>}
-                actions={<button type="button" className="k-btn" data-testid="leftover-delete" disabled={busy !== null || !b.merged} title={b.merged ? undefined : "Kept: it holds commits that are not on the base"}
+                actions={<button type="button" className="k-btn" data-testid="leftover-delete" aria-label={`Delete branch ${b.name}`} disabled={busy !== null || !b.merged} title={b.merged ? undefined : "Kept: it holds commits that are not on the base"}
                   onClick={() => act(`b:${b.name}`, { title: "Delete this branch?", body: `${b.name} in ${b.top}\n\nEvery commit of it is on ${b.base}: nothing is lost.`, action: "Delete", danger: true }, "/api/leftovers/branch/delete", { repo: b.repo, branch: b.name, sha: b.sha }, "Deleted.")}>
                   Delete
                 </button>} />

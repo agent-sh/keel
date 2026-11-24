@@ -68,7 +68,7 @@ function DaysField({ value, onSave, label, testid }: { value: number | null; onS
     if (v !== value) onSave(v).catch((e) => { setBad(true); reportError(e); });
   };
   return (
-    <label className={cn("flex h-8 items-center gap-2 rounded-md border bg-raised px-2.5 text-ui", bad ? "border-danger" : "border-line-strong")}>
+    <label className={cn("flex h-8 items-center gap-2 rounded-md border bg-raised px-2.5 text-ui has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ring", bad ? "border-danger" : "border-line-strong")}>
       <input
         aria-label={label}
         data-testid={testid}
@@ -209,7 +209,7 @@ export function StoragePanel() {
 
       <Group title="Delete old archived sessions" hint="Lists the sessions archived at least this long ago. Nothing is deleted until you confirm the list.">
         <div className="flex flex-wrap items-center gap-2 py-4">
-          <label className="flex h-8 items-center gap-2 rounded-md border border-line-strong bg-raised px-2.5 text-ui">
+          <label className="flex h-8 items-center gap-2 rounded-md border border-line-strong bg-raised px-2.5 text-ui has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ring">
             <span className="text-muted">Archived</span>
             <input aria-label="Days archived" data-testid="cleanup-days" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !composing(e) && find().catch(reportError)} className="w-12 bg-transparent text-right tabular-nums outline-none" />
             <span className="text-muted">days ago or more</span>

@@ -27,6 +27,10 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await shoot(page, "storage-01");
 
   await panel.getByTestId("cleanup-days").fill("30");
+  // A field that takes the focus shows it: its box has a ring (the input's own outline is off).
+  await expect(panel.getByTestId("cleanup-days").locator("xpath=..")).toHaveCSS("outline-width", "2px");
+  await panel.getByTestId("archive-idle").focus();
+  await expect(panel.getByTestId("archive-idle").locator("xpath=..")).toHaveCSS("outline-width", "2px");
   await panel.getByTestId("cleanup-find").click();
   const list = panel.getByTestId("cleanup-list");
   await expect(list).toContainText("Old archived one");
