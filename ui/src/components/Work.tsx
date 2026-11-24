@@ -302,8 +302,10 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
 // Under the card of a step that started one agent: a line for each agent below it while one of them works.
 function BelowOne({ callId, sid }: { callId: string; sid: string }) {
   const a = useAuto((x) => Object.values(x.agents).find((r) => r.parent_id === sid && r.call_id === callId));
+  // (Mounted only while an agent of its own works: a finished step's lines read nothing on each frame.)
+  const busy = useAuto((x) => !!a && Object.values(x.agents).some((r) => r.parent_id === a.session_id && isLive(r)));
   const from = useMemo(() => (a ? [a] : []), [a]);
-  return a ? <AgentLines from={from} sid={sid} below /> : null;
+  return a && busy ? <AgentLines from={from} sid={sid} below /> : null;
 }
 
 // A run of tool calls: one rail. Shift with a click or a key on a step's line opens or closes every step of the run.
