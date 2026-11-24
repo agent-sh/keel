@@ -360,15 +360,23 @@ under `~/.cache/keel-work/bun/research/`.
   (`src/checks/beside.ts` decides, `src/checks/beside-run.ts` runs): the steps
   of a 30 s window are one run (a turn's end runs it at once), one run at a
   time per agent, only for a tree that is not the one checked last and that
-  changes something over the base. It runs on a copy of the agent's files in
-  a folder of Keel's own (its installed packages linked from its `inputs`), in
-  the agent's sandbox, behind every other command of the heavy pool (or on the
-  owner's `checks.beside.host` when this machine has no room). A check with
-  `tests` gets the tests the change touches: the changed tests, the tests of
-  a changed file's folder, the tests that import a changed file and the tests
-  that walk the source tree under one. Each run is a ledger row on its tree
-  (`by: "beside"`); a red one is told to the agent once as a harness message
-  (`checks_beside`, its next step takes it), a green one says nothing.
+  changes something over the base, never for an agent past the owner's Stop.
+  It runs on a copy of the agent's files in a folder of Keel's own (its
+  installed packages linked from its `inputs`, their real places shown to the
+  sandbox), in the agent's sandbox, behind every other command of the heavy
+  pool (or on the owner's `checks.beside.host` when this machine has no room);
+  the copy goes when the agent's turn ends with nothing running or waiting. A
+  check with `tests` gets the tests the latest change touches (the tree's
+  difference from the one checked last), the most direct first and at most
+  `PICK_MAX`: the changed tests and the ones still red, a changed file's own
+  test, the tests that walk the source tree under one, its folder's tests,
+  the tests that import it. Its time limit is sized from its test files; a
+  run longer than `RUN_MAX_MS` is not made. Each run is a ledger row on its
+  tree (`by: "beside"`), never the base's evidence. A red is told once: to a
+  working agent as a harness message (`checks_beside`, its next step takes
+  it), to one that waits on its own at its next step, and of a finished one
+  to its parent's failures notice (kind `check`, riding its next input): it
+  never gives a finished agent new work. A green one says nothing.
 - A session's agent slots are its tree's and count the agents that work. An
   agent that waits on a wait of its own holds none. Its wake, and an agent
   asked for while every slot works, wait in line as owed and take the next
