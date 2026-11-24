@@ -1,10 +1,11 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
-import { Brain, Check, Circle, CircleDot, Link2, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { Brain, Check, Circle, CircleDot, FileText, Link2, RotateCcw, SquareTerminal, X } from "lucide-react";
 import { useKept } from "../lib/kept.ts";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
+import type { SavedFile } from "../../../src/tools/blob.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import type { PatchLine } from "../../../src/safety/patch.ts";
 import { actions, api, failed, reportError } from "../lib/store.ts";
@@ -26,7 +27,7 @@ import {
   type ToolKind,
 } from "../lib/tools.ts";
 import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
-import { cn, fmtWait } from "../lib/utils.ts";
+import { cn, fmtSize, fmtWait } from "../lib/utils.ts";
 import { AGENT_TOOLS, AgentCall, toolSummary } from "./automation/TranscriptExtras.tsx";
 import { CodeCall } from "./CodeCall.tsx";
 import { ReadersCall } from "./ReadersCall.tsx";
@@ -192,6 +193,7 @@ const NO_CALLS: { id: string; result?: unknown }[] = [];
 function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, auto, peek, quiet, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
   const { text: out, nested, memory, diagnostics } = useMemo(() => { const m = splitMemory(resultText(result)); const d = EDITS.has(kind) ? splitDiagnostics(m.text) : { text: m.text, diagnostics: [] }; return { ...splitNested(d.text), memory: m.memory, diagnostics: d.diagnostics }; }, [result, kind]);
   const images = resultImages(result);
+  const saved = (result as (ToolResultBlock & { shown?: { files?: SavedFile[] } }) | undefined)?.shown?.files;
   const spillGone = useSpillRemoved(sessionId, out);
   const refused = useBlocked(sessionId).find((b) => b.calls?.includes(use.id));
   // With no result it runs only while its session works, and waits while its approval card is open.
@@ -366,6 +368,19 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {images.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {images.map((im, i) => <img key={i} src={`data:${im.media_type};base64,${im.data}`} className="max-h-64 rounded-lg border border-line" alt="" />)}
+            </div>
+          )}
+          {saved && sessionId && saved.length > 0 && (
+            // The binary parts of the result, saved as files the model can open (src/tools/blob.ts).
+            <div className="flex flex-wrap gap-2" data-testid="result-files">
+              {saved.map((f) => (
+                <a key={f.path} href={`/api/sessions/${sessionId}/saved/${encodeURIComponent(f.path.split("/").pop()!)}`} download={f.name} data-testid="result-file" title={`${f.path}, ${f.media_type}`}
+                  className="flex h-10 max-w-64 items-center gap-2 rounded-lg border border-line bg-raised px-3 text-ui shadow-1 hover:border-line-strong">
+                  <FileText className="size-4 shrink-0 text-muted" />
+                  <span className="min-w-0 truncate">{f.name}</span>
+                  <span className="shrink-0 text-micro tabular-nums text-faint">{fmtSize(f.size)}</span>
+                </a>
+              ))}
             </div>
           )}
         </div>

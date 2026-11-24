@@ -28,6 +28,7 @@ import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { appUriOf, visibleTo } from "./apps.ts";
+import { base64Bytes as b64Bytes } from "../tools/blob.ts";
 import { hintsOf, hintWords } from "./hints.ts";
 import { ASKED, LOG_KEPT, logLine, severe, type LogLine } from "./logs.ts";
 import { conceal } from "../core/conceal.ts";
@@ -166,12 +167,6 @@ export type ResourceItem = { uri: string; mimeType?: string; text?: string; byte
 export type ResourceHalf = { items: any[]; error?: string; unsupported?: boolean; next?: string };
 // A prompt message as the server returned it, its role kept apart from its content.
 export type PromptMessage = { role: string; type: string; text: string };
-
-// The bytes base64 holds (padding deducted).
-export const b64Bytes = (b: string) => {
-  const t = b.replace(/\s/g, "");
-  return Math.max(0, Math.floor((t.length * 3) / 4) - (t.endsWith("==") ? 2 : t.endsWith("=") ? 1 : 0));
-};
 
 function promptPart(c: any): { type: string; text: string } {
   const type = String(c?.type ?? "unknown");

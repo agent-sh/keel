@@ -1,7 +1,7 @@
 // A tool's output schema: what the model is given when the structured content
 // conforms, and the error it is given when it does not.
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { McpClient } from "./client.ts";
@@ -97,4 +97,39 @@ test("a pattern with two unbounded quantifiers is not run, and a check with one 
   schemaCheck({ type: "array", items: { type: "string", pattern: ".*.*.*.*x" } }, ["a".repeat(1_500)]);
   schemaCheck({ type: "array", items: { type: "string", pattern: "^.*x$" } }, Array.from({ length: 50 }, () => "a".repeat(1_900)));
   expect(performance.now() - t).toBeLessThan(2_000);
+});
+
+test("binary parts are saved as files with their type's extension and named by path; an image stays an image", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-mcp-blob-"));
+  const own = { spillDir: dir } as any;
+  const pdf = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n");
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+  const out = await toOutput({
+    content: [
+      { type: "resource", resource: { uri: "file:///reports/q3.report", mimeType: "application/octet-stream", blob: pdf.toString("base64") } },
+      { type: "image", mimeType: "image/png", data: png.toString("base64") },
+      { type: "audio", mimeType: "audio/mpeg", data: Buffer.from("ID3\x03\0\0\0\0\0\0hello").toString("base64") },
+      { type: "text", text: Buffer.concat([pdf, Buffer.alloc(5000, 0xa5)]).toString("base64") },
+    ],
+  }, own, "files__get");
+  const blocks = out.content as any[];
+  const text = blocks.find((b) => b.type === "text").text as string;
+  const paths = [...text.matchAll(/saved to (\S+?)\]/g)].map((m) => m[1]!);
+  expect(paths.map((p) => p.replace(/^.*\//, "").replace(/-[0-9a-f]{12}/, ""))).toEqual(["q3.pdf", "files__get.png", "files__get.mp3", "files__get.pdf"]);
+  expect(text).toContain("[resource file:///reports/q3.report, application/pdf, 29 bytes, saved to ");
+  expect(text).toContain("image, image/png, 70 bytes");
+  expect(text).toContain("base64 text, application/pdf, ");
+  expect(paths.every((p) => p.startsWith(join(dir, "files") + "/"))).toBe(true);
+  expect(readFileSync(paths[0]!).equals(pdf)).toBe(true);
+  // The image goes on as an image, with the file its original bytes are in.
+  expect(blocks.find((b) => b.type === "image")).toMatchObject({ media_type: "image/png", path: paths[1] });
+  expect(readFileSync(paths[1]!).equals(png)).toBe(true);
+  // The transcript's list of the files, and the same bytes saved again are the one file.
+  expect((out.shown as any).files.map((f: any) => f.name)).toEqual(["q3.pdf", "files__get.png", "files__get.mp3", "files__get.pdf"]);
+  const again = await toOutput({ content: [{ type: "resource", resource: { uri: "file:///reports/q3.report", blob: pdf.toString("base64") } }] }, own, "files__get");
+  expect(again.content).toContain(paths[0]!);
+  expect(readdirSync(join(dir, "files")).length).toBe(4);
+  // Without a folder to keep it in, a blob is described, not inlined.
+  const none = await toOutput({ content: [{ type: "audio", mimeType: "audio/wav", data: "AAAA" }] }, { spillDir: "" } as any, "files__get");
+  expect(none.content).toBe("[audio, audio/wav, 3 bytes, not saved]");
 });

@@ -1,6 +1,8 @@
 // Files the owner attaches to a prompt: stored once by content, sent per model
 // (src/engine/attachments.ts). Not tied to a session, so a new session's first
 // prompt can carry them too.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { ATTACHMENT_MAX, attachmentPath, saveAttachmentStream, servedType, setAttachmentsRoot, TOO_LARGE } from "../../engine/attachments.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -9,6 +11,25 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 export const attachmentRoutes: RouteModule = ({ store }) => {
   setAttachmentsRoot(store.stateDir);
   return {
+    // A file a tool's result saved for the session (src/tools/blob.ts), as the transcript offers it.
+    // The name is one plain file name of the session's own folder.
+    "/api/sessions/:id/saved/:name": {
+      GET: (req: any) => {
+        const { id, name } = req.params as { id: string; name: string };
+        if (!/^[\w.-]+$/.test(name) || name.startsWith(".") || !/^[\w-]+$/.test(id)) return json({ error: "no such file" }, 404);
+        const path = join(store.stateDir, "spill", id, "files", name);
+        if (!existsSync(path)) return json({ error: "no such file" }, 404);
+        const type = servedType(path, name);
+        return new Response(Bun.file(path).slice(), {
+          headers: {
+            "content-type": type,
+            "x-content-type-options": "nosniff",
+            "content-security-policy": "sandbox; default-src 'none'",
+            ...(/^image\/(png|jpeg|gif|webp)$/.test(type) ? {} : { "content-disposition": `attachment; filename="${name}"` }),
+          },
+        });
+      },
+    },
     "/api/attachments": {
       POST: async (req: Request) => {
         const name = new URL(req.url).searchParams.get("name") || "file";
