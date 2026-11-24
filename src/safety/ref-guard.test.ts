@@ -229,7 +229,8 @@ test.skipIf(!hasGit)("a branch an agent made and deleted does not make the next 
   } finally { t.done(); }
 });
 
-test.skipIf(!hasGit)("a script puts HEAD on no branch the worktree did not make", () => {
+// (An older git moves a symbolic ref without the hook: the gate refuses the typed form there, see ref-guard.ts.)
+test.skipIf(!hasGit || !symrefs)("a script puts HEAD on no branch the worktree did not make", () => {
   const t = scratch();
   try {
     t.owner("branch", "release/1");

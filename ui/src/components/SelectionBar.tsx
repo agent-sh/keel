@@ -13,6 +13,8 @@ import { popupClass } from "./ui.tsx";
 // of the history is what a typed one would have made. Keys: Alt+Q quotes, Alt+C comments.
 const TOUCH = matchMedia("(hover: none) and (pointer: coarse)");
 const KEYS = { quote: "alt+q", comment: "alt+c" } as const;
+// What takes Escape for itself while it has the focus.
+const OWNS_ESCAPE = 'input, textarea, select, [contenteditable], [role="dialog"], [role="listbox"], [role="menu"], [role="combobox"]';
 
 // `ends`: where the words begin and end on the screen (their first and last line).
 type Ends = { first: DOMRect; last: DOMRect };
@@ -93,9 +95,14 @@ export const SelectionBar = memo(function SelectionBar({ sid, root, working }: {
   }, []);
 
   // Escape puts the offer away and leaves the words selected as they are (and does not stop the turn).
+  // A field, a menu or a dialog that has the focus keeps its own Escape (a picker opened over the page closes).
   useEffect(() => {
     if (!pick || commenting) return;
-    const f = (e: KeyboardEvent) => { if (e.key === "Escape" && !composing(e)) { e.preventDefault(); e.stopPropagation(); setPick(null); } };
+    const f = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || composing(e)) return;
+      if (e.target instanceof Element && e.target.closest(OWNS_ESCAPE)) return;
+      e.preventDefault(); e.stopPropagation(); setPick(null);
+    };
     addEventListener("keydown", f, true);
     return () => removeEventListener("keydown", f, true);
   }, [!pick, commenting]);
