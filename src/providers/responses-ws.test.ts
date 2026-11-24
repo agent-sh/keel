@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { continuation, ResponsesSockets } from "./responses-ws.ts";
+import { woke } from "./wake.ts";
 import { outward, setEgressSink } from "../safety/egress.ts";
 import { frameBytes, handshakeBytes } from "../safety/egress-count.ts";
 
@@ -88,4 +89,21 @@ test("a socket's opening and each request on it are rows of the outward ledger",
     expect(got[0].bytes).toBe(handshakeBytes(b.url, {}));
     expect(got[2].bytes).toBe(frameBytes(Buffer.byteLength(JSON.stringify({ type: "response.create", model: "m", input: [u("b")] }))));
   } finally { setEgressSink(undefined); b.stop(); }
+});
+
+// A machine's sleep leaves the sockets nobody uses dead on the far side. The wake closes them, so the next
+// request opens a new one and does not wait on the old.
+test("a wake closes the idle sockets and the next request opens a new one", async () => {
+  const b = backend(5);
+  const socks = new ResponsesSockets("test", () => b.url);
+  try {
+    const u = (text: string) => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
+    await ask(socks, "k", { model: "m", input: [u("a")] });
+    await ask(socks, "k", { model: "m", input: [u("b")] });
+    expect(b.opened()).toBe(1);
+    await woke(async () => true);
+    const after = await ask(socks, "k", { model: "m", input: [u("c")] });
+    expect(b.opened()).toBe(2);
+    expect(after.socket).toBe(2);
+  } finally { b.stop(); }
 });

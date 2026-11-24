@@ -18,6 +18,7 @@ import { idleGuard, ProviderError, scrub, streamIdleMs } from "./http.ts";
 import type { ProviderRequest } from "./types.ts";
 import { isPolicyCode } from "./wires/responses.ts";
 import { socketRows, type SocketRows } from "../safety/egress.ts";
+import { onWoke } from "./wake.ts";
 
 const MAX_AGE = 55 * 60_000;     // under the server's 60 minute limit
 const IDLE_CLOSE = 10 * 60_000;  // a socket nobody used for this long is closed
@@ -62,6 +63,13 @@ export class ResponsesSockets {
     setInterval(() => {
       for (const [k, list] of this.chans) for (const c of [...list]) if (!c.busy && Date.now() - c.used > IDLE_CLOSE) this.drop(k, c);
     }, 60_000).unref?.();
+    // After a machine's sleep a socket nobody uses is likely dead and would hold the next request until the idle
+    // window ends: closed now, so the next request opens a new one (a busy one ends with its request).
+    onWoke(() => this.closeIdle());
+  }
+
+  closeIdle() {
+    for (const [k, list] of this.chans) for (const c of [...list]) if (!c.busy) this.drop(k, c);
   }
 
   usable(key: string) { return !this.off.has(key); }

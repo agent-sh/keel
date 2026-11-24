@@ -4,7 +4,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { createServer, type Socket } from "node:net";
 import { streamEvents } from "./http.ts";
-import { slept, watchWake, woke, WAKE_JUMP_MS } from "./wake.ts";
+import { avoidPool, PROBES, reset, slept, watchWake, woke, WAKE_JUMP_MS } from "./wake.ts";
 
 test("a sleep is the wall clock running past the monotonic one by more than the jump", () => {
   const at = { wall: 1_000_000, mono: 5_000 };
@@ -72,3 +72,44 @@ test("without a sleep requests keep reusing the connection; after one the first 
   expect(Math.max(a.ms, b.ms)).toBeLessThan(1_500);
   expect(opened - mark).toBeLessThanOrEqual(1);
 }, 30_000);
+
+test("a request finds a sleep the tick has not seen yet, and is already one of the marked", async () => {
+  let wall = 1_000, mono = 0, probed = 0;
+  reset({ clocks: { wall: () => wall, mono: () => mono }, probe: async () => { probed++; await Bun.sleep(20); return true; } });
+  wall += 4_000; mono += 4_000;
+  expect(avoidPool("http://a.test")).toBe(false);
+  // The machine slept, the tick is up to ten seconds away: the request's own read finds it.
+  wall += 120_000; mono += 1_000;
+  expect(avoidPool("http://a.test")).toBe(true);
+  // An ordinary read after it marks nothing new; the purge ends and the host is free again.
+  wall += 1_000; mono += 1_000;
+  await woke();
+  expect(avoidPool("http://a.test")).toBe(false);
+  expect(probed).toBeGreaterThan(0);
+  reset();
+});
+
+test("a host that answers no probe is left after two rounds, not six", async () => {
+  let probed = 0;
+  reset({ probe: async () => { probed++; return false; } });
+  avoidPool("http://slow.test");
+  await woke();
+  expect(probed).toBe(2 * PROBES);
+  // A host whose dead sockets clear (silent, silent-in-part, then all answer) is probed until a round answers.
+  let left = 8;
+  probed = 0;
+  await woke(async () => { probed++; return left-- <= 0; });
+  expect(probed).toBe(3 * PROBES);
+  reset();
+});
+
+test("hooks run on a wake and can be dropped", async () => {
+  reset();
+  let n = 0;
+  const off = (await import("./wake.ts")).onWoke(() => n++);
+  await woke(async () => true);
+  off();
+  await woke(async () => true);
+  expect(n).toBe(1);
+  reset();
+});
