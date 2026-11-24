@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Check } from "../checks/named.ts";
-import { commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, nearHunks, pairKey, pairTests, PAIR_TESTS, relatedPairs, setupLineOf, brokenText, testMatcher, verdictOf, type Side } from "./pairs.ts";
+import { commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, nearHunks, pairKey, pairTests, PAIR_TESTS, relatedPairs, setupLineOf, noTestFiles, brokenText, testMatcher, verdictOf, type Side } from "./pairs.ts";
 
 const check = (name: string, o: Partial<Check> = {}): Check => ({ name, run: name === "unit" ? "bun test" : `run-${name}`, args: false, dir: ".", cache: true, tree: { kind: "work" }, drop: [], inputs: [], ...o });
 
@@ -59,10 +59,13 @@ describe("which pairs are checked together", () => {
     expect(pairTests({ tests: ["src/provenance.test.ts", "gone.test.ts"] }, known)).toEqual(["src/provenance.test.ts"]);
     const many = Array.from({ length: 40 }, (_, i) => `t${String(i).padStart(2, "0")}.test.ts`);
     expect(pairTests({ tests: many }, new Set(many))).toEqual(many.slice(0, PAIR_TESTS));
-    expect(commandOf(check("unit", { args: true, tests: ["**/*.test.ts"] }), ["src/provenance.test.ts"], "/h")).toBe("bun test src/provenance.test.ts");
+    expect(commandOf(check("unit", { args: true, tests: ["**/*.test.ts"] }), ["src/provenance.test.ts"], "/h")).toBe("bun test ./src/provenance.test.ts");
+    // A path bun test reads as a filter ("ui/src/lib/store.test.ts") is given as a path.
+    expect(commandOf(check("unit", { args: true, tests: ["**/*.test.ts"] }), ["ui/src/lib/store.test.ts"], "/h")).toBe("bun test ./ui/src/lib/store.test.ts");
     expect(commandOf(check("unit", { args: true, tests: ["**/*.test.ts"] }), [], "/h")).toBeUndefined();
     expect(commandOf(check("typecheck", { run: "~/bin/tsc -p ." }), ["x"], "/h")).toBe("/h/bin/tsc -p .");
-    expect(commandOf(check("unit", { args: true, dir: "src", tests: ["src/**/*.test.ts"] }), ["src/a b.test.ts"], "/h")).toBe("bun test 'a b.test.ts'");
+    expect(commandOf(check("unit", { args: true, dir: "src", tests: ["src/**/*.test.ts"] }), ["src/a b.test.ts"], "/h")).toBe("bun test './a b.test.ts'");
+    expect(commandOf(check("unit", { args: true, dir: "ui", tests: ["ui/**/*.test.ts"] }), ["ui/src/lib/store.test.ts"], "/h")).toBe("bun test ./src/lib/store.test.ts");
   });
 
   test("a test that a side changed comes first, then the nearer ones; one past REACH is not the pair's", () => {
@@ -159,6 +162,12 @@ describe("a run that could not start is the setup's, not a red base", () => {
     expect(setupLineOf("$ run\nsomething odd", 127)).toBe("something odd");
     expect(setupLineOf("error: Cannot find module './gone.ts' from '/s/src/x.ts'")).toBeUndefined();
     expect(setupLineOf("1 fail\nexpect(received).toBe(expected)")).toBeUndefined();
+    // A runner that found none of the files it was given: the command's setup, never a red check.
+    const none = "bun test v1.4.2\nThe following filters did not match any test files:\n ui/src/lib/store.test.ts\n1138 files were searched [5.00ms]\n";
+    expect(noTestFiles(none)).toBe(true);
+    expect(noTestFiles("\x1b[31mThe following filter did not match any test files\x1b[0m")).toBe(true);
+    expect(noTestFiles("1 fail\nexpect(received).toBe(expected)")).toBe(false);
+    expect(setupLineOf(none, 1)).toBe("The following filters did not match any test files:");
   });
   test("the owner is told it is the setup's, with the line, and that the next pair is tried", () => {
     const t = brokenText({ repo: "/r", base: "main", baseTip: "a".repeat(40), checks: ["typecheck", "unit"], missing: "error: Cannot find module 'x'" });

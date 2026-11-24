@@ -4,7 +4,7 @@
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ownEnv } from "../../test/env.ts";
 import { patchSettings } from "../admin/settings.ts";
 import { bindLedger, unbindLedger } from "../checks/ledger.ts";
@@ -27,7 +27,7 @@ let n = 0;
 // A repository whose one check is `sh check.sh`, and branches that each change one line of shared.txt
 // (a file no other work touches: they are related by it, and merge clean).
 // `from`: a clone of that repository's head instead (its own checks, its own files).
-function setup(o: { confine?: (argv: string[], who: string | null, folder: string, shown?: string[]) => string[]; check?: string; land?: Record<string, unknown>; files?: Record<string, string>; from?: string }) {
+function setup(o: { confine?: (argv: string[], who: string | null, folder: string, shown?: string[]) => string[]; check?: string; land?: Record<string, unknown>; files?: Record<string, string>; from?: string; checks?: Record<string, unknown> }) {
   const dir = join(root, `case-${++n}`);
   const repo = join(dir, "repo");
   if (o.from) {
@@ -41,8 +41,8 @@ function setup(o: { confine?: (argv: string[], who: string | null, folder: strin
     writeFileSync(join(repo, "shared.txt"), Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
     writeFileSync(join(repo, "check.sh"), o.check!);
     writeFileSync(join(repo, ".gitignore"), "dep\n");
-    for (const [f, t] of Object.entries(o.files ?? {})) writeFileSync(join(repo, f), t);
-    writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { typecheck: "sh check.sh" }, ...(o.land ? { land: o.land } : {}) }));
+    for (const [f, t] of Object.entries(o.files ?? {})) { mkdirSync(dirname(join(repo, f)), { recursive: true }); writeFileSync(join(repo, f), t); }
+    writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: o.checks ?? { typecheck: "sh check.sh" }, ...(o.land ? { land: o.land } : {}) }));
     g(repo, "add", "-A");
     g(repo, "commit", "-qm", "init");
   }
@@ -210,6 +210,36 @@ test("a confined pair is shown the linked packages, and links them only where it
   await t.tg.idle(t.repo);
   expect(seen.some((s) => s.probe)).toBe(true);
   expect(seen.some((s) => !s.probe && s.shown.includes(real))).toBe(false);
+});
+
+test("a touched test file outside the runner's own root is run as a path, and a run that finds none of its files is the setup's, never a red check", async () => {
+  expect(patchSettings({ together: { quiet_s: 0, at_once: 2, host: null } }).ok).toBe(true);
+  // bun test's root is src: a bare `ui/src/lib/store.test.ts` is a name filter that matches nothing there.
+  const files = {
+    "bunfig.toml": '[test]\nroot = "./src"\n',
+    "src/placeholder.ts": "export const p = 1;\n",
+    "ui/src/lib/store.ts": "export const n = 1;\n",
+    "ui/src/lib/store.test.ts": 'import { expect, test } from "bun:test";\nimport { n } from "./store.ts";\ntest("n", () => expect(n).toBe(1));\n',
+  };
+  const t = setup({ check: "exit 0\n", files, checks: { unit: { run: "bun test", args: true, tests: ["ui/src/**/*.test.ts"] } } });
+  t.commitFile("keel/x", "ui/src/lib/store.ts", (x) => x.replace("1", "1 + 0"));
+  t.commitFile("keel/y", "ui/src/lib/store.test.ts", (x) => x + "// y\n");
+  await t.pass();
+  await t.tg.idle(t.repo);
+  expect(t.rows().map((r) => `${r.state} ${r.error ?? ""}`)).toEqual(["green "]);
+  expect(t.broken).toEqual([]);
+});
+
+test("a pair run that says its test files were not found is an error of the run: not red, not broken, nothing told", async () => {
+  expect(patchSettings({ together: { quiet_s: 0, at_once: 2, host: null } }).ok).toBe(true);
+  const t = setup({ check: "echo 'The following filters did not match any test files:'; exit 1\n" });
+  t.commit("keel/x", 2); t.commit("keel/y", 30);
+  await t.pass();
+  await t.tg.idle(t.repo);
+  expect(t.rows().map((r) => r.state)).toEqual(["error"]);
+  expect(t.rows()[0]!.error).toBe("setup missing: The following filters did not match any test files:");
+  expect(t.broken).toEqual([]);
+  expect(t.told).toEqual([]);
 });
 
 test("checks that could not start for want of a package are the setup's: told with the first line, and the next pair is tried", async () => {

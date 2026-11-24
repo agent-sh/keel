@@ -42,7 +42,7 @@ import type { Store } from "../core/store.ts";
 import { pool } from "../tools/heavy.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import type { Overlaps } from "../worktree/overlap-scan.ts";
-import { brokenText, commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, IMPORT_PATHS, pairKey, pairTests, redText, relatedPairs, setupLineOf, testMatcher, verdictOf, type Graph, type Related, type Res, type Side, type Verdict } from "./pairs.ts";
+import { brokenText, commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, IMPORT_PATHS, noTestFiles, pairKey, pairTests, redText, relatedPairs, setupLineOf, testMatcher, verdictOf, type Graph, type Related, type Res, type Side, type Verdict } from "./pairs.ts";
 import { readTail } from "./queue.ts";
 import { importLines, readTree } from "./repo-map.ts";
 import { readLand } from "./rules.ts";
@@ -100,6 +100,9 @@ export type TogetherDeps = {
 
 // What the error of a pair starts with when its checks lacked something the tree is given.
 const MISSING = "setup missing: ";
+// The version of how a pair's commands are built (src/landing/pairs.ts commandOf). 2: the tests are paths with `./`
+// (a bare path was a name filter for bun test and matched no file).
+const COMMANDS = 2;
 const NO_EDIT = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" };
 const KEEL_IDENT = { GIT_AUTHOR_NAME: "Keel", GIT_AUTHOR_EMAIL: "keel@localhost", GIT_COMMITTER_NAME: "Keel", GIT_COMMITTER_EMAIL: "keel@localhost" };
 // A finished pair is kept two weeks (as the landing queue keeps its entries), the newest KEEP_ROWS.
@@ -226,7 +229,8 @@ export class Together {
     const rules = await this.rulesOf(repo, baseTip);
     if (!rules || "off" in rules.pairs || "problem" in rules.pairs) return;
     const checks = rules.pairs.checks;
-    const print = hashOf(JSON.stringify([checks.map((c) => [c.name, c.run, c.dir]), rules.setup ?? ""]));
+    // (COMMANDS: how the pair's commands are built. A row broken by an older build's commands is not this build's.)
+    const print = hashOf(JSON.stringify([COMMANDS, checks.map((c) => [c.name, c.run, c.dir]), rules.setup ?? ""]));
     // A repository whose pairs were broken here (red on both sides alone, or a setup that fails) is not
     // checked again until its base or what it names for the pairs changes: each pair would cost three runs
     // and say the same.
@@ -410,6 +414,13 @@ export class Together {
       if (!steps.length) { set({ state: "error", error: "none of the fast checks has anything to run for this pair", ended: Date.now(), place: runner.place }); return; }
       const together = await runner.run(built.together, steps);
       all.push({ on: "together", ran: together });
+      // A run that says its test files were not found was built wrong: a failure of the setup, never a red
+      // check (and not a broken base: the sides alone would say the same, and stop the repository's pairs).
+      const unseen = together.filter((r) => r.exit !== 0).map((r) => ({ r, text: r.text ?? (r.log ? readTail(r.log) : "") })).find((x) => noTestFiles(x.text));
+      if (unseen) {
+        set({ state: "error", error: `${MISSING}${setupLineOf(unseen.text, unseen.r.exit) ?? "the test files were not found"}`.slice(0, 400), ended: Date.now(), place: runner.place });
+        return;
+      }
       let v = verdictOf(together);
       if (v.state !== "green") {
         if (await gone()) return;

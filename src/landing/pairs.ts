@@ -229,13 +229,16 @@ export function pairTests(related: Pick<Related, "tests">, tree: ReadonlySet<str
 }
 
 // A check as a pair runs it: its command, with the pair's tests when it names its tests; none when
-// it names them and the pair has none.
+// it names them and the pair has none. Each test is a path from the check's folder with `./` in front:
+// a runner that also takes names as filters (bun test) reads `ui/a.test.ts` as a filter, and the filter
+// matches nothing where the runner's own root is another folder.
 export function commandOf(c: Check, tests: readonly string[], home: string): string | undefined {
   const words = c.run.split(" ").map((r) => (r === "~" || r.startsWith("~/") ? home + r.slice(1) : r.replace(/^\$HOME(?=\/|$)/, home)));
   if (!c.tests) return words.join(" ");
   if (!tests.length) return undefined;
   const q = (p: string) => (/^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
-  return [...words, ...tests.map((t) => q(c.dir === "." ? t : t.startsWith(`${c.dir}/`) ? t.slice(c.dir.length + 1) : t))].join(" ");
+  const rel = (t: string) => (c.dir === "." ? t : t.startsWith(`${c.dir}/`) ? t.slice(c.dir.length + 1) : t);
+  return [...words, ...tests.map((t) => q(rel(t).startsWith(".") ? rel(t) : `./${rel(t)}`))].join(" ");
 }
 
 // ---- the result
@@ -310,8 +313,14 @@ export function redText(p: { a: { branch: string; tip: string }; b: { branch: st
 // command the shell does not find. A path of the tree's own that does not resolve is a real failure and
 // matches none. Returns the first such line of the output (the words of the run's own), else undefined.
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
+// A runner that says the test files it was given were not found (bun: "The following filters did not
+// match any test files"): the command named files the run could not see, which is how the run was built,
+// never a red check.
+export const FILTER_NONE = /filters? did not match any test files/i;
+export const noTestFiles = (out: string) => FILTER_NONE.test(out.replace(ANSI, ""));
 const SETUP_LINE = [
   /Cannot find (?:module|package) ['"][^'"./][^'"]*['"]/, // a bare specifier: an installed package
+  FILTER_NONE, // the command's own test files were not found
   /Cannot find type definition file for ['"]?[\w@./-]+/,
   /(?:command not found|: not found$|Executable not found in \$PATH|Script not found|No such file or directory.*node_modules|error: could not determine executable)/i,
 ];
