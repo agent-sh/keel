@@ -133,7 +133,11 @@ async function send(page: Page, text: string, ends: number) {
   const composer = page.getByTestId("composer");
   await composer.fill(text);
   await composer.press("Enter");
-  await expect(page.getByTestId("turn-end")).toHaveCount(ends, { timeout: 30_000 });
+  // Counted in the session's events: the page draws only the blocks near its view, so a long reply
+  // leaves the footers of the turns far above it out of the page.
+  const id = new URL(page.url()).pathname.split("/").pop();
+  await expect.poll(async () => ((await (await page.request.get(`/api/sessions/${id}`)).json()).events as any[]).filter((e) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(ends);
+  await expect(page.getByTestId("turn-end").last()).toBeVisible();
 }
 
 test("retries, continuation, refusal and compaction as the owner sees them", async ({ page, request }) => {
