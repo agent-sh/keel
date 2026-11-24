@@ -298,6 +298,8 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   const overloaded = async () => (await (await request.get("/api/errors?resolved=0")).json()).errors.find((e: any) => e.message.includes("529 overloaded"));
   const spansOf = async (trace: string) => (await (await request.get(`/api/debug/traces/${trace}`)).json()).spans as any[];
   const openRow = async () => {
+    // A panel still leaving keeps its rows as they were, and the click would reopen it: wait until it is gone.
+    await expect(page.getByTestId("errors-panel")).toHaveCount(0);
     await page.getByTestId("errors-button").click();
     // A failure a retry healed is under Recovered; it is under Open when the kind also failed for good on this daemon.
     if ((await overloaded()).recovered_ts) await page.getByTestId("errors-panel").getByRole("tab", { name: /Recovered/ }).click();
