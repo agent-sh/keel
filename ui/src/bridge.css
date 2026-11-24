@@ -825,20 +825,19 @@ html[data-resizing] iframe { pointer-events: none; }
    panes need a preview of a conversation that does not hold the keyboard.
    The title comes first and takes the width it needs, up to the pane's. The
    state stands beside it, on one line, when the title leaves room for the
-   state's word and its clock, for about sixteen characters of a reason when
-   the state has one, and for the tools that always show; else state and
-   reason go to the line under the title, where the reason has the pane's
-   width. Which of the two is decided by the title, the pane and whether there
-   is a reason (the room is a fixed measure, not what the reason happens to
-   say), so the header keeps its height while the steps of a turn change the
-   reason, and a wider pane is never the taller one. The folder has only the
-   room nothing else wants, the tools that move the pane show only where the
-   reason keeps its sixteen characters beside them (the keys and the list's
-   menu move it), and the title is never squeezed by any of them. Each is one
+   state's word and its clock, for about sixteen characters of a reason, and
+   for the pane's tools; else state and reason go to the line under the title,
+   where the reason has the pane's width. Which of the two is decided by the
+   title and the pane alone (the room is one fixed measure, whether the state
+   has a reason or not), so a turn that starts or ends moves no line, and a
+   wider pane is never the taller one. The folder has only the room nothing
+   else wants, the tools that move the pane show under the pointer over the
+   end of the line (the keys and the list's menu move it too), and the title
+   is never squeezed by any of them. Each is one
    line cut with an ellipsis, whole in its tooltip,
    and both are shown whole in a note under the header while the keys are on
    its tools. */
-.k-station-head { --k-tools-w: calc(min(var(--k-tools, 0), 3) * (var(--spacing-ctl-md) + 1px)); --k-state-room: 18rem; }
+.k-station-head { --k-tools-w: calc(min(var(--k-tools, 0), 3) * (var(--spacing-ctl-md) + 1px)); --k-state-room: 16rem; }
 .k-station-identity { flex-wrap: wrap; column-gap: 0.625rem; row-gap: 0.125rem; }
 /* An agent's way up its tree, before its title: quiet links, each whole in its tip. In a wide head the whole
    way up; narrower, the root and one link up to the agent that started this one; narrower still, one mark
@@ -901,7 +900,7 @@ html[data-resizing] iframe { pointer-events: none; }
   .k-top-in > .k-station-head :is(.k-station-row, .k-station-rest) { min-height: 1.25rem; }
   .k-top-in > .k-station-head .k-station-line { margin-top: 0; line-height: 1.25rem; }
   /* The pane worked in: one line when the title, whole, leaves the state its room (the word, the clock
-     and about twenty characters of a reason), and the reason has all the rest; else two, the title over
+     and about sixteen characters of a reason), and the reason has all the rest; else two, the title over
      the state and its reason, which then have the head's width. The choice is the flex line's, on fixed
      measures: a reason that changes length moves nothing. The bar's height is the same in both. */
   .k-station[data-helm] .k-top-in > .k-station-head .k-station-identity { flex-wrap: wrap; }

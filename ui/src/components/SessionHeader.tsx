@@ -186,7 +186,9 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
     items[i < 0 && e.key === "ArrowUp" ? items.length - 1 : i < 0 && e.key === "ArrowDown" ? 0 : to]!.focus();
   };
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    // Modal, as a menu is: the page under it takes no press while it is open, and a key that closes it is
+    // the owner's double press, not a Stop (lib/looks.ts, lib/overlay.ts).
+    <Popover.Root open={open} onOpenChange={setOpen} modal>
       <Popover.Trigger ref={button} data-more="" aria-label="Session actions" title={live ? "Session actions. Background work runs: its list is here" : "Session actions"} data-testid="session-menu" className={cn(iconButton, "relative")}>
         <Ellipsis className="size-4" />
         {live && <span className="k-menu-live" data-testid="more-live" />}
@@ -205,7 +207,8 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
                 </div>
               ))}
             </div>
-            <div role="menu" aria-label="Actions" className="k-stow-acts" onKeyDown={walk}>
+            {/* (A menu only while open: a closed one kept in the page is not a menu over it.) */}
+            <div role={open ? "menu" : undefined} aria-label="Actions" className="k-stow-acts" onKeyDown={walk}>
               {acts.map((a) => (
                 <Fragment key={a.id}>
                   {a.gap && <div role="separator" className="k-stow-rule" />}

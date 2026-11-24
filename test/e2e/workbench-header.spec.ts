@@ -39,7 +39,12 @@ test("the active pane has a single identity line and a background pane keeps its
     await expect(active.locator(".k-station-line")).toBeHidden();
     const title = (await active.getByRole("heading", { name: "Check the app update", level: 2 }).boundingBox())!;
     const state = (await active.getByTestId("station-word").boundingBox())!;
-    expect(Math.abs(title.y + title.height / 2 - state.y - state.height / 2)).toBeLessThan(5);
+    // The state beside the title, or (a pane too narrow for both) on the line under it, inside the head's one height.
+    const beside = Math.abs(title.y + title.height / 2 - state.y - state.height / 2) < 5;
+    const under = state.y >= title.y + title.height - 2;
+    expect(beside || under, "the state is neither beside the title nor under it").toBe(true);
+    const head = (await active.getByTestId("station-head").boundingBox())!, brand = (await page.locator(".k-rail-brand").boundingBox())!;
+    expect(Math.abs(head.y + head.height - (brand.y + brand.height))).toBeLessThanOrEqual(1);
     await active.getByTestId("session-menu").click();
     await page.getByTestId("menu-rename").click({ timeout: 5000 });
     const name = active.getByRole("textbox", { name: "Session title" });
@@ -368,18 +373,18 @@ test.describe("a crowded toolbar", () => {
       if (phone.inMenu.includes("permission-menu")) await page.keyboard.press("Escape");
       await expect(menu).toBeHidden();
 
-      // Larger text folds Permissions too: its row says the mode, a pick keeps its popup open,
-      // and /permissions opens it in the menu, not detached from it.
+      // Larger text: whatever folds, /permissions opens the modes where the control is (in the menu, not
+      // detached from it), and a pick keeps their popup open.
       await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
       await page.reload();
       await expect(more).toBeVisible();
       const large = await reachable(page, station);
       await shoot(page, "workbench-toolbar-390-large-head");
-      expect(large.inMenu).toContain("permission-menu");
+      const where = large.inMenu.includes("permission-menu") ? menu : station;
       await station.getByTestId("composer").fill("/permissions");
       await page.keyboard.press("Enter");
-      await expect(menu).toBeVisible();
-      await expect(menu.getByTestId("permission-mode")).toBeInViewport({ ratio: 1 });
+      if (where === menu) await expect(menu).toBeVisible();
+      await expect(where.getByTestId("permission-menu")).toBeInViewport({ ratio: 1 });
       // The mode in use is whole in view as the menu opens, with its description: at this text size the
       // list is longer than its room and scrolls.
       const modes = page.getByTestId("mode-ask");
@@ -387,17 +392,17 @@ test.describe("a crowded toolbar", () => {
       await expect(modes).toBeInViewport({ ratio: 1 });
       await expect(modes.getByTestId("mode-description")).toBeInViewport({ ratio: 1 });
       // The modes open beside their row, below it or above it when there is no room below, never over it.
-      const [list, row] = [(await modes.boundingBox())!, (await menu.getByTestId("permission-menu").boundingBox())!];
+      const [list, row] = [(await modes.boundingBox())!, (await where.getByTestId("permission-menu").boundingBox())!];
       expect(list.y >= row.y || list.y + list.height <= row.y + 1).toBe(true);
       await page.getByTestId("mode-auto-edits").tap();
       await expect(modes).toBeVisible();
-      await expect(menu.getByTestId("permission-mode")).toHaveText("Auto edits");
+      await expect(where.getByTestId("permission-mode")).toHaveText("Auto edits");
       await page.getByTestId("mode-ask").tap();
       await expect(modes).toBeVisible();
       await shoot(page, "workbench-toolbar-390-large-text");
       await page.keyboard.press("Escape");
       await expect(modes).toBeHidden();
-      await page.keyboard.press("Escape");
+      if (where === menu) await page.keyboard.press("Escape");
       await expect(menu).toBeHidden();
       await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
       await page.reload();
