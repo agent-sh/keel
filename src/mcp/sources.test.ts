@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { importable } from "./config.ts";
+import { readSources } from "./sources.ts";
 
 // Two configs are one server only when the endpoint (scheme and host in any
 // case, path and query exact) and the account (env, headers) both match.
@@ -36,5 +37,47 @@ test("an imported server is already configured only when endpoint and account ma
   }
   } finally {
     if (homeBefore === undefined) delete process.env.KEEL_IMPORT_HOME; else process.env.KEEL_IMPORT_HOME = homeBefore;
+  }
+});
+
+// A plugin whose mcpServers names a bundle (a zip) has no servers here, said once; a plugin that
+// fails names its own file and its own source, and the plugins after it are still read.
+test("a plugin's bundle is no servers and one plugin's failure is its own", () => {
+  const dir = join(process.env.TMPDIR ?? join(process.env.HOME!, ".cache"), `mcp-plugin-bundle-${Date.now()}`);
+  const plugin = (name: string, manifest: object, files: Record<string, string> = {}) => {
+    const root = join(dir, "plugins", name);
+    mkdirSync(join(root, ".claude-plugin"), { recursive: true });
+    mkdirSync(join(root, "dist"), { recursive: true });
+    writeFileSync(join(root, ".claude-plugin", "plugin.json"), JSON.stringify(manifest));
+    for (const [f, text] of Object.entries(files)) writeFileSync(join(root, f), text);
+    return root;
+  };
+  const bundled = plugin("bundled", { mcpServers: "./dist/x.mcpb" }, { "dist/x.mcpb": "PK\u0003\u0004 not json" });
+  const sniffed = plugin("sniffed", { mcpServers: "./dist/y.bin" }, { "dist/y.bin": "PK\u0003\u0004 not json" });
+  const broken = plugin("broken", { mcpServers: "./servers.json" }, { "servers.json": "{ nope" });
+  const good = plugin("good", { mcpServers: { s: { command: "node", args: ["s.js"] } } });
+  mkdirSync(join(dir, "home", ".claude", "plugins"), { recursive: true });
+  const ids = ["bundled@m", "sniffed@m", "broken@m", "good@m"];
+  const roots = [bundled, sniffed, broken, good];
+  writeFileSync(join(dir, "home", ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ plugins: Object.fromEntries(ids.map((id, i) => [id, [{ installPath: roots[i] }]])) }));
+  writeFileSync(join(dir, "home", ".claude", "settings.json"), JSON.stringify({ enabledPlugins: Object.fromEntries(ids.map((id) => [id, true])) }));
+  mkdirSync(join(dir, "project"), { recursive: true });
+  const before = process.env.KEEL_IMPORT_HOME;
+  process.env.KEEL_IMPORT_HOME = join(dir, "home");
+  try {
+    const failed: { file: string; error: string; source?: string }[] = [], notes: string[] = [];
+    const src = readSources(join(dir, "project"), failed, notes);
+    expect(src.map((s) => s.name)).toEqual(["s"]);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.file).toBe(join(broken, "servers.json"));
+    expect(failed[0]!.source).toBe("claude:plugin:broken@m");
+    expect(notes).toHaveLength(2);
+    // The second sync says nothing of the bundles again.
+    const again: string[] = [];
+    readSources(join(dir, "project"), [], again);
+    expect(again).toEqual([]);
+  } finally {
+    if (before === undefined) delete process.env.KEEL_IMPORT_HOME; else process.env.KEEL_IMPORT_HOME = before;
+    rmSync(dir, { recursive: true, force: true });
   }
 });

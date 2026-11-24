@@ -4,7 +4,7 @@
 // Hermes and Zed. Each reader maps its harness's shape onto Keel's one shape;
 // nothing here writes to another agent's file.
 import { createHmac, randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { McpServerConfig } from "./config.ts";
 import { ownerEnv, ownerHome } from "../core/paths";
@@ -129,7 +129,18 @@ function zedShape(c: any): McpServerConfig {
 
 // Every reader is guarded on its own: one unreadable file never hides the others.
 // `failed` collects the files that exist and could not be read (shown, not thrown).
-export function readSources(cwd: string, failed: { file: string; error: string }[] = []): SourceServer[] {
+export type SourceFailure = { file: string; error: string; source?: string };
+// A string `mcpServers` that names an archive (an MCP bundle, a zip), not a JSON file.
+function bundle(file: string): boolean {
+  if (/\.(?:mcpb|dxt|zip)$/i.test(file)) return true;
+  try {
+    const fd = openSync(file, "r");
+    try { const b = Buffer.alloc(2); return readSync(fd, b, 0, 2, 0) === 2 && b[0] === 0x50 && b[1] === 0x4b; } finally { closeSync(fd); }
+  } catch { return false; }
+}
+// The plugins whose bundle was already said: once a plugin for the life of the process, not at every sync.
+const said = new Set<string>();
+export function readSources(cwd: string, failed: SourceFailure[] = [], notes?: string[]): SourceServer[] {
   const home = importHome();
   const out: SourceServer[] = [];
   const add = (source: string, label: string, file: string, servers: unknown, shape: (c: any) => McpServerConfig, project = false, expand?: (s: string) => string) => {
@@ -168,12 +179,27 @@ export function readSources(cwd: string, failed: { file: string; error: string }
       const inst = Array.isArray(list) ? list[list.length - 1] : null;
       const root = inst?.installPath;
       if (!root || !existsSync(root)) continue;
-      const expand = (s: string) => s.replaceAll("${CLAUDE_PLUGIN_ROOT}", root.replace(/["\\]/g, "\\$&"));
-      const manifest = json(join(root, ".claude-plugin", "plugin.json"));
-      const inline = manifest?.mcpServers && typeof manifest.mcpServers === "object" ? manifest.mcpServers : null;
-      const file = inline ? join(root, ".claude-plugin", "plugin.json") : join(root, ".mcp.json");
-      const servers = inline ?? (() => { const m = json(join(root, typeof manifest?.mcpServers === "string" ? manifest.mcpServers : ".mcp.json")); return m?.mcpServers ?? m; })();
-      add(`claude:plugin:${id}`, `Claude Code plugin ${id.split("@")[0]}`, file, servers, claudeShape, false, expand);
+      // A plugin is read on its own: its failure names its own file and is its own, the others go on.
+      let at = join(root, ".claude-plugin", "plugin.json");
+      const source = `claude:plugin:${id}`;
+      try {
+        const expand = (s: string) => s.replaceAll("${CLAUDE_PLUGIN_ROOT}", root.replace(/["\\]/g, "\\$&"));
+        const manifest = json(at);
+        const inline = manifest?.mcpServers && typeof manifest.mcpServers === "object" ? manifest.mcpServers : null;
+        const file = inline ? at : join(root, ".mcp.json");
+        let servers = inline;
+        if (!inline) {
+          at = join(root, typeof manifest?.mcpServers === "string" ? manifest.mcpServers : ".mcp.json");
+          if (typeof manifest?.mcpServers === "string" && bundle(at)) {
+            // A bundle (a zip) names servers Keel cannot read here: no servers, said once a plugin.
+            if (!said.has(source)) { said.add(source); notes?.push(`Claude Code plugin ${id.split("@")[0]} names an MCP bundle (${manifest.mcpServers}): bundles are not supported, so it has no servers here`); }
+          } else {
+            const m = json(at);
+            servers = m?.mcpServers ?? m;
+          }
+        }
+        add(source, `Claude Code plugin ${id.split("@")[0]}`, file, servers, claudeShape, false, expand);
+      } catch (e) { failed.push({ file: at, error: (e as Error).message, source }); }
     }
   });
   const desktop = join(ownerEnv("XDG_CONFIG_HOME")?.startsWith("/") && !process.env.KEEL_IMPORT_HOME ? ownerEnv("XDG_CONFIG_HOME")! : join(home, ".config"), "Claude", "claude_desktop_config.json");

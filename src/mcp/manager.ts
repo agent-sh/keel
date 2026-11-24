@@ -23,7 +23,7 @@ import { allHooks, type ElicitAnswer, type ElicitAsk } from "../engine/hooks.ts"
 import { askFor, DECLINED, type Answers } from "../tools/interact.ts";
 import type { Asked } from "../core/types.ts";
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
-import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles, sourced } from "./sources.ts";
+import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles, sourced, type SourceFailure } from "./sources.ts";
 import { ClientRefused, OAuthStore, type Forgotten } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
 import { Links, placeKept, touchKept } from "./links.ts";
@@ -2547,16 +2547,18 @@ export class McpManager {
   // (only what the source decides; on/off and reads stay the owner's), and
   // restarts. A copy whose source no longer has it stays, marked.
   syncSources(): McpReloadedServer[] {
-    const failed: { file: string; error: string }[] = [];
-    const src = readSources(this.workspace, failed);
+    const failed: SourceFailure[] = [];
+    const notes: string[] = [];
+    const src = readSources(this.workspace, failed, notes);
+    for (const n of notes) console.log(`[mcp] ${n}`);
     for (const f of failed) this.errors.capture("server", new Error(`${f.file}: ${f.error}`), { at: "mcp sources" });
     for (const s of src) this.labels.set(s.source, s.label);
     const changed: Record<string, McpServerConfig> = {};
     for (const [name, c] of Object.entries(this.cfg.servers)) {
       if (!c.sync) continue;
       const hit = src.find((s) => s.source === c.sync!.source && s.name === c.sync!.name);
-      // A source file that failed to read says nothing about its servers.
-      if (!hit) { if (!failed.length) this.gone.add(name); continue; }
+      // A source file that failed to read says nothing about its servers; a failed plugin says nothing of the others'.
+      if (!hit) { if (!failed.some((f) => !f.source || f.source === c.sync!.source)) this.gone.add(name); continue; }
       this.gone.delete(name);
       // The variables a server is passed are the source's and the owner's both. The source's list is taken fresh
       // at each sync; the names the owner added in Keel are kept apart (owner_env_vars) and stay. A copy made before
