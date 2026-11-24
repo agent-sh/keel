@@ -30,6 +30,7 @@ import { commandsOf, heldSwitch, mergeChoices, pickable, settle, splitModel, unk
 import { catalogTools } from "../tools/catalog.ts";
 import { clearServed, SERVED_NAME, ServedTools, type ServedTool } from "./served.ts";
 import { AcpTerminals } from "./terminals.ts";
+import { fitted, noted, unrename } from "../providers/wires/schema-fit.ts";
 
 // Terminals for the agent, when the gate runs: `answered` is told each command the agent asked about and was allowed.
 export type Terminals = { answered(sessionId: string, command: string): void };
@@ -152,6 +153,8 @@ export const optionFor = (options: Json[], allow: boolean): string | undefined =
 // `choices`: what the agent's session offers now (its setup result, then its updates).
 type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; caps: Json; choices: AgentChoices; missed?: string; turn?: TurnState;
   served?: ServedTools; offered: Set<string>; terms: AcpTerminals; commands?: SlashCommand[];
+  // The offered tools whose parameters were renamed to fit (by the name the agent calls), with the server's names.
+  renamed?: Map<string, Record<string, string>>;
   closed: AbortController };  // aborted when the agent's connection ends
 type TurnState = {
   io: ExternalIO;
@@ -203,7 +206,7 @@ export class AcpRunner {
     const served = new ServedTools(this.store.stateDir, s.id, {
       list: () => this.offer(s, live),
       call: (name, args, callId) => live.turn
-        ? live.turn.io.runTool("mcp_call", { tool: name, arguments: args }, callId)
+        ? live.turn.io.runTool("mcp_call", { tool: name, arguments: unrename(args, live.renamed?.get(name)) }, callId)
         : Promise.resolve({ type: "tool_result", tool_use_id: callId, is_error: true, content: "Keel runs its tools for the agent only while a turn of the session runs." }),
     }, (e) => this.capture(e, { session: s.id, agent: id, at: "acp served tools" }));
     try { await served.listen(); live.served = served; } catch (e) {
@@ -264,9 +267,15 @@ export class AcpRunner {
 
   // What the agent is offered of Keel's tools: the MCP servers' tools this session reaches, by their full names.
   private async offer(s: Session, live: Live): Promise<ServedTool[]> {
-    const tools = (await catalogTools(s.id)).filter((t) => t.mcp && !t.hidden);
-    live.offered = new Set(tools.map((t) => t.qualified));
-    return tools.map((t) => ({ name: t.qualified, description: t.description, inputSchema: t.input_schema, readOnly: t.readOnly }));
+    // The agent's provider is not known here: each schema fits every wire's rules (src/providers/wires/schema-fit.ts),
+    // and a tool that cannot be made to fit is not offered (Settings > MCP servers names it).
+    const tools = (await catalogTools(s.id)).filter((t) => t.mcp && !t.hidden).flatMap((t) => {
+      const f = fitted(t.input_schema, "portable");
+      return "left" in f ? [] : [{ t, f }];
+    });
+    live.offered = new Set(tools.map(({ t }) => t.qualified));
+    live.renamed = new Map(tools.flatMap(({ t, f }) => (f.renames ? [[t.qualified, f.renames] as const] : [])));
+    return tools.map(({ t, f }) => ({ name: t.qualified, description: noted(t.description, f.notes), inputSchema: f.schema, readOnly: t.readOnly }));
   }
 
   private closeLive(live: Live) {

@@ -177,6 +177,18 @@ export const hooks: TurnHooks = {
     // (A turn's refusal is its failure, captured by the turn itself.)
     if (c.purpose !== "turn") D().errors.capture("provider", Object.assign(new Error(message), { name: "RouteRefused", kind: "route" }), { session: s.id, purpose: c.purpose, provider: c.provider, model: c.model });
   },
+  // A tool the session's requests leave out because its input schema cannot be
+  // made to fit the provider (src/providers/wires/schema-fit.ts): its model
+  // is told which and why with its next input, once a tool and reason (a silent agent's is recorded only).
+  toolsLeftOut: (s, left) => {
+    const at = scope(s);
+    for (const l of left) record(at.root, { kind: "provider", cls: "tool left out", message: `The tool ${l.name} is not offered to the model: ${l.why}.`, ref: at.ref, tell: at.root === s.id || at.told ? "ride" : undefined }, s.id);
+  },
+  // A provider refused a tool's schema; the request went again with the tool declared without its parameters.
+  toolSchemaRefused: (s, tool, message) => {
+    const at = scope(s);
+    record(at.root, { kind: "provider", cls: "tool schema refused", message: `The provider refused the input schema of ${tool}, so it is declared without its parameters from here: call it with the arguments its description names. The provider said: ${message}`, ref: at.ref, tell: at.root === s.id || at.told ? "ride" : undefined }, s.id);
+  },
   // An agent whose model has said it is overloaded for as long as the counted retries: its turn
   // goes on trying and holds its slot, so the session that started it is told once (it can stop
   // the agent, or start the work on another model). A session of the owner's says it on its row.

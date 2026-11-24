@@ -21,6 +21,7 @@ import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
 import { testBuild } from "../core/build.ts";
 import { BuildPins, coldReason, pinAged } from "./build-pin.ts";
+import { SCHEMA_RESENDS, ToolFit, wireOf as fitWireOf } from "./tool-fit.ts";
 import type { AssistantBlock, ErrorRecord, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
@@ -565,6 +566,8 @@ export class Engine {
   private prompts: PromptStore;
   // The tools and prompt each session was last sent, kept across a daemon upgrade (src/engine/build-pin.ts).
   private pins: BuildPins;
+  // Tools fitted to the wire each request goes on (src/engine/tool-fit.ts).
+  private toolFit: ToolFit;
   private rendering = new Map<string, Promise<System>>();
   // Sessions whose kept prompt was compared with a fresh render in this run,
   // and sessions that moved (their next request renders for the new place).
@@ -594,6 +597,7 @@ export class Engine {
   ) {
     this.prompts = new PromptStore(store);
     this.pins = new BuildPins(store);
+    this.toolFit = new ToolFit((e, context) => this.errors.capture("provider", e, context));
     this.cachePlans = new CachePlans({
       store, errors,
       append: (id, kind, data) => this.append(id, kind, data),
@@ -1563,7 +1567,8 @@ export class Engine {
     // A model known to take no tool definitions (the owner, a probe, its listing
     // or catalog said so) is sent none: it would refuse them or answer garbled.
     const native = info.tools !== false && loadsNatively(provider.wire, info);
-    const built = info.tools === false ? [] : toolsFor(info.family, native, session.id);
+    // Fitted to the wire before the pin: the pin keeps the tools as they were sent.
+    const built = info.tools === false ? [] : this.toolFit.fit(session, fitWireOf(provider, info), toolsFor(info.family, native, session.id));
     // On its own model the session keeps the tools and prompt it was last
     // sent, across a daemon upgrade too, and takes this build's when no warm
     // cache holds its context or waiting would be wrong (src/engine/build-pin.ts).
@@ -1997,9 +2002,13 @@ export class Engine {
     const shown = purpose !== "title";
     if (st.native && !bare) {
       st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c), id);
+      // An MCP server's schemas as the wire takes them, before a loaded one is pinned as it was sent.
+      st.tools = this.toolFit.fit(session, fitWireOf(st.provider, st.info), st.tools);
       // A deferred tool the conversation loaded keeps the definition it was loaded with (src/engine/build-pin.ts).
       if (st.info.id === session.model) st.tools = this.pins.loaded(id, st.tools, referenced(messages));
     }
+    // A tool whose schema the provider refused in this session goes without its parameters.
+    if (!bare) st.tools = this.toolFit.overlay(id, st.tools);
     let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, systemOwn: st.systemOwn, messages, tools: st.tools, effort: st.effort, maxTokens: purpose === "warm" ? 1 : st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
     // A reader's request, a title's and a server's sampling request are sent once: nothing later reads a cache of them.
     if (bare || purpose === "sampling") req.cache = false;
@@ -2027,6 +2036,8 @@ export class Engine {
     // What an image refusal changed for this request; kept for the session once it passes.
     let fixed: { cause: unknown; edge?: number; out?: string[] } | undefined;
     let resent = false;
+    // Tools this request was sent again without the parameters of (a provider refused their schema).
+    let schemaResends = 0;
     // The failures this request was sent again after (a retry that passes heals them).
     const retried: ErrorRecord[] = [];
     // The provider could not be reached and this request waits for it: captured once, however long it takes.
@@ -2133,10 +2144,20 @@ export class Engine {
           this.errors.capture("provider", e, { session: id, fallback: "deferred tools refused; using search_tools" });
           refuseDefer(st.info.id);
           st.native = false;
-          const eager = toolsFor(st.info.family, false, id);
-          st.tools = st.info.id === session.model ? this.pins.tools(session, { model: st.info.id, native: false, own: sessionToolsKey(st.info.family, id) }, eager) : eager;
+          const eager = this.toolFit.fit(session, fitWireOf(st.provider, st.info), toolsFor(st.info.family, false, id));
+          st.tools = this.toolFit.overlay(id, st.info.id === session.model ? this.pins.tools(session, { model: st.info.id, native: false, own: sessionToolsKey(st.info.family, id) }, eager) : eager);
           req = { ...req, tools: st.tools };
           fits(); // every built-in is in the prompt now
+          attempt++;
+          continue;
+        }
+        // The provider refused one tool's input schema (a 400 naming it): sent
+        // again with that tool declared without its parameters, as it is for
+        // the rest of the session; the model can still call it.
+        if (!retryable(e) && !bare && schemaResends < SCHEMA_RESENDS && this.toolFit.refused(session, e, req.tools, fitWireOf(st.provider, st.info))) {
+          schemaResends++;
+          st.tools = this.toolFit.overlay(id, st.tools);
+          req = { ...req, tools: this.toolFit.overlay(id, req.tools as Tool[]) };
           attempt++;
           continue;
         }

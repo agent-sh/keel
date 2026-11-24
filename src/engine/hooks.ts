@@ -104,6 +104,12 @@ export type TurnHooks = {
   // A model call for the session would go to a provider its folder does not allow, and was not
   // made (src/safety/content-routes.ts). `tell`: its model is to hear of it with its next input.
   routeRefused?: (s: Session, c: Crossing, tell: boolean) => void;
+  // Tools the request leaves out because their input schema cannot be made to
+  // fit the wire (src/providers/wires/schema-fit.ts), each named once a session.
+  toolsLeftOut?: (s: Session, left: { name: string; why: string }[]) => void;
+  // A provider refused one tool's input schema: the request was sent again
+  // with that tool declared without its parameters, as it is from here.
+  toolSchemaRefused?: (s: Session, tool: string, message: string) => void;
   // Each streamed piece of the answer, side answers too (they never reach the bus).
   requestDelta?: (s: Session, req: ProviderRequest, d: { kind: string; text: string }) => void;
   afterResponse?: (s: Session, res: ProviderResult, messages: Message[]) => void | Promise<void>;

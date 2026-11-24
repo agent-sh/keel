@@ -39,6 +39,10 @@ import { classify, fetchFailure, ProviderError } from "./http.ts";
 import { reportUsage } from "./reported.ts";
 import { REWORD_SYSTEM } from "../automation/successor.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult, Wire } from "./types.ts";
+import { anthropicBody } from "./wires/anthropic.ts";
+import { geminiBody } from "./wires/gemini.ts";
+import { responsesBody } from "./wires/responses.ts";
+import { BARE_SCHEMA, schemaRefusals } from "./wires/schema-fit.ts";
 
 export const SCRIPTED_ENV = "KEEL_SCRIPTED_PROVIDER";
 export const scriptedEnabled = () => process.env[SCRIPTED_ENV] === "1";
@@ -134,6 +138,8 @@ export class ScriptedProvider implements Provider {
   }
 
   private outage: OutageState = { kind: "dns", until: 0, started: [], requests: 0, listings: 0 };
+  // The refusals `script:refuse-schema` made, per session and prompt.
+  private schemaRefused = new Map<string, number>();
   private saveOutage() {
     try { if (this.stateDir) writeFileSync(join(this.stateDir, this.outageFile), JSON.stringify(this.outage)); } catch {}
   }
@@ -182,6 +188,9 @@ export class ScriptedProvider implements Provider {
     if (/^script:outage-end\b/.test(lastText) && this.outage.until) { this.outage.until = 0; this.saveOutage(); }
     const gone = this.down("requests");
     if (gone) throw gone;
+    // A family's stand-in refuses a tool its wire refuses, as that provider does.
+    const wire = this.wireOf(req.model);
+    if (wire) { const refused = schemaRefusal(req, wire); if (refused) throw refused; }
     // A retry is the same request: system, messages, tools, model and effort, byte for byte.
     const key = String(Bun.hash(JSON.stringify([req.sessionKey, req.model, req.effort, req.system, msgs, req.tools.map((t) => t.name)])));
     const attempt = this.seen.get(key) ?? 0;
@@ -352,6 +361,16 @@ export class ScriptedProvider implements Provider {
       return reply(texts[Math.min(said, texts.length - 1)] ?? "Scripted reply.");
     }
     const scenario = owner.match(/script:([a-z-]+)/)?.[1] ?? "";
+    // `script:refuse-schema NAME`: the provider refuses the input schema of the tool NAME (by its
+    // own name or as an MCP tool's) while it is declared with its parameters, in the words of the
+    // model's wire (the Anthropic wire's for a model of none), naming it as that wire does.
+    const refuseName = scenario === "refuse-schema" ? owner.match(/script:refuse-schema[ \t]+(\S+)/)?.[1] : undefined;
+    const refusedOne = refuseName ? req.tools.find((t) => t.name === refuseName || t.name.endsWith(`__${refuseName}`)) : undefined;
+    const refusedKey = `${req.sessionKey}\u0000${owner}`;
+    if (refusedOne && !bareSchema(refusedOne.input_schema)) {
+      this.schemaRefused.set(refusedKey, (this.schemaRefused.get(refusedKey) ?? 0) + 1);
+      throw schemaRefusal(req, wire ?? "anthropic_messages", refusedOne.name)!;
+    }
     // An outage the prompt asks for, at the request it names. Its start is this request's own failure.
     const ownerAt = msgs.findLastIndex((m) => m.role === "user" && own(m) === owner);
     const round = msgs.slice(ownerAt + 1).filter((m) => m.role === "assistant").length;
@@ -735,10 +754,57 @@ export class ScriptedProvider implements Provider {
         const left = (msgs as any[]).flatMap((m) => (m.role !== "user" ? [] : m.content.flatMap((b: any) => (b.type === "tool_result" && Array.isArray(b.content) ? b.content : [b])))).filter((b: any) => b.type === "text" && String(b.text).startsWith("[Image left out")).length;
         return reply(`Images: ${pics.map((b) => { const z = imageSize(b.data); return z ? `${z.w}x${z.h}` : "unreadable"; }).join(", ") || "none"}. Left out: ${left}. Attempt ${attempt + 1}.`);
       }
+      case "refuse-schema": {
+        const n = this.schemaRefused.get(refusedKey) ?? 0;
+        return reply(refusedOne ? `The tool ${refusedOne.name} was declared ${bareSchema(refusedOne.input_schema) ? "without its parameters" : "with its parameters"}, after ${n} refusal${n === 1 ? "" : "s"} of its schema.` : `No tool named ${refuseName} was declared.`);
+      }
       default:
         return reply(compacted ? "Scripted reply, after a compaction." : "Scripted reply.");
     }
   }
+}
+
+const bareSchema = (s: unknown) => s === BARE_SCHEMA || JSON.stringify(s) === '{"type":"object"}';
+
+// A request the provider of `wire` refuses over a tool's input schema: its
+// body built by the wire's own codec, each tool's schema read as the wire
+// sends it and checked by the wire's rules (wires/schema-fit.ts), and the
+// refusal in that provider's words, naming the tool as it does (the Anthropic
+// wire by its position, OpenAI by its name, Gemini by its declaration's
+// position). `only`: refuse this tool (a request's name), whatever its schema.
+function schemaRefusal(req: ProviderRequest, wire: Wire, only?: string): ProviderError | undefined {
+  const ctx = { origin: `scripted:${req.model}`, sessionKey: req.sessionKey ?? "", efforts: [] };
+  const refuse = (message: string) => classify("Scripted", 400, new Headers(), JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } }));
+  // (On the Responses wire an MCP tool is declared in its server's namespace by the rest of its name.)
+  const first = (name: string, schema: unknown) => (only ? (name === only || only.endsWith(`__${name}`) ? "refused" : undefined) : schemaRefusals(schema, wire)[0]);
+  let body: any;
+  try {
+    body = wire === "anthropic_messages" ? anthropicBody(req, ctx) : wire === "openai_responses" ? responsesBody(req, ctx, "openai") : wire === "gemini_generate_content" ? geminiBody(req, ctx) : undefined;
+  } catch {
+    return undefined;
+  }
+  if (!body) return undefined;
+  if (wire === "anthropic_messages") {
+    const i = (body.tools ?? []).findIndex((t: any) => first(t.name, t.input_schema));
+    if (i < 0) return undefined;
+    const why = first(body.tools[i].name, body.tools[i].input_schema)!;
+    return refuse(/property name/.test(why)
+      ? `tools.${i}.custom.input_schema.properties: Property keys should match pattern '^[a-zA-Z0-9_.-]{1,64}$'`
+      : `tools.${i}.custom.input_schema: JSON schema is invalid. It must match JSON Schema draft 2020-12 (https://json-schema.org/draft/2020-12). Learn more about tool use at https://docs.claude.com/en/docs/tool-use.`);
+  }
+  if (wire === "openai_responses") {
+    const fns = (body.tools ?? []).flatMap((t: any) => (t.type === "namespace" ? t.tools : [t])).filter((t: any) => t.type === "function");
+    const t = fns.find((x: any) => first(x.name, x.parameters));
+    if (!t) return undefined;
+    const why = first(t.name, t.parameters)!;
+    return refuse(/missing items/.test(why)
+      ? `Invalid schema for function '${t.name}': In context=('properties',), array schema missing items.`
+      : `Invalid schema for function '${t.name}': schema must have type 'object' and not have 'oneOf'/'anyOf'/'allOf'/'enum'/'const'/'not' at the top level.`);
+  }
+  const decls: any[] = body.tools?.[0]?.functionDeclarations ?? [];
+  const i = decls.findIndex((d) => first(d.name, d.parametersJsonSchema));
+  if (i < 0) return undefined;
+  return refuse(`* GenerateContentRequest.tools[0].function_declarations[${i}].parameters_json_schema: ${first(decls[i].name, decls[i].parametersJsonSchema)}`);
 }
 
 // What a block carries besides the owner's typed prompts: text that names no

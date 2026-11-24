@@ -3,6 +3,7 @@
 // Servers connect in the background after startup and on first use; a reload
 // restarts only the servers whose config changed, and never touches a session's
 // request prefix (MCP tools are deferred, so the eager tool list is fixed).
+import { fitReport, type SchemaFitRow } from "../providers/wires/schema-fit.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -118,6 +119,10 @@ export type McpServerState = {
   pinned_at?: number; // when its tool definitions were last accepted
   pinned_at_upgrade?: boolean; // pinned as it was when this build first ran, and the owner has not looked yet
   class?: ServerClass; // what kind of server it is (src/mcp/class.ts); not of a server Keel brings
+  // Its tools as offered (the accepted definitions) whose input schema a provider would refuse as it is:
+  // left out where it cannot be made to fit, changed where it can (src/providers/wires/schema-fit.ts).
+  // Tools that fit everywhere are not named.
+  schema_fit: SchemaFitRow[];
   last_connected?: number;
   era?: "modern" | "legacy";
   version?: string;
@@ -1435,6 +1440,8 @@ export class McpManager {
       tool_names: (e.bundled && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
       read_tools: e.bundled ? [] : (e.config.read_tools ?? []),
       hinted_reads: e.bundled ? [] : e.tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
+      // (What the model is offered: a changed tool the owner has not accepted is offered as accepted.)
+      schema_fit: e.bundled ? [] : fitReport(this.view(e)),
       tool_hints: e.bundled ? {} : Object.fromEntries(e.tools.map((t) => [t.name, hintWords(hintsOf(t.annotations))] as const).filter(([, w]) => w.length)),
       ...this.heldOf(e),
       ...(e.bundled ? {} : { class: classify(shown, !!e.config.url && this.oauth.signedIn(e.name)) }),

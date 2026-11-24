@@ -9,6 +9,7 @@ import { imageType } from "../project.ts";
 import { ANTHROPIC_RULES, TOOL_NAME } from "./anthropic.ts";
 import { FUNCTION_NAME as GEMINI_NAME, GEMINI_RULES } from "./gemini.ts";
 import { FUNCTION_NAME as RESPONSES_NAME, RESERVED_NAMESPACES, RESPONSES_RULES, type ResponsesDialect } from "./responses.ts";
+import { schemaRefusals } from "./schema-fit.ts";
 
 // A replayed call's name under a wire's rule: its length, and none of the
 // characters the wire refuses.
@@ -39,6 +40,8 @@ export function anthropicProblems(body: any): string[] {
     if (declared.has(t.name)) say("tools", `two tools are named ${t.name}`);
     declared.add(t.name);
     if (!isObject(t.input_schema)) say("tools", `${t.name} has no input_schema object`);
+    // What the API refuses in an input schema (schema-fit.ts SCHEMA_RULES, its sources).
+    else for (const p of schemaRefusals(t.input_schema, "anthropic_messages")) say("tools", `${t.name}: ${p}`);
   }
   let marks = (body.system ?? []).filter((b: any) => b?.cache_control).length + tools.filter((t) => t.cache_control).length;
   const image = (at: string, b: any) => {
@@ -111,6 +114,7 @@ export function responsesProblems(body: any, dialect: ResponsesDialect = "openai
   const fn = (at: string, t: any) => {
     if (!RESPONSES_NAME.test(String(t.name))) say(at, `the function name ${JSON.stringify(t.name)}`);
     if (dialect === "xai" && XAI_RESERVED.has(t.name)) say(at, `${t.name} is a name xAI keeps for its own tools`);
+    if (t.parameters !== undefined) for (const p of schemaRefusals(t.parameters, "openai_responses")) say(at, `${t.name}: ${p}`);
   };
   // "Function 'web.websearch' is not allowed in reserved namespace 'web'."
   const space = (at: string, t: any) => {
@@ -156,6 +160,7 @@ export function responsesProblems(body: any, dialect: ResponsesDialect = "openai
 export function chatProblems(body: any): string[] {
   const out: string[] = [];
   const say = (at: string, what: string) => void out.push(`${at}: ${what}`);
+  for (const t of body.tools ?? []) if (t.function?.parameters !== undefined) for (const p of schemaRefusals(t.function.parameters, "chat_completions")) say("tools", `${t.function.name}: ${p}`);
   const messages: any[] = body.messages ?? [];
   let open: string[] = [];
   messages.forEach((m, i) => {
@@ -185,7 +190,10 @@ export function chatProblems(body: any): string[] {
 export function geminiProblems(body: any): string[] {
   const out: string[] = [];
   const say = (at: string, what: string) => void out.push(`${at}: ${what}`);
-  for (const t of body.tools ?? []) for (const f of t.functionDeclarations ?? []) if (!GEMINI_NAME.test(String(f.name))) say("tools", `the function name ${JSON.stringify(f.name)}`);
+  for (const t of body.tools ?? []) for (const f of t.functionDeclarations ?? []) {
+    if (!GEMINI_NAME.test(String(f.name))) say("tools", `the function name ${JSON.stringify(f.name)}`);
+    if (f.parametersJsonSchema !== undefined) for (const p of schemaRefusals(f.parametersJsonSchema, "gemini_generate_content")) say("tools", `${f.name}: ${p}`);
+  }
   const contents: any[] = body.contents ?? [];
   const count = (c: any, key: string) => (c?.parts ?? []).filter((p: any) => p[key]).length;
   contents.forEach((c, i) => {

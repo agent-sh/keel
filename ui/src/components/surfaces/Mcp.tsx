@@ -9,6 +9,7 @@ import type { ImportableServer } from "../../../../src/mcp/config.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
 import type { ToolChange, ToolDef, ToolField } from "../../../../src/mcp/pins.ts";
 import { CLASS_KEYS, type ClassKey } from "../../../../src/mcp/class.ts";
+import type { SchemaFitRow } from "../../../../src/providers/wires/schema-fit.ts";
 import type { ProjectServer, ProjectState } from "../../../../src/mcp/project.ts";
 import { api, reportError, failed, useStore } from "../../lib/store.ts";
 import type { Outcome } from "../../../../src/mcp/channel.ts";
@@ -150,6 +151,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           </div>
         ) : <div><div className="k-sub k-label">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
         {s.class && <ClassSection s={s} base={base} act={act} />}
+        {offered(s) && s.schema_fit?.length > 0 && <SchemaFit rows={s.schema_fit} />}
         {!s.bundled && <ChannelSection s={s} base={base} act={act} />}
         {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
         {(s.logging || s.log_rev > 0) && <ServerLog s={s} base={base} />}
@@ -161,6 +163,34 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+// The server's tools whose input schema a provider would refuse as it is
+// (src/providers/wires/schema-fit.ts): left out where it cannot be made to
+// fit, with why; changed where it can, with what the model is told.
+// A note's names, which it writes between backticks, as code.
+const ticked = (text: string) => text.split(/`([^`]+)`/).map((part, i) => (i % 2 ? <code key={i} className="font-mono">{part}</code> : part));
+
+function SchemaFit({ rows }: { rows: SchemaFitRow[] }) {
+  const left = rows.filter((r) => r.left.length).length;
+  return (
+    <div data-testid="mcp-schema-fit">
+      <div className="k-sub k-label">Input schemas{left ? ` · ${left} tool${left === 1 ? "" : "s"} left out` : ""}</div>
+      <ul className="flex flex-col gap-2">
+        {rows.map((r) => (
+          <li key={r.tool} className="flex flex-col gap-1" data-testid="mcp-schema-row" data-tool={r.tool} data-left={r.left.length > 0 || undefined}>
+            <span className="k-chip self-start font-mono">{r.tool}</span>
+            {r.left.map((l) => (
+              <div key={l.why} className="k-issue" data-tone="need" data-testid="mcp-schema-left">Left out on {l.on.join(", ")}: {ticked(l.why)}.</div>
+            ))}
+            {r.changed.map((c) => (
+              <div key={c.on.join()} className="k-issue" data-tone="quiet" data-testid="mcp-schema-changed">Changed to fit on {c.on.join(", ")}. {ticked(`${c.notes.map((n) => n.replace(/[.\s]+$/, "")).join(". ")}.`)}</div>
+            ))}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
