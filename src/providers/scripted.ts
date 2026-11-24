@@ -46,6 +46,7 @@ import { classify, fetchFailure, ProviderError } from "./http.ts";
 import { reportUsage } from "./reported.ts";
 import { REWORD_SYSTEM } from "../automation/successor.ts";
 import { RULING_SYSTEM, standInMatch } from "../automation/ruling-match.ts";
+import { KIND_SYSTEM, LESSON_SYSTEM, standInDraft, standInKind } from "../automation/lesson-draft.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult, Wire } from "./types.ts";
 import { anthropicBody } from "./wires/anthropic.ts";
 import { geminiBody } from "./wires/gemini.ts";
@@ -395,6 +396,9 @@ export class ScriptedProvider implements Provider {
     if (String(req.system ?? "").includes(REWORD_SYSTEM)) return reply(lastText.match(/<brief>\n([\s\S]*)\n<\/brief>/)?.[1] ?? "");
     // A question matched to the owner's standing rulings (src/automation/rulings.ts): by the words they share.
     if (String(req.system ?? "").includes(RULING_SYSTEM)) return reply(standInMatch(lastText));
+    // A recurring failure drafted into a lesson (src/automation/lessons.ts): a note from its first example.
+    if (String(req.system ?? "").includes(LESSON_SYSTEM)) return reply(standInDraft(lastText));
+    if (String(req.system ?? "").includes(KIND_SYSTEM)) return reply(standInKind(lastText));
 
     // `script:replies ["...", "..."]`: these texts, one per reply, in order,
     // the last one from then on. Later prompts that name no script get the

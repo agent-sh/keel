@@ -84,6 +84,7 @@
 import type { Session } from "../core/types.ts";
 import type { Store } from "../core/store.ts";
 import type { ProviderRequest } from "../providers/types.ts";
+import { repoRoot } from "../core/repo-root.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { registerToolsOff } from "../tools/registry.ts";
 import { assignArm, diffInterval, labelBet, meanInterval, msprt, type Interval, type Unit } from "./stats.ts";
@@ -107,8 +108,21 @@ export const METRICS = {
   keep_miss: { label: "miss of a priced summary's kept size", better: "lower", unit: "share" },
   // Read-only steps over the reads they sent (src/engine/read-run.ts): 1 is one read a step, lower is batched.
   steps_per_read: { label: "steps per read", better: "lower", unit: "share" },
+  // Read once a family, over its life: failures of the class a lesson is about (src/automation/lessons.ts).
+  lesson_class: { label: "failures of the lesson's class", better: "lower", unit: "count" },
 } as const;
 export type Metric = keyof typeof METRICS;
+// The metrics read once a family rather than once a turn: a count over the
+// family's life, given by the module that knows it (registerFamilyRead).
+// A guard cannot read one: its observation is a family's first turns.
+export const FAMILY_METRICS: ReadonlySet<Metric> = new Set<Metric>(["lesson_class"]);
+export type FamilyRead = (e: Experiment, roots: string[], until: number) => Map<string, Partial<Record<Metric, number>>> | undefined;
+const familyReads = new Map<string, FamilyRead>();
+// A reader of family metrics, by the module's name; returns what takes it back.
+export function registerFamilyRead(id: string, read: FamilyRead): () => void {
+  familyReads.set(id, read);
+  return () => { if (familyReads.get(id) === read) familyReads.delete(id); };
+}
 
 export type Arm = {
   name: string;
@@ -119,6 +133,7 @@ export type Arm = {
   cache_life?: "short" | "long";
   tool_text?: Record<string, string>;  // a tool's description in this arm, by tool name
   model?: string;                      // offline only: the model the arm runs on
+  lesson?: boolean;                    // its agents are told the experiment's lesson at their start
 };
 
 // A request with the arm's tool descriptions in place (one per session, so its prefix holds).
@@ -149,8 +164,17 @@ export const ALPHA = 0.05;
 export type Decision = { winner: string | null; verdict: "won" | "inconclusive" | "regression"; text: string; remove: string; ts: number };
 export type RunUpload = { receipt: string; arm: string; task?: string; rep?: number; metrics: Record<string, number> };
 const sorted = (m: Record<string, number>) => Object.fromEntries(Object.entries(m).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+// Live only: `unit` is what one draw of an arm covers. "session" (the
+// default) is a top-level session with every agent under it. "agent" is an
+// agent a top-level session started, with the agents under it, while the
+// top-level session itself gets no arm: for a change only agents see (a
+// lesson told at an agent's start), where one coordinator's many agents are
+// many units. `repo`: only units whose folder is in this repository (its root
+// folder) get an arm. `lesson`: the lesson a trial is of, whose failure class
+// `lesson_class` counts.
 export type Experiment = {
   id: string; name: string; hypothesis: string; mode: "offline" | "live"; template?: string;
+  unit?: "session" | "agent"; repo?: string; lesson?: string;
   arms: Arm[]; primary: Metric; guards: Guard[]; stop: Stop;
   state: "draft" | "running" | "stopped"; created_ms: number; started_ms?: number; stopped_ms?: number; stop_reason?: string; decision?: Decision;
 };
@@ -267,6 +291,20 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
   },
 ];
 
+// A lesson's trial (src/automation/lessons.ts makes it from an accepted
+// lesson, with its repository and the lesson), not offered in the list: half
+// of the repository's new agent trees are told the lesson at their start.
+// Does its failure class fall?
+export const LESSON_TEMPLATE: (typeof TEMPLATES)[number] = {
+  id: "lesson", label: "A lesson for a repository's agents",
+  make: () => ({ name: "Lesson", mode: "live", template: "lesson", unit: "agent",
+    hypothesis: "Agents told the lesson at their start fail with its class less often, without more errors or cost.",
+    arms: [{ name: "without" }, { name: "with lesson", lesson: true }], primary: "lesson_class",
+    // What a lesson that misleads would show: turns that fail, more failed calls, the cost of the words it adds.
+    guards: [{ metric: "error", mde: 0.1 }, { metric: "tool_errors", mde: 0.25, relative: true }, { metric: "cost_usd", mde: 0.25, relative: true }],
+    stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
+};
+
 const bad = (msg: string) => Object.assign(new Error(msg), { status: 400 });
 
 // Checks a definition; throws a 400 with what is wrong.
@@ -288,8 +326,14 @@ export function validate(e: Partial<Experiment>): void {
   if (!e.arms.some((a) => (a.weight ?? 1) > 0)) throw bad("no arm has a weight above 0");
   if (e.mode === "live" && !((e.arms[0]!.weight ?? 1) > 0)) throw bad(`arm ${e.arms[0]!.name} is the control, which every arm is compared with: in a live experiment its weight is above 0`);
   if (!e.primary || !(e.primary in METRICS)) throw bad(`primary is one of ${Object.keys(METRICS).join(", ")}`);
+  if (e.unit !== undefined && e.unit !== "session" && e.unit !== "agent") throw bad("unit is session or agent");
+  if ((e.unit || e.repo) && e.mode !== "live") throw bad("unit and repo shape who gets a live arm; an offline experiment has none");
+  if (e.lesson !== undefined && !(typeof e.lesson === "string" && e.lesson)) throw bad("lesson is the id of a lesson");
+  if (e.arms.some((a) => a.lesson) && !e.lesson) throw bad("an arm that tells the lesson needs the experiment's lesson");
+  if (FAMILY_METRICS.has(e.primary) && e.mode !== "live") throw bad(`${e.primary} is read over a live family's life`);
   for (const g of e.guards ?? []) {
     if (!(g.metric in METRICS)) throw bad(`guard metric ${g.metric} is unknown`);
+    if (FAMILY_METRICS.has(g.metric)) throw bad(`guard ${g.metric}: a guard reads a family's first turns, and ${g.metric} is read over its life`);
     if (!(g.mde > 0)) throw bad(`guard ${g.metric}: mde, the size of worsening the guard is tuned to find fastest, is above 0`);
   }
   const alpha = e.stop?.alpha;
@@ -350,7 +394,8 @@ const capReached = (e: Experiment, arms: ArmReport[]) => {
 // What a stopped experiment is read from.
 export type Final = { report: Report; sessions: { arm: string; n: number }[]; runs: number };
 
-type Row = { arm: string; cluster: string; stratum?: string; m: Partial<Record<Metric, number>> };
+// `family`: a row of the metrics read once a family (FAMILY_METRICS), not a turn.
+type Row = { arm: string; cluster: string; stratum?: string; family?: true; m: Partial<Record<Metric, number>> };
 
 // Per-arm means with intervals, each arm's effect against the control, the
 // guards' tests, and what the data says now. `live`: a live experiment's
@@ -364,7 +409,7 @@ export function report(e: Experiment, rows: Row[], live?: Live): Report {
     const mine = rows.filter((r) => r.arm === a.name);
     const out: Partial<Record<Metric, Interval>> = {};
     for (const m of metrics) { const u = units(a.name, m); if (u.length) out[m] = meanInterval(u); }
-    return { arm: a.name, units: mine.length, clusters: new Set(mine.map((r) => r.cluster)).size, metrics: out };
+    return { arm: a.name, units: mine.filter((r) => !r.family).length, clusters: new Set(mine.map((r) => r.cluster)).size, metrics: out };
   });
   const effects: Effect[] = [];
   for (const a of e.arms.slice(1)) for (const m of metrics) {
@@ -446,6 +491,7 @@ function describe(a: Arm): string {
   if (a.cache_life) parts.push(`the ${a.cache_life} cache lifetime`);
   if (a.tool_text) parts.push(`the description of ${Object.keys(a.tool_text).join(", ")} it was given`);
   if (a.model) parts.push(`model ${a.model}`);
+  if (a.lesson) parts.push("the lesson told at its agents' start");
   return parts.join(", ") || "the current configuration";
 }
 
@@ -483,7 +529,9 @@ export function decide(e: Experiment, effects: Effect[], guards: Report["guards"
   // could be priced can depend on what the arm did.
   const lacking = [control, ...compared].flatMap((a) => {
     const r = arms.find((x) => x.arm === a.name), n = r?.metrics[e.primary]?.n ?? 0;
-    return r && n < r.units ? [`${n} of ${r.units} ${e.mode === "live" ? "turns" : "runs"} of ${a.name}`] : [];
+    // (A metric read once a family is known for each family.)
+    const all = FAMILY_METRICS.has(e.primary) ? r?.clusters ?? 0 : r?.units ?? 0;
+    return r && n < all ? [`${n} of ${all} ${FAMILY_METRICS.has(e.primary) ? "families" : e.mode === "live" ? "turns" : "runs"} of ${a.name}`] : [];
   });
   if (lacking.length) {
     return { winner: null, verdict: "inconclusive", ts,
@@ -559,7 +607,7 @@ export class Experiments {
   }
 
   create(body: Partial<Experiment> & { template?: string }): Experiment {
-    const base = body.template ? TEMPLATES.find((t) => t.id === body.template)?.make() : undefined;
+    const base = body.template ? [...TEMPLATES, LESSON_TEMPLATE].find((t) => t.id === body.template)?.make() : undefined;
     if (body.template && !base) throw bad(`no template ${body.template}`);
     const merged = { ...base, ...Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== undefined && k !== "template")) } as Partial<Experiment>;
     merged.guards ??= [];
@@ -633,17 +681,34 @@ export class Experiments {
   // A new top-level session joins the running live experiment at its first
   // turn; a subagent takes its parent's arm and family. Sessions from before
   // the start, and ones that already ran a turn, stay out.
+  // An experiment whose unit is an agent tree draws for an agent its
+  // top-level session started (that session has none), and its agents take
+  // that agent's; an arm the top-level session kept from a stopped
+  // experiment is not passed down to it then.
   assign(s: Session) {
     if (armOf(this.store, s.id)) return;
     const db = this.store.db;
     if (s.parent_id) {
       const p = armOf(this.store, s.parent_id);
-      if (p) db.query("INSERT OR IGNORE INTO experiment_sessions (session_id, exp_id, arm, ts, root) VALUES (?, ?, ?, ?, ?)").run(s.id, p.exp_id, p.arm, Date.now(), p.root);
+      const e = this.running();
+      const unit = e?.unit === "agent" && !this.store.session(s.parent_id)?.parent_id;
+      if (p && !(unit && p.exp_id !== e!.id)) {
+        db.query("INSERT OR IGNORE INTO experiment_sessions (session_id, exp_id, arm, ts, root) VALUES (?, ?, ?, ?, ?)").run(s.id, p.exp_id, p.arm, Date.now(), p.root);
+        return;
+      }
+      if (unit) this.draw(e!, s);
       return;
     }
     const e = this.running();
-    if (!e || s.created < (e.started_ms ?? Infinity)) return;
+    if (e && e.unit !== "agent") this.draw(e, s);
+  }
+
+  // A unit's arm, drawn once: a session made since the start that ran no turn yet, in the experiment's repository.
+  private draw(e: Experiment, s: Session) {
+    const db = this.store.db;
+    if (s.created < (e.started_ms ?? Infinity)) return;
     if (db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' LIMIT 1").get(s.id)) return;
+    if (e.repo && (s.machine || repoRoot(s.workspace) !== e.repo)) return;
     const arm = e.arms[assignArm(e.id, s.id, e.arms.map((a) => a.weight ?? 1))]!;
     db.query("INSERT OR IGNORE INTO experiment_sessions (session_id, exp_id, arm, ts, root) VALUES (?, ?, ?, ?, ?)").run(s.id, e.id, arm.name, Date.now(), s.id);
     if (arm.settings && Object.keys(arm.settings).length) this.store.mergeSettings(s.id, arm.settings);
@@ -722,8 +787,17 @@ export class Experiments {
     const by = ended ? "t.ts + COALESCE(t.ms, 0)" : "t.ts";
     const rows = this.store.db.query<any, [string, number, number]>(
       `SELECT t.*, x.arm AS family_arm, x.root AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND ${by} <= ?`).all(e.id, e.started_ms ?? 0, until);
-    return withSuccessors(this.store.db, rows, e.started_ms ?? 0)
+    const out: Row[] = withSuccessors(this.store.db, rows, e.started_ms ?? 0)
       .map((t) => ({ arm: t.family_arm, cluster: t.family, m: turnMetrics(t) }));
+    // The metrics read once a family, for the families with a turn.
+    const armOfRoot = new Map(out.map((r) => [r.cluster, r.arm]));
+    for (const read of familyReads.values()) {
+      for (const [root, m] of read(e, [...armOfRoot.keys()], until) ?? []) {
+        const arm = armOfRoot.get(root);
+        if (arm !== undefined) out.push({ arm, cluster: root, family: true, m });
+      }
+    }
+    return out;
   }
 
   // What the data says now; for a stopped experiment, what it said at the stop.

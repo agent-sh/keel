@@ -311,6 +311,11 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
       case "queued": return row("agent", `${name} waits for a free agent slot to start`, {}, r);
       case "slot_wait": return row("agent", `${name} was woken and waits for a free agent slot`, {}, r);
       // A message continued it after it reported: where its new work started.
+      // It started with lessons of its repository in its task (src/automation/lessons.ts).
+      case "lessons": {
+        const n = Array.isArray(d.lessons) ? d.lessons.length : 0;
+        return row("agent", `${name} started with ${n === 1 ? "a lesson" : `${n} lessons`} of ${str(d.repo) ?? "its repository"}${typeof d.tokens === "number" ? `, about ${d.tokens} tokens` : ""}`, {}, r);
+      }
       case "follow_up": return row("agent", `${name} took up new work: ${d.why ? String(d.why).replace(/^./, (c) => c.toLowerCase()) : String(d.way ?? "")}`, {}, r);
       default: return row("agent", `${name}: ${a.sub}`, {}, r);
     }

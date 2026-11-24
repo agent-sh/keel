@@ -74,6 +74,7 @@ import { egressRoutes } from "./egress.ts";
 import { pressRoutes } from "./presses.ts";
 import { healthRoutes } from "./health.ts";
 import { rulingRoutes } from "../../automation/rulings.ts";
+import { lessonRoutes } from "../../automation/lessons.ts";
 
 // Each feature module adds one line here.
 // Each is listed under its name: a built binary's functions lose theirs, and a start says by name which module took its time (src/core/start-trace.ts).
@@ -148,6 +149,7 @@ const modules: Record<string, RouteModule> = {
   pressRoutes,
   telemetryRoutes, // its tool timing starts after every gate
   experimentRoutes, // after telemetry: a turn's row reads the calls telemetry wrote
+  lessonRoutes, // after experiments: a lesson's trial is one of them
   timelineRoutes, // reads what the others record: events, activity, errors, telemetry
   hoursRoutes, // where a tree's hours went: reads the spans, turns, agents and waits the others record
   overviewRoutes, // every session's state, failure and spend as one answer

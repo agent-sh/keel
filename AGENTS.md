@@ -236,6 +236,21 @@ under `~/.cache/keel-work/bun/research/`.
   own. Only what a notice can name is owed; a notice never starts a session
   held after the owner's Stop. The same rows are read at
   `GET /api/errors?session=<id>`.
+- A failure cause that recurs across a repository's agent trees becomes one
+  proposed lesson (`src/automation/lessons-mine.ts` mines, read-only, on the
+  read thread; `src/automation/lessons.ts` keeps them): a tool call's failure
+  class from the tool ledger, a cause of `session_failures` that is not a
+  tool's, a provider's or a message's, or a review finding by its words, in
+  three agent trees within two weeks. A small model of the owner's chain drafts
+  its note, or says no agent could avoid it (kept apart). Settings > Lessons
+  shows each with its evidence; the owner accepts it (in his words), edits or
+  drops it, and a dropped cause is never proposed again. An accepted lesson
+  rides in the task of the repository's agents at their start, never in a
+  system prompt. Its trial is a live experiment of the lesson template (unit:
+  agent trees, an agent a top-level session started; only the repository's),
+  read on `lesson_class`, the count of its own class once a tree: kept when the
+  arm told it wins, else dropped with the numbers. While another live
+  experiment runs, an accepted lesson goes to every agent and its trial waits.
 - Agents start agents down to a depth limit, under one budget for the whole
   tree (`src/core/agent-tree.ts` says the numbers and why). A report goes to
   the agent that started it; an agent is not finished while its own agents

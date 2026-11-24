@@ -47,6 +47,7 @@ import { routeShut } from "./incidents.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
 import { agentMemory, memoryDir, memoryOff, memoryOver, SCOPES, type MemoryScope } from "./agent-memory.ts";
+import { lessonStart } from "./lesson-start.ts";
 import { targetsOf } from "../engine/nested.ts";
 import type { Tool } from "../tools/types.ts";
 import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
@@ -1105,8 +1106,11 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // result read later (a foreground agent's), and in none once its spawn's result was read.
   const keep = (near: string | undefined) => { if (near && !earlierTaken.has(id)) { earlierOut.set(id, near); if (earlierOut.size > EARLIER_KEPT) earlierOut.delete(earlierOut.keys().next().value!); } };
   if (earlier) await Promise.race([earlier.then(keep), Bun.sleep(EARLIER_WAIT_MS)]);
+  // The repository's accepted lessons (src/automation/lessons.ts): in its task, never its system prompt.
+  let lessonsBlock = "";
+  try { lessonsBlock = lessonStart.block?.(store.session(child.id) ?? child, id) ?? ""; } catch (e) { capture(e, { at: "agent lessons", agent: id }); }
   const task = [
-    preamble(depth, max), def.body, memory?.block ?? "", ...preloaded,
+    preamble(depth, max), def.body, memory?.block ?? "", ...preloaded, lessonsBlock,
     reviews || isReviewer(def.name) ? VERDICT_LINE : "",
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Change the repository only there (a scratch folder your task names is yours too) and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",

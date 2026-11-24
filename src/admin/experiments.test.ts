@@ -1,7 +1,7 @@
 // Experiment evidence over a real store, on cases the page cannot script:
 // subagent families, a daemon restart, turns that end after a stop.
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -9,7 +9,7 @@ import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { experimentRoutes, experiments, outcomes } from "../server/routes/experiments.ts";
-import { armOf, Experiments, familyObs, FAMILIES_PER_ARM, liveGuards, report, TURNS, WINDOW_MIN, type Experiment, type FamilyTurn, type Obs } from "./experiments.ts";
+import { armOf, Experiments, familyObs, registerFamilyRead, FAMILIES_PER_ARM, liveGuards, report, TURNS, WINDOW_MIN, type Experiment, type FamilyTurn, type Obs } from "./experiments.ts";
 import { offlineReport, receiptOf, runMetrics, runnable, Uploads } from "./offline.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { assignArm, rng } from "./stats.ts";
@@ -574,6 +574,61 @@ test("the sessions per arm cap is over the arms that get sessions; a live contro
     expect([refused.status, refused.body.error]).toEqual([400, expect.stringContaining("control")]);
     expect((await call("POST", "/api/experiments", { template: "readers", name: "offline weights", arms: off })).status).toBe(201);
   } finally { d.close(); }
+});
+
+// A folder that reads as a repository of its own (src/core/git.ts locate).
+function repoAt(dir: string) {
+  mkdirSync(join(dir, ".git", "objects"), { recursive: true });
+  mkdirSync(join(dir, ".git", "refs"), { recursive: true });
+  writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+  return dir;
+}
+
+test("a lesson's trial draws its repository's agent trees and counts its class once a tree", () => {
+  const d = daemon();
+  const counts = new Map<string, number>();
+  const unread = registerFamilyRead("test", (e, roots) => (e.lesson ? new Map(roots.map((r) => [r, { lesson_class: counts.get(r) ?? 0 }])) : undefined));
+  try {
+    const { store, x } = d.open();
+    const here = repoAt(join(d.dir, "here")), there = repoAt(join(d.dir, "there"));
+    mkdirSync(join(here, "sub"));
+    const e = x.start(x.create({ template: "lesson", name: "a lesson", repo: here, lesson: "l1", stop: { sessions_per_arm: 3 } }).id);
+    const top = store.createSession({ model: "p:m", workspace: here });
+    x.assign(top);
+    expect(armOf(store, top.id)).toBeNull(); // a top-level session is no unit
+    const agent = (parent: string, workspace = join(here, "sub")) => {
+      const s = store.createSession({ model: "p:m", workspace });
+      store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent, s.id);
+      x.assign(store.session(s.id)!);
+      return s.id;
+    };
+    // Its agents are units; their agents take theirs; an agent of another repository gets none.
+    const ids: string[] = [];
+    const by = (arm: string) => ids.filter((id) => armOf(store, id)!.arm === arm);
+    while (by("without").length < 4 || by("with lesson").length < 4) ids.push(agent(top.id));
+    const deep = agent(ids[0]!);
+    expect(armOf(store, deep)).toEqual({ ...armOf(store, ids[0]!)!, root: ids[0]! });
+    expect(armOf(store, agent(top.id, there))).toBeNull();
+    // Each tree's turn, and its class count: two or three without the lesson, none or one with it.
+    ids.forEach((id, i) => { turn(store, id); counts.set(id, (armOf(store, id)!.arm === "without" ? 2 : 0) + (i % 2)); });
+    turn(store, deep);
+    const r = x.report(x.get(e.id)!, closed());
+    const of = (arm: string) => r.arms.find((a) => a.arm === arm)!;
+    // A family's count is one value of its tree; the turns stay the turns.
+    const mean = (arm: string) => by(arm).reduce((n, id) => n + counts.get(id)!, 0) / by(arm).length;
+    expect(of("without").metrics.lesson_class).toMatchObject({ estimate: mean("without"), n: by("without").length });
+    expect(of("with lesson").metrics.lesson_class).toMatchObject({ estimate: mean("with lesson"), n: by("with lesson").length });
+    expect(of("without").units + of("with lesson").units).toBe(ids.length + 1);
+    // At the sample size the arm told the lesson wins on its class.
+    x.check(ids[0]!);
+    const stopped = x.get(e.id)!;
+    expect(stopped.state).toBe("stopped");
+    expect(stopped.decision).toMatchObject({ verdict: "won", winner: "with lesson" });
+    expect(stopped.decision!.remove).toContain("the lesson told at its agents' start");
+    // A guard cannot read a metric of a family's life, and an arm that tells a lesson needs one.
+    expect(() => x.create({ template: "lesson", name: "bad", repo: here, lesson: "l1", guards: [{ metric: "lesson_class", mde: 1 }] })).toThrow("read over its life");
+    expect(() => x.create({ template: "lesson", name: "bad", repo: here })).toThrow("needs the experiment's lesson");
+  } finally { unread(); d.close(); }
 });
 
 test("the control wins only when every arm compared with it lost", () => {

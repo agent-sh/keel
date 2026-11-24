@@ -19,6 +19,7 @@ import "./lib/integrations-ui.ts";
 import "./lib/port-ui.ts";
 import "./lib/surfaces-ui.ts";
 import "./lib/rulings.ts";
+import "./lib/lessons.ts";
 import { installKeymap } from "./lib/keys.ts";
 import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";

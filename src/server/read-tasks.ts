@@ -21,6 +21,7 @@ import { priceFactsRead } from "../engine/price-facts.ts";
 import { pressReport } from "../admin/presses.ts";
 import { egressReport, type EgressAsk } from "../safety/egress-report.ts";
 import { scanFiles, type FilesAsk } from "../admin/health-files.ts";
+import { mineRead, untagged } from "../automation/lessons-mine.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -67,6 +68,10 @@ export const tasks = {
   "egress.report": (db: Database, a: EgressAsk) => egressReport(db, a),
   // The health check's walk over the owner's skill, command, agent and plugin files (src/admin/health-files.ts).
   "health.files": (_db: Database, a: FilesAsk) => scanFiles(a),
+  // The causes that recur across a repository's agent trees (src/automation/lessons-mine.ts).
+  "lessons.mine": (db: Database, a: { now: number; days?: number; trees?: number }) => mineRead(db, a),
+  // The review findings no kind was asked for yet.
+  "lessons.untagged": (db: Database, a: { since: number; max: number }) => untagged(db, a.since, a.max),
 };
 
 export type Tasks = typeof tasks;
