@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { agentState, childInput, subagentUpdate, taskLine } from "./subagents.ts";
+import { agentState, childDirs, childInput, subagentUpdate, taskLine } from "./subagents.ts";
 
 const agent = { id: "a1", parent_id: "p", session_id: "c1", title: "Test runner", status: "running" };
 
@@ -12,6 +12,7 @@ test("an agent's record is its child session's label, state and cancel", () => {
   // Its own worktree is its folder; one on another machine says none.
   expect(subagentUpdate({ ...agent, worktree: "/w/.wt/a1" }).cwd).toBe("/w/.wt/a1");
   expect(subagentUpdate({ ...agent, worktree: "/far/a1", machine: "m" }).cwd).toBeUndefined();
+  expect(subagentUpdate({ ...agent, worktree: "/w/.wt/a1" }).additionalDirectories).toEqual([]);
   // Ended: nothing to cancel, and how it ended.
   const ended = (status: string, end_reason?: string) => subagentUpdate({ ...agent, status, end_reason });
   expect(ended("completed")).toMatchObject({ capabilities: {}, state: { state: "idle", stopReason: "end_turn" } });
@@ -35,4 +36,20 @@ test("a child's inputs: its parent's task and messages are from the parent, a pe
   expect(childInput({ id: "e5", data: { text: "from the owner" } }, "c1", "p")).toEqual([{ sessionUpdate: "user_message_chunk", content: { type: "text", text: "from the owner" } }]);
   expect(taskLine("\n  Fix the build\nthen more")).toBe("Fix the build");
   expect(taskLine("x".repeat(300))!.length).toBe(200);
+});
+
+test("where a child works: its worktree, its folder on another machine, and the folders its write scope names", () => {
+  const writes = (...places: any[]) => JSON.stringify({ places });
+  const dirOf = (p: string) => (p.endsWith(".md") ? p.slice(0, p.lastIndexOf("/")) : p);
+  // Its own worktree, with none of its parent's folders; a place inside it adds none.
+  expect(childDirs({ worktree: "/w/.wt/a1", writes: writes({ path: "/w/.wt/a1/out" }) }, { dirOf })).toEqual({ cwd: "/w/.wt/a1", additionalDirectories: [] });
+  // A place beyond it is a folder of its own: a file as its folder, a glob as where it starts, each once.
+  expect(childDirs({ worktree: "/w/.wt/a1", writes: writes({ path: "/notes/today.md" }, { path: "/notes" }, { path: "/data/runs/*.json", glob: true }, { path: "rel" }) }, { dirOf }))
+    .toEqual({ cwd: "/w/.wt/a1", additionalDirectories: ["/notes", "/data/runs"] });
+  // In its parent's folder: only the places beyond it.
+  expect(childDirs({ writes: writes({ path: "/notes" }) }, { dirOf })).toEqual({ additionalDirectories: ["/notes"] });
+  expect(childDirs({})).toEqual({});
+  // On another machine: its folder there, none of the parent's and no write places of this one.
+  expect(childDirs({ machine: "m1", worktree: "/far/wt", writes: writes({ path: "/notes" }) }, { workspace: "/far/wt" })).toEqual({ cwd: "/far/wt", additionalDirectories: [] });
+  expect(childDirs({ writes: "not json" })).toEqual({});
 });

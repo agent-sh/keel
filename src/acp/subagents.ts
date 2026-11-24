@@ -3,7 +3,10 @@
 // says of it. A child is announced with `subagent_update` on its parent's
 // session; its own work goes under its own sessionId. Only for a client that
 // advertised `clientCapabilities.subagents`.
+import { dirname, isAbsolute } from "node:path";
 import { INPUT_LABEL, inputKind } from "../core/inputs.ts";
+import { contains } from "../core/paths.ts";
+import { globBase } from "../safety/own-places.ts";
 
 type Json = any;
 
@@ -19,6 +22,7 @@ export type AgentSeen = {
   machine?: string | null;
   first_seq?: number;
   call_id?: string | null; // the parent's call that started it
+  writes?: string | null; // its write scope as kept (src/automation/write-asks.ts): `{ places: [{ path, glob? }] }`
 };
 
 export const isLive = (a: Pick<AgentSeen, "status">) => a.status === "running" || a.status === "waiting";
@@ -38,12 +42,34 @@ export function agentState(a: Pick<AgentSeen, "status" | "end_reason">, asking =
   return { state: "idle", stopReason: "end_turn" };
 }
 
+// Where a child works, as `cwd` and `additionalDirectories` (subagents.mdx,
+// Working directories): a field left out is inherited from its parent.
+// Its own worktree here is its folder. One on another machine works in its
+// session's folder there (`workspace`, read from the daemon): it never shares
+// the parent's. Either keeps none of the parent's other folders. The places
+// its write scope names beyond its folder are its other folders, each as the
+// folder that holds it (`dirOf`: a file's folder; the bridge looks on disk).
+export type Dirs = { cwd?: string; additionalDirectories?: string[] };
+export function childDirs(a: Pick<AgentSeen, "worktree" | "machine" | "writes">, o: { workspace?: string; dirOf?: (p: string) => string } = {}): Dirs {
+  const cwd = a.machine ? o.workspace : a.worktree ?? undefined;
+  const extra = a.machine ? [] : scopeDirs(a.writes, o.dirOf ?? dirname).filter((d) => !cwd || !contains(cwd, d));
+  if (cwd) return { cwd, additionalDirectories: extra };
+  return extra.length ? { additionalDirectories: extra } : {};
+}
+// The folders a kept write scope names, each once, none inside another.
+export function scopeDirs(writes: string | null | undefined, dirOf: (p: string) => string): string[] {
+  let places: { path?: unknown; glob?: unknown }[] = [];
+  try { places = writes ? JSON.parse(writes)?.places ?? [] : []; } catch {}
+  const dirs = [...new Set((Array.isArray(places) ? places : [])
+    .filter((x) => typeof x?.path === "string" && isAbsolute(x.path))
+    .map((x) => (x.glob ? globBase(String(x.path)) : dirOf(String(x.path)))))];
+  return dirs.filter((d) => !dirs.some((o) => o !== d && contains(o, d)));
+}
+
 // The parent's `subagent_update` for one agent: every field the bridge knows,
 // so each update is the child's whole label and state (a patch that leaves
 // nothing stale). `cancel` while it works or waits: a stop then means something.
-// Its folder only where it has one of its own on this machine; otherwise it
-// inherits the parent's, as Keel's agent without a worktree does.
-export function subagentUpdate(a: AgentSeen, o: { description?: string; asking?: boolean } = {}): Json {
+export function subagentUpdate(a: AgentSeen, o: { description?: string; asking?: boolean; dirs?: Dirs } = {}): Json {
   return {
     sessionUpdate: "subagent_update",
     sessionId: a.session_id,
@@ -51,7 +77,7 @@ export function subagentUpdate(a: AgentSeen, o: { description?: string; asking?:
     ...(o.description ? { description: o.description } : {}),
     capabilities: isLive(a) ? { cancel: {} } : {},
     state: agentState(a, o.asking),
-    ...(a.worktree && !a.machine ? { cwd: a.worktree } : {}),
+    ...(o.dirs ?? childDirs(a)),
   };
 }
 

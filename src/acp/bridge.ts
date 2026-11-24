@@ -19,7 +19,9 @@ import { cardForm, cardLines, type CardForm } from "../safety/card.ts";
 import type { Approval } from "../safety/gate.ts";
 import { spelled } from "../safety/chars.ts";
 import { RESTARTED, retryNotice, streamStep } from "./stream.ts";
-import { childInput, isLive, spawnTask, subagentUpdate, taskLine, type AgentSeen } from "./subagents.ts";
+import { childDirs, childInput, isLive, spawnTask, subagentUpdate, taskLine, type AgentSeen } from "./subagents.ts";
+import { statSync } from "node:fs";
+import { dirname } from "node:path";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -223,9 +225,14 @@ type Live = { prompts: Prompt[]; error?: string; seq: number; delivered: Map<str
 // thought, `streamed` of the attempt that streams now (src/acp/subagents.ts streamStep).
 type Text = { shown: string; streamed: string; thoughtShown: string; thoughtStreamed: string };
 // An agent of a session this editor holds, as a child session: its parent's
-// session, the record as last told, the label and state last sent, the
-// approvals of its own that wait on the owner.
-type Child = { parent: string; agent: AgentSeen; description?: string; sent?: string; asks: Set<string> };
+// session, the record as last told, the label and state last sent, what of its
+// own waits on the owner (its approvals by id, its questions as `q:` and the
+// call's id). One on another machine is announced once its folder there is
+// read (`workspace`): until then it is not shown, rather than shown in its
+// parent's folder.
+type Child = { parent: string; agent: AgentSeen; description?: string; sent?: string; asks: Set<string>; workspace?: string; placing?: boolean; from?: number | null };
+// A place an agent may write as the folder it is in: itself when it is a folder here, else the folder that holds it.
+const folderOf = (p: string) => { try { return statSync(p).isDirectory() ? p : dirname(p); } catch { return dirname(p); } };
 // The spawn tools whose call names an agent's task.
 const SPAWN_TOOLS = new Set(["Agent", "Task", "spawn_agent", "keel__spawn_on_machine"]);
 
@@ -254,13 +261,20 @@ export class AcpBridge {
   private texts = new Map<string, Text>();
   private spawnTasks = new Map<string, string>(); // a spawn call's id -> its task line
   private retried = new Map<string, string>(); // session -> the retry status last told of its reply
+  private elicited = new Set<string>(); // question calls sent to the editor as forms (session and call id)
+  // Sessions being loaded: their frames wait here until the history is replayed, so nothing live goes before it.
+  private loading = new Map<string, Json[]>();
   private titles = new Map<string, string>(); // session -> the title last told
 
   private get subagents() { return !!this.caps?.subagents; }
   // Whether the editor is shown what a session does now: a prompt of its own is
   // open there, or (with subagents) it holds the session, or the session is an
-  // agent of one it holds.
-  private streams(id: string) { return this.live.has(id) || (this.subagents && (this.holds.has(id) || this.children.has(id))); }
+  // agent of one it holds that is shown (one on another machine is shown once its folder is known).
+  private streams(id: string) { return this.live.has(id) || (this.subagents && (this.holds.has(id) || this.shown(id))); }
+  private shown(id: string) {
+    const c = this.children.get(id);
+    return !!c && !(c.agent.machine && c.workspace === undefined);
+  }
 
   constructor(private daemon: DaemonApi, private out: Send, private log: (m: string) => void = () => {}) {}
 
@@ -378,22 +392,40 @@ export class AcpBridge {
 
   // The agents under a session this editor holds, each after the one that
   // started it, announced as they are now (after a load's answer: what came
-  // before it is history), their frames from now on.
+  // before it is history), their frames from now on. What waits on the owner
+  // in the session and its agents was put up before the editor held them: a
+  // child that waits on a card is announced as needing action, and the editor
+  // is asked each card and question it was not asked yet.
   private async announceTree(root: string) {
     if (!this.subagents) return;
-    const r = await this.daemon.get(`/api/sessions/${root}/agents`).catch(() => null);
+    const [r, open] = await Promise.all([
+      this.daemon.get(`/api/sessions/${root}/agents`).catch(() => null),
+      this.daemon.get(`/api/cli/state/${root}`).catch(() => null),
+    ]);
+    const approvals = ((open?.approvals ?? []) as Json[]).filter((a) => a?.id && a.session_id && a.call_id);
+    const questions = ((open?.questions ?? []) as Json[]).filter((q) => q?.session_id && q.call_id);
+    const waiting = (sid: string) => [...approvals.filter((a) => a.session_id === sid).map((a) => String(a.id)), ...questions.filter((q) => q.session_id === sid).map((q) => `q:${q.call_id}`)];
     // A load or resume asks again: each child's label and state are sent again, current.
     for (const id of this.descendants(root)) this.children.get(id)!.sent = undefined;
     for (const row of (r?.tree ?? []) as AgentSeen[]) {
       if (!this.holds.has(root)) return; // closed meanwhile
-      this.onAgent(row, null);
+      this.onAgent(row, null, waiting(row.session_id));
+    }
+    for (const a of approvals) {
+      if (!this.streams(a.session_id) || this.asked.has(a.id)) continue;
+      this.asked.add(a.id);
+      void this.ask(a);
+    }
+    if (this.caps?.elicitation?.form) for (const q of questions) {
+      if (this.streams(q.session_id) && ASK_TOOLS.has(q.tool)) void this.elicit(q.session_id, { id: q.call_id, name: q.tool, input: q.input });
     }
   }
 
   // An agent's record as the daemon tells it. One under a session this editor
   // holds is announced on its parent before anything of its own is sent, and
   // its session's frames come from its task on (`cursor` undefined) or from now.
-  private onAgent(a: AgentSeen, cursor?: number | null) {
+  // `waiting`: what of its own waits on the owner now (a load or resume read it).
+  private onAgent(a: AgentSeen, cursor?: number | null, waiting?: string[]) {
     if (!this.subagents || !a?.session_id || !a.parent_id) return;
     let c = this.children.get(a.session_id);
     if (!c) {
@@ -402,15 +434,38 @@ export class AcpBridge {
       // is a new child session; the one it took over from ends there.
       const was = this.agentSessions.get(a.id);
       if (was && was !== a.session_id) this.lostContext(was);
-      c = { parent: a.parent_id, agent: a, asks: new Set(), description: a.call_id ? this.spawnTasks.get(a.call_id) : undefined };
+      c = { parent: a.parent_id, agent: a, asks: new Set(waiting), description: a.call_id ? this.spawnTasks.get(a.call_id) : undefined };
       this.children.set(a.session_id, c);
       this.agentSessions.set(a.id, a.session_id);
-      this.announce(c);
-      this.daemon.watch?.({ [a.session_id]: cursor === undefined ? Math.max(0, a.first_seq ?? 0) : cursor });
+      const from = cursor === undefined ? Math.max(0, a.first_seq ?? 0) : cursor;
+      c.from = from;
+      if (a.machine) void this.placeRemote(c);
+      else this.show(c, from);
       return;
     }
     c.agent = a;
+    if (waiting) c.asks = new Set(waiting);
+    if (a.machine && c.workspace === undefined) void this.placeRemote(c);
+    else this.announce(c);
+  }
+
+  // A child is announced, then its frames come.
+  private show(c: Child, from: number | null) {
     this.announce(c);
+    this.daemon.watch?.({ [c.agent.session_id]: from });
+  }
+
+  // An agent on another machine works in its session's folder there: read before it is shown.
+  // A read that fails leaves it unshown; its next record tries again.
+  private async placeRemote(c: Child) {
+    if (c.placing) return;
+    c.placing = true;
+    const r = await this.daemon.get(`/api/sessions/${c.agent.session_id}?events=0`).catch(() => null);
+    c.placing = false;
+    if (this.children.get(c.agent.session_id) !== c) return; // let go of meanwhile
+    if (typeof r?.session?.workspace !== "string" || !r.session.workspace) return;
+    c.workspace = r.session.workspace;
+    this.show(c, c.from ?? null);
   }
 
   private lostContext(old: string) {
@@ -423,8 +478,8 @@ export class AcpBridge {
 
   // The parent's update for a child, sent when what it says changed.
   private announce(c: Child) {
-    if (c.sent === "lost") return;
-    const u = subagentUpdate(c.agent, { description: c.description, asking: c.asks.size > 0 });
+    if (c.sent === "lost" || (c.agent.machine && c.workspace === undefined)) return;
+    const u = subagentUpdate(c.agent, { description: c.description, asking: c.asks.size > 0, dirs: childDirs(c.agent, { workspace: c.workspace, dirOf: folderOf }) });
     const key = JSON.stringify(u);
     if (key === c.sent) return;
     c.sent = key;
@@ -632,13 +687,26 @@ export class AcpBridge {
         const r = await this.daemon.get(`/api/sessions/${p.sessionId}`).catch(() => null);
         if (!r?.session) throw Object.assign(new Error(`no session ${p.sessionId}`), { code: -32002 });
         await this.ensureFrames();
-        await this.hold(p.sessionId, lastSeq(r));
-        const perm = await this.daemon.get(`/api/sessions/${p.sessionId}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
-        const setup = await this.sessionSetup(r.session, perm.perm?.mode ?? "ask", true);
-        await this.mcpServers(p.sessionId, p.mcpServers);
-        this.replay(p.sessionId, lineage(r.events ?? [], r.session.head ?? null), !!r.running);
-        setTimeout(() => { void this.commands(p.sessionId); void this.announceTree(p.sessionId); }, 0); // after the answer
-        return setup;
+        // What the session does after the history read waits until the history is replayed
+        // (a running session's events and its streaming reply would go first otherwise).
+        const id = String(p.sessionId);
+        const first = !this.loading.has(id);
+        if (first) this.loading.set(id, []);
+        try {
+          await this.hold(id, lastSeq(r));
+          const perm = await this.daemon.get(`/api/sessions/${id}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
+          const setup = await this.sessionSetup(r.session, perm.perm?.mode ?? "ask", true);
+          await this.mcpServers(id, p.mcpServers);
+          this.replay(id, lineage(r.events ?? [], r.session.head ?? null), !!r.running);
+          setTimeout(() => { void this.commands(id); void this.announceTree(id); }, 0); // after the answer
+          return setup;
+        } finally {
+          if (first) {
+            const held = this.loading.get(id) ?? [];
+            this.loading.delete(id);
+            for (const f of held) this.onFrame(f);
+          }
+        }
       }
       case "session/resume": {
         // As load, without the history replay.
@@ -654,6 +722,8 @@ export class AcpBridge {
       }
       case "session/close": {
         // Ends this editor's hold on the session: a running turn is stopped; the session stays in Keel.
+        // Its agents go on: the session and its agents are the workbench's too, and close only ends what
+        // this editor sees of them (the spec asks a close to stop a parent's children; Keel does not here).
         const id = String(p.sessionId);
         if (this.live.has(id)) await this.stop(id).catch(() => {});
         await this.mcpServers(id, []);
@@ -802,7 +872,12 @@ export class AcpBridge {
       for (const b of e.data.blocks ?? []) {
         if (b.type !== "tool_use") continue;
         this.tools.set(b.id, b.name);
-        if (!replay && ASK_TOOLS.has(b.name) && this.caps?.elicitation?.form) void this.elicit(sessionId, b);
+        if (!replay && ASK_TOOLS.has(b.name)) {
+          // A child's question waits on the owner: it needs action until the call has its result.
+          const c = this.children.get(sessionId);
+          if (c && !c.asks.has(`q:${b.id}`)) { c.asks.add(`q:${b.id}`); this.announce(c); }
+          if (this.caps?.elicitation?.form) void this.elicit(sessionId, b);
+        }
         const plan = planOf(b.name, b.input);
         if (plan) this.notify(sessionId, { sessionUpdate: "plan", entries: plan });
         const r = replay?.results.get(b.id);
@@ -811,6 +886,8 @@ export class AcpBridge {
         if (replay && !r && !replay.running) this.notify(sessionId, { sessionUpdate: "tool_call_update", toolCallId: b.id, status, content: [{ type: "content", content: { type: "text", text: "No result was stored for this call: its turn ended first." } }] });
       }
     } else if (e.kind === "tool_result") {
+      const c = replay ? undefined : this.children.get(sessionId);
+      if (c && (e.data.results ?? []).some((r: Json) => c.asks.delete(`q:${r.tool_use_id}`))) this.announce(c);
       for (const r of e.data.results ?? []) {
         const detail = toolDetail(this.tools.get(r.tool_use_id) ?? "", {});
         this.notify(sessionId, { sessionUpdate: "tool_call_update", toolCallId: r.tool_use_id, status: r.is_error ? "failed" : "completed", content: [...(detail.content ?? []), ...resultContent(r.content)] });
@@ -836,7 +913,17 @@ export class AcpBridge {
     }
   }
 
+  // The session a frame is about (an agent's record: the session that started it).
+  private static about(f: Json): string | undefined {
+    if (f.t === "event") return f.event?.session_id;
+    if (f.t === "session") return f.session?.id;
+    if (f.t === "feature" && f.name === "automation" && f.data?.kind === "agent") return f.data.data?.parent_id;
+    return f.session_id ?? f.data?.session_id;
+  }
+
   private onFrame(f: Json) {
+    const about = this.loading.size ? AcpBridge.about(f) : undefined;
+    if (about && this.loading.has(about)) return void this.loading.get(about)!.push(f);
     if (f.t === "delta" && this.streams(f.session_id)) {
       this.delta(f.session_id, f.kind, String(f.text ?? ""));
     } else if (f.t === "status" && f.status?.kind === "retry" && this.streams(f.session_id)) {
@@ -909,7 +996,8 @@ export class AcpBridge {
   // a declined or cancelled form leaves the card for the workbench.
   private async elicit(sessionId: string, b: Json) {
     const form = questionForm(b.name, b.input);
-    if (!form) return;
+    if (!form || this.elicited.has(`${sessionId} ${b.id}`)) return;
+    this.elicited.add(`${sessionId} ${b.id}`);
     const msg = await this.request("elicitation/create", { sessionId, toolCallId: b.id, mode: "form", message: form.message, requestedSchema: form.requestedSchema });
     const r = msg.result;
     if (r?.action !== "accept" || !r.content) return;
@@ -947,7 +1035,12 @@ export class AcpBridge {
           this.notify(a.session_id, { sessionUpdate: "tool_call_update", toolCallId: a.call_id, status: "pending" });
           this.notify(a.session_id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not take that answer: ${(e as Error).message} The request still waits: answer it in the workbench.\n\n` } });
         }
-        // (Any other refusal: it was answered in the workbench first.)
+        // Any other refusal: it was answered in the workbench first (or before the editor
+        // held the session, and the card was read as open): a child does not wait on it.
+        else {
+          const c = this.children.get(a.session_id);
+          if (c?.asks.delete(a.id)) this.announce(c);
+        }
       });
   }
 }

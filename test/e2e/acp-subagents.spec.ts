@@ -63,7 +63,22 @@ test("acp subagents", async ({ page, request, baseURL }) => {
     await expect.poll(() => told(b!.session_id).at(-1)?.state).toEqual({ state: "requires_action" });
     // A child is watched, not driven: a prompt to it is refused.
     await expect(ed.call("session/prompt", { sessionId: b!.session_id, prompt: [{ type: "text", text: "go" }] })).rejects.toMatchObject({ code: -32602 });
+    // Another editor that loads the session now: the waiting agent is announced as needing action and
+    // the card it put up before is asked there too (one answer counts, from either).
+    const late = new Editor(baseURL!);
+    late.onRequest = () => undefined; // its requests stay open
+    await late.call("initialize", { protocolVersion: 1, clientCapabilities: { subagents: {} } });
+    await late.call("session/load", { sessionId: id, cwd: ws, mcpServers: [] });
+    const lateTold = (child: string) => late.updates.filter((u) => u.sessionId === id && u.update.sessionUpdate === "subagent_update" && u.update.sessionId === child).map((u) => u.update);
+    await expect.poll(() => lateTold(b!.session_id).at(-1)?.state, { timeout: 30_000 }).toEqual({ state: "requires_action" });
+    await expect.poll(() => late.requests.filter((m) => m.params.sessionId === b!.session_id).length, { timeout: 30_000 }).toBe(1);
+    const lateAsk = late.requests.find((m) => m.params.sessionId === b!.session_id)!;
+    expect(lateAsk.params.toolCall.title).toContain("touch second.txt");
+    expect(lateTold(a!.session_id).at(-1)?.state).toEqual({ state: "idle", stopReason: "end_turn" });
     ed.notify("session/cancel", { sessionId: b!.session_id });
+    await expect.poll(() => late.notices.some((m) => m.method === "$/cancel_request" && m.params.requestId === lateAsk.id), { timeout: 30_000 }).toBe(true);
+    late.answer(lateAsk.id, { outcome: { outcome: "cancelled" } });
+    late.close();
     await expect.poll(() => told(b!.session_id).at(-1)?.state, { timeout: 30_000 }).toEqual({ state: "idle", stopReason: "cancelled" });
     // Stopped as the owner's Stop of that agent; its card is withdrawn from the editor, and nothing ran.
     expect((await agents()).find((x) => x.id === b!.id)).toMatchObject({ status: "stopped", stopped_by: "owner" });

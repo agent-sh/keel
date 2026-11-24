@@ -43,7 +43,7 @@ function fixture(sessions: any[], events: Record<string, any[]>) {
   const d = {
     models: [{ id: "p:alpha", name: "Alpha", provider: "p" }],
     post: undefined as undefined | ((method: string, path: string) => any),
-    get: async (path: string) => {
+    get: async (path: string): Promise<any> => {
       calls.push(`GET ${path}`);
       if (path === "/api/models") return { models: d.models, default: "p:alpha" };
       if (path === "/api/sessions?agents=all") return { sessions };
@@ -445,4 +445,89 @@ test("a reply sent again after a failed request is not repeated, and the retry i
     const other = await turn([delta("This half reply "), retry, delta("The whole reply."), reply("The whole reply."), end]);
     expect(other.text).toBe(`This half reply ${line}\n\n[Keel: the model request failed and was sent again; the reply it gave is:]\n\nThe whole reply.`);
   }
+});
+
+// What waits on the owner before the editor holds the session: a child that waits on a card or a question is
+// announced as needing action, and the editor is asked them, once, on a load and on a resume.
+test("a loaded or resumed session's agents that wait on a card or a question are announced so and asked", async () => {
+  const s = { id: "p", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  const recs = [
+    { id: "a1", parent_id: "p", session_id: "c1", title: "Asks a card", status: "running", first_seq: 0 },
+    { id: "a2", parent_id: "p", session_id: "c2", title: "Asks a question", status: "running", first_seq: 0 },
+    { id: "a3", parent_id: "p", session_id: "c3", title: "Works", status: "running", first_seq: 0 },
+  ];
+  const card = { id: "ap1", session_id: "c1", call_id: "t1", tool: "Bash", kind: "shell", state: "pending", summary: "make", input: { command: "make" }, risk: "low", suggest: [] };
+  const asked = { session_id: "c2", call_id: "q1", tool: "AskUserQuestion", input: { questions: [{ question: "Which one?", header: "Pick", options: [{ label: "A" }, { label: "B" }], multiSelect: false }] } };
+  for (const method of ["session/load", "session/resume"]) {
+    const f = fixture([s], { p: [] });
+    Object.assign(f.d, { watch: () => {}, unwatch: () => {} });
+    const get = f.d.get;
+    f.d.get = async (path: string) => {
+      if (path === "/api/sessions/p/agents") return { tree: recs };
+      if (path === "/api/cli/state/p") return { approvals: [card], questions: [asked] };
+      if (path.includes("/approvals/")) return {};
+      return get(path);
+    };
+    await call(f.bridge, f.out, "initialize", { protocolVersion: 1, clientCapabilities: { subagents: {}, elicitation: { form: {} } } });
+    await call(f.bridge, f.out, method, { sessionId: "p", cwd: "/w", mcpServers: [] });
+    await Bun.sleep(10);
+    const state = (sid: string) => f.updates("p").findLast((u: any) => u.sessionUpdate === "subagent_update" && u.sessionId === sid)?.state;
+    expect([state("c1"), state("c2"), state("c3")]).toEqual([{ state: "requires_action" }, { state: "requires_action" }, { state: "running" }]);
+    const perms = f.out.filter((m) => m.method === "session/request_permission");
+    expect(perms.map((m) => [m.params.sessionId, m.params.toolCall.toolCallId])).toEqual([["c1", "t1"]]);
+    const forms = f.out.filter((m) => m.method === "elicitation/create");
+    expect(forms.map((m) => [m.params.sessionId, m.params.toolCallId, m.params.message])).toEqual([["c2", "q1", "Which one?"]]);
+    // The question's call ends with its result: the child works again.
+    f.frame({ t: "event", event: { session_id: "c2", kind: "tool_result", data: { results: [{ tool_use_id: "q1", content: "A" }] } } });
+    expect(state("c2")).toEqual({ state: "running" });
+    // A second resume asks nothing again.
+    await call(f.bridge, f.out, "session/resume", { sessionId: "p", cwd: "/w", mcpServers: [] });
+    await Bun.sleep(10);
+    expect(f.out.filter((m) => m.method === "session/request_permission" || m.method === "elicitation/create").length).toBe(2);
+  }
+});
+
+// A load of a running session: what it does after the history read reaches the editor after the replay.
+test("a running session's live frames during a load come after its replayed history", async () => {
+  const q = ev("user", { text: "Q" }, null, "lq");
+  const a = ev("assistant", { blocks: [{ type: "text", text: "Earlier" }] }, "lq", "la");
+  const s = { id: "s", workspace: "/w", model: "p:alpha", head: "la", updated: 1 };
+  const f = fixture([s], { s: [q, a] });
+  Object.assign(f.d, { watch: () => {}, unwatch: () => {} });
+  const get = f.d.get;
+  f.d.get = async (path: string) => {
+    // The daemon streams while the bridge still reads the session's setup.
+    if (path.endsWith("/permissions")) {
+      f.frame({ t: "event", event: { session_id: "s", seq: 100, kind: "assistant", data: { blocks: [{ type: "text", text: "Live" }] } } });
+      f.frame({ t: "delta", session_id: "s", index: 0, kind: "text", text: "Stream" });
+    }
+    return get(path);
+  };
+  await call(f.bridge, f.out, "initialize", { protocolVersion: 1, clientCapabilities: { subagents: {} } });
+  await call(f.bridge, f.out, "session/load", { sessionId: "s", cwd: "/w", mcpServers: [] });
+  const said = f.updates("s").filter((u: any) => u.sessionUpdate === "agent_message_chunk").map((u: any) => u.content.text);
+  expect(said).toEqual(["Earlier", "Live", "Stream"]);
+});
+
+// An agent on another machine works in its session's folder there, and is shown only once that is known.
+test("an agent on another machine is announced with its folder there", async () => {
+  const s = { id: "p", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  const rec = { id: "a1", parent_id: "p", session_id: "c1", title: "Far", status: "running", first_seq: 0, machine: "m1" };
+  const f = fixture([s], {});
+  const watched: any[] = [];
+  Object.assign(f.d, { watch: (c: any) => watched.push(c), unwatch: () => {} });
+  f.d.post = (_m, path) => (path === "/api/sessions" ? { session: s } : undefined);
+  const get = f.d.get;
+  let read!: () => void;
+  const readable = new Promise<void>((r) => (read = r));
+  f.d.get = async (path: string) => (path === "/api/sessions/c1?events=0" ? (await readable, { session: { id: "c1", workspace: "/srv/far" }, seq: 0 }) : get(path));
+  await call(f.bridge, f.out, "initialize", { protocolVersion: 1, clientCapabilities: { subagents: {} } });
+  await call(f.bridge, f.out, "session/new", { cwd: "/w", mcpServers: [] });
+  f.frame({ t: "feature", name: "automation", data: { kind: "agent", data: rec } });
+  await Bun.sleep(5);
+  expect(f.updates("p").some((u: any) => u.sessionUpdate === "subagent_update")).toBe(false);
+  read();
+  await Bun.sleep(5);
+  expect(f.updates("p").find((u: any) => u.sessionUpdate === "subagent_update")).toMatchObject({ sessionId: "c1", cwd: "/srv/far", additionalDirectories: [] });
+  expect(watched.at(-1)).toEqual({ c1: 0 });
 });
