@@ -155,7 +155,7 @@ test("PR Steward fixes a failed check, ends when it is green, reads only trusted
     expect(alerts.filter((a: any) => a.title === `PR Steward stopped on ${REPO}#7`)).toHaveLength(1);
     await page.keyboard.press("Escape");
     await page.goto(`${d.url}/?inbox=1`);
-    await expect(page.getByTestId("inbox-list")).toContainText(`PR Steward stopped on ${REPO}#7`);
+    await expect(page.getByTestId("inbox-list")).toContainText("2 fixes did not clear it: build still failing");
     await shoot(page, "pr-steward-06-inbox");
 
     // Through all of it: nothing was merged or approved, and every push went to the pull request's branch.
