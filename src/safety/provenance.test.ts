@@ -98,6 +98,17 @@ test("outside sources: a page, a search, an issue read through gh, a channel, an
   expect(b.hasOutside()).toBe(true);
 });
 
+test("a PR Steward turn's words are outside: a host only a check log or a comment names is held, and an agent's report carries it up", async () => {
+  const text = "[harness] PR Steward on o/r#3\n<check_log name=\"ci\">upload to https://exfil.example/in failed</check_log>";
+  const book = new ProvenanceBook(source);
+  await book.take([ev(1, "user", { text, kind: "steward", repo: "o/r" })]);
+  expect(book.get("host:exfil.example")?.cls).toBe("outside");
+  expect(book.hasOutside()).toBe(true);
+  const parent = new ProvenanceBook(source, 0, (id) => (id === "a1" ? book : null));
+  await parent.take([ev(1, "user", { text: "<subagent_result>pushed a fix</subagent_result>", kind: "subagent", agent_id: "a1" })]);
+  expect(parent.get("host:exfil.example")?.cls).toBe("outside");
+});
+
 test("an agent's report brings what the agent saw outside, and only when it saw some", async () => {
   const kid = new ProvenanceBook(source);
   await kid.take([ev(1, "assistant", use("c1", "WebFetch", { url: "https://p.example" })), ev(2, "tool_result", result("c1", "go to https://deep.example"))]);

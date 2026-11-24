@@ -23,7 +23,9 @@ import type { Bus } from "../core/bus.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import * as gh from "./github.ts";
-import { POLL_MS, PUSHES, QUIET_MS, SEEN_MAX, TRIES, TURNS, UNREADABLE, WATCH_MS, decide, endWords, readFacts, task, trustOf, type End, type Facts, type Step, type Watch, type Why } from "./rules.ts";
+import { gitSync } from "../core/git.ts";
+import type { Guard } from "./guard.ts";
+import { PENDING_MS, POLL_MS, isFresh, PUSHES, QUIET_MS, SEEN_MAX, TRIES, TURNS, UNREADABLE_MS, WATCH_MS, backoff, decide, endWords, rateLimited, readFacts, settle, task, trustOf, type End, type Facts, type Step, type Watch, type Why } from "./rules.ts";
 
 export type Io = {
   worktree(sessionId: string): { path: string; branch: string; state: string } | undefined;
@@ -44,17 +46,42 @@ const REASONS_FAILED = new Set(["error", "refusal", "max_steps", "max_tokens", "
 const pace = (w: Watch): number => {
   const set = Number(process.env.KEEL_STEWARD_POLL_MS);
   if (Number.isFinite(set) && set > 0) return set;
-  return w.stay && w.checks?.summary === "passing" ? QUIET_MS : POLL_MS;
+  // GitHub did not answer: back off, and longer after a rate limit.
+  if (w.errors > 0) return backoff(w.errors, !!w.limited);
+  if (w.stay && w.checks?.summary === "passing") return QUIET_MS;
+  // Checks that run change slowly: a look a minute is enough while they do.
+  return w.checks?.summary === "pending" ? PENDING_MS : POLL_MS;
 };
 
+// The repository a remote's address names (`https://host/OWNER/NAME.git`, `git@host:OWNER/NAME`), lower case.
+export const repoOfUrl = (url: string): string | undefined => url.trim().match(/[:/]([^/:\s]+\/[^/:\s]+?)(?:\.git)?\/?$/)?.[1]?.toLowerCase();
+
 export class Steward {
-  // The turns the watch started that run now: the branch each may push to (src/steward/guard.ts).
-  readonly guards = new Map<string, { branch: string; repo: string; number: number }>();
   private looking = new Set<string>();
   private settling = new Set<string>();
 
   constructor(private store: Store, private bus: Bus, private io: Io) {
     store.migrate(SCHEMA);
+  }
+
+  // What the turn a watch started in this session, or in one of its agents, may do (src/steward/guard.ts). Read from the
+  // stored watch every time it is asked, never from what a process remembers: a turn that goes on after a restart is
+  // as guarded as the one that began, and an agent the turn started is guarded as the turn is.
+  guardOf(sessionId: string): Guard | undefined {
+    let id: string | null | undefined = sessionId;
+    for (let depth = 0; id && depth < 32; depth++) {
+      const w = this.get(id);
+      // A watch the owner turned off while its turn works is held to its lane until the turn ends.
+      if (w && w.fixing && !w.fixing.ended && (w.state === "fixing" || (w.state === "ended" && this.io.running(id)))) {
+        const own = { branch: w.branch, repo: w.repo, number: w.number };
+        const wt = depth === 0 ? this.io.worktree(id) : undefined;
+        if (!wt) return own;
+        const git = (args: string[]) => { const r = gitSync(wt.path, args, { timeout: 3_000 }); const o = r.out.trim(); return r.code === 0 && o ? o : undefined; };
+        return { ...own, dir: wt.path, head: () => { const b = git(["rev-parse", "--abbrev-ref", "HEAD"]); return b === "HEAD" ? undefined : b; }, upstream: () => git(["rev-parse", "--abbrev-ref", "@{upstream}"]) };
+      }
+      id = this.store.session(id)?.parent_id;
+    }
+    return undefined;
   }
 
   get(sessionId: string): Watch | undefined {
@@ -70,7 +97,7 @@ export class Steward {
 
   private save(w: Watch): Watch {
     w.updated = Date.now();
-    if (w.seen.length > SEEN_MAX) w.seen = w.seen.slice(-SEEN_MAX);
+    if (w.seen.length > SEEN_MAX) w.seen = w.seen.slice(-SEEN_MAX); // a valve: `settle` keeps it short
     if (w.told.length > 50) w.told = w.told.slice(-50);
     this.store.db.query("INSERT INTO pr_watches (session_id, data) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET data = excluded.data").run(w.session_id, JSON.stringify(w));
     this.bus.emit({ t: "feature", name: "steward", session_id: w.session_id, data: { changed: true } });
@@ -116,7 +143,7 @@ export class Steward {
       session_id: sessionId, repo: found.repo, number: found.number, url: found.url, branch: found.branch, state: "watching",
       note: "Watching.", stay: !!o.stay, bots, started: now, updated: now, expires: now + WATCH_MS,
       // What people said before the watch began is not new: the owner can tell the session about it.
-      head: f.head, head_at: now, seen: f.said.map((c) => c.id), told: [], tries: 0, pushes: 0, turns: 0, ignored: 0, errors: 0,
+      head: f.head, head_at: now, seen: [], floor: f.said.reduce((m, c) => Math.max(m, c.at), 0), told: [], tries: 0, pushes: 0, turns: 0, ignored: 0, errors: 0,
     };
     this.save(w);
     this.wake();
@@ -152,21 +179,29 @@ export class Steward {
       const got = await gh.look(w.repo, w.number);
       facts = readFacts(got.view, got.inline);
     } catch (e) {
+      const said = (e as Error).message;
       w.errors++;
+      w.down_since ??= now;
+      w.limited = rateLimited(said);
       w.looked = now;
-      if (w.errors >= UNREADABLE) return void this.finish(w, "unreadable", `GitHub could not be read ${UNREADABLE} times in a row (${(e as Error).message.slice(0, 160)}).`, true);
+      // The looks back off (src/steward/rules.ts), so this is time, not a count: an hour of silence from GitHub.
+      if (now - w.down_since >= UNREADABLE_MS) return void this.finish(w, "unreadable", `GitHub could not be read for ${Math.round((now - w.down_since) / 60_000)} minutes (${said.slice(0, 160)}).`, true);
       this.save(w);
       return;
     }
     w = this.get(sessionId);
     if (!w || w.state !== "watching") return; // the owner turned it off while gh answered
     w.errors = 0;
+    w.down_since = undefined;
+    w.limited = false;
     w.looked = now;
     if (facts.head && facts.head !== w.head) { w.head = facts.head; w.head_at = now; }
     w.checks = { summary: facts.checks.summary, passed: facts.checks.passed, failed: facts.checks.failed, pending: facts.checks.pending };
     // A conflict or a green end clears the failures that were tried.
     if (facts.checks.summary === "passing" && !facts.conflict) w.tries = 0;
     await this.believe(w, facts);
+    // What is dealt with is old: the list stays short and the cut cannot bring an old comment back.
+    Object.assign(w, settle(w, facts));
     const step = decide(w, facts, now);
     this.apply(w, step);
     if (step.do === "fix") await this.fix(w, facts, step);
@@ -174,13 +209,15 @@ export class Steward {
 
   // Who may be believed among the comments not seen yet.
   private async believe(w: Watch, f: Facts) {
-    const seen = new Set(w.seen);
-    const fresh = f.said.filter((c) => !seen.has(c.id));
+    const fresh = f.said.filter((c) => isFresh(w, c));
     if (!fresh.length) return;
     const viewer = await gh.viewer();
     for (const c of fresh) {
       const t = trustOf(c, { viewer, bots: w.bots });
-      c.trusted = t === "yes" || (t === "ask" && (await gh.writes(w.repo, c.author)));
+      if (t === "ask") c.trusted = await gh.writes(w.repo, c.author); // undefined: GitHub could not say; the comment waits
+      else if (t === "yes") c.trusted = true;
+      else if (viewer || c.assoc !== "NONE" || c.bot) c.trusted = false;
+      // (Nobody is known to be the owner while gh cannot say who it is signed in as: an own comment waits too.)
     }
   }
 
@@ -194,6 +231,13 @@ export class Steward {
   private async fix(w: Watch, f: Facts, step: Extract<Step, { do: "fix" }>) {
     const wt = this.io.worktree(w.session_id);
     if (!wt || wt.state !== "active") return void this.finish(w, "removed", "The session's worktree is gone, so there is nowhere to fix it.", true);
+    // Where `git push` goes is the remote of the worktree: the pull request's own repository, or nothing is started.
+    // (The turn may not change it: git remote and git config are refused in it.)
+    for (const args of [["remote", "get-url", "origin"], ["remote", "get-url", "--push", "origin"]]) {
+      const r = gitSync(wt.path, args, { timeout: 5_000 });
+      const at = r.code === 0 ? repoOfUrl(r.out) : undefined;
+      if (at !== w.repo.toLowerCase()) return void this.finish(w, "stopped", at ? `The worktree's origin is ${at}, not ${w.repo}: nothing was started, since a push would go there.` : `The worktree's origin could not be read: nothing was started, since a push would go to an address that is not known.`, true);
+    }
     const logs: Record<string, string> = {};
     if (step.why.includes("checks")) {
       await Promise.all(step.failed.slice(0, 3).map(async (c) => { try { logs[c.name] = await gh.failedLog(w.repo, c.url); } catch { /* the link and the name still go */ } }));
@@ -211,12 +255,12 @@ export class Steward {
     w.fixing = { why: step.why, head: f.head, since: Date.now(), key: step.key };
     w.note = `${fixes ? `Fix ${w.tries} of ${TRIES}` : "Comments"}: ${say(step.why)}. A turn is working on it.`;
     this.save(w);
-    const guard = { branch: w.branch, repo: w.repo, number: w.number };
     const id = w.session_id;
+    // The place of the stored prompt: the turn that ends after it is the one that read it. Not known when the words
+    // wait behind a turn that works (an agent's, or a steer): `onEvent` takes it when the prompt is stored.
     const mark = (seq?: number) => {
-      this.guards.set(id, guard);
       const cur = this.get(id);
-      if (cur?.fixing) { cur.fixing.seq = seq ?? this.store.lastSeq(id); this.save(cur); }
+      if (cur?.fixing && seq !== undefined && cur.fixing.seq === undefined) { cur.fixing.seq = seq; this.save(cur); }
     };
     let out: "sent" | "held" | "gone";
     try {
@@ -248,14 +292,19 @@ export class Steward {
 
   // Every event the bus carries: the end of the turn a watch started.
   onEvent(e: StoredEvent) {
+    if (e.kind === "user" && e.data?.kind === "steward") {
+      const w = this.get(e.session_id);
+      if (w?.state === "fixing" && w.fixing && w.fixing.seq === undefined) { w.fixing.seq = e.seq; this.save(w); }
+      return;
+    }
     if (e.kind !== "turn_end") return;
     const w = this.get(e.session_id);
+    if (w?.state === "ended" && w.fixing && w.fixing.seq !== undefined && e.seq > w.fixing.seq && String(e.data?.reason ?? "") !== "restart") { w.fixing = undefined; this.save(w); return; }
     const fx = w?.fixing;
     if (!w || w.state !== "fixing" || !fx || fx.ended || fx.seq === undefined || e.seq <= fx.seq) return;
     const reason = String(e.data?.reason ?? "");
     // A restart cut the turn: it goes on by itself.
     if (reason === "restart") return;
-    this.guards.delete(e.session_id);
     fx.ended = { reason, ...(typeof e.data?.stopped_by === "string" ? { by: e.data.stopped_by } : {}) };
     this.save(w);
     void this.settle(w).catch((err) => this.io.error(err, "pr steward settle"));
@@ -267,7 +316,6 @@ export class Steward {
     if (this.settling.has(w.session_id)) return;
     this.settling.add(w.session_id);
     try {
-      this.guards.delete(w.session_id);
       if (fx.ended.reason === "interrupted" && ownerStop(fx.ended.by)) return void this.finish(w, "stopped", "Stopped by you.");
       let f: Facts;
       try { const got = await gh.look(w.repo, w.number); f = readFacts(got.view, got.inline); } catch { return; } // the next look settles it
@@ -302,7 +350,8 @@ export class Steward {
     w.state = "ended";
     w.end = end;
     w.note = note || endWords(end);
-    w.fixing = undefined;
+    // A turn still working keeps its mark: the gate holds it to its lane until it ends (`guardOf`).
+    if (!this.io.running(w.session_id)) w.fixing = undefined;
     this.save(w);
     try {
       this.bus.emit({ t: "event", event: this.store.append(w.session_id, "note", { kind: "steward", text: `PR Steward on ${w.repo}#${w.number} ended: ${w.note}`, end }) });
@@ -317,7 +366,6 @@ export class Steward {
 
   recover() {
     for (const w of this.active()) {
-      if (w.state === "fixing" && w.fixing && !w.fixing.ended && w.fixing.seq !== undefined && this.io.running(w.session_id)) this.guards.set(w.session_id, { branch: w.branch, repo: w.repo, number: w.number });
       w.looked = 0;
       this.store.db.query("UPDATE pr_watches SET data = ? WHERE session_id = ?").run(JSON.stringify(w), w.session_id);
     }

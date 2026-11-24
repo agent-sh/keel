@@ -1767,7 +1767,7 @@ export class Gate {
     // A turn PR Steward started merges, approves and pushes nowhere but its own branch, in every mode (src/steward/guard.ts).
     const stewarded = stewards.of?.(session.id);
     if (stewarded) {
-      const r = cls.kind === "shell" ? stewardCommand(cls.command, stewarded.branch) : stewardTool(name === "mcp_call" ? String(call.input?.tool ?? "") : name, stewarded.branch);
+      const r = cls.kind === "shell" ? stewardCommand(cls.command, stewarded) : stewardTool(name === "mcp_call" ? String(call.input?.tool ?? "") : name, stewarded);
       if (r) return (this.ruled(session, call, "pr steward"), { deny: r });
     }
     const mode = this.perm(session.id).mode;

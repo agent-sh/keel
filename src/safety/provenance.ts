@@ -892,6 +892,10 @@ export class ProvenanceBook {
         const text = String(d.text ?? "");
         if (ownerPrompt(d) && !text.startsWith("[harness]")) await this.noteAll(text, "owner", "the owner's message", e);
         else if (d.kind === "channel") await this.noteAll(text, "outside", `a channel event${d.source ? ` (${String(d.source).slice(0, 60)})` : ""}`, e);
+        // PR Steward's words carry what a check printed and what people wrote on the pull request: a stranger's text,
+        // whoever the harness wrapped it for (src/steward/rules.ts). Outside, as a channel event is. Its turn's report
+        // to a parent comes up as outside through the agent's own book (the subagent branch below).
+        else if (d.kind === "steward") await this.noteAll(text, "outside", `a PR Steward turn (GitHub text${d.repo ? ` of ${String(d.repo).slice(0, 80)}` : ""})`, e);
         else if (d.kind === "subagent") {
           const kid = typeof d.agent_id === "string" ? this.child(d.agent_id) : null;
           const outside = !!kid?.hasOutside();

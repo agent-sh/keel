@@ -19,7 +19,8 @@ test("PR Steward fixes a failed check, ends when it is green, reads only trusted
   test.setTimeout(300_000);
   const state = join(ROOT, `pr-steward-${Date.now()}`);
   const repo = join(sessionsFolder(state), "widgets");
-  const bare = join(state, "origin.git");
+  // The remote is named as the pull request's repository is (the watch starts nothing when origin is another repository).
+  const bare = join(state, `${REPO}.git`);
   const fake = join(state, "gh");
   mkdirSync(repo, { recursive: true });
   mkdirSync(fake, { recursive: true });

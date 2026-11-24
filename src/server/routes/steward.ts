@@ -48,13 +48,12 @@ export const stewardRoutes: RouteModule = (deps: Deps) => {
     pending: (id) => isPending(id, (m) => m.kind === "steward"),
     error: (e, at) => void errors.capture("server", e, { at }),
   });
-  stewards.of = (id) => st.guards.get(id);
+  stewards.of = (id) => st.guardOf(id);
   g.__keelStewardOff?.();
   g.__keelStewardOff = bus.on((f) => {
     try {
       if (f.t === "event") st.onEvent(f.event);
       else if (f.t === "session" && (f.deleted || f.session.archived)) {
-        st.guards.delete(f.session.id);
         if (!f.deleted) st.stop(f.session.id, "stopped", "The session was archived.");
       }
     } catch (e) { errors.capture("server", e, { at: "pr steward frame" }); }

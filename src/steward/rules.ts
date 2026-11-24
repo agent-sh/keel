@@ -32,13 +32,28 @@ export const TURNS = 10;
 export const WATCH_MS = 7 * 86_400_000;
 // A pull request that has no checks at all, and has not had any for this long, has none to wait for.
 export const NO_CHECKS_MS = 120_000;
-// The ids a watch remembers of comments it dealt with.
-export const SEEN_MAX = 400;
+// A safety valve on the ids a watch remembers of comments it dealt with: they are pruned by `settle` (a comment older
+// than the watch's floor is old whatever the list holds), so this is never reached by a pull request people use.
+export const SEEN_MAX = 2000;
 // The look comes this often while something runs or waits, and this often when the watch stays after green.
 export const POLL_MS = 30_000;
 export const QUIET_MS = 120_000;
-// Consecutive looks gh could not answer before the watch gives up.
-export const UNREADABLE = 20;
+// How long gh may go unanswered, looks backing off, before the watch gives up: GitHub's own bad hours (an incident, a
+// rate limit that resets on the hour) pass inside it, a revoked sign-in does not.
+export const UNREADABLE_MS = 3_600_000;
+// The longest wait between looks while gh does not answer, and the shortest one after a rate limit.
+export const BACKOFF_MAX = 600_000;
+export const LIMITED_MIN = 300_000;
+// The look comes this often while checks run: they change slower than a comment arrives.
+export const PENDING_MS = 60_000;
+
+// The wait until the next look after `errors` looks in a row that gh could not answer.
+export function backoff(errors: number, limited: boolean): number {
+  const wait = Math.min(POLL_MS * 2 ** Math.min(errors, 6), BACKOFF_MAX);
+  return limited ? Math.max(wait, LIMITED_MIN) : wait;
+}
+// Whether what gh said is GitHub's refusal to answer so often (HTTP 403 or 429, a rate limit).
+export const rateLimited = (err: string) => /HTTP (403|429)\b|rate limit|abuse detection|secondary rate/i.test(err);
 
 export type End = "green" | "merged" | "closed" | "stopped" | "capped" | "expired" | "unreadable" | "removed";
 export type Why = "checks" | "conflict" | "comments";
@@ -57,7 +72,8 @@ export type Said = {
   path?: string;
   line?: number;
   state?: string;
-  // Set by the watch once trust is settled (src/steward/watch.ts).
+  // Set by the watch once trust is settled (src/steward/watch.ts): false is known not to be trusted,
+  // undefined is not known yet (GitHub could not say whether the author may write): asked again at the next look.
   trusted?: boolean;
 };
 export type Facts = {
@@ -91,7 +107,10 @@ export type Watch = {
   // The head at the last look, and since when it has been the head.
   head?: string;
   head_at?: number;
+  // Comments dealt with that are newer than `floor`.
   seen: string[];
+  // Every comment at or before this time (GitHub's own clock) is old: it was there when the watch began, or it was dealt with.
+  floor?: number;
   // What the model was already given: a failed set of checks of a head, a conflict at a head.
   told: string[];
   tries: number;
@@ -101,8 +120,10 @@ export type Watch = {
   fixing?: { why: Why[]; head: string; since: number; key: string; seq?: number; ended?: { reason: string; by?: string } };
   // The last look: how the checks stood.
   checks?: { summary: string; passed: number; failed: number; pending: number };
-  // Looks in a row that gh could not answer.
+  // Looks in a row that gh could not answer, since when, and whether the last said it was a rate limit.
   errors: number;
+  down_since?: number;
+  limited?: boolean;
   looked?: number;
 };
 
@@ -118,7 +139,8 @@ export const botName = (s: string) => lower(s.trim()).replace(/^app\//, "").repl
 // Whether a comment's author is to be believed: yes, no, or only if GitHub says the person has write access.
 export function trustOf(c: Pick<Said, "author" | "bot" | "assoc">, ctx: { viewer?: string; bots: readonly string[] }): "yes" | "no" | "ask" {
   const who = botName(c.author);
-  if (ctx.bots.some((b) => botName(b) === who)) return "yes";
+  // A name is no proof: a person can take any login that is free, so a named bot counts only when GitHub says it is one.
+  if (c.bot && ctx.bots.some((b) => botName(b) === who)) return "yes";
   if (c.bot) return "no";
   if (ctx.viewer && lower(ctx.viewer) === lower(c.author)) return "yes";
   if (c.assoc === "OWNER") return "yes";
@@ -170,10 +192,24 @@ const ends: Record<End, string> = {
 export const endWords = (e: End) => ends[e];
 
 // What a look at the pull request means for a watch that is `watching`.
-export function decide(w: Watch, f: Facts, now: number): Step {
+export const isFresh = (w: Pick<Watch, "seen" | "floor">, c: Said, seen = new Set(w.seen)) => !seen.has(c.id) && c.at > (w.floor ?? 0);
+
+// What the watch has dealt with, after a look: every comment at or before the floor is old, so the ids of those are
+// let go, and the floor moves up to the newest comment, or to just before the oldest one not dealt with yet. A list
+// that is cut at a number would bring old comments back as new ones; this one cannot.
+export function settle(w: Pick<Watch, "seen" | "floor">, f: Pick<Facts, "said">): { seen: string[]; floor: number } {
   const seen = new Set(w.seen);
-  const fresh = f.said.filter((c) => !seen.has(c.id));
-  const ignore = fresh.filter((c) => !c.trusted).map((c) => c.id);
+  const open = f.said.filter((c) => isFresh(w, c, seen)).map((c) => c.at);
+  const top = f.said.reduce((m, c) => Math.max(m, c.at), w.floor ?? 0);
+  const floor = Math.max(w.floor ?? 0, open.length ? Math.min(...open) - 1 : top);
+  const at = new Map(f.said.map((c) => [c.id, c.at]));
+  return { floor, seen: w.seen.filter((id) => (at.get(id) ?? 0) > floor) };
+}
+
+export function decide(w: Watch, f: Facts, now: number): Step {
+  const fresh = f.said.filter((c) => isFresh(w, c));
+  // Unknown (trusted not set) is neither: it waits for the next look.
+  const ignore = fresh.filter((c) => c.trusted === false).map((c) => c.id);
   const end = (e: End, note: string, inbox = false): Step => ({ do: "end", end: e, note, inbox, ignore });
   if (f.state === "MERGED") return end("merged", "The pull request was merged.");
   if (f.state === "CLOSED") return end("closed", "The pull request was closed.");
@@ -191,7 +227,7 @@ export function decide(w: Watch, f: Facts, now: number): Step {
     const key = conflictKey(f.head);
     if (!w.told.includes(key)) { why.push("conflict"); keys.push(key); }
   }
-  const said = fresh.filter((c) => c.trusted);
+  const said = fresh.filter((c) => c.trusted === true);
   if (said.length) why.push("comments");
   if (!why.length) {
     const quiet = f.checks.summary === "passing" || (f.checks.summary === "none" && now - (w.head_at ?? w.started) >= NO_CHECKS_MS);
@@ -213,6 +249,8 @@ export function decide(w: Watch, f: Facts, now: number): Step {
 // ---- What the model is told ------------------------------------------------
 
 const inert = (t: string, tag: string) => t.replace(new RegExp(`<(\\s*/?\\s*${tag})`, "gi"), "&lt;$1");
+// One line: no break, no angle bracket, a bounded length.
+const line = (t: string, n: number) => t.replace(/[\r\n\u2028\u2029]+/g, " ").slice(0, n);
 const clip = (t: string, n: number) => (t.length <= n ? t : `${t.slice(0, n)}\n[${t.length - n} more characters left out]`);
 export const COMMENT_MAX = 2000;
 export const COMMENTS_MAX = 8;
@@ -222,8 +260,9 @@ export function task(w: Pick<Watch, "repo" | "number" | "branch">, f: Facts, s: 
   const head = `[harness] PR Steward on ${w.repo}#${w.number} (branch ${w.branch}).`;
   const parts: string[] = [];
   if (s.why.includes("checks")) {
-    const rows = s.failed.map((c) => `- ${c.name}${c.workflow ? ` (${c.workflow})` : ""}${c.url ? `: ${c.url}` : ""}`).join("\n");
-    const out = s.failed.filter((c) => logs[c.name]).map((c) => `<check_log name="${c.name.replace(/["<>\n]/g, " ").slice(0, 120)}">\n${inert(logs[c.name]!, "check_log")}\n</check_log>`).join("\n");
+    // A check's name, workflow and link are text an outsider can write (a workflow file in a fork's pull request): inert, like the logs.
+    const rows = `<failed_checks>\n${inert(s.failed.map((c) => `- ${line(c.name, 120)}${c.workflow ? ` (${line(c.workflow, 120)})` : ""}${c.url ? `: ${line(c.url, 300)}` : ""}`).join("\n"), "failed_checks")}\n</failed_checks>`;
+    const out = s.failed.filter((c) => logs[c.name]).map((c) => `<check_log name="${c.name.replace(/["<>\r\n]/g, " ").slice(0, 120)}">\n${inert(logs[c.name]!, "check_log")}\n</check_log>`).join("\n");
     parts.push(`Checks failed at ${f.head.slice(0, 8)}:\n${rows}${out ? `\n${out}` : "\n(The logs could not be read: open the links, or run the check here.)"}`);
   }
   if (s.why.includes("conflict")) parts.push(`The branch conflicts with ${base}. Merge ${base} into it (git fetch, then git merge origin/${base}), resolve the conflicts, run what the project runs, and commit the merge.`);
