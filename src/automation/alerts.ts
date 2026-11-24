@@ -80,6 +80,8 @@ export type AlertSettings = {
   routes: Record<AlertKind, string[]>;
   // finished alerts: never, only while the owner is not watching that session, or always
   completion: "never" | "background" | "always";
+  // Whether a desktop notification makes the system's sound. On unless the owner turned it off.
+  sound: boolean;
 };
 
 const channels = new Map<string, AlertChannel>();
@@ -159,6 +161,7 @@ export function sweep() {
 const defaults = (): AlertSettings => ({
   routes: Object.fromEntries(KINDS.map((k) => [k, ["desktop", "command", "push"]])) as AlertSettings["routes"],
   completion: "background",
+  sound: true,
 });
 
 export function settings(): AlertSettings {
@@ -166,7 +169,7 @@ export function settings(): AlertSettings {
   const d = defaults();
   if (!r) return d;
   const v = JSON.parse(r.value);
-  return { routes: { ...d.routes, ...v.routes }, completion: v.completion ?? d.completion };
+  return { routes: { ...d.routes, ...v.routes }, completion: v.completion ?? d.completion, sound: v.sound ?? d.sound };
 }
 
 // `routes` replaces the lists of the kinds it names; `route` turns one channel
@@ -175,6 +178,7 @@ export function settings(): AlertSettings {
 export function saveSettings(p: Partial<AlertSettings> & { route?: { kind: string; channel: string; on: boolean } }): AlertSettings {
   const cur = settings();
   if (p.completion && !["never", "background", "always"].includes(p.completion)) throw new Error("completion is never, background or always");
+  if (p.sound !== undefined && typeof p.sound !== "boolean") throw new Error("sound is true or false");
   const routes = { ...cur.routes };
   for (const [k, v] of Object.entries(p.routes ?? {})) {
     if (!KINDS.includes(k as AlertKind)) throw new Error(`unknown alert kind ${k}`);
@@ -188,7 +192,7 @@ export function saveSettings(p: Partial<AlertSettings> & { route?: { kind: strin
     const rest = (routes[k] ?? []).filter((c) => c !== ch);
     routes[k] = p.route.on ? [...rest, ch] : rest;
   }
-  const next = { routes, completion: p.completion ?? cur.completion };
+  const next = { routes, completion: p.completion ?? cur.completion, sound: p.sound ?? cur.sound };
   D().store.db.query("INSERT INTO alert_settings (id, value) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value").run(JSON.stringify(next));
   return next;
 }
@@ -1169,6 +1173,7 @@ registerChannel({
     const cost = costs(now) ? costLine(now, Date.now()) : "";
     const a = cost ? { ...given, body: `${given.body}\n${cost}` } : given;
     const key = a.session_id ?? "_";
+    const sound = settings().sound;
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
     // The desktop app's to show while one is attached: its click opens the
     // app's window. It is the app's once the app said the notification is on
@@ -1176,7 +1181,7 @@ registerChannel({
     // both: one this daemon showed for the session before the app came is
     // taken down first, and so is this daemon's copy when the app's word
     // comes late.
-    if (await handShell({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, kind: a.kind }, { late: () => void withdrawOwn(key).catch(() => {}) })) {
+    if (await handShell({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, sound, kind: a.kind }, { late: () => void withdrawOwn(key).catch(() => {}) })) {
       void withdrawOwn(key).catch(() => {});
       return;
     }
@@ -1191,13 +1196,13 @@ registerChannel({
       if (helper && await helper.ready && !helper.ended) {
         // The service may have shown this even if it never acknowledged.
         // No retry through gdbus after the request has left this daemon.
-        return helper.send({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, kind: a.kind });
+        return helper.send({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, sound, kind: a.kind });
       }
     }
     const p = Bun.spawn([
       "gdbus", ...gdbusArgs, "--method", "org.freedesktop.Notifications.Notify",
       "Keel", String(shown.get(key) ?? 0), "", gvariantString(a.title), gvariantString(a.body), "[]",
-      `{'suppress-sound': <true>, 'urgency': <byte ${urgency}>, 'desktop-entry': <'keel'>, 'category': <${gvariantString(`keel.${a.kind}`)}>}`,
+      `{'suppress-sound': <${!sound}>, 'urgency': <byte ${urgency}>, 'desktop-entry': <'keel'>, 'category': <${gvariantString(`keel.${a.kind}`)}>}`,
       "int32 -1",
     ], { stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);

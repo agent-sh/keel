@@ -42,7 +42,7 @@ const read = () => input.read_line_async(GLib.PRIORITY_DEFAULT, null, (stream, r
   try {
     if (req.alert) {
       const hints = {
-        "suppress-sound": new GLib.Variant("b", true),
+        "suppress-sound": new GLib.Variant("b", req.sound === false),
         "urgency": new GLib.Variant("y", req.urgency),
         "desktop-entry": new GLib.Variant("s", "keel"),
         "category": new GLib.Variant("s", "keel." + req.kind),
@@ -72,7 +72,7 @@ send({ ready: true });
 loop.run();
 `;
 
-type Request = { key: string; alert?: string; title?: string; body?: string; urgency?: number; kind?: string };
+type Request = { key: string; alert?: string; title?: string; body?: string; urgency?: number; sound?: boolean; kind?: string };
 
 export function desktopNotifications(gjs: string, activate: (alert: string, token?: string) => void) {
   const p = Bun.spawn([gjs, "-c", worker], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });

@@ -88,8 +88,12 @@ test("no control is under 24 px and icon buttons keep to the four heights", asyn
   // Which alert goes where is a grid of marks, not a wall of switches.
   await page.goto("/settings/alerts");
   await page.getByTestId("alert-routes").waitFor();
-  expect(await page.getByTestId("alert-routes").getByRole("checkbox").count()).toBeGreaterThan(20);
-  expect(await page.getByTestId("alert-routes").getByRole("switch").count()).toBe(0);
+  expect(await page.getByTestId("alert-groups").getByRole("checkbox").count()).toBe(12);
+  await page.getByTestId("alert-fine-toggle").click();
+  expect(await page.getByTestId("alert-routes").getByRole("checkbox").count()).toBeGreaterThan(50);
+  // (The one switch there is "Play a sound", outside the grid.)
+  expect(await page.getByTestId("alert-groups").getByRole("switch").count()).toBe(0);
+  expect(await page.getByTestId("alert-routes").getByRole("switch").count()).toBe(1);
   await shoot(page, "controls-alert-routes");
   // A switch's thumb keeps its color inside a side panel, where a card's surface is the page's paper.
   await page.goto(`/s/${session.id}`);

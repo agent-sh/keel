@@ -439,9 +439,9 @@ impl Shell {
                 self.needs.set(n);
                 self.show_tray();
             }
-            Event::Notify { key, alert, title, body, urgent, ack, stream } => {
+            Event::Notify { key, alert, title, body, urgent, silent, ack, stream } => {
                 if let Some(n) = self.notifier.borrow().as_ref() {
-                    n.show(APP_ID, &key, &alert, &title, &body, urgent, ack.map(|n| (n, stream)));
+                    n.show(APP_ID, &key, &alert, &title, &body, urgent, silent, ack.map(|n| (n, stream)));
                 }
                 self.note_done("notify", serde_json::json!({ "key": key, "alert": alert, "title": title }));
             }

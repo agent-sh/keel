@@ -167,6 +167,17 @@ export const auto = {
     const r = await api<{ settings: AlertSettings; channels: Channel[] }>("/api/alerts/settings", { method: "PUT", body: JSON.stringify({ route: { kind, channel, on } }) });
     set({ settings: r.settings, channels: r.channels });
   },
+  // One channel on or off for several kinds at once: one change, saved together.
+  async setRoutes(kinds: (keyof AlertSettings["routes"])[], channel: string, on: boolean) {
+    if (!state.settings) return;
+    const routes = Object.fromEntries(kinds.map((k) => {
+      const cur = (state.settings!.routes[k] ?? []).filter((c) => c !== channel);
+      return [k, on ? [...cur, channel] : cur];
+    }));
+    set({ settings: { ...state.settings, routes: { ...state.settings.routes, ...routes } } });
+    const r = await api<{ settings: AlertSettings; channels: Channel[] }>("/api/alerts/settings", { method: "PUT", body: JSON.stringify({ routes }) });
+    set({ settings: r.settings, channels: r.channels });
+  },
   snooze: (sessionId: string, body: { until_ms?: number; until_needed?: boolean }) =>
     api(`/api/sessions/${sessionId}/snooze`, { method: "PUT", body: JSON.stringify(body) }),
   unsnooze: (sessionId: string) => api(`/api/sessions/${sessionId}/snooze`, { method: "DELETE" }),

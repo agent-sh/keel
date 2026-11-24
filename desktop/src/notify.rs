@@ -40,9 +40,14 @@ pub struct Notifier {
     on_shown: Rc<dyn Fn((u64, String))>,
 }
 
-/// The hints of one notification: whose it is, and how urgent.
-pub fn hints(app_id: &str, urgent: bool) -> HashMap<String, glib::Variant> {
-    HashMap::from([("desktop-entry".to_string(), app_id.to_variant()), ("urgency".to_string(), (if urgent { 2u8 } else { 1u8 }).to_variant())])
+/// The hints of one notification: whose it is, how urgent, and whether it keeps quiet
+/// (the owner turned its sound off in Settings > Alerts).
+pub fn hints(app_id: &str, urgent: bool, silent: bool) -> HashMap<String, glib::Variant> {
+    let mut h = HashMap::from([("desktop-entry".to_string(), app_id.to_variant()), ("urgency".to_string(), (if urgent { 2u8 } else { 1u8 }).to_variant())]);
+    if silent {
+        h.insert("suppress-sound".to_string(), true.to_variant());
+    }
+    h
 }
 
 /// A body as text for a service that reads markup: what a session wrote stays words.
@@ -114,12 +119,12 @@ impl Notifier {
         Self { conn: conn.clone(), shown, on_shown: Rc::new(on_shown) }
     }
 
-    fn send(&self, app_id: &str, slot: &str, alert: &str, title: &str, body: &str, urgent: bool, ack: Option<(u64, String)>) {
+    fn send(&self, app_id: &str, slot: &str, alert: &str, title: &str, body: &str, urgent: bool, silent: bool, ack: Option<(u64, String)>) {
         let (replaces, markup) = {
             let sh = self.shown.borrow();
             (sh.ids.get(slot).copied().unwrap_or(0), sh.markup)
         };
-        let args = ("Keel", replaces, app_id, title, plain(body, markup).as_str(), vec!["default", "Open"], hints(app_id, urgent), -1i32).to_variant();
+        let args = ("Keel", replaces, app_id, title, plain(body, markup).as_str(), vec!["default", "Open"], hints(app_id, urgent, silent), -1i32).to_variant();
         let (s, slot, alert, on_shown) = (self.shown.clone(), slot.to_string(), alert.to_string(), self.on_shown.clone());
         self.conn.call(Some(NAME), PATH, NAME, "Notify", Some(&args), None, gio::DBusCallFlags::NONE, 5000, gio::Cancellable::NONE, move |r| {
             // Only a notification the service took is acknowledged: with no service, or one that refused, the daemon shows the alert itself.
@@ -136,7 +141,7 @@ impl Notifier {
         });
     }
 
-    pub fn show(&self, app_id: &str, key: &str, alert: &str, title: &str, body: &str, urgent: bool, ack: Option<(u64, String)>) {
+    pub fn show(&self, app_id: &str, key: &str, alert: &str, title: &str, body: &str, urgent: bool, silent: bool, ack: Option<(u64, String)>) {
         let (as_many, count, singles) = {
             let mut sh = self.shown.borrow_mut();
             let as_many = together(&sh.keys, sh.many, key);
@@ -153,9 +158,9 @@ impl Notifier {
                 self.close(id);
             }
             let (head, line) = many_words(count, title);
-            self.send(app_id, MANY, "", &head, &line, urgent, ack);
+            self.send(app_id, MANY, "", &head, &line, urgent, silent, ack);
         } else {
-            self.send(app_id, key, alert, title, body, urgent, ack);
+            self.send(app_id, key, alert, title, body, urgent, silent, ack);
         }
     }
 
@@ -179,7 +184,7 @@ impl Notifier {
             self.close(id);
         } else if left > 0 {
             let (head, _) = many_words(left, "");
-            self.send(crate::APP_ID, MANY, "", &head, "", false, None);
+            self.send(crate::APP_ID, MANY, "", &head, "", false, false, None);
         }
     }
 
@@ -207,15 +212,18 @@ mod tests {
 
     #[test]
     fn a_notification_names_its_app_and_urgency() {
-        let h = hints("io.example.App", true);
+        let h = hints("io.example.App", true, false);
         assert_eq!(h["desktop-entry"].get::<String>().as_deref(), Some("io.example.App"));
         assert_eq!(h["urgency"].get::<u8>(), Some(2));
-        assert_eq!(hints("io.example.App", false)["urgency"].get::<u8>(), Some(1));
+        assert_eq!(hints("io.example.App", false, false)["urgency"].get::<u8>(), Some(1));
+        // Sound is the service's own unless the owner turned it off.
+        assert!(!h.contains_key("suppress-sound"));
+        assert_eq!(hints("io.example.App", false, true)["suppress-sound"].get::<bool>(), Some(true));
     }
 
     #[test]
     fn the_call_has_the_services_signature() {
-        let args = ("Keel", 0u32, "io.example.App", "t", "b", vec!["default", "Open"], hints("io.example.App", false), -1i32).to_variant();
+        let args = ("Keel", 0u32, "io.example.App", "t", "b", vec!["default", "Open"], hints("io.example.App", false, false), -1i32).to_variant();
         assert_eq!(args.type_().as_str(), "(susssasa{sv}i)");
     }
 

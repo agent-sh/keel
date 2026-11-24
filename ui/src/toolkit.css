@@ -123,6 +123,8 @@
 .k-check:hover::before { border-color: var(--muted); }
 .k-check[aria-checked="true"]::before { background: var(--accent); border-color: var(--accent); }
 .k-check[aria-checked="true"]::after { transform: scale(1); }
+.k-check[aria-checked="mixed"]::before { background: var(--accent); border-color: var(--accent); }
+.k-check[aria-checked="mixed"]::after { transform: scale(1); clip-path: inset(38% 0 38% 0); }
 .k-check:focus-visible { outline: 2px solid var(--ring); outline-offset: 0; }
 
 /* The one switch: a track a full control tall, ink when on. Its thumb keeps one color on

@@ -662,7 +662,7 @@ function shoutedStates(list: Src[]): string[] {
 // commit, or put the data in an attribute (data-name, data-value) and keep the id fixed.
 const TEST_ID_PARTS: Record<string, string[]> = {
   "components/AcpAgentsPanel.tsx": ["a.id"], "components/ArtifactsPanel.tsx": ["f", "v"],
-  "components/automation/ActivityList.tsx": ["k"], "components/automation/AlertSettings.tsx": ["c.id", "k"],
+  "components/automation/ActivityList.tsx": ["k"], "components/automation/AlertSettings.tsx": ["c.id", "g.id", "k"],
   "components/automation/Lane.tsx": ["l.key"], "components/automation/SidebarExtras.tsx": ["p.w"], "components/ElsewherePanel.tsx": ["g.id"],
   "components/ExperimentsPanel.tsx": ["m"], "components/HeavyPool.tsx": ["r.state"], "components/Pictures.tsx": ["side"],
   "components/HomeWatch.tsx": ["p.w"], "components/ImportSheet.tsx": ["h.harness"],

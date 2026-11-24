@@ -14,7 +14,8 @@
 //                 takes: this shell is the one handed the alerts (the one attached longest that acknowledges)
 //        takes    { takes: true }        the shell before this one left: the alerts are this one's now
 //        needs    { n }                  what waits on the owner, counted as the page's title counts it
-//        notify   { key, alert, title, body, urgency, kind, ack }   show this (one per key, the next replaces it)
+//        notify   { key, alert, title, body, urgency, sound, kind, ack }   show this (one per key, the next replaces it);
+//                 sound: false when the owner turned the alert sound off (the notification then asks the service for none)
 //        withdraw { key }                take the key's notification down
 //        snooze   { until_ms | null }    alerts are held until then
 // POST /api/shell/ack      { ack, stream }  the notification numbered `ack`, handed to that stream, is on screen

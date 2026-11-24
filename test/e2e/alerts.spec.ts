@@ -50,6 +50,7 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await page.getByTestId("inbox-button").click();
   await page.getByTestId("alert-routes-link").click();
   await expect(page.getByTestId("alert-routes")).toBeVisible();
+  await page.getByTestId("alert-fine-toggle").click();
   const sw = page.getByTestId("route-finished-command");
   await expect(sw).toHaveAttribute("aria-checked", "true");
   await sw.click();
@@ -157,6 +158,7 @@ test("alerts: rows by keyboard, kept unread, a failed hook, routes one by one", 
 
   // Two switches flipped before either save returns both stay off.
   await page.getByTestId("alert-routes-link").click();
+  await page.getByTestId("alert-fine-toggle").click();
   const a = page.getByTestId("route-approval-command"), q = page.getByTestId("route-question-desktop");
   const was = { a: await a.getAttribute("aria-checked"), q: await q.getAttribute("aria-checked") };
   await page.evaluate(() => {
@@ -165,6 +167,7 @@ test("alerts: rows by keyboard, kept unread, a failed hook, routes one by one", 
   });
   await expect(a).toHaveAttribute("aria-checked", was.a === "true" ? "false" : "true");
   await page.reload();
+  await page.getByTestId("alert-fine-toggle").click();
   await expect(a).toHaveAttribute("aria-checked", was.a === "true" ? "false" : "true");
   await expect(q).toHaveAttribute("aria-checked", was.q === "true" ? "false" : "true");
   await a.click();
@@ -318,4 +321,80 @@ test("alerts: agents that fail are one alert a cause, and their coordinator coun
   const settings = (await (await request.get(`/api/sessions/${session.id}?events=0`)).json()).session.settings;
   expect(settings.agents_fail_seen_ms).toBe(settings.agents_failed_ms);
   await request.delete(`/api/sessions/${session.id}`);
+});
+
+// Settings > Alerts shows four rows at rest, each setting all its kinds; a row whose
+// kinds differ shows mixed; the 15-kind table is under Fine tune. One sound switch:
+// the notification the desktop app is handed carries it.
+test("alerts: four rows, mixed, one sound switch", async ({ page, request }) => {
+  await page.goto("/settings/alerts");
+  await expect(page.getByTestId("alert-groups")).toBeVisible();
+  await expect(page.locator('[data-testid^="route-group-"][data-testid$="-command"]')).toHaveCount(4);
+  await expect(page.getByTestId("alert-kinds")).toBeHidden();
+  const need = page.getByTestId("route-group-need-command");
+  await expect(need).toHaveAttribute("aria-checked", "true");
+  await shoot(page, "alerts-09-four-rows");
+
+  // A row sets every kind it holds: one saved change.
+  await need.click();
+  await expect(need).toHaveAttribute("aria-checked", "false");
+  const routes = async () => (await (await request.get("/api/alerts/settings")).json()).settings.routes as Record<string, string[]>;
+  await expect.poll(async () => (await routes()).approval).not.toContain("command");
+  expect((await routes()).question).not.toContain("command");
+  expect((await routes()).finished).toContain("command");
+
+  // One kind back on in Fine tune: the row says mixed, and a press turns all its kinds on.
+  await page.getByTestId("alert-fine-toggle").click();
+  await page.getByTestId("route-approval-command").click();
+  await expect(need).toHaveAttribute("aria-checked", "mixed");
+  await shoot(page, "alerts-10-mixed-fine-tune");
+  await need.click();
+  await expect(need).toHaveAttribute("aria-checked", "true");
+  await expect.poll(async () => (await routes()).question).toContain("command");
+
+  // The sound switch is saved, and the desktop app is handed it with the notification.
+  const sound = page.getByTestId("alert-sound");
+  await expect(sound).toHaveAttribute("aria-checked", "true");
+  const base = new URL(page.url()).origin;
+  const ctl = new AbortController();
+  const res = await fetch(`${base}/api/shell/events?engine=spec&version=1&acks=1`, { signal: ctl.signal });
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let buf = "", stream = "";
+  const next = async (name: string) => {
+    for (;;) {
+      const at = buf.indexOf("\n\n");
+      if (at >= 0) {
+        const chunk = buf.slice(0, at);
+        buf = buf.slice(at + 2);
+        const m = /^event: (\w+)\ndata: (.*)$/s.exec(chunk);
+        if (m && m[1] === name) return JSON.parse(m[2]!);
+        continue;
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error("the shell stream ended");
+      buf += dec.decode(value, { stream: true });
+    }
+  };
+  try {
+    stream = (await next("hello")).stream;
+    const handed = async () => {
+      const sent = request.post("/api/alerts/test", { data: { kind: "approval" } });
+      const n = await next("notify");
+      await request.post("/api/shell/ack", { data: { ack: n.ack, stream } });
+      await sent;
+      return n;
+    };
+    expect((await handed()).sound).toBe(true);
+    await sound.click();
+    await expect(sound).toHaveAttribute("aria-checked", "false");
+    await expect.poll(async () => (await (await request.get("/api/alerts/settings")).json()).settings.sound).toBe(false);
+    expect((await handed()).sound).toBe(false);
+    await shoot(page, "alerts-11-sound-off");
+    await sound.click();
+    await expect(sound).toHaveAttribute("aria-checked", "true");
+  } finally {
+    ctl.abort();
+  }
+  await request.post("/api/alerts/read", { data: {} });
 });
