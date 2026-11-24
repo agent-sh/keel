@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { below, rootOf } from "./agent-tree.ts";
+import { asksBelow, below, rootOf } from "./agent-tree.ts";
 
 const a = (id: string, parent: string, created: number) => ({ id: `a-${id}`, session_id: id, parent_id: parent, title: id.toUpperCase(), created });
 
@@ -18,4 +18,14 @@ test("the root is the last known parent", () => {
   expect(rootOf((id) => up[id], "d")).toBe("root");
   expect(rootOf((id) => ({ d: "b" } as Record<string, string>)[id], "d")).toBe("b");
   expect(rootOf((id) => ({ x: "y", y: "x" } as Record<string, string>)[id], "x")).toBe("y");
+});
+
+test("only an asking agent of the tree makes it worth walking", () => {
+  const agents = Object.fromEntries([a("a", "root", 1), a("b", "a", 2), a("x", "other", 1), a("y", "x", 2)].map((r) => [r.id, r]));
+  expect(asksBelow(agents, "root", [])).toBe(false);
+  expect(asksBelow(agents, "root", ["x", "y", "root", "unknown"])).toBe(false);
+  expect(asksBelow(agents, "root", ["y", "b"])).toBe(true);
+  expect(asksBelow(agents, "other", ["b"])).toBe(false);
+  const loop = Object.fromEntries([a("a", "b", 1), a("b", "a", 2)].map((r) => [r.id, r]));
+  expect(asksBelow(loop, "root", ["a"])).toBe(false);
 });

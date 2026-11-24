@@ -30,3 +30,19 @@ export function rootOf(parentOf: (id: string) => string | null | undefined, id: 
   for (let up = parentOf(at); up && !seen.has(up); up = parentOf(at)) { seen.add(up); at = up; }
   return at;
 }
+
+// Whether any of `ids` (sessions that ask something) is an agent in the tree under `root`, at any depth:
+// each one's parents are followed up through the agents' records. A session that asks and is not in
+// this tree (another pane's agent, a session of its own) is not this tree's to walk.
+export function asksBelow(agents: Record<string, Node>, root: string, ids: Iterable<string>): boolean {
+  let parent: Map<string, string> | undefined;
+  for (const id of ids) {
+    parent ??= new Map(Object.values(agents).map((a) => [a.session_id, a.parent_id]));
+    const seen = new Set<string>();
+    for (let at = parent.get(id); at && !seen.has(at); at = parent.get(at)) {
+      if (at === root) return true;
+      seen.add(at);
+    }
+  }
+  return false;
+}

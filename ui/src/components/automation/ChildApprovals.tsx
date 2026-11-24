@@ -1,7 +1,7 @@
 import { Bot } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef } from "react";
 import { openSession, useAuto } from "../../lib/automation.ts";
-import { below } from "../../lib/agent-tree.ts";
+import { asksBelow, below } from "../../lib/agent-tree.ts";
 import { safety, useSafety } from "../../lib/safety.ts";
 import { useStore } from "../../lib/store.ts";
 import { stateWords } from "../../../../src/core/state-words.ts";
@@ -17,8 +17,10 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
   const all = useAuto((s) => s.agents);
   const open = useSafety((s) => s.approvals);
   const questions = useStore((s) => s.questionCalls);
-  // The tree is walked only while something waits: agents' records change all the time.
-  const waiting = Object.values(open).some((l) => l.length) || Object.values(questions).some((l) => l.length);
+  // The tree is walked only while an agent of this tree waits (not any open approval on the daemon,
+  // which another pane answers): agents' records change all the time.
+  const askers = Object.keys(open).filter((id) => open[id]?.length).concat(Object.keys(questions).filter((id) => questions[id]?.length));
+  const waiting = useMemo(() => asksBelow(all, parentId, askers), [all, parentId, askers.join()]); // eslint-disable-line react-hooks/exhaustive-deps
   const tree = useMemo(() => (waiting ? below(all, parentId) : []), [all, parentId, waiting]);
   const sessions = useStore((s) => s.sessions);
   // An agent's cards come by frames, as every session's do (the page reads all the open cards
