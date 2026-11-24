@@ -11,7 +11,7 @@ import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, checkpointData, 
 import { warmUntil } from "../../admin/telemetry.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { registerShared } from "../../tools/registry.ts";
-import { discoverSkills, renderForOwner } from "../../tools/skills.ts";
+import { discoverSkills, renderForOwnerIn, skillHome } from "../../tools/skills.ts";
 import { fail, ok, type Tool } from "../../tools/types.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -94,20 +94,20 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
   // --- skill mode: kept on through a note the model reads, written at the
   // next request of a turn (and again after a compaction dropped it), so the
   // system prompt and the history before it stay byte for byte.
-  const modeText = (s: Session, name: string | null): string => {
+  const modeText = async (s: Session, name: string | null): Promise<string> => {
     if (!name) return "[harness] The owner turned the skill mode off: the standing instructions of the skill named before no longer apply.";
-    const r = renderForOwner(name, "", s.workspace, s.id);
+    const r = await renderForOwnerIn(name, "", s);
     if ("error" in r) return `[harness] The skill mode ${name} could not be loaded (${r.error}).`;
     return `[harness] The owner set the skill "${name}" as this session's mode: follow its instructions on every turn until they turn it off.\n\n${r.text}`;
   };
   registerHooks({
-    beforeRequest(s, req) {
+    async beforeRequest(s, req) {
       if (req.purpose !== "turn") return req;
       const want = s.settings.skill_mode ?? null;
       const line = engine.lineage(s.id);
       const now = modeNote(line)?.data.skill_mode ?? null;
       if (want === now) return req;
-      const text = modeText(s, want);
+      const text = await modeText(s, want);
       append(s.id, "note", { kind: "skill_mode", model: true, skill_mode: want, text });
       const messages = [...req.messages];
       const last = messages.at(-1);
@@ -251,10 +251,13 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
 
     // One skill kept on as the session's mode (`/skill-mode <name>`); null turns it off.
     "/api/sessions/:id/skill-mode": {
-      GET: (req: any) => {
+      GET: async (req: any) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
-        const skills = discoverSkills(s.workspace).filter((k) => k.userInvocable).map((k) => ({ name: k.name, description: k.description, scope: k.scope }));
+        // On another machine: that machine's skills; one that does not answer lists none.
+        const home = skillHome.of?.(s.id);
+        const listed = home ? await home.list() : { skills: discoverSkills(s.workspace) };
+        const skills = ("skills" in listed ? listed.skills : []).filter((k) => k.userInvocable).map((k) => ({ name: k.name, description: k.description, scope: k.scope }));
         return json({ skill_mode: s.settings.skill_mode ?? null, skills });
       },
       POST: async (req: any) => {
@@ -263,7 +266,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
         const b = ((await req.json().catch(() => null)) ?? {}) as any;
         const name = typeof b.skill === "string" && b.skill.trim() ? b.skill.trim().replace(/^\//, "") : null;
         if (name) {
-          const r = renderForOwner(name, "", s.workspace, s.id);
+          const r = await renderForOwnerIn(name, "", s);
           if ("error" in r) return bad(`this session cannot load that skill: ${r.error}`);
         }
         store.mergeSettings(s.id, { skill_mode: name });

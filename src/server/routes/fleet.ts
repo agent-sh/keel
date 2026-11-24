@@ -37,6 +37,8 @@ import { board } from "./state.ts";
 import { fitted } from "../../engine/image-fit.ts";
 import { reachInto } from "../../safety/net-proxy.ts";
 import { sandboxScope, scopeDir } from "../../safety/sandbox-scope.ts";
+import { skillHome } from "../../tools/skills.ts";
+import { peerSkills } from "../../fleet/skills.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -136,6 +138,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   }
   const spillRoot = `${store.stateDir}/spill`;
 
+  // A session placed on another machine takes its skills from there (src/fleet/skills.ts).
+  skillHome.of = peerSkills(f, (id) => store.session(id), (e, machine) => errors.capture("server", e, { at: "fleet skills", machine }));
   // A session placed on another machine: its workspace tools run there.
   registerHooks({
     async system(s) {

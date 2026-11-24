@@ -8,7 +8,7 @@ import { answer, askedOf, decline, pendingQuestions, type Answers } from "../../
 import { conceal } from "../../core/conceal.ts";
 import { ackNotices, adoptJobs, cutCommand, drainNotices, endedHow, jobEnded, findJob, hasNotice, jobsChanged, jobsOf, jobView, jobWhat, running, stopJob, type Job } from "../../tools/jobs.ts";
 import { commandEndedQuietly } from "../../automation/alerts.ts";
-import { renderForOwner, skillRun } from "../../tools/skills.ts";
+import { renderForOwnerIn, skillRun } from "../../tools/skills.ts";
 import { dropChoice } from "../../tools/skill-turn.ts";
 import { hookContext } from "../../integrations/hooks.ts";
 import { promptExpansion } from "./hooks.ts";
@@ -184,7 +184,7 @@ export const toolRoutes: RouteModule = (deps) => {
         if (!s) return json({ error: "no such session" }, 404);
         const b = (await req.json().catch(() => ({}))) as { name?: string; args?: string };
         // (Its allowed-tools are granted once the hooks below let it through.)
-        const r = renderForOwner(String(b.name ?? ""), String(b.args ?? ""), s.workspace, s.id, { count: false });
+        const r = await renderForOwnerIn(String(b.name ?? ""), String(b.args ?? ""), s, { count: false });
         if ("error" in r) return json({ error: r.error }, 400);
         // The owner's UserPromptExpansion hooks see the command and what it expands to: they refuse it, or add to it.
         const hooked = await promptExpansion?.(s, { name: r.skill.name, args: String(b.args ?? ""), source: r.skill.scope, prompt: r.text });
@@ -204,7 +204,7 @@ export const toolRoutes: RouteModule = (deps) => {
         // that waits in a queue no turn takes yet grants nothing.
         const cmd = `/${r.skill.name}${b.args?.trim() ? ` ${b.args.trim()}` : ""}`;
         const running = deps.engine.isRunning(s.id);
-        const granted = renderForOwner(r.skill.name, String(b.args ?? ""), s.workspace, s.id, { grant: running ? "now" : "next", cmd });
+        const granted = await renderForOwnerIn(r.skill.name, String(b.args ?? ""), s, { grant: running ? "now" : "next", cmd });
         if ("error" in granted) return json({ error: granted.error }, 400);
         const note = deps.store.append(s.id, "note", { text: `<skill name="${r.skill.name}">\n${granted.text}\n</skill>${more}`, model: true, skill: r.skill.name });
         deps.bus.emit({ t: "event", event: note });

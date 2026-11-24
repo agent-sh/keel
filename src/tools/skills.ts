@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { registerHooks } from "../engine/hooks.ts";
+import { registerHooks, type SystemBlock } from "../engine/hooks.ts";
 import { enabledUnits, unitOf } from "../plugins/registry.ts";
 import { fillContent } from "../plugins/options.ts";
 import { valuesOf } from "../plugins/settings.ts";
@@ -423,30 +423,84 @@ const choiceOf = (skill: Skill) => ({ ...(skill.model ? { model: skill.model } :
 
 // The grant a skill makes, or why it makes none.
 const NOT_TRUSTED = "it is this repository's own skill, and its tools run without asking only once the owner trusts it himself (the session's Trust panel)";
-function grantOf(skill: Skill, vars: Record<string, string>): { rules: { kind: RuleKind; pattern: string }[]; granted: string[]; left: string[]; held?: string } {
+function grantOf(skill: Skill, vars: Record<string, string>, grantable = mayGrant(skill)): { rules: { kind: RuleKind; pattern: string }[]; granted: string[]; left: string[]; held?: string } {
   if (!skill.allowedTools?.length) return { rules: [], granted: [], left: [] };
-  if (!mayGrant(skill)) return { rules: [], granted: [], left: [], held: NOT_TRUSTED };
+  if (!grantable) return { rules: [], granted: [], left: [], held: NOT_TRUSTED };
   if (!skillRun.grant) return { rules: [], granted: [], left: [], held: "nothing here grants them" };
   const { rules, left } = skillRules(skill, vars);
   const leftNames = new Set(left.map((l) => l.slice(0, l.indexOf(" (")).trim()));
   return { rules, granted: skill.allowedTools.filter((t) => !leftNames.has(t)), left };
 }
 
-export async function loadSkill(name: string, args: string, ctx: ToolContext): Promise<ToolOutput> {
-  const skill = discoverSkills(ctx.cwd).filter((s) => s.enabled).find((s) => s.name === name || s.name === name.replace(/^\//, ""));
+// Skills of a session whose tools run on another machine come from that
+// machine (src/fleet/skills.ts is the link to it): this machine's skills name
+// files and commands that are not where the session's commands run, and a
+// local-only skill must not be offered there. `of` answers null for a session
+// on this machine.
+export type SkillHome = {
+  machine: string;
+  list(): Promise<{ skills: Skill[] } | { error: string }>;
+  get(name: string): Promise<PeerSkill | { missing: { names: string[]; held?: string } } | { error: string }>;
+};
+export const skillHome: { of?: (sessionId: string) => SkillHome | null } = {};
+// A skill as the machine that holds it read it: its text, the variables of its text
+// and whether its allowed-tools may run without asking (that machine's trust).
+export type PeerSkill = { skill: Skill; raw: string; vars: Record<string, string>; grantable: boolean };
+
+// What a machine serves of its skills to a session placed on it (the hands routes): what it
+// discovers for the folder, under its own trust and scan rules, and a skill's text with its variables.
+export function servedSkills(cwd: string): Skill[] {
+  return discoverSkills(cwd).filter((s) => s.enabled);
+}
+export function servedSkill(cwd: string, name: string, sessionId: string): PeerSkill | { missing: { names: string[]; held?: string } } {
+  const want = (n: string) => n === name || n === name.replace(/^\//, "");
+  const skill = discoverSkills(cwd).filter((s) => s.enabled).find((s) => want(s.name));
+  if (!skill) {
+    const heldBack: { name: string; dir: string }[] = [];
+    const names = discoverSkills(cwd, heldBack).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
+    const held = heldBack.find((h) => want(h.name));
+    return { missing: { names, ...(held ? { held: heldText(held) } : {}) } };
+  }
+  return { skill, raw: readFileSync(skill.file, "utf8"), vars: varsOf(skill, cwd, sessionId), grantable: mayGrant(skill) };
+}
+const heldText = (h: { name: string; dir: string }) => `The skill "${h.name}" is this repository's and does not load: ${(skillFilter.held?.(h.dir) ?? "the owner has not trusted it").replace(/\.?$/, ".")}`;
+
+// A skill found for a session: here, or on the machine its tools run on.
+type Found = PeerSkill & { machine?: string };
+async function findSkill(ctx: { sessionId: string; cwd: string }, name: string): Promise<{ found: Found } | { error: string }> {
+  const home = skillHome.of?.(ctx.sessionId);
+  if (home) {
+    const r = await home.get(name);
+    if ("error" in r) return { error: `The skills on ${home.machine}, where this session's tools run, could not be read: ${r.error}. None are offered; this machine's skills are not used there.` };
+    if ("missing" in r) return { error: r.missing.held ?? `No skill named "${name}" on ${home.machine}. Available: ${r.missing.names.join(", ") || "none"}.` };
+    return { found: { ...r, machine: home.machine } };
+  }
+  const want = (n: string) => n === name || n === name.replace(/^\//, "");
+  const skill = discoverSkills(ctx.cwd).filter((s) => s.enabled).find((s) => want(s.name));
   if (!skill) {
     const heldBack: { name: string; dir: string }[] = [];
     const names = discoverSkills(ctx.cwd, heldBack).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
     // A repository's skill held back by its trust: the model is told why, not that it does not exist.
-    const held = heldBack.find((h) => h.name === name || h.name === name.replace(/^\//, ""));
-    // (The reason may end its own sentence: one full stop, not two.)
-    if (held) return fail(`The skill "${held.name}" is this repository's and does not load: ${(skillFilter.held?.(held.dir) ?? "the owner has not trusted it").replace(/\.?$/, ".")}`);
-    return fail(`No skill named "${name}". Available: ${names.join(", ") || "none"}.`);
+    const held = heldBack.find((h) => want(h.name));
+    if (held) return { error: heldText(held) };
+    return { error: `No skill named "${name}". Available: ${names.join(", ") || "none"}.` };
   }
+  return { found: { skill, raw: readFileSync(skill.file, "utf8"), vars: varsOf(skill, ctx.cwd, ctx.sessionId), grantable: mayGrant(skill) } };
+}
+
+// The hooks a skill of another machine names are not registered here: they run commands on this machine.
+function peerHooksSaid(raw: string, machine: string): string {
+  const { hooks, problem } = hooksOf(raw);
+  if (problem) return `Its hooks are not registered: ${problem}.`;
+  return hooks ? `Its hooks are not registered: the skill is on ${machine}, and hooks run on this machine.` : "";
+}
+
+export async function loadSkill(name: string, args: string, ctx: ToolContext): Promise<ToolOutput> {
+  const r = await findSkill(ctx, name);
+  if ("error" in r) return fail(r.error);
+  const { skill, raw, vars, grantable, machine } = r.found;
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);
-  const raw = readFileSync(skill.file, "utf8");
   const { body } = frontmatter(raw);
-  const vars = varsOf(skill, ctx.cwd, ctx.sessionId);
   const text = renderSkill(body, args ?? "", skill.arguments, vars);
   // context: fork: the skill is an agent's task, not this conversation's text.
   if (skill.fork && skillRun.fork) {
@@ -456,10 +510,10 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
   // Sent again unless the model can still see it: after a clear, a rewind or
   // another branch it is gone from the context even though it was loaded.
   // (Loading it again grants its tools again, for this turn: Claude Code re-applies them.)
-  const g = grantOf(skill, vars);
+  const g = grantOf(skill, vars, grantable);
   if (g.rules.length) skillRun.grant!(ctx.sessionId, g.rules, skill.name, false);
-  holdChoice(ctx.sessionId, choiceOf(skill), skill.name, mayGrant(skill), false);
-  const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, hooksSaid(skill, raw, ctx.sessionId));
+  holdChoice(ctx.sessionId, choiceOf(skill), skill.name, grantable, false);
+  const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine) : hooksSaid(skill, raw, ctx.sessionId));
   if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.${extra}`);
   usage?.record(skill.name);
   return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}`);
@@ -486,19 +540,33 @@ export function preloadSkill(name: string, cwd: string, sessionId: string): { te
 export function renderForOwner(name: string, args: string, cwd: string, sessionId: string, opts: { grant?: "next" | "now"; cmd?: string; count?: boolean } = {}): { skill: Skill; text: string } | { error: string } {
   const skill = discoverSkills(cwd).find((s) => s.name === name);
   if (!skill) return { error: `no skill named ${name}` };
+  return ownerText({ skill, raw: readFileSync(skill.file, "utf8"), vars: varsOf(skill, cwd, sessionId), grantable: mayGrant(skill) }, args, sessionId, opts);
+}
+
+// The same for a session that may be placed on another machine: the skill is read there.
+export async function renderForOwnerIn(name: string, args: string, s: { id: string; workspace: string }, opts: { grant?: "next" | "now"; cmd?: string; count?: boolean } = {}): Promise<{ skill: Skill; text: string } | { error: string }> {
+  const home = skillHome.of?.(s.id);
+  if (!home) return renderForOwner(name, args, s.workspace, s.id, opts);
+  const r = await home.get(name);
+  if ("error" in r) return { error: `the skills on ${home.machine}, where this session's tools run, could not be read: ${r.error}` };
+  if ("missing" in r || r.skill.name !== name) return { error: `no skill named ${name} on ${home.machine}` };
+  return ownerText({ ...r, machine: home.machine }, args, s.id, opts);
+}
+
+function ownerText(f: Found, args: string, sessionId: string, opts: { grant?: "next" | "now"; cmd?: string; count?: boolean }): { skill: Skill; text: string } | { error: string } {
+  const { skill, raw, vars, grantable, machine } = f;
+  const name = skill.name;
   if (!skill.userInvocable) return { error: `${name} is not meant to be invoked by hand` };
   if (!skill.enabled) return { error: `${name} is turned off in Settings > Skills` };
-  const raw = readFileSync(skill.file, "utf8");
   const { body } = frontmatter(raw);
-  const vars = varsOf(skill, cwd, sessionId);
   const text = renderSkill(body, args, skill.arguments, vars);
   if (opts.count !== false) usage?.record(skill.name);
   let extra = "";
   if (opts.grant && !skill.fork) {
-    const g = grantOf(skill, vars);
+    const g = grantOf(skill, vars, grantable);
     if (g.rules.length) skillRun.grant!(sessionId, g.rules, skill.name, opts.grant === "next", opts.cmd);
-    holdChoice(sessionId, choiceOf(skill), skill.name, mayGrant(skill), opts.grant === "next", opts.cmd);
-    extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, hooksSaid(skill, raw, sessionId));
+    holdChoice(sessionId, choiceOf(skill), skill.name, grantable, opts.grant === "next", opts.cmd);
+    extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine) : hooksSaid(skill, raw, sessionId));
   }
   return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}` };
 }
@@ -547,11 +615,12 @@ export function listingOf(cwd: string, window?: number, byUse = true, skills = d
   return fitListing(skills.map((s) => ({ name: s.name, description: s.description, uses: uses.get(s.name) ?? 0 })), listingBudget(window));
 }
 
-export function skillListing(cwd: string, window?: number, byUse = true, skills?: Skill[]): string {
+export function skillListing(cwd: string, window?: number, byUse = true, skills?: Skill[], machine?: string): string {
   const { lines, nameOnly } = listingOf(cwd, window, byUse, skills);
   if (!lines.length) return "";
   const note = nameOnly.length ? `\n(${nameOnly.length} of them are listed by name only, to keep this list short: load one by name to read what it is for.)` : "";
-  return `Skills you can load with the skill tool when a task matches one (the body comes back as its result):\n${lines.join("\n")}${note}`;
+  const head = machine ? `Skills on ${machine}, where your tools run, that you can load with the skill tool when a task matches one (the body comes back as its result; this machine's own skills are not offered)` : "Skills you can load with the skill tool when a task matches one (the body comes back as its result)";
+  return `${head}:\n${lines.join("\n")}${note}`;
 }
 
 // Built with the session's system prompt, which stays frozen: the budget is the window of the model it runs on (made again when the session switches model).
@@ -560,18 +629,39 @@ export function skillListing(cwd: string, window?: number, byUse = true, skills?
 // is no change of the skills, so the block is compared as cut with no use counted, and a kept
 // prompt is not made again because a skill was loaded since (it takes the new cut when it is made
 // again for another reason).
+// A session whose tools run on another machine lists that machine's skills, read there under its own
+// trust and scan rules. One that does not answer gives no skills and one line saying so, never this
+// machine's.
+const BLOCK = "Skills you can load with the skill tool when a t";
 registerHooks({
   system: (s, model) => {
     const window = model && !model.context_assumed ? model.context : undefined;
+    if (s.machine) return peerBlock(s, window);
     const skills = discoverSkills(s.workspace).filter((k) => k.modelInvocable && k.enabled);
     return {
-      name: "Skills you can load with the skill tool when a t",
+      name: BLOCK,
       text: skillListing(s.workspace, window, true, skills),
       data: JSON.stringify(skills.map((k) => [k.name, k.description])),
       same: skillListing(s.workspace, window, false, skills),
     };
   },
 });
+
+async function peerBlock(s: { id: string; workspace: string }, window: number | undefined): Promise<SystemBlock> {
+  const home = skillHome.of?.(s.id);
+  const r = home ? await home.list().catch((e) => ({ error: (e as Error).message })) : { error: "the machine is not in the fleet" };
+  const where = home?.machine ?? "the machine where its tools run";
+  if ("error" in r) {
+    return { name: BLOCK, text: `The skills on ${where}, where your tools run, could not be read just now, so no skills are offered in this session (this machine's own skills are not used there).`, data: JSON.stringify(["unreadable", where]) };
+  }
+  const skills = r.skills.filter((k) => k.modelInvocable && k.enabled);
+  return {
+    name: BLOCK,
+    text: skillListing(s.workspace, window, true, skills, where),
+    data: JSON.stringify(skills.map((k) => [k.name, k.description])),
+    same: skillListing(s.workspace, window, false, skills, where),
+  };
+}
 
 export const skillTool = (name: string, nameKey: string, argsKey: string | null, description?: string): Tool => ({
   name,

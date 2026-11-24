@@ -9,6 +9,7 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { instructionFiles } from "../engine/turn.ts";
 import { jobPids } from "../tools/jobs.ts";
+import { skillFilter } from "../tools/skills.ts";
 import { handsBusy, handsRoutes } from "./hands-routes.ts";
 import { sessionRoutes } from "./hands-sessions.ts";
 
@@ -28,6 +29,11 @@ try {
   if (r.ok) process.exit(0);
 } catch {}
 rmSync(sock, { force: true });
+
+// This helper keeps no trust list: a repository's own skills are not served from here (a skill the owner
+// keeps in his own folders on this machine is).
+skillFilter.allow = () => false;
+skillFilter.held = () => "this machine's helper keeps no trust list, so a repository's skills are not served from it";
 
 let last = Date.now();
 const routes = {

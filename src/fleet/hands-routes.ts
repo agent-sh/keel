@@ -15,6 +15,7 @@ import type { ToolOutput } from "../tools/types.ts";
 import { localFacts } from "./facts.ts";
 import { execArgv, namedSecrets, runHands } from "./hands.ts";
 import { ABORTED_TEXT, pool, waitedLine } from "../tools/heavy.ts";
+import { servedSkill, servedSkills } from "../tools/skills.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -136,6 +137,25 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
         const b = await body(req);
         if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd))) return json({ text: "" });
         return json({ text: existsSync(b.cwd) ? deps.instructions(resolve(b.cwd)) : "" });
+      },
+    },
+
+    // The skills of a session placed here (the owner's folders on this machine and the folder's own),
+    // under this machine's trust and scan rules, read only: the list, and one skill's text with the
+    // variables of its text. The caller renders it; nothing here runs.
+    "/api/fleet/hands/skills": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd))) return bad("not a directory inside the granted one");
+        return json({ skills: existsSync(b.cwd) ? servedSkills(resolve(b.cwd)) : [] });
+      },
+    },
+    "/api/fleet/hands/skill": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd))) return bad("not a directory inside the granted one");
+        if (typeof b.name !== "string" || !b.name || typeof b.session !== "string" || !/^[\w-]+$/.test(b.session)) return bad("a skill is asked for by name, for a session");
+        return json(servedSkill(resolve(b.cwd), b.name, b.session));
       },
     },
 
