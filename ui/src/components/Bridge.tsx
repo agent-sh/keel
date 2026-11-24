@@ -520,9 +520,26 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
     const by = mb.left < lb.left ? mb.left - lb.left : mb.right > lb.right ? mb.right - lb.right : 0;
     if (by) l.scrollBy({ left: by, behavior: scrollMotion() });
   }, [helm, list.length]);
+  // How many marks the row has out of view, said on the list's button (a mark is never shown cut to say so).
+  const [out, setOut] = useState(0);
+  useEffect(() => {
+    const l = row.current;
+    if (!l) return;
+    const count = () => {
+      const lb = l.getBoundingClientRect();
+      setOut([...l.querySelectorAll(".k-dock-mark")].filter((m) => { const b = m.getBoundingClientRect(); return b.right > lb.right + 1 || b.left < lb.left - 1; }).length);
+    };
+    count();
+    const ro = new ResizeObserver(count);
+    ro.observe(l);
+    l.addEventListener("scrollend", count);
+    return () => { ro.disconnect(); l.removeEventListener("scrollend", count); };
+  }, [list.length]);
   return (
     <nav className="k-dock" aria-label="Panes">
-      <button type="button" className="k-dock-btn" aria-label="All sessions" onClick={() => savePref("sidebar", true)}><ListTree /></button>
+      <button type="button" className="k-dock-btn" aria-label="All sessions" onClick={() => savePref("sidebar", true)}><ListTree />{out > 0 && <span className="k-dock-out" aria-hidden="true" data-testid="dock-out">+{out}</span>}</button>
+      {/* The row holds as many whole marks as fit: no mark is cut at its edge (bridge.css); the rest are a swipe away. */}
+      <div className="k-dock-room">
       <ol className="k-dock-list" ref={row}>
         {list.map((s) => (
           <li key={s.id}>
@@ -533,10 +550,13 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
           </li>
         ))}
       </ol>
+      </div>
       {/* The home screen's headline already says it. A tap goes to the card that has waited longest (the desk's Alt+A). */}
       {need > 0 && !fresh && (
-        <button type="button" className="k-dock-need" data-testid="dock-need" onClick={goNextWaiting}>
-          <span className="k-dock-need-n" aria-live="polite">{countWord("need", need)}</span>
+        // The need mark and the count, the words for a screen reader: the marks keep the row's room.
+        <button type="button" className="k-dock-need" data-testid="dock-need" aria-label={countWord("need", need)} title={countWord("need", need)} onClick={goNextWaiting}>
+          <span className="k-dock-need-n" aria-hidden="true"><span className="k-dock-need-mark" />{need}</span>
+          <span className="sr-only" aria-live="polite">{countWord("need", need)}</span>
         </button>
       )}
       <button type="button" className="k-dock-btn" aria-label="New session" aria-current={fresh ? "page" : undefined} onClick={() => navigate({ name: "new" })}><Plus /></button>

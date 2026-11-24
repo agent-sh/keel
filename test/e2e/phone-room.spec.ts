@@ -783,6 +783,49 @@ test.describe("on a phone at a large text size, a waiting question", () => {
   });
 });
 
+// The dock's row shows whole marks only, at every text size: none is cut at the edge of the button for
+// what needs the owner (which says its count with the need mark), and the marks out of view are
+// counted on the list's button. (390 px: a mark cut there read "D".)
+test.describe("on a phone, the dock", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("shows whole marks and counts the rest", async ({ browser, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const made: string[] = [];
+    try {
+      for (let i = 0; i < 7; i++) {
+        const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Dock ${i} ${tag}` } })).json();
+        made.push(session.id);
+        if (i < 3) {
+          await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+          await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: `touch dock${i}.txt` } }])}` } });
+        }
+      }
+      for (const id of made.slice(0, 3)) await expect.poll(async () => ((await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals ?? []).length, { timeout: 30_000 }).toBe(1);
+      for (const [width, height] of [[390, 844], [412, 915]] as const) for (const scale of [1, 1.3, 1.5]) {
+        const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width, height }, hasTouch: true, isMobile: true });
+        await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+        const page = await ctx.newPage();
+        try {
+          await page.goto(`/s/${made[6]}`);
+          await expect(page.locator(".k-dock-mark")).toHaveCount(6);
+          await expect(page.getByTestId("dock-need")).toHaveAccessibleName(/need you/);
+          const look = () => page.evaluate(() => {
+            const l = document.querySelector(".k-dock-list")!.getBoundingClientRect();
+            const ms = [...document.querySelectorAll(".k-dock-mark")].map((m) => m.getBoundingClientRect());
+            return { cut: ms.filter((b) => b.left < l.right - 0.5 && b.right > l.right + 0.5).length, out: ms.filter((b) => b.right > l.right + 0.5 || b.left < l.left - 0.5).length, said: document.querySelector('[data-testid="dock-out"]')?.textContent ?? "" };
+          });
+          await expect.poll(look).toEqual(expect.objectContaining({ cut: 0 }));
+          const r = await look();
+          expect(r.said).toBe(r.out ? `+${r.out}` : "");
+          await shoot(page, `phone-15-dock-${width}-${scale}`);
+        } finally { await ctx.close(); }
+      }
+    } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
+  });
+});
+
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
 // another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
 // box is taken as it shows, cut by what clips it). A target is what a press acts on: a
