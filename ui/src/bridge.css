@@ -540,6 +540,9 @@
 .k-sum-chip { display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0; height: var(--spacing-ctl-sm); padding: 0 0.25rem; border-radius: var(--radius-sm); white-space: nowrap; font-size: var(--text-caption); line-height: 1; color: var(--muted); }
 .k-sum-chip:not([hidden]) ~ .k-sum-chip:not([hidden])::before { content: ","; margin: 0 0.125rem 0 -0.4375rem; color: var(--faint); }
 .k-sum-chip[hidden], .k-sum-calm[hidden], .k-sum-chip[data-bare] .k-sum-word { display: none; }
+.k-sum-mark { display: none; }
+.k-sum-chip[data-bare] .k-sum-mark { display: inline-grid; place-items: center; }
+.k-sum-mark .k-mark { width: 0.5rem; height: 0.5rem; }
 .k-sum[data-tight] .k-sum-chip { gap: 0.1875rem; padding: 0 0.1875rem; }
 .k-sum[data-tight] .k-sum-chip:not([hidden]) ~ .k-sum-chip:not([hidden])::before { margin-left: -0.25rem; }
 .k-sum-chip:hover { background: var(--hover); color: var(--fg); }

@@ -858,6 +858,7 @@ const COUNTS: { kind: Kind; watch?: Watch; says: string }[] = [
   { kind: "need", watch: "need", says: STATE_WORD.need },
   { kind: "fail", watch: "fail", says: STATE_WORD.fail },
   { kind: "work", watch: "work", says: STATE_WORD.work },
+  { kind: "wait", watch: "wait", says: STATE_WORD.wait },
   { kind: "unread", says: NEW_SINCE },
   { kind: "offline", says: "On a machine that does not answer" },
 ];
@@ -866,8 +867,8 @@ const COUNTS: { kind: Kind; watch?: Watch; says: string }[] = [
 // left, the one that calls the owner first. With no room for a word the line's calm sentence
 // goes, then the room between the counts, and at the very narrowest whole counts, the ones that
 // call the owner last.
-const WORDS_STAY: Kind[] = ["need", "fail", "offline", "unread", "work"];
-const COUNTS_GO: Kind[] = ["work", "unread", "offline"];
+const WORDS_STAY: Kind[] = ["need", "fail", "offline", "unread", "work", "wait"];
+const COUNTS_GO: Kind[] = ["wait", "work", "unread", "offline"];
 function fitSummary(el: HTMLElement) {
   const chips = [...el.querySelectorAll<HTMLElement>(".k-sum-chip")];
   const chip = (k: Kind) => chips.find((c) => c.dataset.kind === k);
@@ -912,7 +913,7 @@ function Summary() {
   const said = (kind: Kind, ids: string[]): { n: number; word: string } => {
     if (kind === "need") { const n = Math.max(ids.length, need); return { n, word: countName("need", n) }; }
     if (kind === "fail") return { n: ids.length, word: wentWrongWord(ids.length - declined, declined) };
-    return { n: ids.length, word: kind === "work" ? countName("work", ids.length) : kind === "unread" ? NEW.toLowerCase() : OFFLINE.toLowerCase() };
+    return { n: ids.length, word: kind === "work" || kind === "wait" ? countName(kind, ids.length) : kind === "unread" ? NEW.toLowerCase() : OFFLINE.toLowerCase() };
   };
   // What the fit depends on: which counts show, how many figures each has and its word. A count that
   // goes from 4 to 5 is as wide as it was, and is not measured again (a fit writes every chip twice).
@@ -952,6 +953,8 @@ function Summary() {
             aria-label={`${n} ${c.kind === "offline" && since ? `on ${since}, ${word}` : word}. Go to the next`} title={`${c.says}${c.kind === "offline" && since ? ` (${since})` : ""}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
             {/* One sentence in the text face: the rows' marks say each state, the line says how many. */}
             {c.kind === "offline" && <ServerOff aria-hidden="true" />}
+            {/* A count whose word has no room keeps its state's mark, so the figure still says what it counts. */}
+            {c.watch && c.kind !== "need" && c.kind !== "fail" && <span className="k-sum-mark" aria-hidden="true"><Mark w={c.watch} /></span>}
             <b className="k-sum-n">{n}</b>
             <span className="k-sum-word">{c.kind === "offline" && down.length === 1 && <span className="inline-block max-w-[6.5rem] truncate align-bottom" data-testid="sum-offline-name">{down[0]!.name}</span>}{c.kind === "offline" && down.length === 1 ? " " : ""}{word}</span>
           </button>

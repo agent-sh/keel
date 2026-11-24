@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test";
 import { stateOf, type SessionState, type Watch } from "./watch.ts";
 import { stateWord } from "../automation/state.ts";
-import { ALERT_GROUPS, COUNTERS, CUT_BY_RESTART, STATE_WORD, holdsWords, lastTold, agentState, agentWhy, alertGroup, alertWord, askAction, backgroundWord, countName, countWord, heldWords, inBackground, queuedWord, stateAlone, stateLabel, stateWords, agentTally as tally, waitsOnOwner, wentWrongWord } from "./state-words.ts";
+import { ALERT_GROUPS, COUNTERS, CUT_BY_RESTART, STATE_WORD, holdsWords, lastTold, agentState, agentWhy, alertGroup, alertWord, askAction, countName, doneAlert, stillRuns, countWord, heldWords, inBackground, queuedWord, stateAlone, stateLabel, stateWords, agentTally as tally, waitsOnOwner, wentWrongWord } from "./state-words.ts";
 
 const st = (watch: Watch, more: Partial<SessionState> = {}): SessionState => ({ watch, agents: 0, ...more });
 
@@ -63,14 +63,17 @@ test("the head counts the agents that work, of how many, so the number beside it
   expect(stateLabel(st("need", { agents: 3 }))).toBe("Needs you");
 });
 
-test("where the word stands alone, a session that only keeps a command going says so and is counted apart", () => {
+test("where the word stands alone, a session that only keeps a command going says so, and a turn that left one running is not Done", () => {
   const bg = st("work", { why: "command" });
   expect(stateLabel(bg)).toBe("Working");
   expect(stateAlone(bg)).toBe("Command in background");
   expect(stateAlone(st("work", { agents: 2 }))).toBe("Working · 2 agents");
   expect(stateAlone(st("wait", { why: "timer" }))).toBe("Waiting");
   expect([inBackground(bg), inBackground(st("work", { why: "tool" })), inBackground(undefined)]).toEqual([true, false, false]);
-  expect(backgroundWord(1)).toBe("1 in background");
+  expect(stillRuns(1)).toBe("Turn ended, 1 command still runs");
+  expect(stillRuns(2)).toBe("Turn ended, 2 commands still run");
+  const live = { kind: "finished", read: false, data: { live: { commands: 1 } } };
+  expect([alertWord(live), doneAlert(live), doneAlert({ kind: "finished", read: false })]).toEqual(["Turn ended", false, true]);
 });
 
 test("what waits on the owner is one count of things, each once", () => {

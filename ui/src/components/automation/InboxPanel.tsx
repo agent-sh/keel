@@ -10,9 +10,9 @@ import { ago, cn, when } from "../../lib/utils.ts";
 import { ActivityList } from "./ActivityList.tsx";
 import { plainLine } from "../../../../src/core/plain.ts";
 import { AwayDigest } from "./AwayDigest.tsx";
-import { ALERT_STATE, AlertIcon, CHANNEL_NAME, Empty } from "./bits.tsx";
+import { AlertIcon, alertState, CHANNEL_NAME, Empty } from "./bits.tsx";
 import { seeAllAgents } from "../../lib/agent-seen.ts";
-import { ALERT_GROUPS, ALERT_GROUP_WORD, ASK_KINDS, COUNTERS, STATE_WORD, alertGroup, alertWord, askAction, type AlertGroup } from "../../../../src/core/state-words.ts";
+import { ALERT_GROUPS, ALERT_GROUP_WORD, ASK_KINDS, COUNTERS, STATE_WORD, TURN_ENDED, alertGroup, alertWord, askAction, type AlertGroup } from "../../../../src/core/state-words.ts";
 import { Mark } from "../Mark.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 import { Seg, tabId } from "../Seg.tsx";
@@ -26,7 +26,8 @@ const actCls = "flex h-ctl-md items-center gap-1.5 rounded-md px-2.5 text-captio
 // markdown: the row reads it as words. A command or an error is kept as written.
 const WRITTEN = new Set<Alert["kind"]>(["finished", "agent", "question"]);
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
-const lineOf = (a: Alert) => (WRITTEN.has(a.kind) ? plainLine(a.body) : a.body.split("\n").find((l) => l.trim())?.trim()) || a.body;
+// (A turn that ended while a command still runs has its word, Turn ended, beside the line: the line says the rest.)
+const lineOf = (a: Alert) => { const t = (WRITTEN.has(a.kind) ? plainLine(a.body) : a.body.split("\n").find((l) => l.trim())?.trim()) || a.body; return a.data?.live && t.startsWith(`${TURN_ENDED}, `) ? t.slice(TURN_ENDED.length + 2) : t; };
 
 const WIDE = matchMedia("(min-width: 640px)");
 
@@ -212,7 +213,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
               data-alert={a.id}
               data-unread={!a.read || undefined}
               data-part={part}
-              data-watch={declined ? "declined" : ALERT_STATE[a.kind] ?? "idle"}
+              data-watch={declined ? "declined" : alertState(a)}
               data-open={a.open || undefined}
               // A session's group ends with a hairline, so the one-line row after it is not read as its member.
               className={cn("group", first && !alone && "mt-1.5 first:mt-0", last && !alone && wide && "mb-1.5 border-b border-line pb-1.5 last:mb-0 last:border-0 last:pb-0")}
@@ -228,7 +229,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
                   {first && !alone ? title : !first ? <span className="sr-only">{place}, </span> : null}
                   <span className="flex min-h-ctl-sm items-center gap-2 text-caption">
                     {/* The mark is the state, in its color while unread: a glyph, no box around it. */}
-                    <AlertIcon kind={a.kind} read={a.read && !a.open} declined={declined} />
+                    <AlertIcon kind={a.kind} read={a.read && !a.open} declined={declined} live={!!a.data?.live} />
                     {/* The kind stands second in both row forms, so the eye finds it in one place. */}
                     {/* (A column of its own, as wide as the usual words, so the titles after it start at one place.) */}
                     <span className={cn("shrink-0 text-muted", !tight && "min-w-[4.75rem]")} data-testid="inbox-state" title={routeOf(a)}>

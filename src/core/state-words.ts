@@ -160,9 +160,13 @@ export const CUT_BY_RESTART = `${STATE_WORD.stop} by a restart`;
 export const lastTold = (label: string, text?: string) => `It last told: ${label}${text ? `, ${text}` : ""}`;
 // Sessions that came to the list while the owner's hand was on it: they wait at its end.
 export const JUST_ARRIVED = "Just arrived";
-// A session whose only work is a command it left running: counted apart from the ones a turn or an agent works in.
+// A session whose only work is a command it left running. It is working, and is counted with every
+// session that works: "in background" is a detail of how it works, never a count of its own.
 export const inBackground = (st: Stated | undefined) => st?.watch === "work" && st.why === "command";
-export const backgroundWord = (n: number) => `${n} in background`;
+// A turn that ended while a command of the session still runs: its alert says so, and is not Done
+// (the session is not finished: the command's end starts its next turn, whose end is the finish).
+export const TURN_ENDED = "Turn ended";
+export const stillRuns = (commands: number) => `${TURN_ENDED}, ${commands === 1 ? "1 command still runs" : `${commands} commands still run`}`;
 
 // How many things wait on the owner in these sessions, each once: an approval, a question, a plan,
 // a secret to give, a turn to resume, a message not sent. A session with three requests is three.
@@ -270,7 +274,10 @@ export const COUNTERS = {
 // An ask is under "Needs you" while its card still waits (`open`, the daemon's word), read or
 // not: looking at a request does not answer it. It leaves when it is answered.
 export type AlertGroup = "need" | "new" | "seen";
-export type AlertLike = { kind: string; read: boolean; open?: boolean; data?: { plan_id?: string; secret_id?: string; end?: string } | null };
+// `live`: a finish raised while something of the session still runs (its commands): a turn that ended, not Done.
+export type AlertLike = { kind: string; read: boolean; open?: boolean; data?: { plan_id?: string; secret_id?: string; end?: string; live?: { commands?: number } } | null };
+// A finish alert that says the session is done: none raised while something of it still ran.
+export const doneAlert = (a: AlertLike) => a.kind === "finished" && !a.data?.live;
 export const alertGroup = (a: AlertLike): AlertGroup => (a.open ? "need" : a.read ? "seen" : "new");
 export const ALERT_GROUPS: readonly AlertGroup[] = ["need", "new", "seen"];
 export const ALERT_GROUP_WORD: Record<AlertGroup, string> = { need: STATE_WORD.need, new: NEW_SINCE, seen: "Earlier" };
@@ -289,6 +296,7 @@ export function alertWord(a: AlertLike, declined = false): string {
   if (a.kind === "limit" && (a.data as { cls?: string } | null | undefined)?.cls) return limitWord((a.data as { cls?: string }).cls);
   if (a.kind === "question") return a.data?.plan_id ? "Plan" : a.data?.secret_id ? "Secret" : ALERT_WORD.question!;
   if (a.kind === "finished" && (declined || a.data?.end === "refusal")) return STATE_WORD.declined;
+  if (a.kind === "finished" && a.data?.live) return TURN_ENDED;
   return ALERT_WORD[a.kind] ?? a.kind;
 }
 // What the row of an ask offers: the card it opens.

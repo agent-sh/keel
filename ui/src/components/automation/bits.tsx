@@ -71,9 +71,12 @@ export const ALERT_STATE: Record<Alert["kind"], Watch> = {
 
 // An alert's mark is its state's own shape, the one the rail, the panes and the start page draw:
 // the word beside it says the kind. (A glyph a kind was a second vocabulary of seven pictures.)
-export function AlertIcon({ kind, read, declined }: { kind: Alert["kind"]; read?: boolean; declined?: boolean }) {
+// One alert's state: a turn that ended while a command of its session still runs is work, not done.
+export const alertState = (a: { kind: Alert["kind"]; data?: { live?: unknown } | null }): Watch =>
+  a.kind === "finished" && a.data?.live ? "work" : (ALERT_STATE as Record<string, Watch>)[a.kind] ?? "idle";
+export function AlertIcon({ kind, read, declined, live }: { kind: Alert["kind"]; read?: boolean; declined?: boolean; live?: boolean }) {
   // (A turn the model declined is filed as a finish until it has a kind of its own: it is drawn as declined.)
-  const w: Watch = declined ? "declined" : (ALERT_STATE as Record<string, Watch>)[kind] ?? "idle";
+  const w: Watch = declined ? "declined" : alertState({ kind, data: live ? { live } : null });
   return <span className="k-alert-icon" data-watch={w} data-read={read || undefined} data-testid="alert-icon"><Mark w={w} /></span>;
 }
 

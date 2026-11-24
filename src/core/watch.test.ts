@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Session } from "./types.ts";
+import { agentWorks, treeWaiting, type AgentFact } from "./watch.ts";
+import { stateLabel, stateWords } from "./state-words.ts";
 import { askBrief, askText, briefText, clockText, LIST_TIER, liveAgentCounts, pendingText, span, stateLine, stateOf, WATCH_LABEL, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
 
 const s = (over: Partial<Session> = {}): Session => ({
@@ -153,4 +155,36 @@ test("one clock: a retry says when it goes again, a connected model is answering
   expect(clockText({ watch: "wait", agents: 0, until: 16 * 60_000 }, 60_000)).toBe("due in 15m");
   // Agents that run with a reason of their own (a goal's check) say it.
   expect(stateOf(s(), undefined, { agents: 1, running: "Checking that the goal is met" })).toEqual({ watch: "work", agents: 1, why: "agents", text: "Checking that the goal is met" });
+});
+
+// One status a session, the cases of the audit: what works is counted as working wherever it is said.
+test("an agent works while its turn runs, a command it left runs or an agent under it works; only a wait parks it", () => {
+  const tree: Record<string, AgentFact> = {
+    // A three-deep tree: Coordinator and Worker each moved a command past the tool's time limit to the background.
+    coord: { status: "waiting", commands: 1, kids: ["worker"] },
+    worker: { status: "waiting", commands: 1 },
+    reviewer: { status: "waiting", commands: 1 },
+    // A coordinator whose own turn ended on a wait while its agent still runs a turn.
+    lead: { status: "waiting", kids: ["busy"] }, busy: { status: "running" },
+    // Parked for real: a timer, a wake of its own, a slot, a provider that cannot be reached.
+    timer: { status: "waiting" }, slot: { status: "waiting", inLine: true, commands: 1 }, down: { status: "running", down: true },
+    done: { status: "completed", commands: 1 },
+  };
+  const of = (id: string) => tree[id];
+  expect(["coord", "worker", "reviewer", "lead", "busy"].map((id) => agentWorks(id, of))).toEqual([true, true, true, true, true]);
+  expect(["timer", "slot", "down", "done", "gone"].map((id) => agentWorks(id, of))).toEqual([false, false, false, false, false]);
+  // Refactor: 3 agents, every one works, so its head says all three, as its tree line does.
+  const refactor = stateOf(s(), undefined, { agents: 3, parked: treeWaiting(["coord", "reviewer"], of) });
+  expect(refactor).toMatchObject({ watch: "work", agents: 3 });
+  expect(stateLabel(refactor)).toBe("Working · 3 agents");
+  // Migrate CI: its wait_agent gave up at its limit while both agents' commands run: still working, not Waiting.
+  const ci = stateOf(s(), undefined, { agents: 2, parked: treeWaiting(["worker", "reviewer"], of) });
+  expect([ci.watch, stateWords(ci).phrase]).toEqual(["work", "Working: 2 agents"]);
+  // One agent on a timer and one that works: working, "1 of 2".
+  expect(stateLabel(stateOf(s(), undefined, { agents: 2, parked: treeWaiting(["timer", "busy"], of) }))).toBe("Working · 1 of 2 agents");
+  // Every agent parked on a wait: the parent waits.
+  expect(stateOf(s(), undefined, { agents: 1, parked: treeWaiting(["timer"], of), pending: [{ kind: "timer", agent: "T" }] }).watch).toBe("wait");
+  // A session's own command left running keeps it working, its detail "command in background", never a count apart.
+  const bg = stateOf(s(), undefined, { pending: [{ kind: "command", text: "make test", raw: true }] });
+  expect([bg.watch, stateWords(bg).phrase]).toEqual(["work", "Working: command in background"]);
 });

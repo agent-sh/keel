@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { auto, inMs, isLive, openSession, useAuto, type LoopRecord, type WaitRecord } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, clock, cn } from "../../lib/utils.ts";
-import { STATE_WORD } from "../../../../src/core/state-words.ts";
+import { STATE_WORD, agentTally } from "../../../../src/core/state-words.ts";
 import { useToldStates } from "../../lib/watch.ts";
 import { AgentMark, agentSaid, Empty, IconButton, SectionTitle, StopAgent } from "./bits.tsx";
 
@@ -49,6 +49,7 @@ function useBackground(sessionId: string) {
   const allAgents = useAuto((s) => s.agents);
   const allWaits = useAuto((s) => s.waits);
   const allLoops = useAuto((s) => s.loops);
+  const told = useToldStates();
   // Its own agents, the newest first, each followed by the agents below it (its tree, a step further in a level).
   const agents = useMemo(() => {
     const all = Object.values(allAgents);
@@ -57,11 +58,13 @@ function useBackground(sessionId: string) {
   }, [allAgents, sessionId]);
   const waits = useMemo(() => Object.values(allWaits).filter((w) => w.session_id === sessionId && w.status === "active"), [allWaits, sessionId]);
   const loops = useMemo(() => Object.values(allLoops).filter((l) => l.session_id === sessionId), [allLoops, sessionId]);
-  const out = agents.filter(isLive).length, on = loops.filter((l) => l.enabled).length;
-  // What the count on the button counts, said on it: the agents still out, the waits armed and the loops turned on.
+  const out = agents.filter(isLive), on = loops.filter((l) => l.enabled).length;
+  // What the button says: its live agents by the one status, in the words of the agents' line under the
+  // session's row ("3 working", "1 needs you, 2 working"), then its waits and the loops turned on.
   const n = (k: number, one: string) => (k ? `${k} ${one}${k === 1 ? "" : "s"}` : "");
-  const counts = [n(out, "agent"), n(waits.length, "wait"), n(on, "loop")].filter(Boolean).join(", ");
-  return { agents, waits, loops, live: out + waits.length + on, counts };
+  const tally = agentTally(out.map((a) => agentSaid(a, told[a.session_id]).watch));
+  const parts = [...tally.parts.map((p) => p.text), n(waits.length, "wait"), n(on, "loop")].filter(Boolean);
+  return { agents, waits, loops, live: out.length + waits.length + on, counts: parts.join(", "), tally };
 }
 // How much runs in the background now: the header says it when the button itself is folded away.
 export const useBackgroundLive = (sessionId: string) => useBackground(sessionId).live;
@@ -78,14 +81,14 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
       <Popover.Trigger
         data-testid="background-button"
         title={live ? `In the background: ${counts}` : "Background work of this session"}
-        aria-label={live ? `${live} in background: ${counts}` : "Background work of this session"}
+        aria-label={live ? `In the background: ${counts}` : "Background work of this session"}
         className={cn(
           "flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-caption outline-none transition-colors",
           live ? "border-accent/40 bg-accent-soft text-accent" : "border-line text-faint hover:text-fg",
                   )}
       >
         {live ? <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /> : <Activity className="size-3.5" />}
-        {live ? `${live} in background` : "Background"}
+        {live ? counts : "Background"}
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner sideOffset={8} align="end">

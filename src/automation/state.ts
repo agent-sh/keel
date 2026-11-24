@@ -13,7 +13,7 @@ import type { Store } from "../core/store.ts";
 import type { Session, StoredEvent, TurnStatus } from "../core/types.ts";
 import { statSync } from "node:fs";
 import { STUCK_AFTER, stuckOf, type After, type Progress } from "../core/stuck.ts";
-import { oneLine, stateOf, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
+import { agentWorks, oneLine, treeWaiting, stateOf, watchWord, type AgentFact, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
 import { stopSays } from "../core/stoppers.ts";
 import { UNREACHABLE_WORD, stateLabel, stateWords } from "../core/state-words.ts";
 import { zonedClock } from "../core/clock.ts";
@@ -121,7 +121,7 @@ function heldOf(d: From, s: Session): { text?: string; since?: number } | undefi
 // out once, when something waits on the owner) which asking sessions are under which.
 type Kid = { session_id: string; title: string; status: string; type: string };
 // `tally`: the agents a session started and how many of them failed, read for a session when it is told.
-export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number>; pending: Map<string, Pending[]>; kids: Map<string, Kid[]>; under?: Map<string, { id: string; title: string }[]>; tally?: Map<string, { n: number; failed: number } | null> };
+export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number>; pending: Map<string, Pending[]>; kids: Map<string, Kid[]>; under?: Map<string, { id: string; title: string }[]>; tally?: Map<string, { n: number; failed: number } | null>; self?: Map<string, Kid> };
 // The agents a session's counts name (src/core/agent-count.ts): its tree's, live or of the last
 // day, and of them the failed ones that ended after the owner last looked (?3). Seeks on the
 // parent's index, one a counted agent: never a pass over every agent ever stored (a state is
@@ -217,7 +217,12 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   // An agent whose turn waits for a provider that cannot be reached waits too: it is not at work.
   const e = l.d.engine;
   const downOf = (k: Kid) => (k.status === "running" ? e.outageOf?.(k.session_id) : undefined);
-  const parked = (l.kids.get(s.id) ?? []).filter((k) => k.status === "waiting" || downOf(k));
+  // Which agents work, by the one rule (src/core/watch.ts agentWorks): a command an agent left
+  // running, or an agent of its own at work, keeps it working; only a wait parks it.
+  const fact = (id: string) => agentFact(l, id);
+  const parked = (l.kids.get(s.id) ?? []).filter((k) => !agentWorks(k.session_id, fact));
+  // The agents of its whole tree that wait: the rest of `agents` work, as each one's own state says.
+  const waitingBelow = treeWaiting((l.kids.get(s.id) ?? []).map((k) => k.session_id), fact);
   for (const k of parked) {
     const down = downOf(k);
     const theirs = l.pending.get(k.session_id);
@@ -245,8 +250,24 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   // A running turn whose every call waits on the owner with no card this file knows by name
   // (a program's inner card, a call blocked on agents that ask): the engine's one answer.
   const owner = turn && !asks.length && e.waitsOnOwner?.(s.id) ? { asking: true, owner: true } : {};
-  return { ...owner, asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending, ...live, ...running, ...queue, ...(held ? { held } : {}), failure: failureOf(l.d.store, s) };
+  return { ...owner, asks, agents: l.counts.get(s.id) ?? 0, parked: waitingBelow, pending, ...live, ...running, ...queue, ...(held ? { held } : {}), failure: failureOf(l.d.store, s) };
 }
+
+// An agent's facts for the rule: its record, whether its turn waits for its provider or it waits
+// for a slot, the commands it left running and its own live agents. Read from the lens: no query.
+function agentFact(l: Lens, id: string): AgentFact | undefined {
+  const k = l.self?.get(id) ?? (l.self = selfOf(l)).get(id);
+  if (!k) return undefined;
+  const e = l.d.engine;
+  return {
+    status: k.status,
+    down: k.status === "running" && !!e.outageOf?.(id),
+    inLine: k.status === "waiting" && !!slotGate.inLine?.(id),
+    commands: (l.pending.get(id) ?? []).filter((p) => p.kind === "command").length,
+    kids: (l.kids.get(id) ?? []).map((c) => c.session_id),
+  };
+}
+const selfOf = (l: Lens) => new Map([...l.kids.values()].flat().map((k) => [k.session_id, k]));
 
 // A step that only waits (on an agent, on the owner's answer): its time is the agent's or the owner's, not its own.
 // (What waits on the owner is the engine's answer, Engine.waitsOnOwner; these wait on an agent.)

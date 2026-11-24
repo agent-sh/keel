@@ -252,9 +252,9 @@ export function useAnchor(list: { current: HTMLElement | null }) {
 
 // Whom each count on the line above the list names (Sidebar.tsx keeps them, also
 // while the list is folded); a press on a count, or the key, goes to the next of them.
-export type Kind = "need" | "fail" | "work" | "unread" | "offline";
+export type Kind = "need" | "fail" | "work" | "wait" | "unread" | "offline";
 export type Counts = Record<Kind, string[]>;
-let named: Counts = { need: [], fail: [], work: [], unread: [], offline: [] };
+let named: Counts = { need: [], fail: [], work: [], wait: [], unread: [], offline: [] };
 const last: Partial<Record<Kind, string>> = {};
 const countSubs = new Set<() => void>();
 export const nameCounts = (n: Counts) => { named = n; countSubs.forEach((f) => f()); };

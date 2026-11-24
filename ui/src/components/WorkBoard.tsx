@@ -8,22 +8,19 @@ import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
 import { treeOrder } from "../lib/board-order.ts";
 import { rememberPanel } from "../lib/ui.ts";
-import { useToldStates } from "../lib/watch.ts";
 import { branchGone, type Change } from "../../../src/board/rules.ts";
 import { loadBoard, useBoard, type Board, type BoardRow } from "../lib/board.ts";
 import { failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
+import { useToldStates, type SessionState, type Watch } from "../lib/watch.ts";
+import { STATE_WORD, agentState } from "../../../src/core/state-words.ts";
+import { Mark as StateMark } from "./Mark.tsx";
 
 type Tone = "ok" | "bad" | "wait" | "none";
 const TONE: Record<Tone, string> = { ok: "text-ok", bad: "text-danger", wait: "text-st-work", none: "text-faint" };
-const STATE: Record<string, { word: string; dot: string }> = {
-  running: { word: "working", dot: "animate-pulse bg-st-work" },
-  waiting: { word: "waiting", dot: "bg-st-wait" },
-  completed: { word: "done", dot: "bg-st-done" },
-  incomplete: { word: "incomplete", dot: "bg-st-need" },
-  failed: { word: "failed", dot: "bg-st-fail" },
-  stopped: { word: "stopped", dot: "bg-line-strong" },
-};
+// A card's state is the agent's one status (src/core/state-words.ts agentState): its record with
+// what its session's state says, so an agent that keeps a command going works here as on its row.
+const watchOf = (r: BoardRow, told: SessionState | undefined): Watch => agentState({ status: r.state }, told).watch;
 const short = (b: string) => b.replace(/^keel\//, "");
 const sha = (s: string | null | undefined) => (s ? s.slice(0, 9) : "?");
 
@@ -115,15 +112,14 @@ function Changed({ c, where, testid }: { c: Change; where: string; testid: strin
   );
 }
 
-function Card({ r, below, indent }: { r: BoardRow; below: Board["rows"]; indent: number }) {
-  const st = STATE[r.state] ?? { word: r.state, dot: "bg-line-strong" };
+function Card({ r, below, indent, w }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch }) {
   const reviewing = r.reviews.length > 0;
   return (
-    <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent}>
+    <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent} data-watch={w}>
       <div className="flex min-w-0 items-center gap-2">
-        <span className={cn("size-2 shrink-0 rounded-full", st.dot)} aria-hidden="true" />
+        <StateMark w={w} />
         <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={r.title} data-testid="board-title">{r.title}</button>
-        <span className="shrink-0 text-micro text-muted" data-testid="board-state">{st.word}</span>
+        <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
         <span className="shrink-0 font-mono text-micro text-faint">{r.id}</span>
       </div>
       {r.branch ? (
@@ -176,7 +172,9 @@ export function WorkBoard({ session }: { session: Session }) {
   if (!b) return <p className="k-empty px-3 py-4">{err || "Loading…"}</p>;
   const repo = b.repos.length === 1 ? b.repos[0] : undefined;
   const ordered = treeOrder(b.rows, session.id, Object.fromEntries(b.rows.map((r) => [r.session_id, told[r.session_id]?.watch])));
-  const working = b.rows.filter((r) => r.state === "running" || r.state === "waiting").length;
+  // Working counts the agents that work, by the one status: the tree line under the row counts the same.
+  const watches = new Map(b.rows.map((r) => [r.id, watchOf(r, told[r.session_id])]));
+  const working = b.rows.filter((r) => watches.get(r.id) === "work").length;
   const landed = b.rows.filter((r) => r.landed?.state === "yes").length;
   return (
     <div className="@container flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="work-board">
@@ -199,7 +197,7 @@ export function WorkBoard({ session }: { session: Session }) {
         <p className="k-empty px-1"><b>No agents yet</b>Each agent this session starts shows here with its branch, checks, review and whether it landed, kept from what Keel sees.</p>
       ) : (
         <ul className="flex flex-col gap-2" data-testid="board-rows">
-          {ordered.map(({ row, indent }) => <Card key={row.id} r={row} below={b.rows} indent={indent} />)}
+          {ordered.map(({ row, indent }) => <Card key={row.id} r={row} below={b.rows} indent={indent} w={watches.get(row.id)!} />)}
         </ul>
       )}
       {b.total > b.rows.length && <p className="px-1 text-micro text-faint"><CircleDashed className="mr-1 inline size-3" />{b.total - b.rows.length} older agents are not shown.</p>}

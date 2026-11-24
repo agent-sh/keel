@@ -16,6 +16,8 @@ describe("an agent's now line", () => {
     expect(nowWords({ calls: [{ name: "Bash", input: { command: "bun test" } }] })).toEqual({ text: "Running bun test", from: "tool" });
     expect(nowWords({ calls: [{ name: "Read", input: { file_path: "/w/src/a.ts" } }], cwd: "/w" })).toEqual({ text: "Reading src/a.ts", from: "tool" });
     expect(nowWords({ waits: "a timer" })).toEqual({ text: "Waiting for a timer", from: "wait" });
+    // Parked on nothing but its own commands, it works: the line says what runs, not what it waits for.
+    expect(nowWords({ runs: true })).toEqual({ text: "Command in background", from: "tool" });
     expect(nowWords({})).toEqual({ text: "", from: "none" });
   });
 

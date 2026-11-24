@@ -2,6 +2,8 @@
 // session reads it with keel__work_board in a few hundred tokens, with no model request behind it.
 import { byChild, rootSession } from "../../automation/agents.ts";
 import { WorkBoard } from "../../board/board.ts";
+import { agentCounts, sessionState } from "../../automation/state.ts";
+import { agentState } from "../../core/state-words.ts";
 import { ensureVerdicts, recordVerdict } from "../../board/verdicts.ts";
 import { boardText } from "../../board/rules.ts";
 import { buildInfo } from "../../core/build.ts";
@@ -30,6 +32,19 @@ async function baseOf(repo: string): Promise<string | null> {
   return (await git(repo, ["rev-parse", "-q", "--verify", local], { read: true })).code === 0 ? local : b;
 }
 
+// An agent's state on the board is its one status (src/core/state-words.ts agentState), as the page
+// says it: one parked on a command it left running works. Read for the live rows only.
+function told(b: Awaited<ReturnType<WorkBoard["read"]>>) {
+  const store = current!.store;
+  const counts = agentCounts();
+  const rows = b.rows.map((r) => {
+    if (r.state !== "waiting") return r;
+    const s = store.session(r.session_id);
+    return s && agentState({ status: r.state }, sessionState(s, { counts })).watch === "work" ? { ...r, state: "running" } : r;
+  });
+  return { ...b, rows };
+}
+
 const WorkBoardTool: Tool = {
   name: "keel__work_board",
   readOnly: true,
@@ -52,7 +67,7 @@ const WorkBoardTool: Tool = {
     if (!current) return fail("The work board is not running.");
     if (!current.store.session(ctx.sessionId)) return fail("This session was deleted.");
     const b = await current.board.read(ctx.sessionId);
-    return ok(boardText(b, { all: input?.all === true, agent: typeof input?.agent === "string" && input.agent.trim() ? input.agent.trim() : undefined }));
+    return ok(boardText(told(b), { all: input?.all === true, agent: typeof input?.agent === "string" && input.agent.trim() ? input.agent.trim() : undefined }));
   },
 };
 

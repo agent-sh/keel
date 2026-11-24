@@ -142,6 +142,36 @@ export type WatchFacts = {
 // An agent still at work: running, or waiting on something it set up.
 export const agentLive = (a: { status: string }) => a.status === "running" || a.status === "waiting";
 
+// ---- One status a session. Whether an agent works, decided once here, so a
+// parent, its tree line, its board and its own pane say the same word.
+// An agent works while its turn runs (and its provider answers), and while
+// its turn ended but something of its own still runs: a command it left in
+// the background, or an agent under it that works. It waits (it is parked)
+// only when all it has left is a wait (a timer, a file, a wake of its own, a
+// free slot of its parent's). So a command past the tool's time limit, moved
+// to the background, keeps its agent and every agent above it working, as it
+// keeps a session working (`why: "command"`): "in background" is how it
+// works, not another state, and no parent flips to Waiting while it runs.
+// `status`: the agent's record (running, waiting); `down`: its turn waits for
+// a provider that cannot be reached; `inLine`: it waits for a free slot;
+// `commands`: the commands it left running; `kids`: the live agents it started.
+export type AgentFact = { status: string; down?: boolean; inLine?: boolean; commands?: number; kids?: readonly string[] };
+export function agentWorks(id: string, of: (id: string) => AgentFact | undefined, depth = 0): boolean {
+  const a = of(id);
+  if (!a || !agentLive(a) || a.down || a.inLine) return false;
+  if (a.status === "running") return true;
+  if ((a.commands ?? 0) > 0) return true;
+  // (A tree is bounded by the depth limit: src/core/agent-tree.ts. The bound here only keeps a cycle in bad data finite.)
+  return depth < 32 && (a.kids ?? []).some((k) => agentWorks(k, of, depth + 1));
+}
+// How many agents of a session's tree (`kids`: its own live agents) wait by the rule above: its
+// `parked`, so "Working · 2 of 3 agents" counts what works and no surface counts it another way.
+export function treeWaiting(kids: readonly string[], of: (id: string) => AgentFact | undefined, depth = 0): number {
+  let n = 0;
+  for (const k of kids) n += (agentWorks(k, of) ? 0 : 1) + (depth < 32 ? treeWaiting(of(k)?.kids ?? [], of, depth + 1) : 0);
+  return n;
+}
+
 // Live agents per parent session, from any list of agent records.
 export function liveAgentCounts(agents: Iterable<{ parent_id: string; status: string }>): Record<string, number> {
   const out: Record<string, number> = {};

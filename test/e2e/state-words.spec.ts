@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from ".
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { exited, ownDaemon } from "./peer.ts";
-import { shoot } from "./shots.ts";
+import { openPanel, shoot } from "./shots.ts";
 
 // Feature: one word per state on every surface. A coordinator with eight
 // agents, one in each state, reads the same on the agents' rows under it, on
@@ -159,10 +159,10 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(station(page, coord).getByTestId("failure-entries").first()).toContainText("1 agent failed (billing)");
 
     // Three of its eight agents work: the head says of how many, the total the agents' line starts with,
-    // and the pill beside it counts the five still out (three work, two wait).
+    // and the pill beside it says the five still out in the agents' line's words (three work, two wait).
     await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working · 3 of 8 agents");
     await expect(station(page, coord).getByTestId("station-word")).toHaveText("Working · 3 of 8 agents");
-    await expect(station(page, coord).getByTestId("background-button")).toHaveText("5 in background");
+    await expect(station(page, coord).getByTestId("background-button")).toHaveText("3 working, 2 waiting");
 
     // An agent that ends while neither it nor its parent is on screen is marked on its row until one of them is.
     await row(page, elsewhere).click();
@@ -594,5 +594,81 @@ test("a failure in a pane scrolled off the window is unread and notified; one in
   } finally {
     d.proc.kill();
     await exited(d.proc);
+  }
+});
+
+// One status a session, the same count everywhere: a command left running and an agent that keeps one
+// going are working, never "in background" as a count of their own and never Waiting; what waits is
+// counted by root sessions; a turn that ended while its command runs is not Done.
+test("one status a session: every surface counts working and waiting alike, and a turn that left a command running is not Done", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  // A command that runs until its gate file is there (240 s at most), started in the background.
+  const held = (name: string) => ({ name: "Bash", input: { command: `i=0; until [ -f ${gate(name)} ] || [ $i -ge 800 ]; do i=$((i+1)); sleep 0.3; done; echo ${name}`, run_in_background: true, description: `the ${name} run` } });
+  mkdirSync(gates, { recursive: true });
+  const own = await start(request, "One status: its own command runs on");
+  const lead = await start(request, "One status: its agent keeps a command going");
+  const quiet = await start(request, "One status: its agent waits on a timer");
+  const made = [own, lead, quiet];
+  try {
+    await send(request, own, script([held("own")]));
+    await send(request, lead, script([child("Keep the reindex going", script([held("agent")]))]));
+    await send(request, quiet, script([child("Check back in an hour", script([{ name: "wait_for", input: { kind: "timer", seconds: 3600, note: "check back" } }]))]));
+    for (const id of made) await settle(request, id);
+    // The daemon's one status: the agent parked on its own command works, so its parent works with all its agents.
+    await expect.poll(async () => { const s = await states(request); return [s[own]?.watch, s[own]?.why, s[lead]?.watch, s[lead]?.agents, s[lead]?.parked ?? 0, s[quiet]?.watch]; }, { timeout: 60_000 })
+      .toEqual(["work", "command", "work", 1, 0, "wait"]);
+
+    await page.goto("/");
+    // The home and the line above the list say the same numbers, and they are the daemon's, counted by root session.
+    const counted = async () => {
+      const s = await states(request);
+      const roots = ((await (await request.get("/api/sessions")).json()).sessions as { id: string; parent_id?: string | null; archived?: boolean; settings?: { helper?: boolean } }[])
+        .filter((x) => !x.parent_id && !x.archived && !x.settings?.helper);
+      const n = (w: string[]) => roots.filter((x) => w.includes(s[x.id]?.watch ?? "")).length;
+      const read = async (id: string) => Number((await page.getByTestId(id).locator(".k-sum-n, [data-count]").first().textContent().catch(() => "0")) ?? 0) || 0;
+      const home = async (w: string) => Number(await page.getByTestId(`home-count-${w}`).getAttribute("data-count").catch(() => "0")) || 0;
+      return { api: [n(["work"]), n(["wait", "resume"])], home: [await home("work"), await home("wait")], head: [await read("sum-work"), await read("sum-wait")] };
+    };
+    await expect.poll(async () => { const c = await counted(); return c.home.join() === c.api.join() && c.head.join() === c.api.join() && c.api[0]! >= 2 && c.api[1]! >= 1; }, { timeout: 30_000 }).toBe(true);
+    // No count of its own for a command in the background.
+    await expect(page.getByTestId("home-watch")).not.toContainText("in background");
+
+    // The parent of the agent that keeps a command going: its row, its head, its pill, its tree line and its board say working.
+    await page.goto(`/s/${lead}`);
+    await expect(row(page, lead).getByTestId("row-state")).toHaveText("Working · 1 agent");
+    await expect(station(page, lead).getByTestId("station-word")).toHaveText("Working · 1 agent");
+    await expect(station(page, lead).getByTestId("background-button")).toHaveText("1 working");
+    await expect(row(page, lead).locator("xpath=..").getByTestId("children-toggle")).toHaveAttribute("aria-label", "1 agent: 1 working");
+    await openPanel(page, "board");
+    await expect(page.getByTestId("board-row").getByTestId("board-state")).toHaveText("working");
+    await expect(page.getByTestId("board-summary")).toContainText("1 working");
+    // The parent of the agent on a timer waits, as its agent does.
+    await expect(row(page, quiet).getByTestId("row-state")).toHaveText("Waiting");
+
+    // The turn that left its command running: the Inbox says the turn ended and what still runs, the home counts no Done,
+    // and the alert a desktop notification is made of says the same.
+    const alerts = (await (await request.get("/api/alerts")).json()).alerts as { kind: string; session_id: string; body: string; data?: { live?: { commands: number } } }[];
+    const ended = alerts.find((a) => a.session_id === own && a.kind === "finished");
+    expect(ended?.data?.live).toEqual({ commands: 1 });
+    expect(ended?.body).toMatch(/^Turn ended, 1 command still runs\./);
+    await page.goto("/");
+    await page.getByTestId("inbox-button").click();
+    const item = page.getByTestId("inbox-item").filter({ hasText: "One status: its own command runs on" });
+    await expect(item.getByTestId("inbox-word")).toHaveText("Turn ended");
+    await expect(item.getByTestId("inbox-line")).toHaveText(/^1 command still runs\./);
+    await shoot(page, "state-words-10-one-status-inbox");
+    await page.keyboard.press("Escape");
+    const done = alerts.filter((a) => a.kind === "finished" && !a.data?.live).map((a) => a.session_id);
+    expect(done).not.toContain(own);
+
+    // On a phone the pane's head says the same word.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/s/${lead}`);
+    await expect(page.locator(".k-station[data-helm]").getByTestId("station-word")).toHaveText("Working · 1 agent");
+  } finally {
+    for (const name of ["own", "agent"]) release(name);
+    for (const id of made) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
   }
 });

@@ -13,7 +13,8 @@ import { lockedDaemon } from "../core/daemon-lock.ts";
 import { openUrl } from "../cli/client.ts";
 import { desktopNotifications } from "./desktop.ts";
 import { secretsWaiting } from "../server/routes/secrets.ts";
-import { ASK_KINDS, STATE_WORD, WRONG_KINDS, failWord, limitWord } from "../core/state-words.ts";
+import { ASK_KINDS, STATE_WORD, WRONG_KINDS, failWord, limitWord, stillRuns } from "../core/state-words.ts";
+import { liveJobs, running } from "../tools/jobs.ts";
 import { classOfText } from "../admin/classes.ts";
 import { groupsOf } from "./failures.ts";
 import { exampleOf, OTHERS, SELF } from "./failure-groups.ts";
@@ -694,6 +695,9 @@ const FAR_SESSION = /^[\w-]{1,128}$/;
 function farData(d: unknown): Record<string, any> {
   const out: Record<string, any> = {};
   if (!d || typeof d !== "object") return out;
+  // A finish raised while its session's commands still ran: their count, a small whole number.
+  const live = (d as { live?: { commands?: unknown } }).live?.commands;
+  if (typeof live === "number" && Number.isInteger(live) && live > 0 && live < 10_000) out.live = { commands: live };
   for (const [k, kind] of Object.entries(FAR_DATA)) {
     const v = (d as Record<string, unknown>)[k];
     if (kind === "id" ? typeof v === "string" && v.length > 0 && v.length <= ID_MAX : kind === "text" ? typeof v === "string" : kind === "number" ? typeof v === "number" && Number.isFinite(v) : v === true) {
@@ -1341,5 +1345,11 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   // How long the turn ran: a long one is worth a desktop notice (LONG_TURN_MS).
   const end = all.findLast((e) => e.kind === "turn_end");
   const ran_ms = typeof end?.data.ms === "number" ? end.data.ms : start >= 0 ? Date.now() - all[start]!.ts : undefined;
-  raise("finished", sessionId, title, plainLine(text) || "The turn finished.", event || ran_ms !== undefined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}) } : undefined);
+  // A command the turn left running (one past the tool's time limit, or started in the background) is
+  // the session still at work: not Done. Said as a turn that ended with what still runs; the command's
+  // end starts the next turn, whose end is the finish (and replaces this row while it is unread).
+  const commands = liveJobs().filter((j) => j.sessionId === sessionId && j.background && running(j)).length;
+  const said = plainLine(text) || "The turn finished.";
+  const meta = { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}), ...(commands ? { live: { commands } } : {}) };
+  raise("finished", sessionId, title, commands ? `${stillRuns(commands)}. ${said}` : said, Object.keys(meta).length ? meta : undefined);
 }

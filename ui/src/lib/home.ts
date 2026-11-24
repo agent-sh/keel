@@ -3,14 +3,14 @@
 // (src/core/watch.ts) and whether the owner has looked at a failure since it
 // happened.
 import { askThing, whyText, type SessionState, type Watch } from "../../../src/core/watch.ts";
-import { agentsFailedText, backgroundWord, countWord, inBackground, stateLabel, stateWords, waitsOnOwner } from "../../../src/core/state-words.ts";
+import { agentsFailedText, countWord, stateLabel, stateWords, waitsOnOwner } from "../../../src/core/state-words.ts";
 import { oneLine, SHORT_MAX } from "../../../src/safety/card.ts";
 
 export type Row = { id: string; w: Watch };
 // The headline's parts. `wait` is every session that goes on by itself: one
 // that waits on something it set up, and one a restart cut that Keel resumes.
-// `kind`: the part's own name (a part of sessions that only keep a command going in the background has the mark of work). `text`: how it reads.
-export type Part = { w: "need" | "fail" | "declined" | "work" | "wait" | "stop"; kind: Part["w"] | "background"; ids: string[]; n: number; text: string };
+// `text`: how it reads.
+export type Part = { w: "need" | "fail" | "declined" | "work" | "wait" | "stop"; ids: string[]; n: number; text: string };
 
 // How a count reads in the headline: the vocabulary's count words (src/core/state-words.ts).
 export const say = (w: Part["w"], n: number) => countWord(w, n);
@@ -26,21 +26,13 @@ export const say = (w: Part["w"], n: number) => countWord(w, n);
 type Told = { id: string; st: SessionState };
 export function watchSummary(list: Told[], unseen: ReadonlySet<string>): { head: Part[]; attention: Row[]; working: Row[] } {
   const of = (...w: Watch[]) => list.filter((r) => w.includes(r.st.watch));
-  const by = new Map(list.map((r) => [r.id, r.st]));
   const news = (w: Watch) => of(w).filter((r) => unseen.has(r.id));
   const stopped = of("stop").filter((r) => !!r.st.why);
   const groups: [Part["w"], Told[]][] = [["need", of("need")], ["fail", news("fail")], ["declined", news("declined")], ["work", of("work")], ["wait", of("wait", "resume")], ["stop", stopped]];
   const rows = (g: Told[]): Row[] => g.map((r) => ({ id: r.id, w: r.st.watch }));
   return {
-    head: groups.filter(([, g]) => g.length).map(([w, g]) => ({ w, kind: w, ids: g.map((r) => r.id), n: w === "need" ? waitsOnOwner(g.map((r) => r.st)) : g.length, text: "" }))
-      // A session that only keeps a command going in the background is counted apart from the ones a turn or an agent works in.
-      .flatMap((p): Part[] => {
-        if (p.w !== "work") return [p];
-        const bg = p.ids.filter((id) => inBackground(by.get(id)));
-        const rest = p.ids.filter((id) => !bg.includes(id));
-        return [...(rest.length ? [{ ...p, ids: rest, n: rest.length }] : []), ...(bg.length ? [{ ...p, kind: "background" as const, ids: bg, n: bg.length }] : [])];
-      })
-      .map((p) => ({ ...p, text: p.kind === "background" ? backgroundWord(p.n) : say(p.w, p.n) })),
+    // Every session that works is one count: one that only keeps a command going works too ("in background" is its detail, on its row).
+    head: groups.filter(([, g]) => g.length).map(([w, g]) => ({ w, ids: g.map((r) => r.id), n: w === "need" ? waitsOnOwner(g.map((r) => r.st)) : g.length, text: say(w, w === "need" ? waitsOnOwner(g.map((r) => r.st)) : g.length) })),
     attention: rows([...of("need"), ...news("fail"), ...news("declined"), ...stopped]),
     working: rows([...of("work"), ...of("wait", "resume")]),
   };

@@ -7,6 +7,9 @@
 // the session's own recent output". The decisions here are pure;
 // src/automation/now.ts keeps what they read.
 import { toolKind, toolLine } from "../core/tool-line.ts";
+import { COMMAND_IN_BACKGROUND } from "../core/state-words.ts";
+
+const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
 export const NOW_MS = 15_000;
 const MAX = 160; // characters of a line: a row's width at the widest
@@ -45,6 +48,7 @@ export type Seen = {
   thinking?: string; // the thinking of the current step so far
   calls?: { name: string; input: unknown }[]; // the calls running now, oldest first
   waits?: string; // what it waits on, in words, when it waits
+  runs?: boolean; // its turn ended and only commands it left running go on: it works
   cwd?: string;
 };
 
@@ -76,6 +80,7 @@ export function nowWords(s: Seen): { text: string; from: NowLine["from"] } {
   const call = s.calls?.at(-1);
   // (A call's words are not markdown: a path or a tool name keeps its underscores.)
   if (call) return { text: cut(oneLine(callWords(call.name, call.input, s.cwd))), from: "tool" };
+  if (s.runs) return { text: cap(COMMAND_IN_BACKGROUND), from: "tool" };
   if (s.waits) return { text: cut(`Waiting for ${s.waits}`), from: "wait" };
   return { text: "", from: "none" };
 }

@@ -40,7 +40,7 @@ import { agentFailNews, failedAgentOf, pickRows, rowKind, rowLine, sayMore, watc
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
 import { actions, getState, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow, stateWords } from "../../../src/core/state-words.ts";
+import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow, doneAlert, stateWords } from "../../../src/core/state-words.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { usePress } from "./ApprovalCard.tsx";
@@ -112,7 +112,7 @@ export function WatchHeadline() {
   return (
     <h1 className="k-home-state" data-testid="home-watch">
       {head.map((p) => (
-        <button key={p.kind} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.kind}`} title={`${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
+        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} data-count={p.n} title={`${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
           <Mark w={p.w} />{headCount(p.text)}
         </button>
       ))}
@@ -363,7 +363,7 @@ function List({ title, rows, most, testid, className, counted }: { title: string
 // under the rows that need the owner, so it moves none of those either (one answered there often finishes).
 function Finished() {
   const sessions = useStore((x) => x.sessions);
-  const done = useAuto((x) => [...new Set(x.alerts.filter((a) => a.kind === "finished" && !a.read && a.session_id).map((a) => a.session_id!))].join(" "));
+  const done = useAuto((x) => [...new Set(x.alerts.filter((a) => doneAlert(a) && !a.read && a.session_id).map((a) => a.session_id!))].join(" "));
   const n = done ? done.split(" ").filter((id) => sessions[id] && !sessions[id]!.archived).length : 0;
   if (!n) return null;
   return (
@@ -377,7 +377,7 @@ function Finished() {
 
 export function WatchLists({ className }: { className?: string }) {
   const { attention, working } = useHome();
-  const finished = useAuto((x) => x.alerts.some((a) => a.kind === "finished" && !a.read));
+  const finished = useAuto((x) => x.alerts.some((a) => doneAlert(a) && !a.read));
   if (!attention.length && !working.length && !finished) return null;
   return (
     <div className={className} data-testid="home-lists">

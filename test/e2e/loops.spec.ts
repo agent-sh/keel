@@ -15,7 +15,7 @@ test("loops: /loop, history, pause, run now, calendar", async ({ page, request }
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("loop-notice")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
-  await expect(page.getByTestId("background-button")).toContainText("1 in background");
+  await expect(page.getByTestId("background-button")).toContainText("1 loop");
   await shoot(page, "loops-01-first-run");
 
   await page.getByTestId("background-button").click();

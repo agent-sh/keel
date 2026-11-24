@@ -1,3 +1,4 @@
+import { watchSummary } from "./home.ts";
 import { expect, test } from "bun:test";
 import type { Watch } from "../../../src/core/watch.ts";
 import { after, around, DEFAULT, folders, held, keep, order, pinMark, pinMove, pinnedOrder, readArrange, tally } from "./list-order.ts";
@@ -52,11 +53,20 @@ test("under the hand the list is the one the hand found: what left stays, what c
 test("the counts name the longest wait first, and unread only what no other count has", () => {
   const list = [s("a", 1), s("b", 2), s("c", 3), s("d", 4), s("e", 5)];
   const t = tally(list, { a: { watch: "need", since: 30 }, b: { watch: "need", since: 10 }, c: { watch: "declined" }, d: { watch: "work" }, e: { watch: "done" } }, { a: 2, e: 1 });
-  expect(t).toEqual({ need: ["b", "a"], fail: ["c"], work: ["d"], unread: ["e"] });
+  expect(t).toEqual({ need: ["b", "a"], fail: ["c"], work: ["d"], wait: [], unread: ["e"] });
   expect(after(t.need, null)).toBe("b");
   expect(after(t.need, "b")).toBe("a");
   expect(after(t.need, "a")).toBe("b");
   expect(after([], null)).toBeUndefined();
+});
+
+test("the line above the list counts working and waiting as the home does: a command in the background is working", () => {
+  const list = [s("a", 1), s("b", 2), s("c", 3), s("d", 4)];
+  const states = { a: { watch: "work" as const, why: "tool" }, b: { watch: "work" as const, why: "command" }, c: { watch: "wait" as const, why: "timer" }, d: { watch: "resume" as const } };
+  const t = tally(list, states, {});
+  expect([t.work, t.wait]).toEqual([["a", "b"], ["c", "d"]]);
+  const home = watchSummary(list.map((x) => ({ id: x.id, st: { agents: 0, ...states[x.id as keyof typeof states] } })), new Set());
+  expect(home.head.map((p) => p.text)).toEqual([`${t.work.length} working`, `${t.wait.length} waiting`]);
 });
 
 test("an arrangement kept before the default changed moves to it once, and says so", () => {

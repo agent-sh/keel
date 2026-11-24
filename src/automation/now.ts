@@ -52,7 +52,7 @@ export const track = {
   forget: (id: string) => forget(id),
 };
 // The words of an agent's line from what its turn is doing now.
-export function seenWords(id: string, more: { waits?: string; cwd?: string } = {}) {
+export function seenWords(id: string, more: { waits?: string; runs?: boolean; cwd?: string } = {}) {
   const l = live.get(id);
   return nowWords({ thinking: l?.thinking, calls: l ? [...l.calls.values()] : [], ...more });
 }
@@ -71,8 +71,11 @@ function make(sessionId: string, now = Date.now()): NowLine | undefined {
   const l = live.get(sessionId);
   const s = D().store.session(sessionId);
   const used = agents.usedOf(a, now);
-  const waits = a.status === "waiting" ? agents.waitsOn(a) || "a wait" : undefined;
-  const words = seenWords(sessionId, { waits, cwd: s?.workspace });
+  // Parked on nothing but commands it left running, it works (src/core/watch.ts agentWorks): the line says so, not "Waiting for".
+  const on = a.status === "waiting" ? agents.waitsOn(a) : "";
+  const runs = !!on && !agents.waitsOn(a, { own: false });
+  const waits = a.status === "waiting" && !runs ? on || "a wait" : undefined;
+  const words = seenWords(sessionId, { waits, runs, cwd: s?.workspace });
   return { agent_id: a.id, session_id: sessionId, parent_id: a.parent_id, ...words, steps: used.steps, since: a.task_at ?? a.created, usd: used.usd, ...(used.unpriced ? { unpriced: used.unpriced } : {}), ...(l?.need ? { need: true } : {}), at: now };
 }
 
