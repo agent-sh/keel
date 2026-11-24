@@ -40,7 +40,7 @@ test("checkpoints and rewind", async ({ page, request }) => {
   await openPanel(page, "changes");
   const panel = page.getByTestId("changes-panel");
   await expect(panel.getByTestId("diff-file")).toHaveCount(4);
-  await expect(panel.locator('[data-path="keep.txt"]')).toContainText("outside");
+  await expect(panel.locator('[data-testid="diff-file"][data-path="keep.txt"]')).toContainText("outside");
   // A list of the changed files stands above the diffs: a path jumps to its diff, each row has its own Revert.
   const list = panel.getByTestId("changes-files");
   await expect(list.getByTestId("changes-file")).toHaveCount(4);
@@ -52,7 +52,7 @@ test("checkpoints and rewind", async ({ page, request }) => {
   await shoot(page, "ckpt-01-session-phone");
   // On a short window the last file's diff is below the fold until its path in the list is clicked.
   await page.setViewportSize({ width: 1920, height: 560 });
-  const longHead = panel.locator('[data-path="long.txt"] header');
+  const longHead = panel.locator('[data-testid="diff-file"][data-path="long.txt"] header');
   await expect(longHead).not.toBeInViewport();
   await list.getByRole("button", { name: "Show the diff of long.txt" }).click();
   await expect(longHead).toBeInViewport();
@@ -66,7 +66,7 @@ test("checkpoints and rewind", async ({ page, request }) => {
 
   // Revert one hunk of long.txt: its first line comes back, its last stays changed.
   await panel.getByTestId("tab-session").click();
-  const long = panel.locator('[data-path="long.txt"]');
+  const long = panel.locator('[data-testid="diff-file"][data-path="long.txt"]');
   await expect(long.getByTestId("revert-hunk")).toHaveCount(2);
   await long.getByTestId("revert-hunk").first().click();
   await expect(panel.getByTestId("rewind-done")).toContainText("Reverted 1 file");
