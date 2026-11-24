@@ -73,3 +73,29 @@ test("the list of the branches this worktree made is written by git alone", () =
   expect(gitStoreOf("/r/.git/worktrees/wt/keel-made-branches", s)).not.toBeNull();
   expect(sharedRefusal("echo refs/heads/old-work >> /r/.git/worktrees/wt/keel-made-branches", s.root, "/home/u", s)).not.toBeNull();
 });
+
+test("a command does not write the other object stores git reads, nor make a link in the shared git data", () => {
+  for (const line of [
+    "echo /elsewhere/objects > /r/.git/objects/info/alternates",
+    "printf '/x\\n' | tee /r/.git/objects/info/http-alternates",
+    "cp my-alternates /r/.git/objects/info/alternates",
+    "ln -s /etc/passwd /r/.git/refs/heads/x",
+    "ln -s /etc /r/.git/objects/ab",
+    "ln -sf /etc/passwd /r/.git/objects/pack/pack-1.pack",
+    "ln -s /etc/passwd /r/.git/logs/refs/heads/x",
+    "ln -s /r/.git/worktrees/other /r/.git/worktrees/wt/x",
+    "echo ../../../other > /r/.git/worktrees/wt/commondir",
+    "echo /somewhere/.git > /r/.git/worktrees/wt/gitdir",
+    "echo 'gitdir: /somewhere' > /r/wt/.git",
+  ]) expect([line, refused(line) !== null]).toEqual([line, true]);
+  for (const line of [
+    "ln -s ../shared/node_modules node_modules",
+    "ln -s /r/.git/objects /r/wt/objects-link",
+    "cp /r/.git/objects/info/packs /tmp/packs",
+    "cat /r/.git/objects/info/alternates",
+    "git repack -ad && git gc --auto",
+  ]) expect([line, refused(line)]).toEqual([line, null]);
+  expect(gitStoreOf("/r/.git/objects/info/alternates", s)).toContain("another object store");
+  expect(gitStoreOf("/r/.git/objects/ab/cdef", s)).toBeNull();
+  expect(gitStoreOf("/r/.git/objects/ab", s, true)).toContain("link");
+});

@@ -82,7 +82,8 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       // A write the sandbox refused to an agent with a scope: one question to its parent (src/safety/write-scope.ts).
       if (confined) shut.push(...await g.sandboxRefused(s, said));
       if (watched?.note) activity.record("approval", "sandbox", s.id, watched.note, { call_id: call.id });
-      const text = [watched?.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, ...shut.map((line) => `[sandbox] ${line}`)].filter(Boolean).join("\n\n");
+      if (watched?.planted) activity.record("approval", "sandbox", s.id, watched.planted, { call_id: call.id });
+      const text = [watched?.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, watched?.planted && `[git] ${watched.planted}`, ...shut.map((line) => `[sandbox] ${line}`)].filter(Boolean).join("\n\n");
       if (!text) return;
       // (A result that says the turn was stopped under the call is read by its exact words.)
       if (typeof result.content !== "string") result.content = [...result.content, { type: "text", text }];

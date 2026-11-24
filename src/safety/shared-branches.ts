@@ -9,7 +9,10 @@
 // push . HEAD:main`, `git checkout -B main`, a fetch into main, a rebase of
 // another branch, `git symbolic-ref`, `git fast-import`, or any write in
 // another checkout reached by `-C`, `cd`, `env -C`, `--git-dir`, GIT_DIR or
-// core.worktree. Such a command is refused before it runs, in every mode,
+// core.worktree. It does not write the other object stores git reads
+// (objects/info/alternates) or make a link in the shared git data either;
+// what a script leaves there is set aside after the command (src/safety/plants.ts).
+// Such a command is refused before it runs, in every mode,
 // Full auto included; a branch reaches its base through the landing queue
 // (src/landing/queue.ts), which rebases it, runs the repository's checks and
 // lands it. Claude Code refuses the same for subagents isolated in a worktree
@@ -219,8 +222,17 @@ function configSet(args: string[]): [string, string | undefined] | null {
 // Paths an agent may not write by itself: the repository's git directory but the objects (another checkout's HEAD
 // and index, the shared refs and packed-refs, config, hooks), what in its own says what it has out and where the
 // repository is, and each checkout's .git.
-export function gitStoreOf(p: string, s: Shared): string | null {
-  if (within(join(s.common, "objects"), p)) return null;
+// `link`: the command makes a link (`ln`): none is made anywhere in the shared store.
+export function gitStoreOf(p: string, s: Shared, link = false): string | null {
+  const objects = join(s.common, "objects");
+  if (within(objects, p)) {
+    // What a command writes there by hand is a redirect: another store git reads (objects/info/alternates, http-alternates,
+    // and the rest of info), or a link.
+    if (link) return `${p}, where a link makes git read or write another file`;
+    if (within(join(objects, "info"), p) || /(^|\/)(http-)?alternates$/.test(p)) return `${p}, which makes git in every checkout read another object store`;
+    return null;
+  }
+  if (link && within(s.common, p)) return `${p}, where a link makes git read or write another file`;
   if (within(s.gitDir, p)) return ["HEAD", "commondir", "gitdir", MADE].some((f) => p === join(s.gitDir, f)) ? `${p}, which says what this worktree has out, where its repository is and which branches it made` : null;
   if (within(s.common, p)) return `${p}, in the repository's git directory, which every checkout shares`;
   if (p === join(s.root, ".git")) return `${p}, which says which repository this worktree is in`;
@@ -477,7 +489,7 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
     const written = writtenPaths(part, run);
     for (const t of written) for (const from of dirs[i] != null ? [dirs[i]!] : [null, ...maybe(i)]) {
       const p = pathOf(from, t, home);
-      const what = p === null ? null : gitStoreOf(p, s);
+      const what = p === null ? null : gitStoreOf(p, s, name(words[0]) === "ln");
       if (what) return `writes ${what}`;
     }
     if (!words.length) continue;

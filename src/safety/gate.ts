@@ -23,6 +23,7 @@ import { realPrograms } from "./shims.ts";
 import { readOnlyCommand, shimmedPrograms, splitCommand } from "./shell.ts";
 import { checkoutsOf, report, watch, type Watch } from "./refwatch.ts";
 import { guardEnv } from "./ref-guard.ts";
+import { plantsSaid, scanPlants, settle, type Plants } from "./plants.ts";
 import { setCallEnv } from "../tools/jobs.ts";
 import type { Shared } from "./shared-branches.ts";
 import { configDir } from "../providers/config.ts";
@@ -1432,6 +1433,12 @@ export class Gate {
       const shared = this.sharedOf(session);
       const env = shared ? timed(() => "making the hook that keeps an agent off the shared branches", () => guardEnv(shared)) : {};
       if (Object.keys(env).length) setCallEnv(session.id, call.id, env);
+      // What it leaves in the git data the worktree shares (links, redirect files) is looked for after it (plants.ts).
+      if (shared && !(r.cls.interpreter === undefined && readOnlyCommand(r.cls.command))) {
+        if (this.plantWatches.size >= 256) this.plantWatches.delete(this.plantWatches.keys().next().value!);
+        const { plants, marks } = timed(() => "reading the links and redirect files of the git data an agent's worktree shares", () => scanPlants(shared.common, shared.gitDir));
+        this.plantWatches.set(callKey(session.id, call.id), { common: shared.common, own: shared.gitDir, before: plants, marks });
+      }
     }
     const p = this.perm(session.id);
     let ctx: Partial<ToolCall["ctx"]> | undefined =
@@ -1474,17 +1481,21 @@ export class Gate {
   // what it changed in the repository outside its own branch, in one
   // sentence, or no note.
   private watches = new Map<string, Watch>();
+  private plantWatches = new Map<string, { common: string; own: string; before: Plants; marks: Map<string, number> }>();
   // The refs a session's own commands made in its running turn: deleting or
   // moving one of them again is its own work, and is not reported.
   private ownRefs = new Map<string, Set<string>>();
-  async refsChanged(sessionId: string, callId: string): Promise<{ note?: string } | undefined> {
+  async refsChanged(sessionId: string, callId: string): Promise<{ note?: string; planted?: string } | undefined> {
     const key = callKey(sessionId, callId);
     const w = this.watches.get(key);
     this.watches.delete(key);
-    if (!w) return undefined;
+    const pw = this.plantWatches.get(key);
+    this.plantWatches.delete(key);
+    const planted = pw ? timed(() => "setting aside the links and redirect files a command left in the shared git data", () => plantsSaid(settle(pw.before, scanPlants(pw.common, pw.own, pw.marks).plants, pw.own), pw.common)) : undefined;
+    if (!w) return planted ? { planted } : undefined;
     let own = this.ownRefs.get(sessionId);
     if (!own) this.ownRefs.set(sessionId, (own = new Set()));
-    return { note: await report(w, own) };
+    return { note: await report(w, own), planted };
   }
 
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,
