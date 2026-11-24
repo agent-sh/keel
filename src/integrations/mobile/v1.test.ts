@@ -1333,12 +1333,23 @@ describe("the wire contract", () => {
     // The parent's agent at work: its row counts it.
     store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run("ag-contract", parent.id, s.id, "Fix the build", "general-purpose", "fx:saved", 1, "running", Date.now());
+    // A session at rest whose agent still works: its dot sits in a ring.
+    const resting = session("Resting");
+    store.append(resting.id, "user", { text: "Go" });
+    store.append(resting.id, "turn_end", { reason: "end_turn" });
+    store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("ag-ring", resting.id, failed.id, "Looks", "general-purpose", "fx:saved", 1, "running", Date.now());
     // The owner's helper, its conversation a chat of the list, told of a failure, with a record kept.
     const h = await helperOn();
     h.record("failed", s.id, "Fix the build failed", "HTTP 402: no credit", "feed");
     h.records.put([{ key: "person.dana-levi", value: "Dana Levi, the client", topics: ["clients"] }], "owner");
     // Answers to requests.
-    take("sync", (await call("GET", "/v1/sync?since=0")).body);
+    const first = (await call("GET", "/v1/sync?since=0")).body;
+    take("sync", first);
+    // The row's dot: a session at rest that waits on its agent is the work dot in a ring; one that failed is the failed dot.
+    expect(first.chats.find((c: any) => c.id === resting.id)).toMatchObject({ dot: "work", dot_ring: "agents", dot_word: "Waiting on agents" });
+    expect(first.chats.find((c: any) => c.id === failed.id)).toMatchObject({ dot: "fail", dot_word: "Failed" });
+    expect(first.chats.find((c: any) => c.id === failed.id)).not.toHaveProperty("dot_ring");
     take("helper", (await call("GET", "/v1/helper")).body);
     take("memory", (await call("GET", "/v1/helper/memory")).body);
     // A question from the helper row, asked twice under one id, and its answer: the session it read, named.

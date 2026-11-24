@@ -27,7 +27,7 @@ import { laneOf } from "../../automation/lane.ts";
 import { laneText } from "../../automation/lane-line.ts";
 import { byChild as agentByChild } from "../../automation/agents.ts";
 import { WATCH_LABEL } from "../../core/watch.ts";
-import { stateWords } from "../../core/state-words.ts";
+import { backgroundOf, dotWord, stateWords } from "../../core/state-words.ts";
 import { costLine, costs, rankWaiting, type WaitNow } from "../../core/wait-rank.ts";
 import { lineage } from "../../core/tree.ts";
 import * as push from "./push.ts";
@@ -160,7 +160,7 @@ export function pairLink(base: string, code: string, app: PairApp = "keel") {
 // owner, a turn runs or its agents still work (agents: how many), or how the
 // last turn ended.
 export type ChatStatus = "needs_you" | "working" | "failed" | "stopped" | "done" | "idle";
-export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number; state_word?: string; now?: NowLine | null };
+export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number; state_word?: string; dot?: string; dot_ring?: string; dot_word?: string; now?: NowLine | null };
 
 export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   const c: Record<string, unknown> = {
@@ -173,6 +173,13 @@ export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   // The state in the workbench's own words ("Waiting for a timer", "Declined", "Working: command in
   // background"), beside the six statuses above, which stay as they are: an app that knows the field shows it.
   if (x.state_word) c.state_word = x.state_word;
+  // The row's dot, as the workbench draws it (ui/src/bridge.css .k-mark): the state's own name (`dot`: need, work, wait, fail,
+  // declined, resume, stop, done, idle: declined is a failure the model gave nothing for, wait is a half dot), the ring
+  // around the dot of a session that only waits on what it left going (`dot_ring`: agents or command), and the dot's word
+  // for a reader (`dot_word`). The six statuses above lose the difference between these.
+  if (x.dot) c.dot = x.dot;
+  if (x.dot_ring) c.dot_ring = x.dot_ring;
+  if (x.dot_word) c.dot_word = x.dot_word;
   if (x.failure) c.failure = x.failure;
   if (x.agents) c.agents = x.agents;
   // A live agent's "now" line, flat: what it is doing, its steps, when its task began, its spend, whether it needs the owner.
@@ -501,9 +508,10 @@ export function mobileApi(ctx: MobileCtx) {
   const unread = () => { try { return alerts.unreadCounts().sessions; } catch { return {} as Record<string, number>; } };
   // How the last turn on the shown branch ended, walking back from the head.
   // A failed turn says why, in a line.
-  function status(s: Session): { status: ChatStatus; state_word: string; failure?: string; agents?: number } {
+  function status(s: Session): { status: ChatStatus; state_word: string; dot: string; dot_ring?: string; dot_word: string; failure?: string; agents?: number } {
     const told = statusOf(s);
-    return { ...told.is, state_word: stateWords(told.st).phrase };
+    const ring = backgroundOf(told.st);
+    return { ...told.is, state_word: stateWords(told.st).phrase, dot: told.st.watch, ...(ring ? { dot_ring: ring } : {}), dot_word: dotWord(told.st) };
   }
   function statusOf(s: Session): { st: ReturnType<typeof sessionState>; is: { status: ChatStatus; failure?: string; agents?: number } } {
     // The end of the shown branch, back to the owner's last prompt: how its last turn ended.
