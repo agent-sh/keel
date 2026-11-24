@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from "./isolate.ts";
-import { endsAre, shoot } from "./shots.ts";
+import { choose, endsAre, shoot } from "./shots.ts";
 
 // Feature: the memory system's efficiency, where the owner looks. Settings >
 // Usage has one Memory panel: per recall path, how often memory was added to a
@@ -202,12 +202,12 @@ test("memory usage: a rule is followed until the call it forbids is made, a note
   const panel = page.getByTestId("usage-memory");
   await expect(panel.locator("tbody tr").filter({ hasText: "with a tool call" }).getByTestId("memory-rules-cell")).toContainText("broken");
   await panel.getByTestId("memory-tab-given").click();
-  await panel.getByTestId("memory-session").selectOption(session.id);
+  await choose(panel.getByTestId("memory-session"), session.id);
   await expect(panel.getByTestId("memory-given-held")).toHaveAttribute("data-held", "0");
   await expect(panel.getByTestId("memory-given-held")).toHaveText("broken");
   await shoot(page, "memory-usage-06-rule-broken");
   await panel.getByTestId("memory-tab-unused").click();
-  await panel.getByTestId("memory-session").selectOption(session.id);
+  await choose(panel.getByTestId("memory-session"), session.id);
   const rules = panel.getByTestId("memory-rules");
   await expect(rules).toContainText("0 followed, 1 broken");
   await expect(rules.getByTestId("memory-rules-list").getByTestId("memory-fact-row")).toHaveAttribute("data-name", "standin-rule");
