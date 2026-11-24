@@ -5,7 +5,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { git } from "../core/git.ts";
 import {
-  ProvenanceBook, extractTargets, hostOfRemote, held, inputTargets, wholeTargets,
+  ProvenanceBook, extractTargets, hostOfRemote, held, inputTargets, wholeTargets, withOwn,
   type Hit, type Origin, type Reach, type SourceOf, type Target,
 } from "./provenance.ts";
 
@@ -98,7 +98,7 @@ export class Provenance {
     );
     // What is held before the repository is asked; it is asked (off the loop) only for those.
     const maybe = asked(() => false);
-    if (!maybe.length || !repo) return { hits: maybe, ids };
+    if (!maybe.length || !repo) return { hits: withOwn(maybe, books), ids };
     const mine = new Map<string, boolean>();
     for (const h of maybe) mine.set(h.target.key, await repo.holds(h.target, own));
     // A push names its remote, and what a page named may be only the remote's host: the repository is asked about the remote too.
@@ -111,7 +111,7 @@ export class Provenance {
       if (ownRemote || (own.made.has(h.target.key) && (await repo.hasBranch(h.target.shown)))) mine.set(h.target.key, true);
     }
     void now;
-    return { hits: asked((t) => mine.get(t.key) ?? false), ids };
+    return { hits: withOwn(asked((t) => mine.get(t.key) ?? false), books), ids };
   }
 
   // The targets a text or an input names that outside content named first, for the judge: not only sends.

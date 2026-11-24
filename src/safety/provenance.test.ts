@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { MAX_KEYS, ProvenanceBook, ago, extractTargets, fetchReaches, held, inputTargets, outsideCommand, plainFetcher, refusalOf, serverOf, shellReaches, spilledBy, wholeTargets, type BookEvent, type Origin } from "./provenance.ts";
+import { MAX_KEYS, ProvenanceBook, ago, hostTarget, withOwn, extractTargets, fetchReaches, held, inputTargets, outsideCommand, plainFetcher, refusalOf, serverOf, shellReaches, spilledBy, wholeTargets, type BookEvent, type Origin } from "./provenance.ts";
 import { webShape } from "./web-shape.ts";
 
 const keys = (text: string) => extractTargets(text).map((t) => t.key);
@@ -315,4 +315,29 @@ test("an agent's refusal says what would go through", () => {
   expect(text).toContain("a bare GET");
   expect(text).toContain("no query string");
   expect(text).toContain("tell your parent or the owner");
+});
+
+test("a refusal names the addresses of the host that this session was given, and the age of its own sighting", async () => {
+  const src = (name: string) => (name === "page" ? { linked: true, where: "a WebFetch result" } : name === "Bash" ? { where: "a Bash result" } : undefined);
+  const DAY = 86_400_000;
+  // A session above saw the host four days ago. This one asked for the host itself first, then a page of it linked two articles.
+  const up = new ProvenanceBook(src);
+  await up.take([ev(1, "assistant", use("u1", "Bash", { command: "gh issue view 1" }), 0), ev(2, "tool_result", result("u1", "see https://help.example/notes"), 0)]);
+  const mine = new ProvenanceBook(src);
+  const t = 4 * DAY;
+  await mine.take([
+    ev(1, "assistant", use("c1", "page", { url: "https://help.example/release" }), t),
+    ev(2, "tool_result", result("c1", "newer: https://help.example/en/articles/22 and https://help.example/en/articles/23"), t + 1000),
+  ]);
+  const above = up.get("host:help.example")!;
+  expect(above.cls).toBe("outside");
+  const hit = { target: hostTarget("help.example", "/en/articles/9"), how: "fetch" as const, origin: above };
+  const [h] = withOwn([hit], [mine, up]);
+  const text = refusalOf([h!], t + 60_000);
+  // Before: "help.example: this address first appeared in a Bash result 4 days ago", the tree's, and no way to the right page.
+  expect(text).toContain("first appeared in a WebFetch result 59 s ago in this session");
+  expect(text).toContain("a session above it saw it 4 days ago, in a Bash result");
+  expect(text).toContain("help.example/en/articles/22, help.example/en/articles/23");
+  // Nothing of this session in a host it never linked: the text is the one it was.
+  expect(withOwn([{ ...hit, target: hostTarget("other.example") }], [mine, up])[0]!.own).toBeUndefined();
 });

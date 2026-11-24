@@ -57,6 +57,10 @@ const MAX_TEXT = 8_000_000;
 const CHUNK = 65_536;
 const OVERLAP = 256;
 export const MAX_KEYS = 50_000;
+// How many addresses of one host a book keeps to name in a refusal.
+const LINKED_PER_HOST = 8;
+// How many of them a refusal names.
+const LINKED_SHOWN = 5;
 
 // ---- what a text names ----
 
@@ -496,6 +500,16 @@ export class ProvenanceBook {
     for (const [k, o] of this.first) if ((o.cls === "listed" || o.cls === "outside") && k.startsWith("host:") && groupOf(`https://${k.slice(5)}`) === group) return [k, o];
     return undefined;
   }
+  // The addresses of a host that outside content of this session gave (a search listed them, a page linked them), with when
+  // and where, whoever named the host first: what a refusal tells an agent so it fetches the right one. Never read for a decision.
+  private linked = new Map<string, { at: string; ts: number; where: string }[]>();
+  linkedAt(key: string): { at: string; ts: number; where: string }[] { return this.linked.get(key) ?? []; }
+  private link(key: string, at: string, o: Origin) {
+    const list = this.linked.get(key) ?? [];
+    if (list.length >= LINKED_PER_HOST || at.length > 300 || list.some((x) => x.at === at) || (!list.length && this.linked.size >= MAX_KEYS)) return;
+    list.push({ at, ts: o.ts, where: o.where });
+    this.linked.set(key, list);
+  }
   // The addresses a host's listing gave, for an agent's report.
   listedAddresses(key: string): string[] { return [...(this.listed.get(key) ?? [])]; }
 
@@ -551,6 +565,7 @@ export class ProvenanceBook {
       this.note(t.key, o, e, t.pathq);
       // A search result's address is kept even when the host was first named otherwise: it is what a fetch may ask for.
       if (cls === "listed" && t.pathq !== undefined && this.first.get(t.key)?.cls === "listed") this.listedAt(t.key, t.pathq);
+      if (cls === "listed" && t.kind === "host" && t.pathq !== undefined) this.link(t.key, t.pathq, o);
     }, () => this.tick());
     if (cutText(text) && cls !== "inside" && cls !== "owner") this.markUnbounded(`${where}, which is longer than what is read`, e);
   }
@@ -645,7 +660,33 @@ export class ProvenanceBook {
 
 // ---- the decision ----
 
-export type Hit = { target: Target; how: Reach["how"]; origin: Origin };
+// `own`: what this session itself saw of the target when the sighting that holds it is another session's of the tree: its
+// own first sighting of outside content, and the addresses of the host that its pages and searches gave.
+export type Hit = { target: Target; how: Reach["how"]; origin: Origin; own?: { origin?: Origin; addresses: string[] } };
+
+// Each hit with what the session itself saw (the first book is the session's, the others are the sessions above it).
+export function withOwn(hits: Hit[], books: ProvenanceBook[]): Hit[] {
+  const mine = books[0];
+  if (!mine) return hits;
+  return hits.map((h) => {
+    if (h.origin.unread) return h;
+    const o = mine.get(h.target.key);
+    const first = o && (o.cls === "outside" || o.cls === "listed") && !o.unread ? o : undefined;
+    const addresses: string[] = [];
+    let earliest: Origin | undefined;
+    if (h.target.kind === "host") {
+      for (const [i, b] of books.entries()) for (const l of b.linkedAt(h.target.key)) {
+        if (!addresses.includes(l.at)) addresses.push(l.at);
+        if (i === 0 && (!earliest || l.ts < earliest.ts)) earliest = { cls: "listed", where: l.where, seq: 0, ts: l.ts };
+      }
+    }
+    const origin = first ?? earliest;
+    const same = !!origin && origin.ts === h.origin.ts && origin.where === h.origin.where;
+    const shown = addresses.slice(0, LINKED_SHOWN);
+    if ((!origin || same) && !shown.length) return h;
+    return { ...h, own: { ...(origin && !same ? { origin } : {}), addresses: shown } };
+  });
+}
 
 // The reaches that are held: first seen as outside content, not since said by the owner, not cleared by an answer, not the workspace's.
 // `lookup`: the first sighting over the session and the sessions above it (the owner's wins).
@@ -695,10 +736,16 @@ export function ago(ms: number): string {
 
 const NOUN: Record<TargetKind, string> = { host: "address", email: "email address", remote: "git remote", branch: "branch name" };
 // The sentence for one held target: what it is and where it first appeared.
-export const hitText = (h: Hit, now: number): string =>
-  h.origin.unread
-    ? `${h.target.shown}: this ${NOUN[h.target.kind]} is not one the session has seen, and it read outside content it could not keep whole (${h.origin.where}, ${ago(now - h.origin.ts)})`
-    : `${h.target.shown}: this ${NOUN[h.target.kind]} first appeared in ${h.origin.where} ${ago(now - h.origin.ts)}`;
+export function hitText(h: Hit, now: number): string {
+  if (h.origin.unread) return `${h.target.shown}: this ${NOUN[h.target.kind]} is not one the session has seen, and it read outside content it could not keep whole (${h.origin.where}, ${ago(now - h.origin.ts)})`;
+  const noun = NOUN[h.target.kind];
+  // The session's own sighting, when an earlier one of the tree holds it: the age that matters is this session's.
+  const text = h.own?.origin
+    ? `${h.target.shown}: this ${noun} first appeared in ${h.own.origin.where} ${ago(now - h.own.origin.ts)} in this session (a session above it saw it ${ago(now - h.origin.ts)}, in ${h.origin.where})`
+    : `${h.target.shown}: this ${noun} first appeared in ${h.origin.where} ${ago(now - h.origin.ts)}`;
+  const at = h.own?.addresses.length ? `; this session was given these addresses of ${h.target.shown} by pages or searches it read, fetch one of them: ${h.own.addresses.map((a) => `${h.target.shown}${a}`).join(", ")}` : "";
+  return text + at;
+}
 
 // The reason a card shows or an agent is refused with.
 export function reasonOf(hits: Hit[], now: number): string {

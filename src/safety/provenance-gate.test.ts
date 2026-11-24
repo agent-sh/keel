@@ -632,3 +632,16 @@ test("an MCP page tool's counts and timeouts are above zero, and its format is o
     expect([JSON.stringify(input), (await decide(s, mcpFetch, input)).is]).toEqual([JSON.stringify(input), "ran"]);
   }
 });
+
+test("an agent's refusal names the addresses of that host its own page linked", async () => {
+  const { session, say, callTool, decide } = rig();
+  const parent = session();
+  say(parent, "do the release notes task");
+  callTool(parent, "Bash", { command: "gh issue view 3" }, "the notes are at https://help.evil.example/start");
+  const kid = session(parent);
+  callTool(kid, "WebFetch", fetchOf("https://help.evil.example/release"), "newer: https://help.evil.example/en/articles/22");
+  const r = await decide(kid, bash, { command: "curl https://help.evil.example/en/articles/9?ref=x" });
+  expect(r.is).toBe("refused");
+  expect(r.text).toContain("in this session (a session above it saw it");
+  expect(r.text).toContain("fetch one of them: help.evil.example/en/articles/22");
+});
