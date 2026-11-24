@@ -40,10 +40,10 @@ export async function vettedFetch(u: URL, init: RequestInit, via = "web fetch"):
     row({ bytes: 0, outcome: "failed", why: "the name has no address" });
     throw new Error(`${u.hostname} has no address`);
   }
-  const inside = addresses.find(internalAddress);
-  if (inside) {
+  const bad = addresses.find(internalAddress);
+  if (bad) {
     row({ bytes: 0, outcome: "refused", why: "a name that resolves to a local or private address" });
-    return { refused: `${u.hostname} resolves to a local or private address (${inside}); reach local servers with curl in the shell.` };
+    return { refused: `${u.hostname} resolves to a local or private address (${bad}); reach local servers with curl in the shell.` };
   }
   const bytes = requestBytes({ method: init.method, url: u.href, headers: init.headers, body: init.body });
   let last: unknown;

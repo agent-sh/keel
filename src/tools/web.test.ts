@@ -218,12 +218,12 @@ test("a file the fetch program refuses by its type is fetched here by its type a
 }));
 
 test("a name that resolves inside is refused, whatever its other addresses are, and nothing is sent", () => scene(async ({ dir, answers, led }) => {
-  for (const inside of ["127.0.0.1", "10.0.0.8", "169.254.169.254", "::1", "::ffff:192.168.1.5"]) {
-    answers.splice(0, answers.length, PUBLIC, inside);
+  for (const addr of ["127.0.0.1", "10.0.0.8", "169.254.169.254", "::1", "::ffff:192.168.1.5"]) {
+    answers.splice(0, answers.length, PUBLIC, addr);
     const r = await webFetch(`https://${HOST}/img`, { spillDir: dir });
-    expect(r.error, inside).toBe(true);
-    expect(r.text, inside).toContain("resolves to a local or private address");
-    expect(r.files, inside).toBeUndefined();
+    expect(r.error, addr).toBe(true);
+    expect(r.text, addr).toContain("resolves to a local or private address");
+    expect(r.files, addr).toBeUndefined();
   }
   expect(seen).toEqual([]);
   expect(led.rows.filter((x) => x.via === "web fetch").map((x) => x.outcome)).toEqual(Array(5).fill("refused"));

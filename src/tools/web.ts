@@ -224,12 +224,12 @@ export async function plainFetch(u: URL, o: FetchOpts, signal?: AbortSignal, ref
 // decided from them before anything is read as text.
 async function peek(body: ReadableStream<Uint8Array> | null): Promise<{ head: Uint8Array; rest: ReadableStream<Uint8Array> | null }> {
   if (!body) return { head: new Uint8Array(0), rest: null };
-  const r = body.getReader();
+  const it = chunks(body);
   const held: Uint8Array[] = [];
   let n = 0, done = false;
   while (n < 512 && !done) {
-    const x = await r.read();
-    if (x.done) done = true; else if (x.value) { held.push(x.value); n += x.value.length; }
+    const x = await it.next();
+    if (x.done) done = true; else { held.push(x.value); n += x.value.length; }
   }
   const head = Buffer.concat(held);
   let first = true;
@@ -239,10 +239,10 @@ async function peek(body: ReadableStream<Uint8Array> | null): Promise<{ head: Ui
       async pull(c) {
         if (first) { first = false; if (head.length) { c.enqueue(head); return; } }
         if (done) return c.close();
-        const x = await r.read();
+        const x = await it.next();
         if (x.done) c.close(); else c.enqueue(x.value);
       },
-      cancel: (why) => r.cancel(why),
+      cancel: async () => { await it.return(); },
     }),
   };
 }
