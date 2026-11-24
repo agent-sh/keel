@@ -57,7 +57,9 @@ const LABEL: Partial<Record<ToolKind, [string, string, string]>> = {
 // `peek`: a copy of the call shown while its step is closed: a search hit is not taken by it.
 // `quiet`: why the call is marked is said once above it, for every call marked the same: its own line does not repeat it.
 // `event`: the event the call is of (a program asks for its marks again as it makes calls).
-type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string; lead?: ReactNode; auto?: boolean; peek?: boolean; quiet?: boolean; event?: string };
+// How much of a command a line names while its card is open and others of its step wait too.
+const NAMED_CHARS = 48;
+type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string; lead?: ReactNode; auto?: boolean; peek?: boolean; quiet?: boolean; event?: string; named?: boolean };
 
 function summary(kind: ToolKind, name: string, input: any, cwd?: string): string {
   switch (kind) {
@@ -167,7 +169,7 @@ function useSpillRemoved(sessionId: string | undefined, out: string): boolean {
   return gone;
 }
 
-export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto, peek, quiet, event }: Props) {
+export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto, peek, quiet, event, named }: Props) {
   const hook = hookOf(result);
   // Every call shows the input that ran.
   const use = hook?.input !== undefined ? { ...asked, input: hook.input } : asked;
@@ -180,7 +182,7 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto,
   const kind = toolKind(use.name);
   const input: any = use.input ?? {};
   if (kind === "ask" && !live) return beside(<QuestionCard use={use} result={result} sessionId={sessionId} />);
-  const call = <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} lead={lead} auto={auto} peek={peek} quiet={quiet} hook={hook} asked={asked.input} />;
+  const call = <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} lead={lead} auto={auto} peek={peek} quiet={quiet} named={named} hook={hook} asked={asked.input} />;
   // The app its server drew with the result (an MCP App), under the call.
   const app = peek ? undefined : (result as (ToolResultBlock & { shown?: { mcp_app?: AppShown } }) | undefined)?.shown?.mcp_app;
   // A server asked the owner something while this call runs: a line says so under the call.
@@ -191,7 +193,7 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto,
 const LINE_COMMAND = 72;
 const NO_CALLS: { id: string; result?: unknown }[] = [];
 
-function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, auto, peek, quiet, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
+function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, auto, peek, quiet, named, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
   const { text: out, nested, memory, diagnostics } = useMemo(() => { const m = splitMemory(resultText(result)); const d = EDITS.has(kind) ? splitDiagnostics(m.text) : { text: m.text, diagnostics: [] }; return { ...splitNested(d.text), memory: m.memory, diagnostics: d.diagnostics }; }, [result, kind]);
   const images = resultImages(result);
   const saved = (result as (ToolResultBlock & { shown?: { files?: SavedFile[] } }) | undefined)?.shown?.files;
@@ -284,7 +286,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {hook?.input !== undefined && <><span className="k-line-state k-line-mark" data-tone="warn" data-testid="tool-rewritten">changed by a hook</span>{" "}</>}
           {hook?.allowed !== undefined && hook.input === undefined && <><span className="k-line-state k-line-mark" data-tone="warn" title="A hook of yours allowed it without asking you.">allowed by a hook</span>{" "}</>}
           {/* While its approval card is open the card carries what is asked: the line says only that it waits. */}
-          {state !== "waiting" && <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{what}</span>}
+          {/* (When more than one call of its step waits, each line names its call, trimmed: it matches its card.) */}
+          {(state !== "waiting" || named) && <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{state === "waiting" && what.length > NAMED_CHARS ? `${what.slice(0, NAMED_CHARS).trimEnd()}…` : what}</span>}
         </span>
         <span className="k-line-end">
           {(more > 0 || (plan && plan.length > 0) || (change && changed) || nested.length > 0 || shell.background || shell.session) && <Apart />}

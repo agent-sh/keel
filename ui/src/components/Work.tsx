@@ -195,6 +195,8 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
       </div>
     );
   }
+  // More than one call of the step waits on a card: each line names its call, so it matches its card.
+  const many = (live.waiting?.size ?? 0) > 1;
   const peek = open ? null : peekOf(calls, live, markOf, held, end);
   // Closed, the line names what has no line of its own under it; opened, every call is under it.
   const s = summarize(step, peek ? { ...live, own: new Set([...peek.alone, ...peek.same.flatMap((g) => g.calls)].map((c) => c.id)) } : live);
@@ -220,18 +222,18 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
               {peek.same.map((g) => (
                 <div key={g.why} className="k-peek-same" data-testid="peek-same">
                   <p className="k-peek-why"><span className="k-line-count">{g.calls.length} calls</span><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark">{g.why}</span></p>
-                  {g.calls.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto quiet />)}
+                  {g.calls.map((c) => <ToolCall named={many} key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto quiet />)}
                 </div>
               ))}
               {/* A copy of the call while the step is closed: a search hit is taken by the call itself, once the step opens. */}
-              {peek.alone.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
+              {peek.alone.map((c) => <ToolCall named={many} key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
               {peek.running > 0 && <p className="k-line-more" data-testid="peek-more">and {peek.running} more running</p>}
               {peek.failed > 0 && <p className="k-line-more" data-tone={s.soft ? "note" : "fail"} data-testid="peek-more">and {peek.failed} more failed</p>}
             </div>
           )}
           <Collapsible.Panel className="k-tool-panel overflow-hidden">
             <div className="k-step-calls">
-              {step.items.map((i) => (i.t === "call" ? <ToolCall key={i.id} use={i.use} result={i.result} sessionId={sid} cwd={cwd} /> : i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : null))}
+              {step.items.map((i) => (i.t === "call" ? <ToolCall named={many} key={i.id} use={i.use} result={i.result} sessionId={sid} cwd={cwd} /> : i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : null))}
             </div>
           </Collapsible.Panel>
         </Collapsible.Root>
@@ -247,6 +249,7 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
 // change with each of them.
 function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step; sid: string; cwd?: string; remote: boolean; events: string; live: Live; all: All }) {
   const calls = callsOf(step);
+  const many = (live.waiting?.size ?? 0) > 1;
   const [kept, setOpen] = useKept(`step:${sid}:${step.key}`);
   const open = kept ?? false;
   useEffect(() => { if (all.n) setOpen(all.open); }, [all]);
@@ -285,12 +288,12 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
           {shown && <AgentLines from={from} sid={sid} />}
           {!open && under.length > 0 && (
             <div className="k-step-calls" data-testid="step-peek">
-              {under.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
+              {under.map((c) => <ToolCall named={many} key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
             </div>
           )}
           <Collapsible.Panel className="k-tool-panel overflow-hidden">
             <div className="k-step-calls">
-              {step.items.map((i) => (i.t === "call" ? <ToolCall key={i.id} use={i.use} result={i.result} sessionId={sid} cwd={cwd} /> : i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : <div key={i.id} className="k-aside" data-testid="assistant-text"><Markdown text={i.text} sessionId={remote ? undefined : sid} /></div>))}
+              {step.items.map((i) => (i.t === "call" ? <ToolCall named={many} key={i.id} use={i.use} result={i.result} sessionId={sid} cwd={cwd} /> : i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : <div key={i.id} className="k-aside" data-testid="assistant-text"><Markdown text={i.text} sessionId={remote ? undefined : sid} /></div>))}
             </div>
           </Collapsible.Panel>
         </Collapsible.Root>

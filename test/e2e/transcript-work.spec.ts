@@ -541,6 +541,24 @@ test("a call waiting for approval says so, closed, and asks for no output", asyn
   await request.delete(`/api/sessions/${session.id}`);
 });
 
+test("when more than one call of a step waits, each line names its call", async ({ page, request }) => {
+  const long = "rm -rf second-build-output-folder-with-a-long-name another-folder-that-goes-on";
+  const calls = [{ name: "Bash", input: { command: "rm -rf first-out" } }, { name: "Bash", input: { command: long } }];
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await page.goto(`/s/${session.id}`);
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:batch ${JSON.stringify(calls)}` } });
+  await expect(page.getByTestId("approval").first()).toBeVisible({ timeout: 60_000 });
+  const lines = page.locator('[data-testid="tool-call"][data-tool="Bash"][data-state="waiting"]');
+  await expect(lines).toHaveCount(2);
+  // Each line is its verb, the waiting mark and its command (trimmed): it matches its card.
+  await expect(lines.nth(0).locator(".k-line-what")).toHaveText("rm -rf first-out");
+  await expect(lines.nth(1).locator(".k-line-what")).toHaveText(`${long.slice(0, 48).trimEnd()}…`);
+  await expect(lines.nth(0).getByTestId("call-state")).toHaveAttribute("aria-label", "needs you: an approval");
+  await shoot(page, "work-14-two-waiting");
+  await request.delete(`/api/sessions/${session.id}`);
+});
+
 test("a search hit in a failed call of a folded step opens the step and the call", async ({ page, request }) => {
   const tag = Date.now().toString(36);
   const calls = [{ name: "Bash", input: { command: "echo first" } }, { name: "Bash", input: { command: `echo veto-${tag}; exit 3` } }, { name: "Bash", input: { command: "echo last" } }];
