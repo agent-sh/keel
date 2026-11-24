@@ -36,6 +36,7 @@ export const overlapRoutes: RouteModule = (deps: Deps) => {
       last.set(s.id, now);
       if (last.size > 4096) last.delete(last.keys().next().value!);
       keepMark(store, s.id, now);
+      if (was && (was.tip !== now.tip || was.base !== now.base)) ov.moved(now.repo, s.id);
       const base = ov.baseKnown(now.repo)?.replace(/^refs\/heads\//, "");
       // Its branch moved under this session's call: the session committed to it.
       if (was && was.repo === now.repo && now.branch && was.branch === now.branch && was.tip !== now.tip && now.branch !== base) ov.committed(now.repo, now.branch, s.id);

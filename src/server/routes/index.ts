@@ -43,6 +43,7 @@ import { worktreeRoutes } from "./worktrees.ts";
 import { overlapRoutes } from "./overlaps.ts";
 import { landingRoutes } from "./landing.ts";
 import { boardRoutes } from "./board.ts";
+import { treeReviewRoutes } from "./tree-review.ts";
 import { reviewRoutes } from "./reviews.ts";
 import { prReviewRoutes } from "./pr-reviews.ts";
 import { turnRoutes } from "./turns.ts";
@@ -105,6 +106,7 @@ const modules: Record<string, RouteModule> = {
   overlapRoutes, // after worktrees: it reads the worktrees table
   landingRoutes, // after overlapRoutes: the queue orders and warns by its forecast
   boardRoutes, // after landingRoutes: the board reads the base the queue lands on
+  treeReviewRoutes, // after boardRoutes: the tree review reads the board, the forecast and the queue
   reviewRoutes,
   prReviewRoutes, // after reviews: it reads the reviewer model they keep; after permissions: its sessions are read-only
   turnRoutes,

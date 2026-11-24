@@ -109,6 +109,11 @@ export class Overlaps {
   private empty = new Map<string, string>(); // repo → its empty tree's id (sha1 or sha256)
   private own = new Map<string, Set<string> | null>(); // `${tip} ${baseTip}` → the files the branch changed since it left the base
 
+  private movedBy = new Set<(repo: string, sessionId: string) => void>();
+  // Who hears that a session's call moved its branch tip (the tree review of its tree).
+  onMoved(f: (repo: string, sessionId: string) => void) { this.movedBy.add(f); return () => void this.movedBy.delete(f); }
+  moved(repo: string, sessionId: string) { for (const f of this.movedBy) f(repo, sessionId); }
+
   constructor(private store: Store, private teller: Teller) {
     store.migrate(SCHEMA);
     if (!store.columnExists("overlap_pairs", "raw")) store.migrate("ALTER TABLE overlap_pairs ADD COLUMN raw TEXT");
@@ -323,7 +328,7 @@ export class Overlaps {
 
   // The options that leave every attribute out of a call: an empty tree as
   // the attribute source, and no attributes file of the owner's.
-  private async noAttrs(repo: string): Promise<string[]> {
+  async noAttrs(repo: string): Promise<string[]> {
     let tree = this.empty.get(repo);
     if (!tree) {
       const r = await git(repo, ["hash-object", "-t", "tree", "--stdin"], { read: true, input: "" });
@@ -332,6 +337,24 @@ export class Overlaps {
       this.empty.set(repo, tree);
     }
     return ["--attr-source", tree, "-c", "core.attributesFile=/dev/null"];
+  }
+
+  // What git's merge of two tips says, for a reader outside a pass (the tree review, src/board/tree-review.ts):
+  // the merge runs in a folder of objects of its own, removed after it, with no attribute of anyone's.
+  async mergeTips(repo: string, ta: string, tb: string): Promise<Result> {
+    const w = locate(repo);
+    if (!w) return { error: "not a git repository" };
+    const dir = join(this.store.stateDir, "overlap-objects");
+    mkdirSync(dir, { recursive: true });
+    const objects = mkdtempSync(join(dir, "read-"));
+    try {
+      mkdirSync(join(objects, "info"), { recursive: true });
+      const env = { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(w.common, "objects") };
+      const mt = await git(repo, [...(await this.noAttrs(repo)), "merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", ta, tb], { read: true, env });
+      return parseMergeTree(mt.out, mt.code, mt.err);
+    } finally {
+      rmSync(objects, { recursive: true, force: true });
+    }
   }
 
   // Whether landing `tip` changes the base: its merge with the base is

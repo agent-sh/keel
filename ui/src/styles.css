@@ -104,6 +104,16 @@
   --series-2: #eb6834;
   --series-3: #1baf7a;
 
+  /* A branch's mark in the tree review (ui/src/components/TreeReview.tsx), in
+     the order its branches are listed; made of the tokens above, so each theme
+     gets its own. A mark always sits beside the branch's name. */
+  --lane-1: var(--series-1);
+  --lane-2: var(--series-2);
+  --lane-3: var(--series-3);
+  --lane-4: var(--st-need);
+  --lane-5: var(--syn-keyword);
+  --lane-6: var(--syn-type);
+
   /* Where the hours went (src/admin/hours-rows.ts): one color a class, in
      families. Working is the chart series, waiting on others the steel blue
      of Waiting in three strengths, the owner violet, failures red, Keel's own

@@ -16,6 +16,7 @@ import type { SettleAsk } from "../engine/compact.ts";
 import { readHours, type HoursAsk } from "../admin/hours-read.ts";
 import { checkDrivers, driversOf, type DriversAsk } from "../admin/cost-drivers.ts";
 import { boardChecks, boardFacts } from "../board/facts.ts";
+import { parseDiff } from "../board/tree.ts";
 import { earlierCandidates, earlierOutcomes } from "../automation/earlier-facts.ts";
 import { priceFactsRead } from "../engine/price-facts.ts";
 import { pressReport } from "../admin/presses.ts";
@@ -59,6 +60,8 @@ export const tasks = {
   // and the check runs on their heads' trees.
   "board.facts": (db: Database, a: { root: string }) => boardFacts(db, a),
   "board.checks": (db: Database, a: { trees: string[] }) => boardChecks(db, a),
+  // One branch head's diff against the base, parsed for the tree review (src/board/tree-review.ts).
+  "tree.parse": (_db: Database, a: { text: string }) => parseDiff(a.text),
   // The agents of a repository with their task words, and what the review and landing rows say of some branches (src/automation/earlier.ts).
   "agents.earlier": (db: Database, a: { repo: string; skip?: string[] }) => earlierCandidates(db, a),
   "agents.earlierOutcomes": (db: Database, a: { repo: string; branches: string[]; agents: string[] }) => earlierOutcomes(db, a),

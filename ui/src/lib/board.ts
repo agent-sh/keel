@@ -29,7 +29,7 @@ export function loadBoard(id: string, fresh = false): Promise<void> {
 }
 
 // The agents of the tree as the page knows them, as one word: it changes when one starts, ends or changes state.
-function useTreeMark(root: string): string {
+export function useTreeMark(root: string): string {
   return useAuto((s) => {
     const kids = new Map<string, { id: string; session_id: string; status: string; ended?: number | null }[]>();
     for (const a of Object.values(s.agents)) kids.set(a.parent_id, [...(kids.get(a.parent_id) ?? []), a]);

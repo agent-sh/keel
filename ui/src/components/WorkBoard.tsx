@@ -2,19 +2,22 @@
 // head, and four facts the daemon keeps of it (src/board/board.ts): the named checks on its head's tree,
 // the latest review of its branch, whether the base holds it, and whether what runs holds it. A
 // reviewer's words (its verdict's why, or its LAND line) are quoted under its card as its own.
-import { Check, CircleDashed, FileDiff, GitBranch, GitMerge, Loader2, Minus, RefreshCw, X } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { Check, CircleDashed, FileDiff, GitBranch, GitMerge, GitPullRequestArrow, Loader2, Minus, RefreshCw, X } from "lucide-react";
+import { lazy, Suspense, useState, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
 import { treeOrder } from "../lib/board-order.ts";
 import { rememberPanel } from "../lib/ui.ts";
-import { branchGone, type Change } from "../../../src/board/rules.ts";
+import { branchGone, toLand, type Change } from "../../../src/board/rules.ts";
 import { loadBoard, useBoard, type Board, type BoardRow } from "../lib/board.ts";
 import { failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { useToldStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { STATE_WORD, agentState } from "../../../src/core/state-words.ts";
 import { Mark as StateMark } from "./Mark.tsx";
+
+// The tree review: every agent's branch as one diff by area (TreeReview.tsx), read when it opens.
+const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
 
 type Tone = "ok" | "bad" | "wait" | "none";
 const TONE: Record<Tone, string> = { ok: "text-ok", bad: "text-danger", wait: "text-st-work", none: "text-faint" };
@@ -206,6 +209,7 @@ export function WorkBoard({ session }: { session: Session }) {
   const told = useToldStates();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [reviewing, setReviewing] = useState(false);
   const refresh = () => {
     setBusy(true);
     setErr("");
@@ -229,6 +233,12 @@ export function WorkBoard({ session }: { session: Session }) {
             {repo?.deploys.map((d) => <span key={d.how}> · live at <span className="font-mono">{sha(d.sha)}</span> ({d.how})</span>)}
           </p>
         </div>
+        {b.rows.some((r) => toLand(r)) && (
+          <button type="button" onClick={() => setReviewing(true)} data-testid="board-review-tree" title="Every agent's branch as one diff by area: land, send back or drop each area"
+            className="k-btn">
+            <GitPullRequestArrow /> Review the tree
+          </button>
+        )}
         <button type="button" onClick={refresh} disabled={busy} data-testid="board-refresh"
           className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
           <RefreshCw className={cn("size-3.5", busy && "animate-spin")} /> Refresh
@@ -244,6 +254,7 @@ export function WorkBoard({ session }: { session: Session }) {
       )}
       {b.total > b.rows.length && <p className="px-1 text-micro text-faint"><CircleDashed className="mr-1 inline size-3" />{b.total - b.rows.length} older agents are not shown.</p>}
       <p className="px-1 text-micro text-faint">Read {ago(b.at)} in {b.took_ms} ms, from git, the check ledger and the landing queue.</p>
+      {reviewing && <Suspense fallback={null}><TreeReviewDialog session={session} onClose={() => { setReviewing(false); loadBoard(session.id, true).catch(() => {}); }} /></Suspense>}
     </div>
   );
 }

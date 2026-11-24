@@ -25,7 +25,11 @@ export const feedTopic = (name: string) => `f:${name}`;
 // while a view shows the tree's rows (the sidebar's tree under a session).
 export const treeFeed = (root: string) => `tree:${root}`;
 const TREE_FEED = /^tree:[\w-]{1,200}$/;
-export const isFeed = (name: string) => (FEEDS as readonly string[]).includes(name) || TREE_FEED.test(name);
+// A feed of one tree's review (src/board/tree-review.ts): that a branch head of the tree moved, named by
+// the tree's root while the page's review of it is up.
+export const reviewFeed = (root: string) => `review:${root}`;
+const REVIEW_FEED = /^review:[\w-]{1,200}$/;
+export const isFeed = (name: string) => (FEEDS as readonly string[]).includes(name) || TREE_FEED.test(name) || REVIEW_FEED.test(name);
 export const feedNames = (list: unknown, max = 512): string[] => (Array.isArray(list) ? list.filter((x): x is string => typeof x === "string" && isFeed(x)).slice(0, max) : []);
 export const isScoped = (topic: string) => topic === EVERY || topic === ROWS || topic === LIST_ROWS || topic.startsWith("s:") || topic.startsWith("f:");
 // A session of another daemon, as this daemon's pages name it (ui/src/lib/fleet-ids.ts).
@@ -83,6 +87,7 @@ export function route(f: Frame): Route {
       // The dollar caps' figures (src/automation/caps.ts): the rows and headers that show a capped session read
       // them (a feed they name while they are up), a frame only when one changed.
       if (f.name === "caps") return { topics: [feedTopic("caps"), EVERY] };
+      if (f.name === "tree_review" && f.session_id) return { topics: [feedTopic(reviewFeed(f.session_id)), EVERY] };
       // What the agents of one tree are doing now: to the views of the sessions that started them
       // (their agent lines) and to a view of the tree's rows, never to every socket.
       if (f.name === "agents_now" && f.session_id) {
