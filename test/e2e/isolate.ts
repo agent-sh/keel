@@ -16,6 +16,7 @@
 // made meanwhile may be theirs, so nothing is removed there (scratch.ts).
 // A removal the daemon refuses fails the test, as a refused restoration does.
 import { test as base, type APIRequestContext } from "@playwright/test";
+import { stopStrays } from "./own-daemon.ts";
 import { isScratch } from "./scratch.ts";
 
 export * from "@playwright/test";
@@ -128,7 +129,18 @@ const scratchDaemon = (request: APIRequestContext) => (scratch ??= (async () => 
   return isScratch({ argv: daemon.argv, state_dir: daemon.state_dir, home: boot.home, providers: ((models.providers ?? []) as { id: string }[]).map((p) => p.id) });
 })());
 
-export const test = base.extend<{ daemonSettings: void; ownSessions: void; leftBehind: void }>({
+export const test = base.extend<{ daemonSettings: void; ownSessions: void; leftBehind: void }, { strays: void }>({
+  // The last thing a worker does: whatever the spec's own daemons started and left running (a command a killed
+  // daemon could not end, a daemon a failed spec did not stop) ends with the worker. A spec stops what it
+  // started itself; this is for the one that failed before it did.
+  strays: [
+    async ({}, use) => {
+      await use();
+      const n = stopStrays();
+      if (n) console.warn(`${n} process${n === 1 ? "" : "es"} of the spec daemons ${n === 1 ? "was" : "were"} left running and ${n === 1 ? "was" : "were"} stopped at the end of the run.`);
+    },
+    { scope: "worker", auto: true },
+  ],
   // Set up first and looked at last, after the sessions went and the settings were put back.
   leftBehind: [
     async ({ request }, use, info) => {

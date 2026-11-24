@@ -39,6 +39,9 @@ export const SPIKE_WINDOW_MS = 10 * 60_000;
 export const SPIKE_COUNT = 5;
 // A captured failure the spike counts: a new one, not a repeat a row already said (ErrorPlace.repeat).
 export const spikeCounts = (c: { repeat?: true }) => !c.repeat;
+// A row that tells the owner of a thing and is no failure (a job scope of another daemon, said once): it counts
+// toward no spike of failures. Its capture says so in its context.
+export const isNotice = (e: { context?: unknown }): boolean => (e.context as { notice?: unknown } | undefined)?.notice === true;
 
 export function spike(times: number[], ts: number, windowMs: number, threshold: number): { times: number[]; spiked: boolean } {
   const kept = [...times.filter((t) => ts - t < windowMs), ts];

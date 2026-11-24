@@ -47,7 +47,7 @@ async function first(root: string, mode: "gone" | "archived" | "build" | "old") 
 }
 // A later daemon over `root`, as a process of its own.
 function later(root: string, ...args: (string | number)[]) {
-  const b = Bun.spawnSync([process.execPath, RUN, args.length === 1 ? "b" : "c", root, ...args.map(String)], { stdout: "pipe", stderr: "inherit", env: process.env });
+  const b = Bun.spawnSync([process.execPath, RUN, args.length <= 2 ? "b" : "c", root, ...args.map(String)], { stdout: "pipe", stderr: "inherit", env: process.env });
   return JSON.parse(b.stdout.toString().trim().split("\n").at(-1)!);
 }
 const fresh = () => mkdtempSync(join(tmpdir(), "keel-scopes-"));
@@ -95,8 +95,33 @@ test.skipIf(!scoped.slice)(`another state folder's scope is never taken, by a re
     expect(out.views).toEqual([]);
     expect(out.held.others.scopes).toBeGreaterThanOrEqual(1);
     expect(out.lines).toEqual([]);
+    // Listed for the owner with what it holds (the page's list), never signalled.
+    const mine = out.foreign.find((f: any) => f.cgroup === b.cgroup);
+    expect(mine).toMatchObject({ unit: b.cgroup.split("/").at(-1), tasks: 1, commands: [`sleep 900.${b.tag}`] });
+    expect(mine.memory_bytes).toBeGreaterThanOrEqual(0);
   }
   expect(ours(b.tag).length).toBe(1);
+}, 60_000);
+
+test.skipIf(!scoped.slice)(`a scope refused is said once for its record across starts, listed as foreign, and stopped only by the owner's act${needs}`, async () => {
+  const b = await first(fresh(), "archived");
+  const record = JSON.parse(readFileSync(b.record, "utf8"));
+  // A: a record of its own naming B's job, its start and its scope: the scope is the one of another daemon's.
+  const a = fresh();
+  const forged = join(a, "state", "spill", "forged-session", "jobs");
+  cpSync(b.record.replace(/\.json$/, ".log"), join(forged, `${b.job}.log`));
+  writeFileSync(join(forged, `${b.job}.json`), JSON.stringify({ ...record, sessionId: "forged-session", pid: 999_999, reported: true, ended: Date.now(), exit_code: 0 }));
+  const t0 = Date.now();
+  // Each start is a daemon of its own over the same store: the first says it, the next ones do not.
+  const starts = [later(a, t0), later(a, t0 + 1000), later(a, t0 + 2000)];
+  expect(starts.map((s) => s.said.includes(b.cgroup))).toEqual([true, false, false]);
+  expect(starts.every((s) => s.refused.length >= 1)).toBe(true);
+  // The owner's stop of it, as listed: only that scope, and its process ends.
+  expect(ours(b.tag).length).toBe(1);
+  const out = later(a, t0 + 3000, b.tag);
+  expect(out.stop).toEqual({ stopped: true, left: [] });
+  expect(out.after).not.toContain(b.cgroup);
+  expect(ours(b.tag)).toEqual([]);
 }, 60_000);
 
 test.skipIf(!scoped.slice)(`a scope with a process someone put in it is kept${needs}`, async () => {

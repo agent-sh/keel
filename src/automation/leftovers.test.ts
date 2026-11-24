@@ -488,6 +488,23 @@ test("the work note says the tip, the commits behind, the conflict with the base
   }
 });
 
+test("a job scope that is not this daemon's job is said once for the scope and its record's mark, across restarts", () => {
+  const dir = join(root, "foreign-told");
+  let store = new Store(dir);
+  leftovers.migrate(store);
+  const cg = "/sys/fs/cgroup/user.slice/app.slice/keel-job-b1-abcdef.scope";
+  expect(leftovers.foreignFirst(store, cg, "b1.100")).toBe(true);
+  expect(leftovers.foreignFirst(store, cg, "b1.100")).toBe(false);
+  // Another record's mark over the same scope, and another scope with the same mark, are new.
+  expect(leftovers.foreignFirst(store, cg, "b1.200")).toBe(true);
+  expect(leftovers.foreignFirst(store, `${cg}x`, "b1.100")).toBe(true);
+  // Every start is a new daemon over the same store: it says nothing again.
+  store.db.close();
+  store = new Store(dir);
+  for (let start = 0; start < 5; start++) expect(leftovers.foreignFirst(store, cg, "b1.100")).toBe(false);
+  store.db.close();
+});
+
 test("a stop of a command's scope is told once for its key, across a restart, and to the parent when its session is gone", () => {
   const dir = join(root, "told");
   let store = new Store(dir);

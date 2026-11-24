@@ -422,6 +422,9 @@ export type Survey = {
   processes: { session_id: string; title: string; agent?: { id: string; status: string }; job_id: string; command: string; cwd: string; started: number; running: boolean; pids: number[]; ports: number[]; contain?: string; earlier?: boolean; scope?: Omit<scopes.ScopeView, "job_id" | "session_id"> }[];
   // What the job scopes left running hold, and the job scopes of other daemons (no record here: never touched).
   held?: scopes.Held;
+  // The job scopes that run and are not this daemon's job (another daemon's, or one whose processes carry another
+  // daemon's mark): what each holds. Keel never signals one by itself; the owner stops it here.
+  foreign?: Awaited<ReturnType<typeof scopes.foreignScopes>>;
   worktrees: { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string }[];
   branches: { repo: string; top: string; name: string; sha: string; at: number; base?: string; ahead?: number; behind?: number; merged: boolean; by?: By }[];
   repos: string[];
@@ -491,7 +494,7 @@ export async function survey(c: Ctx, o: { extra?: string[]; only?: string } = {}
   const title = (sid: string) => store.session(sid)?.title || sid;
   // What the job scopes hold, measured within the last 15 seconds (scopes.ts measures once a minute).
   if (!o.only) await scopes.fresh(15_000);
-  const out: Survey = { processes: [], worktrees: [], branches: [], repos: [], held: scopes.heldNow() };
+  const out: Survey = { processes: [], worktrees: [], branches: [], repos: [], held: scopes.heldNow(), foreign: o.only ? undefined : await scopes.foreignScopes().catch(() => []) };
   const since = Date.now() - process.uptime() * 1000;
   // Commands with processes alive, except the one a running turn waits on in front and the owner's own.
   const candidates = allJobs().filter((j) => j.by !== "owner" && !(!j.background && j.ended === undefined && c.isRunning(j.sessionId)));
@@ -563,6 +566,9 @@ export async function stopLeft(sessionId: string, jobId: string, store?: Store):
   return { stopped: !left.length, left };
 }
 
+// The owner's stop of a job scope that is not this daemon's job, as it was listed (its marks).
+export const stopForeign = (cgroup: string, marks: string[]) => scopes.stopForeign(cgroup, { marks });
+
 // The owner's mark on a command left running: kept, its scope is never stopped by Keel (scopes.ts).
 export function keepLeft(store: Store, sessionId: string, jobId: string, keep: boolean): { keep: boolean } {
   if (!findJob(sessionId, jobId)) throw new Error("no such command");
@@ -593,6 +599,14 @@ export function tellLeft(store: Store, sessionId: string, line: string, key: str
   store.db.query("DELETE FROM scope_told WHERE at < ?").run(now - TOLD_DAYS * 86_400_000);
   seen(to, to === sessionId ? line : `Of an agent's session that is gone: ${line}`);
   return to;
+}
+// A job scope that is not this daemon's job, said once for the scope and the mark of the record that names it,
+// across restarts (the told keys above). True the first time only.
+export function foreignFirst(store: Store, cgroup: string, mark: string): boolean {
+  const now = Date.now();
+  const first = store.db.query("INSERT OR IGNORE INTO scope_told (key, at) VALUES (?, ?)").run(`foreign:${cgroup}:${mark}`, now).changes > 0;
+  if (first) store.db.query("DELETE FROM scope_told WHERE at < ?").run(now - TOLD_DAYS * 86_400_000);
+  return first;
 }
 export const keeps = (store: Store) => new Set(store.db.query<{ job_id: string }, []>("SELECT job_id FROM scope_keeps").all().map((r) => r.job_id));
 

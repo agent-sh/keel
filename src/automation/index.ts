@@ -102,7 +102,12 @@ function init(deps: Deps) {
     tell: (sid, line, key) => void leftovers.tellLeft(deps.store, sid, line, key, (to, l) => failures.seen(to, "tool", "left running", l)),
     loadIdle: () => leftovers.loadIdle(deps.store),
     saveIdle: (m) => leftovers.saveIdle(deps.store, m),
-    refused: (file, why) => deps.errors.capture("tool", new Error(`A job scope was not taken over: ${why}. Nothing was signalled for it. The record: ${file}`), { at: "adopt scopes" }, { group: "a job scope was not taken over" }),
+    // Said once for the scope and its record's mark, across restarts; it is a notice (no spike of failures), and the scope
+    // is listed in Settings > Leftovers with what it holds, where the owner stops it.
+    refused: (file, why, scope) => {
+      if (!leftovers.foreignFirst(deps.store, scope.cgroup, scope.mark)) return;
+      deps.errors.capture("tool", new Error(`A job scope was not taken over: ${why}. Nothing was signalled for it. It is listed in Settings > Leftovers, where you can stop it. The record: ${file}`), { at: "adopt scopes", notice: true, scope: scope.cgroup }, { group: "a job scope was not taken over" });
+    },
   });
   waits.migrate();
   loops.migrate();
@@ -605,6 +610,10 @@ export const automationRoutes: RouteModule = (deps) => {
     // live session holds. Each act is the owner's, one item at a time, checked again before it is made.
     "/api/leftovers": {
       GET: () => attempt(async () => json(await leftovers.survey(leftCtx()))),
+    },
+    // A job scope that is not this daemon's job, stopped by the owner as it was listed (its marks).
+    "/api/leftovers/foreign/stop": {
+      POST: (req: any) => attempt(async () => { const b = await body(req); return json(await leftovers.stopForeign(String(b.cgroup ?? ""), Array.isArray(b.marks) ? b.marks.map(String) : [])); }),
     },
     "/api/leftovers/stop": {
       POST: (req: any) => attempt(async () => { const b = await body(req); return json(await leftovers.stopLeft(String(b.session_id ?? ""), String(b.job_id ?? ""), store)); }),

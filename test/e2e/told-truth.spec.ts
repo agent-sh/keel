@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { sessionsFolder, specEnv, TACIT_STANDIN } from "./own-daemon.ts";
+import { sessionsFolder, specEnv, stopStrays, TACIT_STANDIN } from "./own-daemon.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -475,5 +475,9 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     // The commands that outlive a daemon are stopped with the test.
     for (const id of commands) for (const j of await jobsOf(id).catch(() => [])) if (j.running) await call(`/api/sessions/${id}/jobs/${j.id}/stop`, {}).catch(() => {});
     d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    // The commands the kills left running (the ones waiting on a gate the spec did not get to open, and the long
+    // sleeps) are not the daemon's to end any more: they end here, not when some run is over.
+    stopStrays(state);
   }
 });

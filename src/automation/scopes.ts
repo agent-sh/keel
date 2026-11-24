@@ -18,8 +18,9 @@
 import { readFile, readdir, readlink } from "node:fs/promises";
 import { clientsOf, portsOf } from "../fleet/portal.ts";
 import { timed } from "../admin/stall.ts";
-import { adoptScopes, allJobs, jobLive, ownStart, processesOf, scopeEnvs, scopeHoldsSelf, scopeWhy, stateIdOf, stopJob, type Job } from "../tools/jobs.ts";
+import { adoptScopes, allJobs, jobLive, markOf, ownStart, processesOf, scopeEnvs, scopeHoldsSelf, scopeWhy, stateIdOf, stopJob, type Job, type Refused } from "../tools/jobs.ts";
 import * as rules from "./leftover-rules.ts";
+import * as foreign from "./foreign-scopes.ts";
 
 export const PASS_MS = 60_000;
 
@@ -40,7 +41,8 @@ export type Ctx = {
   keeps: () => Set<string>;
   // One line to the session's failures scope, once for each `key` (across restarts too).
   tell: (sessionId: string, line: string, key: string) => void;
-  refused?: (file: string, why: string) => void;
+  // A record a scope names that this daemon did not take over, with the scope and the record's mark.
+  refused?: Refused;
   // The idle marks the last daemon kept (by scope, and by build daemon), and this pass's to keep.
   loadIdle?: () => Map<string, rules.IdleMark>;
   saveIdle?: (marks: Map<string, rules.IdleMark>) => void;
@@ -54,6 +56,17 @@ let held: Held = { scopes: 0, memory_bytes: 0, others: { scopes: 0, memory_bytes
 // scopes it found not to be its jobs' (said once).
 const tried = new Set<string>();
 const doubted = new Set<string>();
+// The job scopes that run and are not this daemon's job, as the last pass found them (cgroup), and why a record
+// that names one was refused. The owner reads them, with what each holds, in Settings > Leftovers.
+let foreignNow = new Set<string>();
+const foreignWhy = new Map<string, string>();
+export const foreignScopes = () => foreign.list(foreignNow, foreignWhy);
+// The owner's stop of one of them (foreign-scopes.ts checks it against what was shown).
+export async function stopForeign(cgroup: string, seen: { marks: string[] }) {
+  const r = await foreign.stop(cgroup, seen, foreignNow);
+  if (r.stopped) foreignNow.delete(cgroup);
+  return r;
+}
 
 export const viewOf = (jobId: string) => views.get(jobId);
 export const heldNow = () => held;
@@ -98,7 +111,8 @@ export type Decision = { job: Job; view: ScopeView };
 // job this daemon holds. `now`: the clock.
 export async function pass(c: Ctx, o: { dry?: boolean; jobs?: Job[]; now?: number } = {}): Promise<Decision[]> {
   const now = o.now ?? Date.now();
-  const others = o.jobs ? { taken: [], others: [] as string[] } : await adoptScopes(c.spillRoot, c.refused).catch(() => ({ taken: [], others: [] as string[] }));
+  const said: Refused = (file, why, scope) => { foreignWhy.set(scope.cgroup, why); if (foreignWhy.size > 4096) foreignWhy.clear(); c.refused?.(file, why, scope); };
+  const others = o.jobs ? { taken: [], others: [] as string[] } : await adoptScopes(c.spillRoot, said).catch(() => ({ taken: [], others: [] as string[] }));
   const stateId = stateIdOf(c.spillRoot);
   const list = (o.jobs ?? allJobs()).filter((j) => lingering(j, c.endedOf));
   const keeps = c.keeps();
@@ -117,7 +131,8 @@ export async function pass(c: Ctx, o: { dry?: boolean; jobs?: Job[]; now?: numbe
   }));
   for (const r of read) if (r.why) {
     others.others.push(r.j.cgroup!);
-    if (!doubted.has(r.j.cgroup!)) { doubted.add(r.j.cgroup!); c.refused?.(r.j.log.replace(/\.log$/, ".json"), r.why); }
+    foreignWhy.set(r.j.cgroup!, r.why);
+    if (!doubted.has(r.j.cgroup!)) { doubted.add(r.j.cgroup!); c.refused?.(r.j.log.replace(/\.log$/, ".json"), r.why, { cgroup: r.j.cgroup!, mark: markOf(r.j) }); }
   }
   const mine = read.filter((r): r is Extract<typeof r, { procs: Map<number, Proc> }> => !r.why);
   marks ??= c.loadIdle?.() ?? new Map();
@@ -156,6 +171,7 @@ export async function pass(c: Ctx, o: { dry?: boolean; jobs?: Job[]; now?: numbe
   else marks = next;
   if (!o.dry) c.saveIdle?.(marks);
   views = new Map(out.map((d) => [d.job.id, d.view]));
+  if (!o.jobs) foreignNow = new Set(others.others);
   const othersMem = await Promise.all(others.others.map((cg) => num(`${cg}/memory.current`)));
   held = { scopes: out.length, memory_bytes: out.reduce((n, d) => n + d.view.memory_bytes, 0), others: { scopes: others.others.length, memory_bytes: othersMem.reduce((a, b) => a + b, 0) }, at: now, bounds: BOUNDS };
   if (!o.dry) for (const d of out) await act(c, d).catch(() => {});

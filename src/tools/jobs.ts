@@ -89,7 +89,7 @@ export type Job = {
 export type Handle = "id" | "num" | "pid";
 // The variable every process of a job carries, and its value for one job.
 const MARK = "KEEL_JOB";
-const markOf = (j: { id: string; started: number }) => `${j.id}.${j.started}`;
+export const markOf = (j: { id: string; started: number }) => `${j.id}.${j.started}`;
 // And the id of the state folder whose daemon started it. A record names the job's mark, so a record read
 // from a copy of a state folder (or one written to name another daemon's job) names the same mark as the
 // original: the folder's id is what the copy does not share. It is made from the spill folder itself (its
@@ -891,8 +891,10 @@ const historyOf = (m: Meta, dir: string): Job => {
 // of the job names that exact cgroup (a scope a start did not see, or one of a job this daemon let go).
 // A scope with no such record (another daemon's, over another state folder) is never taken: it is only
 // counted (`others`). Each unknown id is looked for once. Resolves with what was taken back.
+// `scope`: the scope and the mark of the record that was refused (a daemon says each such pair once).
+export type Refused = (file: string, why: string, scope: { cgroup: string; mark: string }) => void;
 const lookedFor = new Set<string>();
-export async function adoptScopes(spillRoot: string, refused?: (file: string, why: string) => void): Promise<{ taken: Job[]; others: string[] }> {
+export async function adoptScopes(spillRoot: string, refused?: Refused): Promise<{ taken: Job[]; others: string[] }> {
   const out = { taken: [] as Job[], others: [] as string[] };
   const held = new Set([...jobs.values()].map((j) => j.cgroup).filter(Boolean));
   const unknown = [...scopesNow()].filter(([, cg]) => !held.has(cg));
@@ -913,7 +915,7 @@ export async function adoptScopes(spillRoot: string, refused?: (file: string, wh
     const why = !found ? undefined : found.m.cgroup !== cg ? "the scope running under its id is not the cgroup its record names"
       : notOurs(found.m, stateIdOf(spillRoot)) ?? scopeWhy(found.m, await scopeEnvs(cg), stateIdOf(spillRoot));
     if (!found || why || !settled(found.m) || jobs.has(id)) {
-      if (found && why) refused?.(join(found.dir, found.f), why);
+      if (found && why) refused?.(join(found.dir, found.f), why, { cgroup: cg, mark: markOf(found.m) });
       lookedFor.add(cg);
       out.others.push(cg);
       continue;

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../core/types.ts";
 import { keptMessages, OWNER_WORDS_BYTES } from "../engine/compact.ts";
-import { levelOfAlert, nextWakeAt, spike } from "./policy.ts";
+import { isNotice, levelOfAlert, nextWakeAt, spike } from "./policy.ts";
 
 test("what wakes the helper, what waits for the next turn, what is noise", () => {
   const long = 5 * 60_000;
@@ -51,4 +51,11 @@ test("many compactions keep the owner's newest words whole, within the budget, a
   // Digest wakes only fill what their words left.
   const other = (last.other_messages ?? []).reduce((n: number, t: string) => n + Buffer.byteLength(t), 0);
   expect(bytes + other).toBeLessThanOrEqual(OWNER_WORDS_BYTES);
+});
+
+test("a notice row is no failure: it is read from its context and counts toward no spike", () => {
+  expect(isNotice({ context: { at: "adopt scopes", notice: true } })).toBe(true);
+  expect(isNotice({ context: { at: "adopt scopes" } })).toBe(false);
+  expect(isNotice({})).toBe(false);
+  expect(isNotice({ context: "text" })).toBe(false);
 });

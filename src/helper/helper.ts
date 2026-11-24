@@ -24,7 +24,7 @@ import { toMessages } from "../engine/turn.ts";
 import type { Deps } from "../server/app.ts";
 import { mailSource, type MailMsg, type MailSource } from "./mail.ts";
 import { Memory } from "./memory.ts";
-import { digestLines, digestZone, levelOfAlert, nextWakeAt, spike, SPIKE_COUNT, SPIKE_WINDOW_MS, spikeCounts, type DigestEvent, type Level } from "./policy.ts";
+import { digestLines, digestZone, isNotice, levelOfAlert, nextWakeAt, spike, SPIKE_COUNT, SPIKE_WINDOW_MS, spikeCounts, type DigestEvent, type Level } from "./policy.ts";
 import { recallLine, type MemoryRecord } from "./records.ts";
 import { memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -412,12 +412,12 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     this.record(a.kind, a.session_id, `${a.title}${who}`, a.body, level);
   }
 
-  private onError(err: { session_id?: string; turnSession?: string }) {
-    if (this.isHelper(err.session_id) || this.isHelper(err.turnSession)) return;
+  private onError(err: { session_id?: string; turnSession?: string; context?: unknown }) {
+    if (this.isHelper(err.session_id) || this.isHelper(err.turnSession) || isNotice(err)) return;
     const r = spike(this.errTimes, Date.now(), SPIKE_WINDOW_MS, SPIKE_COUNT);
     this.errTimes = r.times;
     if (!r.spiked) return;
-    const recent = this.deps.store.errors(20, { resolved: false }).filter((e) => Date.now() - e.ts < SPIKE_WINDOW_MS).slice(0, 3);
+    const recent = this.deps.store.errors(20, { resolved: false }).filter((e) => Date.now() - e.ts < SPIKE_WINDOW_MS && !isNotice(e)).slice(0, 3);
     this.record("error_spike", null, `${SPIKE_COUNT} or more failures in ${SPIKE_WINDOW_MS / 60_000} minutes`, recent.map((e) => e.message.split("\n")[0]!.slice(0, 120)).join("; "), "wake");
   }
 

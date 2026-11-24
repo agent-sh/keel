@@ -8,8 +8,10 @@
 //       build: what it leaves is a stand-in for a Gradle daemon listening on a port; its session lives.
 //       old: as an older build's job: what it leaves carries no state folder's id, nor does its record; its
 //         session lives.
-//   b ROOT NOW: a later daemon takes the jobs back as a start does and makes one pass over the job scopes at
-//     the clock NOW, with the idle marks and told lines kept in the store. Prints one JSON line.
+//   b ROOT NOW [TAG]: a later daemon takes the jobs back as a start does and makes one pass over the job scopes at
+//     the clock NOW, with the idle marks and told lines kept in the store. Prints one JSON line: the scopes it
+//     lists as not its jobs (`foreign`), and the records it would have said once (`said`). With TAG, the owner
+//     then stops the listed scope that holds a process named by TAG (`stop`), and what is listed after.
 //   c ROOT NOW0 NOW1 PORT: a later daemon decides at NOW0 and NOW1 without acting, then a client connects to
 //     PORT and the decision is acted on; then once more with the client gone. Prints one JSON line.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -51,18 +53,23 @@ if (phase === "a") {
   setInterval(() => {}, 1 << 30);
 } else {
   const refused: string[] = [];
+  const said: string[] = [];
   adoptJobs(spill, (_f, why) => refused.push(why));
   const lines: string[] = [];
   const ctx: scopes.Ctx = {
     spillRoot: spill, endedOf: (sid) => leftovers.endedOf(store, sid), keeps: () => leftovers.keeps(store),
     tell: (sid, line, key) => void leftovers.tellLeft(store, sid, line, key, (to, l) => lines.push(`${to}: ${l}`)),
-    refused: (_f, why) => refused.push(why), loadIdle: () => leftovers.loadIdle(store), saveIdle: (m) => leftovers.saveIdle(store, m),
+    refused: (_f, why, scope) => { refused.push(why); if (leftovers.foreignFirst(store, scope.cgroup, scope.mark)) said.push(scope.cgroup); }, loadIdle: () => leftovers.loadIdle(store), saveIdle: (m) => leftovers.saveIdle(store, m),
   };
   const alive = (pid: number) => { try { const st = readFileSync(`/proc/${pid}/stat`, "utf8"); return !/^[ZX]$/.test(st.slice(st.lastIndexOf(") ") + 2).split(" ")[0] ?? ""); } catch { return false; } };
   const lingering = () => allJobs().filter((j) => j.cgroup && j.ended !== undefined && jobLive(j)).map((j) => j.id);
   if (phase === "b") {
     const d = await scopes.pass(ctx, { now: Number(process.argv[4]) });
-    console.log(JSON.stringify({ taken: lingering(), views: d.map((x) => ({ job: x.job.id, memory: x.view.memory_bytes, fate: x.view.fate })), held: scopes.heldNow(), lines, refused }));
+    const foreign = await scopes.foreignScopes();
+    const tag = process.argv[5];
+    const mine = tag ? foreign.find((f) => f.commands.some((c) => c.includes(tag))) : undefined;
+    const stop = mine ? await scopes.stopForeign(mine.cgroup, { marks: mine.marks }) : undefined;
+    console.log(JSON.stringify({ taken: lingering(), views: d.map((x) => ({ job: x.job.id, memory: x.view.memory_bytes, fate: x.view.fate })), held: scopes.heldNow(), lines, refused, said, foreign, stop, after: stop ? (await scopes.foreignScopes()).map((f) => f.cgroup) : undefined }));
   } else {
     const [now0, now1, port] = process.argv.slice(4).map(Number) as [number, number, number];
     await scopes.pass(ctx, { now: now0, dry: true });

@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { join } from "node:path";
@@ -170,5 +170,51 @@ test("a command's scope left running is listed with its memory and fate, and Kee
   } finally {
     for (const pid of left()) try { process.kill(pid, "SIGKILL"); } catch {}
     await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
+// Feature: a job scope that is not this daemon's job (a scratch daemon's, another state folder's) is listed on
+// Settings > Leftovers with what it holds, marked as another daemon's, and stopped there by the owner. The
+// spec makes one as another daemon would, a scope named as a job's with one process in it.
+test("a job scope of another daemon is listed with what it holds and stopped by the owner", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = String(1e9 + Math.floor(Math.random() * 8e9));
+  const unit = `keel-job-e2e${tag}-abcdef`;
+  const left = () => readdirSync("/proc").filter((n) => { try { return /^\d+$/.test(n) && readFileSync(`/proc/${n}/cmdline`, "utf8").includes(`sleep\u0000700.${tag}`); } catch { return false; } }).map(Number);
+  const child = spawn("systemd-run", ["--user", "--scope", "--quiet", `--unit=${unit}`, "sleep", `700.${tag}`], { stdio: "ignore" });
+  try {
+    await new Promise((r) => setTimeout(r, 1_500));
+    test.skip(left().length === 0, "needs a systemd user manager for this spec's own environment: systemd-run --user made no scope");
+    // The daemon must see user scopes too (it holds its commands by cgroup only then).
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Probe scopes" } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo probe" } }])}` } });
+    const job = async () => ((await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs as any[])[0];
+    await expect.poll(async () => (await job())?.running, { timeout: 60_000 }).toBe(false);
+    const contain = (await job()).contain;
+    await request.delete(`/api/sessions/${session.id}`);
+    test.skip(contain !== "cgroup", "needs systemd user scopes: the daemon holds its commands by group, so it lists no scope");
+
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto("/settings/leftovers");
+    const row = page.locator(`[data-testid="leftover-foreign"][data-unit="${unit}.scope"]`);
+    // (A pass over the scopes is at most 15 seconds old when the page asks; the page is read again until it has the scope.)
+    await expect.poll(async () => { await page.reload(); await expect(page.getByTestId("leftovers")).toBeVisible(); return row.count(); }, { timeout: 90_000, intervals: [3_000] }).toBe(1);
+    await expect(row).toContainText(`sleep 700.${tag}`);
+    await expect(row.getByTestId("leftover-foreign-tasks")).toHaveText("1 task");
+    await expect(row.getByTestId("leftover-foreign-cpu")).toHaveText(/\d+ s CPU/);
+    await shoot(page, "leftovers-06-foreign");
+    expect(left().length).toBe(1);
+
+    await row.getByTestId("leftover-foreign-stop").click();
+    await expect(page.getByRole("alertdialog")).toContainText(`sleep 700.${tag}`);
+    await page.getByRole("alertdialog").getByRole("button", { name: "Stop" }).click();
+    await expect.poll(() => left().length, { timeout: 15_000 }).toBe(0);
+    await expect(row).toHaveCount(0);
+  } finally {
+    for (const pid of left()) try { process.kill(pid, "SIGKILL"); } catch {}
+    child.kill();
   }
 });

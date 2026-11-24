@@ -474,6 +474,11 @@ under `~/.cache/keel-work/bun/research/`.
   session a branch no sighting names is not held when it goes to a remote the repository holds, or when the
   model made it here and it exists; one a page named is. The judge's input
   carries the same fact.
+- A job scope that is not this daemon's job (another daemon's, or its own record's scope whose processes carry another
+  daemon's mark) is never signalled by Keel. A refused record is said once for its scope and mark, across restarts
+  (`foreignFirst`), as a notice row that counts toward no spike of failures (`isNotice`), and every such scope is
+  listed in Settings > Leftovers with what it holds (`src/automation/foreign-scopes.ts`), where the owner stops it:
+  the act names the marks it was listed with and is refused when they changed.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

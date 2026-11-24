@@ -2,7 +2,7 @@
 // own config folder), for what the shared daemon cannot be given: a state
 // written before it starts, a stop and a start.
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { prepare, standIns } from "../../scripts/scratch-env.ts";
 
@@ -40,11 +40,39 @@ export function sessionsFolder(state: string): string {
 // TACIT_BIN and a KEEL_PARLAR that name no file); a spec that wants the
 // stand-ins names them in `more`, as it names any setting of its own there.
 // (test/e2e/spec-env.spec.ts starts one and watches what it opens and runs.)
+// The mark of every process a spec's own daemons start, their commands and servers included, and of the run it
+// is: a daemon killed without its commands leaves them running (nothing ends a command whose daemon is gone),
+// and in an environment with no session bus they are not in a scope of their own to end. The run ends them
+// (`stopStrays`, from the worker's last fixture in isolate.ts). The run's id is made once, by the runner.
+export const STRAY_MARK = "KEEL_SPEC_DAEMON";
+const runId = () => (process.env.KEEL_SPEC_RUN ||= `${process.pid}-${Date.now()}`);
+// `home`: only the processes of the daemon whose state folder is `state` (its home is `<state>-ws`).
+export function stopStrays(state?: string): number {
+  const has = (env: Buffer, e: Buffer) => {
+    const at = env.indexOf(e);
+    return at >= 0 && (at === 0 || env[at - 1] === 0) && (env[at + e.length] === undefined || env[at + e.length] === 0);
+  };
+  const run = Buffer.from(`${STRAY_MARK}=${runId()}`), home = state ? Buffer.from(`HOME=${state.replace(/\/+$/, "")}-ws`) : undefined;
+  let stopped = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    let found = 0;
+    for (const n of readdirSync("/proc")) {
+      if (!/^\d+$/.test(n) || Number(n) === process.pid) continue;
+      let env: Buffer;
+      try { env = readFileSync(`/proc/${n}/environ`); } catch { continue; }
+      if (!has(env, run) || (home && !has(env, home))) continue;
+      try { process.kill(Number(n), "SIGKILL"); found++; } catch {}
+    }
+    stopped += found;
+    if (!found) break;
+  }
+  return stopped;
+}
 export const bareEnv = (home: string): Record<string, string> => {
   mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
   return {
     PATH: cleanPath(), TMPDIR: process.env.TMPDIR || join(home, "tmp"), LANG: "C.UTF-8", HOME: home, XDG_RUNTIME_DIR: join(home, "run"),
-    KEEL_KEYRING_SERVICE: "keel-scratch-empty", KEEL_CRED_GET: "/bin/false", DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus", KEEL_DESKTOP_NOTIFY: "off",
+    [STRAY_MARK]: runId(), KEEL_KEYRING_SERVICE: "keel-scratch-empty", KEEL_CRED_GET: "/bin/false", DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus", KEEL_DESKTOP_NOTIFY: "off",
     // The home has no git identity; sessions commit in scratch repositories.
     GIT_AUTHOR_NAME: "Keel spec", GIT_AUTHOR_EMAIL: "spec@example.invalid", GIT_COMMITTER_NAME: "Keel spec", GIT_COMMITTER_EMAIL: "spec@example.invalid",
   };

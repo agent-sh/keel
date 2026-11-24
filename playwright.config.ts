@@ -52,6 +52,9 @@ const defaults: Record<string, string> = {
   KEEL_IMPORT_KEEL_DB: `${envRoot}/import/keel.db`,
 };
 for (const [k, v] of Object.entries(defaults)) if (!process.env[k]?.trim()) process.env[k] = v;
+// The id of this run, made by the runner and inherited by its worker: what the spec daemons start carries it, and the
+// worker ends what is left of them (test/e2e/own-daemon.ts stopStrays).
+process.env.KEEL_SPEC_RUN ||= `${process.pid}-${Date.now()}`;
 
 // Spec files named on the command line run in the order they are named. Playwright by
 // itself runs files by name whatever order they are given in, so a spec that passes only

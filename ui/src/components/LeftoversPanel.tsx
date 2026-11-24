@@ -21,8 +21,18 @@ type Proc = { session_id: string; title: string; agent?: { id: string; status: s
 type Held = { scopes: number; memory_bytes: number; others: { scopes: number; memory_bytes: number }; at: number; bounds: { idle_ms: number; build_idle_ms: number } };
 type Tree = { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string };
 type Branch = { repo: string; top: string; name: string; sha: string; at: number; base?: string; ahead?: number; behind?: number; merged: boolean; by?: By };
-type Survey = { processes: Proc[]; worktrees: Tree[]; branches: Branch[]; repos: string[]; held?: Held };
+// A job scope that is not this daemon's job (another daemon's, or one whose processes carry another daemon's mark).
+// `daemon_live`: a daemon of the state folder its processes were started over runs now. `holds_self`: this daemon is in it.
+type Foreign = { cgroup: string; unit: string; why?: string; tasks: number; cpu_ms?: number; memory_bytes: number; since?: number; commands: string[]; marks: string[]; sessions: string[]; cwd?: string; gone?: boolean; states?: string[]; daemon_live?: boolean; holds_self?: boolean };
+type Survey = { processes: Proc[]; worktrees: Tree[]; branches: Branch[]; repos: string[]; held?: Held; foreign?: Foreign[] };
 
+// Processor time, as a person reads it: "12 s", "7 min", "4 h 38 min".
+const cpuText = (ms: number) => {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+};
 const mb = (b: number) => `${b >= 1 << 30 ? (b / (1 << 30)).toFixed(1) : Math.round(b / (1 << 20))} ${b >= 1 << 30 ? "GB" : "MB"}`;
 // What becomes of a command's scope, in one line under it.
 function fateLine(sc: Scope): string {
@@ -123,6 +133,27 @@ export function LeftoversPanel() {
       void load();
     }
   };
+  const foreign = s.foreign ?? [];
+  const left = foreign.filter((f) => !f.daemon_live), running = foreign.filter((f) => f.daemon_live);
+  const foreignItem = (f: Foreign) => (
+    <Item key={f.cgroup} testid="leftover-foreign" data-unit={f.unit} mono name={f.commands[0] ?? "no process"}
+      title={f.commands.join("\n")}
+      sub={<span className="block truncate" title={[f.cgroup, f.why, f.marks.length ? `marks ${f.marks.join(", ")}` : "", f.sessions.length ? `sessions ${f.sessions.join(", ")}` : ""].filter(Boolean).join("\n")}>
+        {f.commands.length > 1 ? `+${f.commands.length - 1} more kinds · ` : ""}{f.unit}{f.cwd ? ` · ${f.cwd}${f.gone ? " (folder gone)" : ""}` : ""}
+      </span>}
+      meta={<>
+        <span data-testid="leftover-foreign-tasks">{f.tasks} {f.tasks === 1 ? "task" : "tasks"}</span>
+        <span data-testid="leftover-foreign-cpu" title="Processor time its processes have used">{f.cpu_ms === undefined ? "" : `${cpuText(f.cpu_ms)} CPU`}</span>
+        <span className="w-14 text-right" title="Memory of its scope">{mb(f.memory_bytes)}</span>
+        <span className="w-14 text-right text-faint" title={f.since ? `Its oldest process started ${when(f.since)}` : undefined}>{f.since ? ago(f.since) : ""}</span>
+      </>}
+      status={f.holds_self ? <Status tone="warn" testid="leftover-foreign-self" title="This daemon runs in that scope: stopping it would end this daemon too.">holds this daemon</Status>
+        : f.daemon_live ? <Status tone="warn" testid="leftover-foreign-live" title="A daemon runs over the state folder these commands were started from: this is its live work.">its daemon is running</Status> : undefined}
+      actions={f.holds_self ? undefined : <button type="button" className="k-btn" data-testid="leftover-foreign-stop" disabled={busy !== null}
+        onClick={() => act(`f:${f.cgroup}`, { title: "Stop this job scope?", body: `${f.daemon_live ? "Its daemon is running: this is its live work, and it will not be told.\n\n" : ""}${f.unit}\n\n${f.commands.join("\n")}\n\n${f.tasks} ${f.tasks === 1 ? "process" : "processes"}, ${cpuText(f.cpu_ms ?? 0)} of processor time${f.cwd ? `, working in ${f.cwd}` : ""}. It is not this daemon's job: whatever started it will not be told.`, action: "Stop", danger: true }, "/api/leftovers/foreign/stop", { cgroup: f.cgroup, marks: f.marks }, "Every process of it has ended.")}>
+        Stop
+      </button>} />
+  );
   const age = (t: number | undefined) => <span className="w-14 text-right text-faint" title={t ? when(t) : undefined}>{t ? ago(t) : ""}</span>;
   return (
     <Page testid="leftovers">
@@ -168,6 +199,17 @@ export function LeftoversPanel() {
           </List>
         )}
       </Group>
+
+      {!!left.length && (
+        <Group title="Job scopes of other daemons" count={left.length} testid="leftover-foreign-group" hint="Job scopes that run and are not this daemon's job: a scratch or test daemon's that is gone, another state folder's, or one of this daemon's whose processes carry another daemon's mark. Keel never stops one by itself. Stop one here when nothing needs what it holds: every process in it ends.">
+          <List label="Job scopes of other daemons">{left.map(foreignItem)}</List>
+        </Group>
+      )}
+      {!!running.length && (
+        <Group title="Work of daemons that are running" count={running.length} testid="leftover-foreign-live-group" hint="Job scopes whose commands were started by a daemon that runs now (another Keel on this machine, or a scratch one). It is that daemon's live work; stopping one ends commands its sessions may be waiting on.">
+          <List label="Work of daemons that are running">{running.map(foreignItem)}</List>
+        </Group>
+      )}
 
       <Group title="Worktrees" count={s.worktrees.length} hint={<>
         <p>Worktrees of the repositories sessions work in that no live session works in now. One with nothing uncommitted can be removed: its branch and commits stay, and the ignored files in it go with it (you are told how many first).</p>
