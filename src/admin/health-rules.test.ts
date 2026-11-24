@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { DISK_BROKEN, diskRow, hookRows, layerRows, mcpRows, matcherVerdict, providerRows, sandboxRows, telemetryRows, type MatcherFacts } from "./health-rules.ts";
+import { DISK_BROKEN, diskRow, hookRows, layerRows, mcpRows, matcherVerdict, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts } from "./health-rules.ts";
 
 const facts: MatcherFacts = {
   tools: new Set(["Bash", "Edit", "Write", "Read", "shell", "mcp_call"]),
@@ -47,6 +47,19 @@ test("the sandbox: broken when the profile needs it and it cannot start, a warni
   expect(sandboxRows({ ...up, timedOut: true, started: false })[0]!.level).toBe("warning");
   expect(sandboxRows({ ...up, scope: false, scopeSaid: "no user manager" }).map((r) => r.id)).toEqual(["sandbox:ok", "sandbox:scope"]);
   expect(sandboxRows({ platform: "darwin", profile: "off" })[0]!.level).toBe("ok");
+});
+
+test("the daemon's own process: what its environment and the kernel's Yama setting leave open", () => {
+  const ids = (f: Parameters<typeof processRows>[0]) => processRows(f).map((r) => `${r.level} ${r.id}`);
+  expect(ids({ platform: "linux", held: [], yama: 1 })).toEqual(["ok sandbox:environment", "ok sandbox:ptrace"]);
+  expect(processRows({ platform: "linux", held: [], yama: 1 })[1]!.title).toBe("ptrace limited to ancestors (Yama 1)");
+  const open = processRows({ platform: "linux", held: ["OPENAI_API_KEY", "AWS_BEARER_TOKEN_BEDROCK"], yama: 0 });
+  expect(open.map((r) => r.level)).toEqual(["warning", "warning"]);
+  expect(open[0]!.detail).toContain("OPENAI_API_KEY, AWS_BEARER_TOKEN_BEDROCK");
+  expect(open[1]!.title).toBe("ptrace is not limited to ancestors (Yama 0)");
+  // No Yama in the kernel is open; an environment that cannot be read says nothing of itself; other systems say nothing.
+  expect(ids({ platform: "linux", held: null })).toEqual(["warning sandbox:ptrace"]);
+  expect(processRows({ platform: "darwin", held: null })).toEqual([]);
 });
 
 test("telemetry: an exporter that is on and has nowhere to send is broken", () => {

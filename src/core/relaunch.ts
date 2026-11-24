@@ -1,3 +1,5 @@
+import { execClean, restoreSecretEnv, startedWithSecrets, wasCleaned } from "../safety/closed-env.ts";
+
 // The command that starts this process again: a compiled binary is its own
 // path; under bun it is bun with its flags (--hot) and the script.
 export function relaunchArgv(): string[] {
@@ -37,11 +39,37 @@ export function withoutCollectorTimer() {
     return;
   }
   g.__keelCollectorTimer = "kept";
-  const execve = (process as { execve?: (file: string, args: string[], env: Record<string, string | undefined>) => never }).execve;
-  if (typeof execve !== "function" || process.platform === "win32") return;
-  // Under the runtime's profiler or inspector the process is signalled all the time, and a signal that lands as the
-  // program is replaced ends it (seen with --cpu-prof): such a run keeps the timer.
-  if (process.execArgv.some((a) => /^--(cpu-prof|heap-prof|inspect)/.test(a))) return;
+  if (!canExec()) return;
   const argv = relaunchArgv();
-  try { execve.call(process, argv[0]!, argv, { ...process.env, BUN_GC_TIMER_DISABLE: "1" }); } catch {}
+  // The same exec takes the secrets out of the environment (src/safety/closed-env.ts).
+  execClean(argv, { ...process.env, BUN_GC_TIMER_DISABLE: "1" });
+}
+
+// Whether this process can start itself again in place. Under the runtime's profiler or inspector the
+// process is signalled all the time, and a signal that lands as the program is replaced ends it (seen
+// with --cpu-prof): such a run is not started again.
+function canExec(): boolean {
+  const execve = (process as { execve?: unknown }).execve;
+  if (typeof execve !== "function" || process.platform === "win32") return false;
+  return !process.execArgv.some((a) => /^--(cpu-prof|heap-prof|inspect)/.test(a));
+}
+
+// The daemon's environment holds no secret (src/safety/closed-env.ts): when it was started with some in
+// it, which the collector's exec above did not take out (the unit that started it sets the collector's
+// variable, so there was none), the process is started again once without them. The exec leaves a mark;
+// a process that finds it does not look again.
+export function withoutSecretEnvironment() {
+  if (wasCleaned()) return;
+  if (!startedWithSecrets()?.length || !canExec()) return;
+  const g = globalThis as { __keelCollectorTimer?: "off" | "kept" };
+  execClean(relaunchArgv(), g.__keelCollectorTimer === "off" ? { ...process.env, BUN_GC_TIMER_DISABLE: "1" } : { ...process.env });
+}
+
+// What the daemon does first, in this order: starts again without the collector timer and without the
+// secrets in its environment (one exec), takes the secrets from the pipe the new image was given, and
+// starts again once more if it still holds some (a unit that set the collector's variable).
+export function startClean() {
+  withoutCollectorTimer();
+  restoreSecretEnv();
+  withoutSecretEnvironment();
 }

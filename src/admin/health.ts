@@ -6,7 +6,7 @@
 // time: a check that does not finish says so as a row and the rest still
 // answer. File walks run on the read thread; the rest wait on a process or the
 // network, never on the loop.
-import { existsSync, readdirSync, statfsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "../core/store.ts";
 import { readText } from "../core/proc.ts";
@@ -24,12 +24,13 @@ import { installedUnits } from "../plugins/registry.ts";
 import { configPath } from "../mcp/config.ts";
 import { storePath } from "../core/store-files.ts";
 import { refusedConfigs } from "../core/named-config.ts";
+import { startedWithSecrets } from "../safety/closed-env.ts";
 import { settings, settingsUnreadable } from "./settings.ts";
 import { ERROR_TYPES } from "../server/routes/hooks.ts";
 import { gate } from "../server/routes/permissions.ts";
 import type { FilesAsk, FilesResult, HeldFile } from "./health-files.ts";
 import { countsOf, ordered, type HealthReport, type Row } from "./health-rows.ts";
-import { diskRow, hookRows, layerRows, layersOk, mcpRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts, type ProviderFacts } from "./health-rules.ts";
+import { diskRow, hookRows, layerRows, layersOk, mcpRows, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts, type ProviderFacts } from "./health-rules.ts";
 
 export type HealthDeps = { store: Store; providers: Providers };
 
@@ -169,11 +170,15 @@ async function sandbox(): Promise<Row[]> {
     bwrap ? probe([bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "true"], PROBE_MS) : undefined,
     sr ? probe([sr, "--user", "--scope", "--quiet", "--collect", "true"], PROBE_MS) : undefined,
   ]);
-  return sandboxRows({
+  return [...sandboxRows({
     platform: "linux", profile, bwrap, started: b?.ok, said: b?.said, timedOut: b?.timedOut,
     // A machine with no systemd-run wraps nothing and needs no scope: not a fault.
     ...(s ? { scope: s.ok, scopeSaid: s.timedOut ? "it did not answer in time" : s.said } : {}),
-  });
+  }), ...processRows({ platform: "linux", held: startedWithSecrets(), yama: yamaScope() })];
+}
+
+function yamaScope(): number | undefined {
+  try { return Number(readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim()); } catch { return undefined; }
 }
 
 // ---- providers -------------------------------------------------------------------

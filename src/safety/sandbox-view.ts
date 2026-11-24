@@ -52,6 +52,7 @@ import { readText } from "../core/proc.ts";
 import { configDir } from "../providers/config.ts";
 import { sandboxRoot, sandboxScope, SCOPE_ORIGIN, scopeDir } from "./sandbox-scope.ts";
 import { HIDDEN } from "./credentials.ts";
+import { ENV_SECRET, GIT_PAIR_NAME, URL_SIGN_IN, VALUE_SECRET, gitPairsSecret } from "./env-secret.ts";
 
 export { sandboxRoot, sandboxScope };
 
@@ -653,40 +654,24 @@ export function hiddenSettings(home = ownerHome()): { path: string; note?: strin
 // URL with a password. (What a tool adds for one call, such as a secret the
 // owner gave the session under a name, is not the daemon's and stays.)
 const ENV_KEPT = /^(PATH|HOME|USER|LOGNAME|SHELL|PWD|OLDPWD|SHLVL|HOSTNAME|LANG|LANGUAGE|LC_[A-Z_]+|TZ|TERM|TERMINFO|TERMINFO_DIRS|COLORTERM|COLUMNS|LINES|NO_COLOR|FORCE_COLOR|CLICOLOR|CLICOLOR_FORCE|CI|TMPDIR|TEMP|TMP|EDITOR|VISUAL|PAGER|GIT_PAGER|SYSTEMD_PAGER|DPKG_PAGER|MANPAGER|LESS|XDG_[A-Z_]+|DEBIAN_FRONTEND|SOURCE_DATE_EPOCH|MAKEFLAGS|MAKELEVEL|CC|CXX|CPP|LD|AR|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|PKG_CONFIG_PATH|LD_LIBRARY_PATH|LIBRARY_PATH|CPATH|C_INCLUDE_PATH|CPLUS_INCLUDE_PATH|CMAKE_[A-Z_]+|RUSTFLAGS|RUSTUP_TOOLCHAIN|RUSTC_WRAPPER|CARGO_[A-Z_]+|GOPATH|GOBIN|GOFLAGS|GOTOOLCHAIN|GOPROXY|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GO111MODULE|CGO_[A-Z_]+|PYTHONPATH|PYTHONHOME|PYTHONUNBUFFERED|PYTHONDONTWRITEBYTECODE|PIP_[A-Z_]+|UV_[A-Z_]+|CONDA_[A-Z_]+|NODE_PATH|NODE_ENV|NODE_OPTIONS|NVM_[A-Z_]+|BUN_[A-Z_]+|DENO_[A-Z_]+|JAVA_OPTS|JAVA_TOOL_OPTIONS|GRADLE_USER_HOME|MAVEN_OPTS|M2_HOME|ANDROID_[A-Z_]+|DOTNET_[A-Z_]+|GEM_PATH|BUNDLE_PATH|SSH_AUTH_SOCK|GIT_[A-Z_0-9]+|KEEL_SESSION|KEEL_SANDBOX_[A-Z_]+|TRACEPARENT|TRACESTATE)$/;
-const ENV_SECRET = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|(^|_)AUTH(_|$)|(^|_)KEY$/i;
-// A URL that carries a sign-in before its host: a user and a password, or a token alone (https://token@host).
-const URL_SIGN_IN = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi;
-// A value that carries a sign-in under a name a build keeps: a header (Authorization: ..., Bearer ...), a token
-// in a URL's query, a netrc line, a field of JSON, a flag that sets one (GOFLAGS -X main.token=...). Such a
-// variable goes whole: there is no telling what of it is safe.
-const VALUE_SECRET = /\b(proxy-)?authorization\s*:|\b(bearer|basic)\s+[A-Za-z0-9._~+\/=-]{8,}|\b(login|password|passwd)\s+\S+\s*$|\bpassword\s+\S|[?&;.\s"'{,_-](access[_-]?token|auth[_-]?token|token|api[_-]?key|apikey|secret|password|passwd|credentials?)["']?\s*[=:]\s*["']?[^\s"'&]/i;
-// git settings given through the environment (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n): a pair that
-// carries a sign-in (an Authorization header, a credential helper, a URL with one).
-const GIT_PAIR_SECRET = /authorization\s*:|\b(bearer|basic)\s+\S|token|passw|secret|credential/i;
-const GIT_KEY_SECRET = /extraheader|credential|proxyauth|password|token/i;
 // What happens to the daemon's environment on the way into a sandbox: the names taken out, and the values put in
 // changed (a URL kept without its sign-in). `more`: names the owner keeps besides (Settings).
 export function envPlan(env: Record<string, string | undefined> = process.env, more: string[] = []): { drop: string[]; set: [string, string][] } {
   const kept = new Set([...ROOT_VARS, ...more]);
   const drop: string[] = [], set: [string, string][] = [];
   // git's settings: all of them go when one pair carries a sign-in (the pairs are numbered: one cannot be taken out alone).
-  const count = Number(env.GIT_CONFIG_COUNT ?? 0);
-  let gitSecret = false;
-  for (let i = 0; i < Math.min(Number.isFinite(count) ? count : 0, 256) && !gitSecret; i++) {
-    const k = env[`GIT_CONFIG_KEY_${i}`] ?? "", v = env[`GIT_CONFIG_VALUE_${i}`] ?? "";
-    gitSecret = GIT_KEY_SECRET.test(k) || GIT_PAIR_SECRET.test(v) || new RegExp(URL_SIGN_IN.source, "i").test(v) || new RegExp(URL_SIGN_IN.source, "i").test(k);
-  }
+  const gitSecret = gitPairsSecret(env);
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue;
     const owners = more.includes(name);
     const named = kept.has(name) || ENV_KEPT.test(name);
     const secret = ENV_SECRET.test(name) && name !== "SSH_AUTH_SOCK" && !owners;
-    if (!named || secret || (gitSecret && /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(name))) { drop.push(name); continue; }
+    if (!named || secret || (gitSecret && GIT_PAIR_NAME.test(name))) { drop.push(name); continue; }
     // (A name the owner listed is theirs to pass whole.)
     if (owners) continue;
     const plain = value.replace(URL_SIGN_IN, "$1");
     // (A sign-in that is not a URL's own: nothing of the value is kept.)
-    if (VALUE_SECRET.test(plain) && !/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(name)) { drop.push(name); continue; }
+    if (VALUE_SECRET.test(plain) && !GIT_PAIR_NAME.test(name)) { drop.push(name); continue; }
     if (plain !== value) set.push([name, plain]);
   }
   return { drop, set };

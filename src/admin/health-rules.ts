@@ -95,6 +95,34 @@ export function sandboxRows(f: SandboxFacts): Row[] {
   return rows;
 }
 
+// What another process of this account can learn from the daemon (src/safety/closed-env.ts). A command a session
+// runs outside a sandbox is the daemon's descendant: the kernel's Yama setting decides whether it can read the
+// daemon's memory, and the daemon's own environment is what /proc/<daemon>/environ shows.
+export type ProcessFacts = {
+  platform: string;
+  // The names of the environment the daemon was started with that carry a secret (null: not known).
+  held: string[] | null;
+  // kernel.yama.ptrace_scope (undefined: the kernel has no Yama).
+  yama?: number;
+};
+
+export function processRows(f: ProcessFacts): Row[] {
+  if (f.platform !== "linux") return [];
+  const link = { section: "safety" };
+  const rows: Row[] = [];
+  if (f.held !== null) {
+    const how = "read the environment this daemon process was started with (/proc/self/environ) and looked for names and values that carry a secret";
+    rows.push(f.held.length
+      ? { id: "sandbox:environment", group: "sandbox", level: "warning", title: "the daemon's environment holds secrets", detail: `${f.held.slice(0, 8).join(", ")}${f.held.length > 8 ? ` and ${f.held.length - 8} more` : ""} can be read from /proc/<daemon>/environ by a command a session runs outside a sandbox`, fix: "start the daemon with `keel serve` (it takes the secrets out of its environment at start), or keep commands in a sandbox", link, how }
+      : { id: "sandbox:environment", group: "sandbox", level: "ok", title: "the daemon's environment holds no secret", detail: "what /proc/<daemon>/environ shows carries no key, token or password; the daemon's own start put them in memory", link, how });
+  }
+  const how = "read kernel.yama.ptrace_scope";
+  if (f.yama === undefined) rows.push({ id: "sandbox:ptrace", group: "sandbox", level: "warning", title: "ptrace is not limited to ancestors (no Yama)", detail: "this kernel has no Yama, so a command a session runs outside a sandbox can attach to the daemon and read its memory, provider keys included", fix: "keep commands in a sandbox, or use a kernel with Yama", link, how });
+  else if (f.yama === 0) rows.push({ id: "sandbox:ptrace", group: "sandbox", level: "warning", title: "ptrace is not limited to ancestors (Yama 0)", detail: "any process of this account can attach to the daemon and read its memory, provider keys included", fix: "sysctl kernel.yama.ptrace_scope=1 (as root; set it in /etc/sysctl.d to keep it)", link, how });
+  else rows.push({ id: "sandbox:ptrace", group: "sandbox", level: "ok", title: `ptrace limited to ancestors (Yama ${f.yama})`, detail: f.yama === 1 ? "a command a session runs is the daemon's descendant, so it cannot attach to the daemon or read its memory" : `Yama ${f.yama}: attaching needs more than being an ancestor`, link, how });
+  return rows;
+}
+
 // ---- telemetry export ----------------------------------------------------------
 
 export type ObserveFacts = { otlp_endpoint?: string | null; otlp_headers?: unknown; otlp_metrics?: boolean | null; otlp_events?: boolean | null };

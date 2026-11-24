@@ -160,6 +160,18 @@ under `~/.cache/keel-work/bun/research/`.
   stalls with one cause are one Errors row. The watcher sees no JavaScript
   frames: synchronous work that can be long is wrapped in `timed`
   (`src/admin/stall.ts`) so a stall that computed names it.
+- The daemon's environment holds no secret (`src/safety/closed-env.ts`, `src/safety/env-secret.ts`). A
+  command a session runs as the same user can read `/proc/<daemon>/environ`, which shows what the
+  daemon was started with. At start the daemon is started again once in the same process (the
+  collector's exec, `src/core/relaunch.ts`, or one of its own): the names that carry a secret go
+  through a pipe in the place of standard input, are put into `process.env`, and standard input
+  becomes `/dev/null`. The runtime starts a program with no `env` from the environment it began
+  with, so `Bun.spawn` and `Bun.spawnSync` are wrapped to give `process.env` then: what the daemon
+  starts gets what it did. Memory is not closed by making the process non-dumpable (that closes
+  `/proc/<daemon>` for the daemon's own readers too): Yama's ptrace_scope of 1 or more already
+  limits attaching to ancestors, and Settings > Health says both facts (`sandbox:environment`,
+  `sandbox:ptrace`). A daemon a client command starts in its own process is not started again; its
+  row warns.
 - A turn ends as "interrupted" only when `Engine.interrupt` was called for it,
   and every caller says who it is with a word of `src/core/stoppers.ts`, kept
   on the turn's end (`stopped_by`). What is said of the stop and what follows

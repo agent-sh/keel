@@ -69,8 +69,9 @@ if ("error" in bind) {
 }
 
 const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => Promise<void>; __keelStartSaid?: boolean };
-// Before anything is claimed or opened: the daemon runs without the runtime's collector timer.
-if (!g.__keelSignals) (await import("./core/relaunch.ts")).withoutCollectorTimer();
+// Before anything is claimed or opened: the daemon runs without the runtime's collector timer, and with
+// no secret in the environment it was started with (src/safety/closed-env.ts).
+if (!g.__keelSignals) (await import("./core/relaunch.ts")).startClean();
 const { startDaemon } = await import("./server/start.ts");
 // A daemon that could not start ends here, with what went wrong. Left alone it
 // serves nothing and stays: it holds the state folder, the modules it loaded
