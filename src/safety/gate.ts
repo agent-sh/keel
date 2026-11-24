@@ -16,6 +16,7 @@ import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
 import { fitsAsPlace, namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
 import { lookRepo, readRepo, repoContext } from "./repofacts.ts";
+import { accountNames } from "./account-settings.ts";
 import { looking, type Looked } from "./looked.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
@@ -32,7 +33,7 @@ import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { AddressBook, addressOf, dataIn, groupOf, sendShown, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
-import { childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
 // What a card a hook asked for says before the hook's reason.
@@ -1156,6 +1157,8 @@ export class Gate {
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
       mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch: named.length ? [...scratch, ...named] : scratch, real: facts?.real, looked: facts?.looked,
+      // The owner's namespaces: a write with his accounts beyond them is his alone (accounts.ts).
+      accounts: { names: accountNames(), ...(session.parent_id ? { agent: true as const } : {}) },
       // An agent in a worktree Keel made: what it shares with the other checkouts (shared-branches.ts).
       ...((cls.kind === "shell" || cls.kind === "edit") && session.parent_id && !session.machine ? { shared: this.sharedOf(session) } : {}),
       // Where credentials are kept, as a path is named and where it lands, with Keel's own folders (credentials.ts).
@@ -1535,7 +1538,7 @@ export class Gate {
         : "allow" in d ? { state: "allowed", choice: "once", reason: "settled by a grant or a mode change" } : "deny" in d ? { state: "denied", reason: d.deny } : undefined;
       if (settled) this.finish(back, settled);
       // Now in full auto: the card closes and the call is settled without the owner.
-      if (!settled && back.state === "pending" && "ask" in d && !back.once && this.perm(session.id).mode === "full-auto") {
+      if (!settled && back.state === "pending" && "ask" in d && d.ask.account === undefined && !back.once && this.perm(session.id).mode === "full-auto") {
         this.finish(back, { state: "cancelled", reason: "settled without the owner in full auto" });
         return this.alone(session, call, name, cls, back.summary, keyOf(name, target, cls, call, back.summary), d.ask.why);
       }
@@ -1572,7 +1575,8 @@ export class Gate {
     }
     // Full auto: nothing waits on the owner. What would ask is high risk; it
     // goes to the rules, then the judge, and is run or refused at once.
-    if (mode === "full-auto") return this.alone(session, call, name, cls, summary, key, d.ask.why);
+    // (A write with an account beyond the owner's namespaces is the exception: his card opens in Full auto too.)
+    if (mode === "full-auto" && d.ask.account === undefined) return this.alone(session, call, name, cls, summary, key, d.ask.why);
     let notice: string | undefined;
     // Reviewer mode: what would ask goes to the reviewer first; a high-risk
     // action, and anything it cannot judge, still goes to the owner.
@@ -1724,7 +1728,10 @@ export class Gate {
       }
       if (s) { high = false; settled = `${s.allow} The rules flagged it because the command ${why.replace(/^the command /, "")}.`; }
     }
-    const facts = high && cls.kind === "shell" ? repoContext(cls.command, cwd, homedir(), session, places) : undefined;
+    const repo = high && cls.kind === "shell" ? repoContext(cls.command, cwd, homedir(), session, places) : undefined;
+    // (The writes with the owner's accounts the command makes, and whose namespaces they are in.)
+    const accounts = high && cls.kind === "shell" && !session.machine ? accountContext(cls.command, cwd, this.checking.get(callKey(session.id, call.id))?.looked, accountNames()) : "";
+    const facts = repo === undefined ? undefined : accounts ? `${repo}\n${accounts}` : repo;
     const own = places.length ? ownFacts(places) : undefined;
     const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined, own, settled });
     if (auto && !await auto.valid()) return changedReview;
@@ -2046,7 +2053,7 @@ export class Gate {
       } else if ("deny" in d) {
         this.finish(a, { state: "denied", reason: d.deny });
         w.resolve({ deny: d.deny });
-      } else if (mode === "full-auto") {
+      } else if (mode === "full-auto" && !("ask" in d && d.ask.account !== undefined)) {
         // The session went to full auto with a card open: the card closes, and
         // the call is settled the way full auto settles it.
         this.finish(a, { state: "cancelled", reason: "settled without the owner in full auto" });

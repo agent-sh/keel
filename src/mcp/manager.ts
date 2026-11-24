@@ -28,6 +28,7 @@ import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { hintsOf, hintWords } from "./hints.ts";
+import { holdsAccount } from "./holds-account.ts";
 import { ASKED, LOG_KEPT, logLine, severe, type LogLine } from "./logs.ts";
 import { conceal } from "../core/conceal.ts";
 import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
@@ -810,6 +811,8 @@ export class McpManager {
     const hints = e.bundled ? undefined : hintsOf(t.annotations);
     // A tool the owner marked as a read is a read whatever its server says; any other call carries what raises its care.
     const careful = !readOnly && (hints?.destructive || hints?.openWorld) ? { ...(hints.destructive ? { destructive: true as const } : {}), ...(hints.openWorld ? { openWorld: true as const } : {}) } : undefined;
+    // A tool that writes, on a server that holds the owner's account: his to allow in every mode (src/safety/accounts.ts).
+    const account = !readOnly && !e.bundled && holdsAccount(e.config);
     return {
       server,
       name: t.name,
@@ -823,7 +826,8 @@ export class McpManager {
       input_schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
       readOnly,
       ...(hints ? { hints } : {}),
-      judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input) : careful ? async () => ({ kind: "other" as const, hints: careful }) : undefined,
+      judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input)
+        : careful || account ? async (input: any) => ({ kind: "other" as const, ...(careful ? { hints: careful } : {}), ...(account ? { account: { server, input } } : {}) }) : undefined,
       run: (input: any, ctx: ToolContext) => this.call(e.name, t.name, input, ctx),
     };
   }

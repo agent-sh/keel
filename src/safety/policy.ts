@@ -2,6 +2,7 @@
 // standing answers that apply. Pure: the gate supplies the facts.
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { accountFacts, foreign, namedOwners, ownsOwner, say, whyForeign, writesOf as writesToAccounts, type Namespace, type Write } from "./accounts.ts";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { shellCredentialReads, type DiskLook } from "./credential-reads.ts";
 import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.ts";
@@ -98,7 +99,9 @@ export type CallClass =
   // `paths`: the strings of its input that are a path by themselves (pathsNamed).
   // `hints`: what an MCP server says of its tool (2025-11-25 tool annotations), which only ever
   // makes the gate more careful: a destructive one is high risk, an open-world one says so on its card.
-  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints }
+  // `account`: the tool writes with an account its MCP server holds (the server's name), src/safety/accounts.ts.
+  // `input`: what the call was given, which the owners it names are read from.
+  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints; account?: { server: string; input?: unknown } }
   // A message, answer or model command into another session. `resource` names
   // the tool and the target (keel__session_message:claude:abc); `owner` says why
   // only the owner may allow it.
@@ -120,7 +123,9 @@ export type CallClass =
 // the repository's state before a judge is asked.
 // `risks`: each reason a high-risk command is high risk, with the part of the line it was found in (what Keel's
 // facts can settle of one part, own-places.ts).
-export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string; settles?: true; risks?: PartRisk[] };
+// `account`: a write with the owner's account beyond his namespaces (the namespace, or "" when it is not known): the owner's
+// alone in every mode, Full auto included, where it opens a card and does not go to the judge.
+export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; notice?: string; settles?: true; risks?: PartRisk[] };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
@@ -501,6 +506,9 @@ export type Facts = {
   // under a path, whether a path is there, the files a patch or an archive writes. Without it a delete inside the
   // folder is judged by names, and a patch or an archive is not read.
   looked?: Looked;
+  // The owner's namespaces (Settings > Permissions). Without it no write with an account is looked at. `agent`: a session an
+  // agent works in, which is refused such a write where the owner would be asked.
+  accounts?: { names: Namespace[]; agent?: true };
   // Whether a program's name on this machine is the program itself and not a version manager's shim (shims.ts):
   // looked up by the gate before it decides, so this only reads the answer. Without it the reading forms of such
   // programs (node --version) are not reads.
@@ -643,6 +651,19 @@ export function decide(c: CallClass, f: Facts): Decision {
     const why = keelNamed(w, f.workspace, f, "names", f.keel);
     if (why) return { deny: keelRefusal(why) };
   }
+  // A tool that writes with an account its server holds (Slack, mail, a forge): the owner's in every mode, unless its input
+  // names an owner who is among his namespaces. An agent is refused.
+  if (c.kind === "other" && c.account && f.accounts && f.mode !== "read-only") {
+    const owners = namedOwners(c.account.input);
+    if (!(owners.length && owners.every((o) => ownsOwner(f.accounts!.names, o)))) {
+      const names = f.accounts.names;
+      const yours = names.length ? names.map(say).join(", ") : "none named yet (Settings > Permissions)";
+      const named = owners.length ? ` for ${owners.join(", ")}, not among your namespaces` : `, and nothing in the call names whose it is`;
+      const why = `${f.tool} writes with the account the MCP server ${c.account.server} holds${named} (your namespaces: ${yours})`;
+      if (f.accounts.agent) return { deny: `Refused: ${why}. ${AGENT_SAYS}` };
+      return { ask: { risk: "high", why, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: owners.join(", ") || c.account.server } };
+    }
+  }
   if (f.mode === "full-auto") return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
   // A tool that can change things, given a file that is the owner's alone to change (an MCP file server's write).
@@ -697,6 +718,42 @@ const never = (why: string, f: Facts): Decision =>
     ? { deny: `Refused: the command ${why}, which never runs without the owner. Do not try another form of it; say what you wanted it for and go on with the rest.` }
     : onlyOwner(`the command ${why}`, why);
 
+// Every write with an account the parts of a line make, found through what wraps them and in the folder each runs in.
+// A script a shell is given with -c is read as a line of its own.
+export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: Pick<Facts, "looked" | "home">, depth = 0): Write[] {
+  const out: Write[] = [];
+  parts.forEach((part, i) => {
+    if (part.heredoc) return;
+    const run = pre.runs[i]!;
+    const env = { dir: pre.dirs[i] ?? null, set: [...run.set, ...part.words.filter((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w))],
+      ...(f.looked?.remotes ? { remotes: (d: string) => f.looked!.remotes!(d) } : {}), ...(f.looked?.manifest ? { manifest: (d: string) => f.looked!.manifest!(d) } : {}) };
+    out.push(...writesToAccounts(run.words, env));
+    // sh -c 'git push ...'
+    const first = baseName(run.words[0]);
+    const c = run.words.indexOf("-c");
+    if (depth < 2 && /^(sh|bash|zsh|dash|ksh)$/.test(first) && c > 0 && run.words[c + 1] !== undefined) {
+      const inner = splitCommand(run.words[c + 1]!);
+      if (inner) out.push(...accountWrites(inner, laid(inner, pre.dirs[i] ?? null, f.home ?? homedir()), f, depth + 1));
+    }
+  });
+  return out;
+}
+
+// What the judge is told of a line's writes with the owner's accounts, and whose namespaces they are in; "" when it makes none.
+export function accountContext(command: string, cwd: string, looked: Looked | undefined, names: Namespace[], home: string = homedir()): string {
+  const parts = splitCommand(command);
+  if (!parts) return "";
+  return accountFacts(accountWrites(parts, laid(parts, cwd, home), { looked, home }), names);
+}
+
+const AGENT_SAYS = "That write is the owner's to make, in every mode: an agent is never allowed it. Do not try another form of it. Report to your parent what you wanted to do (the command, and the repository or package) and go on with the rest.";
+// What a write with an account beyond the owner's namespaces asks: the owner's card in every mode; an agent is refused.
+function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign> extends infer T ? (T extends { account: infer A } ? A : never) : never }, f: Facts, what = "the command"): Decision {
+  const why = whyForeign(hit as Parameters<typeof whyForeign>[0], f.accounts!.names);
+  if (f.accounts!.agent) return { deny: `Refused: ${what} ${why}. ${AGENT_SAYS}` };
+  return { ask: { risk: "high", why: `${what} ${why}`, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: hit.account ? say(hit.account) : "" } };
+}
+
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
   const parts = splitCommand(command);
   const home = f.home ?? homeOf();
@@ -738,6 +795,11 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   // it below.) Each part is read in the folder a `cd` before it leaves it in.
   // (Each part's command and folder, worked out once for this and for the risk classes.)
   const pre = laid(parts, cwd, home);
+  if (f.mode !== "read-only" && f.accounts && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) {
+    const writes = accountWrites(parts, pre, f);
+    const hit = foreign(f.accounts.names, writes);
+    if (hit) return uncovered(accountDecision(hit, f), whyForeign(hit, f.accounts.names));
+  }
   if (f.mode !== "read-only") {
     const owners = (o: OwnerOnly): Decision => uncovered(f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule), o.why);
     // The variables the line gives one value, and the links it makes: a write through either lands where they lead.

@@ -46,6 +46,7 @@ import { reviewRoutes } from "./reviews.ts";
 import { prReviewRoutes } from "./pr-reviews.ts";
 import { turnRoutes } from "./turns.ts";
 import { switchRoutes } from "./switch.ts";
+import { accountRoutes } from "./accounts.ts";
 import { buildPinRoutes } from "./build-pin.ts";
 import { sideRoutes } from "./side.ts";
 import { treeRoutes } from "./tree.ts";
@@ -102,6 +103,7 @@ const modules: Record<string, RouteModule> = {
   prReviewRoutes, // after reviews: it reads the reviewer model they keep; after permissions: its sessions are read-only
   turnRoutes,
   switchRoutes,
+  accountRoutes,
   buildPinRoutes,
   sideRoutes,
   treeRoutes,

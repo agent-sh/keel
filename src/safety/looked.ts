@@ -14,9 +14,10 @@
 // again with the same ones.
 import { lstat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { gitNames } from "../core/git.ts";
+import { git, gitNames } from "../core/git.ts";
 import { contains } from "../core/paths.ts";
 import { chunks } from "../core/proc.ts";
+import type { Answer, Manifest, Remotes } from "./accounts.ts";
 
 // `n`: files git cannot bring back (0, 1, or 2 for more). `self`: the one such file is the path itself.
 // null: no repository there. "late": git did not answer in time.
@@ -28,6 +29,10 @@ export type Looked = {
   targets(kind: "patch" | "archive", file: string): string[] | null;
   // null: not read (missing, too large, no answer in time).
   read(file: string): string | null;
+  // The git remotes of the repository a folder is in, and the package a folder's manifest names (accounts.ts).
+  // null: nothing there. "late": no answer in time.
+  remotes?(dir: string): Answer<Remotes>;
+  manifest?(dir: string): Answer<Manifest>;
   // The line asked more than is looked up for one command (QUESTIONS): the rest were not asked, and read as not answered.
   over?(): boolean;
 };
@@ -123,6 +128,49 @@ async function textOf(file: string): Promise<string | null> {
   }
 }
 
+// The remotes of the repository `dir` is in, through Keel's own view of its config (src/core/git.ts): the
+// addresses as git rewrites them for a fetch and for a push, what gh marked, and where a bare push goes.
+export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
+  const run = (args: string[]) => git(dir, args, { read: true, timeout: 1_500 });
+  const [verbose, config, branch] = await Promise.all([run(["remote", "-v"]), run(["config", "--get-regexp", "^(remote\\..+\\.gh-resolved|remote\\.pushdefault|branch\\..+\\.(remote|pushremote))$"]), run(["symbolic-ref", "-q", "--short", "HEAD"])]);
+  if (verbose.code === -1 || config.code === -1) return "late";
+  if (verbose.code !== 0) return null;
+  const r: Remotes = { push: {}, fetch: {}, resolved: {} };
+  for (const line of verbose.out.split("\n")) {
+    const m = /^(\S+)\s+(\S+)\s+\((fetch|push)\)$/.exec(line.trim());
+    if (!m) continue;
+    if (m[3] === "fetch") r.fetch[m[1]!] = m[2]!; else (r.push[m[1]!] ??= []).push(m[2]!);
+  }
+  r.branch = branch.code === 0 ? branch.out.trim() : undefined;
+  for (const line of config.out.split("\n")) {
+    const m = /^(\S+) (.*)$/.exec(line);
+    if (!m) continue;
+    const key = m[1]!, value = m[2]!.trim();
+    const res = /^remote\.(.+)\.gh-resolved$/.exec(key);
+    if (res) r.resolved[res[1]!] = value;
+    else if (key === "remote.pushdefault") r.pushDefault = value;
+    else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.remote`) r.branchRemote = value;
+    else if (r.branch !== undefined && key.toLowerCase() === `branch.${r.branch.toLowerCase()}.pushremote`) r.branchPushRemote = value;
+  }
+  return r;
+}
+
+// The package a folder holds: the names in package.json, pyproject.toml (or setup.cfg) and Cargo.toml, each read
+// from the file's first 256 KB.
+export async function manifestIn(dir: string): Promise<Manifest | null | "late"> {
+  const text = async (name: string) => { try { const f = Bun.file(join(dir, name)); return (await f.exists()) && f.size <= 262_144 ? await within(500, f.text(), null as string | null) : null; } catch { return null; } };
+  const [pkg, py, cfg, cargo] = await Promise.all([text("package.json"), text("pyproject.toml"), text("setup.cfg"), text("Cargo.toml")]);
+  if (pkg === null && py === null && cfg === null && cargo === null) return null;
+  const m: Manifest = {};
+  if (pkg) { try { const j = JSON.parse(pkg); if (typeof j?.name === "string") m.npm = j.name; if (j?.private === true) m.private = true; } catch { /* not JSON: no name */ } }
+  const section = (t: string, head: RegExp) => { const at = t.search(head); return at < 0 ? "" : t.slice(at).split(/\n\[/)[0]!; };
+  const nameIn = (t: string) => /^\s*name\s*=\s*["']([^"']+)["']/m.exec(t)?.[1];
+  if (py) m.pypi = nameIn(section(py, /^\[project\]/m)) ?? nameIn(section(py, /^\[tool\.poetry\]/m));
+  if (!m.pypi && cfg) m.pypi = /^\s*name\s*=\s*([^\s#]+)/m.exec(section(cfg, /^\[metadata\]/m))?.[1];
+  if (cargo) m.crates = nameIn(section(cargo, /^\[package\]/m));
+  return m;
+}
+
 // The answers gathered for one call. `view(asked)` is what a decision reads: an answer already in hand, else the
 // answer of a disk that did not answer, with the question noted in `asked`. `answer` asks the disk what was noted.
 // A decision that asks more than QUESTIONS at once is over: nothing is asked for it, and it stands as it is.
@@ -140,6 +188,8 @@ export function looking(workspace: string) {
       exists: (path) => get(`exists\0${path}`, "late" as const, () => existsAt(path)),
       targets: (kind, file) => get<string[] | null>(`targets\0${kind}\0${file}`, null, () => targetsOf(kind, file)),
       read: (file) => get<string | null>(`read\0${file}`, null, () => textOf(file)),
+      remotes: (dir) => get<Answer<Remotes>>(`remotes\0${dir}`, "late", () => remotesIn(dir)),
+      manifest: (dir) => get<Answer<Manifest>>(`manifest\0${dir}`, "late", () => manifestIn(dir)),
       over: () => over,
     };
   };
