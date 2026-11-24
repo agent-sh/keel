@@ -45,6 +45,7 @@
 // the stop cut runs again. A check longer than the time between restarts
 // never ends; a repository with such checks raises land.timeout_minutes and
 // restarts less often.
+import { cpuMsOf } from "../core/proc.ts";
 import { during } from "../admin/activity.ts";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeSync } from "node:fs";
@@ -833,7 +834,7 @@ export class LandingQueue {
     const s = await this.sh(c.command, join(scratch, c.dir === "." ? "" : c.dir), `${e.id}-${c.check.name}`, who, repo, timeoutMs);
     const counts = countsOf(s.text);
     const result = s.exit === 0 ? "pass" : "fail";
-    const run = record({ name: c.check.name, command: c.command, dir: c.dir, repo: scope, tree, head, session_id: who, by: "queue", result: s.exit === null ? "stopped" : result, exit: s.exit, pass: counts?.pass ?? null, fail: counts?.fail ?? null, started, ended: Date.now(), log: s.log, from_run: null, inputs, top: scratch });
+    const run = record({ name: c.check.name, command: c.command, dir: c.dir, repo: scope, tree, head, session_id: who, by: "queue", result: s.exit === null ? "stopped" : result, exit: s.exit, pass: counts?.pass ?? null, fail: counts?.fail ?? null, started, ended: Date.now(), log: s.log, from_run: null, inputs, top: scratch, cpu_ms: s.cpu_ms });
     if (result === "pass") return { result, note: "", tail: "", log: s.log };
     let note = s.exit === null ? `stopped after ${limitSays(timeoutMs)}` : `exit ${s.exit}`;
     if (run && at) { const n = (await ledgerNote(run, at).catch(() => "")).replace(/^Check ledger: [^.]*\.\s*/, "").trim(); if (n) note += `; ${n.charAt(0).toLowerCase()}${n.slice(1).replace(/\.$/, "")}`; }
@@ -844,7 +845,7 @@ export class LandingQueue {
   // its output to a log of its own, in a process group of its own: at the time
   // limit the whole group is killed (exit null), and so is one still running
   // when the daemon exits.
-  private async sh(command: string, cwd: string, name: string, who: string | null, repo: string, timeoutMs: number, extra: Record<string, string> = {}): Promise<{ exit: number | null; text: string; log: string }> {
+  private async sh(command: string, cwd: string, name: string, who: string | null, repo: string, timeoutMs: number, extra: Record<string, string> = {}): Promise<{ exit: number | null; text: string; log: string; cpu_ms?: number | null }> {
     const log = join(this.dir, "logs", `${name.replace(/[^\w.-]/g, "_")}.log`);
     mkdirSync(join(this.dir, "logs"), { recursive: true });
     const fd = openSync(log, "w");
@@ -862,7 +863,7 @@ export class LandingQueue {
       // What it left running in its group goes with it.
       killGroup(pid);
       // (Without the line that names the command, when the tail reaches back to it.)
-      return { exit: late || p.signalCode ? null : code, text: readTail(log).replace(/^\$ [^\n]*\n/, ""), log };
+      return { exit: late || p.signalCode ? null : code, text: readTail(log).replace(/^\$ [^\n]*\n/, ""), log, cpu_ms: cpuMsOf(p) };
     } catch (e) {
       writeSync(fd, `\n${(e as Error).message}\n`);
       return { exit: 127, text: (e as Error).message, log };

@@ -23,6 +23,7 @@ export type Run = {
   from_run: number | null;
   inputs: string | null;   // the check's inputs as they were (src/checks/ledger.ts inputsOf), when it names any
   top: string | null;      // the work tree the run's tree was read from
+  cpu_ms?: number | null;  // its processor time (its scope's, else its process's own), when it was measured: a run Keel made beside an agent or in the landing queue
 };
 
 // A time as the owner reads it: HH:MM today, else with its day.

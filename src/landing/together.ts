@@ -38,7 +38,7 @@ import { overlay, parseChecks, readChecks, type Check } from "../checks/named.ts
 import { release } from "../checks/package-cache.ts";
 import { flakyOn } from "../checks/words.ts";
 import { git } from "../core/git.ts";
-import { readText } from "../core/proc.ts";
+import { cpuMsOf, readText } from "../core/proc.ts";
 import type { Store } from "../core/store.ts";
 import { pool } from "../tools/heavy.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
@@ -625,7 +625,7 @@ class LocalRunner implements Runner {
       const r = await this.sh(s.command, join(this.dir, s.check.dir === "." ? "" : s.check.dir), s.check.name);
       const text = readTail(r.log);
       out.push({ check: s.check.name, exit: r.exit, names: r.exit === 0 ? [] : failedNames(text), ms: Date.now() - t0, log: r.log });
-      if (tree) record({ name: s.check.name, command: s.command, dir: s.check.dir, repo: at?.scope ?? this.j.repo, tree, head: commit, session_id: this.j.who, by: "queue", result: r.exit === null ? "stopped" : r.exit === 0 ? "pass" : "fail", exit: r.exit, pass: null, fail: null, started: t0, ended: Date.now(), log: r.log, from_run: null, inputs, top: this.dir });
+      if (tree) record({ name: s.check.name, command: s.command, dir: s.check.dir, repo: at?.scope ?? this.j.repo, tree, head: commit, session_id: this.j.who, by: "queue", result: r.exit === null ? "stopped" : r.exit === 0 ? "pass" : "fail", exit: r.exit, pass: null, fail: null, started: t0, ended: Date.now(), log: r.log, from_run: null, inputs, top: this.dir, cpu_ms: r.cpu_ms });
     }
     return out;
   }
@@ -635,7 +635,7 @@ class LocalRunner implements Runner {
     rmSync(this.dir, { recursive: true, force: true });
   }
   // A command in a process group of its own, niced (and its disk use too where ionice is), after a slot of the heavy pool.
-  private async sh(command: string, cwd: string, name: string, limitMs = this.j.timeoutMs): Promise<{ exit: number | null; log: string }> {
+  private async sh(command: string, cwd: string, name: string, limitMs = this.j.timeoutMs): Promise<{ exit: number | null; log: string; cpu_ms?: number | null }> {
     const log = join(this.logs, `${this.id}-${name.replace(/[^\w.-]/g, "_")}-${Date.now().toString(36)}.log`);
     const slot = await pool.take({ session: this.j.who ?? "pairs", who: "agent", command });
     const fd = openSync(log, "w");
@@ -653,7 +653,7 @@ class LocalRunner implements Runner {
       const code = await p.exited;
       clearTimeout(timer);
       killGroup(pid);
-      return { exit: late || p.signalCode ? null : code, log };
+      return { exit: late || p.signalCode ? null : code, log, cpu_ms: cpuMsOf(p) };
     } catch (e) {
       writeSync(fd, `\n${(e as Error).message}\n`);
       return { exit: 127, log };

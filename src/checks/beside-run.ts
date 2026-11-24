@@ -270,7 +270,7 @@ async function runIn(id: string, held: string[]): Promise<Done> {
     // (below): not a result of the check, not a red of the agent's, and never told to its parent.
     const missing = result === "fail" ? setupLineOf(r.ran.out, r.ran.code) : undefined;
     if (missing) { setups.push({ name: check.name, line: missing, check, command, t0, log: r.log }); continue; }
-    const row = record({ name: check.name, command, dir: check.dir, repo: repo.scope, tree, head: look.head, session_id: id, call_id: null, by: "beside", result, exit: r.ran.timedOut ? null : r.ran.code, pass: counts?.pass ?? null, fail: counts?.fail ?? null, started: t0, ended: Date.now(), log: r.log, from_run: null, inputs, top: repo.top });
+    const row = record({ name: check.name, command, dir: check.dir, repo: repo.scope, tree, head: look.head, session_id: id, call_id: null, by: "beside", result, exit: r.ran.timedOut ? null : r.ran.code, pass: counts?.pass ?? null, fail: counts?.fail ?? null, started: t0, ended: Date.now(), log: r.log, from_run: null, inputs, top: repo.top, cpu_ms: r.ran.cpu_ms });
     if (result !== "fail") continue;
     if (tests.length) carry.push(...failedFiles(r.ran.out, tests));
     // How it fares on the base, when the ledger knows: a check red there too is not the change's.

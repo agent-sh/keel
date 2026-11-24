@@ -3,9 +3,11 @@
 // setting, and its routes.
 //
 // GET /api/checks?session=&repo=&tree=&before=&limit=
-//   -> { runs (newest first), answered, saved_ms, kept, bound }
+//   -> { runs (newest first), answered, saved_ms, kept, bound, cpu_hour }
 //   answered and saved_ms: the runs the ledger answered instead of running,
 //   and the time their earlier runs took (what answering saved).
+//   cpu_hour: the processor time of the runs Keel made beside agents and in the landing queue in the last hour
+//   ({ cpu_ms, beside_ms, queue_ms, runs }): kept with each run (check_runs.cpu_ms), so a restart does not lose it.
 // GET /api/checks/named?cwd=
 //   -> { repo, source: "file" | "setting" | null, checks, problems }
 // GET /api/sessions/:id/fails-before -> { run (the newest, or null), tests (whether its repository names a check that runs test files) }

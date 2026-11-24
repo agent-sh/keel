@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS check_runs (
   from_run INTEGER,
   inputs TEXT,
   top TEXT,
-  note TEXT
+  note TEXT,
+  cpu_ms INTEGER
 );
 CREATE TABLE IF NOT EXISTS check_pending (call_id TEXT PRIMARY KEY, data TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS check_anyway (session_id TEXT NOT NULL, key TEXT NOT NULL, tree TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (session_id, key, tree)) WITHOUT ROWID;
@@ -80,6 +81,7 @@ export function bindLedger(s: Store) {
   s.migrate(SCHEMA);
   // (A table of an earlier build of this module.)
   for (const c of ["inputs", "top", "note"]) if (!s.columnExists("check_runs", c)) s.migrate(`ALTER TABLE check_runs ADD COLUMN ${c} TEXT`);
+  if (!s.columnExists("check_runs", "cpu_ms")) s.migrate("ALTER TABLE check_runs ADD COLUMN cpu_ms INTEGER");
   // What a restart left owed is kept a week; a mark to run anyway, a day.
   s.db.query("DELETE FROM check_pending WHERE created < ?").run(Date.now() - 7 * 86400_000);
   s.db.query("DELETE FROM check_anyway WHERE created < ?").run(Date.now() - 86400_000);
@@ -277,19 +279,19 @@ export async function baseOf(repo: Repo): Promise<{ name: string; history: { com
 
 // --- rows
 
-const COLS = "id, name, command, dir, tree, head, session_id, by, result, exit, pass, fail, started, ended, log, from_run, inputs, top";
+const COLS = "id, name, command, dir, tree, head, session_id, by, result, exit, pass, fail, started, ended, log, from_run, inputs, top, cpu_ms";
 let writes = 0;
 // `note`: why a run is not a result (the first line of what the copy lacked): it is "stopped", said on the timeline.
-export function record(r: Omit<Run, "id" | "inputs" | "top"> & { repo: string; call_id?: string | null; inputs?: string | null; top?: string | null; note?: string | null }): Run | undefined {
+export function record(r: Omit<Run, "id" | "inputs" | "top" | "cpu_ms"> & { repo: string; call_id?: string | null; inputs?: string | null; top?: string | null; note?: string | null; cpu_ms?: number | null }): Run | undefined {
   const d = db();
   if (!d) return undefined;
   const row = d.query<{ id: number }, any[]>(
-    `INSERT INTO check_runs (key, name, command, dir, repo, tree, head, session_id, call_id, by, result, exit, pass, fail, started, ended, log, from_run, inputs, top, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-  ).get(keyOf(r.dir, r.command), r.name, r.command, r.dir, r.repo, r.tree, r.head, r.session_id, r.call_id ?? null, r.by, r.result, r.exit, r.pass, r.fail, r.started, r.ended, r.log, r.from_run, r.inputs ?? null, r.top ?? null, r.note ?? null);
+    `INSERT INTO check_runs (key, name, command, dir, repo, tree, head, session_id, call_id, by, result, exit, pass, fail, started, ended, log, from_run, inputs, top, note, cpu_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  ).get(keyOf(r.dir, r.command), r.name, r.command, r.dir, r.repo, r.tree, r.head, r.session_id, r.call_id ?? null, r.by, r.result, r.exit, r.pass, r.fail, r.started, r.ended, r.log, r.from_run, r.inputs ?? null, r.top ?? null, r.note ?? null, r.cpu_ms ?? null);
   // The bound, checked every hundred writes: the oldest rows past it go.
   if (++writes % 100 === 0) d.query("DELETE FROM check_runs WHERE id <= (SELECT MAX(id) FROM check_runs) - ?").run(keep);
-  return row ? ({ id: row.id, ...r, inputs: r.inputs ?? null, top: r.top ?? null } as Run) : undefined;
+  return row ? ({ id: row.id, ...r, inputs: r.inputs ?? null, top: r.top ?? null, cpu_ms: r.cpu_ms ?? null } as Run) : undefined;
 }
 
 // The runs of a check on one tree (and the same inputs, when it names them), newest first (answered ones left out).
@@ -327,11 +329,14 @@ export const markAnyway = (sessionId: string, key: string, tree: string) => void
 export const takeAnyway = (sessionId: string, key: string, tree: string): boolean =>
   !!db()?.query<{ k: string }, [string, string, string]>("DELETE FROM check_anyway WHERE session_id = ? AND key = ? AND tree = ? RETURNING key AS k").get(sessionId, key, tree);
 
-export type ListOpts = { session?: string; repo?: string; tree?: string; before?: number; limit?: number };
+export type ListOpts = { session?: string; repo?: string; tree?: string; before?: number; limit?: number; now?: number };
+// The processor time of the runs Keel made in the last hour (beside agents and in the landing queue), where it was measured.
+export type CpuHour = { cpu_ms: number; beside_ms: number; queue_ms: number; runs: number };
+const HOUR_MS = 3_600_000;
 export type Read = <T>(sql: string, params: (string | number | null)[]) => Promise<T[]>;
 // The ledger for the route: newest first, with what the answers saved. Read on the read thread
 // (`read`, src/server/reads.ts): the sums go over the whole table.
-export async function list(o: ListOpts, read: Read): Promise<{ runs: (Run & { repo: string })[]; answered: number; saved_ms: number; kept: number; bound: number }> {
+export async function list(o: ListOpts, read: Read): Promise<{ runs: (Run & { repo: string })[]; answered: number; saved_ms: number; kept: number; bound: number; cpu_hour: CpuHour }> {
   const where: string[] = [], args: (string | number)[] = [];
   if (o.session) { where.push("session_id = ?"); args.push(o.session); }
   if (o.repo) { where.push("repo = ?"); args.push(o.repo); }
@@ -339,14 +344,16 @@ export async function list(o: ListOpts, read: Read): Promise<{ runs: (Run & { re
   if (o.before) { where.push("id < ?"); args.push(o.before); }
   const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const limit = Math.min(Math.max(Math.floor(o.limit ?? 100), 1), 1000);
-  const [runs, saved, kept] = await Promise.all([
+  const [runs, saved, kept, cpu] = await Promise.all([
     read<Run & { repo: string }>(`SELECT ${COLS}, repo FROM check_runs ${w} ORDER BY id DESC LIMIT ?`, [...args, limit]),
     // What answering from the ledger saved: the time each answered run's original took.
     read<{ n: number; ms: number | null }>(
       `SELECT COUNT(*) AS n, SUM(o.ended - o.started) AS ms FROM check_runs a JOIN check_runs o ON o.id = a.from_run ${w ? w.replace(/\b(session_id|repo|tree|id)\b/g, "a.$1") : ""} ${w ? "AND" : "WHERE"} a.result = 'answered'`, args),
     read<{ n: number }>("SELECT COUNT(*) AS n FROM check_runs", []),
+    read<{ by: string; ms: number; n: number }>("SELECT by, SUM(cpu_ms) AS ms, COUNT(*) AS n FROM check_runs WHERE ended >= ? AND cpu_ms IS NOT NULL GROUP BY by", [(o.now ?? Date.now()) - HOUR_MS]),
   ]);
-  return { runs, answered: saved[0]?.n ?? 0, saved_ms: saved[0]?.ms ?? 0, kept: kept[0]?.n ?? 0, bound: keep };
+  const by = (k: string) => cpu.find((r) => r.by === k)?.ms ?? 0;
+  return { runs, answered: saved[0]?.n ?? 0, saved_ms: saved[0]?.ms ?? 0, kept: kept[0]?.n ?? 0, bound: keep, cpu_hour: { cpu_ms: cpu.reduce((n, r) => n + r.ms, 0), beside_ms: by("beside"), queue_ms: by("queue"), runs: cpu.reduce((n, r) => n + r.n, 0) } };
 }
 
 export type { Result };

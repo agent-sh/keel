@@ -108,3 +108,8 @@ export async function collect(p: { stdout: Pipe; stderr?: Pipe; exited: Promise<
   const [out, err, code] = await Promise.all([readText(p.stdout, where), readText(p.stderr, where), p.exited]);
   return { out, err, code };
 }
+
+// A finished child's processor time in ms, with what it waited for (the system's own count of it): null when not known.
+export function cpuMsOf(p: { resourceUsage?: () => { cpuTime: { total: bigint | number } } | undefined }): number | null {
+  try { const t = p.resourceUsage?.()?.cpuTime.total; return t === undefined ? null : Math.round(Number(t) / 1000); } catch { return null; }
+}
