@@ -372,6 +372,29 @@ test("a monitor that reaches its deadline delivers the lines it still held, then
   expect(waits.get(w.id)).toMatchObject({ status: "timeout", events: 1 });
 });
 
+test("a monitor that times out with no event says why: what it wrote, that part of it went to stderr, and a file", async () => {
+  const marker = join(dir, "monitor-stderr");
+  const w = waits.create(s.id, waits.normalize({ kind: "monitor", command: `echo boom >&2; echo plain; touch ${marker}; sleep 20`, match: "READY" }, dir), { timeout_seconds: 30 });
+  await until(() => existsSync(marker));
+  await Bun.sleep(200);
+  try {
+    setSystemTime(new Date(w.deadline + 1));
+    await waits.tick();
+  } finally {
+    setSystemTime();
+  }
+  const out = waits.get(w.id)!.outcome!;
+  expect(waits.get(w.id)).toMatchObject({ status: "timeout", events: 0 });
+  expect(out).toContain("No line matched READY");
+  expect(out).toContain("2 lines");
+  expect(out).toContain("stderr");
+  expect(out).toContain("boom");
+  const file = out.match(/saved to (\S+?)\.(?:\s|$)/)?.[1];
+  expect(file).toBeTruthy();
+  expect(existsSync(file!)).toBe(true);
+  expect(readFileSync(file!, "utf8")).toContain("boom");
+});
+
 test("a wake says the whole outcome, and a cut one says it was cut", async () => {
   // A monitor that ends with five long last lines and no event to carry them.
   const line = (i: number) => `${"x".repeat(1900)}END${i}`;

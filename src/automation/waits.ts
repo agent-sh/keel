@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { gitEnv } from "../core/git.ts";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, familyOf, inert, isPending, withdraw } from "./core.ts";
@@ -162,7 +162,7 @@ type LogCursor = { offset: number; ident?: string; skip?: boolean; skipped?: num
 // `probing`: the one probe of the wait that has not answered yet (`late` once
 // it was given up on).
 type Probing = { started: number; abort: AbortController; late?: boolean };
-const live = new Map<string, { cpu?: number; quietSince?: number; aliveAt?: number; grew?: string; offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; probing?: Probing; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
+const live = new Map<string, { cpu?: number; quietSince?: number; aliveAt?: number; grew?: string; offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; probing?: Probing; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number; seen?: number; errs?: number; recent?: string[] }>();
 const LOG_READ = 4 << 20; // a probe reads at most this much of a log
 const LINE_MAX = 64 * 1024; // a monitor matches lines up to this long; a longer one is cut there
 const DISPLAY = 2000; // characters of one line shown in an event
@@ -1053,8 +1053,19 @@ function startMonitor(w: WaitRecord) {
   });
   st.proc = proc;
   D().store.db.query("UPDATE waits SET state = ? WHERE id = ?").run(JSON.stringify({ pgid: proc.pid, start: startTime(proc.pid) }), w.id);
-  const onLine = lineSink(w.id, s);
-  const read = async (stream: ReadableStream<Uint8Array>) => {
+  const sink = lineSink(w.id, s);
+  st.seen = 0; st.errs = 0; st.recent = [];
+  // What a monitor that ends with no event says of its command's output: how much, how much on stderr, the last lines.
+  const read = async (stream: ReadableStream<Uint8Array>, err: boolean) => {
+    const onLine = (line: string, cut = false) => {
+      if (line.trim()) {
+        st.seen!++;
+        if (err) st.errs!++;
+        st.recent!.push(`${err ? "[stderr] " : ""}${line.length > 400 ? `${line.slice(0, 400)} [...]` : line}`);
+        if (st.recent!.length > 20) st.recent!.shift();
+      }
+      sink(line, cut);
+    };
     let buf = "";
     await pumpText(stream, (t) => {
       buf += t;
@@ -1065,7 +1076,7 @@ function startMonitor(w: WaitRecord) {
     }, "monitor").catch(() => {}); // the pipe closed with the process; what it wrote is already read
     if (buf) onLine(buf);
   };
-  Promise.all([read(proc.stdout as ReadableStream<Uint8Array>), read(proc.stderr as ReadableStream<Uint8Array>), proc.exited])
+  Promise.all([read(proc.stdout as ReadableStream<Uint8Array>, false), read(proc.stderr as ReadableStream<Uint8Array>, true), proc.exited])
     .then(([, , code]) => {
       if (get(w.id)?.status !== "active") return;
       flushMonitor(w.id, true);
@@ -1074,6 +1085,29 @@ function startMonitor(w: WaitRecord) {
       settle(w.id, "ended", `The command exited with code ${code}.${tail}`);
     })
     .catch((e) => capture(e, { at: "monitor", wait: w.id }));
+}
+
+// What a monitor that reached its deadline says. With no event, the model is told why there was none: how many
+// lines its command wrote, how many of them on stderr and the last of those, and a file with the last lines.
+function monitorTimeout(w: WaitRecord): string {
+  const base = "The monitor reached its deadline and was stopped. Start it again if it is still needed.";
+  const st = live.get(w.id);
+  if (w.events || st?.seen === undefined) return base;
+  const match = (w.spec as { match?: string }).match;
+  const what = st.seen === 0 ? "Its command wrote nothing" : `No line matched ${match ?? "the pattern"} among the ${st.seen} line${st.seen === 1 ? "" : "s"} its command wrote${st.errs ? `, ${st.errs} of them on stderr` : ""}`;
+  let text = `The monitor reached its deadline with no event and was stopped. ${what}.`;
+  const errs = (st.recent ?? []).filter((l) => l.startsWith("[stderr] ")).slice(-3);
+  if (errs.length) text += `\nLast stderr lines:\n${errs.map((l) => l.slice("[stderr] ".length)).join("\n")}`;
+  if (st.recent?.length) {
+    try {
+      const dir = join(D().store.stateDir, "spill", w.session_id, "monitors");
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${w.id}.log`);
+      writeFileSync(file, conceal(`${st.recent.join("\n")}\n`), { mode: 0o600 });
+      text += `\nThe last ${st.recent.length} lines are saved to ${file}.`;
+    } catch (e) { capture(e, { at: "monitor log", wait: w.id }); }
+  }
+  return `${text} Start it again if it is still needed.`;
 }
 
 function flushMonitor(id: string, force = false) {
@@ -1238,7 +1272,7 @@ export async function tick() {
     if (isMonitor(w.kind)) {
       // At the deadline what is buffered goes out first, whatever is left of its window.
       flushMonitor(w.id, now >= w.deadline);
-      if (now >= w.deadline) settle(w.id, "timeout", "The monitor reached its deadline and was stopped. Start it again if it is still needed.");
+      if (now >= w.deadline) settle(w.id, "timeout", monitorTimeout(w));
       continue;
     }
     const st = live.get(w.id) ?? {};
