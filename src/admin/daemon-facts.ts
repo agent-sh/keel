@@ -6,6 +6,7 @@
 // daemon's own list is only of its present process.
 import type { Database } from "bun:sqlite";
 import type { Restart } from "./life-rows.ts";
+import { STALL_MS } from "./stall.ts";
 
 export type StallFact = { ts_ms: number; ms: number; what: string; kind: string };
 // A provider that could not be reached (src/providers/outage.ts), from its two Activity rows:
@@ -38,7 +39,7 @@ export function daemonFacts(db: Database, spans: { from: number; to: number }[])
     // One that found cut turns without knowing how the daemon before it ended is told by its own time.
     .filter((r) => (r.before || r.turns.length > 0) && touches(r.before?.down_ms ?? r.up_ms, r.up_ms));
   const stalls = !has(db, "daemon_stalls") ? [] : db
-    .query<StallFact, [number, number]>("SELECT ts_ms, ms, what, kind FROM daemon_stalls WHERE ts_ms >= ? AND ts_ms <= ? ORDER BY ts_ms").all(lo, hi)
+    .query<StallFact, [number, number, number]>("SELECT ts_ms, ms, what, kind FROM daemon_stalls WHERE ts_ms >= ? AND ts_ms <= ? AND ms >= ? ORDER BY ts_ms").all(lo, hi, STALL_MS)
     .filter((s) => touches(s.ts_ms, s.ts_ms));
   return { restarts, stalls, outages: outageFacts(db, lo, hi, touches) };
 }
@@ -77,7 +78,25 @@ export function earlierStarts(db: Database, now: Restart, n = 9): EarlierStart[]
     // Its life ended where the start after it says the daemon went down, else when that start came up.
     const next = i === 0 ? now : rows[i - 1]!;
     const end = next.before?.down_ms ?? next.up_ms;
-    const own = stalls ? db.query<StallFact, [number, number]>("SELECT ts_ms, ms, what, kind FROM daemon_stalls WHERE ts_ms >= ? AND ts_ms <= ? ORDER BY ts_ms DESC").all(start.up_ms, Math.max(start.up_ms, end)) : [];
+    const own = stalls ? db.query<StallFact, [number, number, number]>("SELECT ts_ms, ms, what, kind FROM daemon_stalls WHERE ts_ms >= ? AND ts_ms <= ? AND ms >= ? ORDER BY ts_ms DESC").all(start.up_ms, Math.max(start.up_ms, end), STALL_MS) : [];
     return { start, stalls: own, ...(next.before?.down_ms ? { down_ms: next.before.down_ms } : {}) };
+  });
+}
+
+// The stalls of each start's life, newest start first: how many the loop had (every stall from STALL_KEEP_MS
+// up), how many of them reached the Errors bar, the longest and the time they add up to. A start's life
+// runs to the next start's record of when the daemon before it went down, else to when that start came up;
+// the newest one's to `now`.
+export type StartStalls = { id: string; pid: number; up_ms: number; end_ms: number; stalls: number; over_bar: number; longest_ms: number; total_ms: number };
+export function stallsPerStart(db: Database, now: number, n = 8): StartStalls[] {
+  if (!has(db, "daemon_starts")) return [];
+  const rows = db.query<{ data: string }, [number]>("SELECT data FROM daemon_starts ORDER BY up_ms DESC LIMIT ?").all(n).map((r) => JSON.parse(r.data) as Restart);
+  const stalls = has(db, "daemon_stalls");
+  return rows.map((start, i) => {
+    const end = i === 0 ? now : rows[i - 1]!.before?.down_ms ?? rows[i - 1]!.up_ms;
+    const sum = stalls
+      ? db.query<{ n: number; over: number | null; longest: number | null; total: number | null }, [number, number, number]>("SELECT COUNT(*) AS n, SUM(ms >= ?) AS over, MAX(ms) AS longest, SUM(ms) AS total FROM daemon_stalls WHERE ts_ms >= ? AND ts_ms <= ?").get(STALL_MS, start.up_ms, Math.max(start.up_ms, end))
+      : null;
+    return { id: start.id, pid: start.pid, up_ms: start.up_ms, end_ms: end, stalls: sum?.n ?? 0, over_bar: sum?.over ?? 0, longest_ms: sum?.longest ?? 0, total_ms: sum?.total ?? 0 };
   });
 }

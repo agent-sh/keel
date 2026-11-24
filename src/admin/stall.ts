@@ -39,7 +39,10 @@ import { IDLE_MAX_MS } from "../core/pulse.ts";
 const G = globalThis as { __keelStall?: State; __keelStallMonitor?: StallMonitor };
 
 export const STALL_MS = Number(process.env.KEEL_STALL_MS) > 0 ? Number(process.env.KEEL_STALL_MS) : 2000;
-export const STALL_LOG_MS = STALL_MS / 4;
+// A stall from here up is kept (the log line and the daemon_stalls row); from STALL_MS up it is an Errors row too.
+// 0.3 s is below what a person feels as a frozen page, so a trend of shorter stalls shows before a long one does.
+export const STALL_KEEP_MS = 300;
+const keepFrom = (row: number) => Math.min(row / 4, STALL_KEEP_MS);
 const TICK_MS = 100;
 const IDLE_TICK_MS = 1000;
 // The watcher's word and the timer's for one stall come this close together.
@@ -303,7 +306,7 @@ export class TurnWatch {
 }
 
 export type StallDeps = {
-  // A stall of STALL_MS or more: the error row. A shorter one, from STALL_LOG_MS: the log line only.
+  // A stall of STALL_MS or more: the error row. A shorter one, from STALL_KEEP_MS: the log line and its daemon_stalls row only.
   report(s: Stall): void;
   note?(s: Stall): void;
   // The turns that ran in the middle of the stall (`when`: on the monotonic clock).
@@ -421,7 +424,7 @@ export class StallMonitor {
     // A section that was timed says exactly how long it held the loop, also when the tick was a long one.
     const during = longest && longest.ms >= late * 0.5 ? longest : undefined;
     const held = during ? Math.max(late, during.ms) : late;
-    if (held < row / 4) return undefined;
+    if (held < keepFrom(row)) return undefined;
     // The watcher told of this stall a moment ago (it began while the timer slept).
     if (now - this.unsaidAt < SAME_MS) return undefined;
     this.tickedAt = now;
@@ -452,7 +455,7 @@ export class StallMonitor {
   unsaid(ms: number): Stall | undefined {
     const now = performance.now();
     const row = this.deps.thresholdMs ?? STALL_MS;
-    if (ms < row / 4 || now - this.tickedAt < SAME_MS || now - this.unsaidAt < SAME_MS) return undefined;
+    if (ms < keepFrom(row) || now - this.tickedAt < SAME_MS || now - this.unsaidAt < SAME_MS) return undefined;
     this.unsaidAt = now;
     const st = state();
     const work = [...st.work.keys()];

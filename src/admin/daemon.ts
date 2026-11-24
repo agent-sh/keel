@@ -187,7 +187,11 @@ export class Daemon {
       const ended = Date.now();
       const d = describeStall({ ...stall, cause: await sight.ask(stall.ms, stall.window_ms ?? stall.ms) });
       const c = stallCapture(d, row, recur.add(d.group, ended), ended);
-      if (!c) return console.warn(`[daemon] ${d.message}`);
+      if (!c) {
+        // Under the row's mark: the log line and the stall's own row, so a trend of short stalls can be read.
+        try { keepStall(this.deps.store.db, { ts_ms: ended, ms: d.ms, what: d.what, kind: d.kind }); } catch (e) { console.warn(`[daemon] a stall was not kept: ${(e as Error).message}`); }
+        return console.warn(`[daemon] ${d.message}`);
+      }
       const { context } = c;
       const rec = this.deps.errors.capture("server", Object.assign(new Error(c.message), { stack: undefined }), context, c.at);
       try { onRow?.(context, d.what, rec.id || undefined); } catch (e) { console.warn(`[daemon] a stall's span was not written: ${(e as Error).message}`); }

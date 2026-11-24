@@ -447,3 +447,20 @@ test("a recurring short stall's later repeats count on its row and are no new fa
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("with the default bar, a stall of 0.3 s or more is noted for its row in daemon_stalls, and one under it is not", () => {
+  const clock = { now: (epoch += 1_000_000), cpu: 0 };
+  performance.now = () => clock.now;
+  const seen: Stall[] = [], noted: Stall[] = [];
+  const m = new StallMonitor({ report: (s) => void seen.push(s), note: (s) => void noted.push(s), turns: () => [], working: () => true, tick: () => {}, cpu: () => clock.cpu });
+  m.start();
+  m.stop();
+  for (const step of [100, 380]) { clock.now += step; clock.cpu += step; expect(m.tick()).toBeUndefined(); }
+  expect(noted.map((s) => s.ms)).toEqual([]);
+  clock.now += 420; clock.cpu += 420;
+  expect(m.tick()).toBeUndefined();
+  expect(noted.map((s) => s.ms)).toEqual([320]);
+  clock.now += 2_600; clock.cpu += 2_600;
+  expect(m.tick()!.ms).toBe(2_500);
+  expect(seen.map((s) => s.ms)).toEqual([2_500]);
+});

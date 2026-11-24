@@ -26,6 +26,8 @@ import { checkpointerOf } from "../../core/checkpoint.ts";
 import { heldNow } from "../../automation/scopes.ts";
 import type { RouteModule } from "../app.ts";
 import { heavyChanged, pool } from "../../tools/heavy.ts";
+// `daemon.stalls_per_start`: the loop's stalls of each recent start (every one from 0.3 s up), newest start first.
+import { stallsPerStart } from "../../admin/daemon-facts.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -47,7 +49,7 @@ export const resourceRoutes: RouteModule = ({ store, bus }) => {
         // What the daemon holds of its sessions' events: how many sessions, the memory they are charged, and the budget.
         // And what its checkpoint thread did with the store's log (src/core/checkpoint.ts): absent when none works.
         const checkpoint = checkpointerOf(store)?.counts;
-        return json({ ...report, left: heldNow(), daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, collector: collected, ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) }, heavy: pool.view() });
+        return json({ ...report, left: heldNow(), daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, collector: collected, stalls_per_start: stallsPerStart(store.db, Date.now()), ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) }, heavy: pool.view() });
       },
     },
   };

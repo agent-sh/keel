@@ -201,3 +201,38 @@ test("the resources panel says when the daemon's memory is in swap", async ({ pa
   await expect(line).toContainText("started from a terminal (it runs in vte-spawn-1.scope)");
   await shoot(page, "resources-04-swap-terminal");
 });
+
+// The loop's stalls of every start from 0.3 s up are counted per start, so a rise from one start to the
+// next shows before a stall reaches the Errors list (2 s). The daemon's own answer is shown first (this
+// start has its row); the table is then read from the same answer with three starts' counts.
+test("the resources panel lists the loop's stalls per start", async ({ page, request }) => {
+  const real = await (await request.get("/api/resources?refresh=1")).json();
+  expect(real.daemon.stalls_per_start[0]).toMatchObject({ pid: real.daemon.pid, stalls: expect.any(Number), over_bar: expect.any(Number) });
+  const now = Date.now();
+  const starts = [
+    { id: "a", pid: 4201, up_ms: now - 3_600_000, end_ms: now, stalls: 14, over_bar: 1, longest_ms: 2_350, total_ms: 9_800 },
+    { id: "b", pid: 4180, up_ms: now - 9_000_000, end_ms: now - 3_700_000, stalls: 6, over_bar: 0, longest_ms: 1_100, total_ms: 4_200 },
+    { id: "c", pid: 4102, up_ms: now - 14_000_000, end_ms: now - 9_100_000, stalls: 0, over_bar: 0, longest_ms: 0, total_ms: 0 },
+  ];
+  await page.route(/\/api\/resources\?/, async (route) => {
+    const answer = await route.fetch();
+    const body = await answer.json();
+    await route.fulfill({ response: answer, json: { ...body, daemon: { ...body.daemon, stalls_per_start: starts } } });
+  });
+  await page.goto("/settings/resources");
+  const group = page.getByTestId("resources-stalls");
+  await expect(group).toContainText("Loop stalls per start");
+  const rows = group.getByTestId("stalls-row");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0)).toContainText("this start, pid 4201");
+  await expect(rows.nth(0)).toContainText("14");
+  await expect(rows.nth(0)).toContainText("2.35 s");
+  await expect(rows.nth(2)).toContainText("none");
+  await group.scrollIntoViewIfNeeded();
+  await shoot(page, "resources-05-stalls");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(group.locator("dl").first()).toContainText("Held in all");
+  expect(await scrollsSideways(group)).toEqual([]);
+  await group.scrollIntoViewIfNeeded();
+  await shoot(page, "resources-06-stalls-narrow");
+});

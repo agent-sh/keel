@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { clock } from "../lib/utils.ts";
+import { clock, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { Stat, Stats } from "./Stat.tsx";
 import { fmtMs } from "./UsagePanel.tsx";
@@ -26,11 +26,13 @@ type Step = {
   running: { turns: number; readers: number; run_code: number; acp_agents: number; cold_reads: { n: number }; body_reads: { n: number }; spawned: { label: string }[] };
 };
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+// The loop's stalls of one start (every one from 0.3 s up); `over_bar` of them reached the Errors list.
+type StartStalls = { id: string; pid: number; up_ms: number; end_ms: number; stalls: number; over_bar: number; longest_ms: number; total_ms: number };
 
 type Report = {
   measured_ms: number; interval_ms: number;
   totals: { rss_bytes: number; cpu_percent: number; processes: number; threads: number; cpu_user_ms: number; cpu_system_ms: number };
-  daemon: { pid: number; started_ms: number; rss_bytes: number; peak_rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number; heap_bytes: number; growth: { start_rss_bytes: number; per_hour_bytes: number | null }; steps?: Step[]; swap?: { process_bytes: number; unit_bytes?: number; unit_limit_bytes?: number; unit?: string; own?: boolean } };
+  daemon: { pid: number; started_ms: number; rss_bytes: number; peak_rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number; heap_bytes: number; growth: { start_rss_bytes: number; per_hour_bytes: number | null }; steps?: Step[]; swap?: { process_bytes: number; unit_bytes?: number; unit_limit_bytes?: number; unit?: string; own?: boolean }; stalls_per_start?: StartStalls[] };
   processes: { pid: number; name: string; label: string; command: string; kind: string; session_id?: string; rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number }[];
   sessions: { session_id: string; processes: number; rss_bytes: number; cpu_percent: number; total: { cpu_user_ms: number; cpu_system_ms: number; processes: number } }[];
   disk: { path: string; free_bytes: number; total_bytes: number } | null;
@@ -118,6 +120,8 @@ export function ResourcesPanel() {
 
       {r.heavy && <HeavyPool v={r.heavy} />}
 
+      {!!d.stalls_per_start?.length && <StallsPerStart starts={d.stalls_per_start} />}
+
       <Group title="Memory" hint="Last hour." pad>
         <TimeChart
           label="Memory over the last hour"
@@ -177,5 +181,28 @@ export function ResourcesPanel() {
         </Group>
       )}
     </Page>
+  );
+}
+
+const STALL_COLS: Record<string, Col> = {
+  start: { head: "Start", grow: true }, stalls: { head: "Stalls", end: true }, over: { head: "In Errors", end: true, minor: true },
+  longest: { head: "Longest", end: true }, total: { head: "Held in all", end: true, minor: true },
+};
+// How often the loop was held, start by start: a rise from one start to the next is a trend, which the Errors list (stalls of 2 s and up) cannot show.
+function StallsPerStart({ starts }: { starts: StartStalls[] }) {
+  return (
+    <Group testid="resources-stalls" title="Loop stalls per start" hint="Every time the daemon's loop was held for 0.3 s or more, by the start it happened in. Those of 2 s or more are in Errors too.">
+      <Table cols={Object.values(STALL_COLS)} label="Loop stalls per start">
+        {starts.map((s, i) => (
+          <Row key={s.id} testid="stalls-row" name={<span className="font-medium">{when(s.up_ms)}</span>}
+            after={<span className="ml-1.5 text-faint">{i === 0 ? "this start, " : ""}pid {s.pid}, {fmtMs(s.end_ms - s.up_ms)} up</span>}>
+            <Cell col={STALL_COLS.stalls!}>{s.stalls}</Cell>
+            <Cell col={STALL_COLS.over!} className="text-muted">{s.over_bar}</Cell>
+            <Cell col={STALL_COLS.longest!} className="text-muted">{s.stalls ? fmtMs(s.longest_ms) : "none"}</Cell>
+            <Cell col={STALL_COLS.total!} className="text-muted">{s.stalls ? fmtMs(s.total_ms) : "none"}</Cell>
+          </Row>
+        ))}
+      </Table>
+    </Group>
   );
 }
