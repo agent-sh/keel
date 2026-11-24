@@ -579,7 +579,7 @@ const TEST_ID_PARTS: Record<string, string[]> = {
   "components/automation/ActivityList.tsx": ["k"], "components/automation/AlertSettings.tsx": ["c.id", "k"],
   "components/automation/Lane.tsx": ["l.key"], "components/automation/SidebarExtras.tsx": ["p.w"], "components/ElsewherePanel.tsx": ["g.id"],
   "components/ExperimentsPanel.tsx": ["m"], "components/HeavyPool.tsx": ["r.state"],
-  "components/HomeWatch.tsx": ["p.kind"], "components/ImportSheet.tsx": ["h.harness"],
+  "components/HomeWatch.tsx": ["p.w"], "components/ImportSheet.tsx": ["h.harness"],
   "components/ListArrange.tsx": ["g", "l.v", "s.v"], "components/LogsSettings.tsx": ["id"],
   "components/ObservabilityPanel.tsx": ["g.metric"], "components/Panes.tsx": ["n"],
   "components/PermissionMenu.tsx": ["m.id", "p.id"], "components/ProviderModels.tsx": ["k"], "components/QuestionCard.tsx": ["s.scope"],
