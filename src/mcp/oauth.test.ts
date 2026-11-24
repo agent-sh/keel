@@ -5,7 +5,7 @@ import { afterAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OAuthStore } from "./oauth.ts";
+import { ClientRefused, OAuthStore } from "./oauth.ts";
 
 // The server rotates refresh tokens (each works once) and holds every
 // refresh until the test lets it answer.
@@ -186,4 +186,73 @@ test("a sign-in keeps the revocation endpoint its metadata advertises", async ()
   } finally {
     as.stop(true);
   }
+});
+
+// A registration the authorization server no longer knows (RFC 6749 5.2 invalid_client, or HTTP 410) is dropped,
+// and the sign-in registers again once.
+let registered = 0;
+let tokenAnswer: { status: number; body: any } = { status: 400, body: { error: "invalid_client" } };
+const authSrv: ReturnType<typeof Bun.serve> = Bun.serve({
+  port: 0,
+  hostname: "127.0.0.1",
+  async fetch(req) {
+    const u = new URL(req.url);
+    const base = u.origin;
+    if (u.pathname === "/.well-known/oauth-authorization-server") {
+      return Response.json({ issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register` });
+    }
+    if (u.pathname === "/register") return Response.json({ client_id: `reg-${++registered}` });
+    if (u.pathname === "/token") return Response.json(tokenAnswer.body, { status: tokenAnswer.status });
+    return new Response(null, { status: 404 });
+  },
+});
+afterAll(() => authSrv.stop(true));
+
+const fresh = () => { dir = mkdtempSync(join(tmpdir(), "keel-mcp-oauth-")); return new OAuthStore(dir); };
+const redirect = "http://127.0.0.1:1/cb";
+const stateOf = (url: string) => new URL(url).searchParams.get("state")!;
+const clientOf = (url: string) => new URL(url).searchParams.get("client_id");
+
+for (const [name, answer] of [
+  ["invalid_client", { status: 400, body: { error: "invalid_client" } }],
+  ["HTTP 410 Gone", { status: 410, body: {} }],
+] as const) {
+  test(`a registration refused as ${name} at the redirect is dropped, and the next sign-in registers again`, async () => {
+    registered = 0;
+    tokenAnswer = answer;
+    const store = fresh();
+    const url = `http://127.0.0.1:${authSrv.port}/mcp`;
+    const first = await store.begin("s", url, null, redirect);
+    expect(clientOf(first)).toBe("reg-1");
+    const refused = await store.finish(new URLSearchParams({ state: stateOf(first), code: "k" })).catch((e) => e);
+    expect(refused).toBeInstanceOf(ClientRefused);
+    expect(refused.message).toContain("no longer knows Keel's client registration");
+    expect(refused.again).toBe(false);
+    expect(file().clients).toEqual({});
+    // The next sign-in posts a new registration and offers the new client.
+    const second = await store.begin("s", url, null, redirect, {}, true);
+    expect(clientOf(second)).toBe("reg-2");
+    expect(registered).toBe(2);
+    // Refused again: told, and not offered a third time.
+    const again = await store.finish(new URLSearchParams({ state: stateOf(second), code: "k" })).catch((e) => e);
+    expect(again).toBeInstanceOf(ClientRefused);
+    expect(again.again).toBe(true);
+    expect(again.message).toContain("refused too");
+    expect(registered).toBe(2);
+  });
+}
+
+test("a refresh the server refuses as invalid_client drops the cached registration", async () => {
+  registered = 0;
+  tokenAnswer = { status: 400, body: { error: "invalid_client" } };
+  const store = fresh();
+  const url = `http://127.0.0.1:${authSrv.port}/mcp`;
+  const first = await store.begin("s", url, null, redirect);
+  tokenAnswer = { status: 200, body: { access_token: "a", refresh_token: "r", expires_in: 1 } };
+  await store.finish(new URLSearchParams({ state: stateOf(first), code: "k" }));
+  expect(Object.keys(file().clients)).toHaveLength(1);
+  tokenAnswer = { status: 400, body: { error: "invalid_client" } };
+  await store.token("s");
+  expect(file().clients).toEqual({});
+  expect(clientOf(await store.begin("s", url, null, redirect))).toBe("reg-2");
 });

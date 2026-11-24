@@ -35,6 +35,14 @@ const page = (title: string, text: string) =>
     { headers: { "content-type": "text/html; charset=utf-8" } },
   );
 
+// The server no longer knew Keel's client: one line, then the browser goes on to the sign-in of the new one.
+const retryPage = (line: string, url: string) =>
+  new Response(
+    `<!doctype html><meta charset="utf-8"><title>Signing in again</title><meta http-equiv="refresh" content="3;url=${escape(url)}"><body style="font:15px system-ui;display:grid;place-items:center;height:90vh;margin:0">` +
+      `<div style="text-align:center"><h2 style="font-weight:600">Signing in again</h2><p style="opacity:.7">${escape(line)}</p><p><a href="${escape(url)}">Continue</a></p></div>`,
+    { headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+
 const escape = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 export const mcpRoutes: RouteModule = (deps) => {
@@ -389,8 +397,9 @@ export const mcpRoutes: RouteModule = (deps) => {
     "/api/mcp/oauth/callback": {
       GET: async (req: Request) => {
         try {
-          const name = await m.finishSignIn(new URL(req.url).searchParams);
-          return page("Signed in", `${escape(name)} is connected. You can close this tab.`);
+          const done = await m.finishSignIn(new URL(req.url).searchParams);
+          if (done.retry) return retryPage(done.line ?? "", done.retry);
+          return page("Signed in", `${escape(done.server)} is connected. You can close this tab.`);
         } catch (e) {
           deps.errors.capture("server", e, { at: "mcp oauth callback" });
           return page("Sign-in failed", escape((e as Error).message));
@@ -404,8 +413,8 @@ export const mcpRoutes: RouteModule = (deps) => {
         const q = new URLSearchParams(r.includes("?") ? r.slice(r.indexOf("?") + 1) : r);
         if (!q.get("state")) return bad("the redirect carries no state");
         try {
-          const server = await m.finishSignIn(q);
-          return json({ server, servers: m.list() });
+          const done = await m.finishSignIn(q);
+          return json({ server: done.server, ...(done.retry ? { retry: done.retry, line: done.line } : {}), servers: m.list() });
         } catch (e) {
           return bad((e as Error).message);
         }

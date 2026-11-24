@@ -23,7 +23,7 @@ import { askFor, DECLINED } from "../tools/interact.ts";
 import type { Asked } from "../core/types.ts";
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles, sourced } from "./sources.ts";
-import { OAuthStore, type Forgotten } from "./oauth.ts";
+import { ClientRefused, OAuthStore, type Forgotten } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
@@ -2093,10 +2093,21 @@ export class McpManager {
     return this.oauth.begin(name, expand(e.config.url), e.www ?? null, redirectUri, e.config.oauth);
   }
 
-  async finishSignIn(query: URLSearchParams): Promise<string> {
-    const name = await this.oauth.finish(query);
+  // `retry` is the address to send the owner on to when the server no longer knew Keel's client: it was registered
+  // again and the sign-in starts over, once (`line` says so). A second refusal throws.
+  async finishSignIn(query: URLSearchParams): Promise<{ server: string; retry?: string; line?: string }> {
+    let name: string;
+    try {
+      name = await this.oauth.finish(query);
+    } catch (e) {
+      if (!(e instanceof ClientRefused) || e.again || !this.entries.has(e.server)) throw e;
+      const entry = this.entries.get(e.server)!;
+      if (!entry.config.url) throw e;
+      const retry = await this.oauth.begin(e.server, expand(entry.config.url), entry.www ?? null, e.redirectUri, entry.config.oauth, true);
+      return { server: e.server, retry, line: e.message };
+    }
     if (this.entries.has(name)) await this.reconnect(name);
-    return name;
+    return { server: name };
   }
 
   // The tokens are forgotten here already; the authorization server is told in

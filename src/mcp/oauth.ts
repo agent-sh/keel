@@ -14,10 +14,21 @@ type Client = { client_id: string; client_secret?: string; redirect_uri: string 
 type Tokens = { access_token: string; refresh_token?: string; expires_at?: number; scope?: string; token_type?: string };
 // revocation_endpoint: the server's own, "" when its metadata names none (an older file has no field: asked again at sign-out).
 type ServerAuth = { issuer: string; token_endpoint: string; revocation_endpoint?: string; resource: string; client: Client; tokens?: Tokens };
-type PendingSignIn = { server: string; verifier: string; issuer: string; token_endpoint: string; revocation_endpoint?: string; resource: string; client: Client; at: number };
+// again: this sign-in already follows one that found its client refused (it is not offered a second time).
+type PendingSignIn = { again?: boolean; server: string; verifier: string; issuer: string; token_endpoint: string; revocation_endpoint?: string; resource: string; client: Client; at: number };
 // What a sign-out or removal forgot, kept to revoke at the authorization server.
 export type Forgotten = ServerAuth & { tokens: Tokens };
 type File = { servers: Record<string, ServerAuth>; clients: Record<string, Client>; pending: Record<string, PendingSignIn> };
+
+// The authorization server does not know the client Keel presented (RFC 6749 5.2 invalid_client, or a registration
+// the service retired: HTTP 410). The cached registration is dropped when this is told; the next sign-in registers anew.
+class ClientGone extends Error {}
+
+// A sign-in's redirect came back with a registration the server had retired. `again` is true when the sign-in was
+// already the second try: it is told to the owner, never started a third time.
+export class ClientRefused extends Error {
+  constructor(message: string, readonly server: string, readonly redirectUri: string, readonly again: boolean) { super(message); }
+}
 
 export type OAuthConfig = { client_id?: string; client_secret_env?: string; scopes?: string[] };
 
@@ -127,8 +138,10 @@ export class OAuthStore {
         refresh_token: from.refresh_token!,
         resource: a.resource,
       });
-    } catch {
-      // A refused refresh means a new sign-in; the 401 that follows says so.
+    } catch (e) {
+      // A refused refresh means a new sign-in; the 401 that follows says so. A client the server no longer knows
+      // is dropped, so that sign-in registers anew.
+      if (e instanceof ClientGone) this.dropClient(a.client.client_id);
       return this.read().servers[server]?.tokens?.access_token;
     }
     const f = this.read();
@@ -141,8 +154,17 @@ export class OAuthStore {
     return now.tokens.access_token;
   }
 
+  // Forget the registrations made with this client id (never a client the config names: it is not in the file).
+  private dropClient(id: string): boolean {
+    const f = this.read();
+    const keys = Object.keys(f.clients).filter((k) => f.clients[k]!.client_id === id);
+    for (const k of keys) delete f.clients[k];
+    if (keys.length) this.write(f);
+    return keys.length > 0;
+  }
+
   // Start a sign-in: discovery, a client, and the URL to open.
-  async begin(server: string, url: string, wwwAuthenticate: string | null, redirectUri: string, cfg: OAuthConfig = {}): Promise<string> {
+  async begin(server: string, url: string, wwwAuthenticate: string | null, redirectUri: string, cfg: OAuthConfig = {}, again = false): Promise<string> {
     const challenge = parseWwwAuthenticate(wwwAuthenticate);
     const prm = await protectedResource(url, challenge.resource_metadata);
     const issuer = prm?.authorization_servers?.[0] ?? new URL(url).origin;
@@ -189,7 +211,7 @@ export class OAuthStore {
     if (scope) q.set("scope", scope);
     // drop stale sign-ins (older than 15 minutes)
     for (const [k, p] of Object.entries(f.pending)) if (Date.now() - p.at > 15 * 60_000) delete f.pending[k];
-    f.pending[state] = { server, verifier, issuer: as.issuer, token_endpoint: as.token_endpoint, revocation_endpoint: as.revocation_endpoint ?? "", resource, client, at: Date.now() };
+    f.pending[state] = { server, verifier, issuer: as.issuer, token_endpoint: as.token_endpoint, revocation_endpoint: as.revocation_endpoint ?? "", resource, client, at: Date.now(), ...(again ? { again } : {}) };
     this.write(f);
     const auth = new URL(as.authorization_endpoint);
     for (const [k, v] of q) auth.searchParams.set(k, v);
@@ -209,13 +231,23 @@ export class OAuthStore {
     if (query.get("error")) throw new Error(`sign-in refused: ${query.get("error")} ${query.get("error_description") ?? ""}`.trim());
     const code = query.get("code");
     if (!code) throw new Error("the redirect carries no code");
-    const tokens = await tokenRequest(p.token_endpoint, p.client, {
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: p.client.redirect_uri,
-      code_verifier: p.verifier,
-      resource: p.resource,
-    });
+    let tokens: Tokens;
+    try {
+      tokens = await tokenRequest(p.token_endpoint, p.client, {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: p.client.redirect_uri,
+        code_verifier: p.verifier,
+        resource: p.resource,
+      });
+    } catch (e) {
+      // A registration the server no longer knows is dropped (one the config names is not ours to drop).
+      if (!(e instanceof ClientGone) || !this.dropClient(p.client.client_id)) throw e;
+      throw new ClientRefused(
+        `${p.issuer} no longer knows Keel's client registration (${e.message}); it was dropped${p.again ? ", and the new one was refused too: sign in again" : " and Keel registers again"}`,
+        p.server, p.client.redirect_uri, !!p.again,
+      );
+    }
     const g = this.read();
     g.servers[p.server] = { issuer: p.issuer, token_endpoint: p.token_endpoint, revocation_endpoint: p.revocation_endpoint, resource: p.resource, client: p.client, tokens };
     this.write(g);
@@ -239,7 +271,10 @@ async function tokenRequest(endpoint: string, client: Client, params: Record<str
   const text = await r.text();
   let d: any;
   try { d = JSON.parse(text); } catch { d = Object.fromEntries(new URLSearchParams(text)); }
-  if (!r.ok || !d.access_token) throw new Error(`token request failed: HTTP ${r.status} ${d.error ?? ""} ${d.error_description ?? ""}`.trim());
+  if (!r.ok || !d.access_token) {
+    const why = `token request failed: HTTP ${r.status} ${d.error ?? ""} ${d.error_description ?? ""}`.trim();
+    throw new (r.status === 410 || d.error === "invalid_client" ? ClientGone : Error)(why);
+  }
   return {
     access_token: d.access_token,
     refresh_token: d.refresh_token,
