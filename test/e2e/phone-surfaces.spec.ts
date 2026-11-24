@@ -777,5 +777,45 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    test("the new models' folded list is a row of two lines a finger can press, and the list measures what it draws", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(120_000);
+      const batch = `flood${Math.random().toString(36).slice(2, 6)}`;
+      const models = async () => (await (await request.get("/api/models?refresh=1")).json()).models.map((m: any) => m.id) as string[];
+      for (const e of (await (await request.get("/api/experiments")).json()).experiments) if (e.state === "running" && e.mode === "live") await request.post(`/api/experiments/${e.id}/stop`);
+      const say = async (text: string) => {
+        const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: `new models ${batch}`, text } })).json();
+        await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings.last_end, { timeout: 30_000 }).toBeTruthy();
+      };
+      try {
+        // (A daemon's first listing is its baseline, not news: it is made before the models this test adds.)
+        await models();
+        await say(`script:list-models ${batch} 300`);
+        expect((await models()).filter((m) => m.startsWith(`scripted:${batch}.`))).toHaveLength(300);
+        await page.goto("/");
+        await expect(page.getByTestId("new-model-news")).toContainText("300 new models", { timeout: 20_000 });
+        await page.getByTestId("new-model-news").tap();
+        await page.getByTestId("new-models-toggle").tap();
+        const group = page.locator('[data-testid="new-models-group"][data-provider="scripted"]');
+        await group.getByTestId("new-models-group-toggle").tap();
+        const rows = group.getByTestId("new-models-row");
+        await expect(rows.first()).toBeVisible();
+        const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+        // A row is as tall as the list takes it to be (it spaces the rows it does not draw by that height), and a finger's target.
+        const takes = await group.getByTestId("new-models-scroll").evaluate((el) => el.querySelector<HTMLElement>("[data-probe]")!.offsetHeight / 2);
+        const row = (await rows.first().boundingBox())!;
+        expect(Math.abs(row.height - takes), "the row's height is what the list assumes").toBeLessThan(1);
+        expect(row.height, "the row is a finger's target").toBeGreaterThanOrEqual(2.75 * rem - 1);
+        // The name is whole on its own line; its window and price are under it.
+        expect(await rows.first().locator("span").first().evaluate((e) => e.scrollWidth > e.clientWidth + 1), "the name is cut").toBe(false);
+        const [name, win] = await Promise.all([rows.first().locator("span").nth(0).boundingBox(), rows.first().locator("span").nth(1).boundingBox()]);
+        expect(win!.y, "the window is under the name").toBeGreaterThanOrEqual(name!.y + name!.height - 1);
+        await noSideScroll(page);
+        await shoot(page, `phone-surfaces-23-new-models-list-${size.width}`);
+      } finally {
+        await say(`script:unlist-models ${batch}`);
+        await models();
+      }
+    });
   });
 }

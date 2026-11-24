@@ -10,6 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { every } from "../lib/clock.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { fmtMetric } from "../lib/metric.ts";
+import { usePhoneWidth } from "../lib/list-hold.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, fmtTokens } from "../lib/utils.ts";
 import { Seg } from "./Seg.tsx";
@@ -68,7 +69,9 @@ export function NewModelNews() {
 export const CARDS_UP_TO = 3;
 const SUMMARY_BEST = 3;
 // A row of the list is this tall (rem); only the rows in view are drawn.
+// A row of the folded list: one line at a desk; on a phone two (the name, then its window and price), as tall as a finger needs.
 const ROW_REM = 2;
+const ROW_REM_PHONE = 3.25;
 
 // The models worth a trial first: those that take every role, then the larger window, then the cheaper
 // output price, then by name. The listing's own facts only; nothing here names a model.
@@ -148,6 +151,7 @@ function NewModelList({ models, roles, metrics, labels, reload, dismiss, busy }:
   const [open, setOpen] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const card = picked ? models.find((m) => m.id === picked) : undefined;
+  const rem = usePhoneWidth() ? ROW_REM_PHONE : ROW_REM;
   return (
     <div className="mt-3 flex flex-col divide-y divide-line/60 rounded-md border border-line" data-testid="new-models-list">
       {groups.map(([provider, list]) => (
@@ -166,13 +170,13 @@ function NewModelList({ models, roles, metrics, labels, reload, dismiss, busy }:
               {card && card.provider === provider && (
                 <div className="mt-2" data-testid="new-models-picked"><NewModelCard m={card} roles={roles} metrics={metrics} reload={reload} lean /></div>
               )}
-              <VirtualRows items={list} rem={ROW_REM} viewRem={20} key={provider}>
+              <VirtualRows items={list} rem={rem} viewRem={20} key={provider}>
                 {(m) => (
                   <button type="button" data-testid="new-models-row" data-model={m.id} aria-pressed={picked === m.id} onClick={() => setPicked(picked === m.id ? null : m.id)}
-                    className={cn("grid h-8 w-full grid-cols-[minmax(0,1fr)_4rem_8rem] items-center gap-2 rounded-sm px-2 text-left text-ui hover:bg-hover max-md:grid-cols-[minmax(0,1fr)_3rem_4.5rem]", picked === m.id && "bg-hover")}>
-                    <span className="min-w-0 truncate" title={m.name}>{m.name}</span>
-                    <span className="text-right text-caption tabular-nums text-muted">{m.context ? fmtTokens(m.context) : "?"}</span>
-                    <span className="truncate text-right text-caption tabular-nums text-muted">{priceShort(m)}</span>
+                    className={cn("grid h-8 w-full grid-cols-[minmax(0,1fr)_4rem_8rem] items-center gap-2 rounded-sm px-2 text-left text-ui hover:bg-hover max-md:h-[3.25rem] max-md:grid-cols-[auto_minmax(0,1fr)] max-md:grid-rows-2 max-md:gap-x-3 max-md:gap-y-0", picked === m.id && "bg-hover")}>
+                    <span className="min-w-0 truncate max-md:col-span-2 max-md:self-end" title={m.name}>{m.name}</span>
+                    <span className="text-right text-caption tabular-nums text-muted max-md:self-start max-md:text-left">{m.context ? fmtTokens(m.context) : "?"}</span>
+                    <span className="truncate text-right text-caption tabular-nums text-muted max-md:self-start">{priceShort(m)}</span>
                   </button>
                 )}
               </VirtualRows>

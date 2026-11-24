@@ -171,7 +171,8 @@ test("new models: a listing of hundreds is one summary and a folded list", async
       const rows = group.getByTestId("new-models-row");
       const boxes = await Promise.all([0, 1, 2, 3].map(async (i) => (await rows.nth(i).locator("span").nth(1).boundingBox())!.x));
       expect(new Set(boxes.map((x) => Math.round(x))).size).toBe(1);
-      expect((await rows.first().boundingBox())!.height).toBeLessThan(40);
+      // (A phone draws it in two lines: the name, then its window and price.)
+      expect((await rows.first().boundingBox())!.height).toBeLessThan(name === "wide" ? 40 : 60);
       // Scrolling the list brings other rows, still few.
       const firstBefore = await rows.first().getAttribute("data-model");
       await group.getByTestId("new-models-scroll").evaluate((el) => { el.scrollTop = el.scrollHeight; });
