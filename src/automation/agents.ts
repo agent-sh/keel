@@ -57,6 +57,7 @@ import { agentTitle } from "./agent-title.ts";
 import { lookup as earlierLookup } from "./earlier.ts";
 import { yamlWithin } from "../core/yaml-bound.ts";
 import { ifHolds } from "../integrations/hooks.ts";
+import { AGENT_FILE_MAX } from "../core/agent-file.ts";
 import { choiceOf as turnChoiceOf } from "../tools/skill-turn.ts";
 import { isApiGrant, listReach, type ApiGrant } from "./api-grant.ts";
 
@@ -378,9 +379,6 @@ export function setLimit(parentId: string, limit: number | null) {
 
 // --- definitions -----------------------------------------------------------
 
-// The most of an agent definition file read: the budget of repository instructions.
-const AGENT_FILE_MAX = 32 * 1024;
-
 // The frontmatter as YAML (Claude Code's fields include lists of objects:
 // mcpServers, hooks), else read line by line as before.
 function frontMatter(text: string): { meta: Record<string, any>; body: string } | undefined {
@@ -545,7 +543,7 @@ function readCodexDir(dir: string, source: string): AgentDef[] {
     if (!f.endsWith(".toml")) continue;
     const p = join(dir, f);
     try {
-      if (statSync(p).size > 32 * 1024) continue;
+      if (statSync(p).size > AGENT_FILE_MAX) continue;
       const t = Bun.TOML.parse(readFileSync(p, "utf8")) as Record<string, any>;
       const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
       const name = str(t.name), description = str(t.description), body = str(t.developer_instructions);
@@ -576,14 +574,39 @@ export function defFor(defs: readonly AgentDef[], type: string | undefined): Age
   return named(want) ?? (ROLE_ALIASES[want] ? named(ROLE_ALIASES[want]!) : undefined);
 }
 
+// Where agent files are read, in the order they are taken: the owner's, then each folder from the
+// repository's root down to `cwd`. `codex`: TOML files of Codex's format, else Markdown. The health
+// check walks the same list (src/admin/health.ts).
+export function agentFolders(cwd: string): { dir: string; layer: "owner" | "project"; codex: boolean }[] {
+  const config = process.env.XDG_CONFIG_HOME ?? join(homeDir(), ".config");
+  const codexHome = process.env.CODEX_HOME ?? join(homeDir(), ".codex");
+  // The owner's: the Rust Keel's folder, Codex's, Claude Code's, then keel-bun's own (it wins a name).
+  const out: { dir: string; layer: "owner" | "project"; codex: boolean }[] = [
+    { dir: join(config, "keel", "agents"), layer: "owner", codex: false },
+    { dir: join(codexHome, "agents"), layer: "owner", codex: true },
+    { dir: join(homeDir(), ".claude", "agents"), layer: "owner", codex: false },
+    { dir: join(configDir(), "agents"), layer: "owner", codex: false },
+  ];
+  const dirs: string[] = [];
+  for (let d = cwd; ; d = dirname(d)) {
+    dirs.unshift(d);
+    if (existsSync(join(d, ".git")) || dirname(d) === d || d === homeDir()) break;
+  }
+  for (const d of dirs) {
+    out.push({ dir: join(d, ".codex", "agents"), layer: "project", codex: true });
+    for (const sub of [".claude/agents", ".agents/agents", ".keel/agents"]) out.push({ dir: join(d, sub), layer: "project", codex: false });
+  }
+  return out;
+}
+export const builtinAgentNames = (): string[] => BUILTIN.map((d) => d.name);
+
 // Built-ins, then the owner's, then the project's (nearest directory wins). A
 // project file never takes a built-in's name.
 export function definitions(cwd: string): AgentDef[] {
   const byName = new Map<string, AgentDef>(BUILTIN.map((d) => [d.name, d]));
-  const config = process.env.XDG_CONFIG_HOME ?? join(homeDir(), ".config");
-  // The owner's: the Rust Keel's folder, Claude Code's, then keel-bun's own (it wins a name).
-  const codexHome = process.env.CODEX_HOME ?? join(homeDir(), ".codex");
-  for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readCodexDir(join(codexHome, "agents"), "owner"), ...readDir(join(homeDir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
+  const folders = agentFolders(cwd);
+  const read = (f: (typeof folders)[number]) => (f.codex ? readCodexDir(f.dir, f.layer) : readDir(f.dir, f.layer));
+  for (const d of folders.filter((f) => f.layer === "owner").flatMap(read)) byName.set(d.name, d);
   // Agents of the plugins Keel installed (while enabled) and of the Claude Code
   // plugins the owner carried, as Claude Code names them (<plugin>:<agent>).
   // Its settings fill ${user_config.KEY} in the agent's text, a sensitive one as a placeholder (src/plugins/options.ts).
@@ -592,15 +615,7 @@ export function definitions(cwd: string): AgentDef[] {
     for (const d of readFiles(u.agents.map((a) => a.file), "owner", true)) byName.set(`${u.id}:${d.name}`, { ...d, name: `${u.id}:${d.name}`, ...(v && d.body ? { body: fillContent(d.body, v.specs, v.text) } : {}) });
   }
   for (const p of carriedPlugins()) for (const d of readDir(join(p.dir, "agents"), "owner", true)) byName.set(`${p.name}:${d.name}`, { ...d, name: `${p.name}:${d.name}` });
-  const dirs: string[] = [];
-  for (let d = cwd; ; d = dirname(d)) {
-    dirs.unshift(d);
-    if (existsSync(join(d, ".git")) || dirname(d) === d || d === homeDir()) break;
-  }
-  for (const d of dirs) {
-    const here = [...readCodexDir(join(d, ".codex", "agents"), "project"), ...[".claude/agents", ".agents/agents", ".keel/agents"].flatMap((sub) => readDir(join(d, sub), "project"))];
-    for (const def of here) if (!BUILTIN.some((b) => b.name === def.name)) byName.set(def.name, def);
-  }
+  for (const def of folders.filter((f) => f.layer === "project").flatMap(read)) if (!BUILTIN.some((b) => b.name === def.name)) byName.set(def.name, def);
   return [...byName.values()];
 }
 

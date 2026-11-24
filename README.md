@@ -1675,6 +1675,42 @@ Credentials: a token saved in Settings > Pull requests (kept in the system
 keyring), else `GH_TOKEN` or `GITHUB_TOKEN`, else your gh login. The token
 is never printed and never on a command line.
 
+## One health check
+
+`keel doctor` and Settings > Health list what is wrong with an installation in
+one list, from `GET /api/health/check` (`?cwd=DIR` adds that folder's own
+skills, commands, agents and hooks). It runs when asked, never on a timer, and
+changes and spends nothing. Each row is well, a warning or broken, says how to
+fix it in a line and where (a file, and the Settings section). The checks:
+
+- Skill, command, agent and plugin files that are not loaded, or load with part
+  of what they say lost (a front matter that never closes, no front matter in
+  an agent file, a plugin whose folder or listed file is gone), and the owner's
+  JSON config files that do not parse.
+- Hook files with a problem, a matcher that matches no tool and no value of its
+  event, and a matcher on an event that takes none.
+- Settings that hide each other: a skill or agent name taken by another file, a
+  repository agent that takes a built-in's name, a setting that wins over an
+  OpenTelemetry variable, a config file a variable points into a session's
+  folder, an unreadable `settings.json`.
+- The sandbox: bubblewrap present and able to start one (broken when the
+  default profile needs it, a warning when nothing does), and a scope of its own
+  for commands.
+- Each available provider, by its model listing (a read that spends no tokens;
+  a provider that answers locally, or an endpoint with no listing, is named as
+  not checked, never asked for an answer), with an account problem it already
+  knows (billing, sign-in).
+- MCP servers that fail to start, wait for a sign-in or hold changed tools.
+- A telemetry exporter that is on with no endpoint.
+- The disk under the state folder: broken under 1 GB free (the database's log
+  alone holds 66 MB before it is copied back), a warning while a backup copy of
+  the database would not fit.
+
+Each check has its own time limit and says so as a row when it does not finish;
+the file walk runs on the read thread, the probes and listings wait on a
+process or the network. `keel doctor --problems` leaves out what is well, and
+its exit status is 1 when something is broken.
+
 ## Backups
 
 `keel backup` writes a checked copy under `<state>/backups`: the database, the

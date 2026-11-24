@@ -1,6 +1,6 @@
 // The admin lane's place in the workbench: usage, resources, storage and the
 // daemon as settings sections, each with a palette command.
-import { BarChart3, Cpu, HardDrive, PackageOpen, Server } from "lucide-react";
+import { BarChart3, Cpu, HardDrive, HeartPulse, PackageOpen, Server } from "lucide-react";
 import { createElement, lazy } from "react";
 import { settingsSections } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
@@ -14,6 +14,15 @@ settingsSections.add({
   icon: createElement(BarChart3, { className: "size-4" }),
   order: 30,
   component: lazy(() => import("../components/UsagePanel.tsx").then((m) => ({ default: m.UsagePanel }))),
+});
+
+settingsSections.add({
+  id: "health",
+  label: "Health",
+  words: "health doctor check broken skill agent command plugin hook matcher sandbox bwrap provider reachable mcp server telemetry otel endpoint disk free layers override",
+  icon: createElement(HeartPulse, { className: "size-4" }),
+  order: 30.5,
+  component: lazy(() => import("../components/HealthPanel.tsx").then((m) => ({ default: m.HealthPanel }))),
 });
 
 settingsSections.add({
@@ -57,5 +66,6 @@ registerCommand(
   { id: "daemon", label: "Daemon", group: "General", words: "restart keep awake report", run: () => navigate({ name: "settings", section: "daemon" }) },
 );
 registerCommand({ id: "leftovers", label: "Leftovers", group: "General", words: "left behind processes worktrees branches", run: () => navigate({ name: "settings", section: "leftovers" }) });
+registerCommand({ id: "health", label: "Health check", group: "General", words: "doctor broken skills hooks sandbox providers disk", run: () => navigate({ name: "settings", section: "health" }) });
 registerCommand({ id: "resources", label: "Resources", group: "General", words: "memory cpu disk processes", run: () => navigate({ name: "settings", section: "resources" }) });
 registerCommand({ id: "usage", label: "Usage", group: "General", words: "cost spend tokens cache latency stats", run: () => navigate({ name: "settings", section: "usage" }) });

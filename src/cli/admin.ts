@@ -1,4 +1,4 @@
-// keel status | drain | restart | upgrade | ui | storage | cleanup | backup |
+// keel status | drain | restart | upgrade | ui | storage | doctor | cleanup | backup |
 // backups | restore | report | usage | service: the daemon's administration
 // from a terminal. Each asks the running daemon over HTTP, except restore
 // (the daemon must be stopped) and service (writes the systemd unit).
@@ -14,6 +14,7 @@ import { parseBind } from "../core/bind.ts";
 import { configDir } from "../providers/config.ts";
 import { authHeaders, clean, findDaemon, refusal } from "./client.ts";
 import { defaultStateDir, homeDir } from "../core/paths.ts";
+import { doctorExit, healthText, type HealthReport } from "../admin/health-rows.ts";
 
 const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
 // --url, KEEL_URL, the address the state folder's daemon recorded, the default bind.
@@ -169,6 +170,17 @@ const storage = wrap("keel storage [--refresh] [--url URL] [--json]", { refresh:
   ].join("\n"));
   return 0;
 });
+
+// One list of what is wrong with this installation (the daemon's health check, also Settings > Health).
+const doctor = wrap(
+  "keel doctor [--cwd DIR] [--problems] [--url URL] [--json]\n  Broken skill, command, agent, plugin and config files; hooks that never run; a sandbox that cannot start;\n  settings one layer hides; each provider's reachability (a model listing call, never a paid request);\n  MCP servers that fail to start; a telemetry exporter with no endpoint; the disk under the state folder.\n  --cwd DIR reads that folder's own skills, commands, agents and hooks too (this folder by default);\n  --problems leaves out what is well. Exit status 1 when something is broken.",
+  { cwd: { type: "string" }, problems: { type: "boolean" } },
+  async (v) => {
+    const r: HealthReport = await call(urlOf(v.url), `/api/health/check?cwd=${encodeURIComponent(resolve(v.cwd ?? process.cwd()))}`);
+    out(r, !!v.json, () => healthText(r, { all: !v.problems }));
+    return doctorExit(r.counts);
+  },
+);
 
 // What sessions left behind: commands still running, worktrees and branches no live session holds.
 const leftoversCmd = wrap("keel leftovers [--url URL] [--json]\n  Commands of sessions that still run, worktrees no live session works in, and branches no worktree has out,\n  with what each holds and who it is known by. Settings, Leftovers stops or removes them, one at a time or all at once.", {}, async (v) => {
@@ -473,6 +485,7 @@ export const adminCommands = {
   upgrade: drainCmd(true, true),
   storage,
   leftovers: leftoversCmd,
+  doctor,
   cleanup,
   backup,
   backups,

@@ -71,6 +71,7 @@ import { shellRoutes } from "./shell.ts";
 import { checkRoutes } from "./checks.ts";
 import { egressRoutes } from "./egress.ts";
 import { pressRoutes } from "./presses.ts";
+import { healthRoutes } from "./health.ts";
 import { rulingRoutes } from "../../automation/rulings.ts";
 
 // Each feature module adds one line here.
@@ -114,6 +115,7 @@ const modules: Record<string, RouteModule> = {
   contentRouteRoutes,
   errorRoutes,
   resourceRoutes,
+  healthRoutes, // reads what the others set up: hooks, MCP servers, providers, the settings
   adminRoutes,
   observeRoutes, // after admin: it reads the settings admin loads
   automationRoutes,

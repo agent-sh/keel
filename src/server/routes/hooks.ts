@@ -44,7 +44,7 @@ const MODE_NAMES: Record<string, string> = { ask: "default", "auto-edits": "acce
 // An alert's kind as a notification type of Claude Code's, where one fits; else the kind itself.
 const NOTICE_TYPES: Record<string, string> = { approval: "permission_prompt", question: "agent_needs_input", finished: "idle_prompt" };
 // How a turn's error reads as one of Claude Code's StopFailure error types.
-const ERROR_TYPES: Record<string, string> = { rate: "rate_limit", auth: "authentication_failed", quota: "billing_error", overloaded: "server_error", server: "server_error", network: "server_error", invalid: "invalid_request", context: "invalid_request" };
+export const ERROR_TYPES: Record<string, string> = { rate: "rate_limit", auth: "authentication_failed", quota: "billing_error", overloaded: "server_error", server: "server_error", network: "server_error", invalid: "invalid_request", context: "invalid_request" };
 // The events of a tool call: a call is followed only when one of them has a hook.
 const CALL_EVENTS: HookEvent[] = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied"];
 

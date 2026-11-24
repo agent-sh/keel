@@ -20,6 +20,7 @@ import { earlierCandidates, earlierOutcomes } from "../automation/earlier-facts.
 import { priceFactsRead } from "../engine/price-facts.ts";
 import { pressReport } from "../admin/presses.ts";
 import { egressReport, type EgressAsk } from "../safety/egress-report.ts";
+import { scanFiles, type FilesAsk } from "../admin/health-files.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -64,6 +65,8 @@ export const tasks = {
   // What the owner presses, most used first per view (src/admin/presses.ts).
   "presses.report": (db: Database, a: { days?: number }) => pressReport(db, a),
   "egress.report": (db: Database, a: EgressAsk) => egressReport(db, a),
+  // The health check's walk over the owner's skill, command, agent and plugin files (src/admin/health-files.ts).
+  "health.files": (_db: Database, a: FilesAsk) => scanFiles(a),
 };
 
 export type Tasks = typeof tasks;

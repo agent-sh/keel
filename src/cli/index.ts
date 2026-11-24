@@ -33,7 +33,7 @@ const from = {
 export const WHERE: Record<string, keyof typeof from> = {
   pair: "mobile", devices: "mobile", revoke: "mobile", notify: "mobile",
   acp: "acp",
-  ui: "admin", status: "admin", drain: "admin", restart: "admin", upgrade: "admin", storage: "admin", leftovers: "admin", cleanup: "admin",
+  ui: "admin", status: "admin", drain: "admin", restart: "admin", upgrade: "admin", storage: "admin", leftovers: "admin", doctor: "admin", cleanup: "admin",
   backup: "admin", backups: "admin", restore: "admin", report: "admin", usage: "admin", service: "admin", activity: "admin",
   plugin: "plugin",
   sessions: "sessions", ls: "sessions", stuck: "sessions", show: "sessions", logs: "sessions", stop: "sessions", agents: "sessions", send: "sessions",
