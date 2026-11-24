@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, askedOf, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { conceal } from "../../core/conceal.ts";
-import { ackNotices, adoptJobs, cutCommand, drainNotices, jobEnded, findJob, hasNotice, jobsChanged, jobsOf, jobView, running, stopJob, type Job } from "../../tools/jobs.ts";
+import { ackNotices, adoptJobs, cutCommand, drainNotices, endedHow, jobEnded, findJob, hasNotice, jobsChanged, jobsOf, jobView, jobWhat, running, stopJob, type Job } from "../../tools/jobs.ts";
+import { commandEndedQuietly } from "../../automation/alerts.ts";
 import { renderForOwner, skillRun } from "../../tools/skills.ts";
 import { dropChoice } from "../../tools/skill-turn.ts";
 import { hookContext } from "../../integrations/hooks.ts";
@@ -43,7 +44,7 @@ export const toolRoutes: RouteModule = (deps) => {
         if (agent && agent.status !== "running" && agent.status !== "waiting") return riding ? note() : sent();
         if (riding) return commandEnded(job, text, riding, agent?.status === "waiting", { sent, note });
         // (An agent parked on the command is the one that still gets its turn after a stop: nothing else ends its wait.)
-        if ((job.stopReason && agent?.status !== "waiting") || deps.engine.isHeld(job.sessionId)) return note();
+        if ((job.stopReason && agent?.status !== "waiting") || deps.engine.isHeld(job.sessionId)) return (note(), quiet(job));
         // Its branch ends in a turn a restart cut: the engine is about to continue that turn (or holds it for the owner).
         const end = deps.store.db.query<{ kind: string; reason: string | null }, [string]>("SELECT kind, data ->> '$.reason' AS reason FROM events WHERE id = (SELECT head FROM sessions WHERE id = ?)").get(job.sessionId);
         const cut = end?.kind === "turn_end" && end.reason === "restart";
@@ -60,7 +61,9 @@ export const toolRoutes: RouteModule = (deps) => {
   // gained, and the note rides it). Ends that land a moment apart go as one input.
   const commandEnded = (job: Job, text: string, key: string, parked: boolean, { sent, note }: { sent: () => void; note: () => void }) => {
     // (Its note is gone already when a request of a turn at work took it, or the result of a cut call told it.)
-    if (!hasNotice(job.sessionId, key) || (job.stopReason && !parked) || deps.engine.isHeld(job.sessionId) || waitsOnJob(job.sessionId, job)) return note();
+    // (A wait of its own on the command wakes the session: that turn's end is the finish.)
+    if (waitsOnJob(job.sessionId, job)) return note();
+    if (!hasNotice(job.sessionId, key) || (job.stopReason && !parked) || deps.engine.isHeld(job.sessionId)) return (note(), quiet(job));
     // Told before a restart, and its record did not say so yet.
     if (deps.engine.hasInput(job.sessionId, key)) return sent();
     const meta = { kind: "harness", job: job.id };
@@ -76,6 +79,8 @@ export const toolRoutes: RouteModule = (deps) => {
       } : undefined,
     });
   };
+  // A command whose end starts no turn: a turn that ended while it ran said so, and its finish is raised now.
+  const quiet = (job: Job) => commandEndedQuietly(job.sessionId, `The command ${jobWhat(job)} ${endedHow(job)}.`);
   // Its note went with a request of the session: the input lined up for it is not sent.
   jobEnded.read = (job) => void withdraw(job.sessionId, (m) => m.kind === "harness" && m.job === job.id);
   // Background commands a previous daemon started run on; take them back.

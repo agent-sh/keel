@@ -672,3 +672,38 @@ test("one status a session: every surface counts working and waiting alike, and 
     for (const id of made) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
   }
 });
+
+// A turn that ended while its command ran said "Turn ended, 1 command still runs". When that command ends and
+// no turn follows (the owner stops it from its pane), the session is done: the row becomes the finish, saying
+// what ended, and the home counts it as done since the owner looked.
+test("a command stopped after its turn ended turns the session's 'still runs' alert into its finish", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(120_000);
+  const held = { name: "Bash", input: { command: `i=0; until [ -f ${gate("stopped")} ] || [ $i -ge 800 ]; do i=$((i+1)); sleep 0.3; done; echo stopped`, run_in_background: true, description: "the stopped run" } };
+  mkdirSync(gates, { recursive: true });
+  const id = await start(request, "One status: its command is stopped by the owner");
+  type A = { kind: string; session_id: string; body: string; read: boolean; data?: { live?: { commands: number } } };
+  const finish = async () => ((await (await request.get("/api/alerts")).json()).alerts as A[]).find((a) => a.session_id === id && a.kind === "finished");
+  try {
+    await send(request, id, script([held]));
+    await settle(request, id);
+    await expect.poll(async () => (await finish())?.data?.live ?? null, { timeout: 30_000 }).toEqual({ commands: 1 });
+    // The home does not count it as done while its command runs.
+    await page.goto("/");
+    const doneN = async () => Number((await page.getByTestId("home-count-finished").textContent({ timeout: 1000 }).catch(() => "0"))?.match(/\d+/)?.[0] ?? 0);
+    await expect(page.getByTestId("home-watch")).toBeVisible();
+    const before = await doneN();
+    const job = ((await (await request.get(`/api/sessions/${id}/jobs`)).json()).jobs as { id: string; running?: boolean }[])[0]!;
+    expect((await request.post(`/api/sessions/${id}/jobs/${job.id}/stop`)).ok()).toBe(true);
+    // The row is the finish now: no command runs, and it says which one ended and how.
+    await expect.poll(async () => { const a = await finish(); return a ? [!!a.data?.live, a.read, a.body.split(". ")[0]] : null; }, { timeout: 30_000 })
+      .toEqual([false, false, 'The command "the stopped run" was stopped by the owner']);
+    expect((await states(request))[id]?.watch).not.toBe("work");
+    // The home counts it with the sessions done since the owner looked.
+    await expect.poll(doneN, { timeout: 15_000 }).toBe(before + 1);
+    await shoot(page, "state-words-11-stopped-command-done");
+  } finally {
+    release("stopped");
+    await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+  }
+});

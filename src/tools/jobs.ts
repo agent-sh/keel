@@ -494,6 +494,18 @@ export const jobEnded: {
 // The key of a background command's end: of its note, and of the input that tells it (stored once under it).
 export const endKey = (j: Pick<Job, "id">) => `job-end:${j.id}`;
 
+// A background command by its description, else the start of its command line. (The model's own
+// words; on one line, so nothing of them reads as a line of the harness.)
+export function jobWhat(job: Pick<Job, "description" | "command">): string {
+  const line = (t: string) => t.replace(/[\x00-\x1f\x7f]+/g, " ");
+  return job.description ? `"${line(job.description)}"` : `\`${line(job.command.slice(0, 80))}\``;
+}
+// How a command that ended ended: who stopped it, the signal, or its exit code.
+export function endedHow(job: Pick<Job, "stopReason" | "signal" | "exitCode">): string {
+  const { signal, exitCode: code } = job;
+  return job.stopReason ?? (signal ? `was killed by ${signal}` : code === null || code === undefined ? "ended; its exit code was not recorded (it ended under another daemon, or was killed)" : `exited with code ${code}`);
+}
+
 // `at`: when it ended, for one that ended while no daemon watched it (its exit file's time).
 function finish(job: Job, code: number | null, signal: string | null, at?: number) {
   if (job.ended !== undefined) return;
@@ -514,9 +526,7 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     writeMeta(job.log, { ...meta(job, job.pid), reported: !job.background, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason });
   } catch {}
   if (job.background) {
-    // (The command and its description are the model's own words; on one line, so nothing of them reads as a line of the harness.)
-    const line = (t: string) => t.replace(/[\x00-\x1f\x7f]+/g, " ");
-    const what = job.description ? `"${line(job.description)}"` : `\`${line(job.command.slice(0, 80))}\``;
+    const what = jobWhat(job);
     const code_ = job.kind === "code";
     const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? (code_ ? "was interrupted when its daemon went down; it is not run again, run it again if its work is still needed" : "ended; its exit code was not recorded (it ended under another daemon, or was killed)") : `exited with code ${code}`);
     const noun = code_ ? "program" : "command";

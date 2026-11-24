@@ -1353,3 +1353,30 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   const meta = { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}), ...(commands ? { live: { commands } } : {}) };
   raise("finished", sessionId, title, commands ? `${stillRuns(commands)}. ${said}` : said, Object.keys(meta).length ? meta : undefined);
 }
+
+// A turn that ended while a command of its session ran said so ("Turn ended, 1 command still runs"), and
+// the command's end was to start the turn whose end is the finish. When it ends and no turn follows (the
+// owner stopped it, the session is held, no daemon was there to start one), nothing else would replace
+// that row: the finish is raised now with what ended. While other commands still run, the row's count
+// follows them, in the inbox only (nothing new to tell).
+const STILL_RUNS = /^Turn ended, \d+ commands? still runs?\. /;
+export function commandEndedQuietly(sessionId: string, ended: string) {
+  try {
+    const { store, engine } = D();
+    if (engine.isRunning(sessionId)) return; // its turn's end is the finish
+    const s = store.session(sessionId);
+    if (!s || s.archived || s.parent_id) return; // an agent's turn raises no finish (onTurnEnd)
+    const last = store.db.query<Row, [string]>("SELECT * FROM alerts WHERE session_id = ? AND kind = 'finished' AND far_id IS NULL AND json_extract(data, '$.child_session') IS NULL ORDER BY ts DESC, id DESC LIMIT 1").get(sessionId);
+    const a = last ? toAlert(last) : undefined;
+    if (!a?.data?.live) return;
+    const left = liveJobs().filter((j) => j.sessionId === sessionId && j.background && running(j)).length;
+    const said = a.body.replace(STILL_RUNS, "");
+    const meta = { ...(a.data.event_id ? { event_id: a.data.event_id } : {}), ...(typeof a.data.ran_ms === "number" ? { ran_ms: a.data.ran_ms } : {}) };
+    if (left) {
+      if (left === a.data.live.commands) return;
+      raise("finished", sessionId, a.title, `${stillRuns(left)}. ${said}`, { ...meta, live: { commands: left } }, true);
+      return;
+    }
+    raise("finished", sessionId, s.title || "Session", `${ended} ${said}`, Object.keys(meta).length ? meta : undefined);
+  } catch (e) { capture(e, { at: "a command's quiet end", session: sessionId }); }
+}
