@@ -138,6 +138,9 @@ export type SessionSettings = {
   // An agent compacts when the steps it is expected to take would read more than a summary costs (src/engine/price-compact.ts):
   // true or false for its whole tree, set on a session at the top (a trial's arm sets it there); absent = by the window only.
   compact_by_price?: boolean;
+  // An agent told at a run of read-only steps what each step costs and what else there is (src/engine/read-run.ts):
+  // "batch" (parallel reads) or "reader" (that, and an Explore agent on the reader model), for its whole tree, set at the top (a trial's arm).
+  read_runs?: "batch" | "reader";
   speed?: string;      // a speed offer id of the model's listing; absent = standard
   // Marks, daemon state every client shares (src/server/routes/marks.ts).
   pinned_ms?: number;  // pinned at; absent = not pinned

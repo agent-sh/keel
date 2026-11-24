@@ -426,6 +426,17 @@ export class ScriptedProvider implements Provider {
         }
         // An agent's budget is spent: it writes its report in words, as a model told so does.
         if (lastText.includes("[harness] Your budget for this task is spent")) return reply(`Report at the budget: ${done} of ${calls.length} steps taken.`);
+        // `script:then-batch` on a later line: once a result said the reads could go as parallel calls in one
+        // step (src/engine/read-run.ts), the calls left go in one reply, as a model that follows it does.
+        if (/\nscript:then-batch\b/.test(owner)) {
+          const after = msgs.slice(at + 1);
+          const made = after.filter((m) => m.role === "assistant").flatMap((m) => m.content as any[]).filter((b) => b.type === "tool_use").length;
+          const told = after.some((m) => m.role === "user" && (m.content as any[]).some((b) => b.type === "tool_result" && carried(b).some((t) => t.includes("parallel calls in one step"))));
+          const left = calls.slice(made);
+          if (told && left.length) return reply(`Reading the ${left.length} left in one step.`, "tool_use", left.map((c, i) => ({ type: "tool_use", id: `batched-${msgs.length}-${i}`, name: String(c.name), input: c.input ?? {} })));
+          if (left.length) return reply(`Step ${made + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${made}`, name: String(left[0]!.name), input: left[0]!.input ?? {} }]);
+          return reply(`Done with ${calls.length} reads in ${after.filter((m) => m.role === "assistant").length} steps.`);
+        }
         const next = calls[done];
         if (next) {
           // `after_ms` on a call: the model takes that long before it makes it, as a real one does (at most 10 s).

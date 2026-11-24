@@ -39,6 +39,8 @@ import { fillContent } from "../plugins/options.ts";
 import { valuesOf } from "../plugins/settings.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { isWay, WAY_WORDS, type Way } from "../engine/follow-up.ts";
+import { readerFor, readRunsOf } from "../engine/read-run.ts";
+import { smallModels } from "../engine/readers.ts";
 import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, otherFamily, parentLine, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
@@ -595,6 +597,14 @@ export function definitions(cwd: string): AgentDef[] {
 
 // A model the call names: an exact listed id, or a short name ("haiku",
 // "sonnet") matched against the parent's provider's listing, newest first.
+// An Explore agent an agent starts in a tree on "reader" (src/engine/read-run.ts) searches on the
+// reader model: the reads it takes over are the ones the note priced on its parent's model.
+async function exploreModel(parent: Session): Promise<string> {
+  const { providers } = D();
+  const [models, { info }] = await Promise.all([providers.models(), providers.resolve(parent.model)]);
+  return readerFor(models, info, process.env, (m) => providers.catalog?.lookup(m.model)?.price, smallModels())?.id ?? parent.model;
+}
+
 async function pickModel(parent: Session, want?: string): Promise<string> {
   if (!want || want === "inherit") return parent.model;
   const models = await D().providers.models();
@@ -937,6 +947,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
   let model = input.fork ? parent.model
     : !input.model && def.format === "codex" ? await pickModel(parent, def.model).catch(() => parent.model)
+    : !input.model && !def.model && def.name === "Explore" && def.source === "built-in" && readRunsOf(parent, (id) => D().store.session(id)) === "reader"
+      ? await exploreModel(parent).catch(() => parent.model)
     : await pickModel(parent, input.model ?? def.model);
   // The agent reads its parent's content: its model's provider must be one the parent's folder allows
   // (src/safety/content-routes.ts). A model the caller named is refused; a type's own model gives way

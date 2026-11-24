@@ -105,6 +105,8 @@ export const METRICS = {
   successor: { label: "agent contexts lost to a successor", better: "lower", unit: "share" },
   // How far a compaction by price's estimate of what its summary keeps was from what the next step read (|read / kept - 1|).
   keep_miss: { label: "miss of a priced summary's kept size", better: "lower", unit: "share" },
+  // Read-only steps over the reads they sent (src/engine/read-run.ts): 1 is one read a step, lower is batched.
+  steps_per_read: { label: "steps per read", better: "lower", unit: "share" },
 } as const;
 export type Metric = keyof typeof METRICS;
 
@@ -239,6 +241,19 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
       arms: [{ name: "window" }, { name: "price", settings: { compact_by_price: true } }], primary: "cost_usd",
       // What a summary that lost the work would show: a turn that fails, more failed calls, a context lost to a
       // successor, the owner's Stop, a reply rated down. (keep_miss is reported: only the price arm has it.)
+      guards: [{ metric: "error", mde: 0.1 }, { metric: "tool_errors", mde: 0.25, relative: true }, { metric: "successor", mde: 0.05 },
+        { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
+  },
+  {
+    // A third of the new session trees each: their agents are told nothing at a run of reads, are told to send
+    // them in parallel, or are told that and offered an Explore agent on the reader model (src/engine/read-run.ts).
+    id: "read_runs", label: "Agents batch their reads",
+    make: () => ({ name: "Reads in batches", mode: "live", template: "read_runs",
+      hypothesis: "Agents told at a run of read-only steps what each step costs, and to send the reads they know they need in one step (or to hand a search to an Explore agent on the reader model), cost less per turn and take fewer steps a read, without more errors or failed tool calls.",
+      arms: [{ name: "plain" }, { name: "batch", settings: { read_runs: "batch" } }, { name: "reader", settings: { read_runs: "reader" } }], primary: "cost_usd",
+      // What a read the agent needed and did not make would show: a turn that fails, more failed calls (an edit
+      // of a file it did not read), a context lost to a successor, the owner's Stop, a reply rated down.
+      // (steps_per_read is reported: it says whether the agents followed the note.)
       guards: [{ metric: "error", mde: 0.1 }, { metric: "tool_errors", mde: 0.25, relative: true }, { metric: "successor", mde: 0.05 },
         { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
@@ -808,5 +823,6 @@ export function turnMetrics(t: any): Partial<Record<Metric, number>> {
     stopped_by_owner: t.outcome === "stopped_by_owner" ? 1 : 0,
     ...(typeof t.successor === "number" ? { successor: t.successor } : {}),
     ...(typeof t.keep_miss === "number" ? { keep_miss: t.keep_miss } : {}),
+    ...(typeof t.steps_per_read === "number" ? { steps_per_read: t.steps_per_read } : {}),
   };
 }

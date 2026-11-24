@@ -19,6 +19,7 @@ import { secretRoutes } from "./secrets.ts";
 import { trustRoutes } from "./trust.ts";
 import { nestedRoutes } from "./nested.ts";
 import { repeatRoutes } from "./repeat.ts";
+import { readRunRoutes } from "./read-runs.ts";
 import { planRoutes } from "./plan.ts";
 import { providersRoutes } from "./providers.ts";
 import { providerSetupRoutes } from "./provider-setup.ts";
@@ -74,6 +75,7 @@ import { egressRoutes } from "./egress.ts";
 const modules: Record<string, RouteModule> = {
   codeModeRoutes, // refuses run_code for a session on another machine before the gate asks about it
   repeatRoutes, // before the gate: a repeat it refuses needs no approval; it reads a result before others add to it
+  readRunRoutes, // beside repeatRoutes: its note goes on a read's result before others add to it
   permissionRoutes, // first: its beforeTool gate decides before the others run
   checkRoutes, // after the gate: a check is looked at (its files hashed) and answered only once the call may run
   planRoutes,

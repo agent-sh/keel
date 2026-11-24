@@ -45,7 +45,9 @@ under `~/.cache/keel-work/bun/research/`.
   and lapsed) and the model's price over the steps its last task took (`src/engine/follow-up.ts`
   decides, `Engine.followUp` puts it in place). A start the first step acts on is stored with the
   message (`follow_up`), never in memory. One cut mid-work goes on in its context. The owner can
-  choose one on the agent's card.
+  choose one on the agent's card. An agent's second read-only step in a row is told once a run what a
+  step of its context costs and to send the reads it knows it needs in one step (`src/engine/read-run.ts`;
+  a trial decides whether it stays, and whether it also offers an Explore agent on the reader model).
 - A change to a tool or a prompt block reaches a live session late by design
   (its tools and prompt are pinned, see above): when its cache is cold, or
   after `build_pin.max_age_hours` (24 by default). Mark it urgent when waiting

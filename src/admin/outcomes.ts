@@ -16,6 +16,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { armOf, type Experiments } from "./experiments.ts";
 import { meanInterval, xmr, XMR_MIN, type Interval } from "./stats.ts";
 import { ownerStop, stopper } from "../core/stoppers.ts";
+import { readSteps } from "../engine/read-run.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS telemetry_turns (
@@ -49,7 +50,8 @@ CREATE TABLE IF NOT EXISTS telemetry_turns (
   exp_id TEXT,
   arm TEXT,
   rating INTEGER,
-  keep_miss REAL
+  keep_miss REAL,
+  steps_per_read REAL
 );
 CREATE INDEX IF NOT EXISTS telemetry_turns_ts ON telemetry_turns(ts);
 CREATE INDEX IF NOT EXISTS telemetry_turns_session ON telemetry_turns(session_id, ts);
@@ -103,6 +105,7 @@ export class Outcomes {
   constructor(private store: Store, private experiments?: Experiments) {
     store.migrate(SCHEMA);
     if (!store.columnExists("telemetry_turns", "keep_miss")) store.migrate("ALTER TABLE telemetry_turns ADD COLUMN keep_miss REAL");
+    if (!store.columnExists("telemetry_turns", "steps_per_read")) store.migrate("ALTER TABLE telemetry_turns ADD COLUMN steps_per_read REAL");
     this.backfill();
     registerHooks({
       turnEnd: (s, reason) => {
@@ -201,6 +204,7 @@ export class Outcomes {
       exp_id: tag?.exp_id ?? null, arm: tag?.arm ?? null,
       rating: db.query<{ v: number | null }, [string]>("SELECT MIN(value) AS v FROM reply_ratings WHERE turn_event = ?").get(start.id)?.v ?? null,
       keep_miss: keepMiss(span),
+      steps_per_read: readSteps(span),
     };
     const cols = Object.keys(row);
     // (Written with the next commit, src/core/side.ts: a reader of the table has it written first.)
