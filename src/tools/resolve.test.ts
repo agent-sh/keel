@@ -1,6 +1,6 @@
 // A call's name that is another tool's by case or as its job's name in another harness.
 import { expect, test } from "bun:test";
-import { resolveToolName } from "./resolve.ts";
+import { pauseNote, resolveToolName } from "./resolve.ts";
 
 const tool = (name: string, required: string[] = []) => ({ name, input_schema: { type: "object", required } });
 const claude = [tool("Bash", ["command"]), tool("Read", ["file_path"]), tool("Edit", ["file_path", "old_string", "new_string"]), tool("WebFetch", ["url"]), tool("Glob", ["pattern"])];
@@ -28,4 +28,12 @@ test("two matches, or none, run nothing", () => {
   expect(resolveToolName("bash", [tool("Bash"), tool("BASH")], {})).toEqual({ near: ["Bash", "BASH"] });
   expect(resolveToolName("Reed", claude, {})).toEqual({ near: ["Read"] });
   expect(resolveToolName("frobnicate", claude, {})).toEqual({ near: [] });
+});
+
+test("a stand-in name for doing nothing is told the pause tool and the shell tool of its family", () => {
+  const withWait = [...claude, tool("WaitFor", ["kind"])];
+  expect(pauseNote("bash_placeholder", withWait)).toBe(' bash_placeholder does nothing: to pause, call WaitFor with kind "timer" and seconds; to run a command, call Bash.');
+  expect(pauseNote("noop", [...gpt, tool("wait_for", ["kind"])])).toBe(' noop does nothing: to pause, call wait_for with kind "timer" and seconds; to run a command, call exec_command.');
+  expect(pauseNote("frobnicate", withWait)).toBe("");
+  expect(pauseNote("Read", withWait)).toBe("");
 });

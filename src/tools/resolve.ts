@@ -52,3 +52,15 @@ export function resolveToolName(asked: string, offered: readonly Offered[], inpu
 // What the result of a resolved call says, once.
 export const resolvedNote = (asked: string, as: string) => `(There is no tool named ${asked}; ran as ${as}, the name of the tool here. Call it ${as}.)`;
 export const closestNote = (near: string[]) => (near.length ? ` The nearest tools offered: ${near.join(", ")}.` : "");
+
+// A name that is a stand-in for doing nothing ("bash_placeholder", "noop", "pause"): a model that has nothing to
+// run and calls one means to wait. It is told the tool that pauses and the tool that runs commands, in one line.
+const PAUSE_NAME = /placeholder|no[-_ ]?op|^(pause|sleep|wait|idle|nothing|continue|skip)$/i;
+export function pauseNote(asked: string, offered: readonly Offered[]): string {
+  if (!PAUSE_NAME.test(asked)) return "";
+  const names = offered.map((t) => t.name);
+  const pause = names.find((n) => n === "WaitFor" || n === "wait_for");
+  const shell = offered.find((t) => ALIASES[0]!.includes(t.name.toLowerCase()))?.name;
+  const parts = [pause && `to pause, call ${pause} with kind "timer" and seconds`, shell && `to run a command, call ${shell}`].filter(Boolean);
+  return parts.length ? ` ${asked} does nothing: ${parts.join("; ")}.` : "";
+}

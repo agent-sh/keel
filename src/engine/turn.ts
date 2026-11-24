@@ -33,7 +33,7 @@ import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
-import { closestNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
+import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
 import { answers, callPaths, stoppedWaiting, unansweredText } from "../tools/fs-bound.ts";
 import { inputProblem } from "../tools/validate.ts";
 import { isDeferError, keepReferenced, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
@@ -3215,7 +3215,7 @@ export class Engine {
         r.resolved_as = found.as.name;
         return r;
       }
-      const none: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: removed ? `${u.name} was removed by an upgrade of Keel and is no longer available. Use the tools you have now.` : noSuchTool(u.name) + (await unknownToolHint(u.name, tools, session.id).catch(() => "")) + closestNote(found && "near" in found ? found.near : []), is_error: true };
+      const none: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: removed ? `${u.name} was removed by an upgrade of Keel and is no longer available. Use the tools you have now.` : noSuchTool(u.name) + (await unknownToolHint(u.name, tools, session.id).catch(() => "")) + (pauseNote(u.name, tools) || closestNote(found && "near" in found ? found.near : [])), is_error: true };
       // A failed call like any other: it has its span and its row in the tools
       // table under the name the model gave, and the turn counts it.
       this.measure(session.id, (h) => h.toolRan?.(session, { id: u.id, tool: { name: u.name, description: "", input_schema: {}, readOnly: true, run: async () => none } as Tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id } }, none, { ms: 0, outcome: "error" }));
