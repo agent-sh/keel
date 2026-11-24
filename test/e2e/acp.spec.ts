@@ -24,7 +24,16 @@ test("acp", async ({ page, request, baseURL }) => {
   const s = await ed.call("session/new", { cwd: ws, mcpServers: [] });
   const id = s.sessionId as string;
   expect(s.configOptions.find((o: any) => o.id === "model").options.some((g: any) => g.options.some((m: any) => m.value === HAIKU))).toBe(true);
-  await ed.call("session/set_config_option", { sessionId: id, configId: "model", value: HAIKU });
+  const switched = await ed.call("session/set_config_option", { sessionId: id, configId: "model", value: HAIKU });
+  // The model's listed levels are a thought_level option; picking one sets the session's effort.
+  const levels = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === HAIKU).efforts as string[];
+  const level = switched.configOptions.find((o: any) => o.category === "thought_level");
+  if (levels.length) {
+    expect(level.options.map((o: any) => o.value)).toEqual(["default", ...levels]);
+    const picked = await ed.call("session/set_config_option", { sessionId: id, configId: level.id, value: levels[0] });
+    expect(picked.configOptions.find((o: any) => o.id === level.id).currentValue).toBe(levels[0]);
+    expect((await (await request.get(`/api/sessions/${id}`)).json()).session.settings.effort).toBe(levels[0]);
+  } else expect(level).toBeUndefined();
   await ed.call("session/set_mode", { sessionId: id, modeId: "ask" });
   // The daemon's MCP prompts are the editor's slash commands (none on a scratch daemon is fine; the update comes).
   await expect.poll(() => ed.kinds(id)).toContain("available_commands_update");

@@ -382,7 +382,7 @@ export class AcpBridge {
       this.children.delete(c);
       if (this.agentSessions.get(child.agent.id) === c) this.agentSessions.delete(child.agent.id);
     }
-    for (const x of [id, ...gone]) { this.texts.delete(x); this.retried.delete(x); this.planned.delete(x); }
+    for (const x of [id, ...gone]) { this.offered.delete(x); this.texts.delete(x); this.retried.delete(x); this.planned.delete(x); }
     this.daemon.unwatch?.([id, ...gone]);
   }
 
@@ -661,8 +661,30 @@ export class AcpBridge {
     return [...groups].map(([name, options]) => ({ group: name, name, options }));
   }
 
+  // What the editor was last offered for a session's model and effort: a change made elsewhere
+  // (the workbench, a model switch) is told to it as an update that resends the options.
+  private offered = new Map<string, string>();
+  private static offer(s: Json) { return `${s.model ?? ""}\0${s.settings?.effort ?? ""}`; }
+
+  // The reasoning levels of the session's model, as its listing gives them; none when it lists none.
+  private effortOption(s: Json): Json | undefined {
+    const efforts: string[] = this.models?.find((m) => m.id === s.model)?.efforts ?? [];
+    if (!efforts.length) return undefined;
+    const now: string = s.settings?.effort ?? "";
+    const known = !now || efforts.includes(now);
+    return {
+      id: "effort", name: "Reasoning effort", category: "thought_level", type: "select", currentValue: now || "default",
+      options: [
+        { value: "default", name: "Default", description: "The model's own level" },
+        ...efforts.map((e) => ({ value: e, name: e })),
+        ...(known ? [] : [{ value: now, name: `${now} (not available)`, description: "The model does not list this level now. Pick a listed one to go on." }]),
+      ],
+    };
+  }
+
   private async sessionSetup(s: Json, mode: string, fresh = false) {
     const models = await this.modelOptions(fresh);
+    this.offered.set(s.id, AcpBridge.offer(s));
     // The session's model is its current value also when no provider lists it
     // now (a key removed, a model retired): it is shown as what it is, an option
     // of its own that says so, and stays until the owner picks a listed one.
@@ -673,6 +695,7 @@ export class AcpBridge {
       configOptions: [
         { id: "mode", name: "Permissions", category: "mode", type: "select", currentValue: mode, options: MODES.map((m) => ({ value: m.id, name: m.name, description: m.description })) },
         { id: "model", name: "Model", category: "model", type: "select", currentValue: s.model, options: models },
+        ...(this.effortOption(s) ? [this.effortOption(s)] : []),
       ],
     };
   }
@@ -820,6 +843,7 @@ export class AcpBridge {
       case "session/set_config_option": {
         if (p.configId === "mode") await this.setMode(p.sessionId, p.value);
         else if (p.configId === "model") await this.daemon.send("PATCH", `/api/sessions/${p.sessionId}`, { model: p.value });
+        else if (p.configId === "effort") await this.setEffort(p.sessionId, p.value);
         else throw Object.assign(new Error(`no option ${p.configId}`), { code: -32602 });
         const r = await this.daemon.get(`/api/sessions/${p.sessionId}`);
         const perm = await this.daemon.get(`/api/sessions/${p.sessionId}/permissions`);
@@ -828,6 +852,23 @@ export class AcpBridge {
       default:
         throw Object.assign(new Error(`method not found: ${method}`), { code: -32601 });
     }
+  }
+
+  private async setEffort(sessionId: string, value: unknown) {
+    const r = await this.daemon.get(`/api/sessions/${sessionId}`);
+    if (!this.models) await this.modelOptions();
+    const offer = this.effortOption(r.session);
+    if (!offer) throw Object.assign(new Error("the session's model lists no reasoning effort"), { code: -32602 });
+    if (typeof value !== "string" || !offer.options.some((o: Json) => o.value === value)) throw Object.assign(new Error(`unknown reasoning effort ${String(value)}`), { code: -32602 });
+    await this.daemon.send("PATCH", `/api/sessions/${sessionId}`, { settings: { effort: value === "default" ? null : value } });
+  }
+
+  // The session's model or effort changed where the editor did not ask for it: the options are sent again.
+  private async optionsChanged(s: Json) {
+    const perm = await this.daemon.get(`/api/sessions/${s.id}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
+    if (!this.holds.has(s.id) || this.offered.get(s.id) === AcpBridge.offer(s)) return;
+    const setup = await this.sessionSetup(s, perm.perm?.mode ?? "ask");
+    this.notify(s.id, { sessionUpdate: "config_option_update", configOptions: setup.configOptions });
   }
 
   private async setMode(sessionId: string, mode: string) {
@@ -950,6 +991,7 @@ export class AcpBridge {
   private onFrame(f: Json) {
     const about = this.loading.size ? AcpBridge.about(f) : undefined;
     if (about && this.loading.has(about)) return void this.loading.get(about)!.push(f);
+    if (f.t === "session" && this.offered.has(f.session?.id) && this.holds.has(f.session.id) && this.offered.get(f.session.id) !== AcpBridge.offer(f.session)) void this.optionsChanged(f.session).catch((e) => this.log(`config options of ${f.session.id}: ${(e as Error).message}`));
     if (f.t === "delta" && this.streams(f.session_id)) {
       this.delta(f.session_id, f.kind, String(f.text ?? ""));
     } else if (f.t === "status" && f.status?.kind === "retry" && this.streams(f.session_id)) {

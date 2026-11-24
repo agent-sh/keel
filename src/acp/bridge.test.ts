@@ -602,3 +602,40 @@ test("a plan goes as an identified plan to an editor that takes plan operations,
     { sessionUpdate: "plan_removed", planId: "plan" },
   ]);
 });
+
+test("the session model's reasoning levels are a thought_level option; setting it sets the session's effort, and a model change resends the options", async () => {
+  const s: any = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1, settings: {} };
+  const f = fixture([s], {});
+  f.d.models = [{ id: "p:alpha", name: "Alpha", provider: "p", efforts: ["low", "high"] }, { id: "p:beta", name: "Beta", provider: "p", efforts: [] }, { id: "p:gamma", name: "Gamma", provider: "p", efforts: ["minimal", "deep"] }] as any;
+  // The daemon stand-in applies a settings or model change as the daemon does (a model switch drops the effort).
+  const record = f.d.send;
+  f.d.send = async (method: string, path: string, body?: any) => {
+    if (method === "PATCH" && body?.settings) { s.settings = { ...s.settings }; if (body.settings.effort === null) delete s.settings.effort; else s.settings.effort = body.settings.effort; }
+    if (method === "PATCH" && body?.model) { s.model = body.model; s.settings = {}; }
+    return path === "/api/sessions" ? { session: s } : record(method, path, body);
+  };
+  const effort = (r: any) => r.find((o: any) => o.id === "effort");
+  const made = await call(f.bridge, f.out, "session/new", { cwd: "/w", mcpServers: [] });
+  expect(effort(made.result.configOptions)).toMatchObject({ category: "thought_level", type: "select", currentValue: "default", options: [{ value: "default" }, { value: "low" }, { value: "high" }] });
+  const set = await call(f.bridge, f.out, "session/set_config_option", { sessionId: "s", configId: "effort", value: "high" });
+  expect(f.d.sent.filter((x) => x.method === "PATCH").map((x) => x.body)).toEqual([{ settings: { effort: "high" } }]);
+  expect(effort(set.result.configOptions).currentValue).toBe("high");
+  // A level the model does not list is refused, and nothing is sent.
+  const bad = await call(f.bridge, f.out, "session/set_config_option", { sessionId: "s", configId: "effort", value: "deep" });
+  expect(bad.error.code).toBe(-32602);
+  expect(f.d.sent.filter((x) => x.method === "PATCH").length).toBe(1);
+  // The workbench switches the model: the editor gets the options again, with the new model's levels.
+  s.model = "p:gamma"; s.settings = {};
+  f.frame({ t: "session", session: { ...s } });
+  await Bun.sleep(0);
+  const upd = f.updates("s").filter((u: any) => u.sessionUpdate === "config_option_update");
+  expect(upd.length).toBe(1);
+  expect(effort(upd[0].configOptions).options.map((o: any) => o.value)).toEqual(["default", "minimal", "deep"]);
+  // A model that lists none has no such option; a frame that changes nothing says nothing.
+  const none = await call(f.bridge, f.out, "session/set_config_option", { sessionId: "s", configId: "model", value: "p:beta" });
+  expect(effort(none.result.configOptions)).toBeUndefined();
+  f.frame({ t: "session", session: { ...s } });
+  await Bun.sleep(0);
+  expect(f.updates("s").filter((u: any) => u.sessionUpdate === "config_option_update").length).toBe(upd.length);
+  expect((await call(f.bridge, f.out, "session/set_config_option", { sessionId: "s", configId: "effort", value: "low" })).error.code).toBe(-32602);
+});
