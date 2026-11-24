@@ -29,7 +29,8 @@ test("the daemon's own Read does not open its claim file, so the claim holds", a
     // By its name, through a link to it, and as the same file under another name (a hard link).
     const link = join(scratch(), "notes.txt");
     symlinkSync(join(dir, "daemon.claim"), link);
-    const hard = join(dir, "..", `hard-${Date.now()}.txt`);
+    // (In a scratch folder of its own: runs of this file at once, in other processes, share the temporary folder.)
+    const hard = join(scratch(), "hard.txt");
     linkSync(join(dir, "daemon.claim"), hard);
     for (const p of [join(dir, "daemon.claim"), link, hard]) {
       expect(isClaimFile(p)).toBe(true);
