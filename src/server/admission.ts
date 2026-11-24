@@ -26,7 +26,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { socketFacts, socketUid, type SocketFacts } from "./sockdiag.ts";
-import { blindTo, cgroupIds, peerAuthority, peerVerdict, PHONE_API, type Authority, type ListReach } from "./peer-scope.ts";
+import { ABSENT, blindTo, cgroupIds, namedSessions, peerAuthority, peerVerdict, PHONE_API, type Authority, type ListReach } from "./peer-scope.ts";
 import { forwardedPeer } from "../safety/presence.ts";
 
 type Check = (req: Request, path: string) => Response | undefined;
@@ -80,7 +80,8 @@ export const forwarded = (req: Request) => FORWARDING.some((h) => req.headers.ha
 
 const LOOPBACK_IP = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
 // What admit learned about a request's socket, for isLocal (safety/presence.ts).
-const peers = new WeakMap<Request, { loopback: boolean; session?: string; blind?: boolean }>();
+// `hidden`: sessions another harness runs that the request names to a caller blind to them (peer-scope.ts blindTo).
+const peers = new WeakMap<Request, { loopback: boolean; session?: string; blind?: boolean; hidden?: string[] }>();
 export const peerIsRemote = (req: Request) => peers.get(req)?.loopback === false;
 // The session whose command made this request (peer-scope.ts), or null: the owner's page, the command line, a peer.
 export const callerSession = (req: Request) => peers.get(req)?.session ?? null;
@@ -375,10 +376,12 @@ export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined):
   const decide = (a: Authority) => {
     const linked = forwardedPeer(req) !== null;
     const blind = blindTo(a, { path, linked });
-    if (a.kind === "session") peers.set(req, { loopback, session: a.session, blind });
-    else if (blind) peers.set(req, { loopback, blind });
-    const v = peerVerdict(a, { method: req.method, path, ownAuth: OWN_AUTH.test(path), open: SESSION_OPEN.test(path), search: new URL(req.url).search, linked }, (s) => scopes?.lists(s) ?? { reads: false, why: "" }, (s) => !!scopes?.outside?.(s));
-    return "refuse" in v ? refuse(v.refuse) : "absent" in v ? Response.json({ error: v.absent }, { status: 404 }) : "pass" in v ? undefined : account();
+    const v0 = peerVerdict(a, { method: req.method, path, ownAuth: OWN_AUTH.test(path), open: SESSION_OPEN.test(path), search: new URL(req.url).search, linked }, (s) => scopes?.lists(s) ?? { reads: false, why: "" }, (s) => !!scopes?.outside?.(s));
+    const hidden = "absent" in v0 ? v0.ids : undefined;
+    if (a.kind === "session") peers.set(req, { loopback, session: a.session, blind, hidden });
+    else if (blind) peers.set(req, { loopback, blind, hidden });
+    const v = "absent" in v0 ? v0.then : v0;
+    return "refuse" in v ? refuse(v.refuse) : "pass" in v ? undefined : account();
   };
   return scope instanceof Promise ? scope.then(decide) : decide(scope);
 }
@@ -394,6 +397,38 @@ const PORTAL = /^\/(fleet-)?portal\//;
 const OAUTH_CALLBACKS = new Set(["/api/mcp/oauth/callback"]);
 const oauthReturn = (req: Request, path: string) =>
   req.method === "GET" && OAUTH_CALLBACKS.has(path) && req.headers.get("sec-fetch-mode") === "navigate";
+
+// A request that names a session another harness runs, from a caller blind to it (peer-scope.ts blindTo), is
+// answered as one that names a session that does not exist: on a route of the daemon's (app.ts wrap) it is
+// made to name a fresh id no session has, in its path, its parameters and its query, and the answer is given
+// back with the id it named. Null when the request names none; a Response when it cannot be made to (an id
+// written so that it cannot be swapped): "no such session", the door's answer before the route.
+export function standIn(req: Request & { params?: Record<string, string> }): null | Response | ((res: Response) => Promise<Response>) {
+  const ids = peers.get(req)?.hidden;
+  if (!ids?.length) return null;
+  const swap = new Map(ids.map((id) => [id, Bun.randomUUIDv7()]));
+  const url = new URL(req.url);
+  const seg = (raw: string) => { try { return swap.get(decodeURIComponent(raw)) ?? raw; } catch { return raw; } };
+  url.pathname = url.pathname.split("/").map(seg).join("/");
+  const q = new URLSearchParams(url.search);
+  for (const k of [...new Set(q.keys())]) {
+    const vs = q.getAll(k);
+    if (vs.some((x) => swap.has(x))) { q.delete(k); for (const x of vs) q.append(k, swap.get(x) ?? x); }
+  }
+  url.search = q.toString() ? `?${q}` : "";
+  if (namedSessions(url.pathname, url.search).some((x) => ids.includes(x))) return Response.json({ error: ABSENT }, { status: 404 });
+  Object.defineProperty(req, "url", { value: url.toString(), configurable: true });
+  for (const [k, x] of Object.entries(req.params ?? {})) if (typeof x === "string" && swap.has(x)) req.params![k] = swap.get(x)!;
+  return async (res) => {
+    const type = res.headers.get("content-type") ?? "";
+    if (!/json|text\/plain/.test(type)) return res;
+    let text = await res.text();
+    for (const [real, fresh] of swap) text = text.split(fresh).join(real);
+    const headers = new Headers(res.headers);
+    headers.delete("content-length");
+    return new Response(text, { status: res.status, statusText: res.statusText, headers });
+  };
+}
 
 // The answer is a promise only for a client port not seen in the last second
 // (its owner is being read from the kernel's table); the callers await it.

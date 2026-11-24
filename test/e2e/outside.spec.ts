@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HAIKU, ask, shoot } from "./shots.ts";
 
@@ -121,33 +121,50 @@ test("a live Claude Code session shows in the list read-only and goes on in Keel
     await expect(page.getByTestId("outside-files")).toContainText("src/config.ts");
     await shoot(page, "outside-done");
 
-    // For a command a Keel session runs it does not exist: not in the list, no such session for every read of it.
+    // Marked unread, its alert holds nothing of its words: the phone and other machines are told alerts.
+    expect((await request.post(`/api/sessions/${sid}/unread`)).ok()).toBe(true);
+    const alerts = ((await (await request.get("/api/alerts")).json()).alerts as any[]).filter((a) => a.session_id === sid);
+    expect(alerts.map((a) => [a.title, a.body])).toEqual([["Claude Code session", "Marked unread."]]);
+    expect((await request.put(`/api/sessions/${sid}/snooze`, { data: { until_ms: Date.now() + 3_600_000 } })).ok()).toBe(true);
+
+    // For a command a Keel session runs it does not exist: not in the list, nor its alert or its snooze, and every
+    // read of it is answered as a read of a session that does not exist is, word for word but the id.
     const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `outside-probe-${createHash("sha256").update(tag).digest("hex").slice(0, 8)}`);
     mkdirSync(ws, { recursive: true });
     const { session: keel } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
     made.push(keel.id);
     const api = `http://127.0.0.1:${new URL(page.url()).port}`;
-    const reads = ["/api/sessions", `/api/sessions/${sid}`, `/api/sessions/${sid}/events`, `/api/sessions/${sid}/timeline`, `/api/sessions/${sid}/hours`, `/api/sessions/${sid}/agents`, `/api/errors?session=${sid}`, `/api/resources?session_id=${sid}`];
-    writeFileSync(join(ws, "probe.sh"), reads.map((r) => `echo "${r} $(curl -s -m 5 --noproxy '*' -o b.out -w '%{http_code}' '${api}${r}') $(head -c 100000 b.out | tr '\\n' ' ')"`).join("\n") + "\necho probed\n");
+    const none = randomUUID();
+    const lists = ["/api/sessions", "/api/automation", "/api/alerts", "/api/snooze"];
+    const named = ["/api/sessions/ID", "/api/sessions/ID/events", "/api/sessions/ID/timeline", "/api/sessions/ID/hours", "/api/sessions/ID/agents", "/api/sessions/ID/secrets", "/api/errors?session=ID", "/api/resources?session_id=ID", "/api/overview?of=ID"];
+    const line = (label: string, r: string) => `echo "${label} $(curl -s -m 5 --noproxy '*' -o b.out -w '%{http_code}' '${api}${r}') $(head -c 100000 b.out | tr '\\n' ' ')"`;
+    const probe = [...lists.map((r) => line(r, r)), ...named.flatMap((r, i) => [line(`A${i}`, r.replace("ID", sid)), line(`B${i}`, r.replace("ID", none))])];
+    writeFileSync(join(ws, "probe.sh"), probe.join("\n") + "\necho probed\n");
     await request.put(`/api/sessions/${keel.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
     const PROBE = "bash probe.sh > probe.out 2>&1; tail -n 1 probe.out";
     await request.post(`/api/sessions/${keel.id}/messages`, { data: { text: ask(`Run this command and end your turn: ${PROBE}`, `script:calls ${JSON.stringify([{ name: "Bash", input: { command: PROBE } }])}`) } });
     const probed = () => { try { return readFileSync(join(ws, "probe.out"), "utf8"); } catch { return ""; } };
     await expect.poll(() => probed().includes("probed"), { timeout: 60_000 }).toBe(true);
     const lines = probed().split("\n");
-    const status = (r: string) => lines.find((l) => l.startsWith(`${r} `))?.slice(r.length + 1, r.length + 4);
-    expect(status("/api/sessions")).toBe("200");
-    for (const r of reads.slice(1)) expect({ r, status: status(r) }).toEqual({ r, status: "404" });
-    expect(lines.find((l) => l.startsWith("/api/sessions "))).not.toContain(sid);
+    const of = (label: string) => lines.find((l) => l.startsWith(`${label} `))?.slice(label.length + 1) ?? "";
+    expect(of("/api/sessions").slice(0, 3)).toBe("200");
+    expect(of("/api/automation").slice(0, 3)).toBe("200");
+    for (const r of lists) expect({ r, names: of(r).includes(sid) }).toEqual({ r, names: false });
+    // (Its resources are measured at each read: their status, and that the session is named nowhere but where the read named it.)
+    named.forEach((r, i) => {
+      const [a, b] = [of(`A${i}`), of(`B${i}`).replaceAll(none, sid)];
+      if (r.startsWith("/api/resources")) expect({ r, status: a.slice(0, 3) }).toEqual({ r, status: b.slice(0, 3) });
+      else expect({ r, answer: a }).toEqual({ r, answer: b });
+    });
     expect(probed()).not.toContain(`config loader ${tag}`);
     expect(probed()).not.toContain(`readConfig ${tag}`);
-    // The owner still has it.
+    expect(probed()).not.toContain("Marked unread");
+    // The owner still has it, and its alert and snooze.
     expect((await sessionOf())?.id).toBe(sid);
-
-    // Marked unread, its alert holds nothing of its words: the phone and other machines are told alerts.
-    expect((await request.post(`/api/sessions/${sid}/unread`)).ok()).toBe(true);
-    const alerts = ((await (await request.get("/api/alerts")).json()).alerts as any[]).filter((a) => a.session_id === sid);
-    expect(alerts.map((a) => [a.title, a.body])).toEqual([["Claude Code session", "Marked unread."]]);
+    const auto = await (await request.get("/api/automation")).json();
+    expect((auto.alerts as any[]).some((a) => a.session_id === sid)).toBe(true);
+    expect((auto.snoozes as any[]).some((x) => x.session_id === sid)).toBe(true);
+    await request.delete(`/api/sessions/${sid}/snooze`);
     await request.post("/api/alerts/read", { data: { session_id: sid } });
     rmSync(ws, { recursive: true, force: true });
 

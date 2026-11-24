@@ -112,7 +112,9 @@ export const sessionRefusal = (session: string, method: string, path: string, re
 // authentication of its own (the phone's signed API, health); `open`: one a session's command may reach
 // (the portal, under its capability key); `lists`: whether a session's command reads the daemon's lists. "account": the account
 // and token checks decide, as for any of the owner's requests.
-export type PeerVerdict = { pass: true } | { account: true } | { refuse: string } | { absent: string };
+// `absent`: the request names sessions another harness runs to a caller blind to them (`ids`), and is otherwise
+// what `then` says: the door has the route answer it as for sessions that do not exist (admission.ts standIn).
+export type PeerVerdict = { pass: true } | { account: true } | { refuse: string } | { absent: string; ids: string[]; then: { pass: true } | { account: true } };
 
 // A session another harness runs (src/core/outside.ts) exists for the owner only: the owner's page and the
 // owner's command line on a terminal. For a session's own command, a request another machine forwarded
@@ -134,8 +136,16 @@ export function namedSessions(path: string, search = ""): string[] {
 }
 export const ABSENT = "no such session";
 
+// The answer it gets is the one a session that does not exist gets: a refusal the request would get anyway
+// comes first, and the rest the route answers as for an id no session has.
 export function peerVerdict(a: Authority, req: { method: string; path: string; ownAuth: boolean; open: boolean; search?: string; linked?: boolean }, lists: (session: string) => ListReach, outside: (session: string) => boolean = () => false): PeerVerdict {
-  if (blindTo(a, req) && namedSessions(req.path, req.search).some(outside)) return { absent: ABSENT };
+  const v = callerVerdict(a, req, lists);
+  if ("refuse" in v || !blindTo(a, req)) return v;
+  const ids = [...new Set(namedSessions(req.path, req.search).filter(outside))];
+  return ids.length ? { absent: ABSENT, ids, then: v } : v;
+}
+
+function callerVerdict(a: Authority, req: { method: string; path: string; ownAuth: boolean; open: boolean }, lists: (session: string) => ListReach): { pass: true } | { account: true } | { refuse: string } {
   if (a.kind === "session") {
     const reach = lists(a.session);
     return sessionMay(req.method, req.path, a.session, !!reach.reads) || req.open ? { pass: true } : { refuse: sessionRefusal(a.session, req.method, req.path, reach) };

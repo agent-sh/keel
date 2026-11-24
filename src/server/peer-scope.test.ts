@@ -97,11 +97,20 @@ test("the door: a session another harness runs does not exist for anyone but the
   const s: Authority = { kind: "session", session: "s-a", by: "cgroup" };
   const owner: Authority = { kind: "owner" };
   const tops = (): ListReach => ({ reads: "top" });
+  const noReads = (): ListReach => ({ reads: false, why: "not granted" });
   const out = (id: string) => id === "o-1";
   for (const [path, search] of [["/api/sessions/o-1", ""], ["/api/sessions/o-1/events", ""], ["/api/sessions/o-1/timeline", ""], ["/api/sessions/o-1/hours", ""], ["/api/sessions/o-1/agents", ""],
     ["/api/errors", "?session=o-1"], ["/api/resources", "?session_id=o-1"], ["/api/overview", "?of=o-1"], ["/api/usage", "?children_of=o-1"], ["/api/sessions/o%2D1", ""]] as const) {
-    expect({ path, search, v: peerVerdict(s, req(path, { search }), tops, out) }).toEqual({ path, search, v: { absent: "no such session" } });
-    expect({ path, search, v: peerVerdict(owner, req(path, { search, linked: true }), tops, out) }).toEqual({ path, search, v: { absent: "no such session" } });
+    // What it gets is what a session that does not exist gets: a refusal a missing id would get comes first, the
+    // same words but for the id, before anything says whether the session is there; else the route answers it as
+    // for a missing id (`then`, admission.ts standIn).
+    const missing = (p: string) => p.replace("o-1", "m-1").replace("o%2D1", "m%2D1");
+    const back = (v: unknown) => JSON.parse(JSON.stringify(v).replaceAll("m-1", "o-1").replaceAll("m%2D1", "o%2D1"));
+    for (const [a, reach, linked] of [[s, tops, false], [s, noReads, false], [owner, tops, true]] as const) {
+      const m = back(peerVerdict(a, req(missing(path), { search: missing(search), linked }), reach, out));
+      const v = peerVerdict(a, req(path, { search, linked }), reach, out);
+      expect({ path, search, v }).toEqual({ path, search, v: "refuse" in m ? m : { absent: "no such session", ids: ["o-1"], then: m } });
+    }
     expect({ path, search, v: peerVerdict(owner, req(path, { search }), tops, out) }).toEqual({ path, search, v: { account: true } });
   }
   // The phone's signed API is blind too (its own routes leave them out: src/integrations/mobile/v1.ts).

@@ -13,7 +13,7 @@ import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, leftText, jobLive, stopJobs } from "../tools/jobs.ts";
-import { admit, initAccess, seesOutside } from "./admission.ts";
+import { admit, initAccess, seesOutside, standIn } from "./admission.ts";
 import { agentsUnder, leanSessions } from "./session-list.ts";
 import { Live } from "./live.ts";
 import { sessionTopic } from "./scope.ts";
@@ -195,9 +195,15 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       const answered = inFlight(req, label);
       // (The session a request names stays in memory until it is answered: Store.hold.)
       let release: (() => void) | undefined;
+      // A session another harness runs, named by a caller it does not exist for: answered as one that does not,
+      // its refusals too (admission.ts standIn).
+      let stood: ((res: Response) => Promise<Response>) | null = null;
       try {
         const refused = await admit(req, srv);
         if (refused) return refused;
+        const swap = standIn(req);
+        if (swap instanceof Response) return swap;
+        stood = swap;
         if (typeof req.params?.id === "string") {
           const s = store.session(req.params.id);
           if (s?.outside && (await outsideRefused(req, routeOf(req)))) return json({ error: outsideRefusal(s), code: "outside" }, 409);
@@ -218,14 +224,18 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         }
         if (typeof sid === "string" && store.isKept(sid)) release = store.hold(sid);
         // Who asks, for a read that holds the loop all the same: the route as it is registered, its values left out (src/core/asker.ts).
-        const res = await asAsker(routeOf(req), () => timed(label, () => h(req, srv)));
+        const answer = await asAsker(routeOf(req), () => timed(label, () => h(req, srv)));
+        const res = stood ? await stood(answer) : answer;
         return await timed(label, () => compressJson(req, res));
       } catch (e) {
         // A write the store refused (it takes none right now): the refusal's own answer, not a failure of the daemon's.
         if (refusedWrite(e) || diskFull(e)) return json({ error: checkpointerOf(store)?.refusalSays ?? STORE_REFUSES, store_refusing: true }, 503);
         const st = (e as any)?.status;
         // `code`: a machine-readable reason, when the refusal has one (off_branch).
-        if (typeof st === "number" && st >= 400 && st < 500) return json({ error: (e as Error).message, ...((e as any).code ? { code: (e as any).code } : {}) }, st);
+        if (typeof st === "number" && st >= 400 && st < 500) {
+          const res = json({ error: (e as Error).message, ...((e as any).code ? { code: (e as any).code } : {}) }, st);
+          return stood ? await stood(res) : res;
+        }
         const rec = errors.capture("server", e, { url: new URL(req.url).pathname, method: req.method });
         return json({ error: rec.message, error_id: rec.id }, 500);
       } finally {
@@ -749,6 +759,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       if (url.pathname === "/ws") {
         const refused = await admit(req, srv);
         if (refused) return refused;
+        if (standIn(req)) return bad("no such session", 404);
         if (srv.upgrade(req)) return;
         return bad("websocket upgrade failed");
       }

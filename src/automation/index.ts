@@ -35,6 +35,8 @@ import { waitCost, waitNow } from "./wait-cost.ts";
 import * as failures from "./failures.ts";
 import * as outage from "./outage.ts";
 import * as snooze from "./snooze.ts";
+import { seesOutside } from "../server/admission.ts";
+import { outsideIds } from "../core/outside.ts";
 import * as undelivered from "./undelivered.ts";
 import * as channels from "./channels.ts";
 import { afterCallOff, afterTurn, capture, clip, D, flush, hasPending, setDeps, stopperOf } from "./core.ts";
@@ -470,9 +472,26 @@ export const automationRoutes: RouteModule = (deps) => {
   const treeSeen = (b: any): leftovers.TreeSeen => ({ repo: String(b?.repo ?? ""), path: String(b?.path ?? ""), head: opt(b?.head), ignored: Number(b?.ignored) || 0 });
   const branchSeen = (b: any): leftovers.BranchSeen => ({ repo: String(b?.repo ?? ""), branch: String(b?.branch ?? ""), sha: opt(b?.sha) });
 
+  // A session another harness runs exists for the owner only (src/server/peer-scope.ts blindTo): for any other
+  // caller its alerts, its unread counts and its snooze are left out, as the session is from every list.
+  const unseen = (req: Request): Set<string> | null => {
+    if (seesOutside(req)) return null;
+    const away = outsideIds(store.db);
+    return away.size ? away : null;
+  };
+  const shownAlerts = (away: Set<string> | null, list: alerts.Alert[]) => (away ? list.filter((a) => !a.session_id || !away.has(a.session_id)) : list);
+  const shownSnoozes = <S extends { session_id: string }>(away: Set<string> | null, list: S[]) => (away ? list.filter((x) => !away.has(x.session_id)) : list);
+  const shownUnread = (away: Set<string> | null, u: ReturnType<typeof alerts.unreadCounts>) => {
+    if (!away) return u;
+    const drop = (r: Record<string, number>) => Object.fromEntries(Object.entries(r).filter(([id]) => !away.has(id)));
+    const gone = Object.entries(u.sessions).reduce((n, [id, c]) => n + (away.has(id) ? c : 0), 0);
+    return { ...u, total: u.total - gone, sessions: drop(u.sessions), fresh: drop(u.fresh), children: drop(u.children) };
+  };
+
   return {
     "/api/automation": {
-      GET: () => {
+      GET: (req: Request) => {
+        const away = unseen(req);
         const db = store.db;
         // The agents every count names (src/core/agent-count.ts): live, or of the last day; and
         // the agents above a live one, so the page's tree reaches it (it counts only the counted).
@@ -486,11 +505,11 @@ export const automationRoutes: RouteModule = (deps) => {
           agents: agentRows.map((r) => agents.get(r.id)).filter((a) => !!a).map((a) => ({ ...agents.brief(a), ...(agents.isEnded(a) ? {} : { now: now.lineOf(a.session_id) }) })),
           waits: waits.list(undefined, 30),
           loops: loops.list(),
-          unread: alerts.unreadCounts(),
-          alerts: alerts.list({ limit: 50, withUnread: true }),
+          unread: shownUnread(away, alerts.unreadCounts()),
+          alerts: shownAlerts(away, alerts.list({ limit: 50, withUnread: true })),
           settings: alerts.settings(),
           channels: alerts.channelList(),
-          snoozes: snooze.all(),
+          snoozes: shownSnoozes(away, snooze.all()),
           rev: deps.bus.rev(), // the bus frame this read reflects: a page orders it against frames
         });
       },
@@ -795,9 +814,10 @@ export const automationRoutes: RouteModule = (deps) => {
         const q = new URL(req.url).searchParams;
         const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
         if (limit !== undefined && !Number.isFinite(limit)) return bad("limit is a number");
+        const away = unseen(req);
         return attempt(async () => json({
-          alerts: alerts.list({ before: q.get("before") ?? undefined, limit, unread: q.has("unread"), withUnread: q.has("with_unread") }),
-          unread: alerts.unreadCounts(),
+          alerts: shownAlerts(away, alerts.list({ before: q.get("before") ?? undefined, limit, unread: q.has("unread"), withUnread: q.has("with_unread") })),
+          unread: shownUnread(away, alerts.unreadCounts()),
         }));
       },
     },
@@ -814,20 +834,24 @@ export const automationRoutes: RouteModule = (deps) => {
         const seen = b.seen === undefined || b.seen === null ? undefined : Number(b.seen);
         if (seen !== undefined && !Number.isFinite(seen)) return bad("seen is the inbox revision the page had");
         if (b.ids !== undefined && !Array.isArray(b.ids)) return bad("ids is a list of alert ids");
-        const changed = alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id, seen, auto: !!b.auto, touch: !!b.touch });
-        return json({ ok: true, changed, unread: alerts.unreadCounts() });
+        const away = unseen(req);
+        // (A caller that is not shown a session another harness runs reads it as no such session: nothing of it is marked.)
+        const changed = away && typeof b.session_id === "string" && away.has(b.session_id) ? 0 : alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id, seen, auto: !!b.auto, touch: !!b.touch });
+        return json({ ok: true, changed, unread: shownUnread(away, alerts.unreadCounts()) });
       },
     },
     "/api/alerts/:id/unread": {
       POST: (req: any) => {
-        if (!alerts.markUnread(req.params.id)) return bad("no such alert", 404);
-        return json({ ok: true, unread: alerts.unreadCounts() });
+        const away = unseen(req);
+        const of = away ? store.db.query<{ s: string | null }, [string]>("SELECT session_id AS s FROM alerts WHERE id = ?").get(req.params.id)?.s : null;
+        if ((of && away?.has(of)) || !alerts.markUnread(req.params.id)) return bad("no such alert", 404);
+        return json({ ok: true, unread: shownUnread(away, alerts.unreadCounts()) });
       },
     },
     // The owner marks a session unread to come back to it; and what a session last said, for a
     // list that shows one it has not opened.
     "/api/sessions/:id/unread": {
-      POST: (req: any) => (alerts.markSessionUnread(req.params.id) ? json({ ok: true, unread: alerts.unreadCounts() }) : bad("no such session, or an agent's session (its marks are its parent's)", 404)),
+      POST: (req: any) => (alerts.markSessionUnread(req.params.id) ? json({ ok: true, unread: shownUnread(unseen(req), alerts.unreadCounts()) }) : bad("no such session, or an agent's session (its marks are its parent's)", 404)),
     },
     "/api/sessions/:id/last-line": {
       GET: (req: any) => (session(req.params.id) ? json(alerts.lastLine(req.params.id)) : bad("no such session", 404)),
@@ -927,7 +951,7 @@ export const automationRoutes: RouteModule = (deps) => {
       DELETE: (req: any) => (session(req.params.id) ? json({ ok: true, ended: snooze.end(req.params.id, "the owner ended it") }) : bad("no such session", 404)),
     },
     "/api/snooze": {
-      GET: () => json({ snooze: snooze.global() ?? null, sessions: snooze.all().filter((x) => x.session_id !== snooze.GLOBAL_ID) }),
+      GET: (req: Request) => json({ snooze: snooze.global() ?? null, sessions: shownSnoozes(unseen(req), snooze.all().filter((x) => x.session_id !== snooze.GLOBAL_ID)) }),
       PUT: (req: Request) => attempt(async () => json({ snooze: snooze.setGlobal(Number((await body(req)).until_ms)) })),
       DELETE: () => {
         const g0 = snooze.global();
