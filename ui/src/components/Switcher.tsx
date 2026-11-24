@@ -19,7 +19,7 @@ export function Switcher() {
   return (
     <div className="fixed left-1/2 top-[14vh] z-50 w-[min(26rem,calc(100vw-1.5rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-line bg-raised shadow-3" role="dialog" aria-label="Recent sessions" data-testid="switcher">
       <ul role="listbox" aria-label="Recent sessions, most recent first" className="m-0 flex list-none flex-col gap-0.5 p-1.5" aria-activedescendant={`switch-${s.ids[s.at]}`}>
-        {s.ids.filter((id) => shown.has(id)).map((id, i) => {
+        {s.ids.map((id, i) => ({ id, i })).filter((x) => shown.has(x.id)).map(({ id, i }) => {
           const x = sessions[id]!;
           const w = states[id]?.watch ?? "idle";
           return (
@@ -35,8 +35,16 @@ export function Switcher() {
         })}
       </ul>
       <p className="m-0 flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-line px-3 py-1.5 text-micro text-faint">
-        <span className="flex items-center gap-1"><Kbd keys="ctrl+tab" /> next</span>
-        <span className="flex items-center gap-1"><Kbd keys="ctrl+shift+tab" /> back</span>
+        {s.hold === "Alt" ? (<>
+          <span className="flex items-center gap-1"><Kbd keys="alt+`" /> next</span>
+          <span className="flex items-center gap-1"><Kbd keys="alt+shift+`" /> back</span>
+        </>) : s.hold === "Control" ? (<>
+          <span className="flex items-center gap-1"><Kbd keys="ctrl+tab" /> next</span>
+          <span className="flex items-center gap-1"><Kbd keys="ctrl+shift+tab" /> back</span>
+        </>) : (<>
+          <span className="flex items-center gap-1"><Kbd keys="arrowdown" /> <Kbd keys="arrowup" /> move</span>
+          <span className="flex items-center gap-1"><Kbd keys="enter" /> open</span>
+        </>)}
         <span className="flex items-center gap-1"><Kbd keys="escape" /> cancel</span>
       </p>
     </div>

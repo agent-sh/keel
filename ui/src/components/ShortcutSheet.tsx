@@ -17,8 +17,10 @@ const fixed = (enterSends: boolean): [string, string, string, string?][] => [
   ["Answering", "Choose an option of a question (1 to 9)", "1"],
   ["Answering", "Deny an approval with a reason", "escape", "on its card"],
   // A row of the session list is one Tab stop: its actions are reached from it.
-  ["Sessions", "Switch between the last six sessions (hold Ctrl, Tab for the next)", "ctrl+tab"],
-  ["Sessions", "Up the switcher", "ctrl+shift+tab"],
+  ["Sessions", "Switch between the last six sessions (hold Alt, ` for the next)", "alt+`"],
+  ["Sessions", "Up the switcher", "alt+shift+`"],
+  // A browser tab keeps Ctrl Tab for its own tabs: it reaches the page in the desktop app.
+  ["Sessions", "The same with Ctrl, Tab", "ctrl+tab", "in the desktop app"],
   ["Sessions", "To a list row's actions", "arrowright"],
   ["Sessions", "Back to the row", "arrowleft"],
   ["Message box", "Send", SEND_KEYS(enterSends).send],

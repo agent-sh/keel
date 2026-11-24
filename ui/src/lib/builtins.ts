@@ -18,6 +18,7 @@ import { toggleList } from "./rail.ts";
 import { fmtTokens, focusBox } from "./utils.ts";
 import { confirmAction } from "../components/Confirm.tsx";
 import { switchSession } from "./switch.ts";
+import { open as openSwitcher } from "./switcher.ts";
 import { stopHere } from "./automation.ts";
 import { leaveHome, leaveLook, lookNow, stopHeld, underHome } from "./looks.ts";
 
@@ -115,6 +116,8 @@ registerCommand(
   { id: "new-here", label: "New session in this folder", group: "Sessions", words: "clear fresh", when: () => !!current(), run: () => newIn(current()!.workspace) },
   { id: "next-session", label: "Next session", group: "Sessions", keys: "mod+shift+]", inInput: true, run: () => step(1) },
   { id: "prev-session", label: "Previous session", group: "Sessions", keys: "mod+shift+[", inInput: true, run: () => step(-1) },
+  // The switcher of the last six sessions visited, with no key held (its keys are lib/switcher.ts's own).
+  { id: "recent-sessions", label: "Recent sessions", group: "Sessions", words: "switch back previous visited last", run: () => openSwitcher(1) },
   // (On a Mac, Option with a letter types a character: in a field the Alt letter keys stay the field's.)
   // From anywhere to the list in one key: the row of the session on screen, else the first. Up and Down move, Enter opens.
   { id: "focus-list", label: "Focus the session list", group: "Sessions", keys: "alt+l", inInput: () => !isMac, words: "sidebar rows keyboard jump", run: () => (document.querySelector<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"][aria-current="page"]') ?? document.querySelector<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"]'))?.focus() },

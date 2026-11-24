@@ -423,3 +423,66 @@ test("Ctrl Tab switches between the sessions visited last, most recent first", a
   await page.keyboard.press("Control+Shift+BracketRight");
   await expect(page).not.toHaveURL(before);
 });
+
+// Feature: a browser tab keeps Ctrl Tab for its own tabs, so the switcher has two more ways in: Alt ` (hold Alt,
+// ` again for the next, Shift for up) and the palette's "Recent sessions" (no key held: arrows and Enter). A
+// session that goes while it is open does not move the choice to another row.
+test("the switcher opens with Alt ` and from the palette, and keeps its choice when a session goes", async ({ page, request }) => {
+  await scripted(request);
+  const tag = Date.now().toString(36);
+  const names = ["Hotel", "India", "Juliet", "Kilo"].map((n) => `${n} ${tag}`);
+  const ids: string[] = [];
+  for (const n of names) ids.push(await create(request, n));
+  for (const id of ids) await page.goto(`/s/${id}`);
+  const at = (i: number) => new RegExp(`/s/${ids[i]}$`);
+  const switcher = page.getByTestId("switcher");
+  const rows = switcher.getByTestId("switcher-row");
+  await expect(page).toHaveURL(at(3));
+  await page.getByTestId("composer").click();
+
+  // Alt ` opens it on the session before; ` again goes down; letting go of Alt opens the selected one.
+  await page.keyboard.down("Alt");
+  await page.keyboard.press("Backquote");
+  await expect(switcher).toBeVisible();
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(switcher).toContainText("Alt");
+  await page.keyboard.press("Backquote");
+  await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.up("Alt");
+  await expect(switcher).toHaveCount(0);
+  await expect(page).toHaveURL(at(1));
+
+  // From the palette: no key held. Arrows move, Enter opens, a press outside leaves it.
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("recent sessions");
+  await page.keyboard.press("Enter");
+  await expect(switcher).toBeVisible();
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowDown");
+  await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
+  await shoot(page, "recent-switcher-palette");
+  await page.keyboard.press("Enter");
+  await expect(switcher).toHaveCount(0);
+  await expect(page).toHaveURL(at(2));
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("recent sessions");
+  await page.keyboard.press("Enter");
+  await expect(switcher).toBeVisible();
+  await page.mouse.click(5, 5);
+  await expect(switcher).toHaveCount(0);
+
+  // The list as it is now: Juliet (on screen), India, Kilo, Hotel. Select the last, then India goes.
+  await page.getByTestId("composer").click();
+  await page.keyboard.down("Alt");
+  await page.keyboard.press("Backquote");
+  await page.keyboard.press("Backquote");
+  await page.keyboard.press("Backquote");
+  await expect(rows.nth(3)).toHaveAttribute("aria-selected", "true");
+  await expect(rows.nth(3)).toHaveAttribute("data-session", ids[0]!);
+  await request.delete(`/api/sessions/${ids[1]}`);
+  await expect(rows).toHaveCount(3);
+  await expect(switcher.locator('[aria-selected="true"]')).toHaveAttribute("data-session", ids[0]!);
+  await page.keyboard.up("Alt");
+  await expect(page).toHaveURL(at(0));
+  for (const id of [ids[0], ids[2], ids[3]]) await request.delete(`/api/sessions/${id}`);
+});

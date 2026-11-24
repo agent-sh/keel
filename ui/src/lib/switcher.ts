@@ -1,6 +1,9 @@
 // The switcher of recent sessions: Ctrl Tab opens it on the session before this one, Tab again goes down the
-// list (Shift Tab, up), letting go of Ctrl opens the selected one, Esc leaves it. It lists the last six sessions
-// this page showed, most recent first (lib/recent.ts). Next and previous session keep the list's own order.
+// list (Shift Tab, up), letting go of Ctrl opens the selected one, Esc leaves it. A browser tab keeps Ctrl Tab
+// for its own tabs, so Alt ` (the key above Tab, read by its place) does the same holding Alt, and the palette's
+// "Recent sessions" opens it with no key held: the arrows move, Enter or a click opens, Esc leaves.
+// It lists the last six sessions this page showed, most recent first (lib/recent.ts). Next and previous
+// session keep the list's own order.
 import { useSyncExternalStore } from "react";
 import { announce } from "./announce.ts";
 import { modalOpen } from "./overlay.ts";
@@ -8,7 +11,8 @@ import { recentList, recentOf } from "./recent.ts";
 import { getState } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 
-type Switcher = { ids: string[]; at: number } | null;
+// `hold`: the key whose release opens the selected one; none when it was opened from the palette.
+type Switcher = { ids: string[]; at: number; hold: "Control" | "Alt" | null } | null;
 let state: Switcher = null;
 const subs = new Set<() => void>();
 const set = (s: Switcher) => { state = s; subs.forEach((f) => f()); };
@@ -20,13 +24,13 @@ const shown = () => {
 };
 const wordOf = (id: string) => getState().sessions[id]?.title || "New session";
 
-function open(dir: 1 | -1) {
+export function open(dir: 1 | -1, hold: "Control" | "Alt" | null = null) {
   const ids = shown();
   if (ids.length < 2) return;
   const r = getUI().route;
   // The session on screen is first: the one to go back to is the second, or the last when going up.
   const at = r.name === "session" && ids[0] === r.id ? (dir > 0 ? 1 : ids.length - 1) : dir > 0 ? 0 : ids.length - 1;
-  set({ ids, at });
+  set({ ids, at, hold });
   announce(`Switch session: ${wordOf(ids[at]!)}`);
 }
 export function move(dir: 1 | -1) {
@@ -49,18 +53,22 @@ export const select = (at: number) => { if (state) set({ ...state, at }); };
 function onKeyDown(e: KeyboardEvent) {
   const take = () => { e.preventDefault(); e.stopImmediatePropagation(); };
   if (!state) {
-    if (e.key === "Tab" && e.ctrlKey && !e.altKey && !e.metaKey && !e.isComposing && !modalOpen()) { take(); if (!e.repeat) open(e.shiftKey ? -1 : 1); }
+    if (e.isComposing || e.metaKey || modalOpen()) return;
+    if (e.key === "Tab" && e.ctrlKey && !e.altKey) { take(); if (!e.repeat) open(e.shiftKey ? -1 : 1, "Control"); }
+    else if (e.code === "Backquote" && e.altKey && !e.ctrlKey) { take(); if (!e.repeat) open(e.shiftKey ? -1 : 1, "Alt"); }
     return;
   }
-  if (e.key === "Tab") { take(); move(e.shiftKey ? -1 : 1); }
+  if (e.key === "Tab" || e.code === "Backquote") { take(); move(e.shiftKey ? -1 : 1); }
   else if (e.key === "ArrowDown") { take(); move(1); }
   else if (e.key === "ArrowUp") { take(); move(-1); }
   else if (e.key === "Escape") { take(); cancel(); }
   else if (e.key === "Enter") { take(); choose(); }
-  // Ctrl was let go without its key-up reaching the page: it is not held, so the choice is made.
-  else if (!e.ctrlKey && e.key !== "Control" && e.key !== "Shift") choose();
+  // The held key was let go without its key-up reaching the page: it is not held, so the choice is made.
+  else if (state.hold && !(state.hold === "Control" ? e.ctrlKey : e.altKey) && e.key !== "Control" && e.key !== "Alt" && e.key !== "Shift") choose();
 }
-function onKeyUp(e: KeyboardEvent) { if (state && e.key === "Control") { e.preventDefault(); choose(); } }
+function onKeyUp(e: KeyboardEvent) { if (state?.hold && e.key === state.hold) { e.preventDefault(); choose(); } }
+// A press outside the list leaves it, as Esc does.
+function onPointerDown(e: PointerEvent) { if (state && !(e.target as Element | null)?.closest?.('[data-testid="switcher"]')) cancel(); }
 
 let installed = false;
 export function installSwitcher() {
@@ -68,6 +76,7 @@ export function installSwitcher() {
   installed = true;
   addEventListener("keydown", onKeyDown, true);
   addEventListener("keyup", onKeyUp, true);
+  addEventListener("pointerdown", onPointerDown, true);
   // The page lost the keyboard while it was open (another window, Alt Tab): nothing was chosen.
   addEventListener("blur", cancel);
 }
