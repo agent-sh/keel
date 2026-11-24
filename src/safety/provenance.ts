@@ -41,7 +41,8 @@ export type Target = { kind: TargetKind; key: string; shown: string; pathq?: str
 export type Class = "owner" | "outside" | "listed" | "inside";
 // `where`: the source as a card says it ("a WebFetch result"). `seq` and `ts`: the event of the first sighting.
 // `unread`: not a sighting of this target: the session read outside content too long to read whole.
-export type Origin = { cls: Class; where: string; seq: number; ts: number; call?: string; unread?: true };
+// `model`: the model's own words or call (a target it spells after the book went unbounded may come from what was not kept).
+export type Origin = { cls: Class; where: string; seq: number; ts: number; call?: string; unread?: true; model?: true };
 
 // A text is read whole, in chunks of CHUNK (cut at white space, with a line's worth of overlap), up to MAX_TEXT; what
 // lies past that is not read, and the book says so (`unbounded`). MAX_KEYS bounds a session's book: the oldest
@@ -399,6 +400,9 @@ export type BookEvent = { seq: number; kind: string; data: any; ts: number };
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((b: any) => (b?.type === "text" ? String(b.text ?? "") : "")).join("\n") : "";
 
+const MODEL_WORDS = "the model's words";
+const MODEL_CALL = "the model's own call";
+
 export class ProvenanceBook {
   private first = new Map<string, Origin>();
   private calls = new Map<string, { name: string; input: any }>();
@@ -453,15 +457,19 @@ export class ProvenanceBook {
       return;
     }
     if (this.first.size >= MAX_KEYS) {
-      // The oldest sightings go, a tenth at a time (a Map walked from its start after deletions is slow, so not one by
-      // one), never the owner's; one that was outside content leaves the book unbounded.
+      // Sightings go a tenth at a time (a Map walked from its start after deletions is slow, so not one by one): the
+      // model's and the session's own first, the oldest first, then outside content's; the owner's never. One that was
+      // outside content leaves the book unbounded.
       let n = MAX_KEYS / 10;
-      for (const [k, v] of this.first) {
-        if (v.cls === "owner") continue;
-        this.first.delete(k);
-        this.listed.delete(k);
-        if (v.cls === "outside" || v.cls === "listed") this.markUnbounded(`${v.where} (more than ${MAX_KEYS} targets were named)`, e);
-        if (--n <= 0) break;
+      for (const outsideToo of [false, true]) {
+        if (n <= 0) break;
+        for (const [k, v] of this.first) {
+          if (v.cls === "owner" || (!outsideToo && v.cls !== "inside")) continue;
+          this.first.delete(k);
+          this.listed.delete(k);
+          if (v.cls === "outside" || v.cls === "listed") this.markUnbounded(`${v.where} (more than ${MAX_KEYS} targets were named)`, e);
+          if (--n <= 0) break;
+        }
       }
     }
     this.first.set(key, o);
@@ -483,7 +491,7 @@ export class ProvenanceBook {
 
   private async noteAll(text: string, cls: Class, where: string, e: BookEvent, call?: string) {
     if (!text) return;
-    const o: Origin = { cls, where, seq: e.seq, ts: e.ts, call };
+    const o: Origin = { cls, where, seq: e.seq, ts: e.ts, call, ...(cls === "inside" && (where === MODEL_CALL || where === MODEL_WORDS) ? { model: true as const } : {}) };
     await scanTargets(text, (t) => {
       this.note(t.key, o, e, t.pathq);
       // A search result's address is kept even when the host was first named otherwise: it is what a fetch may ask for.
@@ -532,12 +540,12 @@ export class ProvenanceBook {
         else await this.noteAll(text, "inside", "a message", e);
       } else if (e.kind === "assistant") {
         for (const b of d.blocks ?? []) {
-          if (b?.type === "text") await this.noteAll(String(b.text ?? ""), "inside", "the model's words", e);
+          if (b?.type === "text") await this.noteAll(String(b.text ?? ""), "inside", MODEL_WORDS, e);
           else if (b?.type === "tool_use" && typeof b.id === "string") {
             this.calls.set(b.id, { name: String(b.name), input: b.input });
             const cmd = typeof b.input?.command === "string" ? b.input.command : typeof b.input?.cmd === "string" ? b.input.cmd : "";
             // What the model's own call names is first seen as its own, before the call is judged.
-            await this.noteAll(cmd || JSON.stringify(b.input ?? {}).slice(0, 20_000), "inside", "the model's own call", e, b.id);
+            await this.noteAll(cmd || JSON.stringify(b.input ?? {}).slice(0, 20_000), "inside", MODEL_CALL, e, b.id);
             if (cmd) this.madeBy(cmd);
           }
         }

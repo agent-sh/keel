@@ -292,15 +292,20 @@ under `~/.cache/keel-work/bun/research/`.
   a search result lists an address (a page fetch of that address, or of a page above it with no query, goes on;
   a path or query it did not list, a header, a cookie or a body is a send). A text is read whole, in chunks,
   with a turn of the loop between them; a text past 8 MB, or more than 50,000 targets in a session, leaves the
-  session "unbounded" (an agent's report brings it up), and it then holds a send to any target it has no
-  sighting of that is not the owner's or the repository's. A host is any name in a URL or an ssh form (any
+  session "unbounded" (an agent's report brings it up; a full book drops the model's own sightings before
+  outside content's), and it then holds a send to any target it has no sighting of that is not the owner's or
+  the repository's: what the model's own call spells after that is no sighting (the call is stored before the
+  gate sees it). A host is any name in a URL or an ssh form (any
   top-level domain, punycode, an IPv6 literal, a trailing dot); a bare name needs a known one. Not covered: a
   subdomain or an IP of a host the page named is another target (a name that carries data in a label, or a
   host a program computed, is not followed). A call that sends to such a target (a fetch, a
   push, curl, ssh, scp, mail, an MCP tool that does not only read) asks the owner in every mode, a hook's or a
   grant's allow included, and its card says where the target first appeared; an agent is refused with the same
   words. A target the owner typed, one the repository held before the session, one the model's own call named
-  first, or one the owner allowed on a card is not held. The judge's input carries the same fact.
+  first, or one the owner allowed on a card is not held; a push to a remote the repository holds is not held
+  even when a page named its forge's host. A session on another machine reads no repository there: a remote
+  it names by name (`git push origin`) is no target, a URL it spells is held as any other. The judge's input
+  carries the same fact.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

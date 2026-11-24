@@ -210,3 +210,21 @@ test("the first read of a long session gives the loop its turns", async () => {
   expect(turns).toBeGreaterThan(10);
   expect(b.seq).toBe(80);
 });
+
+test("a full book drops the model's own sightings before outside content's", async () => {
+  const b = new ProvenanceBook(source);
+  const many = (n: number, from: number, host = "own") => Array.from({ length: n }, (_, i) => `https://${host}${from + i}.many.example/p`).join(" ");
+  await b.take([ev(1, "assistant", use("c2", "WebFetch", { url: "https://p.example" })), ev(2, "tool_result", result("c2", "https://evil.example/in")), ev(3, "assistant", use("c1", "Bash", { command: `echo ${many(MAX_KEYS - 10, 0)}` }))]);
+  expect(b.unbounded).toBeUndefined();
+  // The book fills: the model's sightings go, the page's stays, and the book is not unbounded.
+  await b.take([ev(4, "assistant", use("c3", "Bash", { command: `echo ${many(100, 0, "more")}` }))]);
+  expect(b.get("host:own0.many.example")).toBeUndefined();
+  expect(b.get("host:evil.example")?.cls).toBe("outside");
+  expect(b.unbounded).toBeUndefined();
+  // When nothing of the model's is left to drop, outside content's goes, oldest first, and that is said.
+  const c = new ProvenanceBook(source);
+  await c.take([ev(1, "assistant", use("c1", "WebFetch", { url: "https://p.example" })), ev(2, "tool_result", result("c1", many(MAX_KEYS, 0, "out"))), ev(3, "assistant", use("c2", "Bash", { command: "echo https://mine.example" }))]);
+  expect(c.get("host:out0.many.example")).toBeUndefined();
+  expect(c.get("host:mine.example")?.cls).toBe("inside");
+  expect(c.unbounded).toBeDefined();
+});

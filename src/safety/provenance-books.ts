@@ -72,6 +72,8 @@ export class Provenance {
     for (const b of books) {
       const o = b.get(key);
       if (!o) continue;
+      // What the model spells after the book went unbounded may come from what was not kept: not a sighting of its own.
+      if (o.model && b.unbounded && o.seq >= b.unbounded.seq) continue;
       if (o.cls === "owner") return o;
       if (!best || (best.cls === "inside" && o.cls !== "inside") || (best.cls === "listed" && o.cls === "outside")) best = o;
     }
@@ -97,6 +99,8 @@ export class Provenance {
     if (!maybe.length || !repo) return { hits: maybe, ids };
     const mine = new Map<string, boolean>();
     for (const h of maybe) mine.set(h.target.key, await repo.holds(h.target, own));
+    // A push names its remote, and what a page named may be only the remote's host: the repository is asked about the remote too.
+    for (const r of reaches) if (r.target.kind === "remote" && !mine.has(r.target.key)) mine.set(r.target.key, await repo.holds(r.target, own));
     void now;
     return { hits: asked((t) => mine.get(t.key) ?? false), ids };
   }
