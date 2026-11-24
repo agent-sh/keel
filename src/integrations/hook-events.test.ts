@@ -6,6 +6,7 @@ import { afterAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homeDir } from "../core/paths";
+import { formOf } from "../mcp/elicit.ts";
 
 const { Store } = await import("../core/store.ts");
 const { Bus } = await import("../core/bus.ts");
@@ -190,6 +191,16 @@ test("Elicitation, ElicitationResult: a hook answers a server's question or chan
   const secret = (await given("ElicitationResult"))[0]!;
   expect(secret).toMatchObject({ action: "accept", fields: ["password"] });
   expect(JSON.stringify(secret)).not.toContain("hunter2");
+  // The form decides it, not the test: a field named auth, a password or a token is a secret, and what was typed in
+  // any of them reaches no hook; a plain field's answer does.
+  for (const [field, secretive] of [["auth", true], ["password", true], ["api_token", true], ["color", false]] as const) {
+    clear();
+    const form = formOf({ message: "Fill in", requestedSchema: { type: "object", properties: { [field]: { type: "string" } } } });
+    expect([field, form.sensitive]).toEqual([field, secretive]);
+    await hook.elicitationResult!(s.id, { ...asked("form"), fields: [field], sensitive: form.sensitive }, { action: "accept", content: { [field]: "typed-w-seen" } });
+    const told = (await given("ElicitationResult"))[0]!;
+    expect([field, JSON.stringify(told).includes("typed-w-seen")]).toEqual([field, !secretive]);
+  }
 });
 
 test("a matcher is exact alternatives or a regular expression, and `if` narrows a tool's hook", () => {
