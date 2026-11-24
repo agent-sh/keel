@@ -86,6 +86,8 @@ test("a changed listing and changed instructions are held from the model, told o
   expect(row().tools).toBe(3);
   expect(await offered()).toEqual({ lookup: "Look up a word. Wording-one.", environment: "The environment this server was started with, as JSON." });
   expect(String((await m.call("leash", "upload", { path: "/x" }, ctx())).content)).toContain("not accepted");
+  // What Settings says of its schemas is of what the model is offered: upload is not, until accepted.
+  expect(row().schema_fit).toEqual([]);
   // Connected again, it gives new instructions: held too, the accepted ones kept in the prompt.
   await m.reconnect("leash");
   await m.ensure("leash");
@@ -104,6 +106,7 @@ test("a changed listing and changed instructions are held from the model, told o
   expect((await offered()).lookup).toContain("Wording-two");
   expect(await instructions(m)).toContain("Instructions-two");
   expect(String((await m.call("leash", "upload", { path: "/x" }, ctx())).content)).toBe("uploaded /x");
+  expect(row().schema_fit.map((r) => [r.tool, r.changed.map((c) => c.on)])).toEqual([["upload", [["Anthropic", "ACP agents"]]]]);
   m.dispose();
 });
 
