@@ -80,13 +80,11 @@
 .k-rail[data-open] .k-foot-named .k-foot-word { display: inline; }
 .k-rail[data-open] .k-foot-named > svg, .k-rail[data-open] .k-foot-named:not([data-held]) > span:first-child > svg { display: none; }
 .k-rail[data-open] .k-foot-named:not([data-held]) > span:first-child { display: contents; }
-.k-rail[data-open] .k-foot-named:not([data-held]) .k-inbox-dot { position: static; order: 3; box-shadow: none; }
 .k-rail[data-open] .k-foot-named .k-foot-word { order: 1; }
 .k-rail[data-open] .k-foot-named :is(.k-inbox-count, .k-act-n) { order: 2; }
 .k-rail[data-open] .k-rail-foot[data-tight] .k-foot-named .k-foot-word { display: none; }
 .k-rail[data-open] .k-rail-foot[data-tight] .k-foot-named > svg, .k-rail[data-open] .k-rail-foot[data-tight] .k-foot-named > span:first-child > svg { display: block; }
 .k-rail[data-open] .k-rail-foot[data-tight] .k-foot-named > span:first-child { display: grid; }
-.k-rail[data-open] .k-rail-foot[data-tight] .k-foot-named .k-inbox-dot { position: absolute; box-shadow: 0 0 0 0.125rem var(--bg); }
 .k-act {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 0.5625rem;
   min-width: 2.5rem; height: var(--spacing-ctl-xl); padding: 0 0.5625rem; border-radius: var(--radius-md); color: var(--muted); font-size: var(--text-ui);
@@ -466,8 +464,6 @@
 .k-session-children { margin-left: 0.75rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
 .k-child-row { position: relative; container: kid / inline-size; }
 /* Under an agent's row: what it is doing now, a step in from its mark. */
-.k-child-now { padding: 0 0.375rem 0.125rem 1.875rem; font-size: var(--text-micro); }
-.k-child-now .k-agent-now-meta { margin-inline-start: auto; }
 .k-child-session { display: flex; align-items: center; gap: 0.5rem; min-width: 0; height: 1.5rem; padding: 0 0.375rem; border-radius: var(--radius-md); font-size: var(--text-caption); cursor: default; outline: none; }
 .k-child-session:hover, .k-child-session[data-current] { background: var(--raised); }
 .k-child-session[data-current] { box-shadow: var(--shadow-1); }
@@ -542,7 +538,7 @@
 .k-sum-mark { display: none; }
 .k-sum-chip[data-bare] .k-sum-mark { display: inline-grid; place-items: center; }
 .k-sum-mark .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-sum-dot { width: 0.375rem; height: 0.375rem; border-radius: 999px; background: var(--accent-ink); }
+.k-sum-dot { width: 0.375rem; height: 0.375rem; border-radius: 999px; background: var(--dot-unread); }
 .k-sum[data-tight] .k-sum-chip { gap: 0.1875rem; padding: 0 0.1875rem; }
 .k-sum[data-tight] .k-sum-chip:not([hidden]) ~ .k-sum-chip:not([hidden])::before { margin-left: -0.25rem; }
 .k-sum-chip:hover { background: var(--hover); color: var(--fg); }
@@ -1678,10 +1674,6 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);
 }
 .k-inbox-count[data-watch="idle"] { background: var(--accent); }
-/* Other news since the owner looked: a dot at the bell's corner, quiet, with no number. */
-.k-inbox-dot { position: absolute; right: -0.1875rem; top: -0.125rem; width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 0.125rem var(--bg); }
-/* A failure among it: the dot is the failed state's colour. */
-.k-inbox-dot[data-watch="fail"] { background: var(--st-fail); }
 
 /* A turn the model declined: a failure under its own word. The same red as a
    failed one wherever a state is drawn, and its own mark (an empty square). */

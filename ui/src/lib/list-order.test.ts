@@ -1,7 +1,7 @@
 import { watchSummary } from "./home.ts";
 import { expect, test } from "bun:test";
 import type { Watch } from "../../../src/core/watch.ts";
-import { after, around, DEFAULT, folders, held, keep, order, pinMark, pinMove, pinnedOrder, readArrange, tally } from "./list-order.ts";
+import { after, around, DEFAULT, folders, held, isNews, keep, order, pinMark, pinMove, pinnedOrder, readArrange, tally } from "./list-order.ts";
 
 const s = (id: string, created: number, more: Partial<{ title: string; updated: number; workspace: string; machine: string }> = {}) =>
   ({ id, title: more.title ?? id, created, updated: more.updated ?? created, workspace: more.workspace ?? "/w/app", machine: more.machine });
@@ -60,10 +60,12 @@ test("the counts name the longest wait first, and unread only what no other coun
   expect(after([], null)).toBeUndefined();
 });
 
-test("news counts only where its dot shows: a row at work or waiting with a clock keeps the clock", () => {
-  const list = [s("a", 1), s("b", 2), s("c", 3), s("d", 4)];
-  const t = tally(list, { a: { watch: "work", since: 5 }, b: { watch: "wait", until: 9 }, c: { watch: "work" }, d: { watch: "done" } }, { a: 1, b: 1, c: 1, d: 1 });
-  expect(t.unread).toEqual(["c", "d"]);
+test("news counts exactly the rows that show its dot: every row but one that needs the owner or failed", () => {
+  const list = [s("a", 1), s("b", 2), s("c", 3), s("d", 4), s("e", 5), s("f", 6), s("g", 7)];
+  const states = { a: { watch: "work" as const, since: 5 }, b: { watch: "wait" as const, until: 9 }, c: { watch: "work" as const }, d: { watch: "done" as const }, e: { watch: "need" as const }, f: { watch: "fail" as const }, g: { watch: "declined" as const } };
+  const t = tally(list, states, { a: 1, b: 1, c: 1, d: 1, e: 1, f: 1, g: 1 });
+  expect(t.unread).toEqual(["a", "b", "c", "d"]);
+  expect(list.filter((x) => isNews(states[x.id as keyof typeof states].watch)).map((x) => x.id)).toEqual(t.unread);
 });
 
 test("the line above the list counts working and waiting as the home does: a command in the background is working", () => {

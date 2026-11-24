@@ -26,7 +26,7 @@ test("the bell counts what waits on you; a finish is a dot, not a number", async
     const bell = page.getByTestId("inbox-button");
     // A session finishes while the page shows the home: news, but nothing waits on the owner.
     ids.push(await make(request, "Bell: a finish", "full-auto", calls([bash("echo done")])));
-    await expect(page.getByTestId("bell-dot")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true", { timeout: 30_000 });
     await expect(page.getByTestId("inbox-count")).toHaveCount(0);
     await expect(bell).toHaveAccessibleName(/1 unread: new since you last looked/);
     await shoot(page, "bell-badge-01-dot");
@@ -40,7 +40,7 @@ test("the bell counts what waits on you; a finish is a dot, not a number", async
     await bell.click();
     await page.getByTestId("mark-all-read").click();
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("bell-dot")).toHaveCount(0);
+    await expect(page.getByTestId("inbox-button")).not.toHaveAttribute("data-news", "true");
     await expect(page.getByTestId("inbox-count")).toHaveText("1");
     // The bell's name shows on hover and on the keyboard's focus.
     await bell.hover();
@@ -71,12 +71,12 @@ test("a failure among the unread colours the bell's dot and is said in its name"
     const bell = page.getByTestId("inbox-button");
     // A finish is a quiet dot that says nothing of failure.
     ids.push(await make(request, "Bell: finish before", "full-auto", calls([bash("echo ok")])));
-    await expect(page.getByTestId("bell-dot")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("bell-dot")).not.toHaveAttribute("data-watch", "fail");
+    await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true", { timeout: 30_000 });
+    await expect(page.getByTestId("inbox-button")).not.toHaveAttribute("data-wrong", "true");
     await expect(bell).not.toHaveAccessibleName(/failed/);
     // A session fails: the dot takes the failed color and the bell's name says how many.
     ids.push(await make(request, "Bell: a failure", "full-auto", "script:billing"));
-    await expect(page.getByTestId("bell-dot")).toHaveAttribute("data-watch", "fail", { timeout: 30_000 });
+    await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-wrong", "true", { timeout: 30_000 });
     await expect(page.getByTestId("inbox-count")).toHaveCount(0);
     await expect(bell).toHaveAccessibleName(/1 failed/);
     await expect(bell).toHaveAttribute("title", /1 failed/);
@@ -85,7 +85,7 @@ test("a failure among the unread colours the bell's dot and is said in its name"
     await bell.click();
     await page.getByTestId("mark-all-read").click();
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("bell-dot")).toHaveCount(0);
+    await expect(page.getByTestId("inbox-button")).not.toHaveAttribute("data-news", "true");
     await expect(bell).not.toHaveAccessibleName(/failed/);
   } finally {
     for (const id of ids) {

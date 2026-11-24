@@ -5,11 +5,13 @@ import { capTip, dollars } from "../../../../src/automation/cap-rules.ts";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useAgentsOpen } from "../../lib/agents-open.ts";
 import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
-import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
+import { isLive, openSession, snoozeText, useAuto, type AgentRecord } from "../../lib/automation.ts";
 import { COUNTERS, wentWrongWord } from "../../../../src/core/state-words.ts";
 import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
-import { AgentMark, AgentNow, agentSaid, IconButton, StopAgent } from "./bits.tsx";
+import { AgentMark, agentSaid, IconButton, nowMeta, StopAgent } from "./bits.tsx";
+import { useNow as useSecond } from "../Mark.tsx";
+import { beatOf } from "../../lib/clock.ts";
 import { AgentLane } from "./Lane.tsx";
 import { scope } from "../../lib/store.ts";
 import { useNeedCount, useToldStates } from "../../lib/watch.ts";
@@ -90,6 +92,7 @@ function AgentTree({ parentId, current }: { parentId: string; current: string | 
         return (
           // The row opens the agent; Stop is a control of its own over the row's end, never inside the open target.
           <div key={a.id} className="k-child-row" data-live={isLive(a) || undefined} data-lane={lanes.has(a.id) || undefined} data-testid="child-row" data-depth={depth} style={depth > 1 ? ({ "--k-indent": `${(depth - 1) * 0.875}rem` } as React.CSSProperties) : undefined}>
+            <WithNow a={a}>{(tip) => (
             <div
               role="button"
               tabIndex={0}
@@ -99,8 +102,8 @@ function AgentTree({ parentId, current }: { parentId: string; current: string | 
               data-fresh={news || undefined}
               data-current={current === a.session_id || undefined}
               aria-label={`${title}, ${st.title}${below ? `, ${below} agent${below > 1 ? "s" : ""} below it` : ""}${news ? ", ended since you looked" : ""}`}
-              // The row may be too narrow for the title or the word: the tooltip carries both.
-              title={`${title}: ${st.title}`}
+              // The row may be too narrow for the title or the word: the tooltip carries both, and what the agent is doing now with its steps, time and cost (a row is one line).
+              title={`${title}: ${st.title}${tip ? `. ${tip}` : ""}`}
               onClick={() => onPick(a.session_id)}
               onKeyDown={(e) => {
                 if (e.key !== "Enter" && e.key !== " ") return;
@@ -124,19 +127,28 @@ function AgentTree({ parentId, current }: { parentId: string; current: string | 
                 </span>
               ) : null}
             </div>
+            )}</WithNow>
             <span className="k-child-acts">
               <IconButton title={`${lanes.has(a.id) ? "Hide" : "Show"} what ${title} is doing, waits for, got wrong, changed and does next`} onClick={() => foldLane(a.id)} testid="child-lane-fold">
                 <ListCollapse className={cn("size-3.5", lanes.has(a.id) && "text-fg")} aria-hidden />
               </IconButton>
               {isLive(a) && <StopAgent a={a} title={title} testid="child-stop" />}
             </span>
-            <AgentNow a={a} className="k-child-now" />
             {lanes.has(a.id) && <AgentLane a={a} className="k-child-lane" testid="child-lane" />}
           </div>
         );
       })}
     </div>
   );
+}
+
+// What an agent is doing now, in words for a tooltip: its line and its steps, time and cost. A row of the tree is
+// one line; this is where the rest of it is.
+function WithNow({ a, children }: { a: AgentRecord; children: (tip: string) => React.ReactNode }) {
+  const line = useAuto((s) => s.now[a.id]);
+  const shown = !!line && isLive(a);
+  const now = useSecond(shown, beatOf(line?.since));
+  return <>{children(shown ? [line.text, nowMeta(line, now)].filter(Boolean).join(" · ") : "")}</>;
 }
 
 // An agent with a dollar budget: the share spent and the rate, as a session's row says them.
@@ -217,15 +229,16 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
         type="button"
         data-testid="inbox-button"
         onClick={onInbox}
-        // The bell counts what waits on the owner, in the color of that; other news is a muted dot.
+        // The bell counts what waits on the owner, in the color of that, once; other news is the button's ink and its tooltip (no dot: it meant nothing beside the count).
         title={said}
         aria-label={said}
         data-held={held || undefined}
+        data-news={others > 0 || undefined}
+        data-wrong={wrong > 0 || undefined}
         className={cn("k-foot-named relative flex h-ctl-md items-center gap-1.5 rounded-md px-2 text-caption hover:bg-raised", need || others ? "text-fg" : "text-faint")}
       >
         <span className="relative grid place-items-center">
           {held ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
-          {others > 0 && <span data-testid="bell-dot" data-watch={wrong ? "fail" : undefined} className="k-inbox-dot" />}
         </span>
         <span className="k-foot-word">Inbox</span>
         {need > 0 && <span data-testid="inbox-count" data-watch="need" className="k-inbox-count tabular-nums">{need}</span>}

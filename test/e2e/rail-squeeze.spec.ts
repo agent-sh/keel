@@ -125,6 +125,8 @@ test("the session list fits at every width its edge can be dragged to", async ({
     const row = (id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
     const grip = page.getByTestId("list-grip");
     const check = async (what: string) => {
+      // (Two frames: the line above the list fits its counts to the width in the frame after the edge moved, before it is painted.)
+      await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
       const a = await page.evaluate(audit);
       expect.soft(a.issues, `${what}, the list ${Math.round(a.width)}px wide (${(a.width / a.rem).toFixed(2)}rem)`).toEqual([]);
       return a;

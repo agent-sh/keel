@@ -78,13 +78,13 @@ test("each agent's line says what it is doing now", async ({ page, request }) =>
     await expect(card("Runner").getByTestId("agent-now-text")).not.toHaveText(was!, { timeout: 25_000 });
     await expect(card("Thinker").getByTestId("agent-now-text")).toHaveText("Checking the migration next.", { timeout: 30_000 });
 
-    // The sidebar's tree shows the same lines while it is open.
+    // The sidebar's tree is one line a row: the same line is the row's tooltip, with its steps, time and cost.
     const row = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`).locator("xpath=..");
     const toggle = row.getByTestId("children-toggle");
     if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
     const kid = (title: string) => row.getByTestId("child-row").filter({ hasText: title });
-    await expect(kid("Thinker").getByTestId("agent-now-text")).toHaveText("Checking the migration next.", { timeout: 20_000 });
-    await expect(kid("Asker").getByTestId("agent-now")).toHaveAttribute("data-need", "true");
+    await expect(row.getByTestId("agent-now")).toHaveCount(0);
+    await expect(kid("Thinker").getByTestId("child-session")).toHaveAttribute("title", /Checking the migration next\./, { timeout: 20_000 });
     await shoot(page, "agent-now-02-tree");
 
     // At most one telling a line every 15 s (a little less for the timer's own beat), for every agent told twice.

@@ -22,7 +22,7 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await expect(page.getByTestId("new-composer")).toBeVisible();
   // The turn runs while the page shows the home screen, not this session.
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, text: "Reply with only the word done." } })).json();
-  await expect(page.getByTestId("bell-dot")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true", { timeout: 60_000 });
   // The rail: an unread session stands out.
   const row = page.locator(`[data-testid="session-row"][data-session="${session.id}"]`);
   await expect(row).toHaveAttribute("data-unread", "true");
@@ -80,7 +80,7 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   // speaking, red failed; the bell shows them as news, a dot (a count is for what waits on the owner).
   for (const kind of ["agent", "failed", "approval"]) await request.post("/api/alerts/test", { data: { kind } });
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("bell-dot")).toBeVisible();
+  await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true");
   await page.getByTestId("inbox-button").click();
   const icons = page.getByTestId("inbox-item").getByTestId("alert-icon");
   await expect(icons.nth(0)).toHaveAttribute("data-watch", "need");
@@ -193,7 +193,7 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   await expect(page.getByTestId("new-composer")).toBeVisible();
   // A reply that opens with a markdown heading, finished while the page is elsewhere.
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Write up the parser move", text: "script:render" } })).json();
-  await expect(page.getByTestId("bell-dot")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true", { timeout: 60_000 });
   for (const kind of ["question", "failed", "approval"]) await request.post("/api/alerts/test", { data: { kind, session_id: session.id } });
   // A second session with one alert, of a kind that asks nothing of the owner.
   const { session: quiet } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Tidy the changelog" } })).json();

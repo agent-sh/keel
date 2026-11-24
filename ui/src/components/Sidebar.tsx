@@ -19,7 +19,7 @@ import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
 import { getStations, stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, scrollerOf, useActed, useAnchor, useCounts, useHand, usePhoneWidth, useUnderLook, type Hand, type Kind } from "../lib/list-hold.ts";
-import { around, folders, held as heldList, pinnedOrder, tally } from "../lib/list-order.ts";
+import { around, folders, held as heldList, isNews, pinnedOrder, tally } from "../lib/list-order.ts";
 import { countedState, withAgentFailures } from "../lib/home.ts";
 import { focusAsk } from "../lib/asks.ts";
 import { announce } from "../lib/announce.ts";
@@ -287,6 +287,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   // Pinned or unpinned from the keyboard, the keyboard stays with the row, in the group it went to.
   const togglePin = (keys = false) => pin(s.id, !pinned, !keys).then(() => { if (keys) focusRow(s.id); }, reportError);
   const left = !gone ? null : deleted || (!live && !given.archived) ? "deleted" : given.archived ? "restored" : "archived";
+  // News is a dot at the row's end, where the list's count of what is new counts it (lib/list-order.ts: isNews).
+  const news = unread && !gone && !left && !offline && isNews(w);
   // The card beside the row is away while a menu of the row is open over it.
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
   const open = (beside: boolean) => {
@@ -386,8 +388,6 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           : timed(st)
           ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{rowClock(st, now)}</span>
           : <>
-              {/* News, for a reader: the eye has the title's ink (a row at work or calling the owner wears its state's). */}
-              {unread && !gone && <span className="sr-only" data-testid="row-new">{NEW}</span>}
               <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-calm={calm || undefined} title={when(s.updated)}>{said ?? ago(s.updated)}</span>
             </>}
         {/* (A row whose session left has no actions: there is nothing to act on.) */}
@@ -430,7 +430,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         )}
       </span>
       {/* News: a white dot at the row's right end (its ink in the light theme: bridge.css). The word for a reader is in the time's place. */}
-      {unread && !gone && !left && <span className="k-row-unread" data-testid="row-unread" aria-hidden="true" />}
+      {news && <><span className="k-row-unread" data-testid="row-unread" aria-hidden="true" /><span className="sr-only" data-testid="row-new">{NEW}</span></>}
       {menu && (
         <RowMenu
           at={menu}

@@ -45,13 +45,14 @@ async function paint(page: Page, token: string) {
   }, token);
 }
 // The list at each size: where the page folds it away (a phone), its button shows it first.
-async function shootList(page: Page, name: string, session: string) {
+async function shootList(page: Page, name: string, session: string, ready: () => Promise<void>) {
   for (const size of SIZES) {
     await page.setViewportSize(size);
     if (size.width < 500) await page.goto(`/s/${session}`);
     // A phone has no rail: the session header's button shows the list over the page.
     const show = page.getByTestId("show-sidebar");
     if (size.width < 500) await show.first().click();
+    await ready();
     await expect(page.locator('[data-testid="session-row"]:visible').first()).toBeInViewport();
     await page.waitForTimeout(300);
     await shoot(page, `${name}-${size.width}x${size.height}`);
@@ -144,6 +145,16 @@ test("a row's state is one dot, and a session that waits on what it left going h
     await expect(mark(working)).toHaveAttribute("data-watch", "work");
     await page.emulateMedia({ reducedMotion: "no-preference" });
 
+    // The count above the list says how many are new: the number of rows that carry the dot. A row that needs the owner or
+    // failed says more than a dot, so it has none and is not in the count.
+    const dots = page.getByTestId("session-list").getByTestId("row-unread");
+    await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the dots" }).toBe(await dots.count());
+    expect(await dots.count()).toBeGreaterThanOrEqual(2);
+    for (const id of [asking, failed, declined]) await expect(row(page, id).getByTestId("row-unread")).toHaveCount(0);
+    // The foot: one count of what waits on the owner, and no dot after it.
+    await expect(page.getByTestId("inbox-count")).toHaveText("1");
+    await expect(page.getByTestId("inbox-button").locator(".k-inbox-dot")).toHaveCount(0);
+
     // News: a white dot at the row's right end, outside the row's end slot; read, it is gone.
     const unread = row(page, news).getByTestId("row-unread");
     await expect(unread).toBeVisible();
@@ -162,7 +173,10 @@ test("a row's state is one dot, and a session that waits on what it left going h
     expect(await unread.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(ink.color);
     expect(Math.max(...ink.rgb), "the ink in the light theme").toBeLessThan(90);
 
-    await shootList(page, "state-dots-01-list", working);
+    await shootList(page, "state-dots-01-list", working, async () => {
+      // (A page that has just loaded shows each row as its session record says, until the states it is told arrive and settle.)
+      for (const [id, watch] of [[asking, "need"], [failed, "fail"], [declined, "declined"], [working, "work"]] as const) await expect(mark(id)).toHaveAttribute("data-watch", watch, { timeout: 15_000 });
+    });
   } finally {
     for (const id of made) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
     writeFileSync(gate, "go\n");
@@ -202,7 +216,12 @@ test("the sidebar counts no agents: the row's chevron opens their tree, and the 
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(wrap.getByTestId("child-row")).toHaveCount(3);
     expect(await wrap.innerText()).not.toMatch(/\b\d+ agents?\b/);
-    await shootList(page, "state-dots-02-tree", lead);
+    // An agent's row is one line: what it does now, with its steps, time and cost, is its tooltip.
+    await expect(wrap.getByTestId("agent-now")).toHaveCount(0);
+    const working = wrap.getByTestId("child-session").filter({ hasText: "Hold lane one" });
+    await expect(working).toHaveAttribute("title", /^Hold lane one: Working.*\bstep\b/, { timeout: 30_000 });
+    for (const r of await wrap.getByTestId("child-row").all()) expect((await r.boundingBox())!.height, "an agent's row is one line").toBeLessThan(34);
+    await shootList(page, "state-dots-02-tree", lead, () => expect(row(page, lead).locator(".k-mark")).toHaveAttribute("data-bg", "agents", { timeout: 15_000 }));
     await toggle.click();
     await expect(wrap.getByTestId("child-row")).toHaveCount(0);
 
