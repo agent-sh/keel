@@ -811,7 +811,7 @@ function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign
   return { ask: { risk: "high", why: `${agent ? `An agent's write, to a remote of the repository it works in: ${what}` : what} ${why}`, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: hit.account ? say(hit.account) : "", ...(hit.account ? { mine: namespaceOf(hit.account) } : {}) } };
 }
 
-// The decision on a line whose program words are variables it gave a written-out value is the stricter of two: the
+// The decision on a line with variables it gave a written-out value is the stricter of two: the
 // line written out, which every rule judges exactly as if the owner had typed it (resolved-line.ts), and the line as
 // it is. An agent in a worktree of its own has no card to ask on, and its lines were refused for the word the rules
 // cannot read: there the written line's verdict stands in its place (the line as it is counts only when it refuses or
@@ -819,7 +819,7 @@ function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign
 // of a program hidden in a variable, which the card shows him, and gain the written line's findings besides.
 const SEVERITY = (d: Decision) => ("deny" in d ? 3 : "ask" in d ? (d.ask.risk === "high" ? 2 : 1) : 0);
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
-  const written = resolvedLine(command);
+  const written = interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter) ? resolvedLine(command) : null;
   if (written === null) return decideLine(command, f, cwd, interpreter);
   const beside = !!f.shared;
   const a = decideLine(command, f, cwd, interpreter, beside), b = decideLine(written, f, cwd, interpreter);

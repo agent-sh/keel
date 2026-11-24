@@ -105,3 +105,45 @@ test("a program path an agent's line set earlier is not refused", () => {
   // And never looser than the line as it is, there: the typed line's findings are added.
   expect(rank[verdicts("W=rm; $W -rf ~", false)[2]!]).toBeGreaterThanOrEqual(rank[verdicts("rm -rf ~", false)[2]!]!);
 });
+
+// A variable in an argument is written out as a program word is: the line is judged as typed, and a git word kept in a
+// variable no longer hides the branch or the push from the guard of the shared branches.
+test("a variable of an argument set to a literal earlier is judged as written out", () => {
+  for (const line of [
+    "W=git V=push; $W $V --force",
+    "W=git; V=push; $W $V --force",
+    "W=git; V=push; $W $V origin",
+    "W=git; V=branch; $W $V -D keel/agent-2",
+    "W=git; V=-D; $W branch $V keel/agent-2",
+    "W=git; V=git; $W $V push --force",
+    "V=branch; git $V -D keel/agent-2",
+    "V=-D; git branch $V keel/agent-2",
+    "V=push; git $V --force",
+    "V=/r/.git/refs; rm -rf $V",
+    "V=/r/.git/refs/heads/y; touch \"$V\"",
+  ]) {
+    const typed = resolvedLine(line);
+    expect([line, typed !== null]).toEqual([line, true]);
+    expect([line, verdicts(line)]).toEqual([line, verdicts(typed!)]);
+    // (In the owner's own sessions too: never looser than the typed line.)
+    const own = verdicts(line, false), ownTyped = verdicts(typed!, false);
+    expect([line, own.map((k, i) => rank[k]! >= rank[ownTyped[i]!]!)]).toEqual([line, modes.map(() => true)]);
+  }
+  // Not looser than main's own gap: the branch and the push are refused in an agent's worktree, in every mode.
+  for (const line of ["V=branch; git $V -D keel/agent-2", "W=git; V=push; $W $V --force"]) expect([line, verdicts(line).every((k) => k === "deny" || k === "ask-high")]).toEqual([line, true]);
+  // Written out only what is shown whole: a variable with a use that is not a word of its own is not written out, and a positional parameter keeps the refusal.
+  expect(resolvedLine("V=push; echo '$V'; git $V origin")).toBeNull();
+  for (const line of ["W=git; set -- branch -D keel/agent-2; $W \"$@\"", "W=git; set -- branch -D keel/agent-2; $W $1 $2 $3"]) {
+    expect([line, resolvedLine(line)]).toEqual([line, null]);
+    expect([line, verdicts(line).every((k) => k === "deny" || k === "ask-high")]).toEqual([line, true]);
+  }
+});
+
+test("a line of thousands of variables is written out in one pass", () => {
+  const line = Array.from({ length: 4000 }, (_, i) => `W${i}=echo; $W${i} hi`).join("; ");
+  const t = performance.now();
+  const out = resolvedLine(line);
+  expect(out).not.toBeNull();
+  expect(out!.includes("$W")).toBe(false);
+  expect(performance.now() - t).toBeLessThan(1000); // 4000 variables took 2.7 s when each was looked up in the whole line
+});
