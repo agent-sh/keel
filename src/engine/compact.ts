@@ -133,6 +133,26 @@ export function preparedHolds(lineage: readonly StoredEvent[], covered: string, 
   return !idle || lineage.slice(at + 1).every((e) => e.kind === "note" || e.kind === "turn_start" || e.kind === "turn_end");
 }
 
+// A summary prepared ahead is put in place only when the context it leaves fits:
+// the summary and every event after the one it covers up to (they follow it
+// verbatim) under the compaction line, and those events at most PREPARED_TAIL of
+// the line, so the next steps have room before the line comes again. A tool
+// result that came after the summary was prepared can make what follows it as
+// large as a context that needs compacting; a fresh summary of the whole
+// context then leaves far less, and the prepared one would bring a second
+// compaction within a few steps, or the turn to the window. OpenCode falls back
+// to a fresh summary when the conversation since the held one grew past about
+// 40% of its threshold (its compaction docs, PR 64290, 2026-11-16). Counted from
+// the bytes at the model's bytes a token, as a context no reply measured is.
+export const PREPARED_TAIL = 0.4;
+export function preparedFits(lineage: readonly StoredEvent[], data: Record<string, unknown>, model: string | undefined, limit: number): boolean {
+  const per = bytesPerToken(model);
+  const summary = { id: "\u0000prepared", kind: "compaction", data } as unknown as StoredEvent;
+  const after = contextTokens([...lineage, summary], model).used;
+  const own = Math.round(tailBytes(summary, per) / per);
+  return after < limit && after - own <= limit * PREPARED_TAIL;
+}
+
 // A summary may shorten the conversation but never change what a statement
 // means. Rules, constraints, decisions and requests are quoted, not retold
 // (summaries drop how-to-work rules and scope exclusions far more often than

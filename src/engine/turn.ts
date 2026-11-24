@@ -38,7 +38,7 @@ import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successo
 import { cleanTitle, firstReply, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { derived } from "../core/message-facts.ts";
-import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, fixedContext } from "./compact.ts";
+import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedFits, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, fixedContext } from "./compact.ts";
 import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
@@ -2569,7 +2569,7 @@ export class Engine {
           // One that fails while the context still fits is said, and the turn goes on whole.
           // (A context whose summary could not be written whole is not asked for again:
           // compactNow says so at once, with no request, and the turn says it once.)
-          if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st }).catch((e) => {
+          if (!this.applyPrepared(id, events, undefined, st)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st }).catch((e) => {
             if (signal.aborted || over) throw e;
             summaryFailed = true;
             const rec = this.errors.capture("provider", e, { session: id, at: "threshold compaction" });
@@ -2582,7 +2582,7 @@ export class Engine {
           if (this.least(events, st) >= st.info.context) throw Object.assign(new Error(`The context is still larger than ${st.info.name}'s window after compacting (about ${now} of ${st.info.context} tokens): switch to a model with a larger window, or start a new session.`), { status: 409, code: "context_over_window" });
         } else if (steps === 1 && (mark = followUpMark(events))?.way === "summary") {
           // A follow-up to a summary with none prepared (the owner's choice): written now, the message its focus.
-          if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "follow_up", focus: mark!.focus, signal, step: st }).catch((e) => {
+          if (!this.applyPrepared(id, events, undefined, st)) await this.compactNow(id, { auto: true, trigger: "follow_up", focus: mark!.focus, signal, step: st }).catch((e) => {
             if (signal.aborted) throw e;
             const rec = this.errors.capture("provider", e, { session: id, at: "follow-up summary" });
             this.append(id, "note", { kind: "compaction_failed", text: `The context was not summarized for the follow-up (${rec.message}); it goes on with it whole.` });
@@ -2590,7 +2590,7 @@ export class Engine {
           events = this.lineage(id);
         } else if (steps === 1 && mark?.way === "carry") {
           // A follow-up decided to go on in the whole context: no summary replaces it now.
-        } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events)) {
+        } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events, undefined, st)) {
           // Back after the cache expired: the summary written while idle (or
           // ahead) replaces the history instead of the history being written again.
           events = this.lineage(id);
@@ -2599,7 +2599,7 @@ export class Engine {
           // the steps go on, and put in place at the first step after it is
           // ready, the newest steps kept as they were (no tool result the model
           // has not answered yet is summarized away, and no step waits for it).
-          if (this.applyPrepared(id, events, priced)) events = this.lineage(id);
+          if (this.applyPrepared(id, events, priced, st)) events = this.lineage(id);
           else this.prepare(id, st, false);
         } else if (!summaryFailed && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
@@ -3113,7 +3113,7 @@ export class Engine {
     // Its wake compacts anyway, from a summary that holds: a warm cache would serve nothing.
     if (used >= limit) {
       const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(session.id);
-      if (have && preparedHolds(events, have.covered, false, JSON.parse(have.data))) return true;
+      if (have && preparedHolds(events, have.covered, false, JSON.parse(have.data)) && this.preparedFits(session.id, events, JSON.parse(have.data), st)) return true;
     }
     // A summary is a choice where idle compaction would make one: a long context worth summarizing.
     const summary = session.settings.idle_compact !== false && used >= idleMinTokens(limit) && worthSummarizing(summarizable(events)) && !this.summaryGaveUp(session.id, events, st, false);
@@ -3199,7 +3199,7 @@ export class Engine {
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
     if (!covered || !worthSummarizing(events) || this.summaryGaveUp(id, events, st, false) || this.summaryHeld(id, events, st)) return;
     const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
-    if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data))) return;
+    if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data)) && this.preparedFits(id, events, JSON.parse(have.data), st)) return;
     const abort = new AbortController();
     this.preparing.set(id, { abort, covered: covered.id });
     const session = this.store.session(id)!;
@@ -3309,6 +3309,17 @@ export class Engine {
     }
   }
 
+  // The context a prepared summary leaves fits under the compaction line with room for the next
+  // steps (src/engine/compact.ts preparedFits), on the model the session's next step uses.
+  private preparedFits(id: string, events: readonly StoredEvent[], data: Record<string, unknown>, st?: Step): boolean {
+    const session = this.store.session(id);
+    if (!session) return false;
+    const info = st?.info ?? this.providers.current().find((m) => m.id === session.model);
+    // A model not listed now: its window is unknown here, and the turn that reaches its line decides.
+    if (!info) return true;
+    return preparedFits(events, data, info.id, session.settings.compact_at ?? Math.floor(info.context * COMPACT_SHARE));
+  }
+
   private preparationHolds(id: string, covered: string, data?: { statements_done?: string[] }): boolean {
     const s = this.store.session(id);
     return !!s && !s.archived && !this.draining && preparedHolds(this.lineage(id), covered, false, data);
@@ -3333,7 +3344,7 @@ export class Engine {
   // The prepared summary as a checkpoint, when it covers part of this branch
   // after its last checkpoint. The events since stay verbatim after it.
   // `price`: put in place by compaction by price, which says so with what it priced.
-  private applyPrepared(id: string, events: readonly StoredEvent[], price?: NonNullable<ReturnType<Engine["priced"]>>): boolean {
+  private applyPrepared(id: string, events: readonly StoredEvent[], price?: NonNullable<ReturnType<Engine["priced"]>>, st?: Step): boolean {
     const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (!row) return false;
     const data = JSON.parse(row.data);
@@ -3342,6 +3353,12 @@ export class Engine {
       // Written for another branch: kept for when that branch is shown again.
       // One this branch has passed (a checkpoint came after it) serves no more.
       if (events.some((e) => e.id === row.covered) || !this.store.event(row.covered)) this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
+      return false;
+    }
+    // What came after it outgrew it (preparedFits): it serves no more on this branch, whose history
+    // after it only grows, and a fresh summary is written in its place (the caller's, or prepared ahead).
+    if (!this.preparedFits(id, events, data, st)) {
+      this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
       return false;
     }
     this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
@@ -3396,7 +3413,7 @@ export class Engine {
     const capsule = { ...timed(() => "making a follow-up's capsule (its kept messages and trail)", () => checkpointData(events, text, this.wordsBudget(st), story)), capsule: true };
     const capBytes = messagesBytes([summaryMessage(capsule)], model);
     const prepared = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
-    const ready = prepared && preparedHolds(events, prepared.covered, false, JSON.parse(prepared.data)) ? JSON.parse(prepared.data) : undefined;
+    const ready = prepared && preparedHolds(events, prepared.covered, false, JSON.parse(prepared.data)) && this.preparedFits(id, events, JSON.parse(prepared.data), st) ? JSON.parse(prepared.data) : undefined;
     // What the message names that the context holds and the capsule leaves out, and what a fresh start reads again.
     const { missing, reread } = timed(() => "weighing a follow-up's fresh start (what it names, what it reads again)", () => {
       const span = events.slice(cp.keepFrom);
@@ -3415,7 +3432,7 @@ export class Engine {
       void this.compacted(session, ev);
       return plan;
     }
-    if (plan.way === "summary" && this.applyPrepared(id, events)) return plan;
+    if (plan.way === "summary" && this.applyPrepared(id, events, undefined, st)) return plan;
     return { ...plan, mark: plan.way };
   }
 
