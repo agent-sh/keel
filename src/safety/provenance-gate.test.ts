@@ -1,4 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
+import { learner } from "./public-send.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +37,8 @@ const rig = (mode: Mode = "full-auto") => {
   if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
   store.migrate("CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, parent_id TEXT, session_id TEXT)");
   g.webUse = webUse;
+  // These tests are about where a send goes, not what it says: no repository is asked or read for private words.
+  g.publicSend = { visibility: async () => "private", words: learner(store) };
   const ws = mkdtempSync(join(tmp(), "prov-ws-"));
   const session = (parent?: Session, dir = ws): Session => {
     const s = store.createSession({ model: "m", workspace: dir });

@@ -82,7 +82,7 @@ const FROM_PARENT = "Message from the session that started you:\n";
 
 export type Asked = { owner: string[]; task?: string; parent?: string[] };
 
-const ownerWords = (e: StoredEvent) => !(e.data.kind || NOT_OWNER.has(e.data.origin) || String(e.data.text).startsWith("[harness]"));
+export const ownerWords = (e: StoredEvent) => !(e.data.kind || NOT_OWNER.has(e.data.origin) || String(e.data.text).startsWith("[harness]"));
 const rootOf = (store: Store, sessionId: string) => {
   let root = store.session(sessionId);
   for (let i = 0; root?.parent_id && i < 32; i++) root = store.session(root.parent_id) ?? undefined;

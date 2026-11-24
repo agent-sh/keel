@@ -129,7 +129,7 @@ export const setOf = (set: readonly string[] | undefined, name: string): string 
 const lateWhy = (what: string) => `the rules could not read ${what}`;
 
 // The remote a bare `git push` goes to, as git picks it.
-function pushRemote(r: Remotes): string {
+export function pushRemote(r: Remotes): string {
   const pick = (n: string | undefined) => (n && (n in r.push || n in r.fetch) ? n : undefined);
   return pick(r.branchPushRemote) ?? pick(r.pushDefault) ?? pick(r.branchRemote) ?? "origin";
 }

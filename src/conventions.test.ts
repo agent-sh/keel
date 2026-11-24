@@ -48,7 +48,7 @@ test("git is run through src/core/git.ts", () => {
   for (const f of scripts) expect([relative(ROOT, f), /\bGIT_SHELL_ENV\b/.test(readFileSync(f, "utf8"))]).toEqual([relative(ROOT, f), true]);
   // gh runs git by itself: every spawn of it gets the helper's environment.
   const gh = src.filter((f) => /["'`]gh["'`]\s*,\s*["'`](pr|repo|auth|api|issue|run|release|workflow)["'`]|KEEL_GH_BIN[^\n]*,\s*["'`](pr|repo|auth|api)["'`]|\[gh,\s*["'`]/.test(readFileSync(f, "utf8")));
-  expect(gh.map((f) => relative(ROOT, f)).sort()).toEqual(["src/automation/waits.ts", "src/mcp/connectors.ts", "src/prreview/github.ts", "src/worktree/manager.ts"]);
+  expect(gh.map((f) => relative(ROOT, f)).sort()).toEqual(["src/automation/waits.ts", "src/mcp/connectors.ts", "src/prreview/github.ts", "src/safety/public-send.ts", "src/worktree/manager.ts"]);
   for (const f of gh) expect([relative(ROOT, f), /\bgitEnv\(/.test(readFileSync(f, "utf8"))]).toEqual([relative(ROOT, f), true]);
 });
 

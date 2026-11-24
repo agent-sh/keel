@@ -17,6 +17,7 @@ import { bornDuring, endedWell, worktreesAdded } from "./made-places.ts";
 import { fitsAsPlace, namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
 import { lookRepo, readRepo, repoContext } from "./repofacts.ts";
 import { accountNames } from "./account-settings.ts";
+import { askVisibility, held as publicHeld, heldRefusal, heldWhy, learner, type Deps as PublicDeps, type Held } from "./public-send.ts";
 import { looking, type Looked } from "./looked.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
@@ -1819,6 +1820,18 @@ export class Gate {
     if (checkShell && (cls.kind !== "shell" || !shell || shell.command !== cls.command || !dir))
       return { deny: 'Refused: Auto cannot verify this shell invocation. Use a supported local non-login Bash command (for exec_command, shell: "bash" and login: false), or use Ask.' };
     const invocation = dir && shell ? { ...dir, interpreter: shell.interpreter } : undefined;
+    // What goes to a public place under the owner's name holds no private word (src/safety/public-send.ts): in every
+    // mode, full auto and a hook's or a grant's allow included. The owner's card quotes what was found; an agent is
+    // refused with the same words.
+    let words: Held | null = null;
+    if (cls.kind === "shell" && !session.machine && /\b(push|gh)\b/.test(cls.command)) {
+      words = await this.privateWords(session, cls.command, cwdOf(call) ?? call.ctx.cwd);
+      if (words) {
+        if (session.parent_id) return { deny: heldRefusal(words) };
+        const out = await this.askOnce(session, call, name, heldWhy(words));
+        if (out) return out;
+      }
+    }
     // The owner decides what goes to a target outside content named (in every mode, a hook's or a grant's allow
     // included): their card says where it came from. An agent is refused, and says why to its parent.
     if (provHeld.hits.length) {
@@ -1831,6 +1844,8 @@ export class Gate {
       this.provenance.clear(provHeld.ids, provHeld.hits);
       return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     }
+    // (The owner answered for the words: what else the call asks, an account beyond his, is still asked.)
+    if (words && !("ask" in d && d.ask.ownerOnly)) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     if (cls.kind === "control") return { cls };
     if (mode !== "auto" && cls.kind === "shell" && call.tool.answeredBefore && this.takeAnswered(session.id, cls.command)) return { cls };
@@ -1874,6 +1889,19 @@ export class Gate {
       }
     }
     return (await this.card(session, call, name, cls, summary, { ...d.ask, notice: notice ?? d.ask.notice, bind: target?.source, cut })) ?? { cls };
+  }
+
+  // The private words a command sends to a public place, or null: none, a private repository, or a check that could
+  // not run (the rules then stand as they were; the error is not the call's).
+  publicSend?: PublicDeps;
+  private async privateWords(session: Session, command: string, cwd: string): Promise<Held | null> {
+    try {
+      this.publicSend ??= { visibility: askVisibility, words: learner(this.store) };
+      return await publicHeld(command, cwd, this.publicSend, session.id);
+    } catch (e) {
+      console.error(`public send check failed: ${(e as Error).message}`);
+      return null;
+    }
   }
 
   // `asJudged`: what the gate made of the call's class when it judged it (a fetch judged as a send), made again of the class now.

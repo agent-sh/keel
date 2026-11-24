@@ -352,6 +352,20 @@ under `~/.cache/keel-work/bun/research/`.
   A message whose session can no longer read it
   (deleted, archived, the row removed) is told to its sender as a failure in
   its scope (`src/automation/undelivered.ts`), never dropped in silence.
+- Text bound for a public place under the owner's name is read for private words before it leaves
+  (`src/safety/public-send.ts`, the words in `private-words.ts`): the commits a `git push` sends (messages, authors,
+  file names, branch and tag names, added lines), what a commit made on the same command line will hold (its `-m`/`-F`
+  messages, the index and working tree against HEAD), and the text of the `gh` writes that publish (pr, issue, release,
+  gist when public, repo edit, api, with a body file the line writes itself). Public is asked of the remote (`gh repo
+  view`, else an anonymous `git ls-remote`, kept ten minutes, each probe cut at its end with its process group); a
+  private repository is not read. Private is learned: sentences the owner typed in the session, the fleet's machines,
+  ssh aliases, folders his sessions work in (live ones whose repository is not public, never the repository the text
+  goes to), his home path, vault values and token shapes, and the `private.terms` setting; his login, his accounts'
+  owners and a URL's owner place are never private, and a short or common word is not found inside a longer name written
+  with `-`, `_` or `.`. What could not be read (a failed or cut log, a missing body file, a text past the limit) holds
+  the call too, with what was not read. The text is scanned in slices with the loop free between. A hit holds the call
+  in every mode, full auto included (as the provenance rule does): the owner's card quotes it and allows once, an agent
+  is refused with the same words.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files
