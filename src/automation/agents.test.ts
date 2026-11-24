@@ -118,6 +118,29 @@ test("an agent that messages the session that started it is told that its report
   await settled();
 });
 
+test("an agent's task and its parent's messages carry the owner's word only when the sender's turn held it", async () => {
+  const eng = engine as { byOwner?: (id: string) => boolean };
+  const owners = new Set<string>();
+  eng.byOwner = (id) => owners.has(id);
+  try {
+    const task = (a: agents.AgentRecord) => store.events(a.session_id).find((e) => e.kind === "user" && e.data.kind === "task")!.data.owned;
+    const unowned = await spawn();
+    owners.add(parent.id);
+    const owned = await spawn();
+    expect([task(unowned), task(owned)]).toEqual([undefined, true]);
+    // A message of the parent's: the parent's turn decides, not the agent's task.
+    owners.delete(parent.id);
+    await agents.send(unowned.id, "go on");
+    owners.add(parent.id);
+    await agents.send(unowned.id, "and this");
+    const steers = store.events(unowned.session_id).filter((e) => e.kind === "user" && e.data.kind === "steer").map((e) => e.data.owned);
+    expect(steers).toEqual([undefined, true]);
+    end(unowned, "end_turn");
+    end(owned, "end_turn");
+    await settled();
+  } finally { delete eng.byOwner; }
+});
+
 test("a spawn names Codex's built-in roles as Keel's types, and a definition of that name goes first", async () => {
   // (The built-ins alone: a machine's own agent files may hold any name.)
   const builtIn = agents.definitions(dir).filter((d) => d.source === "built-in");

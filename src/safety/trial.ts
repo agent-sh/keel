@@ -67,6 +67,7 @@ const BEFORE: [RegExp, string][] = [
   [/^Refused: this session's folder is not the folder the session was made in/, "folder moved"],
   [/^Refused: this session reviews another person's code/, "review tools only"],
   [/^Refused: authorization or the action changed/, "changed while pending"],
+  [/no message of the owner's is in this turn/, "a turn nobody started"],
   [/^Refused: Auto cannot|^Refused: the complete action does not fit in (?:Auto|the judge's) review/, "review limits"],
   [/^The reviewer refused this call/, "the reviewer"],
   [/^Refused: it sends to a target that came from outside content/, "outside content"],
@@ -139,7 +140,7 @@ export const CALLS_MAX = 500;
 export const CAUSE_CALLS = 20;
 export const LIMITS = [
   "The judge and the reviewer are models: a call they would review counts as asked, and what they would say is not guessed.",
-  "Hooks, an agent's write scope, outside-content holds and the network switch are checks beside the rules: calls they refused are counted apart.",
+  "Hooks, an agent's write scope, outside-content holds, the network switch and the limit of a turn nobody started are checks beside the rules: calls they refused are counted apart.",
   "What the disk said of a call is read from its stored record; calls stored before that record was kept are judged by their names, with the disk's lasting answers (git remotes, manifests) read now.",
 ];
 

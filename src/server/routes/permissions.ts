@@ -53,6 +53,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   const needs = (req: Request, action: string) => (pk.allows(req, action) ? null : json({ error: "this needs your passkey from a remote device", presence: { action } }, 428));
   g.judge = makeJudge(store, deps.providers, () => g.setting("reviewer_model"), () => g.setting("reviewer_policy"));
   g.webUse = webUse;
+  g.byOwner = (id) => deps.engine.byOwner(id);
   // The gate's reads of a session's stored words (the folders named as its own) run on the read thread.
   g.readSql = (sql, params) => readsOf(store).sql(sql, params);
   const sb = sandboxStatus();

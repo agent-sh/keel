@@ -13,6 +13,7 @@ import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
+import { unstartedAct, unstartedWhy } from "./unstarted.ts";
 import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains, homeDir } from "../core/paths.ts";
 import { RESERVED } from "../mcp/config.ts";
@@ -554,6 +555,10 @@ export type Facts = {
   // For an agent in a worktree Keel made for it: the checkouts it shares its branches with. A command that moves
   // one of their branches is refused in every mode (shared-branches.ts). The owner's own sessions have none.
   shared?: Shared;
+  // Whether the owner's own words are in the turn that runs the call (a loop run, a wake, a monitor's batch, a watch
+  // or an agent's report started it when they are not): asked only when a command could merge, approve or force-push.
+  // Without it nothing is limited.
+  byOwner?: () => boolean;
 };
 
 // The class of a command that asks to run outside the sandbox.
@@ -850,6 +855,11 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   // An agent in a worktree Keel made for it changes its own branch only, in every mode, Full auto included.
   // (A program of another language is not read as a shell line: the hook holds what git it starts, ref-guard.ts.)
   if (f.shared && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) { const why = sharedRefusal(command, cwd, home, f.shared, 0, resolved); if (why) return { deny: sharedMessage(why, f.shared) }; }
+  // A turn nobody started merges, approves and force-pushes nothing, in any mode (unstarted.ts).
+  if (f.byOwner && parts && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) {
+    const act = unstartedAct(parts);
+    if (act && !f.byOwner()) return { deny: unstartedWhy(act) };
+  }
   const worst = f.mode === "read-only" ? null : parts ? neverAllowed(parts, cwd, home) : neverAllowedText(command, home);
   const shellRules = f.rules.filter((r) => r.kind === "shell");
   // A standing rule of the owner's that names this command and does not cover it: the card says so.

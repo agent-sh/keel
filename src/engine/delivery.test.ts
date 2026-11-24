@@ -865,3 +865,17 @@ test("a queued prompt taken by the continued turn's first request leaves no star
   expect(b.store.queue(s.id)).toEqual([]);
   expect(owed(b)).toBe(0);
 });
+
+// An agent acts for the owner's words when the turn that started it, or sent it a message, held them.
+test("an agent's task counts as the owner's only when the parent's turn held the owner's words", () => {
+  const { store, engine, session } = rig(scratch("by-owner-agent"));
+  const agent = (...events: Record<string, unknown>[]) => { const s = session(); for (const e of events) store.append(s.id, "user", e); store.append(s.id, "turn_start", {}); return s.id; };
+  expect(engine.byOwner(agent({ text: "do it", kind: "task", owned: true }))).toBe(true);
+  expect(engine.byOwner(agent({ text: "do it", kind: "task" }))).toBe(false);
+  // Owner words copied in front of the task (a forked history) are not the task's.
+  expect(engine.byOwner(agent({ text: "earlier", origin: undefined }, { text: "do it", kind: "task" }))).toBe(false);
+  // A message of the parent's or the owner's after an unowned task.
+  expect(engine.byOwner(agent({ text: "do it", kind: "task" }, { text: "go on", kind: "steer", owned: true }))).toBe(true);
+  expect(engine.byOwner(agent({ text: "do it", kind: "task" }, { text: "go on", kind: "steer" }))).toBe(false);
+  expect(engine.byOwner(agent({ text: "do it", kind: "task" }, { text: "mine" }))).toBe(true);
+});

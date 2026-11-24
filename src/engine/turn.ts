@@ -945,7 +945,9 @@ export class Engine {
   }
 
   // The turn that runs was started, or steered into, by the owner's own words (not a loop, a wake,
-  // a report or an agent): read back from the end to the last turn's end.
+  // a report or an agent): read back from the end to the last turn's end. An agent's task and the
+  // messages its parent sent it carry `owned` when the parent's turn was the owner's (src/automation/agents.ts):
+  // that is the owner's word reaching the agent, and what stands before the task (a forked history) is not.
   byOwner(id: string): boolean {
     const line = this.lineage(id);
     // A turn a restart cut and the continued one are one turn: past the restart message the
@@ -958,7 +960,8 @@ export class Engine {
         return false;
       }
       if (e.kind === "user" && e.data.origin === "restart") continued = true;
-      if (e.kind === "user" && ownerPrompt(e.data)) return true;
+      if (e.kind === "user" && (ownerPrompt(e.data) || e.data.owned === true)) return true;
+      if (e.kind === "user" && e.data.kind === "task") return false;
     }
     return false;
   }

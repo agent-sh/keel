@@ -54,7 +54,9 @@ describe("the rule modules a trial replays", () => {
       // is made in any of the three, so the replay has nothing of them to run.
       // env-secret.ts is the sandbox view's rule of which variable names and values hold a secret: it hides them from a
       // command's environment and decides no call.
-      "ref-guard.ts", "sandbox-view.ts", "sandbox-scope.ts", "env-secret.ts"]);
+      // unstarted.ts reads a line for the acts a turn nobody started may not do; the replay has no record of who started
+      // the turn (the gate asks the engine), so it runs none of it and counts such refusals apart (trial.ts, BEFORE).
+      "ref-guard.ts", "sandbox-view.ts", "sandbox-scope.ts", "env-secret.ts", "unstarted.ts"]);
     expect(policy.filter((f) => !listed.has(f) && !helpers.has(f))).toEqual([]);
   });
 

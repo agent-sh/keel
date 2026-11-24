@@ -753,6 +753,9 @@ export class Gate {
     this.trees.set(sessionId, { at: Date.now(), list });
     return list;
   }
+  // Whether the owner's own words are in the session's running turn (Engine.byOwner, given by the routes). Without it
+  // no turn is held to be one nobody started.
+  byOwner?: (sessionId: string) => boolean;
   // A read of the store off the loop (the permission routes give the read thread; a test reads on the loop).
   readSql: (sql: string, params: (string | number | null)[]) => Promise<unknown[]> = async (sql, params) => this.store.db.query(sql).all(...params);
   // The folders that are a session's own (own-places.ts), read at most every 30 seconds per session: its folder,
@@ -1353,6 +1356,8 @@ export class Gate {
       // An agent reads none. (A session on another machine is judged by the names and the home's stores alone.)
       ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: this.look(cls, facts?.looked) }),
       ...(session.parent_id ? { agent: true as const } : {}),
+      // Whether the owner's words are in the turn (a turn nobody started merges and force-pushes nothing: unstarted.ts).
+      ...(cls.kind === "shell" && this.byOwner ? { byOwner: () => this.byOwner!(session.id) } : {}),
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
       // (A command that runs in the sandbox: what its sandbox shows it, read as the file tools' own view of it.)
       ...(() => { const confinedShown = this.confinedView(session, cls, p, workspace); return confinedShown ? { confinedShown } : {}; })(),

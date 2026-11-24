@@ -12,6 +12,7 @@ import { proofFor } from "../checks/proof.ts";
 import { beforeLine } from "../checks/before.ts";
 import * as beforeRun from "../checks/before-run.ts";
 import { awaited, beingStopped, listens, sampleServing, unfinished } from "../tools/jobs.ts";
+import { ownerPrompt } from "../core/owner.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, movePending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, whenPartsGo, withdraw } from "./core.ts";
@@ -1091,6 +1092,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const speed = askedOffer ? askedOffer.id : inheritedSpeed ? speedOffer(info, inheritedSpeed)?.id : undefined;
   const title = agentTitle(input);
   const id = Bun.randomUUIDv7().slice(-12);
+  // Whether the owner's own words are in the turn that starts it: the agent acts for them (what the gate refuses a turn nobody started).
+  const owned = byOwner(parentId);
   const mode = modeOfChild(parentId, def);
   const wantWorktree = wantsWorktree(def, input, mode);
   const placed = input.machine || parent.machine
@@ -1198,7 +1201,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   store.db.query(
     "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes, reviews, api) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
-    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null, scope.json, reviews, input.api === "read" ? "read" : null);
+    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length, ...(owned ? { owned: true } : {}) })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null, scope.json, reviews, input.api === "read" ? "read" : null);
   release(); // the persisted running row now occupies the slot
   // The repositories it may change, as they are before its first step: what it makes there is told at its end.
   if (!placed) await leftovers.before(store, id, [child.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: id }));
@@ -1360,6 +1363,9 @@ export function spawnNotes(id: string): string {
   return notCarried(id) + (s ? `\n\n${s}` : "") + takeEarlier(id);
 }
 
+// Whether the owner's own words are in a session's running turn (a stand-in engine that does not say: no).
+const byOwner = (id: string): boolean => D().engine.byOwner?.(id) ?? false;
+
 // The agent's first prompt goes into its session, once: from the start that
 // stored it, or from the next daemon when that one stopped first. False when
 // there was nothing left to send.
@@ -1372,10 +1378,10 @@ function sendTask(a: AgentRecord): boolean {
   const there = store.events(a.session_id).find((e) => e.kind === "user" && e.data.kind === "task" && e.data.agent_id === a.id);
   if (there && a.first_seq !== there.seq - 1) update(a.id, { first_seq: there.seq - 1 });
   if (!there) {
-    const { text, task_at } = JSON.parse(row.task) as { text: string; task_at: number };
+    const { text, task_at, owned } = JSON.parse(row.task) as { text: string; task_at: number; owned?: true };
     // traceparent: the spawn call's span, so the child's turns trace under it.
     const context = a.call_id ? spawnContext(store, a.parent_id, a.call_id) : null;
-    const ev = engine.send(a.session_id, text, { meta: { kind: "task", agent_id: a.id, task_at, ...(context ? { traceparent: context } : {}) } }).event!;
+    const ev = engine.send(a.session_id, text, { meta: { kind: "task", agent_id: a.id, task_at, ...(owned ? { owned: true as const } : {}), ...(context ? { traceparent: context } : {}) } }).event!;
     update(a.id, { first_seq: ev.seq - 1 });
   }
   store.db.query("UPDATE agents SET task = NULL WHERE id = ?").run(a.id);
@@ -2441,6 +2447,8 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   await leftovers.settle({ store, isRunning: (sid) => engine.isRunning(sid) }, { ...a, report: reportId(a) }).catch((e) => capture(e, { at: "agent successor leftovers", agent: a.id }));
   loopsEnded(a.session_id);
   await leftovers.before(store, a.id, [old.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: a.id }));
+  // The task goes on for the owner when the lost context had their word in it.
+  const handed = got.events.some((e) => e.kind === "user" && (e.data.owned === true || ownerPrompt(e.data)));
   const settings = { ...old.settings };
   if (model !== a.model && settings.effort && !(await providers.resolve(model)).info.efforts.includes(String(settings.effort))) delete settings.effort;
   // (The first loss keeps the task as the first context got it; each keeps the messages its context was sent.)
@@ -2456,7 +2464,7 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
     // The worktree goes with the work: the new session holds it, the old one keeps its history.
     if (a.worktree) store.db.query("UPDATE worktrees SET session_id = ? WHERE session_id = ?").run(c.id, a.session_id);
     // (task_at: the capsule is what the page shows as its task.)
-    store.db.query("UPDATE agents SET task = ? WHERE id = ?").run(JSON.stringify(store.redact(c.id, "user", { text, task_at: text.length - capsule.length })), a.id);
+    store.db.query("UPDATE agents SET task = ? WHERE id = ?").run(JSON.stringify(store.redact(c.id, "user", { text, task_at: text.length - capsule.length, ...(handed ? { owned: true } : {}) })), a.id);
     update(a.id, { session_id: c.id, model, first_seq: 0, tasks: a.tasks + 1, result: null, lost: [...lost, entry], start: null, end_reason: null, stopped_by: null }, true);
     // The agents the lost context started that still work go with the task, as its worktree does: the successor
     // holds the task, so their reports come to it and the agent's stop reaches them (stopBelow reads the agent's
@@ -2614,7 +2622,9 @@ export async function send(id: string, message: string, interrupt = false, key?:
   const text = harness ? message
     : peer ? `Message from agent "${attr(peer.title)}" (${peer.id}), another agent of your session's tree:\n${message}`
     : `Message from the session that started you:\n${message}`;
-  const meta = harness ? { kind: harness, agent_id: id } : { kind: "steer", agent_id: id, ...(peer ? { from_agent: peer.id } : {}) };
+  // A message of its parent's or a peer's carries the owner's word when the sender's turn does (src/engine/turn.ts, byOwner).
+  const owned = !harness && byOwner(peer ? peer.session_id : a.parent_id);
+  const meta = harness ? { kind: harness, agent_id: id } : { kind: "steer", agent_id: id, ...(peer ? { from_agent: peer.id } : {}), ...(owned ? { owned: true as const } : {}) };
   const opts = { key, fp: key ? Bun.hash(message).toString(36) : undefined, releases: peer || harness ? [] : OWN_HOLDS };
   const sent = (r: Sent): MessageSent => ({ agent: get(id)!, waits: !!r.queued, ...(r.held ? { held: true, held_by: engine.heldBy(a!.session_id) ?? null } : {}), ...(r.duplicate ? { duplicate: true } : {}) });
   // The owner stopped it: nothing is made ready and nothing starts. A turn
