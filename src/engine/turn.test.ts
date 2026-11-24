@@ -780,6 +780,36 @@ test("a settled tool call leaves no abort listener on the turn's signal", async 
   }
 });
 
+// A call that names no offered tool by its own name: one that differs by case or is the same job's name
+// in another harness runs as the offered tool and its result says so once; any other is told the nearest
+// names. The call the model wrote is not touched.
+test("a call named by case or by another harness's name runs as the offered tool, once said", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "resolve-"));
+  const store = new Store(dir);
+  const s = store.createSession({ title: "Fixture", model: "x:y", workspace: dir });
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  const ran: unknown[] = [];
+  const tools = [{ name: "Bash", description: "", input_schema: { type: "object", required: ["command"] }, readOnly: true, run: async (input: any) => (ran.push(input), { content: "out" }) }] as any;
+  const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
+  try {
+    const call = (id: string, name: string, input: any) => (engine as any).runTool(s, tools, { type: "tool_use", id, name, input }, ctx);
+    const a = await call("a", "bash", { command: "ls" });
+    expect(a.is_error).toBeUndefined();
+    expect(a.content).toBe("out\n\n(There is no tool named bash; ran as Bash, the name of the tool here. Call it Bash.)");
+    expect(ran).toEqual([{ command: "ls" }]);
+    const b = await call("b", "exec_command", { cmd: "ls" });
+    expect([b.is_error, b.content]).toEqual([true, "No tool named exec_command. The nearest tools offered: Bash."]);
+    expect(ran.length).toBe(1);
+  } finally {
+    store.db.close();
+  }
+});
+
 // What a gate adds to a call's process environment (an agent's guard settings) ends with the call, also when the
 // call starts no process: a tool that ran no command, one that threw, a later gate's refusal. It is the session's:
 // another session's call of the same id neither gets it nor loses its own.

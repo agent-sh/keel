@@ -33,6 +33,7 @@ import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
+import { closestNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
 import { isDeferError, keepReferenced, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
 import { allHooks, cacheBreaks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
@@ -2875,7 +2876,17 @@ export class Engine {
     const tool = tools.find((t) => t.name === u.name);
     // A tool an upgrade took away while the session ran says so: the model called it before.
     if (!tool) {
-      const none: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: this.pins.removed(session.id, u.name) ? `${u.name} was removed by an upgrade of Keel and is no longer available. Use the tools you have now.` : noSuchTool(u.name) + (await unknownToolHint(u.name, tools, session.id).catch(() => "")), is_error: true };
+      // A name that is another tool's by case or as its job's alias in another harness runs as that
+      // tool (the stored call keeps the name the model wrote), and its result says so once.
+      const removed = this.pins.removed(session.id, u.name);
+      const found = removed ? undefined : resolveToolName(u.name, tools, u.input);
+      if (found && "as" in found) {
+        const r = await this.runTool(session, tools, { ...u, name: found.as.name }, ctx);
+        const note = resolvedNote(u.name, found.as.name);
+        r.content = typeof r.content === "string" ? `${r.content}\n\n${note}` : [...r.content, { type: "text", text: note }];
+        return r;
+      }
+      const none: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: removed ? `${u.name} was removed by an upgrade of Keel and is no longer available. Use the tools you have now.` : noSuchTool(u.name) + (await unknownToolHint(u.name, tools, session.id).catch(() => "")) + closestNote(found && "near" in found ? found.near : []), is_error: true };
       // A failed call like any other: it has its span and its row in the tools
       // table under the name the model gave, and the turn counts it.
       this.measure(session.id, (h) => h.toolRan?.(session, { id: u.id, tool: { name: u.name, description: "", input_schema: {}, readOnly: true, run: async () => none } as Tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id } }, none, { ms: 0, outcome: "error" }));

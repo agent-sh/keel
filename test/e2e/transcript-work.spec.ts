@@ -892,7 +892,7 @@ test("a program's calls stand under its line and mark it, after a reload too", a
   const noTool = page.locator('[data-testid="tool-call"][data-tool="exec_command"]');
   await expect(noTool.locator(".k-line-verb")).toHaveText("Run");
   await expect(noTool.getByTestId("call-state")).toHaveText("no such tool");
-  await expect(noTool.getByTestId("tool-why")).toHaveText("No tool named exec_command.");
+  await expect(noTool.getByTestId("tool-why")).toHaveText(/^No tool named exec_command\./);
   const waited = page.locator('[data-testid="tool-call"][data-tool="wait_agent"]');
   console.log("WAIT_AGENT", JSON.stringify(await waited.locator(".k-line-text").textContent()));
   await bring(page, '[data-testid="tool-call"][data-tool="run_code"]', 1, 80);
