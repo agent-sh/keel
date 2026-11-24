@@ -738,5 +738,44 @@ for (const size of SIZES) {
       expect(await phoneProblems(page.getByTestId("settings-scroll")), "alerts section, each kind").toEqual([]);
       await shoot(page, `phone-surfaces-20-alerts-${size.width}`);
     });
+    test("the model picker keeps every control of a row inside the row, and an ACP agent's models are folded to its row", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const base = ((await (await request.get("/api/models")).json()).models as any[]).find((m) => m.id === STAND_IN);
+      const LONG = "opengateway/z-ai/glm-5.4-extended-context-instruct-preview-quantized";
+      const acp = (model: string, name: string) => ({ ...base, id: `acp:${model}`, provider: "acp", model, name, billing: "subscription", price: undefined, context: model.length % 3 ? 1_000_000 : 200_000 });
+      const agents = [acp("opencode", "OpenCode"), ...Array.from({ length: 12 }, (_, i) => acp(`opencode/${LONG}-${i}`, `OpenCode: ${LONG}-${i}`)), acp("codex", "Codex"), ...["a", "b"].map((x) => acp(`codex/gpt-${x}`, `Codex: gpt-${x}`))];
+      await page.route(/\/api\/models(\?.*)?$/, async (route) => { const res = await route.fetch(); const body = await res.json(); await route.fulfill({ response: res, json: { ...body, models: [...body.models, ...agents] } }); });
+      const id = await start(request, "Phone picker");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: "Say hello." } });
+        await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        await page.goto(`/s/${id}`);
+        const pane = page.getByRole("region", { name: /^Phone picker, / });
+        await pane.getByRole("button", { name: "Show the model and tools" }).tap();
+        await pane.getByTestId("model-picker").tap();
+        const popup = page.getByTestId("model-popup");
+        await expect(popup).toBeVisible();
+        await expect(popup.getByTestId("model-option").first()).toBeVisible();
+        // The agent's models are one row with a count until it is opened.
+        const open = popup.locator('[data-group="agent:opencode"]');
+        await expect(open.getByTestId("model-option")).toHaveCount(1);
+        await expect(open.getByTestId("agent-toggle")).toHaveText(/^1\d models$/);
+        // No control of a row stands outside it (a row's columns wrap to the lines under its name).
+        const spill = () => popup.getByTestId("model-option").evaluateAll((rows) => rows.flatMap((r) => {
+          const b = r.getBoundingClientRect();
+          return [...r.querySelectorAll<HTMLElement>("*")].filter((c) => { const x = c.getBoundingClientRect(); return x.width > 0 && (x.right > b.right + 0.5 || x.left < b.left - 0.5); }).map((c) => `${(r as HTMLElement).dataset.model}: ${c.dataset.testid ?? c.tagName}`);
+        }));
+        expect(await spill(), "parts of a row outside it").toEqual([]);
+        await shoot(page, `phone-surfaces-21-picker-${size.width}`);
+        await open.getByTestId("agent-toggle").tap();
+        await expect.poll(() => open.getByTestId("model-option").count()).toBeGreaterThan(12);
+        expect(await spill(), "parts of a row outside it, the agent open").toEqual([]);
+        expect(await small(popup.getByTestId("model-option").first()), "a row's own controls are finger targets").toEqual([]);
+        await shoot(page, `phone-surfaces-22-picker-agents-${size.width}`);
+      } finally {
+        await page.unroute(/\/api\/models(\?.*)?$/);
+        await drop(request, id);
+      }
+    });
   });
 }

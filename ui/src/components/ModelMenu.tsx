@@ -357,6 +357,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                                   label={pinned.includes(item.value) ? "Remove from favorites" : "Add to favorites"}
                                   on={pinned.includes(item.value)}
                                   testid="pin-model"
+                                  className="picker-narrow:ml-auto"
                                   onPress={() => togglePin(item)}
                                 >
                                   <Star className={cn("size-3", pinned.includes(item.value) && "fill-current text-brass")} />
@@ -445,12 +446,12 @@ const NARROW = {
   row: "picker-narrow:flex picker-narrow:flex-wrap picker-narrow:gap-x-1.5 picker-narrow:gap-y-0.5 picker-narrow:py-1.5 picker-narrow:pl-8",
   mark: "picker-narrow:absolute picker-narrow:left-2 picker-narrow:top-2",
   apart: "picker-narrow:contents",
-  tail: "picker-narrow:flex picker-narrow:min-h-7 picker-narrow:flex-[1_0_auto] picker-narrow:items-center picker-narrow:gap-1",
+  tail: "picker-narrow:flex picker-narrow:min-h-7 picker-narrow:max-w-full picker-narrow:flex-[1_0_auto] picker-narrow:flex-wrap picker-narrow:items-center picker-narrow:gap-1",
   name: "picker-narrow:max-w-none picker-narrow:basis-full picker-narrow:overflow-visible picker-narrow:whitespace-normal picker-narrow:[overflow-wrap:anywhere]",
   wrap: "picker-narrow:min-w-0 picker-narrow:shrink picker-narrow:whitespace-normal picker-narrow:[overflow-wrap:anywhere]",
   facts: "picker-narrow:order-first picker-narrow:flex picker-narrow:items-center picker-narrow:gap-1",
   window: "picker-narrow:w-auto",
-  actions: "picker-narrow:ml-auto picker-narrow:flex picker-narrow:flex-wrap picker-narrow:items-center picker-narrow:justify-end picker-narrow:gap-1",
+  actions: "picker-narrow:contents",
   count: "picker-narrow:order-last picker-narrow:basis-full picker-narrow:px-3 picker-narrow:pb-1.5",
   gone: "picker-narrow:hidden",
 };
@@ -460,7 +461,7 @@ const NARROW = {
 const FINGER = "pointer-coarse:size-[2.9rem] pointer-coarse:[&>svg]:size-4";
 
 // A small button inside an option that acts without choosing the option.
-function RowAction({ label, on, testid, onPress, children }: { label: string; on: boolean; testid: string; onPress: () => void; children: React.ReactNode }) {
+function RowAction({ label, on, testid, onPress, children, className }: { label: string; on: boolean; testid: string; onPress: () => void; children: React.ReactNode; className?: string }) {
   return (
     <span
       role="button"
@@ -471,7 +472,7 @@ function RowAction({ label, on, testid, onPress, children }: { label: string; on
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}
       className={cn(
-        "grid size-ctl-sm shrink-0 place-items-center rounded-xs hover:bg-line hover:text-fg", FINGER,
+        "grid size-ctl-sm shrink-0 place-items-center rounded-xs hover:bg-line hover:text-fg", FINGER, className,
         on ? "opacity-100" : "opacity-0 group-hover/row:opacity-100 group-data-highlighted/row:opacity-100 pointer-coarse:opacity-100",
       )}
     >
