@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
 import { calls, colors, create, folder, pending } from "./answering.ts";
-import { inHead, leaveHead, shoot } from "./shots.ts";
+import { SHOTS, inHead, leaveHead, shoot } from "./shots.ts";
 
 // Feature: the surfaces that landed after the phone page was last checked fit a phone and are
 // reached by a finger: the session menu's rows and what opens from them, the dollar cap, the
@@ -11,6 +11,8 @@ import { inHead, leaveHead, shoot } from "./shots.ts";
 // scroll, nothing past the page's edge, a target at least 2.75rem, no control that waits for a
 // hover, and a popup opened from the menu stands over the menu.
 const STAND_IN = "scripted:stand-in";
+// Settings sections whose phone fit is not done yet (the walk below).
+const WALK_PENDING = new Set<string>(["providers", "safety", "network", "agents", "plugins", "hooks", "port", "machines", "integrations", "resources", "storage"]);
 const SIZES = [{ width: 390, height: 844 }, { width: 412, height: 915 }];
 
 async function scripted(request: APIRequestContext) {
@@ -487,6 +489,55 @@ for (const size of SIZES) {
       }
     });
 
+    test("every Settings section pages through on a phone: inside the page, a finger's targets, no words cut off", async ({ page }) => {
+      test.setTimeout(240_000);
+      await page.goto("/settings");
+      await page.getByTestId("settings-jump").tap();
+      const ids = await page.locator("[data-section]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.section!));
+      // (The registered sections: every one is on the kit by now; the count only guards against a walk of none.)
+      expect(ids.length, "sections listed").toBeGreaterThan(30);
+      const found: Record<string, string[]> = {};
+      for (const id of ids) {
+        await page.goto(`/settings/${id}`);
+        await expect(page.getByTestId("settings-title")).toBeVisible();
+        // The section has drawn: its group heads or its first rows are there, and it stops changing.
+        await page.waitForLoadState("networkidle").catch(() => {});
+        await page.waitForTimeout(250);
+        const scroll = page.getByTestId("settings-scroll");
+        const problems = await scroll.evaluate((root) => {
+          const rem = parseFloat(getComputedStyle(document.documentElement).fontSize), out: string[] = [];
+          const name = (e: Element) => `${(e as HTMLElement).dataset.testid ?? `${e.tagName.toLowerCase()}.${String((e as HTMLElement).className).trim().split(/\s+/).slice(0, 4).join(".")}`}${(e.textContent ?? "").trim().slice(0, 24) ? ` "${(e.textContent ?? "").trim().slice(0, 24)}"` : ""}`;
+          const shown = (e: Element) => { const r = e.getBoundingClientRect(); return !!r.width && !!r.height && getComputedStyle(e).visibility !== "hidden" && !e.closest("[aria-hidden=true], [hidden], details:not([open]) > :not(summary)"); };
+          // Inside something that scrolls sideways by itself, a wide part is reached by a finger.
+          const scrolls = (e: Element) => { for (let a = e.parentElement; a && a !== root; a = a.parentElement) if (/auto|scroll/.test(getComputedStyle(a).overflowX)) return true; return false; };
+          if (document.documentElement.scrollWidth > document.documentElement.clientWidth) out.push(`page scrolls sideways by ${document.documentElement.scrollWidth - document.documentElement.clientWidth}`);
+          if ((root as HTMLElement).scrollWidth > (root as HTMLElement).clientWidth + 1) out.push(`section scrolls sideways by ${(root as HTMLElement).scrollWidth - (root as HTMLElement).clientWidth}`);
+          for (const e of root.querySelectorAll("*")) {
+            if (!shown(e) || scrolls(e)) continue;
+            const r = e.getBoundingClientRect();
+            if (r.right > innerWidth + 0.5 || r.left < -0.5) out.push(`past the edge: ${name(e)} ${Math.round(r.left)}-${Math.round(r.right)}`);
+            const cs = getComputedStyle(e);
+            if (cs.textOverflow === "ellipsis" && e.scrollWidth > e.clientWidth + 1) out.push(`cut: ${name(e)}`);
+          }
+          for (const c of root.querySelectorAll<HTMLElement>("button, [role=button], a[href], input:not([type=hidden]), select, textarea, summary")) {
+            if (!shown(c)) continue;
+            // A link among words keeps its line; a checkbox or radio is pressed by the label around it.
+            if (c.tagName === "A" && getComputedStyle(c).display === "inline") continue;
+            const r = (/^(checkbox|radio)$/.test((c as HTMLInputElement).type) ? c.closest("label") ?? c : c).getBoundingClientRect();
+            if (r.width <= 1 && r.height <= 1) continue; // (a visually hidden field: its label is the control)
+            if (r.height < 2.75 * rem - 1 || r.width < 2.75 * rem - 1) out.push(`small: ${name(c)} ${Math.round(r.width)}x${Math.round(r.height)}`);
+          }
+          return [...new Set(out)];
+        });
+        if (problems.length) found[id] = problems;
+      }
+      writeFileSync(join(SHOTS, `walk-${size.width}.json`), JSON.stringify(found, null, 1));
+      // The sections not fitted yet are named in WALK_PENDING and the list only shrinks: one that fits is taken out.
+      const fitsNow = [...WALK_PENDING].filter((id) => ids.includes(id) && !found[id]);
+      expect(fitsNow, "sections that fit a phone now: take them out of WALK_PENDING").toEqual([]);
+      for (const id of WALK_PENDING) delete found[id];
+      expect(found, "sections with a part a finger cannot reach whole").toEqual({});
+    });
     test("the tree review reads as one column on a phone: areas, one area's diff, and its decisions by a finger", async ({ page, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
       test.setTimeout(180_000);
