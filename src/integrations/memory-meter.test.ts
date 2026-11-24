@@ -166,6 +166,10 @@ test("the store's line says a rule from a note, and a rule's text says the call 
   // No prohibition, no backquote after it, or not a program: no call to judge it by.
   expect(bansOf("Wait ten minutes before a swap; use `mv` instead.")).toEqual([]);
   expect(bansOf("Never push without asking.")).toEqual([]);
+  // a backquoted word is a command only when it is a program: a branch, a name or a made-up word is not
+  expect(bansOf("Never push to `main`; do not touch `staging`.")).toEqual([]);
+  expect(bansOf("Never push to `main` with `git push --force` or `rm -rf`.")).toEqual(["git push --force", "rm -rf"]);
+  expect(bansOf("Do not run `zzqx-no-such-program`.")).toEqual([]);
   expect(bansOf("Never edit `~/x` or `--force` by hand.")).toEqual([]);
   const sh = (command: string) => ({ tool_name: "Bash", tool_input: { command } });
   expect(callBreaks("git stash", sh("cd x && git stash pop"))).toBe(true);

@@ -110,9 +110,19 @@ export function handlesOf(text: string): string[] {
 
 // The commands a rule's text forbids: what it puts in backquotes after a word of prohibition, in the same
 // sentence ("never run `git stash`", "do not use `rm -rf` here"), lower case, words as written. A span that
-// does not start with a program's name (a path, a flag, a common word) is not a command. A rule with none
+// does not start with a program's name (a path, a flag, a word no shell would run) is not a command. A rule with none
 // names no call: it cannot be measured.
 const PROHIBITION = /\b(?:never|do not|don't|must not|mustn't|should not|shouldn't|avoid|forbidden|not allowed)\b/i;
+// A word is a program when the shell would run it: a builtin, git or gh (their subcommand forms are
+// "git push", "gh pr merge"), or a file on the daemon's PATH. "main" in "never push to `main`" is none.
+const BUILTINS = new Set(["cd", "exec", "eval", "source", "export", "unset", "kill", "trap", "ulimit", "umask", "alias", "set", "shopt", "test", "echo", "printf", "read", "wait", "command", "type", "git", "gh"]);
+const found = new Map<string, boolean>();
+function isProgram(word: string): boolean {
+  if (BUILTINS.has(word)) return true;
+  let v = found.get(word);
+  if (v === undefined) { v = Bun.which(word) !== null; if (found.size > 500) found.clear(); found.set(word, v); }
+  return v;
+}
 export function bansOf(text: string): string[] {
   const out = new Set<string>();
   for (const sentence of text.split(/(?<=[.;!?])\s+|\n/)) {
@@ -120,7 +130,7 @@ export function bansOf(text: string): string[] {
     if (!at) continue;
     for (const m of sentence.slice(at.index).matchAll(/`([^`\n]{2,80})`/g)) {
       const w = m[1]!.trim().toLowerCase().split(/\s+/);
-      if (/^[a-z][\w.-]+$/.test(w[0]!) && !COMMON.has(w[0]!) && w.length <= 6) out.add(w.join(" "));
+      if (/^[a-z][\w.-]+$/.test(w[0]!) && !COMMON.has(w[0]!) && w.length <= 6 && isProgram(w[0]!)) out.add(w.join(" "));
     }
   }
   return [...out];
