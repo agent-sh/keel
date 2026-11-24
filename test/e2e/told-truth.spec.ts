@@ -337,14 +337,20 @@ test("what a coordinator and the owner are told about agents, restarts and tools
       const j = (await jobsOf(lane(title).session_id)).find((x) => x.running)!;
       expect(coordNow).toContain(`Agent "${title}" is waiting for command ${j.id}`);
     }
+    // Their parks start no turn of the coordinator: a park on a command is a line that rides the next input
+    // the harness sends it (not the owner's own prompt), and only one past the long park wakes an idle parent.
+    // Their reports, which come first, say more. The timeline names what each waits on all the while.
     for (const title of ["Slow lane 1", "Slow lane 2"]) {
       expect(str((await results(lane(title).session_id)).at(-1))).toContain("The command was not interrupted: it still runs in the background");
-      await expect.poll(async () => inputs(coord), { timeout: 60_000 }).toMatch(new RegExp(`\\[harness\\] Agent "${title}" \\(${lane(title).id}\\) is waiting for command \\w+, which runs on after a daemon restart\\. It has not finished; its report comes when it does\\.`));
+      expect(await inputs(coord)).not.toContain(`Agent "${title}" (${lane(title).id}) is waiting for`);
       expect(await inputs(coord)).not.toContain(`title="${title}" status="completed"`);
     }
+    await idle(coord);
+    await send(coord, "script:say noted");
+    await idle(coord);
     // The coordinator is told which of its agents were cut and what became of each: one line for the restart,
-    // naming both, with a request of its own that came after the last of them was decided (here a turn a parked
-    // notice started). (It was told in a line for each wave of agents that came back.)
+    // naming both, with a request of its own that came after the last of them was decided (here the owner's
+    // prompt). (It was told in a line for each wave of agents that came back.)
     for (const title of ["Slow lane 1", "Slow lane 2"]) {
       await expect.poll(async () => count(await notes(coord), `"${title}" (${lane(title).id}) resumed`), { timeout: 60_000 }).toBe(1);
     }
@@ -388,10 +394,17 @@ test("what a coordinator and the owner are told about agents, restarts and tools
 
     // Two kills with no request of the parent between them: the first line went down with its daemon. The parent
     // hears of its agent once, from the start that cut it last. (It heard nothing of an agent cut this way.)
+    // Their parks start no turn of the parents: the owner's prompt is the request the line waits for, sent
+    // again while the line is not there (the agent may not be decided yet when the first goes).
+    const nudged = async (lead: string, line: string, want = 1) => {
+      const n = count(await notes(lead), line);
+      if (n < want && !(await call(`/api/sessions/${lead}?events=0`)).running) await send(lead, "script:say again");
+      return n;
+    };
     const twiceLine = `"Twice lane" (${other.id}) resumed`;
-    await expect.poll(async () => count(await notes(twice), twiceLine), { timeout: 90_000 }).toBe(1);
-    // The one that was told after the first kill hears of the second cut too: another restart, another line, each once.
-    await expect.poll(async () => count(await notes(small), gateLine), { timeout: 90_000 }).toBe(2);
+    await expect.poll(() => nudged(twice, twiceLine), { timeout: 90_000 }).toBe(1);
+    // The one that was nudged after the first kill hears of the second cut too: another restart, another line, each once.
+    await expect.poll(() => nudged(small, gateLine, 2), { timeout: 90_000 }).toBe(2);
     // Both agents ran two commands that went on: they wait on them, and report when the last has ended.
     for (const [lead, a] of [[small, gate], [twice, other]] as const) {
       await expect.poll(async () => (await only(lead)).status, { timeout: 60_000 }).toBe("waiting");
@@ -404,7 +417,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
       expect(count(await notes(lead), `"${a.title}" (${a.id}) resumed`)).toBe(lead === small ? 2 : 1);
     }
 
-    // --- item 1 again: a stop of the daemon stops a command its call runs, and the call is told that
+    // --- item 1 again: a stop of the daemon stops a command its call runs, and the call is nudged that
     const stopped = await open("Stopped tool");
     await send(stopped, calls([bash(`${STOPPED}; echo never`)]));
     await atTool(stopped);
