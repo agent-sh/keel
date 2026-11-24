@@ -34,6 +34,12 @@ export function ago(ts: number, now = Date.now()): string {
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
 }
+// The bucket of a time a glance tells apart: now, within the hour, within the day, within the week, then
+// month by month. A calm list shows a quiet row's time only where its bucket changes (Sidebar.tsx).
+export function timeBucket(ts: number, now = Date.now()): number {
+  const s = Math.round((now - ts) / 1000); // as `ago` reads it: a time that says "1m" is in the minute's bucket
+  return s < 60 ? 0 : s < 3600 ? 1 : s < 86400 ? 2 : s < 7 * 86400 ? 3 : 4 + Math.floor(s / (30 * 86400));
+}
 
 // Every time on screen is on the 24-hour clock, and these two write it: no
 // surface formats a time of its own (src/ui-conventions.test.ts).

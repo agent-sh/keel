@@ -331,12 +331,15 @@
 .k-row[data-shown]::before { content: ""; position: absolute; left: -0.625rem; top: 0.3125rem; bottom: 0.3125rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-row[aria-current]::before { background: var(--fg); }
 .k-row-title { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Ink is for what calls the owner (needs them, failed, declined), the open row and news; news alone is
-   one step heavier, as unread mail is. The rest steps back. The row's end then holds one thing. */
-.k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); }
-.k-row[data-unread]:not([data-gone]) .k-row-title { font-weight: 600; color: var(--fg); }
+/* What calls the owner (needs them, failed, declined) is in ink and one step heavier: the rarest rows
+   stand out first. News at rest is in ink at the row's own weight, so reading it changes no width; the
+   open row is in ink too, and the rest steps back. The row's end then holds one thing. */
+.k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); font-weight: 600; }
+.k-row[data-unread]:not([data-gone]):is([data-watch="done"], [data-watch="idle"], [data-watch="stop"]) .k-row-title { color: var(--fg); }
 /* Done: the mark is a small steel dot. Whether it is new is the title's to say. */
 .k-row[data-watch="done"]:not([aria-current]) > .k-mark { background: var(--st-idle); transform: scale(0.7); }
+/* A quiet row's time is in its tooltip where it says what the row above said (Sidebar.tsx, calm). */
+.k-row-time[data-calm] { display: none; }
 /* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
 .k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1.25rem; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); font-weight: 500; }
