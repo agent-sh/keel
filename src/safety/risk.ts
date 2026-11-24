@@ -38,6 +38,7 @@ import { QUESTIONS } from "./looked.ts";
 export { RULE_WORDS } from "./risk-words.ts";
 import { protectedBranch } from "./autonomy.ts";
 import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, sqlClient, type Part } from "./risk-reach.ts";
+import { awkReads, harmless, runsProgram, sedReads } from "./closed-code.ts";
 import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, untrailed, literal, madeName, name, redirected, rootOf, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
 import { docOf, docsRun, highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
 
@@ -423,24 +424,26 @@ function inline(p: string, args: string[]): string | null {
 // to run a file than any list of them (pickle-like loaders, importlib, getattr of a builtin, a debugger's run).
 // A string of one of these: F names the file, J names it and ends in .json (what node's require reads as data).
 const F = "\u0001", J = "\u0002";
+// P: a path in a known read: the file, or another string written out (a file the line did not download is only data).
+const P = String.raw`(?:${F}|'[^'\n\u0001\u0002]*'|"[^"\n\u0001\u0002]*")`;
 const LITERAL = String.raw`(?:'[^'\n\u0001\u0002]*'|"[^"\n\u0001\u0002]*")`;
 const VALUE = String.raw`(?:${LITERAL}|-?\d+(?:\.\d+)?|True|False|None)`;
 // What reading a whole file gives may be cut, split or measured on the way: open(f).read()[:200].strip().
 const AFTER = String.raw`(?:\[\s*-?\d*\s*:?\s*-?\d*\s*\]|\.(?:splitlines|strip|rstrip|lstrip|split|lower|upper|count|toString|trim)\(\s*${LITERAL}?\s*\))*`;
-const PY_OPEN = String.raw`open\(\s*${F}(?:\s*,\s*(?:'r?[bt]?'|"r?[bt]?"))?(?:\s*,\s*encoding\s*=\s*${LITERAL})?\s*\)`;
-const PY_READ = String.raw`(?:${PY_OPEN}\.read\(\)|(?:pathlib\.)?Path\(\s*${F}\s*\)\.read_(?:text|bytes)\(\))${AFTER}`;
-const JS_READ = String.raw`(?:require\(\s*${LITERAL}\s*\)|fs)\.readFileSync\(\s*[${F}${J}]\s*(?:,\s*(?:${LITERAL}|\{\s*encoding\s*:\s*${LITERAL}\s*\}))?\s*\)${AFTER}`;
-const RB_READ = String.raw`File\.(?:read|binread)\(\s*${F}\s*\)${AFTER}`;
+const PY_OPEN = String.raw`open\(\s*${P}(?:\s*,\s*(?:'r?[bt]?'|"r?[bt]?"))?(?:\s*,\s*encoding\s*=\s*${LITERAL})?\s*\)`;
+const PY_READ = String.raw`(?:${PY_OPEN}\.read\(\)|(?:pathlib\.)?Path\(\s*${P}\s*\)\.read_(?:text|bytes)\(\))${AFTER}`;
+const JS_READ = String.raw`(?:require\(\s*${LITERAL}\s*\)|fs)\.readFileSync\(\s*(?:${P}|${J})\s*(?:,\s*(?:${LITERAL}|\{\s*encoding\s*:\s*${LITERAL}\s*\}))?\s*\)${AFTER}`;
+const RB_READ = String.raw`File\.(?:read|binread)\(\s*${P}\s*\)${AFTER}`;
 const PURE_READS = [
   String.raw`(?:json\.load|yaml\.safe_load|tomllib\.load|csv\.reader|csv\.DictReader|list|hashlib\.file_digest)\(\s*${PY_OPEN}\s*(?:,\s*${LITERAL}\s*)?\)`,
   String.raw`(?:json\.loads|yaml\.safe_load|tomllib\.loads|print|len|str|repr|hashlib\.\w+)\(\s*${PY_READ}\s*\)`,
-  String.raw`(?:pd|pandas)\.read_(?:csv|json|table|parquet|excel|feather|fwf)\(\s*${F}(?:\s*,\s*\w+\s*=\s*${VALUE})*\s*\)`,
-  String.raw`(?:os\.path\.(?:getsize|exists|isfile)|os\.stat|print)\(\s*${F}\s*\)`,
-  String.raw`require\(\s*${J}\s*\)`,
+  String.raw`(?:pd|pandas)\.read_(?:csv|json|table|parquet|excel|feather|fwf)\(\s*${P}(?:\s*,\s*\w+\s*=\s*${VALUE})*\s*\)`,
+  String.raw`(?:os\.path\.(?:getsize|exists|isfile)|os\.stat|print)\(\s*${P}\s*\)`,
+  String.raw`require\(\s*(?:${J}|'[^'\n]*\.json'|"[^"\n]*\.json")\s*\)`,
   String.raw`(?:JSON\.parse|console\.log|String)\(\s*${JS_READ}\s*\)`,
-  String.raw`(?:require\(\s*${LITERAL}\s*\)|fs)\.(?:existsSync|statSync)\(\s*[${F}${J}]\s*\)`,
+  String.raw`(?:require\(\s*${LITERAL}\s*\)|fs)\.(?:existsSync|statSync)\(\s*(?:${P}|${J})\s*\)`,
   String.raw`(?:JSON\.parse|YAML\.safe_load|CSV\.parse)\(\s*${RB_READ}\s*\)|\b(?:puts|p|print)(?:\s+${RB_READ}|\(\s*${RB_READ}\s*\))`,
-  String.raw`(?:CSV\.read|File\.size|File\.exist\?)\(\s*${F}\s*\)`,
+  String.raw`(?:CSV\.read|File\.size|File\.exist\?)\(\s*${P}\s*\)`,
 ].map((s) => new RegExp(s, "g"));
 // Code that runs what it is given, by name or by a way around a name: once the file is read, what it read can still
 // run (json.load(open(f), object_hook=eval), exec of a field of it).
@@ -451,7 +454,7 @@ const LOADED = [".js", ".cjs", ".mjs", ".ts", ".rb", ".pm", ".pl"];
 // Whether code given to interpreter `p` takes a file `hit` picks: it names it (a string, a word of a string, a
 // module a loader finds by it, or `module`, the name python imports a downloaded file by) other than in a known
 // read, or it reads it and holds a use that runs code. Code too long to read through takes it.
-function codeRuns(p: string, code: string, hit: (path: string) => boolean, module?: string): boolean {
+function codeRuns(p: string, code: string, hit: (path: string) => boolean, module?: string, closed = true): boolean {
   if (code.length > SCRIPT_MAX) return true;
   const py = /^python/.test(p), js = /^(node|nodejs|bun|deno)$/.test(p);
   if (module && py && new RegExp(`(^|[\\s;])(import\\s+([\\w.]+\\s*,\\s*)*|from\\s+)${module}\\b`).test(code)) return true;
@@ -465,11 +468,14 @@ function codeRuns(p: string, code: string, hit: (path: string) => boolean, modul
   // (A name outside a string, or in one the rules do not read, as perl's do x.pl or 'x.json\n'.)
   const loose = (t: string) => t.split(/[\s'"`()[\]{},;:=<>|&+]+/).some((w) => w !== "" && hit(w));
   if (loose(text)) return true;
-  if (!named) return false;
+  if (!named && !closed) return false;
   for (let before = ""; before !== text; ) { before = text; for (const re of PURE_READS) text = text.replace(re, "0"); }
   if (text.includes(F) || text.includes(J)) return true;
   // (A backquote runs a command in perl and ruby; in JavaScript it is a template.)
-  return CODE_RUNS.test(text) || ((p === "perl" || p === "ruby") && text.includes("`"));
+  if (CODE_RUNS.test(text) || ((p === "perl" || p === "ruby") && text.includes("`"))) return true;
+  // What is left of the code once the known reads are out is held to a closed set of harmless tokens. A name the
+  // code builds ('x.' + 'py') is not seen as the file's, so code that reads nothing it names is held to it too.
+  return closed && !harmless(p, text);
 }
 // The code a command hands to an interpreter on its command line, for what else reads it (the policy's owner-only files).
 export function codeGiven(run: Run): string | null {
@@ -499,13 +505,48 @@ const READS_ARGS = /^(json\.tool|base64|ast|tokenize)$/;
 // handed to any other program may be run by it: a test runner, a notebook's executor, an installer, a build tool,
 // a debugger, a playbook (there are more ways to run a file than any list of them).
 const READERS = /^(cd|pushd|cat|bat|shellcheck|tac|head|tail|less|more|wc|file|stat|ls|du|jq|gojq|yq|grep|egrep|fgrep|rg|ag|diff|cmp|sort|uniq|cut|column|fold|nl|iconv|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|md5sum|b2sum|cksum|sum|shasum|base64|base32|xxd|od|hexdump|strings|chmod|chown|chgrp|touch|cp|mv|rm|ln|mkdir|install|realpath|readlink|basename|dirname|test|\[|tar|unzip|zipinfo|gzip|gunzip|zcat|bzip2|bunzip2|bzcat|xz|unxz|xzcat|zstd|unzstd|tee|git|gpg|minisign|pdftotext|sed|awk|gawk|mawk)$/;
+// The files a command writes from what it was handed: a copy, a move or a link (the last word, or -t's), a redirect,
+// and tee's files when what it reads comes from a stage that named the file. `named`: whether the command, or the
+// stage before it that feeds it, names the file by a word or a string of its code.
+function writtenFrom(x: Part2, named: boolean, fedNamed: boolean): string[] {
+  const out: string[] = [];
+  const q = name(x.words[0]);
+  const args = x.words.slice(1).filter((a, k, all) => !a.startsWith("-") || all[k - 1] === "--");
+  if (named && /^(cp|mv|ln|install|rsync|scp)$/.test(q)) {
+    const t = x.words.findIndex((a, k) => k > 0 && /^(-t|--target-directory)$/.test(a));
+    const dest = t > 0 ? x.words[t + 1] : args[args.length - 1];
+    if (dest !== undefined && args.length >= (t > 0 ? 1 : 2)) out.push(dest);
+  }
+  if ((named || fedNamed) && q === "tee") out.push(...args);
+  if (named || fedNamed) out.push(...x.redirects);
+  return out;
+}
+type Part2 = { words: string[]; redirects: string[] };
+// Whether the program of a sed or an awk command (the first word that is no option, or what -e gives) runs nothing.
+function programReads(q: string, args: string[]): boolean {
+  const progs: string[] = [];
+  const sed = q === "sed";
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (/^(-e|--expression|--source)$/.test(a) || (sed && /^-[A-Za-z]*e$/.test(a))) { if (args[k + 1] === undefined) return false; progs.push(args[k + 1]!); k++; }
+    else if (/^--(expression|source)=/.test(a)) progs.push(a.slice(a.indexOf("=") + 1));
+    else if (sed ? /^(-l|--line-length)$/.test(a) : /^(-F|-v|--field-separator|--assign)$/.test(a)) k++;
+    else if (a === "--") { if (progs.length === 0 && args[k + 1] !== undefined) progs.push(args[k + 1]!); break; }
+    else if (!a.startsWith("-")) { if (progs.length === 0) progs.push(a); break; }
+  }
+  return progs.length > 0 && progs.every((x) => (sed ? sedReads(x) : awkReads(x)));
+}
 function takes(words: string[], hit: (path: string) => boolean, scripts: Scripts, depth = 0, module?: string): Taken | null {
   const q = name(words[0]);
   if (words[0] !== undefined && hit(words[0])) return { how: "runs", by: q };
   if (!(SHELLS.test(q) || INTERPRETERS.test(q) || q === "source" || q === ".")) {
     const args = words.slice(1);
-    // (sed and awk run a program file they are given with -f; a reader of the rest of its words.)
-    if (/^(sed|awk|gawk|mawk)$/.test(q)) return args.some((a, k) => /^(-f|--file)$/.test(args[k - 1] ?? "") && hit(a)) ? { how: "handed", by: q } : null;
+    // (sed and awk run a program file they are given with -f, and a program of their own that runs a command (sed's e,
+    // awk's system and pipes) runs what the file holds; a reader of the rest of its words.)
+    if (/^(sed|awk|gawk|mawk)$/.test(q)) return args.some((a, k) => /^(-f|--file)$/.test(args[k - 1] ?? "") && hit(a)) || (args.some(hit) && !programReads(q, args)) ? { how: "handed", by: q } : null;
+    // (A reader that an option or a subcommand makes run a program is no reader of a file that names one: tar -I,
+    // git --upload-pack, rg --pre, sort --compress-program.)
+    if (READERS.test(q) && runsProgram(q, args, hit)) return { how: "handed", by: q };
     return !READERS.test(q) && args.some(hit) ? { how: "handed", by: q } : null;
   }
   if (SHELLS.test(q) && words.includes("-n")) return null;
@@ -545,7 +586,7 @@ function takes(words: string[], hit: (path: string) => boolean, scripts: Scripts
       const m = a === "-m" ? args[k + 1] : a.slice(2);
       if (m === undefined) return null;
       if ((module !== undefined && m.split(".")[0] === module) || hit(m)) return { how: "runs", by: q };
-      const names = (w: string) => hit(w) || (module !== undefined && (w.split(".")[0] === module || codeRuns(q, w, () => false, module)));
+      const names = (w: string) => hit(w) || (module !== undefined && (w.split(".")[0] === module || codeRuns(q, w, () => false, module, false)));
       return !READS_ARGS.test(m) && args.slice(a === "-m" ? k + 2 : k + 1).some(names) ? { how: "handed", by: q } : null;
     }
     if (!a.startsWith("-")) {
@@ -1107,8 +1148,14 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       const module = stem !== file && /^[A-Za-z_]\w*$/.test(stem) ? stem : undefined;
       // (Not a here-document's lines, unless a shell on the line reads them as commands: else they are what a program
       // reads, and a path among them is not a program run.)
+      // The names the file is known by: its own, and the files the line writes from it (a copy, a move, a redirect of
+      // what reads it): a file written from the download and run later is the download run.
+      const known = new Set<string>(file ? [file] : []);
+      let extracted = false;
       if (file && file !== "null") for (let k = i + 1; k < n && k < i + 64; k++) {
-        const hit = (a: string) => name(a) === file || (a.includes("$") && name(expand(a, k)) === file);
+        const hit = (a: string) => known.has(name(a)) || (a.includes("$") && known.has(name(expand(a, k))));
+        // A file unpacked from the download: what it holds is not in the command, and a path run after it may be it.
+        const may = (a: string) => hit(a) || (extracted && !a.startsWith("-") && (a.includes("/") || /\.\w+$/.test(a)));
         if (parts[k]!.heredoc && !(docLines ??= docsRun(parts))) {
           // Lines a program reads other than one that only writes them out (cat, tee): a file the line downloads,
           // named there, may be what it runs (exec(open('f').read()), require('./f.js'), . f.sh on a container's shell).
@@ -1127,7 +1174,16 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
         let j = k;
         while (j > 0 && parts[j - 1]!.nested) j--;
         const printed = parts.slice(j, k).some((x, d) => runs[j + d]!.words.slice(1).some(hit));
-        const t = takes(runs[k]!.words.map((a) => (a.includes("$") && a !== "$(...)" ? expand(a, k) : a)), (a) => hit(a) || (printed && a === "$(...)"), scripts, 0, module);
+        const wk = runs[k]!.words.map((a) => (a.includes("$") && a !== "$(...)" ? expand(a, k) : a));
+        const t = takes(wk, (a) => may(a) || (printed && a === "$(...)"), scripts, 0, module)
+          // (A value set for the command alone names a program the command runs: GIT_PAGER=./x.sh git log.)
+          ?? (runs[k]!.set.some((kv) => may(kv.slice(kv.indexOf("=") + 1))) ? { how: "handed" as const, by: "an environment variable" } : null);
+        if (!t) {
+          const mentions = (j: number) => runs[j]!.words.some(hit) || parts[j]!.text.includes(file);
+          const from = prev[k]! >= 0 && mentions(prev[k]!);
+          for (const w of writtenFrom({ words: wk, redirects: redirected(parts[k]!).map((r) => r.to) }, mentions(k), from)) known.add(name(w));
+          if (/^(tar|bsdtar|unzip|7z|7za|gunzip|gzip|bunzip2|xz|unxz|zstd|unzstd|cpio|ar)$/.test(name(wk[0])) && wk.slice(1).some(hit) && !wk.slice(1).some((a) => /^-[A-Za-z]*t[A-Za-z]*$|^--list$/.test(a))) extracted = true;
+        }
         if (t) { line.push({ rule: "hidden", why: t.how === "runs" ? `runs ${file}, a script the same line downloads` : t.how === "handed" ? `hands ${file}, a file the same line downloads, to ${t.by}, which is not known only to read it: it may run it` : `gives ${t.by} code that may run ${file}, a file the same line downloads` }); break; }
       }
     }
@@ -1137,15 +1193,18 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     if (cloned) {
       const { url } = cloned;
       const into = dirs[i] ? resolve(dirs[i]!, cloned.dir) : null;
+      // The folders the clone is in: where it was cloned, and where the line copies, moves or links it.
+      const there = into ? [into] : [];
       if (into) for (let k = i + 1; k < n && k < i + 64; k++) {
         const at = dirs[k], q = name(runs[k]!.words[0]);
-        if (at && under(into, at) && q !== "cd" && q !== "git" && !isReadOnly(parts[k]!)) { line.push({ rule: "hidden", why: `runs ${q} in ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}` }); break; }
+        if (at && there.some((d) => under(d, at)) && q !== "cd" && q !== "git" && !isReadOnly(parts[k]!)) { line.push({ rule: "hidden", why: `runs ${q} in ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}` }); break; }
         // From outside it: a program, a script or code of the clone named by its path (python3 r/setup.py, ./r/install.sh),
         // or a build or an install of it (pip install ./r, make -C r, npm --prefix r install, pytest r).
-        const inClone = (a: string) => (a.includes("/") || a === name(into) ? !/[$`*?]/.test(a) && under(into, resolve(at!, a)) : false);
+        const inClone = (a: string) => (a.includes("/") || there.some((d) => a === name(d))) && !/[$`*?]/.test(a) && !!at && there.some((d) => under(d, resolve(at, a)));
         const b = at ? builds(runs[k]!.words, inClone) : null;
         if (b) { line.push({ rule: "hidden", why: `runs ${b} on ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}: it runs the repository's code` }); break; }
         const t = at ? takes(runs[k]!.words, inClone, scripts) : null;
+        if (!t && at && /^(cp|mv|ln|install|rsync)$/.test(q)) for (const w of writtenFrom({ words: runs[k]!.words, redirects: [] }, runs[k]!.words.some(inClone), false)) there.push(resolve(at, w));
         if (t) { line.push({ rule: "hidden", why: `${t.how === "runs" ? "runs" : t.how === "handed" ? `hands to ${t.by}, which is not known only to read them,` : `gives ${t.by} code that may run`} files of ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}` }); break; }
       }
     }
