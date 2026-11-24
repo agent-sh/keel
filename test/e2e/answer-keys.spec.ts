@@ -1120,6 +1120,19 @@ test("the hint says Enter allows once exactly when it would, and says so quietly
   await expect(card).toHaveAttribute("data-live", "true");
   expect(await where()).toBe(before);
   expect(Math.round((await card.boundingBox())!.height)).toBe(height);
+  // The box under it says what Enter does while the card has the keys, and what it does once the keys are the box's:
+  // Enter is never two things on one screen.
+  const box = page.getByTestId("composer");
+  await page.waitForTimeout(200);
+  await shoot(page, "answer-keys-17b-box-hint-card");
+  await expect(box).toHaveAttribute("placeholder", "Enter allows once; Tab to the box to steer");
+  await box.focus();
+  await expect(box).toHaveAttribute("placeholder", /^Enter steers, /);
+  await shoot(page, "answer-keys-17c-box-hint-box");
+  await allow.focus();
+  await expect(box).toHaveAttribute("placeholder", "Enter allows once; Tab to the box to steer");
+  // (The keyboard came back by code: its keys act after the settle time.)
+  await expect(allow).toHaveAttribute("data-ready", "true");
   await page.keyboard.press("Enter");
   await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
   await drop(request, id);

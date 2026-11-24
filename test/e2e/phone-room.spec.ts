@@ -657,11 +657,14 @@ test.describe("on a phone, what waits", () => {
       });
       await expect.poll(shown, { timeout: 5000 }).toEqual({ options: 3, other: true });
       await expect(pane.getByTestId("composer-tools")).toBeHidden();
+      // The box rests as one line, with no Send and no queue button: its hint names none, and says a tap steers.
       await shoot(page, "phone-12-question-room");
+      await expect(pane.getByTestId("composer")).toHaveAttribute("placeholder", "Tap to steer the turn");
       // A tap on the box: its tools, and the running turn's Stop.
       await pane.getByTestId("composer").tap();
       await expect(pane.getByTestId("stop")).toBeVisible();
       await expect(pane.getByTestId("composer-tools")).toBeVisible();
+      await expect(pane.getByTestId("composer")).toHaveAttribute("placeholder", /^Send steers/);
       // Whole where a finger finds them: inside the window and the pane, above the dock, and the
       // press at Stop's middle lands on Stop. The cards above give the room and scroll.
       const reach = () => pane.evaluate((el) => {

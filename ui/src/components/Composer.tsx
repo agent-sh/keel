@@ -80,6 +80,14 @@ const outgoing = new Map<string, Promise<void>>();
 const MAX_FILES = 20;
 const heading = (d: SendDraft) => (d.state === "waiting" ? "Waiting for Keel" : d.state === "refused" ? (d.queue ? "Not queued" : "Not sent") : d.state === "unconfirmed" ? "Delivery unconfirmed" : "Saved draft");
 
+// What Enter does where a card above the box holds the keyboard (`at` is the focused control, `card` its card).
+function cardEnter(at: Element, card: Element) {
+  const kind = (card as HTMLElement).dataset.testid;
+  if (kind === "question") return "Enter answers the question above";
+  if ((at as HTMLElement).dataset.testid === "allow-once") return "Enter allows once";
+  return "The keys are on the request above";
+}
+
 const OFF_BRANCH = "You are reading another branch. Choose Reply from this branch to reply there, or Back to the current one.";
 
 type ComposerProps = {
@@ -403,6 +411,23 @@ const SessionComposer = memo(function SessionComposer({
   }, [working]);
   // Where a key would act on the turn (the box has the keyboard: Enter steers, Esc stops), Stop and Queue are there at once.
   const [keysHere, setKeysHere] = useState(false);
+  // Whether something waits above the box (what the phone's style sheet reads as data-asking), and what the card
+  // that holds the keyboard does with Enter: the box's hint says it, so Enter is never two things on one screen.
+  const [asking, setAsking] = useState(false);
+  const [cardKeys, setCardKeys] = useState<string | null>(null);
+  useEffect(() => {
+    const look = () => {
+      const at = document.activeElement;
+      const card = at?.closest("[data-ask-card]");
+      const mine = !!card && !!boxEl.current?.closest(".k-session")?.contains(card);
+      setCardKeys(mine ? cardEnter(at!, card!) : null);
+    };
+    // (A focus that leaves is read once the next one has landed.)
+    const later = () => setTimeout(look, 0);
+    document.addEventListener("focusin", look);
+    document.addEventListener("focusout", later);
+    return () => { document.removeEventListener("focusin", look); document.removeEventListener("focusout", later); };
+  }, []);
   const busy = !!working && (runShown || keysHere);
   // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
   const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
@@ -877,7 +902,7 @@ const SessionComposer = memo(function SessionComposer({
 
   return (
     <>
-    <Tray asks={asks}>
+    <Tray asks={asks} onAsking={setAsking}>
       {above}
       {sid && <QueuePanel sessionId={sid} />}
       {saved.some(shown) && (
@@ -1007,7 +1032,7 @@ const SessionComposer = memo(function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={busy ? (TOUCH.matches ? (onQueue ? "Send steers, the list button queues" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
+        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? "Send steers, the list button queues" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
@@ -1210,7 +1235,7 @@ const CARDS = ["approval", "question", "plan-card", "secret-request", "trust-car
 // whole, at the oldest of those, until it is scrolled. A card that arrives out
 // of view is brought into it, and whatever holds the focus here is in view:
 // Enter never answers a card that is not shown.
-function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
+function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactNode; onAsking?: (on: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const wait = useRef<HTMLDivElement>(null);
@@ -1274,6 +1299,7 @@ function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
       const pane = el.closest<HTMLElement>(".k-session");
       el.style.minHeight = pane && c.offsetHeight ? `${Math.min(Math.ceil(c.offsetHeight + pad()), Math.round(pane.clientHeight * 0.3))}px` : "";
       el.toggleAttribute("data-asking", w.offsetHeight > 0);
+      onAsking?.(w.offsetHeight > 0);
       // Said on the pane, which a phone's style sheet reads: an open question there takes the room of the session's tools row.
       el.closest(".k-station")?.toggleAttribute("data-question", w.offsetHeight > 0 && !!c.querySelector('.k-question[data-state="open"]'));
       // The scroll bar sits in the column's side padding: the cards keep the box's edges.
