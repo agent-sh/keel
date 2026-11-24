@@ -71,7 +71,7 @@ test("what the agent and its parent are told", () => {
   const line = parentLine({ ...o, title: "Scout", id: "ag-1" });
   expect(line).toMatch(/^\[harness\] Agent "Scout" \(ag-1\) was waiting: the provider of One could not be reached for 10 min\./);
   expect(line).toContain("moved it to b:big");
-  expect(line).not.toContain("—");
+  expect(line).not.toContain("\u2014");
 });
 
 test("a move that would ask the owner is not made: an agent cannot be asked", () => {
