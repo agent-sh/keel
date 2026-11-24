@@ -469,7 +469,6 @@
 .k-kids-sum[data-words] .k-kids-word { display: inline; }
 .k-kids-sum[data-words] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-mark { display: none; }
 .k-kids-sum[data-words] .k-kids-part { gap: 0.1875rem; }
-.k-kids-sum[data-words] .k-kids-part::before { content: "\00b7"; margin-right: 0.25rem; color: var(--faint); }
 .k-kids-sum[data-words] .k-kids-label { font-size: var(--text-micro); }
 .k-kids-sum[data-words] .k-kids-total .k-kids-n { color: var(--muted); }
 .k-kids-part[data-watch="need"] :is(.k-kids-n, .k-kids-word) { color: var(--st-need-ink); }

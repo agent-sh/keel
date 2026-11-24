@@ -66,7 +66,13 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     const trimmed = await counts();
     expect(trimmed.parts).toEqual(["fail 1", "work 1", "done 6"]);
     expect(reads).toEqual([""]);
+    // Three states are said in words, on one line: "8 agents 1 failed 1 working 6 done", not marks and figures.
+    for (const [part, word] of [["fail", "failed"], ["work", "working"], ["done", "done"]] as const) {
+      await expect(kids.getByTestId(`children-${part}`).locator(".k-kids-word")).toBeVisible();
+      await expect(kids.getByTestId(`children-${part}`).locator(".k-kids-word")).toHaveText(word);
+    }
     await shoot(page, "session-list-01-agents-line");
+    expect((await toggle.boundingBox())!.height, "the agents line is one line").toBeLessThanOrEqual(30);
 
     // Opened: the rows of the ones at rest are read then, once, and every agent is in the tree.
     await toggle.click();
