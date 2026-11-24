@@ -204,7 +204,8 @@ test("connection truth: a network that goes silent is said within seconds, and t
   expect([await top(page, "session-list"), await top(page, "station-head")]).toEqual([listAt, paneAt]);
   // What happened in the silence is all there: the finish's mark, the question's count.
   await expect(row(page, finisher)).toHaveAttribute("data-unread", "true");
-  await expect(page.getByTestId("inbox-count")).toHaveText("2");
+  await expect(page.getByTestId("inbox-count")).toHaveText("1");
+  await expect(page.getByTestId("bell-dot")).toBeVisible();
   await expect(page).toHaveTitle(/^\(1\) /);
   // Never "Connected" over rows it had not read again: from the loss to the last "as of", the logo said something else.
   const log = (await said(page)).filter((e) => e.t >= t0 + saidAfter);
@@ -594,12 +595,12 @@ test("connection truth: a session on another machine is followed like one here, 
     writeFileSync(gate, "go\n");
     await expect(row(page, id)).toHaveAttribute("data-watch", "done", { timeout: 30_000 });
     await expect(row(page, id)).toHaveAttribute("data-unread", "true", { timeout: 10_000 });
-    await expect(page.getByTestId("inbox-count")).toHaveText("1");
+    await expect(page.getByTestId("bell-dot")).toBeVisible();
     expect((await mine()).map((a) => [a.kind, a.read, a.machine])).toEqual([["finished", false, { id: machine, name }]]);
     // A second device sees the same one alert, and it stays one.
     const second = await context.newPage();
     await second.goto("/");
-    await expect(second.getByTestId("inbox-count")).toHaveText("1", { timeout: 20_000 });
+    await expect(second.getByTestId("bell-dot")).toBeVisible({ timeout: 20_000 });
     await expect(row(second, id)).toHaveAttribute("data-unread", "true");
     expect(await mine()).toHaveLength(1);
     await page.getByTestId("inbox-button").click();
@@ -615,7 +616,7 @@ test("connection truth: a session on another machine is followed like one here, 
     // ---- it asks: the row needs the owner, the title counts it, the alert is a question.
     await there(`/api/sessions/${session.id}/messages`, { text: `Ask. ${script([question])}` });
     await expect(row(page, id)).toHaveAttribute("data-watch", "need", { timeout: 30_000 });
-    await expect(page.getByTestId("inbox-count")).toHaveText("2", { timeout: 10_000 });
+    await expect(page.getByTestId("inbox-count")).toHaveText("1", { timeout: 10_000 });
     await expect(page).toHaveTitle(/^\(1\) /);
     expect((await mine()).map((a) => a.kind).sort()).toEqual(["finished", "question"]);
 
@@ -666,7 +667,9 @@ test("connection truth: a session on another machine is followed like one here, 
     const offline = async () => (await inbox()).filter((a) => a.data?.machine_offline === machine);
     await expect.poll(async () => (await offline()).map((a) => [a.kind, a.title, a.read]), { timeout: 40_000 }).toEqual([["machine", `${name} is offline`, false]]);
     expect((await offline())[0]!.body).toMatch(new RegExp(`^${name} does not answer since \\d\\d:\\d\\d\\. Its sessions show as they were then\\.$`));
-    await expect(page.getByTestId("inbox-count")).toHaveText("3");
+    // Nothing answerable waits any more: the bell has no count, and the notice is news, a dot.
+    await expect(page.getByTestId("inbox-count")).toHaveCount(0);
+    await expect(page.getByTestId("bell-dot")).toBeVisible();
     // A rename is followed in what was already said.
     await request.patch(`/api/fleet/machines/${machine}`, { data: { name: `${name}-b` } });
     expect((await offline())[0]!.title).toBe(`${name}-b is offline`);

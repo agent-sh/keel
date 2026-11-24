@@ -1467,6 +1467,10 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);
 }
 .k-inbox-count[data-watch="idle"] { background: var(--accent); }
+/* Other news since the owner looked: a dot at the bell's corner, quiet, with no number. */
+.k-inbox-dot { position: absolute; right: -0.1875rem; top: -0.125rem; width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 0.125rem var(--bg); }
+/* A failure among it: the dot is the failed state's colour. */
+.k-inbox-dot[data-watch="fail"] { background: var(--st-fail); }
 
 /* A turn the model declined: a failure under its own word. The same red as a
    failed one wherever a state is drawn, and its own mark (an empty square). */

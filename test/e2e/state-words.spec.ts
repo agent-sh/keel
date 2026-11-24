@@ -332,9 +332,10 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   const unread = async () => (await (await request.get("/api/alerts?with_unread")).json()).unread as { total: number; sessions: Record<string, number> };
   expect((await unread()).total).toBe(5);
 
-  // The bell counts what is unread and says so.
+  // The bell counts what waits on the owner (the two approvals), shows the finishes as a dot, and says what is unread.
   const bell = page.getByTestId("inbox-button");
-  await expect(page.getByTestId("inbox-count")).toHaveText("5");
+  await expect(page.getByTestId("inbox-count")).toHaveText("2");
+  await expect(page.getByTestId("bell-dot")).toBeVisible();
   await expect(bell).toHaveAccessibleName(/5 unread: new since you last looked/);
   await expect(bell).toHaveAttribute("title", /5 unread: new since you last looked/);
   // The tab's title and the home headline count what waits on the owner: the same number.
@@ -470,7 +471,9 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   await page.getByTestId("mark-all-read").click();
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("session-list").locator('[data-testid="session-row"][data-unread="true"]')).toHaveCount(0);
-  await expect(page.getByTestId("inbox-count")).toHaveCount(0);
+  // (The two approvals are read and still wait: the bell still counts them, and has no dot.)
+  await expect(page.getByTestId("inbox-count")).toHaveText("2");
+  await expect(page.getByTestId("bell-dot")).toHaveCount(0);
   await expect(bell).toHaveAccessibleName(/Nothing new since you last looked/);
 
   // A phone: the same parts. The two approvals were read by "clear all" and still wait: they are first.
@@ -563,7 +566,7 @@ test("a failure in a pane scrolled off the window is unread and notified; one in
     // Its notification goes out at once, it is unread on the list and the bell, and its failure is still news.
     await expect.poll(() => notified(ids[5]!), { timeout: 15_000 }).toBe(true);
     await expect(row(page, ids[5]!)).toHaveAttribute("data-unread", "true");
-    await expect(page.getByTestId("inbox-count")).toHaveText("1");
+    await expect(page.getByTestId("bell-dot")).toBeVisible();
     await typing();
     await page.waitForTimeout(2500);
     expect(await seen(ids[5]!)).toBe(false);
@@ -578,7 +581,8 @@ test("a failure in a pane scrolled off the window is unread and notified; one in
     await expect.poll(() => seen(ids[0]!), { timeout: 15_000 }).toBe(true);
     await page.waitForTimeout(4000);
     expect(notified(ids[0]!)).toBe(false);
-    await expect(page.getByTestId("inbox-count")).toHaveText("2");
+    await expect(page.getByTestId("bell-dot")).toBeVisible();
+    await expect(page.getByTestId("inbox-count")).toHaveCount(0);
     await shoot(page, "state-words-11-six-panes-1440");
     // They leave the sessions (the page goes to Settings) and it still waits unread: now it is sent.
     await page.goto(`${d.url}/settings/general`);

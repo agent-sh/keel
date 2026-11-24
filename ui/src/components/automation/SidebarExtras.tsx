@@ -3,14 +3,14 @@ import type React from "react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
 import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
-import { COUNTERS, NEW, agentTally, countName } from "../../../../src/core/state-words.ts";
+import { COUNTERS, NEW, agentTally, countName, wentWrongWord } from "../../../../src/core/state-words.ts";
 import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
-import { AgentMark, AgentNow, agentSaid, ALERT_STATE, IconButton, StopAgent } from "./bits.tsx";
+import { AgentMark, AgentNow, agentSaid, IconButton, StopAgent } from "./bits.tsx";
 import { AgentLane } from "./Lane.tsx";
 import { scope } from "../../lib/store.ts";
 import { Mark } from "../Mark.tsx";
-import { useToldStates } from "../../lib/watch.ts";
+import { useNeedCount, useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
 import { calls, useSettled } from "../../lib/settle.ts";
 import type { Watch } from "../../../../src/core/watch.ts";
@@ -213,27 +213,41 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
   const liveUnread = useAuto((s) => s.unread.total);
   const loops = useAuto((s) => Object.values(s.loops).filter((l) => l.enabled).length);
   const held = useAuto((s) => !!s.snoozes["*"]);
-  // The count takes the color of the most urgent unread alert.
-  const liveTop = useAuto((s) => {
-    const ws = new Set(s.alerts.filter((a) => !a.read).map((a) => ALERT_STATE[a.kind]));
-    return (["need", "fail", "work", "done"] as const).find((w) => ws.has(w)) ?? "idle";
-  });
-  // Counted as the list counts (lib/settle.ts): finishes coming one after another move the bell once
-  // they have settled; what needs the owner or failed, and what they read, move it at once.
-  const { unread, top } = useSettled("bell", { unread: liveUnread, top: liveTop }, `${liveUnread}|${liveTop}`, (was) => liveTop === "need" || liveTop === "fail" || was.top !== liveTop || liveUnread < was.unread);
+  // What waits on the owner is the one count of the tab's title and the home headline (useNeedCount).
+  // Other news is unread that is not that: a session that needs the owner has its ask unread, which the count has.
+  const need = useNeedCount();
+  const told = useToldStates();
+  const unreadBy = useAuto((s) => s.unread.sessions);
+  // Unread that is not a session needing the owner is the dot; the ones among it that failed or were declined
+  // colour it, so a failure is still in front of the owner without a number.
+  const liveOthers = useMemo(() => {
+    const ofSessions = Object.values(unreadBy).reduce((n, c) => n + (c ?? 0), 0);
+    const rest = Object.entries(unreadBy).filter(([id, c]) => (c ?? 0) > 0 && told[id]?.watch !== "need");
+    const failed = rest.filter(([id]) => told[id]?.watch === "fail").length;
+    const declined = rest.filter(([id]) => told[id]?.watch === "declined").length;
+    return { others: rest.length + Math.max(0, liveUnread - ofSessions), failed, declined };
+  }, [unreadBy, told, liveUnread]);
+  // Counted as the list counts (lib/settle.ts): finishes coming one after another move the dot once
+  // they have settled; what waits on the owner, and what they read, move it at once.
+  const { unread, others, failed, declined } = useSettled("bell", { unread: liveUnread, ...liveOthers }, `${liveUnread}|${liveOthers.others}|${liveOthers.failed}|${liveOthers.declined}`, (was) => need > 0 || liveUnread < was.unread || liveOthers.others < was.others || liveOthers.failed > was.failed || liveOthers.declined > was.declined);
+  const wrong = failed + declined;
+  const said = `Inbox. ${need ? `${COUNTERS.waiting(need)}. ` : ""}${COUNTERS.unread(unread)}${wrong ? `. ${wrong} ${wentWrongWord(failed, declined)}` : ""}${held ? ". Alerts are snoozed" : ""}`;
   return (
     <>
       <button
         type="button"
         data-testid="inbox-button"
         onClick={onInbox}
-        // The bell counts one thing and says so: what is new since the owner last looked.
-        title={`Inbox. ${COUNTERS.unread(unread)}${held ? ". Alerts are snoozed" : ""}`}
-        aria-label={`Inbox. ${COUNTERS.unread(unread)}${held ? ". Alerts are snoozed" : ""}`}
-        className={cn("relative flex h-ctl-md items-center gap-1.5 rounded-md px-2 text-caption hover:bg-raised", unread ? "text-fg" : "text-faint")}
+        // The bell counts what waits on the owner, in the color of that; other news is a muted dot.
+        title={said}
+        aria-label={said}
+        className={cn("relative flex h-ctl-md items-center gap-1.5 rounded-md px-2 text-caption hover:bg-raised", need || others ? "text-fg" : "text-faint")}
       >
-        {held ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
-        {unread > 0 && <span data-testid="inbox-count" data-watch={top} className="k-inbox-count tabular-nums">{unread}</span>}
+        <span className="relative grid place-items-center">
+          {held ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
+          {others > 0 && <span data-testid="bell-dot" data-watch={wrong ? "fail" : undefined} className="k-inbox-dot" />}
+        </span>
+        {need > 0 && <span data-testid="inbox-count" data-watch="need" className="k-inbox-count tabular-nums">{need}</span>}
       </button>
       <button
         type="button"
