@@ -1319,6 +1319,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
      is read whole; the state and its reason under it. Pin and close are in the session's menu
      (SessionHeader), and a phone has no panes to focus: the head holds no tools. */
   .k-station-identity .k-station-title { max-width: 100%; display: -webkit-box; white-space: normal; }
+  /* The reason is read whole: it stays beside the word and the clock when it fits there, else it takes the line
+     under them and wraps (a cut with an ellipsis is no way to read it on a touch screen). */
+  .k-station-identity .k-station-state { display: block; flex: 1 1 0; }
+  .k-station-identity .k-station-state > * { display: inline-block; vertical-align: baseline; margin-right: 0.4375rem; }
+  .k-station-identity .k-station-state > .k-station-word { display: inline-flex; align-items: center; gap: 0.25rem; }
+  .k-station-identity .k-station-why { display: inline; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; line-height: 1.35; }
   .k-station .k-station-identity .k-station-tools { display: none; }
   /* The helm's top bar is one row, as the wide bar is: the list's button, the title with its state beside it
      (under it when the title leaves the state no room), and the session's tools at the end. The reading

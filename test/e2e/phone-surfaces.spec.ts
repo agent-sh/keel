@@ -906,6 +906,31 @@ for (const size of SIZES) {
         await request.delete("/api/acp/agents/children-p");
       }
     });
+    test("the head's reason for a state is read whole: it wraps under the word, never cut by an ellipsis", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Phone head reason");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 30", description: "Building the whole documentation cache from every source folder in the checkout module" } }]) } });
+        await page.goto(`/s/${id}`);
+        const why = page.locator(".k-station[data-helm]").getByTestId("station-why");
+        await expect(why).toContainText("Building the whole documentation cache", { timeout: 30_000 });
+        // Whole: no ellipsis, nothing clipped in either direction, every line of it inside the page and the head.
+        const cut = await why.evaluate((e) => {
+          const head = e.closest(".k-station-head")!.getBoundingClientRect();
+          const lines = [...e.getClientRects()];
+          return { ellipsis: getComputedStyle(e).textOverflow === "ellipsis" && e.scrollWidth > e.clientWidth + 1, wide: e.scrollWidth > e.clientWidth + 1, tall: e.scrollHeight > e.clientHeight + 1,
+            right: Math.round(Math.max(...lines.map((r) => r.right))), below: Math.round(Math.max(...lines.map((r) => r.bottom)) - head.bottom) };
+        });
+        expect(cut.ellipsis || cut.wide || cut.tall, `the reason is cut: ${JSON.stringify(cut)}`).toBe(false);
+        expect(cut.right).toBeLessThanOrEqual(size.width);
+        expect(cut.below, "a line of the reason is below the head").toBeLessThanOrEqual(1);
+        await noSideScroll(page);
+        await shoot(page, `phone-surfaces-27-head-reason-${size.width}`);
+        await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
+      } finally {
+        await drop(request, id);
+      }
+    });
     test("a question the agent asks can be put away with Later by a finger, and the count in the head is pressed back", async ({ page, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
       await settle(request);
