@@ -17,8 +17,9 @@ import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { git } from "../core/git.ts";
 import { realOf } from "../core/paths.ts";
-import { MADE } from "./ref-guard.ts";
-import { linkedWorktree, SCRATCH } from "./sandbox.ts";
+import { madeNow, madeNowSync } from "./made.ts";
+import { linkedWorktree, linkedWorktreeAsync, SCRATCH } from "./sandbox.ts";
+import { readdir as readdirP, readFile as readFileP, realpath, stat as statP } from "node:fs/promises";
 import type { Shared } from "./shared-branches.ts";
 
 // A ref's value: the commit it names, and the ref it points at when it is a symbolic one.
@@ -107,6 +108,76 @@ export function checkoutsOf(root: string, branch: string, base: string | null, k
   return { ...shared, kids, foreign: () => foreignBranches(at.common, at.own, branch, kids) };
 }
 
+// checkoutsOf with the asynchronous file calls (the same answer, off the loop). `withForeign`: the branches that are
+// not this worktree's are read now (a command that names git), else when a rule asks, as checkoutsOf does.
+const markOfAsync = async (p: string) => { try { const st = await statP(p); return `${st.mtimeMs}:${st.ino}:${st.size}`; } catch { return "-"; } };
+export async function checkoutsOfAsync(root: string, branch: string, base: string | null, kids: string[] = [], withForeign = false): Promise<Shared | undefined> {
+  const at = await linkedWorktreeAsync(root);
+  if (!at) return undefined;
+  let names: string[] = [];
+  try { names = await readdirP(join(at.common, "worktrees")); } catch {} // no linked worktrees but this one
+  const key = `${root}\0${branch}\0${base ?? ""}`;
+  const marks = await Promise.all([markOfAsync(join(at.common, "config")), markOfAsync(join(at.common, "HEAD")), ...names.map(async (n) => [n, await markOfAsync(join(at.common, "worktrees", n, "HEAD")), await markOfAsync(join(at.common, "worktrees", n, "gitdir"))].join("|"))]);
+  const mark = marks.join("|");
+  let shared: Shared;
+  const was = kept.get(key);
+  if (was && was.mark === mark) shared = was.shared;
+  else {
+    shared = await readCheckoutsAsync(root, branch, base, at, names);
+    kept.set(key, { mark, shared });
+    if (kept.size > 256) kept.delete(kept.keys().next().value!);
+  }
+  if (!withForeign) return { ...shared, kids, foreign: () => foreignBranches(at.common, at.own, branch, kids) };
+  const set = await foreignBranchesAsync(at.common, at.own, branch, kids);
+  return { ...shared, kids, foreign: () => set };
+}
+
+const realAsync = async (p: string) => { try { return await realpath(p); } catch { return realOf(p); } };
+const branchOfAsync = async (gitDir: string): Promise<string | undefined> => {
+  try { return /^ref: (\S+)/.exec(await readFileP(join(gitDir, "HEAD"), "utf8"))?.[1]; } catch { return undefined; }
+};
+async function readCheckoutsAsync(root: string, branch: string, base: string | null, at: { own: string; common: string }, names: string[]): Promise<Shared> {
+  const out = new Map<string, string>();
+  const folders: string[] = [];
+  const gitDirs: string[] = [];
+  const add = async (gitDir: string, folder: string | undefined) => {
+    gitDirs.push(gitDir);
+    if (!folder) return;
+    const real = await realAsync(folder);
+    folders.push(real);
+    const b = await branchOfAsync(gitDir);
+    if (b?.startsWith("refs/heads/")) out.set(b.slice(11), real);
+  };
+  await add(at.common, basename(at.common) === ".git" ? dirname(at.common) : undefined);
+  // (In the order of the names, as the synchronous reading has them.)
+  const dirs = names.map((name) => join(at.common, "worktrees", name)).filter((d) => d !== at.own);
+  const where = await Promise.all(dirs.map(async (dir) => { try { return dirname((await readFileP(join(dir, "gitdir"), "utf8")).trim()); } catch { return undefined; } }));
+  for (let k = 0; k < dirs.length; k++) await add(dirs[k]!, where[k]);
+  let remotes: Map<string, string[]> | undefined;
+  try { remotes = parseRemotes(await readFileP(join(at.common, "config"), "utf8")); } catch { /* none */ }
+  return { root: await realAsync(root), gitDir: at.own, common: at.common, branch, base, out, folders, gitDirs, remotes, hosts: [hostname().toLowerCase()], real: realOf };
+}
+
+// localBranches, asynchronously.
+export async function localBranchesAsync(common: string): Promise<Set<string> | undefined> {
+  const out = new Set<string>();
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const e of await readdirP(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) await walk(join(dir, e.name), `${prefix}${e.name}/`);
+      else if (!e.name.endsWith(".lock")) out.add(`${prefix}${e.name}`);
+    }
+  };
+  try { await walk(join(common, "refs/heads"), ""); } catch { /* none loose */ }
+  try {
+    for (const line of (await readFileP(join(common, "packed-refs"), "utf8")).split("\n")) {
+      const m = /^[0-9a-f]+ refs\/heads\/(.+)$/.exec(line);
+      if (m) out.add(m[1]!);
+    }
+  } catch { /* none packed */ }
+  try { if ((await statP(join(common, "reftable"))).isDirectory()) return undefined; } catch { /* files backend */ }
+  return out;
+}
+
 // Every branch of the repository, by name (the loose ones and the packed ones). undefined for a repository whose refs are
 // kept another way (reftable).
 export function localBranches(common: string): Set<string> | undefined {
@@ -127,27 +198,22 @@ export function localBranches(common: string): Set<string> | undefined {
   try { if (statSync(join(common, "reftable")).isDirectory()) return undefined; } catch { /* files backend */ }
   return out;
 }
-// What this worktree's own git made, as the hook of its guard noted it (src/safety/ref-guard.ts).
-export function madeBranches(own: string): Set<string> {
-  try { return new Set(readFileSync(join(own, MADE), "utf8").split("\n").filter((l) => l.startsWith("refs/heads/")).map((l) => l.slice(11))); } catch { return new Set(); }
-}
 // The branches that exist and that this worktree did not make: neither its own, the one its HEAD is on, one made by its
-// own git, nor one an agent under it made. In small letters (a file system that ignores case takes MAIN for main).
-function foreignBranches(common: string, own: string, branch: string, kids: string[]): Set<string> {
+// own git (the ledger, src/safety/made.ts), nor one an agent under it made. In small letters (a file system that
+// ignores case takes MAIN for main).
+function foreignOf(all: Set<string> | undefined, branch: string, kids: string[], head: string | undefined, made: Set<string>): Set<string> {
   const out = new Set<string>();
-  const all = localBranches(common);
   if (!all) return out;
-  const mine = new Set([branch, ...kids, ...madeBranches(own), branchOf(own)?.replace(/^refs\/heads\//, "") ?? ""].map((b) => b.toLowerCase()));
-  // A rename gives the new name no entry of its own in git's reference transaction, only a line in its log.
-  const renamed = (b: string, depth = 0): boolean => {
-    if (mine.has(b.toLowerCase())) return true;
-    if (depth >= 4) return false;
-    let log: string;
-    try { log = readFileSync(join(common, "logs/refs/heads", b), "utf8"); } catch { return false; }
-    return [...log.matchAll(/\tBranch: renamed refs\/heads\/(\S+) to refs\/heads\/(\S+)$/gm)].some((m) => m[2] === b && renamed(m[1]!, depth + 1));
-  };
-  for (const b of all) if (!renamed(b)) out.add(b.toLowerCase());
+  const mine = new Set([branch, ...kids, head?.replace(/^refs\/heads\//, "") ?? ""].map((b) => b.toLowerCase()));
+  for (const b of all) if (!mine.has(b.toLowerCase()) && !made.has(b.toLowerCase())) out.add(b.toLowerCase());
   return out;
+}
+function foreignBranches(common: string, own: string, branch: string, kids: string[]): Set<string> {
+  return foreignOf(localBranches(common), branch, kids, branchOf(own), madeNowSync(common, own));
+}
+async function foreignBranchesAsync(common: string, own: string, branch: string, kids: string[]): Promise<Set<string>> {
+  const [all, made] = await Promise.all([localBranchesAsync(common), madeNow(common, own)]);
+  return foreignOf(all, branch, kids, await branchOfAsync(own), made);
 }
 function readCheckouts(root: string, branch: string, base: string | null, at: { own: string; common: string }, names: string[]): Shared {
   const out = new Map<string, string>();
@@ -176,6 +242,9 @@ function readCheckouts(root: string, branch: string, base: string | null, at: { 
 function remotesOf(common: string): Map<string, string[]> | undefined {
   let text: string;
   try { text = readFileSync(join(common, "config"), "utf8"); } catch { return undefined; }
+  return parseRemotes(text);
+}
+function parseRemotes(text: string): Map<string, string[]> {
   const out = new Map<string, string[]>();
   let at: string | undefined;
   for (const line of text.split("\n")) {

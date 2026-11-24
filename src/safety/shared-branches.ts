@@ -28,7 +28,7 @@
 //
 // Pure: the gate reads the checkouts from the disk (refwatch.ts checkoutsOf).
 import { isAbsolute, join, resolve } from "node:path";
-import { MADE } from "./ref-guard.ts";
+import { PAD } from "./ref-guard.ts";
 import { laid } from "./risk.ts";
 import { name, redirected, SHELLS, type Run } from "./risk-words.ts";
 import { isReadOnly, splitCommand, type Simple } from "./shell.ts";
@@ -233,7 +233,7 @@ export function gitStoreOf(p: string, s: Shared, link = false): string | null {
     return null;
   }
   if (link && within(s.common, p)) return `${p}, where a link makes git read or write another file`;
-  if (within(s.gitDir, p)) return ["HEAD", "commondir", "gitdir", MADE].some((f) => p === join(s.gitDir, f)) ? `${p}, which says what this worktree has out, where its repository is and which branches it made` : null;
+  if (within(s.gitDir, p)) return ["HEAD", "commondir", "gitdir", PAD].some((f) => p === join(s.gitDir, f)) || p.startsWith(`${join(s.gitDir, PAD)}.`) ? `${p}, which says what this worktree has out, where its repository is and which branches its git made while a command runs` : null;
   if (within(s.common, p)) return `${p}, in the repository's git directory, which every checkout shares`;
   if (p === join(s.root, ".git")) return `${p}, which says which repository this worktree is in`;
   for (const f of s.folders) if (within(join(f, ".git"), p)) return `${p}, another checkout's git data`;
@@ -272,6 +272,12 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
   const named = (w: string) => unread(w) || shared.has(branchOf(w).toLowerCase()) || (held ??= heldSet(s)).has(branchOf(w).toLowerCase());
   const what = (w: string) => (unread(w) ? `a branch it names with an expansion (${w})` : `the branch ${branchOf(w)}${s.out.has(branchOf(w)) ? ", which another checkout has out" : shared.has(branchOf(w).toLowerCase()) ? ", this worktree's base" : ", which this worktree did not make"}`);
   const { sub, args } = g;
+  // A file the command writes by name (git log --output=FILE, diff, show, format-patch) is no place in the git data.
+  for (const f of valuesOf(args, ["--output"])) {
+    const at = pathOf(dir, f, home);
+    const what = at === null ? null : gitStoreOf(at, s);
+    if (what) return `writes ${what} (--output)`;
+  }
   if (sub === "branch") {
     const p = operands(args, /^(-u|--set-upstream-to|--contains|--no-contains|--merged|--no-merged|--points-at|--sort|--format|--column)$/);
     if (flag(args, ["--delete"], "d") || flag(args, [], "D")) { const hit = p.find(named); return hit ? `deletes ${what(hit)}` : null; }

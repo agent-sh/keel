@@ -7,10 +7,12 @@ import { realOf } from "../core/paths.ts";
 import { plantsSaid, scanPlants, settle } from "./plants.ts";
 import { checkoutsOf } from "./refwatch.ts";
 import { sharedRefusal } from "./shared-branches.ts";
+import { guardEnv, refGuardRoot } from "./ref-guard.ts";
+import { ledgerSync } from "./made.ts";
 
 const hasGit = !!Bun.which("git");
 
-test.skipIf(!hasGit)("a link or an alternates file a command leaves in the shared git data is set aside; git in the worktree and the main checkout goes on", () => {
+test.skipIf(!hasGit)("a link or an alternates file a command leaves in the shared git data is set aside; git in the worktree and the main checkout goes on", async () => {
   const dir = realOf(mkdtempSync(join(process.env.TMPDIR ?? ".", "plants-")));
   const env = { PATH: process.env.PATH!, HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
   const git = (cwd: string, ...a: string[]) => {
@@ -32,7 +34,7 @@ test.skipIf(!hasGit)("a link or an alternates file a command leaves in the share
     symlinkSync(join(dir, "store"), join(common, "refs", "keep"));
     writeFileSync(join(common, "objects", "info", "alternates"), `${join(dir, "store")}\n`);
     const refs = git(main, "for-each-ref");
-    const before = scanPlants(common, s.gitDir);
+    const before = await scanPlants(common, s.gitDir);
     // What a script of the agent's does.
     symlinkSync("/etc/passwd", join(common, "refs", "heads", "x"));
     mkdirSync(join(common, "logs", "refs", "heads"), { recursive: true });
@@ -44,7 +46,7 @@ test.skipIf(!hasGit)("a link or an alternates file a command leaves in the share
     writeFileSync(join(common, "objects", "info", "http-alternates"), "http://x\n");
     writeFileSync(join(s.gitDir, "commondir"), "/somewhere\n");
     const ordinaryBefore = readFileSync(join(s.gitDir, "gitdir"), "utf8");
-    const done = settle(before.plants, scanPlants(common, s.gitDir, before.marks).plants, s.gitDir, quarantine);
+    const done = settle(before.plants, (await scanPlants(common, s.gitDir, before.marks)).plants, s.gitDir, quarantine);
     const said = plantsSaid(done, common)!;
     expect(done.map((d) => `${d.what} ${d.path.slice(common.length)}`).sort()).toEqual([
       "changed /objects/info/alternates",
@@ -65,7 +67,7 @@ test.skipIf(!hasGit)("a link or an alternates file a command leaves in the share
     expect(readFileSync(join(s.gitDir, "gitdir"), "utf8")).toBe(ordinaryBefore);
     expect(readlinkSync(join(common, "refs", "keep"))).toBe(join(dir, "store"));
     // Nothing else is said: a second look finds nothing new.
-    expect(settle(before.plants, scanPlants(common, s.gitDir, before.marks).plants, s.gitDir, quarantine)).toEqual([]);
+    expect(settle(before.plants, (await scanPlants(common, s.gitDir, before.marks)).plants, s.gitDir, quarantine)).toEqual([]);
     // git in the worktree (its own folder under .git/worktrees) and in the main checkout is as before.
     expect(git(main, "for-each-ref")).toBe(refs);
     writeFileSync(join(agent, "b"), "b\n");
@@ -85,6 +87,14 @@ test.skipIf(!hasGit)("a link or an alternates file a command leaves in the share
 
 test("what is not new is the repository's own: no entries, no note", () => {
   expect(plantsSaid([], "/r/.git")).toBeUndefined();
+});
+
+test("the note says set aside or put back only when something was, and changed for a change it only reports", () => {
+  const other = plantsSaid([{ path: "/r/.git/worktrees/b/gitdir", what: "changed" }], "/r/.git")!;
+  expect(other).toContain("This command made a change to worktrees/b/gitdir");
+  expect(other).toContain("it was left as it is");
+  expect(plantsSaid([{ path: "/r/.git/refs/x", what: "link", kept: "/q/x" }], "/r/.git")).toContain("what could be was set aside or put back");
+  expect(plantsSaid([{ path: "/r/.git/worktrees/a/commondir", what: "changed", put: true }], "/r/.git")).toContain("(put back)");
 });
 
 test.skipIf(!hasGit)("the gate looks for what a worktree agent's command left in the shared git data, and says it in the result", async () => {
@@ -109,7 +119,13 @@ test.skipIf(!hasGit)("the gate looks for what a worktree agent's command left in
     const call = { id: "c1", tool: bash, input: { command: "python3 plant.py" }, ctx: { sessionId: "a1", cwd: agent, signal: new AbortController().signal, spillDir: agent, seen: new Map() } } as never;
     expect(await g.beforeTool(session, call)).not.toHaveProperty("deny");
     symlinkSync("/etc/passwd", join(main, ".git", "refs", "heads", "x"));
+    // (A command of the agent's that makes a branch, through the hook the gate gave it: the gate notes the branch as the
+    // worktree's own after the command, and only then.)
+    const ownEnv = guardEnv(checkoutsOf(agent, "keel/x", "main")!, env);
+    expect(Bun.spawnSync(["git", "branch", "keel/made"], { cwd: agent, env: { ...env, ...ownEnv } }).exitCode).toBe(0);
+    expect(ledgerSync(join(main, ".git", "worktrees", "agent"))).toEqual([]);
     const said = await g.refsChanged("a1", "c1");
+    expect(ledgerSync(join(main, ".git", "worktrees", "agent")).map((e) => e.ref)).toEqual(["refs/heads/keel/made"]);
     expect(said?.planted).toContain("a link at refs/heads/x");
     expect(existsSync(join(main, ".git", "refs", "heads", "x"))).toBe(false);
     // A command that only reads is not watched.
@@ -118,5 +134,6 @@ test.skipIf(!hasGit)("the gate looks for what a worktree agent's command left in
     expect(await g.refsChanged("a1", "c2")).toBeUndefined();
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(refGuardRoot(), { recursive: true, force: true });
   }
 });

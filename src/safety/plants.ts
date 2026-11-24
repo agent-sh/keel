@@ -18,73 +18,79 @@
 // says so. What stood before the command (an alternates file the owner made, a
 // link they keep) is the repository's own and stays.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstat, readdir, readFile, readlink, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
 
 // A place with what stood there: a link's target, or a redirect file's content.
 type Seen = { link: string } | { text: string } | { sha: string };
 export type Plants = Map<string, Seen>;
-export type Plant = { path: string; what: "link" | "file" | "changed" | "gone"; kept?: string };
+export type Plant = { path: string; what: "link" | "file" | "changed" | "gone"; kept?: string; put?: boolean };
 
 const LIMIT = 100_000;
 // The files that say where a repository's objects are, by name.
 const REDIRECTS = ["alternates", "http-alternates"];
 
-function note(out: Plants, p: string, redirect: boolean): void {
+async function note(out: Plants, p: string, redirect: boolean): Promise<void> {
   try {
-    const st = lstatSync(p);
-    if (st.isSymbolicLink()) out.set(p, { link: readlinkSync(p) });
-    else if (st.isFile() && redirect) out.set(p, st.size <= 65_536 ? { text: readFileSync(p, "utf8") } : { sha: createHash("sha256").update(readFileSync(p)).digest("hex") });
+    const st = await lstat(p);
+    if (st.isSymbolicLink()) out.set(p, { link: await readlink(p) });
+    else if (st.isFile() && redirect) out.set(p, st.size <= 65_536 ? { text: await readFile(p, "utf8") } : { sha: createHash("sha256").update(await readFile(p)).digest("hex") });
   } catch { /* gone */ }
 }
 
 // Every link under a folder (not followed), and nothing else.
-function links(dir: string, out: Plants, left: { n: number }): void {
+async function links(dir: string, out: Plants, left: { n: number }): Promise<void> {
   let entries;
-  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
   for (const e of entries) {
     if (left.n-- <= 0) return;
     const p = join(dir, e.name);
-    if (e.isSymbolicLink()) out.set(p, { link: readlinkSync(p) });
-    else if (e.isDirectory()) links(p, out, left);
+    if (e.isSymbolicLink()) { try { out.set(p, { link: await readlink(p) }); } catch { /* gone */ } }
+    else if (e.isDirectory()) await links(p, out, left);
   }
 }
 
 // The places read: links in the repository's directory, refs, logs, hooks and objects, the alternates files, and the
 // files that name where each worktree's repository is. `common`: the repository's git directory; `own`: this
 // worktree's. The 256 folders of loose objects are looked into only when given the marks of an earlier reading, and
-// then only the ones written to since (a link in one is always new: git writes plain files there).
-export function scanPlants(common: string, own: string, since?: Map<string, number>): { plants: Plants; marks: Map<string, number> } {
+// then only the ones written to since (a link in one is always new: git writes plain files there). Read with the
+// asynchronous file calls: a command's reading does not hold the daemon's loop.
+export async function scanPlants(common: string, own: string, since?: Map<string, number>): Promise<{ plants: Plants; marks: Map<string, number> }> {
   const out: Plants = new Map();
   const left = { n: LIMIT };
-  const top = (dir: string) => {
+  const top = async (dir: string) => {
     let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) if (e.isSymbolicLink()) note(out, join(dir, e.name), false);
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    await Promise.all(entries.filter((e) => e.isSymbolicLink()).map((e) => note(out, join(dir, e.name), false)));
   };
-  top(common);
-  top(own);
-  for (const d of ["refs", "logs", "info", "hooks"]) links(join(common, d), out, left);
   const objects = join(common, "objects");
-  top(objects);
-  links(join(objects, "info"), out, left);
-  links(join(objects, "pack"), out, left);
-  for (const f of REDIRECTS) note(out, join(objects, "info", f), true);
   const marks = new Map<string, number>();
-  try {
-    for (const e of readdirSync(objects, { withFileTypes: true })) {
-      if (!e.isDirectory() || !/^[0-9a-f]{2}$/.test(e.name)) continue;
-      const p = join(objects, e.name);
-      const m = statSync(p).mtimeMs;
-      marks.set(p, m);
-      if (since !== undefined && since.get(p) !== m) links(p, out, left);
-    }
-  } catch { /* no objects */ }
-  for (const f of ["gitdir", "commondir"]) note(out, join(own, f), true);
-  try {
-    for (const name of readdirSync(join(common, "worktrees"))) for (const f of ["gitdir", "commondir"]) note(out, join(common, "worktrees", name, f), true);
-  } catch { /* no linked worktrees */ }
+  await Promise.all([
+    top(common), top(own), top(objects),
+    ...["refs", "logs", "info", "hooks"].map((d) => links(join(common, d), out, left)),
+    links(join(objects, "info"), out, left), links(join(objects, "pack"), out, left),
+    ...REDIRECTS.map((f) => note(out, join(objects, "info", f), true)),
+    (async () => {
+      try {
+        const dirs = (await readdir(objects, { withFileTypes: true })).filter((e) => e.isDirectory() && /^[0-9a-f]{2}$/.test(e.name));
+        await Promise.all(dirs.map(async (e) => {
+          const p = join(objects, e.name);
+          const m = (await stat(p)).mtimeMs;
+          marks.set(p, m);
+          if (since !== undefined && since.get(p) !== m) await links(p, out, left);
+        }));
+      } catch { /* no objects */ }
+    })(),
+    ...["gitdir", "commondir"].map((f) => note(out, join(own, f), true)),
+    (async () => {
+      try {
+        const names = await readdir(join(common, "worktrees"));
+        await Promise.all(names.flatMap((name) => ["gitdir", "commondir"].map((f) => note(out, join(common, "worktrees", name, f), true))));
+      } catch { /* no linked worktrees */ }
+    })(),
+  ]);
   return { plants: out, marks };
 }
 
@@ -113,15 +119,16 @@ export function settle(before: Plants, after: Plants, own: string, at: string = 
   };
   const alternates = (p: string) => /(^|\/)(http-)?alternates$/.test(p);
   const ownFile = (p: string) => /(^|\/)(gitdir|commondir)$/.test(p) && dirname(p) === own;
-  for (const [p, now] of after) {
+  for (const [p, now] of [...after].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     const was = before.get(p);
     if (same(was, now)) continue;
     if ("link" in now) { keep(p, "link"); if (was && "text" in was) restore(p, was); continue; }
     // A redirect file: a new alternates file is moved out; one that held something else gets its words back (this
     // worktree's own, and the alternates file; a change to another worktree's is said, since Keel moves those itself).
     if (!was) { if (alternates(p)) keep(p, "file"); continue; }
-    if (alternates(p) || ownFile(p)) restore(p, was);
-    done.push({ path: p, what: "changed" });
+    const put = alternates(p) || ownFile(p);
+    if (put) restore(p, was);
+    done.push({ path: p, what: "changed", ...(put ? { put } : {}) });
   }
   for (const [p, was] of before) {
     // A redirect file taken away: a worktree without its gitdir or commondir is lost to git.
@@ -137,8 +144,9 @@ export function plantsSaid(done: Plant[], common: string): string | undefined {
   const each = done.slice(0, 6).map((d) => {
     const p = short(d.path, common);
     const where = d.kept ? ` (moved to ${d.kept})` : "";
-    return d.what === "link" ? `a link at ${p}${where}` : d.what === "file" ? `the file ${p}${where}` : d.what === "changed" ? `a change to ${p}` : `${p} taken away (put back)`;
+    return d.what === "link" ? `a link at ${p}${where}` : d.what === "file" ? `the file ${p}${where}` : d.what === "changed" ? `a change to ${p}${d.put ? " (put back)" : ""}` : `${p} taken away (put back)`;
   });
   const more = done.length > 6 ? ` and ${done.length - 6} more` : "";
-  return `This command left ${each.join(", ")}${more} in the git data this worktree shares with the repository's other checkouts. A link or a redirect file there makes git in every checkout read or write somewhere else, so what could be was set aside or put back. Use git's own commands in your own worktree instead, and say in your report what you wanted done.`;
+  const acted = done.some((d) => d.kept !== undefined || d.put || d.what === "gone");
+  return `This command ${done.every((d) => d.what === "changed") ? "made" : "left"} ${each.join(", ")}${more} in the git data this worktree shares with the repository's other checkouts. A link or a redirect file there makes git in every checkout read or write somewhere else; ${acted ? "what could be was set aside or put back" : "it was left as it is"}. Use git's own commands in your own worktree instead, and say in your report what you wanted done.`;
 }

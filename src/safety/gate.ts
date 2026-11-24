@@ -21,7 +21,8 @@ import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
 import { realPrograms } from "./shims.ts";
 import { readOnlyCommand, shimmedPrograms, splitCommand } from "./shell.ts";
-import { checkoutsOf, report, watch, type Watch } from "./refwatch.ts";
+import { checkoutsOf, checkoutsOfAsync, report, watch, type Watch } from "./refwatch.ts";
+import { settleMade } from "./made.ts";
 import { guardEnv } from "./ref-guard.ts";
 import { plantsSaid, scanPlants, settle, type Plants } from "./plants.ts";
 import { setCallEnv } from "../tools/jobs.ts";
@@ -659,7 +660,7 @@ export class Gate {
     const moved = this.rootMoved(session);
     if (moved) return { deny: moved.replace(/^Refused: /, "") };
     await this.credentialValuesOf(session, { kind: "shell", command, cwd: session.workspace });
-    const shared = session.parent_id ? this.sharedOf(session) : undefined;
+    const shared = session.parent_id ? await this.sharedFresh(session) : undefined;
     const env = shared ? timed(() => "making the hook that keeps an agent off the shared branches", () => guardEnv(shared)) : {};
     const p = this.perm(session.id);
     if (p.sandbox === "off" || !this.sandboxed(session, p)) return { wrap: (argv) => argv, env };
@@ -1339,11 +1340,8 @@ export class Gate {
     }
   }
 
-  // The checkouts an agent's worktree shares its branches with, when the agent
-  // works in a worktree Keel made: its own, or the one of the agent it runs
-  // under (the nearest that holds its folder). Read at each command: a checkout
-  // made or gone, or a branch taken out, since the last one counts.
-  private sharedOf(session: Session): Shared | undefined {
+  // The row of the worktree an agent works in, and the branches of the agents under it.
+  private sharedRow(session: Session): { row: { path: string; branch: string; base: string; session_id: string }; base: string | null; kids: string[] } | undefined {
     let row: { path: string; branch: string; base: string; session_id: string } | null;
     try {
       row = this.store.db.query<{ path: string; branch: string; base: string; session_id: string }, [string, string]>(
@@ -1362,7 +1360,37 @@ export class Gate {
         "WITH RECURSIVE sub(id) AS (SELECT id FROM sessions WHERE parent_id = ?1 UNION SELECT s.id FROM sessions s JOIN sub ON s.parent_id = sub.id) SELECT branch FROM worktrees WHERE session_id IN (SELECT id FROM sub) AND branch != ''",
       ).all(row.session_id).map((r) => r.branch);
     } catch { /* (no worktree was ever made) */ }
-    return timed(() => "reading the checkouts an agent's worktree shares its branches with", () => checkoutsOf(row.path, row.branch, base, kids));
+    return { row, base, kids };
+  }
+  // What was read for a session last (by the asynchronous reading below), for the decisions that are made without
+  // waiting for the disk: the same checkouts, for the same worktree row.
+  private sharedKept = new Map<string, { sig: string; shared: Shared | undefined }>();
+  private sharedSig = (r: { row: { path: string; branch: string }; base: string | null; kids: string[] }) => [r.row.path, r.row.branch, r.base ?? "", ...r.kids].join("\0");
+  private keepShared(id: string, sig: string, shared: Shared | undefined): void {
+    if (this.sharedKept.size >= 512) this.sharedKept.delete(this.sharedKept.keys().next().value!);
+    this.sharedKept.set(id, { sig, shared });
+  }
+  // Read off the loop: `line` is the command about to be judged, and the branches that are not the worktree's are read
+  // with it only when it names git (any other rule asks for them when it needs them).
+  private async sharedFresh(session: Session, line?: string): Promise<Shared | undefined> {
+    const r = this.sharedRow(session);
+    if (!r) { this.sharedKept.delete(session.id); return undefined; }
+    const shared = await checkoutsOfAsync(r.row.path, r.row.branch, r.base, r.kids, line !== undefined && /git/i.test(line));
+    this.keepShared(session.id, this.sharedSig(r), shared);
+    return shared;
+  }
+  // The checkouts an agent's worktree shares its branches with, when the agent works in a worktree Keel made: its
+  // own, or the one of the agent it runs under (the nearest that holds its folder). Read at each command (sharedFresh
+  // does it before the command is judged); a decision made in between takes that reading, for the same worktree.
+  private sharedOf(session: Session): Shared | undefined {
+    const r = this.sharedRow(session);
+    if (!r) return undefined;
+    const sig = this.sharedSig(r);
+    const kept = this.sharedKept.get(session.id);
+    if (kept && kept.sig === sig) return kept.shared;
+    const shared = timed(() => "reading the checkouts an agent's worktree shares its branches with", () => checkoutsOf(r.row.path, r.row.branch, r.base, r.kids));
+    this.keepShared(session.id, sig, shared);
+    return shared;
   }
 
   // What stands on this machine under the names of the programs a command's reading forms depend on (node
@@ -1430,14 +1458,15 @@ export class Gate {
     // An agent in a worktree Keel made: every git its command starts carries the hook that keeps the branches the
     // worktree shares where they are (ref-guard.ts).
     if (r.cls.kind === "shell" && session.parent_id && !session.machine) {
-      const shared = this.sharedOf(session);
+      const shared = await this.sharedFresh(session);
       const env = shared ? timed(() => "making the hook that keeps an agent off the shared branches", () => guardEnv(shared)) : {};
       if (Object.keys(env).length) setCallEnv(session.id, call.id, env);
       // What it leaves in the git data the worktree shares (links, redirect files) is looked for after it (plants.ts).
       if (shared && !(r.cls.interpreter === undefined && readOnlyCommand(r.cls.command))) {
         if (this.plantWatches.size >= 256) this.plantWatches.delete(this.plantWatches.keys().next().value!);
-        const { plants, marks } = timed(() => "reading the links and redirect files of the git data an agent's worktree shares", () => scanPlants(shared.common, shared.gitDir));
-        this.plantWatches.set(callKey(session.id, call.id), { common: shared.common, own: shared.gitDir, before: plants, marks });
+        const at = Date.now();
+        const { plants, marks } = await scanPlants(shared.common, shared.gitDir);
+        this.plantWatches.set(callKey(session.id, call.id), { common: shared.common, own: shared.gitDir, before: plants, marks, at });
       }
     }
     const p = this.perm(session.id);
@@ -1481,7 +1510,7 @@ export class Gate {
   // what it changed in the repository outside its own branch, in one
   // sentence, or no note.
   private watches = new Map<string, Watch>();
-  private plantWatches = new Map<string, { common: string; own: string; before: Plants; marks: Map<string, number> }>();
+  private plantWatches = new Map<string, { common: string; own: string; before: Plants; marks: Map<string, number>; at: number }>();
   // The refs a session's own commands made in its running turn: deleting or
   // moving one of them again is its own work, and is not reported.
   private ownRefs = new Map<string, Set<string>>();
@@ -1491,7 +1520,13 @@ export class Gate {
     this.watches.delete(key);
     const pw = this.plantWatches.get(key);
     this.plantWatches.delete(key);
-    const planted = pw ? timed(() => "setting aside the links and redirect files a command left in the shared git data", () => plantsSaid(settle(pw.before, scanPlants(pw.common, pw.own, pw.marks).plants, pw.own), pw.common)) : undefined;
+    let planted: string | undefined;
+    if (pw) {
+      const after = (await scanPlants(pw.common, pw.own, pw.marks)).plants;
+      planted = timed(() => "setting aside the links and redirect files a command left in the shared git data", () => plantsSaid(settle(pw.before, after, pw.own), pw.common));
+      // What its git made in this worktree is noted as the worktree's own (made.ts).
+      try { await settleMade(pw.common, pw.own, pw.at); } catch { /* the notes are only what lets the agent move its own branches */ }
+    }
     if (!w) return planted ? { planted } : undefined;
     let own = this.ownRefs.get(sessionId);
     if (!own) this.ownRefs.set(sessionId, (own = new Set()));
@@ -1575,6 +1610,8 @@ export class Gate {
     // What the disk says of the paths a command names is asked off the loop, and only when the decision asked
     // for it: the first reading of a line decides most of them. Nothing is asked for a session on another machine.
     const facts: CallFacts = { real: names.length ? await this.real(names) : undefined };
+    // (The checkouts an agent's worktree shares are read here, off the loop, for the decision below.)
+    if (session.parent_id && !session.machine && (judged.kind === "shell" || judged.kind === "edit")) await this.sharedFresh(session, judged.kind === "shell" ? judged.command : undefined);
     // The calls of one reply are checked side by side, and their cards list in call order: a call goes on from
     // here only after the calls before it have, however long the disk took over any of them.
     const prior = this.asking.get(session.id);

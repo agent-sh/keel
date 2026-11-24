@@ -5,6 +5,7 @@
 // a session never believes it is confined when it is not.
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { access, lstat, readFile, realpath } from "node:fs/promises";
 import { atCwd, contains, realOf } from "../core/paths.ts";
 import { basename, dirname, join, resolve } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
@@ -265,6 +266,26 @@ export function linkedWorktree(workspace: string): { dot: string; own: string; c
     const back = atCwd(own, readFileSync(join(own, "gitdir"), "utf8").trim());
     if (there(dirname(back)) !== there(workspace) || basename(back) !== ".git") return undefined;
     if (!["HEAD", "objects", "refs"].every((p) => existsSync(join(common, p)))) return undefined;
+    return { dot, own, common };
+  } catch {
+    return undefined;
+  }
+}
+
+// linkedWorktree, read with the asynchronous file calls: the same answer, off the loop.
+export async function linkedWorktreeAsync(workspace: string): Promise<{ dot: string; own: string; common: string } | undefined> {
+  try {
+    const dot = join(workspace, ".git");
+    if (!(await lstat(dot)).isFile()) return undefined;
+    const named = /^gitdir: (.+)$/m.exec(await readFile(dot, "utf8"))?.[1]?.trim();
+    if (!named) return undefined;
+    const own = await realpath(atCwd(workspace, named));
+    const common = dirname(dirname(own));
+    if (basename(dirname(own)) !== "worktrees") return undefined;
+    if ((await realpath(atCwd(own, (await readFile(join(own, "commondir"), "utf8")).trim()))) !== common) return undefined;
+    const back = atCwd(own, (await readFile(join(own, "gitdir"), "utf8")).trim());
+    if ((await realpath(dirname(back))) !== (await realpath(workspace)) || basename(back) !== ".git") return undefined;
+    for (const p of ["HEAD", "objects", "refs"]) await access(join(common, p));
     return { dot, own, common };
   } catch {
     return undefined;

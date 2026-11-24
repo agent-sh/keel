@@ -9,8 +9,8 @@
 // a non-zero exit in the "prepared" state aborts the whole transaction). The
 // hook refuses an update of the worktree's base branch, of a branch another
 // checkout has out, and of any branch that exists and that this worktree did not
-// make (it notes the branches its own git makes beside its HEAD, and a renamed
-// one is known by the rename in its log), a symbolic HEAD put on one, and a change of another
+// make (the branches its own git makes are noted with the line that begins each one's log, and a renamed
+// one is known by the rename in its log), a symbolic HEAD put on one of those, and a change of another
 // checkout's HEAD.
 //
 // How git is given it: the command's environment carries, after the pairs it
@@ -43,10 +43,14 @@ import { offerToSandbox } from "./sandbox-view.ts";
 import type { Shared } from "./shared-branches.ts";
 import { homeDir } from "../core/paths";
 
-// What this worktree's git made, by ref, one a line, in its own git directory: the hook writes it (the gate refuses
-// any other write there, shared-branches.ts) and the gate reads it.
-export const MADE = "keel-made-branches";
+// The branches this worktree's git made, in two places (src/safety/made.ts says how they are kept and checked):
+// the pad, in its own git directory, which the hook writes while a command runs (a confined command can write there,
+// so the gate refuses any other write to it and nothing counts from it after the command), and the ledger, in Keel's own
+// folder for the agent, which only the daemon writes (the hook reads it).
+export const PAD = "keel-made-pad";
 export const refGuardRoot = () => join(dirname(gitViewsDir()), "ref-guard");
+export const guardDirOf = (gitDir: string) => join(refGuardRoot(), createHash("sha256").update(gitDir).digest("hex").slice(0, 24));
+export const ledgerOf = (gitDir: string) => join(guardDirOf(gitDir), "made");
 // A confined command runs the hook too: its folder is shown read-only in every sandbox.
 offerToSandbox(() => [refGuardRoot()]);
 
@@ -113,7 +117,8 @@ branch=${shq(`refs/heads/${s.branch}`)}
 base=${shq(base)}
 others=${shq((s.gitDirs ?? []).join("\n"))}
 kids=${shq((s.kids ?? []).map((b) => `refs/heads/${b}`).join("\n"))}
-made="$own/${MADE}"
+ledger=${shq(ledgerOf(s.gitDir))}
+pad="$own/${PAD}"
 orig=${shq(join(orig, "reference-transaction"))}
 nl='
 '
@@ -155,30 +160,53 @@ unmoved() {
 }
 # (The old value in a transaction is zero where the command gave none, so a ref's own files say whether it exists.)
 exists() { [ -f "$common/$1" ] || grep -q -e " $1\\$" "$common/packed-refs" 2>/dev/null; }
-# A branch of this worktree's: its own, the one it is on, one an agent under it made, one its own git made before (the
-# list beside its HEAD), or one of those renamed (git writes the new name of a rename with no entry of its own in
-# the transaction, and says it in that branch's log).
+# A branch of this worktree's: its own, the one it is on, one an agent under it made, or one its own git made. A
+# made one is known by the line that begins its log (when it was made, from what): the ledger (Keel's, written after
+# a command) and the pad (this worktree's git directory, written by this hook while a command runs) hold that line
+# with the name it was made under. A branch the owner makes under the name of one deleted begins with another line. A
+# renamed one carries its log along, and says each rename in it.
+first() { f=; [ -f "$common/logs/$1" ] && { IFS= read -r f < "$common/logs/$1" || :; }; printf '%s' "$f"; }
+listed() {
+  for lf in "$ledger" "$pad"; do
+    [ -f "$lf" ] && grep -qxF -e "$1 $2" "$lf" && return 0
+  done
+  return 1
+}
 mine() {
   [ "$1" = "$branch" ] && return 0
   line=
   IFS= read -r line < "$own/HEAD" || :
   [ "$line" = "ref: $1" ] && return 0
   case "$nl$kids$nl" in *"$nl$1$nl"*) return 0 ;; esac
-  [ -f "$made" ] && grep -qxF "$1" "$made" && return 0
-  [ "$2" -ge 4 ] && return 1
-  [ -f "$common/logs/$1" ] || return 1
-  for from in $(sed -nE "s|^.*$tab"'Branch: renamed (refs/heads/[^ ]*) to '"$1"'$|\\1|p' "$common/logs/$1" 2>/dev/null); do
-    mine "$from" $(($2 + 1)) && return 0
+  fl=$(first "$1")
+  # (A rename moves the branch's log away before it deletes the old name: a branch with no log is known by its name.)
+  if [ -z "$fl" ]; then
+    [ -f "$common/logs/$1" ] && return 1
+    for lf in "$ledger" "$pad"; do
+      [ -f "$lf" ] || continue
+      while read -r r rest; do [ "$r" = "$1" ] && return 0; done < "$lf"
+    done
+    return 1
+  fi
+  listed "$1" "$fl" && return 0
+  for from in $(sed -nE "s|^.*$tab"'Branch: renamed (refs/heads/[^ ]*) to refs/heads/[^ ]*$|\\1|p' "$common/logs/$1" 2>/dev/null); do
+    listed "$from" "$fl" && return 0
   done
   return 1
 }
 # A branch that exists and that this worktree did not make.
 foreign() { exists "$1" && ! mine "$1" 0; }
-# What this worktree's git makes is its own to move: noted where only git writes (the gate refuses a write there),
-# once the transaction that makes it went through.
-pending="$made.$PPID"
+# What this worktree's git makes is its own to move: noted in the pad (the gate refuses a write there), once the
+# transaction that makes it went through, with the line that begins its log.
+pending="$pad.$PPID"
 if [ "$1" = committed ]; then
-  if [ -f "$pending" ]; then cat "$pending" >> "$made" 2>/dev/null || :; rm -f "$pending"; fi
+  if [ -f "$pending" ]; then
+    while IFS= read -r r || [ -n "$r" ]; do
+      fl=$(first "$r")
+      [ -n "$fl" ] && { printf '%s %s\\n' "$r" "$fl" >> "$pad" 2>/dev/null || :; }
+    done < "$pending"
+    rm -f "$pending"
+  fi
 elif [ "$1" = aborted ]; then rm -f "$pending"
 fi
 if [ "$1" = prepared ] && [ -n "$input" ]; then
@@ -193,7 +221,10 @@ if [ "$1" = prepared ] && [ -n "$input" ]; then
         if [ "$here" != "$own" ]; then
           case "$nl$others$nl" in *"$nl$here$nl"*) refuse "changes what another checkout of this repository has out ($here)" ;; esac
         fi
-        case "$new" in ref:refs/heads/*) shared "\${new#ref:}" && refuse "puts a checkout on the branch \${new#ref:refs/heads/}, which this worktree shares" ;; esac
+        case "$new" in ref:refs/heads/*)
+          shared "\${new#ref:}" && refuse "puts a checkout on the branch \${new#ref:refs/heads/}, which this worktree shares"
+          foreign "\${new#ref:}" && refuse "puts a checkout on the branch \${new#ref:refs/heads/}, which this worktree did not make" ;;
+        esac
         ;;
       refs/heads/*)
         if shared "$ref" && ! unmoved "$old" "$new" "$ref"; then refuse "moves the branch \${ref#refs/heads/}, which this worktree shares"; fi
@@ -219,7 +250,7 @@ export function guardFor(s: Shared, env: Record<string, string | undefined> = pr
   // (A pattern character in the repository's path would be read as one by includeIf: no guard is given there.)
   if (/[*?[\\\n]/.test(s.common)) return undefined;
   if (!pruned) { pruned = true; pruneGuards(); }
-  const dir = join(refGuardRoot(), createHash("sha256").update(s.gitDir).digest("hex").slice(0, 24));
+  const dir = guardDirOf(s.gitDir);
   const files = configFiles(s.common, s.gitDir, env);
   const orig = hooksOf(s, env);
   const origAbs = isAbsolute(orig) ? orig : resolve(s.root, orig);

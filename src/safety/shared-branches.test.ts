@@ -76,9 +76,12 @@ test("with no list of branches the rule is the one for the base and the checkout
   expect(sharedRefusal("git branch -D main", s.root, "/home/u", bare)).not.toBeNull();
 });
 
-test("the list of the branches this worktree made is written by git alone", () => {
-  expect(gitStoreOf("/r/.git/worktrees/wt/keel-made-branches", s)).not.toBeNull();
-  expect(sharedRefusal("echo refs/heads/old-work >> /r/.git/worktrees/wt/keel-made-branches", s.root, "/home/u", s)).not.toBeNull();
+test("the pad of the branches this worktree's git made is written by git alone", () => {
+  expect(gitStoreOf("/r/.git/worktrees/wt/keel-made-pad", s)).not.toBeNull();
+  expect(gitStoreOf("/r/.git/worktrees/wt/keel-made-pad.4242", s)).not.toBeNull();
+  expect(sharedRefusal("echo refs/heads/old-work >> /r/.git/worktrees/wt/keel-made-pad", s.root, "/home/u", s)).not.toBeNull();
+  expect(sharedRefusal("git log --output=/r/.git/worktrees/wt/keel-made-pad", s.root, "/home/u", s)).toContain("--output");
+  expect(sharedRefusal("git diff --output=/r/wt/out.patch", s.root, "/home/u", s)).toBeNull();
 });
 
 test("a command does not write the other object stores git reads, nor make a link in the shared git data", () => {
