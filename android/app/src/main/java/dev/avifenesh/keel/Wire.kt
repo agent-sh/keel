@@ -1082,14 +1082,14 @@ data class LandArea(val area: String, val files: Int, val added: Int, val remove
  */
 data class LandCard(
     val key: String, val chatId: String, val title: String, val agentChat: String, val agentTitle: String, val agentState: String,
-    val branch: String, val base: String, val head: String, val ahead: Int?, val behind: Int?,
+    val branch: String, val base: String, val baseTip: String, val head: String, val ahead: Int?, val behind: Int?,
     val checksState: String, val passed: List<String>, val failed: List<String>, val notRun: List<String>, val checksWhy: String,
     val verdict: String, val reviewer: String, val reviewTitle: String, val reviewLine: String, val reviewCurrent: Boolean?,
     val proof: String, val areas: List<LandArea>, val queueState: String, val queueWhy: String,
     val ready: Boolean, val missing: List<String>, val fp: String,
 ) {
     val short get() = head.take(9)
-    /** "2 ahead · 1 behind main": where the head stands against the base, when git said. */
+    /** "2 ahead · 1 behind main": where the head stands against the base, when git said (counted against `baseTip`, the base's commit then). */
     val against get() = listOfNotNull(ahead?.let { "$it ahead" }, behind?.takeIf { it > 0 }?.let { "$it behind ${base.ifBlank { "the base" }}" }).joinToString(" · ")
     /** "typecheck, unit passed · e2e failed": the checks in a line. */
     val checksLine get() = when (checksState) {
@@ -1119,7 +1119,7 @@ data class LandCard(
             val q = o.optJSONObject("queue")
             return LandCard(
                 o.str("key"), o.str("chat_id"), o.str("title"), o.str("agent_chat"), o.str("agent_title"), o.str("agent_state"),
-                o.str("branch"), o.str("base"), o.str("head"), if (o.isNull("ahead")) null else o.optInt("ahead"), if (o.isNull("behind")) null else o.optInt("behind"),
+                o.str("branch"), o.str("base"), o.str("base_tip"), o.str("head"), if (o.isNull("ahead")) null else o.optInt("ahead"), if (o.isNull("behind")) null else o.optInt("behind"),
                 c.str("state"), strs(c.optJSONArray("passed")), strs(c.optJSONArray("failed")), strs(c.optJSONArray("not_run")), c.str("why"),
                 r?.str("verdict").orEmpty(), r?.str("by").orEmpty(), r?.str("title").orEmpty(), r?.str("line").orEmpty(),
                 r?.let { if (it.isNull("current")) null else it.optBoolean("current") },

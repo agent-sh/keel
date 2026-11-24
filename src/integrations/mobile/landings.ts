@@ -64,8 +64,9 @@ export function landings(d: LandingsDeps) {
     return out;
   };
 
-  const cardOf = async (root: string, row: BoardRow): Promise<LandCard> =>
-    landCard({ root, title: d.store.session(root)?.title || "New chat", row, report: d.report(row.id), numstat: row.repo && row.base && row.head ? await numstat(row.repo, row.base, row.head) : "" });
+  const cardOf = async (root: string, row: BoardRow, repos: { repo: string; base_tip: string | null }[] = []): Promise<LandCard> =>
+    landCard({ root, title: d.store.session(root)?.title || "New chat", row, report: d.report(row.id), baseTip: repos.find((x) => x.repo === row.repo)?.base_tip ?? null,
+      numstat: row.repo && row.base && row.head ? await numstat(row.repo, row.base, row.head) : "" });
 
   // Every card, ready first.
   async function list(): Promise<LandCard[]> {
@@ -74,7 +75,7 @@ export function landings(d: LandingsDeps) {
     const out: (LandCard & { at: number })[] = [];
     for (const root of roots()) {
       const board = await b.read(root).catch(() => undefined);
-      for (const row of board?.rows ?? []) if (isCard(row)) out.push({ ...(await cardOf(root, row)), at: row.ended ?? row.created });
+      for (const row of board?.rows ?? []) if (isCard(row)) out.push({ ...(await cardOf(root, row, board?.repos)), at: row.ended ?? row.created });
     }
     return out.sort(cardOrder).map(({ at, ...c }) => c);
   }
@@ -85,8 +86,9 @@ export function landings(d: LandingsDeps) {
     const root = key.slice(0, Math.max(0, dot)), agent = key.slice(dot + 1);
     const b = d.board();
     if (!b || !root || !agent || !d.store.session(root)) return null;
-    const row = (await b.read(root, true)).rows.find((r) => r.id === agent);
-    return row && isCard(row) ? { card: await cardOf(root, row), repo: row.repo } : null;
+    const board = await b.read(root, true);
+    const row = board.rows.find((r) => r.id === agent);
+    return row && isCard(row) ? { card: await cardOf(root, row, board.repos), repo: row.repo } : null;
   }
 
   // The card as shown (`fp`), or why not: its facts changed, or it is gone.
@@ -120,7 +122,9 @@ export function landings(d: LandingsDeps) {
     if ("status" in got) return got;
     const c = got.card;
     const words = `The owner sent your branch ${c.branch} back from the phone, at ${c.head.slice(0, 9)}; it was not landed. Their words:\n${text}`;
-    const r = await d.sendBack(c.agent_id, words, `phone-back:${c.key}:${c.fp}`);
+    // The key is of these words on this card: other words on the same card are another message, the same
+    // words sent twice are one.
+    const r = await d.sendBack(c.agent_id, words, `phone-back:${c.key}:${c.fp}:${Bun.hash(text).toString(36)}`);
     return { sent: { waits: r.waits, held: !!r.held }, card: c };
   }
 

@@ -20,7 +20,7 @@ export type LandCard = {
   chat_id: string;             // the session whose tree it is
   title: string;               // that session's title
   agent_id: string; agent_chat: string; agent_title: string; agent_state: string;
-  branch: string; base: string | null; head: string; ahead: number | null; behind: number | null;
+  branch: string; base: string | null; base_tip: string | null; head: string; ahead: number | null; behind: number | null;
   checks: CardChecks;
   review: CardReview | null;
   proof: string;               // what the check ledger saw of the agent's checks; "" when its report has none
@@ -103,11 +103,12 @@ export function missingOf(checks: CardChecks, review: CardReview | null): string
 
 // The print of what a card shows: a decision is taken on these facts and no others.
 export function cardPrint(c: Omit<LandCard, "fp" | "ready" | "missing">): string {
-  const facts = [c.key, c.branch, c.head, c.base ?? "", c.agent_state, JSON.stringify(c.checks), JSON.stringify(c.review && { v: c.review.verdict, by: c.review.by, cur: c.review.current, line: c.review.line }), c.proof, JSON.stringify(c.queue)];
+  const facts = [c.key, c.branch, c.head, c.base ?? "", c.base_tip ?? "", String(c.ahead ?? ""), String(c.behind ?? ""), c.agent_state, JSON.stringify(c.checks), JSON.stringify(c.review && { v: c.review.verdict, by: c.review.by, cur: c.review.current, line: c.review.line }), c.proof, JSON.stringify(c.queue)];
   return Bun.hash(facts.join("\u0000")).toString(36);
 }
 
-export function landCard(o: { root: string; title: string; row: BoardRow; report: string | null; numstat: string }): LandCard {
+// `baseTip`: the commit the base is at, from the board's repository (the card's behind line is counted against it).
+export function landCard(o: { root: string; title: string; row: BoardRow; report: string | null; numstat: string; baseTip?: string | null }): LandCard {
   const r = o.row;
   const review: CardReview | null = r.review ? { verdict: r.review.verdict, by: r.review.by, title: r.review.title, line: r.review.line, current: r.review.current, panel: r.review.how === "panel" } : null;
   const checks = cardChecks(r.checks);
@@ -115,7 +116,7 @@ export function landCard(o: { root: string; title: string; row: BoardRow; report
   const body = {
     key: `${o.root}.${r.id}`, chat_id: o.root, title: o.title,
     agent_id: r.id, agent_chat: r.session_id, agent_title: r.title, agent_state: r.state,
-    branch: r.branch!, base: r.base, head: r.head!, ahead: r.ahead, behind: r.behind,
+    branch: r.branch!, base: r.base, base_tip: o.baseTip ?? null, head: r.head!, ahead: r.ahead, behind: r.behind,
     checks, review, proof: proofOf(o.report), areas: areasOf(o.numstat),
     queue: q ? { state: q.state, why: q.why } : null,
   };

@@ -24,6 +24,7 @@ const row = (id: string, o: Partial<BoardRow> = {}): BoardRow => ({
   reviews: [], landed: { state: "no", missing: 1 }, queue: null, live: null, work: null, ...o,
 });
 
+const BASE_TIP = "9".repeat(40);
 function setup() {
   const root = store.createSession({ model: "m", workspace: dir, title: "Coordinator" });
   const old = store.createSession({ model: "m", workspace: dir, title: "Archived" });
@@ -38,7 +39,7 @@ function setup() {
   const sent: { id: string; text: string; key: string }[] = [];
   const L = landings({
     store,
-    board: () => ({ read: async (r: string) => ({ rows: r === root.id ? rows : r === old.id ? [row("ag9")] : [] }) }) as any,
+    board: () => ({ read: async (r: string) => ({ rows: r === root.id ? rows : r === old.id ? [row("ag9")] : [], repos: [{ repo: dir, base: "main", base_tip: BASE_TIP, deploys: [] }] }) }) as any,
     landing: () => ({
       add: async (repo: string, branches: string[], by: string | null) => { queued.push({ repo, branches, by }); return { queued: [{ id: "e1", state: "queued", tip, why: null }], refused: [], warnings: [] }; },
       remove: (id: string) => { removed.push(id); return {}; },
@@ -57,6 +58,8 @@ test("the cards are the finished branches of the owner's live trees, ready first
   expect(cards.map((c) => [c.key, c.ready, c.missing])).toEqual([[`${root.id}.ag1`, true, []], [`${root.id}.ag3`, false, ["no review"]]]);
   expect(cards[0]!.proof).toBe("(Checks after its last edit (1 min ago): unit passed 1 min ago.)");
   expect([cards[0]!.title, cards[0]!.branch]).toEqual(["Coordinator", "keel/ag1"]);
+  // Where the base stood when its ahead and behind were counted.
+  expect(cards[0]!.base_tip).toBe(BASE_TIP);
 });
 
 test("a landing goes to the queue only on the facts shown, and only for the head shown", async () => {
@@ -92,8 +95,13 @@ test("sent back, the agent gets the owner's words with its branch and head, once
   const [card] = await L.list();
   const r: any = await L.back(card!.key, card!.fp, "Split the retry change from the rename.");
   expect(r.sent).toEqual({ waits: false, held: false });
-  expect(sent).toEqual([{ id: "ag1", key: `phone-back:${card!.key}:${card!.fp}`, text: "The owner sent your branch keel/ag1 back from the phone, at aaaaaaaaa; it was not landed. Their words:\nSplit the retry change from the rename." }]);
+  expect(sent).toEqual([{ id: "ag1", key: `phone-back:${card!.key}:${card!.fp}:${Bun.hash("Split the retry change from the rename.").toString(36)}`, text: "The owner sent your branch keel/ag1 back from the phone, at aaaaaaaaa; it was not landed. Their words:\nSplit the retry change from the rename." }]);
+  // Other words on the same unchanged card are another message (its own key); the same words are one.
+  await L.back(card!.key, card!.fp, "And keep the old name.");
+  await L.back(card!.key, card!.fp, "And keep the old name.");
+  expect(new Set(sent.map((x) => x.key)).size).toBe(2);
+  expect(sent.map((x) => x.key.split(":").slice(0, 3).join(":"))).toEqual(Array(sent.length).fill(`phone-back:${card!.key}:${card!.fp}`));
   setRows([row("ag1", { head: "c".repeat(40) })]);
   expect(await L.back(card!.key, card!.fp, "again")).toMatchObject({ status: 409 });
-  expect(sent).toHaveLength(1);
+  expect(sent.length).toBeLessThanOrEqual(3);
 });

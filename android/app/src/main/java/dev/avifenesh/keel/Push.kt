@@ -81,14 +81,14 @@ object Notify {
         runCatching { nm.notify(LIVE, LIVE_ID, b.build()) }
     }
 
+    /** The app is in front and shows what runs itself: the notification goes, and a swipe of it is still kept. */
+    fun hideLive(c: Context) { runCatching { c.getSystemService(NotificationManager::class.java).cancel(LIVE, LIVE_ID) } }
+
     /**
      * A "live" push. In front, the app shows what runs itself, and the notification is set as it goes to
      * the back: none is put up then. One that says nothing runs still takes a shown one down. True when
      * the notification was set.
      */
-    /** The app is in front and shows what runs itself: the notification goes, and a swipe of it is still kept. */
-    fun hideLive(c: Context) { runCatching { c.getSystemService(NotificationManager::class.java).cancel(LIVE, LIVE_ID) } }
-
     fun livePush(c: Context, l: Live): Boolean = (!Ui.inFront || !l.shown).also { if (it) live(c, l) }
 
     private fun idOf(key: String) = key.hashCode()
@@ -107,8 +107,8 @@ object Notify {
      * and Deny; a question or a plan opens its session. A notification shows one line, so
      * Allow sits on it only for a request that line shows whole: a held one
      * (long, cut, marked, high risk) gets Open and Deny, and is read in the app.
+     * `to`: where it leads when it names no session ("errors": a failure with no session to open opens the Errors view).
      */
-    /** `to`: where it leads when it names no session ("errors": a failure with no session to open opens the Errors view). */
     fun post(c: Context, kind: String, chat: String?, title: String, body: String, aid: String?, allow: Boolean, to: String = "") {
         val high = kind in setOf("approval", "question", "failed", "loop_failed", "limit", "test")
         val b = NotificationCompat.Builder(c, if (high) NEEDS else UPDATES)

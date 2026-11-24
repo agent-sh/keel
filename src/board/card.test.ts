@@ -11,7 +11,7 @@ const row = (o: Partial<BoardRow> = {}): BoardRow => ({
   reviews: [], landed: { state: "no", missing: 2 }, queue: null, live: null, work: null, ...o,
 });
 const card = (r: BoardRow, report = "Done.\n(Checks after its last edit (2 min ago): typecheck passed 1 min ago.)\nLeft: nothing", numstat = "") =>
-  landCard({ root: "s-root", title: "Coordinator", row: r, report, numstat });
+  landCard({ root: "s-root", title: "Coordinator", row: r, report, numstat, baseTip: "d".repeat(40) });
 
 test("a finished branch the base lacks is a card; work in progress, a queued head and a landed branch are not", () => {
   expect(isCard(row())).toBe(true);
@@ -45,7 +45,12 @@ test("the print changes with every fact the card shows, and with nothing else", 
     row({ review: { ...row().review!, verdict: "refused" } }),
     row({ review: { ...row().review!, line: "another reason" } }),
     row({ state: "stopped" }),
+    row({ behind: 2 }),
+    row({ ahead: 3 }),
   ]) expect(card(changed).fp).not.toBe(base);
+  // The base moved under the same name: what the card says of how far behind it is was read against another commit.
+  expect(landCard({ root: "s-root", title: "Coordinator", row: row(), report: "x", numstat: "", baseTip: "e".repeat(40) }).fp).not.toBe(landCard({ root: "s-root", title: "Coordinator", row: row(), report: "x", numstat: "", baseTip: "d".repeat(40) }).fp);
+  expect(card(row()).base_tip).toBe("d".repeat(40));
   expect(card(row(), "Done.\n(Checks: none ran; it made 2 edits.)").fp).not.toBe(base);
 });
 

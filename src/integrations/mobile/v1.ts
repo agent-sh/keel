@@ -1176,7 +1176,9 @@ export function mobileApi(ctx: MobileCtx) {
       POST: signed(withBody(async (req, dev, b) => {
         const L = ctx.landings;
         if (!L) return err("this daemon runs no work board", 409);
-        const key = decodeURIComponent(req.params.key!), action = req.params.action;
+        let key: string;
+        try { key = decodeURIComponent(req.params.key!); } catch { return err("the key is not a valid path part", 400); }
+        const action = req.params.action;
         const fp = typeof b.fp === "string" ? b.fp : "";
         if (!fp) return err("fp is the print of the card as it was shown", 400);
         let r: any;

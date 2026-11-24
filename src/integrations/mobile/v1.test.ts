@@ -109,7 +109,7 @@ const landRow = (o: any = {}) => ({ id: "ag1", session_id: "s-ag1", parent_id: "
   branch: "keel/fix-retry", repo: dir, base: "main", head: H, ahead: 2, behind: 1, worktree: "here", checks: { state: "known", passed: ["typecheck", "unit"], failed: [], notRun: [] },
   review: { by: "rv1", title: "Review the retry fix", how: "named", state: "completed", verdict: "approved", source: "verdict", line: "Bounded.", tip: H, of: H, current: true, at: 1 },
   reviews: [], landed: { state: "no", missing: 2 }, queue: null, live: null, ...o });
-let landNow = landCard({ root: "s-root", title: "Mobile round", row: landRow() as any, report: "Done.\n(Checks after its last edit (4 min ago): unit passed 2 min ago.)", numstat: "84\t12\tsrc/a.ts\n20\t2\tandroid/b.kt" });
+let landNow = landCard({ root: "s-root", title: "Mobile round", row: landRow() as any, report: "Done.\n(Checks after its last edit (4 min ago): unit passed 2 min ago.)", numstat: "84\t12\tsrc/a.ts\n20\t2\tandroid/b.kt", baseTip: "9b1e0c4d7a2f5836e1d0c9b8a7f6e5d4c3b2a190" });
 // One whose checks are not known and that left the queue, with no review: every field of a card is sent.
 const landLeft = landCard({ root: "s-root", title: "Mobile round", row: landRow({ id: "ag2", session_id: "s-ag2", state: "stopped", base: null, ahead: null, behind: null, checks: { state: "unknown", why: "its worktree was removed" }, review: null,
   queue: { id: "lq-0", state: "left", why: "unit failed on the rebased tree", landed: null, tip: H, current: true, updated: 1 } }) as any, report: null, numstat: "" });
@@ -640,6 +640,10 @@ describe("landings", () => {
     expect(await call("POST", `${path}/back`, { fp: "old", text: "again" })).toMatchObject({ status: 409, body: { error: "gone", card: null } });
     expect((await call("POST", `${path}/merge`, { fp: landNow.fp })).status).toBe(400);
     expect((await call("POST", `${path}/land`, {})).status).toBe(400);
+    // A key that is not a valid percent-encoding is a bad request, not a failure of the daemon.
+    landAsked.length = 0;
+    expect((await call("POST", "/v1/landings/s-root.%E0%A4%A/back", { fp: landNow.fp, text: "words" })).status).toBe(400);
+    expect(landAsked).toEqual([]);
   });
 });
 
