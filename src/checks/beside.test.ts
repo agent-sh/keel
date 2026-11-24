@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { changed, commandOf, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
+import { changed, commandOf, covers, dueAt, failureOf, finished, fingerprint, fresh, hostLoadOf, importsOf, limitOf, noticeText, NOTICE_MAX, parentWords, placeOf, refsIn, RUN_MAX_MS, started, sweepable, testFilesOf, testsFor, toTell, toWhom, treeReadsOf, turnEnded, WINDOW_MS, type Red } from "./beside.ts";
 import { parseChecks } from "./named.ts";
 
 test("the steps of a window are one run, one run at a time, and a turn's end runs what waits at once", () => {
@@ -169,4 +169,12 @@ test("where a run goes: here with room, else the host with room, else the line h
   expect(placeOf({ localFree: false, host: null, hostLoad: undefined, share: 0.83 })).toBe("line");
   expect(hostLoadOf("1.70 2.30 2.36 3/900 1234\n32\n")).toEqual({ load1: 1.7, cores: 32 });
   expect(hostLoadOf("")).toBeUndefined();
+});
+
+test("a run of a check covers the files of a run beside it when it is the whole check or names each of them", () => {
+  const [unit] = parseChecks(JSON.stringify({ checks: { unit: { run: "bun test", args: true, tests: ["**/*.test.ts"], beside: true } } })).checks;
+  expect(covers(unit!, [], "bun test src/a.test.ts")).toBe(true); // a check of the whole tree: any run of it
+  expect(covers(unit!, ["src/a.test.ts"], "bun test")).toBe(true);
+  expect(covers(unit!, ["src/a.test.ts", "src/b.test.ts"], "bun test ./src/b.test.ts  'src/a.test.ts'")).toBe(true);
+  expect(covers(unit!, ["src/a.test.ts", "src/b.test.ts"], "bun test src/a.test.ts")).toBe(false);
 });

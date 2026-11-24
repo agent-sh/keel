@@ -248,6 +248,17 @@ export async function afterCall(s: Session, call: ToolCall, result: ToolResultBl
   else result.content = [...result.content, { type: "text", text: note }];
 }
 
+// Whether the agent of a session has a run of this check on these files on its way (its call has not
+// ended): the check beside the agent (src/checks/beside-run.ts) leaves it to that run, which says
+// what it finds to the agent itself. A run whose tree is taken at its end is not known by it.
+// `covers`: whether the command of that run checks what the caller would (it may be a narrower run).
+export function inFlight(sessionId: string, name: string, tree: string, inputs: string | null, covers: (command: string) => boolean = () => true): boolean {
+  if (!tree) return false;
+  const mine = `${sessionId}\n`;
+  for (const [at, ps] of pending) if (at.startsWith(mine) && ps.some((p) => p.by === "agent" && p.name === name && p.tree === tree && p.inputs === inputs && covers(p.command))) return true;
+  return false;
+}
+
 // A call that failed before its command ran leaves nothing waiting.
 export function dropCall(sessionId: string, id: string) {
   const at = slot(sessionId, id);

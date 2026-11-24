@@ -179,6 +179,17 @@ export function commandOf(check: Check, files: readonly string[] = []): string {
   return `${check.run} ${files.map((f) => { const rel = check.dir === "." ? f : relative(check.dir, f); return quote(rel.startsWith(".") ? rel : `./${rel}`); }).join(" ")}`;
 }
 
+// Whether an agent's run of a check (its command as it was run) covers the files a run beside it would give
+// the check: the check whole (what it takes no files for, or the command with none), or a run that names each
+// of those files.
+export function covers(check: Check, files: readonly string[], ran: string): boolean {
+  if (!files.length) return true;
+  const words = ran.trim().split(/\s+/);
+  if (words.join(" ") === check.run.trim().split(/\s+/).join(" ")) return true;
+  const named = new Set(words.map((w) => w.replace(/^(["'])(.*)\1$/, "$2").replace(/^\.\//, "")));
+  return files.every((f) => named.has((check.dir === "." ? f : relative(check.dir, f)).replace(/^\.\//, "")));
+}
+
 // --- what a failure says
 
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g;

@@ -13,7 +13,7 @@ import { Worktrees } from "../worktree/manager.ts";
 import { afterCall, afterStep, afterTurn, bindBeside, laneOf } from "./beside-run.ts";
 import { scratchName, BESIDE_DIR, type AgentState } from "./beside.ts";
 import { bindLedger, keyOf, ofSession, record, repoOf, treeOf } from "./ledger.ts";
-import { baseFor } from "./runs.ts";
+import { baseFor, beforeCall, dropCall } from "./runs.ts";
 
 const dir = tempTree("keel-beside-run-");
 const store = new Store(join(dir, "state"));
@@ -134,6 +134,29 @@ test("a red found while the agent waits on its own is told at its next step, or 
   for (let i = 0; i < 100 && !toAgent.length; i++) await Bun.sleep(10);
   expect(toAgent.map((t) => t.text.includes("error: x is 2"))).toEqual([true]);
   expect(toParent).toHaveLength(0);
+});
+
+// The agent's own call of the check, on its way: what the shell tool gives beforeCall.
+const own = (top: string, id: string, command: string) => ({ id, tool: { kind: "shell" }, input: { command }, ctx: { cwd: top } }) as any;
+
+test("no run beside while the agent's own run of the check on these files is on its way, and one when it checks less", async () => {
+  const { top, session, write } = repo({ "lib.sh": "x=1\n", "lib.test.sh": "exit 0\n", "other.test.sh": "exit 0\n" });
+  const sess = () => store.session(session.id)!;
+  // Its own run of the whole check, begun on the files as they are: the run beside would be the same work.
+  write("lib.sh", "x=2\n");
+  await beforeCall(sess(), own(top, "c1", "sh t.sh"));
+  step(session);
+  await idle(session.id);
+  expect(ran(session.id)).toEqual([]);
+  dropCall(session.id, "c1");
+  // Its run names only another test file: the files this change touches are not checked by it.
+  write("lib.sh", "x=3\n");
+  await beforeCall(sess(), own(top, "c2", "sh t.sh ./other.test.sh"));
+  step(session);
+  await idle(session.id);
+  expect(ran(session.id)).toHaveLength(1);
+  expect(ran(session.id)[0]).toContain("./lib.test.sh");
+  dropCall(session.id, "c2");
 });
 
 test("the copy of the files goes when the agent's turn ends with nothing running or waiting", async () => {

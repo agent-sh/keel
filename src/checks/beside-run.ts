@@ -29,9 +29,9 @@ import { INSTALL_MS, mainTop, packagesFor, readsIn, runCommand, type Ran } from 
 import * as cache from "./package-cache.ts";
 import { setupLineOf } from "../landing/pairs.ts";
 import { timed } from "../admin/stall.ts";
-import { BESIDE_DIR, besideOf, changed, commandOf, dueAt, failureOf, finished, fresh, hostLoadOf, limitOf, noticeText, parentWords, perFile, PICK_MAX, placeOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
+import { BESIDE_DIR, besideOf, changed, commandOf, covers, dueAt, failureOf, finished, fresh, hostLoadOf, limitOf, noticeText, parentWords, perFile, PICK_MAX, placeOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
 import { countsOf } from "./counts.ts";
-import { baseFor } from "./runs.ts";
+import { baseFor, inFlight } from "./runs.ts";
 import { baseOf, inputsOf, keyOf, namedFor, objectsOf, ofSession, onTree, record, repoOf, treeOf, type Repo } from "./ledger.ts";
 import type { Check } from "./named.ts";
 
@@ -241,6 +241,11 @@ async function runIn(id: string, held: string[]): Promise<Done> {
     const inputs = inputsOf(repo.top, check.inputs) ?? null;
     // Run on these files already (by the agent itself, or before): not again.
     if (onTree(key, tree, inputs).length) { stats.skipped++; continue; }
+    // The agent's own run of this check on these files is on its way: it reads its own result, and a run beside
+    // it would do the same work at the same time. (Asked again when the run has its place in the pool's line.)
+    const by = (c: string) => covers(check, tests, c);
+    const covered = () => onTree(key, tree, inputs).length > 0 || inFlight(id, check.name, tree, inputs, by);
+    if (inFlight(id, check.name, tree, inputs, by)) { stats.skipped++; continue; }
     // What its test files took here before; a check of the whole tree, what the session's own runs of it took.
     const own = () => ofSession(id, 0, 200).filter((r) => r.name === check.name && (r.result === "pass" || r.result === "fail")).map((r) => r.ended - r.started);
     const limitMs = tests.length ? limitOf(tests.length, rates.get(rate)) : limitFor(own());
@@ -250,7 +255,7 @@ async function runIn(id: string, held: string[]): Promise<Done> {
     // The packages it reads could not be had: not run, and not the agent's red.
     const lacks = pk.failed.get(check.dir);
     if (lacks) { ran.push(check.name); setups.push({ name: check.name, line: lacks, check, command, t0, log: null }); continue; }
-    const r = await runCheck(id, s, check, command, scratch, tool, limitMs, repo, pk.shown);
+    const r = await runCheck(id, s, check, command, scratch, tool, limitMs, repo, pk.shown, covered);
     if (!r) continue;
     ran.push(!tests.length ? check.name : of > tests.length ? `${check.name} (the ${tests.length} most direct of the ${of} test files the change touches)` : `${check.name} (${tests.length} test file${tests.length === 1 ? "" : "s"})`);
     if (r.where) where = r.where;
@@ -321,7 +326,7 @@ async function readRefs(scratch: string, copy: Copy, checks: readonly Check[]) {
 // One check on the copy: on this machine through the heavy pool (behind every other command), or on the
 // owner's host when this machine has no room and one is set. Undefined: it could not run (said nowhere:
 // the agent's own run of the check says what it says).
-async function runCheck(id: string, s: Session, check: Check, command: string, scratch: string, tool: string, limitMs: number, repo: Repo, shown: readonly string[] = []): Promise<{ ran: Ran; log: string; where?: string } | undefined> {
+async function runCheck(id: string, s: Session, check: Check, command: string, scratch: string, tool: string, limitMs: number, repo: Repo, shown: readonly string[] = [], covered: () => boolean = () => false): Promise<{ ran: Ran; log: string; where?: string } | undefined> {
   const cwd = check.dir === "." ? scratch : join(scratch, check.dir);
   if (!existsSync(cwd)) return undefined;
   const cfg = setting();
@@ -338,6 +343,8 @@ async function runCheck(id: string, s: Session, check: Check, command: string, s
     if ("refused" in howToRun(d!.perm(id), confined)) return undefined;
     const slot = await pool.take({ session: id, who: "beside", command });
     if (slot === "aborted") return undefined;
+    // The line may have been long: the agent's own run of it may have come in the meantime.
+    if (covered()) { slot?.release(); stats.skipped++; return undefined; }
     mkdirSync(tool, { recursive: true });
     try {
       ran = await runCommand({ cwd, tool, env: { ...toolEnv(id), CI: "1" }, command, limitMs, wrap: confined?.wrap, unit: `keel-beside-${process.pid}-${Date.now() % 1_000_000}-${stats.runs}`, session: s.id, mark: "beside" });
