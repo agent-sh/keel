@@ -1,11 +1,11 @@
 // File operations every family's tools share: reading pages of text, images,
 // PDFs and notebooks; exact-string edits with the quote and line-ending
 // tolerance models need; the read-before-overwrite guard; glob and ripgrep.
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, statSync } from "node:fs";
-import { mkdir, open, readdir } from "node:fs/promises";
+import { closeSync, constants, existsSync, fstat as fstatCb, lstatSync, open as openCb, readlinkSync, statSync, type Stats } from "node:fs";
+import { chmod, lstat, mkdir, open, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { atCwd, canonical, contains, realOf } from "../core/paths.ts";
-import { heldFile, heldWrite } from "../core/store-files.ts";
+import { atCwd, canonical, canonicalOf, contains, realOf } from "../core/paths.ts";
+import { heldFile, heldFileOf, heldWrite, heldWriteOf } from "../core/store-files.ts";
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { notFound } from "./missing.ts";
 import { mtimes } from "./fs-bound.ts";
@@ -27,6 +27,8 @@ export function fileOf(input: Record<string, unknown> | undefined, key: string, 
   return { p: abs(named, ctx) };
 }
 export const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return -1; } };
+// The same, asked on the thread pool: what a write asks of a path that may be on a mount that stopped answering.
+export const mtimeOf = (p: string) => stat(p).then((st) => st.mtimeMs, () => -1);
 
 // ---- the file a tool opens is the file that was judged ----------------------
 
@@ -109,15 +111,21 @@ function clearedBy(ctx: HoldContext, p: string, cls: "read" | "write"): Judged |
   const now = Date.now(), head = `${cls}\0`;
   return find([...m].filter(([k, v]) => v.until >= now && k.startsWith(head)).map(([k, v]) => ({ path: k.slice(head.length), id: v.id })));
 }
-export type HoldContext = { judged?: string[]; looked?: Record<string, string | null>; sessionId?: string };
+export type HoldContext = { judged?: string[]; looked?: Record<string, string | null>; sessionId?: string; signal?: AbortSignal };
+
+// The kernel's answers to a hold's opens come from the thread pool, never from the loop: a mount that stops
+// answering stalls the call (which a Stop ends), not the daemon. A descriptor is a number, as the hold keeps them.
+const openAt = (path: string, flags: number, mode?: number) => new Promise<number>((res, rej) => openCb(path, flags, mode ?? 0o666, (e, fd) => e ? rej(e) : res(fd)));
+const fstatOf = (fd: number) => new Promise<Stats>((res, rej) => fstatCb(fd, (e, st) => e ? rej(e) : res(st)));
+
 
 // A folder by its descriptor: opened without following a link at its name, and the same folder the path names
 // (the descriptor's own path). `make`: its missing parts are made, each inside the descriptor of the part above.
-function openFolder(dir: string, make: boolean): { fd: number } | { missing: true } | { moved: string } {
+async function openFolder(dir: string, make: boolean, stopped?: () => string | undefined): Promise<{ fd: number } | { missing: true } | { moved: string }> {
   const flags = O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-  const open = (path: string): number | NodeJS.ErrnoException => { try { return openSync(path, flags); } catch (e) { return e as NodeJS.ErrnoException; } };
+  const open = async (path: string): Promise<number | NodeJS.ErrnoException> => { try { return await openAt(path, flags); } catch (e) { return e as NodeJS.ErrnoException; } };
   const is = (fd: number, path: string) => { try { return readlinkSync(fdPath(fd)) === path; } catch { return false; } };
-  const whole = open(dir);
+  const whole = await open(dir);
   if (typeof whole === "number") {
     if (is(whole, dir)) return { fd: whole };
     closeSync(whole);
@@ -133,7 +141,7 @@ function openFolder(dir: string, make: boolean): { fd: number } | { missing: tru
     if (up === at) return { moved: "no folder of its path can be opened" };
     parts.unshift(basename(at));
     at = up;
-    const got = open(at);
+    const got = await open(at);
     if (typeof got === "number") {
       if (!is(got, at)) { closeSync(got); return { moved: "a folder of its path is somewhere else now" }; }
       fd = got;
@@ -142,9 +150,11 @@ function openFolder(dir: string, make: boolean): { fd: number } | { missing: tru
     if (got.code !== "ENOENT") return { moved: `a folder of its path cannot be opened (${got.code ?? "it failed"})` };
   }
   for (const part of parts) {
+    // (A call that was stopped makes no more folders.)
+    { const no = stopped?.(); if (no) { closeSync(fd); return { moved: no }; } }
     const child = `${fdPath(fd)}/${part}`;
-    try { mkdirSync(child); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") { closeSync(fd); return { moved: `a folder of its path cannot be made (${(e as NodeJS.ErrnoException).code ?? "it failed"})` }; } }
-    const next = open(child);
+    try { await mkdir(child); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") { closeSync(fd); return { moved: `a folder of its path cannot be made (${(e as NodeJS.ErrnoException).code ?? "it failed"})` }; } }
+    const next = await open(child);
     closeSync(fd);
     if (typeof next !== "number") return { moved: "a folder of its path became a link or a file while it was made" };
     fd = next;
@@ -154,13 +164,22 @@ function openFolder(dir: string, make: boolean): { fd: number } | { missing: tru
   return { moved: "its folder is somewhere else now" };
 }
 
-export function hold(given: string, ctx: HoldContext, how: "read" | "write" | "folder"): Held | { refused: string } {
+export async function hold(given: string, ctx: HoldContext, how: "read" | "write" | "folder"): Promise<Held | { refused: string }> {
+  // A file's folder is opened while the questions about its path are asked, for a hold that makes nothing: a hold is
+  // as few waits for the thread pool as its steps depend on each other. It is let go when the path is refused.
+  const early = { open: PROC && how === "read" ? openFolder(dirname(given), false) : undefined, taken: false };
+  try { return await holdWith(given, ctx, how, early); } finally {
+    if (!early.taken) early.open?.then((f) => { if ("fd" in f) try { closeSync(f.fd); } catch {} });
+  }
+}
+async function holdWith(given: string, ctx: HoldContext, how: "read" | "write" | "folder", early: { open?: ReturnType<typeof openFolder>; taken: boolean }): Promise<Held | { refused: string }> {
   // (A caller that names the file through a link: where it is. The tools pass what realOf answered already.)
-  const p = canonical(given) ? given : realOf(given);
+  const [was, keptAsGiven] = await Promise.all([canonicalOf(given), heldFileOf(given)]);
+  const p = was ? given : realOf(given);
   // The daemon's own store and claim are never opened from inside the daemon, by any name: closing a descriptor of
   // such a file gives up the lock the daemon holds on it.
-  { const kept = heldFile(p); if (kept) return { refused: kept }; }
-  if (!canonical(p)) {
+  { const kept = was ? keptAsGiven : await heldFileOf(p); if (kept) return { refused: kept }; }
+  if (!was && !(await canonicalOf(p))) {
     // (A path the kernel refuses is answered by realOf as it was given: say what the kernel says of it.)
     let why = "its path holds a link or a `..`";
     try { lstatSync(p); } catch (e) { why = `the path cannot be opened (${(e as NodeJS.ErrnoException).code ?? "it failed"})`; }
@@ -181,48 +200,49 @@ export function hold(given: string, ctx: HoldContext, how: "read" | "write" | "f
   if (!PROC) {
     // No descriptor's path to read: the name's kind, without following a link, and then the name.
     let st: ReturnType<typeof lstatSync> | undefined;
-    try { st = lstatSync(p); } catch {} // not there
+    try { st = await lstat(p); } catch {} // not there
     if (st?.isSymbolicLink()) return moved(p, "it is a link now");
     const odd = st && KINDS.find(([is]) => is(st!));
     if (odd) return { refused: `${p} is ${odd[1]}, not a file: nothing is read from it or written to it.` };
     if (st && typeof judged === "string" && `${st.dev}:${st.ino}` !== judged) return moved(p, "another file has its name now");
     if (!st && how === "read") return absent();
-    if (how !== "read") mkdirSync(dirname(p), { recursive: true });
+    if (how !== "read") await mkdir(dirname(p), { recursive: true });
     return { path: p, io: p, existed: !!st, beside: (name) => join(dirname(p), name), close() {} };
   }
   const dir = dirname(p), base = basename(p);
   const fds: number[] = [];
   const close = () => { for (const fd of fds.splice(0)) try { closeSync(fd); } catch {} };
   try {
-    const folder = openFolder(dir, how !== "read");
+    // (A Stop ends the call that waits on this; the call itself goes on to its end and gives back what it holds.)
+    const stopped = () => ctx.signal?.aborted ? { refused: `${p} was not opened: the call was stopped.` } : undefined;
+    const folder = early.open && was ? (early.taken = true, await early.open) : await openFolder(dir, how !== "read", () => ctx.signal?.aborted ? "the call was stopped" : undefined);
+    if ("fd" in folder) fds.push(folder.fd);
     if ("missing" in folder) return absent();
-    if ("moved" in folder) return moved(p, folder.moved);
-    fds.push(folder.fd);
+    if ("moved" in folder) return ctx.signal?.aborted ? (stopped() ?? moved(p, folder.moved)) : moved(p, folder.moved);
     const beside = (name: string) => `${fdPath(folder.fd)}/${name}`;
     let io = beside(base), existed = true;
     if (how !== "folder") {
       let fd: number | undefined;
       // A bare handle on whatever has the name, a link itself included: nothing is followed, nothing blocks.
-      try { fd = openSync(beside(base), O_PATH | constants.O_NOFOLLOW); } catch (e) {
+      try { fd = await openAt(beside(base), O_PATH | constants.O_NOFOLLOW); } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         if (code !== "ENOENT") { close(); return code === "ELOOP" ? moved(p, "it is a link now") : { refused: `${p} could not be opened: ${(e as Error).message}` }; }
       }
+      if (fd !== undefined) fds.push(fd);
       if (fd === undefined) {
         existed = false;
         if (how === "read") { close(); return absent(); }
         if (typeof judged === "string") { close(); return moved(p, "it is gone"); }
+        // (A call that was stopped while its folder was opened creates nothing.)
+        { const no = stopped(); if (no) return close(), no; }
         // Made here and only here: a name that appeared meanwhile, a link among them, is not written through.
-        // (A synchronous create, like every open of `hold`: the call's paths were asked about off the loop first
-        // (fs-bound.ts), so the folder is in the kernel's caches. A mount that stalls between that answer and this
-        // open still holds the loop; making `hold` asynchronous is the remedy, filed as its own item.)
-        try { fd = openSync(beside(base), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o666); } catch (e) {
+        try { fd = await openAt(beside(base), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o666); } catch (e) {
           close();
           return (e as NodeJS.ErrnoException).code === "EEXIST" ? moved(p, "something took its name while the call ran") : { refused: `${p} could not be made: ${(e as Error).message}` };
         }
         fds.push(fd);
       } else {
-        fds.push(fd);
-        const st = fstatSync(fd);
+        const st = await fstatOf(fd);
         if (st.isSymbolicLink()) { close(); return moved(p, "it is a link now"); }
         const odd = KINDS.find(([is]) => is(st));
         if (odd) { close(); return { refused: `${p} is ${odd[1]}, not a file: nothing is read from it or written to it.` }; }
@@ -370,7 +390,7 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
 // (ctx.room) instead of one page and the whole-file limit.
 export async function readFile(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean } = {}): Promise<ReadResult> {
   // The file is held for the whole read: what is read is the file that was judged (hold).
-  const h = hold(p, ctx, "read");
+  const h = await hold(p, ctx, "read");
   if ("refused" in h) return { content: h.refused, error: true };
   // A spilled output the storage retention removed is said to be that, not a file that never was.
   if (!h.existed) { h.close(); return { content: removedNote(p, ctx.spillDir) ?? notFound(p, ctx.cwd), error: true }; }
@@ -503,14 +523,14 @@ async function readNotebook(p: string, ctx: ToolContext): Promise<ReadResult> {
 // Overwriting a whole file the model has not seen loses work it does not know
 // about: the first try shows the file and marks it seen, so the next applies.
 export async function guardOverwrite(p: string, ctx: ToolContext): Promise<string | null> {
-  const m = mtime(p);
-  if (m === -1) return heldWrite(p) ?? null;
-  { const held = heldWrite(p); if (held) return held; }
+  const m = await mtimeOf(p);
+  if (m === -1) return await heldWriteOf(p) ?? null;
+  { const held = await heldWriteOf(p); if (held) return held; }
   const seen = ctx.seen.get(p);
   if (seen === undefined) {
     ctx.seen.set(p, m);
     let head = "";
-    const h = hold(p, ctx, "read");
+    const h = await hold(p, ctx, "read");
     if ("refused" in h) return h.refused;
     // (Its start only, and never a read that holds the loop: the file is a session's to name.)
     try {
@@ -525,18 +545,20 @@ export async function guardOverwrite(p: string, ctx: ToolContext): Promise<strin
 
 // Writes a file. It answers with words when the write was refused (the tool gives them to the model as its result).
 export async function writeFile(p: string, content: string, ctx: ToolContext): Promise<string | undefined> {
-  { const held = heldWrite(p); if (held) throw new Error(held); }
+  { const held = await heldWriteOf(p); if (held) throw new Error(held); }
   // The file is held while it is written: made in its folder and nowhere else when it is new, the same file when
   // it is there (hold).
-  const h = hold(p, ctx, "write");
+  const h = await hold(p, ctx, "write");
   if ("refused" in h) return h.refused;
+  // (A call stopped while its file was held writes nothing.)
+  if (ctx.signal?.aborted) { h.close(); return `${p} was not written: the call was stopped.`; }
   try {
     let mode: number | undefined;
-    if (h.existed) try { mode = statSync(h.io).mode; } catch {}
+    if (h.existed) try { mode = (await stat(h.io)).mode; } catch {}
     await Bun.write(h.io, content);
-    if (mode !== undefined) chmodSync(h.io, mode & 0o7777);
+    if (mode !== undefined) await chmod(h.io, mode & 0o7777);
   } finally { h.close(); }
-  ctx.seen.set(p, mtime(p));
+  ctx.seen.set(p, await mtimeOf(p));
   return undefined;
 }
 
@@ -676,7 +698,7 @@ export async function editFile(p: string, oldS: string, newS: string, all: boole
   const m = mtime(p);
   if (m === -1) return { error: notFound(p, ctx.cwd) };
   { const held = heldWrite(p); if (held) return { error: held }; }
-  const h = hold(p, ctx, "read");
+  const h = await hold(p, ctx, "read");
   if ("refused" in h) return { error: h.refused };
   if (!h.existed) { h.close(); return { error: notFound(p, ctx.cwd) }; }
   let bytes: Uint8Array;
@@ -709,7 +731,7 @@ export const GLOB_SCAN_MAX = 20_000;
 // `ctx`: the call's context. The folder is held and scanned from its handle (hold): a folder that became a link
 // between the gate's look and the scan is not listed.
 export async function globFiles(pattern: string, root: string, cwd: string, cap = 100, ctx?: HoldContext): Promise<{ files: string[]; truncated: boolean; stopped?: string; ceiling?: string } | { error: string }> {
-  const h = ctx ? hold(root, ctx, "read") : undefined;
+  const h = ctx ? await hold(root, ctx, "read") : undefined;
   if (h && "refused" in h) return { error: h.refused };
   try { return await globHeld(pattern, root, h?.io ?? root, cwd, cap); } finally { h?.close(); }
 }

@@ -522,7 +522,7 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
     let original: string | null = null;
     let mode: number | null = null;
     // The file is held while it is read: the file that was judged, by its descriptor (files.ts hold).
-    const h = hold(real, opts, "read");
+    const h = await hold(real, opts, "read");
     if ("refused" in h) throw new Error(h.refused);
     try {
       if (h.existed) {
@@ -607,7 +607,7 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
     const f = files.get(real)!;
     if (f.original !== null && f.current === null) {
       // (Removed by its name inside its folder, held: a name is not followed when it is removed.)
-      const h = hold(real, opts, "folder");
+      const h = await hold(real, opts, "folder");
       if ("refused" in h) throw new Error(h.refused);
       try { await rm(h.beside(basename(real))); } finally { h.close(); }
     }
@@ -619,7 +619,7 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
 async function writeAtomic(path: string, content: string, mode: number | null, ctx: HoldContext) {
   // The folder is held (made when missing): the temp file is made in it and takes the file's name there, which is
   // not followed if it is a link by then.
-  const h = hold(path, ctx, "folder");
+  const h = await hold(path, ctx, "folder");
   if ("refused" in h) throw new Error(h.refused);
   const tmp = h.beside(`.${basename(path)}.keel-tmp-${crypto.randomUUID()}`);
   try {

@@ -1,4 +1,5 @@
 import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -115,6 +116,22 @@ export function canonical(p: string): boolean {
     }
   }
   return true;
+}
+
+// The same answer, the kernel asked on the thread pool: for a path that may be on a mount that stopped
+// answering, which stalls the call that asks (a Stop ends it), not the loop. A path that is its own real path
+// has no link, `.` or `..` in it: one question for a file that is there, and for one that is not, the folders
+// above it up to the first that is (and a name that is a link to nowhere is a link).
+export async function canonicalOf(p: string): Promise<boolean> {
+  if (!isAbsolute(p) || (p !== "/" && (p.endsWith("/") || p.includes("//")))) return false;
+  if (p.split("/").some((c) => c === "." || c === "..")) return false;
+  for (let at = p; ; at = dirname(at)) {
+    try { return (await realpath(at)) === at; } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    try { await lstat(at); return false; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return false; } // there as a link to nowhere
+    if (dirname(at) === at) return true;
+  }
 }
 
 // The names in a folder, read from the folder itself: it is opened without following a link at its name, what was

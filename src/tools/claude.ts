@@ -2,7 +2,7 @@
 // argument shapes and result wording (code.claude.com/docs/en/tools-reference).
 import { realOf } from "../core/paths.ts";
 import { heldWrite } from "../core/store-files.ts";
-import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, mtime, readFile, ripgrep, writeFile } from "./files.ts";
+import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, mtime, mtimeOf, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -149,7 +149,7 @@ const Write: Tool = {
     if ("error" in at) return fail(at.error);
     const p = at.p;
     const content = String(input.content ?? "");
-    const existed = mtime(p) !== -1;
+    const existed = (await mtimeOf(p)) !== -1;
     const g = await guardOverwrite(p, ctx);
     if (g) return fail(g);
     if (existed && content.includes("�")) return fail("The content holds U+FFFD, the mark of bytes that did not decode; write the real characters.");
@@ -203,7 +203,7 @@ const NotebookEdit: Tool = {
     if (!ctx.seen.has(p)) return fail(`Read ${p} before editing it.`);
     { const held = heldWrite(p); if (held) return fail(held); }
     let nb: any;
-    const h = hold(p, ctx, "read");
+    const h = await hold(p, ctx, "read");
     if ("refused" in h) return fail(h.refused);
     if (!h.existed) { h.close(); return fail(`${p} does not exist.`); }
     try { nb = JSON.parse(await Bun.file(h.io).text()); } catch (e) { return fail(`Cannot parse the notebook: ${(e as Error).message}`); } finally { h.close(); }

@@ -32,7 +32,7 @@ const skipDir = (f: string) => f.includes("/node_modules/") || f.includes("/.git
 // by the folder's name, so its list is taken only when the name is still that folder afterwards; the plain scan
 // goes through the folder's handle.
 async function filesIn(dir: string, signal: AbortSignal, ctx: HoldContext): Promise<string[] | { skip: string }> {
-  const h = hold(dir, ctx, "read");
+  const h = await hold(dir, ctx, "read");
   if ("refused" in h) return { skip: "it changed while it was read" };
   try {
     if (!h.existed) return [];
@@ -56,7 +56,7 @@ async function globbed(pattern: string, cwd: string, ctx: HoldContext): Promise<
   const at = segs.findIndex((s) => GLOB.test(s));
   const base = realOf(atCwd(cwd, segs.slice(0, at).join("/") || "."));
   const rest = segs.slice(at).join("/");
-  const h = hold(base, ctx, "read");
+  const h = await hold(base, ctx, "read");
   if ("refused" in h || !h.existed) { if (!("refused" in h)) h.close(); return []; }
   try {
     const out: string[] = [];
@@ -74,7 +74,7 @@ async function textOf(f: string, max: number, ctx: HoldContext): Promise<{ text:
   if (isClaimFile(f)) return { skip: "the daemon's claim on its state folder" };
   if (isStoreFile(f)) return { skip: "the daemon's own store, which is not opened from inside the daemon" };
   // The file itself, held: a link found inside a folder (to a file somewhere else) is not read through.
-  const h = hold(f, ctx, "read");
+  const h = await hold(f, ctx, "read");
   if ("refused" in h) return { skip: !canonical(f) ? "a link, or a path with one in it: read what it points at by its own path" : /, not a file:/.test(h.refused) ? "a named pipe, a socket or a device, not a file" : "it changed while it was read" };
   if (!h.existed) { h.close(); return { skip: "not found" }; }
   try {

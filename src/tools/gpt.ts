@@ -220,7 +220,7 @@ const view_image: Tool = {
     if (!raw) return fail("view_image needs a path");
     const p = realOf(atCwd(shellCwd(ctx), raw));
     // (The file is held for the read: what is read is the file that was judged.)
-    const h = hold(p, ctx, "read");
+    const h = await hold(p, ctx, "read");
     if ("refused" in h) return fail(h.refused);
     try {
     let st;

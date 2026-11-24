@@ -6,7 +6,7 @@ import { heldFile } from "../core/store-files.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
-import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
+import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, lineRange, mtime, mtimeOf, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -80,7 +80,7 @@ const read_file: Tool = {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
       { const held = heldFile(p); if (held) return fail(held); }
       // (The file is held for the read: what is read is the file that was judged.)
-      const h = hold(p, ctx, "read");
+      const h = await hold(p, ctx, "read");
       if ("refused" in h) return fail(h.refused);
       if (!h.existed) { h.close(); return fail(notFound(p, ctx.cwd)); }
       try {
@@ -121,7 +121,7 @@ const write_file: Tool = {
     const at = fileOf(input, "file_path", ctx);
     if ("error" in at) return fail(at.error);
     const p = at.p;
-    const existed = mtime(p) !== -1;
+    const existed = (await mtimeOf(p)) !== -1;
     const g = await guardOverwrite(p, ctx);
     if (g) return fail(g);
     { const no = await writeFile(p, String(input.content ?? ""), ctx); if (no) return fail(no); }
@@ -221,7 +221,7 @@ const list_directory: Tool = {
   async run(input, ctx) {
     const dir = abs(String(input.dir_path ?? "."), ctx);
     // (The folder is held while it is listed: the folder that was judged, not what its name is by now.)
-    const h = hold(dir, input.dir_path ? ctx : { judged: [dir] }, "read");
+    const h = await hold(dir, input.dir_path ? ctx : { judged: [dir] }, "read");
     if ("refused" in h) return fail(h.refused);
     let rows: { n: string; d: boolean }[];
     try {

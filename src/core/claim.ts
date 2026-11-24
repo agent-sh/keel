@@ -46,4 +46,7 @@ export function isClaimFile(path: string): boolean {
   }
   return false;
 }
+// The state folders this process holds a claim on, and the claim's name there (heldFileOf asks about them).
+export const claimedDirs = (): string[] => [...claims.keys()];
+export const CLAIM_FILE = CLAIM;
 export const claimNote = (path: string) => `${path} is the daemon's claim on its state folder. It is empty, and it is not opened from inside the daemon.`;

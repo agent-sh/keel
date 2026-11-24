@@ -25,8 +25,9 @@
 //   ask `heldFile` first and leave these files alone. A stat is fine.
 // src/conventions.test.ts holds the list of files that may name them.
 import { type Dirent, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { claimNote, isClaimFile } from "./claim.ts";
+import { CLAIM_FILE, claimedDirs, claimNote, isClaimFile } from "./claim.ts";
 import { OWED_FILE } from "./owed.ts";
 
 export const STORE_DB = "keel.db";
@@ -141,6 +142,7 @@ export function isOwedFile(path: string): boolean {
 // it starts and acts on (its settings, its keys and tokens, its plugins, the page it serves, its
 // records of a restart, its backups), and what it keeps as evidence.
 const SESSION_WRITES = ["artifacts", "worktrees"];
+const stateFolderNote = (path: string, dir: string) => `${path} is inside the daemon's own state folder (${dir}), which holds what the daemon reads back and acts on when it starts. A session writes there only under ${SESSION_WRITES.map((n) => `${n}/`).join(" and ")}.`;
 // Why `path` is not written from a tool or a route that takes a path; undefined: it may be.
 // Besides what is never opened at all (heldFile): any file of a state folder this process has a
 // store open in, where it lands or, for a top-level file of the folder, as the same file under
@@ -154,7 +156,7 @@ export function heldWrite(path: string): string | undefined {
   try { st = statSync(p); } catch {}
   for (const s of stores) {
     const dir = real(s);
-    const said = `${path} is inside the daemon's own state folder (${dir}), which holds what the daemon reads back and acts on when it starts. A session writes there only under ${SESSION_WRITES.map((n) => `${n}/`).join(" and ")}.`;
+    const said = stateFolderNote(path, dir);
     if (p === dir) return said;
     if (p.startsWith(dir + sep)) {
       const top = p.slice(dir.length + 1).split(sep)[0]!;
@@ -193,11 +195,81 @@ function sameFileBelow(dir: string, st: { ino: number; dev: number }, top = fals
   return undefined;
 }
 
+const owedNote = (path: string) => `${path} is the daemon's own record of writes it owes its store. It is read and written by the daemon alone: what it holds is made when the daemon starts.`;
+const storeNote = (path: string) => `${path} is the daemon's own store. It is not opened from inside the daemon: closing it there would drop the daemon's locks on it. Read it with a command (sqlite3 in read-only mode: sqlite3 -readonly), or ask the daemon's API.`;
 // What to say instead of opening `path` from inside the daemon; undefined: it may be opened.
 export function heldFile(path: string): string | undefined {
   if (isClaimFile(path)) return claimNote(path);
-  if (isOwedFile(path)) return `${path} is the daemon's own record of writes it owes its store. It is read and written by the daemon alone: what it holds is made when the daemon starts.`;
-  if (isStoreFile(path)) return `${path} is the daemon's own store. It is not opened from inside the daemon: closing it there would drop the daemon's locks on it. Read it with a command (sqlite3 in read-only mode: sqlite3 -readonly), or ask the daemon's API.`;
+  if (isOwedFile(path)) return owedNote(path);
+  if (isStoreFile(path)) return storeNote(path);
+  return undefined;
+}
+
+// ---- the same answers, the kernel asked on the thread pool -----------------------------------------------
+// For a call that holds a path which may be on a mount that stopped answering: that stalls the call (a Stop
+// ends it), not the loop. They answer exactly what heldFile and heldWrite answer.
+const realOf = (p: string) => realpath(p).catch(() => resolve(p));
+async function landingOf(path: string): Promise<string> {
+  let p = resolve(path);
+  for (let hop = 0; hop < 16; hop++) {
+    try { return await realpath(p); } catch {}
+    let target: string | undefined;
+    try { if ((await lstat(p)).isSymbolicLink()) target = readlinkSync(p); } catch {}
+    if (target === undefined) break;
+    p = resolve(dirname(p), target);
+  }
+  const rest: string[] = [];
+  let dir = p;
+  for (;;) {
+    const up = dirname(dir);
+    if (up === dir) return p;
+    rest.unshift(basename(dir));
+    dir = up;
+    try { return join(await realpath(dir), ...rest); } catch {}
+  }
+}
+// What `heldFile` answers, with every question to the kernel asked at once (one wait for the thread pool, however
+// many state folders and files): the path's own real path, its landing, its device and inode, and for each folder
+// its real path and the files in it. The comparing is then of what came back.
+const statOf = (p: string) => stat(p).then((s) => s, () => undefined);
+export async function heldFileOf(path: string): Promise<string | undefined> {
+  const claimed = claimedDirs();
+  if (!claimed.length && !stores.size) return undefined;
+  const given = resolve(path);
+  const [p, land, st, claims, folders] = await Promise.all([
+    realOf(given), landingOf(given), statOf(given),
+    Promise.all(claimed.map(async (dir) => { const [at, own] = await Promise.all([realOf(dir), statOf(join(dir, CLAIM_FILE))]); return { at, own }; })),
+    Promise.all([...stores].map(async (s) => {
+      const [dir, files, owed] = await Promise.all([realOf(s), Promise.all(STORE_FILES.map((f) => statOf(join(s, f)))), statOf(join(s, OWED_FILE))]);
+      return { dir, files, owed };
+    })),
+  ]);
+  const same = (own: { ino: number; dev: number } | undefined) => !!own && !!st && own.ino === st.ino && own.dev === st.dev;
+  if (claims.some((c) => (basename(p) === CLAIM_FILE && c.at === dirname(p)) || same(c.own))) return claimNote(path);
+  if (folders.some((f) => (dirname(land) === f.dir && basename(land) === OWED_FILE) || same(f.owed))) return owedNote(path);
+  const named = (STORE_FILES as readonly string[]).includes(basename(p));
+  if (folders.some((f) => (named && dirname(p) === f.dir) || f.files.some(same))) return storeNote(path);
+  return undefined;
+}
+export async function heldWriteOf(path: string): Promise<string | undefined> {
+  if (!stores.size) return heldFileOf(path);
+  const given = resolve(path);
+  const [held, p, st] = await Promise.all([heldFileOf(path), landingOf(given), stat(given).then((s) => s, () => undefined)]);
+  if (held) return held;
+  for (const s of stores) {
+    const dir = await realOf(s);
+    const said = stateFolderNote(path, dir);
+    if (p === dir) return said;
+    if (p.startsWith(dir + sep)) {
+      const top = p.slice(dir.length + 1).split(sep)[0]!;
+      if (!SESSION_WRITES.includes(top) || p === join(dir, top)) return said;
+      continue;
+    }
+    if (!st || st.nlink < 2) continue;
+    try { if ((await stat(dir)).dev !== st.dev) continue; } catch { continue; }
+    const own = sameFileBelow(dir, st, true);
+    if (own) return `${path} is the daemon's own ${own.slice(dir.length + 1)} under another name. It is not written from a session.`;
+  }
   return undefined;
 }
 

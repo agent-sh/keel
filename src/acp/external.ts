@@ -486,7 +486,7 @@ export class AcpRunner {
         { const held = heldFile(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
         // (The file that was judged, held: the one the gate saw under the name at its look, not whatever the name is
         // by now. Read off the loop: an agent names the file.)
-        const h = hold(path, { judged: [path] }, "read");
+        const h = await hold(path, { judged: [path] }, "read");
         if ("refused" in h) throw Object.assign(new Error(h.refused), { code: -32000 });
         if (!h.existed) { h.close(); throw Object.assign(new Error(`${path} does not exist`), { code: -32000 }); }
         let text: string;
@@ -505,7 +505,7 @@ export class AcpRunner {
         const v = await this.judge(s, { id: crypto.randomUUID(), name: "Write", cls: { kind: "edit", paths: [path] }, input: { file_path: path, content: String(p.content ?? "") }, signal });
         if (v) throw Object.assign(new Error(v.deny), { code: -32000 });
         { const held = heldWrite(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
-        const h = hold(path, { judged: [path] }, "write");
+        const h = await hold(path, { judged: [path] }, "write");
         if ("refused" in h) throw Object.assign(new Error(h.refused), { code: -32000 });
         try { await writeFile(h.io, String(p.content ?? "")); } finally { h.close(); }
         return null;
