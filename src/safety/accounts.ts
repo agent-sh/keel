@@ -16,7 +16,8 @@ export type Registry = "npm" | "pypi" | "crates";
 // `ssh`: the host was spelled in an ssh address, so it may be a name of the owner's ssh config (resolved by `Env.hostname`).
 export type Account = { kind: "forge"; host: string; path: string[]; ssh?: true } | { kind: "package"; registry: Registry; name: string };
 // One write found in a command. `account` is null when the rules cannot tell where it lands (`why` says).
-export type Write = { does: string; account: Account | null; why?: string };
+// `own`: the account is where a remote of the repository the command runs in points (read from its disk, not named by the command).
+export type Write = { does: string; account: Account | null; why?: string; own?: true };
 
 const lower = (s: string) => s.toLowerCase();
 const REGISTRIES: Record<string, Registry> = { npm: "npm", pypi: "pypi", pip: "pypi", crates: "crates", cargo: "crates" };
@@ -203,7 +204,7 @@ function viaRemote(does: string, name: string | null, env: Env): Write[] {
   const added = env.added?.get(remote);
   const urls = added !== undefined ? [added] : r.push[remote] ?? (r.fetch[remote] ? [r.fetch[remote]!] : []);
   if (!urls.length) return [];
-  return urls.flatMap((u) => { const a = repoOf(u); return a ? [{ does, account: shown(a) }] : []; });
+  return urls.flatMap((u) => { const a = repoOf(u); return a ? [{ does, account: shown(a), ...(added === undefined ? { own: true as const } : {}) }] : []; });
 }
 
 // gh: the group, the verb, and the writes among them.
@@ -277,7 +278,7 @@ function gh(words: string[], env: Env, set: string[]): Write[] {
   if (r === "late") return [{ does, account: null, why: lateWhy("the repository gh acts on") }];
   if (r === null) return [];
   const base = ghBase(r, lower(setOf(set, "GH_HOST") ?? "github.com"));
-  return base ? [{ does, account: shown(base) }] : [];
+  return base ? [{ does, account: shown(base), own: true }] : [];
 }
 
 // gh api: a request that is not a read, to a repository, an organization or a mutation.
@@ -327,7 +328,7 @@ function glab(words: string[], env: Env): Write[] {
   const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("the project glab acts on") }];
   const base = r ? ghBase(r, "gitlab.com") : null;
-  return base ? [{ does, account: shown(base) }] : [];
+  return base ? [{ does, account: shown(base), own: true }] : [];
 }
 
 // Publishes and the changes to a package's owners and versions.
@@ -484,6 +485,9 @@ export function foreign(list: readonly Namespace[], writes: Write[]): { write: W
   for (const w of writes) if (!w.account || !owned(list, w.account)) return { write: w, account: w.account };
   return null;
 }
+
+// Every write in a line the owner has no namespace for.
+export const foreignAll = (list: readonly Namespace[], writes: Write[]): Write[] => writes.filter((w) => !w.account || !owned(list, w.account));
 
 // The sentence of the card: what the command does and whose namespace it is not.
 export function whyForeign(f: { write: Write; account: Account | null }, list: readonly Namespace[]): string {

@@ -159,22 +159,36 @@ export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
 
 // What `ssh -G NAME` says the host is: it prints the configuration ssh would use and makes no connection. The answers are
 // kept a minute, since the owner's config changes seldom and a card waits on it.
-const hosts = new Map<string, { at: number; host: string | null }>();
-export async function hostnameOf(name: string): Promise<string | null | "late"> {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/.test(name)) return null;
+const hosts = new Map<string, { at: number; host: string | null | "late" }>();
+const hostsAsked = new Map<string, Promise<string | null | "late">>();
+const LATE_KEPT_MS = 5_000;
+// One `ssh -G` runs for a name at a time, whoever asks meanwhile; an answer that did not come in time is kept a few seconds,
+// so the next decision about the same name is not another wait.
+export function hostnameOf(name: string): Promise<string | null | "late"> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/.test(name)) return Promise.resolve(null);
   const had = hosts.get(name);
-  if (had && Date.now() - had.at < 60_000) return had.host;
+  if (had && Date.now() - had.at < (had.host === "late" ? LATE_KEPT_MS : 60_000)) return Promise.resolve(had.host);
+  const running = hostsAsked.get(name);
+  if (running) return running;
+  const ask = askHost(name).then((host) => {
+    hosts.set(name, { at: Date.now(), host });
+    if (hosts.size > 200) hosts.delete(hosts.keys().next().value!);
+    return host;
+  }).finally(() => { hostsAsked.delete(name); });
+  hostsAsked.set(name, ask);
+  return ask;
+}
+/** Test seam: forget what was kept. */
+export function forgetHosts() { hosts.clear(); hostsAsked.clear(); }
+async function askHost(name: string): Promise<string | null | "late"> {
   try {
-    const proc = Bun.spawn(["ssh", "-G", name], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 1_500, killSignal: "SIGKILL" });
+    const proc = Bun.spawn(["ssh", "-G", name], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 1_500, killSignal: "SIGKILL" });
     const read = async () => { const dec = new TextDecoder(); let all = ""; for await (const chunk of chunks(proc.stdout as ReadableStream<Uint8Array>)) { all += dec.decode(chunk, { stream: true }); if (all.length > 65_536) break; } return all; };
     const out = await within(1_800, read(), null as string | null);
     if (out === null) { proc.kill("SIGKILL"); return "late"; }
     const code = await proc.exited;
     const host = code === 0 ? /^hostname (\S+)$/m.exec(out)?.[1]?.toLowerCase() ?? null : null;
-    const same = host === null || host === name.toLowerCase() ? null : host;
-    hosts.set(name, { at: Date.now(), host: same });
-    if (hosts.size > 200) hosts.delete(hosts.keys().next().value!);
-    return same;
+    return host === null || host === name.toLowerCase() ? null : host;
   } catch {
     return null; // (no ssh here: the name stays as it was written)
   }

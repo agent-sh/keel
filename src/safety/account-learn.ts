@@ -63,8 +63,9 @@ export async function learnNamespaces(folders: string[], home = homedir(), env: 
         const a = repoOf(url);
         if (!a || a.path.length < 2) continue;
         // (An ssh name of his config stands for the host it says.)
-        const host = a.ssh ? ((await hostnameOf(a.host)) ?? a.host) : a.host;
-        top.add(`${host === "late" ? a.host : host}/${a.path[0]}`);
+        const named = a.ssh ? await hostnameOf(a.host) : null;
+        const host = named === null || named === "late" ? a.host : named;
+        top.add(`${host}/${a.path[0]}`);
       }
       // (A folder inside a repository already counted through another folder of it counts once per owner.)
       const key = [...top].sort().join(" ");

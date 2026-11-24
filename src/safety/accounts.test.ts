@@ -230,6 +230,28 @@ const TABLE: [string, string, string | null][] = [
   ["git remote -v", "/w/clone", null],
 ];
 
+// The rows whose target is read from the repository's own remotes (by name, or by default), not named by the command.
+const OWN = new Set<string>([
+  "/w/clone git push origin main",
+  "/w/clone git push",
+  "/w/ssh git push -f origin main",
+  "/w/fork git push upstream HEAD:main",
+  "/w/two git push",
+  "/w/own cd /w/clone && git push",
+  "/w/own git -C /w/clone push origin main",
+  "/w/fork GIT_TERMINAL_PROMPT=0 git push upstream",
+  "/w/clone git commit -m x && git push",
+  "/w/fork bash -c 'git push upstream'",
+  "/w/aliaswork git push",
+  "/w/own git --git-dir=/w/clone/.git push",
+  "/w/own bash -lc 'git -C /w/clone push'",
+  "/w/clone bash -ic \"git push\"",
+  "/w/clone eval 'git push'",
+  "/w/clone eval git push",
+  "/w/clone sudo -u x bash -lc 'git push'",
+  "/w/fork gh pr create --fill",
+]);
+
 test("a table of commands: a write beyond the owner's namespaces asks him in every mode and names the namespace", () => {
   const rows: string[] = [];
   for (const [command, cwd, theirs] of TABLE) {
@@ -251,7 +273,12 @@ test("a table of commands: a write beyond the owner's namespaces asks him in eve
     // An agent is refused, told to report what it wanted to do.
     const a = run(command, cwd, "auto-edits", true);
     if (theirs === null) expect([command, "deny" in a && a.deny.includes("report")]).toEqual([command, false]);
-    else {
+    else if (OWN.has(`${cwd} ${command}`)) {
+      // (A push or a gh write to where a remote of the repository the agent works in points waits for the owner, who can say Mine.)
+      expect([command, how(a)]).toEqual([command, "account"]);
+      expect((a as { ask: { why: string; mine?: string } }).ask.why).toContain("An agent's write");
+      expect((a as { ask: { mine?: string } }).ask.mine).toBeDefined();
+    } else {
       expect([command, how(a)]).toEqual([command, "deny"]);
       expect((a as { deny: string }).deny).toContain("Report to your parent");
       expect((a as { deny: string }).deny).toContain("Your accounts");
@@ -322,4 +349,37 @@ test("a command's writes are listed for the judge", async () => {
   expect(accountFacts(w, parseNamespaces(names))).toContain("NOT under the owner's namespaces");
   expect(foreign(parseNamespaces(names), w)?.account).toEqual({ kind: "forge", host: "github.com", path: ["them", "lib"] });
   expect(classify({ name: "Bash", readOnly: false, kind: "shell" }, { command: "git push" }, "/w").kind).toBe("shell");
+});
+
+test("an ssh name is asked once at a time, and an answer that came late is not asked for again at once", async () => {
+  const { mkdtempSync, writeFileSync, chmodSync, readFileSync, existsSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { hostnameOf, forgetHosts } = await import("./looked.ts");
+  const dir = mkdtempSync(join(tmpdir(), "ssh-g-"));
+  const count = join(dir, "count");
+  const fake = join(dir, "ssh");
+  // A stand-in for ssh: it counts its runs, then answers (the name "slowname" takes longer than the rules wait).
+  writeFileSync(fake, `#!/bin/sh\necho x >> ${count}\ncase "$2" in slowname) sleep 4;; *) sleep 0.3;; esac\necho "hostname real.example"\n`);
+  chmodSync(fake, 0o755);
+  const was = process.env.PATH;
+  process.env.PATH = `${dir}:${was}`;
+  const runs = () => (existsSync(count) ? readFileSync(count, "utf8").split("\n").filter(Boolean).length : 0);
+  try {
+    forgetHosts();
+    const three = await Promise.all([hostnameOf("alias-a"), hostnameOf("alias-a"), hostnameOf("alias-a")]);
+    expect(three).toEqual(["real.example", "real.example", "real.example"]);
+    expect(runs()).toBe(1);
+    expect(await hostnameOf("alias-a")).toBe("real.example");
+    expect(runs()).toBe(1);
+    const slow = await Promise.all([hostnameOf("slowname"), hostnameOf("slowname")]);
+    expect(slow).toEqual(["late", "late"]);
+    expect(runs()).toBe(2);
+    expect(await hostnameOf("slowname")).toBe("late");
+    expect(runs()).toBe(2);
+  } finally {
+    process.env.PATH = was;
+    forgetHosts();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

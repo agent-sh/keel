@@ -84,8 +84,8 @@ test("a push beyond the owner's namespaces is his to allow, in every mode", asyn
   await expect.poll(turns, { timeout: 30_000 }).toBe(4);
   expect(await approvals()).toHaveLength(2);
 
-  // An agent is refused, with the way on: report what it wanted to do.
-  await request.post(`${base}/messages`, { data: { text: calls([{ name: "spawn_agent", input: { message: `Pusher\n${calls([bash("git push theirs main")])}`, isolation: "none" } }, { name: "wait_agent", input: {} }]) } });
+  // An agent that names a place outside the repository's remotes is refused, with the way on: report what it wanted to do.
+  await request.post(`${base}/messages`, { data: { text: calls([{ name: "spawn_agent", input: { message: `Pusher\n${calls([bash("git push http://127.0.0.1:1/them/lib.git main")])}`, isolation: "none" } }, { name: "wait_agent", input: {} }]) } });
   await expect.poll(turns, { timeout: 60_000 }).toBe(5);
   const agent = ((await (await request.get(`${base}/agents`)).json()).agents as { session_id: string }[])[0]!;
   const events = JSON.stringify((await (await request.get(`/api/sessions/${agent.session_id}`)).json()).events);
@@ -94,4 +94,20 @@ test("a push beyond the owner's namespaces is his to allow, in every mode", asyn
   expect(events).toContain("Your accounts");
   expect(await approvals()).toHaveLength(2); // (the agent's refusal opened no card)
   await shoot(page, "account-writes-03-agent");
+
+  // An agent's push to a remote of the repository it works in waits for the owner, as his own would: the card says it is the
+  // agent's, and he can deny it.
+  await request.post(`${base}/messages`, { data: { text: calls([{ name: "spawn_agent", input: { message: `Pusher2\n${calls([bash("git push theirs main")])}`, isolation: "none" } }, { name: "wait_agent", input: {} }]) } });
+  const agentCard = page.getByTestId("approval");
+  await expect(agentCard).toHaveCount(1, { timeout: 60_000 });
+  await expect(agentCard).toContainText("An agent's write");
+  await expect(agentCard).toContainText("127.0.0.1/them/lib");
+  await expect(agentCard.getByTestId("allow-mine")).toContainText("127.0.0.1/them");
+  await shoot(page, "account-writes-05-agent-card");
+  await agentCard.getByTestId("deny").click();
+  await agentCard.getByTestId("deny-send").click();
+  await expect.poll(turns, { timeout: 60_000 }).toBe(6);
+  const second = ((await (await request.get(`${base}/agents`)).json()).agents as { session_id: string }[]).map((a) => a.session_id);
+  const states = await Promise.all(second.map(async (id) => ((await (await request.get(`/api/sessions/${id}/approvals?all`)).json()).approvals as { state: string; why?: string }[])));
+  expect(states.flat().filter((a) => a.state === "denied" && (a.why ?? "").includes("An agent's write"))).toHaveLength(1);
 });

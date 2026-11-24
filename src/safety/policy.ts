@@ -2,7 +2,7 @@
 // standing answers that apply. Pure: the gate supplies the facts.
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { accountFacts, foreign, namedOwners, namespaceOf, ownsOwner, say, whyForeign, writesOf as writesToAccounts, type Namespace, type Write } from "./accounts.ts";
+import { accountFacts, foreign, foreignAll, namedOwners, namespaceOf, ownsOwner, say, whyForeign, writesOf as writesToAccounts, type Namespace, type Write } from "./accounts.ts";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { shellCredentialReads, type DiskLook } from "./credential-reads.ts";
 import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.ts";
@@ -796,10 +796,13 @@ export function accountContext(command: string, cwd: string, looked: Looked | un
 
 const AGENT_SAYS = "That write is the owner's to make, in every mode: an agent is never allowed it unless the place is one of his namespaces (Settings > Permissions > Your accounts, where he names them). Do not try another form of it. Report to your parent what you wanted to do (the command, and the repository or package) and go on with the rest.";
 // What a write with an account beyond the owner's namespaces asks: the owner's card in every mode; an agent is refused.
-function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign> extends infer T ? (T extends { account: infer A } ? A : never) : never }, f: Facts, what = "the command"): Decision {
+function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign> extends infer T ? (T extends { account: infer A } ? A : never) : never }, f: Facts, what = "the command", own = false): Decision {
   const why = whyForeign(hit as Parameters<typeof whyForeign>[0], f.accounts!.names);
-  if (f.accounts!.agent) return { deny: `Refused: ${what} ${why}. ${AGENT_SAYS}` };
-  return { ask: { risk: "high", why: `${what} ${why}`, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: hit.account ? say(hit.account) : "", ...(hit.account ? { mine: namespaceOf(hit.account) } : {}) } };
+  // An agent's write to a remote of the repository it works in waits for the owner, who can say "Mine" to it; one the command
+  // itself names outside the repository's remotes is refused.
+  const agent = f.accounts!.agent;
+  if (agent && !own) return { deny: `Refused: ${what} ${why}. ${AGENT_SAYS}` };
+  return { ask: { risk: "high", why: `${agent ? `An agent's write, to a remote of the repository it works in: ${what}` : what} ${why}`, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: hit.account ? say(hit.account) : "", ...(hit.account ? { mine: namespaceOf(hit.account) } : {}) } };
 }
 
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
@@ -846,7 +849,8 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   if (f.mode !== "read-only" && f.accounts && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) {
     const writes = accountWrites(parts, pre, f);
     const hit = foreign(f.accounts.names, writes);
-    if (hit) return uncovered(accountDecision(hit, f), whyForeign(hit, f.accounts.names));
+    // (An agent's line waits for the owner only when every write of it that is beyond his namespaces goes to a remote of the repository.)
+    if (hit) return uncovered(accountDecision(hit, f, "the command", hit.account !== null && foreignAll(f.accounts.names, writes).every((w) => w.own && w.account)), whyForeign(hit, f.accounts.names));
   }
   if (f.mode !== "read-only") {
     const owners = (o: OwnerOnly): Decision => uncovered(f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule), o.why);

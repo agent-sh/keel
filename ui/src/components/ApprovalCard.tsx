@@ -1416,7 +1416,7 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
                 else if (a.mine) alsoOnce(() => safety.addNamespace(a.mine!)).catch(reportError);
                 else alsoOnce(() => safety.markRead(a.read_tool!.server, a.read_tool!.tool)).catch(reportError);
               }}
-              className="h-8 shrink-0 whitespace-nowrap rounded-lg border border-line px-3 text-ui font-medium text-fg outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised disabled:opacity-50 aria-disabled:cursor-default aria-disabled:opacity-50"
+              className="k-btn whitespace-nowrap aria-disabled:cursor-default aria-disabled:opacity-50"
             >
               {a.mine ? <>Mine<span className="ml-1 font-normal text-muted">{a.mine}</span></> : "Mark as read"}
             </button>
