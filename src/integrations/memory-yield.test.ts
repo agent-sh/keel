@@ -62,7 +62,15 @@ test("asks of a quiet kind keep their count across decisions", () => {
 
 test("a call's families: the programs of a shell line, the folders of a write, an MCP tool", () => {
   const sh = (command: string) => callFamilies({ tool_name: "Bash", tool_input: { command } }).sort();
-  expect(sh("cd /home/x/repo && FOO=1 /usr/bin/git push")).toEqual(["cd", "git", "push", "repo"]);
+  expect(sh("cd /home/x/repo && FOO=1 /usr/bin/git push")).toEqual(["cd", "git"]);
+  expect(sh("sudo make install | tee out.log")).toEqual(["make", "tee"]);
+  // Only the programs the line runs: not the words of a script, a quoted argument or a here-document.
+  expect(sh("python3 - <<'EOF'\nthis announce 250\nrm -rf scratch-dir\nEOF")).toEqual(["python3"]);
+  expect(sh("bun -e \"console.log(getComputedStyle(x).announce)\" && git commit -m 'fix 250 ab12cd3'")).toEqual(["bun", "git"]);
+  expect(sh("echo $(date) | grep -c \"$(git rev-parse HEAD)\"")).toEqual(["date", "echo", "git", "grep"]);
+  expect(sh("echo 'open quote")).toEqual(["echo"]);
+  // Loop words, builtins that steer the line and functions the line defines are not programs.
+  expect(sh("p() { sed -n 1p x; }; for i in a b; do p $i || break; done")).toEqual(["sed"]);
   expect(sh("git push origin main")).toEqual(sh("git push origin dev"));
   expect(callFamilies({ tool_name: "Edit", tool_input: { file_path: "/r/src/a.ts" } })).toEqual(["/r/src"]);
   expect(callFamilies({ tool_name: "Write", tool_input: { file_path: "a.ts" } })).toEqual(["."]);

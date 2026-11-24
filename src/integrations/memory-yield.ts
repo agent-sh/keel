@@ -23,6 +23,8 @@
 // standards, decisions or past mistakes, or given as a title: no use count
 // sees what the model does not do because of those.
 import { dirname } from "node:path";
+import { splitCommand } from "../safety/shell.ts";
+import { name as baseName, unwrap } from "../safety/risk-words.ts";
 import { filesOf, type StoreCall } from "./tacit-tools.ts";
 
 // Edits in the measured stores answer about one call in 150; QUIET_AFTER is
@@ -72,16 +74,37 @@ export function callTopics(call: StoreCall): string[] {
   return [...new Set(filesOf(call))];
 }
 
-// What an answer of the store speaks for: the program of each command of a
-// shell line (the first word of each topic), the folder of each file a write
-// touches, an MCP tool by its name. A call is of the families its topics are;
-// the store ties a fact to a command, a file or an area, and a family is the
-// widest group a fact of one kind has been seen to cover.
-// A word that can be a program or its subcommand: not a path, a file or a flag, which are as many as there are calls.
+// What an answer of the store speaks for: the program each command of a shell
+// line runs, the folder of each file a write touches, an MCP tool by its name.
+// A call is of the families its programs are; the store ties a fact to a
+// command, a file or an area, and a family is the widest group a fact of one
+// kind has been seen to cover.
+// A shell line's programs are read as the safety gate reads it (splitCommand,
+// then unwrap for `sudo make`, `uv run x`): a here-document's lines are text a
+// program reads, not commands, and a quoted script or an argument is one word
+// of its program, so none of their words is a family (a word of a script was
+// once a family of its own: `this`, `250`, a commit id, a scratch folder).
+// A word that can be a program: not a path, a file or a flag.
 const PROGRAM = /^[a-z0-9][\w-]*$/;
+// Words a shell reads itself (loops, builtins that only steer the line): no program runs under them.
+const SYNTAX = new Set(["for", "while", "until", "select", "do", "done", "if", "then", "else", "elif", "fi", "case", "esac", "in", "function", "break", "continue", "return", "exit", "shift", "local", "export", "unset", "read", "set", "eval", "true", "false", "declare", "typeset", "readonly", "let", "wait", "trap"]);
+// A function the line defines is not a program either (`p() { sed -n 1p x; }; p a`).
+const FUNCTION = /(?:^|[;&|{(\n])\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)/g;
+function shellPrograms(command: string): string[] {
+  const parts = splitCommand(command);
+  // Not a line a shell would run: its first word, if that can be a program.
+  if (!parts) { const w = words(command)[0]; return w && PROGRAM.test(baseName(w)) ? [baseName(w)] : []; }
+  const out = new Set<string>(), defined = new Set([...command.matchAll(FUNCTION)].map((m) => m[1]!.toLowerCase()));
+  for (const p of parts) {
+    if (p.heredoc) continue;
+    const prog = baseName(unwrap(p.words).words[0]).toLowerCase();
+    if (PROGRAM.test(prog) && !SYNTAX.has(prog) && !defined.has(prog)) out.add(prog);
+  }
+  return [...out];
+}
 export function callFamilies(call: StoreCall): string[] {
   if (call.tool_name.startsWith("mcp__")) return [call.tool_name];
-  if (call.tool_name === "Bash" || (call.tool_name === "apply_patch" && !filesOf(call).length)) return [...new Set(callTopics(call).map((t) => t.split(" ")[0]!).filter((w) => PROGRAM.test(w)))];
+  if (call.tool_name === "Bash" || (call.tool_name === "apply_patch" && !filesOf(call).length)) return shellPrograms(String(call.tool_input?.command ?? ""));
   return [...new Set(filesOf(call).map((f) => dirname(f)))];
 }
 
