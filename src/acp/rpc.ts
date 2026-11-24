@@ -3,6 +3,7 @@
 // client: it sends requests and notifications, and answers the agent's
 // requests (permission, files) through `onRequest`.
 import { pumpLines, pumpText } from "../core/proc.ts";
+import { scrubbedEnv } from "../safety/env-secret.ts";
 
 type Json = any;
 export type RpcFailure = Error & { code?: number; data?: unknown };
@@ -16,8 +17,8 @@ export class AcpConnection {
   onNotification: (method: string, params: Json) => void = () => {};
   onRequest: (method: string, params: Json) => Promise<Json> = async (m) => { throw Object.assign(new Error(`method not found: ${m}`), { code: -32601 }); };
 
-  constructor(argv: string[], opts: { cwd: string; env?: Record<string, string> }, private log: (m: string) => void = () => {}) {
-    this.proc = Bun.spawn(argv, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  constructor(argv: string[], opts: { cwd: string; env?: Record<string, string>; pass?: string[] }, private log: (m: string) => void = () => {}) {
+    this.proc = Bun.spawn(argv, { cwd: opts.cwd, env: opts.pass ? scrubbedEnv(process.env, opts.pass, opts.env) : { ...process.env, ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     void pumpLines(this.proc.stdout as ReadableStream<Uint8Array>, (l) => this.line(l), "acp agent stdout");
     // The tail of what the agent wrote to stderr: said when it ends early.
     void pumpText(this.proc.stderr as ReadableStream<Uint8Array>, (t) => { this.stderr = (this.stderr + t).slice(-4000); }, "acp agent stderr");

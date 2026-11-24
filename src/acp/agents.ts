@@ -17,7 +17,10 @@ import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } fr
 export const REGISTRY_URL = () => process.env.KEEL_ACP_REGISTRY ?? "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 export const agentsPath = () => process.env.KEEL_ACP_AGENTS ?? join(configDir(), "acp-agents.json");
 
-export type AgentCommand = { command: string; args: string[]; env?: Record<string, string> };
+// An agent is the owner's own coding agent and often signs in from the environment, so it gets the daemon's
+// whole environment. An entry that sets `env_vars` asks for less: the environment without any name that carries
+// a secret, plus the names listed (as an MCP server's `env_vars` works).
+export type AgentCommand = { command: string; args: string[]; env?: Record<string, string>; env_vars?: string[] };
 export type CustomAgent = AgentCommand & { name?: string };
 // One agent as the picker and the runner see it.
 export type AcpAgent = {
@@ -55,7 +58,7 @@ export function joinAgents(reg: Registry | null, custom: Record<string, CustomAg
   for (const [id, c] of Object.entries(custom)) {
     if (!c?.command) continue;
     const i = out.findIndex((x) => x.id === id);
-    const agent: AcpAgent = { id, name: c.name ?? out[i]?.name ?? id, description: out[i]?.description, source: "custom", run: { command: c.command, args: c.args ?? [], env: c.env } };
+    const agent: AcpAgent = { id, name: c.name ?? out[i]?.name ?? id, description: out[i]?.description, source: "custom", run: { command: c.command, args: c.args ?? [], env: c.env, ...(c.env_vars ? { env_vars: c.env_vars } : {}) } };
     if (i >= 0) out[i] = agent; else out.push(agent);
   }
   return out;
@@ -70,7 +73,7 @@ export function readCustom(path = agentsPath()): Record<string, CustomAgent> {
   const out: Record<string, CustomAgent> = {};
   for (const [id, c] of Object.entries<any>(agents)) {
     if (!c || typeof c.command !== "string") continue;
-    out[id] = { command: c.command, args: Array.isArray(c.args) ? c.args.map(String) : [], env: c.env && typeof c.env === "object" ? c.env : undefined, name: typeof c.name === "string" ? c.name : undefined };
+    out[id] = { command: c.command, args: Array.isArray(c.args) ? c.args.map(String) : [], env: c.env && typeof c.env === "object" ? c.env : undefined, ...(Array.isArray(c.env_vars) ? { env_vars: c.env_vars.map(String) } : {}), name: typeof c.name === "string" ? c.name : undefined };
   }
   return out;
 }
@@ -170,7 +173,7 @@ export class AcpAgents {
     const key = programKey(a.run!);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      conn = new AcpConnection(this.argvOf(a, cwd), { cwd, env: a.run!.env });
+      conn = new AcpConnection(this.argvOf(a, cwd), { cwd, env: a.run!.env, pass: a.run!.env_vars });
       const c = conn;
       // (The commands it advertises once the session is made: ACP v1 slash-commands.)
       let commands: SlashCommand[] | undefined;

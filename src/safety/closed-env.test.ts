@@ -25,9 +25,9 @@ test("names that carry a secret go, plain ones stay", () => {
 const linux = process.platform === "linux" && typeof (process as { execve?: unknown }).execve === "function";
 
 // The program starts as the daemon does, with keys in its environment, and a child of it reads its environ.
-async function run(env: Record<string, string>) {
+async function run(env: Record<string, string | undefined>) {
   const p = Bun.spawn([process.execPath, join(import.meta.dir, "closed-env-fixture.ts")], {
-    env: { PATH: process.env.PATH!, HOME: process.env.HOME!, TEST_API_KEY: "sekrit", TEST_TOKEN: "sekrit2", TEST_PLAIN: "visible", ...env }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    env: Object.fromEntries(Object.entries({ PATH: process.env.PATH!, HOME: process.env.HOME!, TEST_API_KEY: "sekrit", TEST_TOKEN: "sekrit2", TEST_PLAIN: "visible", ...env }).filter(([, v]) => v !== undefined)) as Record<string, string>, stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
   const out = await new Response(p.stdout).text();
   await p.exited;
@@ -63,4 +63,11 @@ test.skipIf(!linux)("an environment with no secret is started as it is", async (
   const got = await run({ TEST_API_KEY: "", TEST_TOKEN: "" });
   expect(got.samePid).toBe(true);
   expect(got.startedWith).toContain("TEST_PLAIN");
+});
+
+test.skipIf(!linux)("a handover that cannot be read is said, not ignored: the daemon runs without its keys", async () => {
+  // A handover left over from another process (no secret in the rest of the environment, so no second start).
+  const other = await run({ BUN_GC_TIMER_DISABLE: "1", KEEL_SECRET_ENV: "1:0", TEST_API_KEY: undefined, TEST_TOKEN: undefined });
+  expect(other.lost).toContain("another process");
+  expect((await run({ TEST_API_KEY: undefined, TEST_TOKEN: undefined })).lost).toBeNull();
 });

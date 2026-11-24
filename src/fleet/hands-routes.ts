@@ -16,6 +16,7 @@ import { localFacts } from "./facts.ts";
 import { execArgv, namedSecrets, runHands } from "./hands.ts";
 import { ABORTED_TEXT, pool, waitedLine } from "../tools/heavy.ts";
 import { servedSkill, servedSkills } from "../tools/skills.ts";
+import { PROXY_NAMES, scrubbedEnv } from "../safety/env-secret.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -221,7 +222,7 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
           const p = Bun.spawn(argv, {
             // (`view`: a script of the daemon's own, a session's move, whose git reads the repository in `cwd` through this machine's view of it.
             // `fetch`: it fills a work tree there, and may fetch what a partial clone lacks as far as that reaches: GitOpts.fetch.)
-            cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, ...(b.view === true ? gitEnv(cwd, b.fetch === "any" || b.fetch === "public" ? b.fetch : undefined) : {}), GIT_TERMINAL_PROMPT: "0", ...named.env }, signal: req.signal,
+            cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: scrubbedEnv(process.env, PROXY_NAMES, { ...(b.view === true ? gitEnv(cwd, b.fetch === "any" || b.fetch === "public" ? b.fetch : undefined) : {}), GIT_TERMINAL_PROMPT: "0", ...named.env }), signal: req.signal,
             timeout: 10 * 60_000, // the longest a shell call may run in any family
           });
           const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);

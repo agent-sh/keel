@@ -216,7 +216,7 @@ export class AcpRunner {
     }
     // Its own process is confined as Keel's commands are; the session is told how.
     const c = this.confine(s, agent, live.served ? { own: [live.served.dir, live.served.relayDir], programs: [[process.execPath]] } : { own: [], programs: [] });
-    const conn = new AcpConnection(c.argv, { cwd: s.workspace, env: agent.run.env }, (m) => this.capture(new Error(m), { session: s.id, agent: id }));
+    const conn = new AcpConnection(c.argv, { cwd: s.workspace, env: agent.run.env, pass: agent.run.env_vars }, (m) => this.capture(new Error(m), { session: s.id, agent: id }));
     io.append("note", { kind: "acp", sandbox: c.confined ? "on" : "off", text: c.note });
     live.conn = conn;
     conn.onNotification = (method, params) => { if (method === "session/update") this.update(live, params); };

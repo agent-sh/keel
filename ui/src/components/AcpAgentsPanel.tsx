@@ -81,7 +81,7 @@ export function AcpAgentsSettings() {
       <Card>
         <div className="py-4">
           <div className="text-base font-medium">Add your own</div>
-          <div className="mt-0.5 text-ui text-muted">A command that speaks ACP on stdio, as in Zed's custom agents.</div>
+          <div className="mt-0.5 text-ui text-muted">A command that speaks ACP on stdio, as in Zed's custom agents. It gets the daemon's environment; an `env_vars` list on its entry in acp-agents.json limits that to the environment without secrets plus the names listed.</div>
           <form
             className="mt-3 flex flex-wrap items-center gap-2"
             onSubmit={(e) => { e.preventDefault(); act(() => api<Listing>("/api/acp/agents", { method: "POST", body: JSON.stringify({ id: form.id.trim(), command: form.command.trim(), args: form.args.trim() ? form.args.trim().split(/\s+/) : [] }) })); setForm({ id: "", command: "", args: "" }); }}

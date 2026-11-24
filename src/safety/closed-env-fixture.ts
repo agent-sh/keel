@@ -1,5 +1,6 @@
 // A program for closed-env.test.ts: starts the way the daemon does, then says what it holds.
 import { readFileSync, readlinkSync } from "node:fs";
+import { secretsLost } from "./closed-env.ts";
 import { startClean } from "../core/relaunch.ts";
 
 const pid = process.pid;
@@ -18,5 +19,6 @@ console.log(JSON.stringify({
   plain: process.env.TEST_PLAIN,
   startedChild: own.stdout.toString(),
   stdin: readlinkSync("/proc/self/fd/0"),
+  lost: secretsLost() ?? null,
   marker: process.env.KEEL_ENV_CLEANED ?? null,
 }));

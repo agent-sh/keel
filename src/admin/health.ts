@@ -24,7 +24,7 @@ import { installedUnits } from "../plugins/registry.ts";
 import { configPath } from "../mcp/config.ts";
 import { storePath } from "../core/store-files.ts";
 import { refusedConfigs } from "../core/named-config.ts";
-import { startedWithSecrets } from "../safety/closed-env.ts";
+import { secretsLost, startedWithSecrets } from "../safety/closed-env.ts";
 import { settings, settingsUnreadable } from "./settings.ts";
 import { ERROR_TYPES } from "../server/routes/hooks.ts";
 import { gate } from "../server/routes/permissions.ts";
@@ -174,7 +174,7 @@ async function sandbox(): Promise<Row[]> {
     platform: "linux", profile, bwrap, started: b?.ok, said: b?.said, timedOut: b?.timedOut,
     // A machine with no systemd-run wraps nothing and needs no scope: not a fault.
     ...(s ? { scope: s.ok, scopeSaid: s.timedOut ? "it did not answer in time" : s.said } : {}),
-  }), ...processRows({ platform: "linux", held: startedWithSecrets(), yama: yamaScope() })];
+  }), ...processRows({ platform: "linux", held: startedWithSecrets(), yama: yamaScope(), lost: secretsLost() })];
 }
 
 function yamaScope(): number | undefined {

@@ -2,7 +2,7 @@
 // sandboxed command does not get, src/safety/sandbox-view.ts) and for the daemon's own environment
 // (src/safety/closed-env.ts, which keeps them out of /proc/<daemon>/environ).
 
-export const ENV_SECRET = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|(^|_)AUTH(_|$)|(^|_)KEY$/i;
+export const ENV_SECRET = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|(^|_)AUTH(_|$)|(^|_)KEY$|(^|_)PAT$/i;
 // The telemetry exporters' headers carry a sign-in under a name that says nothing of it.
 const EXPORTER_HEADERS = /^OTEL_EXPORTER_OTLP(_[A-Z]+)?_HEADERS$/;
 // A URL that carries a sign-in before its host: a user and a password, or a token alone (https://token@host).
@@ -41,5 +41,21 @@ export function secretEnvNames(env: Env): string[] {
     const gitName = GIT_PAIR_NAME.test(name);
     if (byName || (gitName && git) || (!gitName && (VALUE_SECRET.test(value.replace(URL_SIGN_IN, "$1")) || value.replace(URL_SIGN_IN, "$1") !== value))) out.push(name);
   }
+  return out;
+}
+
+// The proxy variables: a child that reaches the network through one needs it, whatever it holds.
+export const PROXY_NAMES = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"];
+
+// The environment a program the daemon starts for its own sake (a hook, an ACP agent, a handoff script) is
+// given: the daemon's, without the names that carry a secret (the provider keys, a cloud's, a token), except
+// the names `pass` lists, which the owner's file for that program asked for (`allowedEnvVars` of a hook,
+// `env_vars` of an ACP agent, as an MCP server's). `extra` is set last, as given.
+export function scrubbedEnv(from: Env = process.env, pass: Iterable<string> = [], extra: Record<string, string | undefined> = {}): Record<string, string> {
+  const drop = new Set(secretEnvNames(from));
+  for (const n of pass) drop.delete(n);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(from)) if (v !== undefined && !drop.has(k)) out[k] = v;
+  for (const [k, v] of Object.entries(extra)) if (v !== undefined) out[k] = v;
   return out;
 }

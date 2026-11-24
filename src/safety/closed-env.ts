@@ -120,6 +120,16 @@ export function execClean(argv: string[], env: Env): void {
   try { execve.call(process, argv[0]!, argv, kept); } catch { if (piped) nullStdin(); }
 }
 
+// Why the secrets taken out at the exec did not come back, when they did not: the daemon then runs without
+// its keys. Said in the log at once and by Settings > Health (src/admin/health-rules.ts).
+let lostWhy: string | undefined;
+export const secretsLost = (): string | undefined => lostWhy;
+function lost(why: string): "failed" {
+  lostWhy = why;
+  console.error(`keel: the provider keys taken out of the environment at start were not restored: ${why}; the daemon runs without them`);
+  return "failed";
+}
+
 // The new image's first step: takes the secrets out of the pipe into the process. The runtime starts what
 // it is asked to start without an `env` from the environment it began with, not from `process.env`
 // (which is where the secrets are now): from here a start with no `env` is given `process.env`.
@@ -127,16 +137,16 @@ export function restoreSecretEnv(): "none" | "restored" | "failed" {
   const spec = process.env[SPEC];
   if (spec === undefined) return "none";
   delete process.env[SPEC];
-  if (spec !== `${process.pid}:0`) return "failed"; // not for this process: left over from another
+  if (spec !== `${process.pid}:0`) return lost("the handover was made for another process"); // left over from another
   let held: Record<string, unknown> | undefined;
   try {
-    if (!fstatSync(0).isFIFO()) return "failed";
+    if (!fstatSync(0).isFIFO()) return lost("standard input is not the pipe the handover goes through");
     const chunks: Buffer[] = [];
     const buf = Buffer.alloc(16_384);
     for (let n = readSync(0, buf, 0, buf.length, null); n > 0; n = readSync(0, buf, 0, buf.length, null)) chunks.push(Buffer.from(buf.subarray(0, n)));
     held = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    return "failed";
+  } catch (e) {
+    return lost(`the handover could not be read (${(e as Error).message.slice(0, 120)})`);
   } finally {
     nullStdin();
   }

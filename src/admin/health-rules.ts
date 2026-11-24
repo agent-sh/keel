@@ -104,12 +104,15 @@ export type ProcessFacts = {
   held: string[] | null;
   // kernel.yama.ptrace_scope (undefined: the kernel has no Yama).
   yama?: number;
+  // The secrets taken out of the daemon's environment at start did not come back (src/safety/closed-env.ts): why.
+  lost?: string;
 };
 
 export function processRows(f: ProcessFacts): Row[] {
   if (f.platform !== "linux") return [];
   const link = { section: "safety" };
   const rows: Row[] = [];
+  if (f.lost) rows.push({ id: "sandbox:environment-lost", group: "sandbox", level: "warning", title: "the daemon runs without the keys it was started with", detail: `its start took the secrets out of the environment and could not put them back: ${f.lost}; no provider that needs one of them can be reached`, fix: "restart the daemon with `keel serve`; if it repeats, the handover pipe is being taken (a wrapper that reads standard input)", link, how: "read the result of the daemon's own start" });
   if (f.held !== null) {
     const how = "read the environment this daemon process was started with (/proc/self/environ) and looked for names and values that carry a secret";
     rows.push(f.held.length

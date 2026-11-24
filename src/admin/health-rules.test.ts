@@ -60,6 +60,10 @@ test("the daemon's own process: what its environment and the kernel's Yama setti
   // No Yama in the kernel is open; an environment that cannot be read says nothing of itself; other systems say nothing.
   expect(ids({ platform: "linux", held: null })).toEqual(["warning sandbox:ptrace"]);
   expect(processRows({ platform: "darwin", held: null })).toEqual([]);
+  // Keys taken out at start that did not come back: the daemon has none, and Health says so.
+  const lost = processRows({ platform: "linux", held: [], yama: 1, lost: "standard input is not the pipe" });
+  expect(lost.map((r) => `${r.level} ${r.id}`)).toEqual(["warning sandbox:environment-lost", "ok sandbox:environment", "ok sandbox:ptrace"]);
+  expect(lost[0]!.detail).toContain("standard input is not the pipe");
 });
 
 test("telemetry: an exporter that is on and has nowhere to send is broken", () => {

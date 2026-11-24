@@ -1029,7 +1029,7 @@ names.
 
 | `type` | Fields | What runs |
 | --- | --- | --- |
-| `command` | `command`, `timeout`, `onFailure`, `async`, `asyncRewake` | The command in bash, with the event on stdin |
+| `command` | `command`, `allowedEnvVars`, `timeout`, `onFailure`, `async`, `asyncRewake` | The command in bash, with the event on stdin. It gets the daemon's environment without the names that carry a secret (keys, tokens, passwords); `allowedEnvVars` lists the names it is given whole |
 | `command` with `args` | `command`, `args` | The program itself with those arguments, no shell. `${KEEL_PROJECT_DIR}` and `${CLAUDE_PROJECT_DIR}` are filled in |
 | `http` | `url`, `headers`, `allowedEnvVars`, `timeout`, `onFailure` | A POST of the event as JSON. A header takes an environment variable (`$NAME`, `${NAME}`) only when `allowedEnvVars` lists it |
 | `mcp_tool` | `server`, `tool`, `input`, `timeout`, `onFailure` | A tool of an MCP server Keel is connected to. `${tool_input.file_path}` in `input` is filled from the event: alone it keeps its type, inside a text it is written into it |

@@ -35,6 +35,7 @@ import type { MachineRow } from "./db.ts";
 import type { Fleet } from "./fleet.ts";
 import { LinkError, linkFetch } from "./link.ts";
 import { readText } from "../core/proc.ts";
+import { PROXY_NAMES, scrubbedEnv } from "../safety/env-secret.ts";
 
 export type StepName = "interrupt" | "snapshot" | "transfer" | "worktree" | "switch";
 export type Step = { name: StepName; state: "pending" | "running" | "done" | "skipped" | "failed"; detail?: string };
@@ -260,7 +261,7 @@ export class Handoffs {
     // these keep the file transport, which a bundle is fetched over.)
     script = `${GIT_SHELL_ENV}\n${script}`;
     if (!machine) {
-      const p = Bun.spawn(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, ...(view ? gitEnv(cwd, fetch) : {}), GIT_TERMINAL_PROMPT: "0" } });
+      const p = Bun.spawn(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: scrubbedEnv(process.env, PROXY_NAMES, { ...(view ? gitEnv(cwd, fetch) : {}), GIT_TERMINAL_PROMPT: "0" }) });
       const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
       return { code, out: out + err };
     }

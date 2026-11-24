@@ -167,7 +167,13 @@ under `~/.cache/keel-work/bun/research/`.
   through a pipe in the place of standard input, are put into `process.env`, and standard input
   becomes `/dev/null`. The runtime starts a program with no `env` from the environment it began
   with, so `Bun.spawn` and `Bun.spawnSync` are wrapped to give `process.env` then: what the daemon
-  starts gets what it did. Memory is not closed by making the process non-dumpable (that closes
+  starts gets what it did, except a command hook and a handoff script, which get `scrubbedEnv` (the
+  environment without the names that carry a secret); a hook lists the names it needs in
+  `allowedEnvVars`, and a handoff script keeps the proxy variables only. An ACP agent is the owner's
+  own coding agent and often signs in from the environment: it gets the whole environment, and the
+  scrubbed one plus the names in `env_vars` only when its entry sets `env_vars` (as an MCP server's). A start whose pipe could not be read (another
+  process's handover, standard input not a pipe, bad JSON) is logged and Health says it
+  (`sandbox:environment-lost`). Memory is not closed by making the process non-dumpable (that closes
   `/proc/<daemon>` for the daemon's own readers too): Yama's ptrace_scope of 1 or more already
   limits attaching to ancestors, and Settings > Health says both facts (`sandbox:environment`,
   `sandbox:ptrace`). A daemon a client command starts in its own process is not started again; its

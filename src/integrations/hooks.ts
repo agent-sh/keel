@@ -34,6 +34,7 @@ import { timed } from "../admin/stall.ts";
 import { enabledUnits, type Unit } from "../plugins/registry.ts";
 import { substitute } from "../plugins/options.ts";
 import { hookOptions, waiting } from "../plugins/settings.ts";
+import { scrubbedEnv } from "../safety/env-secret.ts";
 
 // The events Keel fires, the ones existing hook files use most first. What
 // each carries and what its hooks can answer: README, Hooks.
@@ -94,7 +95,7 @@ type Common = { timeout?: number; onFailure?: "block" | "continue"; if?: string 
 // `async`: the command runs in the background (see background below);
 // `asyncRewake`: the same, with its time limit, and exit code 2 wakes the session.
 type Handler =
-  | (Common & { type: "command"; command: string; args?: string[]; async?: boolean; asyncRewake?: boolean })
+  | (Common & { type: "command"; command: string; args?: string[]; async?: boolean; asyncRewake?: boolean; allowedEnvVars?: string[] })
   | (Common & { type: "http"; url: string; headers?: Record<string, string>; allowedEnvVars?: string[] })
   | (Common & { type: "mcp_tool"; server: string; tool: string; input?: Record<string, unknown> });
 // Why a handler cannot run, or nothing.
@@ -104,6 +105,7 @@ function handlerProblem(h: any): string | null {
     case "command":
       if (!text(h.command)) return "a command hook needs a command";
       for (const k of ["async", "asyncRewake"]) if (h[k] !== undefined && typeof h[k] !== "boolean") return `a command hook's ${k} must be true or false`;
+      if (h.allowedEnvVars !== undefined && !(Array.isArray(h.allowedEnvVars) && h.allowedEnvVars.every((a: unknown) => typeof a === "string"))) return "a command hook's allowedEnvVars must be a list of names";
       return h.args === undefined || (Array.isArray(h.args) && h.args.every((a: unknown) => typeof a === "string")) ? null : "a command hook's args must be a list of strings";
     case "http":
       if (!text(h.url) || !/^https?:\/\//.test(h.url)) return "an http hook needs an http or https url";
@@ -1002,7 +1004,7 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
   const argv = h.args ? [place(h.command), ...h.args.map((a) => (own ? substitute(place(a), opts.text) : place(a)))] : ["bash", "-c", h.command];
   let p: ReturnType<typeof Bun.spawn>;
   try {
-    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, ...own?.env, ...opts.env, ...skill, KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root } });
+    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: scrubbedEnv(process.env, h.allowedEnvVars ?? [], { ...own?.env, ...opts.env, ...skill, KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root }) });
   } catch (e) {
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }
