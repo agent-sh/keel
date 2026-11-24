@@ -18,11 +18,16 @@
 import { readFile, readdir, readlink } from "node:fs/promises";
 import { clientsOf, portsOf } from "../fleet/portal.ts";
 import { timed } from "../admin/stall.ts";
-import { adoptScopes, allJobs, jobLive, markOf, ownStart, processesOf, scopeEnvs, scopeHoldsSelf, scopeWhy, stateIdOf, stopJob, type Job, type Refused } from "../tools/jobs.ts";
+import { adoptScopes, allJobs, jobLive, markOf, ownStart, processesOf, scopeEnvs, scopeHoldsSelf, scopeWhy, stateIdOf, stopJob, unmarkedOwn, type Job, type Refused } from "../tools/jobs.ts";
 import * as rules from "./leftover-rules.ts";
 import * as foreign from "./foreign-scopes.ts";
 
 export const PASS_MS = 60_000;
+
+// What the command's own session is told of a scope that holds processes with no job mark, when its record names
+// this state folder and its command ended (jobs.ts unmarkedOwn): a note, not an error.
+export const unmarkedLine = (u: { job: string; session: string; command: string }) =>
+  `The job scope of \`${u.command}\` (ID ${u.job}, session ${u.session}) holds processes that carry no job mark: the command ended and cleaned its environment. Nothing was signalled for it. It is listed in Settings > Leftovers, where you can stop it.`;
 
 // What one pass found of a job's scope, for the page.
 export type ScopeView = {
@@ -132,7 +137,7 @@ export async function pass(c: Ctx, o: { dry?: boolean; jobs?: Job[]; now?: numbe
   for (const r of read) if (r.why) {
     others.others.push(r.j.cgroup!);
     foreignWhy.set(r.j.cgroup!, r.why);
-    if (!doubted.has(r.j.cgroup!)) { doubted.add(r.j.cgroup!); c.refused?.(r.j.log.replace(/\.log$/, ".json"), r.why, { cgroup: r.j.cgroup!, mark: markOf(r.j) }); }
+    if (!doubted.has(r.j.cgroup!)) { doubted.add(r.j.cgroup!); c.refused?.(r.j.log.replace(/\.log$/, ".json"), r.why, { cgroup: r.j.cgroup!, mark: markOf(r.j), unmarked: unmarkedOwn({ id: r.j.id, sessionId: r.j.sessionId, command: r.j.command, description: r.j.description, ended: r.j.ended, state_id: r.j.stateId }, r.why, stateId) }); }
   }
   const mine = read.filter((r): r is Extract<typeof r, { procs: Map<number, Proc> }> => !r.why);
   marks ??= c.loadIdle?.() ?? new Map();

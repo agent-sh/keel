@@ -23,11 +23,12 @@ import type { Store } from "../core/store.ts";
 import { git, locate } from "../core/git.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { clientsOf, portsOf } from "../fleet/portal.ts";
-import { allJobs, findJob, jobsIn, jobsOf, processesOf, stopJob, type Job } from "../tools/jobs.ts";
+import { allJobs, findJob, jobsIn, jobsOf, processesOf, scopeHoldsSelf, stopJob, type Job } from "../tools/jobs.ts";
 import type { Worktree, Worktrees } from "../worktree/manager.ts";
 import { readsOf } from "../server/reads.ts";
 import * as rules from "./leftover-rules.ts";
 import * as scopes from "./scopes.ts";
+import { HOLDS_SELF } from "./foreign-scopes.ts";
 import { checksOnTree, landingLines, type BaseConflict, type ChecksOn } from "./landing.ts";
 import { forecastOf } from "../worktree/overlap-scan.ts";
 import { decidedOn, inputsOf, namedFor, repoOf, treeOf } from "../checks/ledger.ts";
@@ -562,6 +563,7 @@ export async function survey(c: Ctx, o: { extra?: string[]; only?: string } = {}
 export async function stopLeft(sessionId: string, jobId: string, store?: Store): Promise<{ stopped: boolean; left: number[] }> {
   const j = findJob(sessionId, jobId);
   if (!j) throw new Error("no such command");
+  if (scopeHoldsSelf(j)) throw new Error(HOLDS_SELF);
   const left = await stopJob(j, "was stopped by the owner from Leftovers");
   if (!left.length) store?.db.query("DELETE FROM scope_keeps WHERE job_id = ?").run(jobId);
   return { stopped: !left.length, left };

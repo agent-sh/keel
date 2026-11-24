@@ -133,7 +133,17 @@ export function scopeWhy(m: { id: string; started: number; state_id?: string; st
   const mark = `${MARK}=${markOf(m)}`, st = m.state_id === undefined ? undefined : `${STATE_MARK}=${m.state_id}`;
   if (!st && envs.some((e) => !!e && hasKey(e, STATE_MARK))) return "its record names no state folder, and its scope's processes carry one";
   if (envs.some((e) => !!e && hasEntry(e, mark) && (!st || hasEntry(e, st)))) return undefined;
-  return st ? "no process in its scope carries the job's mark and this state folder's id" : "no process in its scope carries the job's mark";
+  return st ? NO_MARK_STATE : "no process in its scope carries the job's mark";
+}
+const NO_MARK_STATE = "no process in its scope carries the job's mark and this state folder's id";
+// A scope refused for want of a mark only, whose record names this state folder and is of a command that ended
+// (and was reported): the command's processes carry no mark because it cleaned its environment (`env -i`, a
+// launcher that starts a daemon of its own). The scope stays listed as another's, never taken over or stopped
+// by Keel: only what is said of it changes, from an error to a note to the command's own session. This is a
+// claim of the record, so it decides words and nothing else.
+export function unmarkedOwn(m: { id: string; sessionId: string; command: string; description?: string; ended?: number; state_id?: string }, why: string | undefined, stateId: string | undefined): { job: string; session: string; command: string } | undefined {
+  if (why !== NO_MARK_STATE || !stateId || m.state_id !== stateId || m.ended === undefined) return undefined;
+  return { job: m.id, session: m.sessionId, command: (m.description || m.command).replace(/[\x00-\x1f\x7f`]+/g, " ").trim().slice(0, 60) };
 }
 const envsIn = (cg: string): (Buffer | undefined)[] => {
   let pids: number[] = [];
@@ -892,7 +902,7 @@ const historyOf = (m: Meta, dir: string): Job => {
 // A scope with no such record (another daemon's, over another state folder) is never taken: it is only
 // counted (`others`). Each unknown id is looked for once. Resolves with what was taken back.
 // `scope`: the scope and the mark of the record that was refused (a daemon says each such pair once).
-export type Refused = (file: string, why: string, scope: { cgroup: string; mark: string }) => void;
+export type Refused = (file: string, why: string, scope: { cgroup: string; mark: string; unmarked?: { job: string; session: string; command: string } }) => void;
 const lookedFor = new Set<string>();
 export async function adoptScopes(spillRoot: string, refused?: Refused): Promise<{ taken: Job[]; others: string[] }> {
   const out = { taken: [] as Job[], others: [] as string[] };
@@ -915,7 +925,7 @@ export async function adoptScopes(spillRoot: string, refused?: Refused): Promise
     const why = !found ? undefined : found.m.cgroup !== cg ? "the scope running under its id is not the cgroup its record names"
       : notOurs(found.m, stateIdOf(spillRoot)) ?? scopeWhy(found.m, await scopeEnvs(cg), stateIdOf(spillRoot));
     if (!found || why || !settled(found.m) || jobs.has(id)) {
-      if (found && why) refused?.(join(found.dir, found.f), why, { cgroup: cg, mark: markOf(found.m) });
+      if (found && why) refused?.(join(found.dir, found.f), why, { cgroup: cg, mark: markOf(found.m), unmarked: settled(found.m) ? unmarkedOwn(found.m, why, stateIdOf(spillRoot)) : undefined });
       lookedFor.add(cg);
       out.others.push(cg);
       continue;
@@ -1162,7 +1172,9 @@ function signalJob(j: Job, sig: NodeJS.Signals, more: Member[] = []) {
   }
   // Members outside the group: in the cgroup (setsid, double forks) or
   // moved to a group of their own within the session.
-  if (sig === "SIGKILL" && j.cgroup) try { writeFileSync(`${j.cgroup}/cgroup.kill`, "1"); } catch {}
+  // Not while this daemon (or a process above it) is in the scope: the kill would end it too. Its other members
+  // are then signalled one by one, below.
+  if (sig === "SIGKILL" && j.cgroup && !cgroupHoldsSelf(j.cgroup)) try { writeFileSync(`${j.cgroup}/cgroup.kill`, "1"); } catch {}
   for (const m of [...rest, ...more]) if ((own || m.group !== pid) && procStart(m.pid) === m.start && (!m.cg || inCgroup(m.pid, j.cgroup!))) try { process.kill(m.pid, sig); } catch {}
   if (!rest.length && !more.length && (reused || (j.boot && lead === undefined))) gone(j);
 }

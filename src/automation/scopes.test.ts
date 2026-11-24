@@ -7,7 +7,7 @@ import { afterEach, expect, test } from "bun:test";
 import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jobScope } from "../tools/jobs.ts";
+import { jobScope, unmarkedOwn } from "../tools/jobs.ts";
 import { BUILD_IDLE_MS, SCOPE_IDLE_MS } from "./leftover-rules.ts";
 
 const scoped = jobScope();
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 // The first daemon: its command leaves a process in its scope, and the daemon is killed.
-async function first(root: string, mode: "gone" | "archived" | "build" | "old") {
+async function first(root: string, mode: "gone" | "archived" | "build" | "old" | "bare" | "term") {
   const tag = String(1e9 + Math.floor(Math.random() * 8e9));
   tags.push(tag);
   const a = Bun.spawn([process.execPath, RUN, "a", root, tag, mode], { stdout: "pipe", stderr: "inherit", env: process.env });
@@ -172,4 +172,56 @@ test.skipIf(!scoped.slice)(`an older build's record taken back with its scope is
   // The folder that took it back still does.
   expect(later(root, t0 + 1000).taken).toContain(o.job);
   expect(ours(o.tag).length).toBe(1);
+}, 60_000);
+
+const NO_MARK = "no process in its scope carries the job's mark and this state folder's id";
+const rec = { id: "j1", sessionId: "s1", command: "env -i setsid sleep 900", ended: 5, state_id: "st-1" };
+test("only a missing mark is worded as a note, and only for this folder's ended command", () => {
+  expect(unmarkedOwn(rec, NO_MARK, "st-1")).toEqual({ job: "j1", session: "s1", command: "env -i setsid sleep 900" });
+  expect(unmarkedOwn({ ...rec, command: "echo `id`\n\x1b[31m" }, NO_MARK, "st-1")?.command).toBe("echo  id [31m");
+  expect(unmarkedOwn(rec, NO_MARK, "st-2")).toBeUndefined();
+  expect(unmarkedOwn({ ...rec, state_id: undefined }, NO_MARK, "st-1")).toBeUndefined();
+  expect(unmarkedOwn({ ...rec, ended: undefined }, NO_MARK, "st-1")).toBeUndefined();
+  expect(unmarkedOwn(rec, "its record was written over another state folder (a copy of one)", "st-1")).toBeUndefined();
+  expect(unmarkedOwn(rec, undefined, "st-1")).toBeUndefined();
+});
+
+test.skipIf(!scoped.slice)(`a scope whose command cleaned its environment stays listed as another's, said once as a note naming the command, not an error${needs}`, async () => {
+  const root = fresh();
+  const a = await first(root, "bare");
+  const t0 = Date.now();
+  const one = later(root, t0);
+  // Not taken over: no process of it carries the mark, so it is listed for the owner, and nothing is signalled for it.
+  expect(one.refused.length).toBeGreaterThanOrEqual(1);
+  expect(one.refused.every((w: string) => w === NO_MARK)).toBe(true);
+  expect(one.views.map((v: any) => v.job)).not.toContain(a.job);
+  expect(one.foreign.some((f: any) => f.cgroup === a.cgroup)).toBe(true);
+  // Told as a note to the command's session, once, and no record is said as an error.
+  expect(one.said).toEqual([]);
+  expect(one.lines).toHaveLength(1);
+  expect(one.lines[0]).toStartWith(`${a.session}: The job scope of \``);
+  expect(one.lines[0]).toContain(`setsid sleep 900.${a.tag}`);
+  expect(one.lines[0]).toContain(`ID ${a.job}, session ${a.session}`);
+  const two = later(root, t0 + 1000);
+  expect(two.lines).toEqual([]);
+  expect(two.said).toEqual([]);
+  expect(ours(a.tag).length).toBe(1);
+  // The owner's stop of it, as listed, ends it.
+  const out = later(root, t0 + 2000, a.tag);
+  expect(out.stop).toEqual({ stopped: true, left: [] });
+  expect(ours(a.tag)).toEqual([]);
+}, 60_000);
+
+test.skipIf(!scoped.slice)(`a stop of a scope that holds the daemon ends what ignores TERM there and never the daemon${needs}`, async () => {
+  const root = fresh();
+  const a = await first(root, "term");
+  const d = Bun.spawnSync([process.execPath, RUN, "d", root, a.job], { stdout: "pipe", stderr: "inherit", env: process.env });
+  const lines = d.stdout.toString().trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  // Both lines came: the daemon was not ended with the scope.
+  expect(lines).toHaveLength(2);
+  expect(lines[0].held).toBe(true);
+  expect(lines[0].stopLeft).toStartWith("this daemon runs in that scope");
+  expect(lines[0].before).toContain(a.job);
+  expect(lines[1].left).toEqual([]);
+  expect(ours(a.tag)).toEqual([]);
 }, 60_000);

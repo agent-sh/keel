@@ -8,6 +8,10 @@
 //       build: what it leaves is a stand-in for a Gradle daemon listening on a port; its session lives.
 //       old: as an older build's job: what it leaves carries no state folder's id, nor does its record; its
 //         session lives.
+//       bare: what it leaves was started with a cleaned environment (env -i): it carries no mark; its record is this folder's.
+//       term: what it leaves ignores TERM.
+//   d ROOT JOB: a later daemon takes the jobs back, moves itself into JOB's scope, and the owner's stop of that command
+//     and a stop of its job are tried: two JSON lines (the refusal, then what was left), or none when the daemon was ended.
 //   b ROOT NOW [TAG]: a later daemon takes the jobs back as a start does and makes one pass over the job scopes at
 //     the clock NOW, with the idle marks and told lines kept in the store. Prints one JSON line: the scopes it
 //     lists as not its jobs (`foreign`), and the records it would have said once (`said`). With TAG, the owner
@@ -17,7 +21,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { adoptJobs, allJobs, jobLive, startJob } from "../tools/jobs.ts";
+import { adoptJobs, allJobs, jobLive, scopeHoldsSelf, startJob, stopJob } from "../tools/jobs.ts";
 import * as leftovers from "./leftovers.ts";
 import * as scopes from "./scopes.ts";
 
@@ -36,6 +40,8 @@ if (phase === "a") {
   const run = (sid: string, command: string) => startJob({ sessionId: sid, command, cwd: root, logDir: join(spill, sid, "jobs") });
   const left = mode === "build"
     ? `setsid python3 -c 'import socket,sys; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); open(sys.argv[1],"w").write(str(s.getsockname()[1])); held=[s.accept() for _ in iter(int, 1)]' ${join(root, "port")} org.gradle.launcher.daemon.bootstrap.GradleDaemon ${tag}`
+    : mode === "bare" ? `env -i setsid sleep 900.${tag}`
+    : mode === "term" ? `setsid sh -c 'trap "" TERM; exec sleep 900.${tag}'`
     : mode === "old" ? `env -u KEEL_JOB_STATE setsid sleep 900.${tag}` : `setsid sleep 900.${tag}`;
   const j = run(s.id, `${left} < /dev/null > /dev/null 2>&1 & echo started`);
   await j.exited;
@@ -59,11 +65,25 @@ if (phase === "a") {
   const ctx: scopes.Ctx = {
     spillRoot: spill, endedOf: (sid) => leftovers.endedOf(store, sid), keeps: () => leftovers.keeps(store),
     tell: (sid, line, key) => void leftovers.tellLeft(store, sid, line, key, (to, l) => lines.push(`${to}: ${l}`)),
-    refused: (_f, why, scope) => { refused.push(why); if (leftovers.foreignFirst(store, scope.cgroup, scope.mark, why)) said.push(scope.cgroup); }, loadIdle: () => leftovers.loadIdle(store), saveIdle: (m) => leftovers.saveIdle(store, m),
+    refused: (_f, why, scope) => {
+      refused.push(why);
+      if (!leftovers.foreignFirst(store, scope.cgroup, scope.mark, why)) return;
+      if (scope.unmarked) ctx.tell(scope.unmarked.session, scopes.unmarkedLine(scope.unmarked), `unmarked:${scope.cgroup}:${scope.mark}`); else said.push(scope.cgroup);
+    }, loadIdle: () => leftovers.loadIdle(store), saveIdle: (m) => leftovers.saveIdle(store, m),
   };
   const alive = (pid: number) => { try { const st = readFileSync(`/proc/${pid}/stat`, "utf8"); return !/^[ZX]$/.test(st.slice(st.lastIndexOf(") ") + 2).split(" ")[0] ?? ""); } catch { return false; } };
   const lingering = () => allJobs().filter((j) => j.cgroup && j.ended !== undefined && jobLive(j)).map((j) => j.id);
-  if (phase === "b") {
+  if (phase === "d") {
+    // The daemon is itself in the job's scope (a command there started it), which also holds a process that ignores TERM:
+    // the owner's stop of the scope as a command's, and a stop of its job, end that process and never this daemon.
+    const job = allJobs().find((j) => j.id === process.argv[4])!;
+    writeFileSync(`${job.cgroup}/cgroup.procs`, String(process.pid));
+    const held = scopeHoldsSelf(job);
+    const stopLeft = await leftovers.stopLeft(job.sessionId, job.id, store).then(() => "stopped", (e: Error) => e.message);
+    console.log(JSON.stringify({ held, stopLeft, before: lingering() }));
+    const left = await stopJob(job, "was stopped by a test");
+    console.log(JSON.stringify({ left, after: lingering(), alive: true }));
+  } else if (phase === "b") {
     const d = await scopes.pass(ctx, { now: Number(process.argv[4]) });
     const foreign = await scopes.foreignScopes();
     const tag = process.argv[5];

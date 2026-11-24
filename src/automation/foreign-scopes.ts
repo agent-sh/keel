@@ -145,11 +145,13 @@ export async function list(cgroups: Iterable<string>, whys: Map<string, string>,
 
 // The owner's stop of one: only a job scope by its name, and only while it holds what the owner was shown
 // (the same marks). TERM to every process, KILL for the scope after two seconds. What is left is told.
+// What the owner is told when a scope holds this daemon (a command that lives there started it).
+export const HOLDS_SELF = "this daemon runs in that scope (it was started from a command that lives there): stopping it would end this daemon too";
 export async function stop(cgroup: string, seen: { marks: string[] }, listed: Set<string>): Promise<{ stopped: boolean; left: number[] }> {
   if (!listed.has(cgroup) || !SCOPE_NAME.test(cgroup.slice(cgroup.lastIndexOf("/") + 1))) throw new Error("that is not a job scope of another daemon this one knows of");
   const now = await look(cgroup);
   if (!now) return { stopped: true, left: [] };
-  if (now.holds_self) throw new Error("this daemon runs in that scope (it was started from a command that lives there): stopping it would end this daemon too");
+  if (now.holds_self) throw new Error(HOLDS_SELF);
   const was = [...seen.marks].sort().join(" ");
   if (was !== now.marks.join(" ")) throw new Error("the scope holds other commands than the ones that were shown: look at it again");
   const pids = async () => (await readFile(`${cgroup}/cgroup.procs`, "utf8").catch(() => "")).split("\n").filter(Boolean).map(Number);

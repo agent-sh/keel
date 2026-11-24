@@ -95,17 +95,20 @@ function init(deps: Deps) {
   leftovers.migrate(deps.store);
   // What commands left running in their scopes, this daemon's and the one's before a restart: listed, and
   // stopped once their session ended and they idle (scopes.ts). Not in a command's own daemon.
+  const tell = (sid: string, line: string, key: string) => void leftovers.tellLeft(deps.store, sid, line, key, (to, l) => failures.seen(to, "tool", "left running", l));
   if (!runMode.client) scopes.start({
     spillRoot: join(deps.store.stateDir, "spill"),
     endedOf: (sid) => leftovers.endedOf(deps.store, sid),
     keeps: () => leftovers.keeps(deps.store),
-    tell: (sid, line, key) => void leftovers.tellLeft(deps.store, sid, line, key, (to, l) => failures.seen(to, "tool", "left running", l)),
+    tell,
     loadIdle: () => leftovers.loadIdle(deps.store),
     saveIdle: (m) => leftovers.saveIdle(deps.store, m),
     // Said once for the scope and its record's mark, across restarts; it is a notice (no spike of failures), and the scope
     // is listed in Settings > Leftovers with what it holds, where the owner stops it.
     refused: (file, why, scope) => {
       if (!leftovers.foreignFirst(deps.store, scope.cgroup, scope.mark, why)) return;
+      // The record is this state's and its command ended: its processes carry no mark because it cleaned its environment.
+      if (scope.unmarked) return tell(scope.unmarked.session, scopes.unmarkedLine(scope.unmarked), `unmarked:${scope.cgroup}:${scope.mark}`);
       deps.errors.capture("tool", new Error(`A job scope was not taken over: ${why}. Nothing was signalled for it. It is listed in Settings > Leftovers, where you can stop it. The record: ${file}`), { at: "adopt scopes", notice: true, scope: scope.cgroup }, { group: "a job scope was not taken over" });
     },
   });
