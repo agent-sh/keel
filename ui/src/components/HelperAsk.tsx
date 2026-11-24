@@ -11,7 +11,7 @@
 import { ArrowUp, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { ask, dismiss, pending, readLine, resume, useAsk } from "../lib/ask.ts";
+import { ask, dismiss, lookAgain, pending, readLine, resume, useAsk } from "../lib/ask.ts";
 import { useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
@@ -25,6 +25,7 @@ export function HelperAsk() {
   const answer = useAsk((s) => s.answer);
   const asking = useAsk((s) => s.asking);
   const error = useAsk((s) => s.error);
+  const unanswered = useAsk((s) => s.unanswered);
   const [text, setText] = useState("");
   useEffect(resume, []);
   const send = () => { const t = text; setText(""); void ask(t); };
@@ -50,7 +51,12 @@ export function HelperAsk() {
             <span dir="auto" className="min-w-0 flex-1 truncate" data-testid="helper-answer-q">{answer.question}</span>
             <button type="button" className="k-ask-x" aria-label="Clear the answer" data-testid="helper-answer-clear" onClick={dismiss}><X /></button>
           </div>
-          {pending(answer.state) && !answer.text && <p className="k-ask-wait" data-testid="helper-answer-wait"><span className="k-mark" data-watch="work" aria-hidden />{WORKING[answer.state]}</p>}
+          {unanswered && pending(answer.state) ? (
+            <p className="k-ask-note k-ask-late" data-testid="helper-answer-late">
+              The helper did not answer.
+              <button type="button" className="k-ask-again" data-testid="helper-answer-again" onClick={lookAgain}>Look again</button>
+            </p>
+          ) : pending(answer.state) && !answer.text && <p className="k-ask-wait" data-testid="helper-answer-wait"><span className="k-mark" data-watch="work" aria-hidden />{WORKING[answer.state]}</p>}
           {answer.text && <div className="k-ask-text" data-testid="helper-answer-text"><Markdown text={answer.text} /></div>}
           {answer.state === "failed" && <p className="k-ask-note" data-testid="helper-answer-failed">The helper's turn failed. Its conversation says why.</p>}
           {answer.state === "stopped" && <p className="k-ask-note">The helper was stopped before it answered.</p>}

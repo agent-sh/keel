@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { promptsOf, QUEUED, rig, SENT, untilStopped } from "./delivery.fixture.ts";
 import { allHooks, registerHooks } from "./hooks.ts";
 import { STALLED_MAX } from "./turn.ts";
+import { turnRoutes } from "../server/routes/turns.ts";
 
 // Turn hooks are process-wide: the files after this one run without the ones its tests register.
 const hooksAtStart = allHooks().length;
@@ -780,4 +781,63 @@ test("a continued turn counts as the owner's when the owner started the cut one"
   store.append(owners, "turn_start", {});
   store.append(owners, "turn_end", { reason: "end_turn" });
   expect(engine.byOwner(owners)).toBe(false);
+});
+
+// A question from the helper's row on a phone is the owner's words with a mark (`ask`): it releases the
+// owner's hold as a typed prompt does, and a queue clear removes it as the owner's own row, telling no
+// sender. A mark of the harness's beside it (a peer's message, a kind) keeps an input not the owner's:
+// it waits behind the hold, and a clear, a remove or a delete tells its sender it went unread.
+test("an ask is the owner's words; an ask with another mark, or a peer's message, is not", async () => {
+  const dir = scratch("ask-owner");
+  const { store, engine, session } = rig(dir);
+  const told: string[] = [];
+  registerHooks({ inputDropped: (rows, why) => { for (const r of rows) told.push(`${r.text}:${why}`); } });
+  const routes = turnRoutes({ store, engine } as any) as any;
+  const clear = (id: string) => routes["/api/sessions/:id/queue"].DELETE({ params: { id } });
+  const remove = (id: string, qid: string) => routes["/api/sessions/:id/queue/:qid"].DELETE({ params: { id, qid } });
+  const ask = { ask: "phone" };
+  const peer = { kind: "peer" };
+  const mixed = { ask: "phone", kind: "peer" };
+
+  // engine.send and the hold: the ask releases it and runs; the others wait behind it.
+  const held = session();
+  engine.holdQueue(held.id, "owner");
+  expect(engine.send(held.id, "from a peer", { meta: peer, mode: "queue" }).queued).toBeTruthy();
+  expect(engine.send(held.id, "an ask with a kind", { meta: mixed, mode: "queue" }).queued).toBeTruthy();
+  expect(engine.isHeld(held.id)).toBe(true);
+  expect(engine.send(held.id, "what waits for me?", { meta: ask }).event).toBeTruthy();
+  expect(engine.isHeld(held.id)).toBe(false);
+  await engine.idle(held.id);
+  expect(store.events(held.id).find((e) => e.kind === "user" && e.data.text === "what waits for me?")?.data.ask).toBe("phone");
+
+  // The queue clear: the ask row is the owner's and goes untold; the others' senders are told.
+  const q = session();
+  engine.holdQueue(q.id, "owner");
+  for (const [text, meta] of [["asked", ask], ["peer", peer], ["mixed", mixed]] as const) engine.send(q.id, text, { meta, mode: "queue" });
+  expect(store.queue(q.id)).toHaveLength(3);
+  told.length = 0;
+  await clear(q.id);
+  expect(store.queue(q.id)).toEqual([]);
+  expect(told.sort()).toEqual(["mixed:removed", "peer:removed"]);
+
+  // One row removed: an ask by itself, a peer's told; engine.drop never takes the owner's.
+  const r = session();
+  engine.holdQueue(r.id, "owner");
+  const a = engine.send(r.id, "asked", { meta: ask, mode: "queue" }).queued!;
+  const p = engine.send(r.id, "peer", { meta: peer, mode: "queue" }).queued!;
+  engine.drop([a], "removed");
+  expect(store.queue(r.id).map((x) => x.text)).toEqual(["asked", "peer"]);
+  told.length = 0;
+  await remove(r.id, a.id);
+  await remove(r.id, p.id);
+  expect(store.queue(r.id)).toEqual([]);
+  expect(told).toEqual(["peer:removed"]);
+
+  // A deleted session tells the senders of what it had not read, never the owner of an ask.
+  const d = session();
+  engine.holdQueue(d.id, "owner");
+  for (const [text, meta] of [["asked", ask], ["peer", peer], ["mixed", mixed]] as const) engine.send(d.id, text, { meta, mode: "queue" });
+  told.length = 0;
+  store.deleteSession(d.id);
+  expect(told.sort()).toEqual(["mixed:deleted", "peer:deleted"]);
 });

@@ -95,6 +95,10 @@ export type ToolKind = "shell" | "edit" | "control" | "remote";
 
 export type Tool = ToolSpec & {
   readOnly: boolean;
+  // It changes nothing outside Keel, so the gate reads it as a read, but it acts in Keel: it starts or stops
+  // an agent, messages another session, sets a loop or a wake, sends a notification, records a verdict or
+  // replaces a context. A turn that may only read (the helper's answer to a phone's ask) refuses it.
+  acts?: true;
   // A mark of a change a live session must not wait for (src/core/build.ts
   // URGENT): any new text, written on the tool itself so two branches that
   // each mark a tool change two places and merge clean.

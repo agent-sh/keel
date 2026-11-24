@@ -13,6 +13,15 @@ data class AskAct(val kind: Kind, val chatId: String, val label: String) {
 private val LOOKED = mapOf("sessions" to "the session list", "activity" to "what happened", "mail" to "mail", "calendar" to "the calendar", "memory" to "its memory")
 
 object Asked {
+    /** How long the row reads an answer that has not come: past it the helper is held (a provider's wait, a long turn) and the row says so. */
+    const val ANSWER_WAIT_MS = 2 * 60_000L
+
+    /** Whether the row reads the answer again: the helper still works, and the row has not waited [ANSWER_WAIT_MS] since it began. */
+    fun readsAgain(a: HelperAnswer, sinceMs: Long, nowMs: Long): Boolean = a.pending && nowMs - sinceMs < ANSWER_WAIT_MS
+
+    /** What the row says when it stopped reading an answer that had not come. */
+    const val UNANSWERED = "The helper did not answer."
+
     /** "Read Fix the build, Deploy and the session list"; empty when it read nothing. */
     fun readLine(a: HelperAnswer): String {
         val parts = a.read.map { it.title } + a.looked.map { LOOKED[it] ?: it }

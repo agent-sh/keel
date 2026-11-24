@@ -38,4 +38,12 @@ class AskedTest {
         assertEquals("The helper's turn failed. Its conversation says why.", Asked.status(a))
         assertEquals("The helper was stopped before it answered.", Asked.status(a.copy(state = "stopped")))
     }
+
+    @Test fun theRowStopsReadingAnAnswerThatDoesNotComeAndSaysSo() {
+        val working = answer("""{"id":"e1","chat_id":"s-h","state":"working","question":"q","text":"","ts":1.0,"looked":[],"read":[]}""")
+        assertEquals(true, Asked.readsAgain(working, 1_000, 1_000 + Asked.ANSWER_WAIT_MS - 1))
+        assertEquals(false, Asked.readsAgain(working, 1_000, 1_000 + Asked.ANSWER_WAIT_MS))
+        assertEquals(false, Asked.readsAgain(working.copy(state = "done"), 1_000, 1_001))
+        assertEquals("The helper did not answer.", Asked.UNANSWERED)
+    }
 }

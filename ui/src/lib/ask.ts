@@ -1,8 +1,10 @@
 // The helper row on a phone (components/HelperAsk.tsx): a question for the
 // helper, typed or spoken, and its answer read back from the daemon
 // (POST/GET /api/helper/ask, src/helper/ask.ts). The answer is polled on the
-// page's one clock while the helper works, and stops when it is done or the
-// page is hidden. The last question is kept, so a reload shows its answer.
+// page's one clock while the helper works, and stops when it is done, the
+// page is hidden, or it has not answered in `ANSWER_WAIT_MS` (the row then
+// says so, and the owner can look again). The last question is kept, so a
+// reload shows its answer.
 import { useSyncExternalStore } from "react";
 import { every } from "./clock.ts";
 import { api } from "./store.ts";
@@ -18,10 +20,14 @@ export type HelperAnswer = {
   looked: string[];
   ts: number;
 };
-type State = { answer: HelperAnswer | null; asking: boolean; error: string };
+// `unanswered`: the helper had not answered when the page stopped looking.
+type State = { answer: HelperAnswer | null; asking: boolean; error: string; unanswered: boolean };
+// How long the page reads an answer that has not come: a helper turn that reads a few sessions answers in
+// seconds; past two minutes it is held (a provider's wait, a long turn) and the owner is told, not polled for.
+export const ANSWER_WAIT_MS = 2 * 60_000;
 
 const KEPT = "keel.helperAsk";
-let state: State = { answer: null, asking: false, error: "" };
+let state: State = { answer: null, asking: false, error: "", unanswered: false };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => { state = { ...state, ...p }; subs.forEach((f) => f()); };
 export function useAsk<T>(sel: (s: State) => T): T {
@@ -39,12 +45,14 @@ export function readLine(a: Pick<HelperAnswer, "read" | "looked">): string {
 export const pending = (s: AskState | undefined) => s === "waiting" || s === "working";
 
 let stop: (() => void) | null = null;
+let since = 0;
 async function read(id: string) {
   try {
     const a = await api<HelperAnswer>(`/api/helper/ask/${encodeURIComponent(id)}`);
     // An ask that was queued gets its stored id once delivered; it is read under the id it was given.
     set({ answer: { ...a, id }, error: "" });
     if (!pending(a.state)) { stop?.(); stop = null; }
+    else if (Date.now() - since >= ANSWER_WAIT_MS) { stop?.(); stop = null; set({ unanswered: true }); }
   } catch (e) {
     // Gone (the helper's conversation was archived): nothing to follow. A dropped read is read again on the next beat.
     if ((e as { status?: number }).status === 404) { stop?.(); stop = null; localStorage.removeItem(KEPT); set({ answer: null }); }
@@ -53,6 +61,8 @@ async function read(id: string) {
 }
 function follow(id: string) {
   stop?.();
+  since = Date.now();
+  set({ unanswered: false });
   localStorage.setItem(KEPT, id);
   stop = every(1000, () => void read(id));
   void read(id);
@@ -73,6 +83,11 @@ export async function ask(text: string) {
   }
 }
 
+// Look again for an answer the page stopped waiting for.
+export function lookAgain() {
+  if (state.answer) follow(state.answer.id);
+}
+
 // The answer kept from the last visit, read again once.
 export function resume() {
   const id = localStorage.getItem(KEPT);
@@ -81,5 +96,5 @@ export function resume() {
 export function dismiss() {
   stop?.(); stop = null;
   localStorage.removeItem(KEPT);
-  set({ answer: null, error: "" });
+  set({ answer: null, error: "", unanswered: false });
 }

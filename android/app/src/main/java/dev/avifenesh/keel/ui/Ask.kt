@@ -120,11 +120,17 @@ fun HelperRow() {
         }
     }
 
-    // While the helper works, its answer is read again.
+    // While the helper works, its answer is read again, for at most Asked.ANSWER_WAIT_MS; then the row says it did not
+    // answer, and Look again reads it for as long again.
     val a = answer
-    LaunchedEffect(a?.id, a?.pending) {
+    var late by remember { mutableStateOf(false) }
+    var looks by remember { mutableStateOf(0) }
+    LaunchedEffect(a?.id, a?.pending, looks) {
         val id = a?.id ?: return@LaunchedEffect
+        val since = System.currentTimeMillis()
+        late = false
         while (answer?.id == id && answer?.pending != false) {
+            if (!Asked.readsAgain(answer!!, since, System.currentTimeMillis())) { late = true; break }
             delay(POLL_MS)
             runCatching { Hub.answer(id) }.onSuccess { if (answer?.id == id) answer = it.copy(id = id) }
                 .onFailure { if ((it as? dev.avifenesh.keel.ApiError)?.code == 404) answer = null }
@@ -171,13 +177,13 @@ fun HelperRow() {
         }
         val note = error.ifBlank { (state as? TalkState.Failed)?.why.orEmpty() }
         if (note.isNotBlank()) { Spacer(Modifier.height(6.dp)); Txt(note, T.small, k.muted, Modifier.semantics { contentDescription = "helper-note" }) }
-        a?.let { AnswerCard(it) { answer = null } }
+        a?.let { AnswerCard(it, late && it.pending, { looks++ }) { answer = null } }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun AnswerCard(a: HelperAnswer, onClear: () -> Unit) {
+fun AnswerCard(a: HelperAnswer, late: Boolean, onLookAgain: () -> Unit, onClear: () -> Unit) {
     val k = k()
     Spacer(Modifier.height(S.sm))
     Column(
@@ -189,10 +195,11 @@ fun AnswerCard(a: HelperAnswer, onClear: () -> Unit) {
             Txt(a.question, T.small, k.muted, Modifier.weight(1f), maxLines = 1)
             IconBtn(Ic.X, "Clear the answer", onClear, tint = k.faint)
         }
-        val status = Asked.status(a)
+        val status = if (late) Asked.UNANSWERED else Asked.status(a)
         if (status.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically) {
-            if (a.pending) { StateMark(State.WORKING, 8.dp); Spacer(Modifier.width(8.dp)) }
+            if (a.pending && !late) { StateMark(State.WORKING, 8.dp); Spacer(Modifier.width(8.dp)) }
             Txt(status, T.ui, k.muted, Modifier.semantics { contentDescription = "helper-answer-status" })
+            if (late) { Spacer(Modifier.width(S.sm)); Btn("Look again", onLookAgain, tone = Tone.QUIET, compact = true, tag = "helper-look-again") }
         }
         if (a.text.isNotBlank()) Markdown(a.text, T.ui, Modifier.padding(end = 8.dp).semantics { contentDescription = "helper-answer-text" })
         val read = Asked.readLine(a)

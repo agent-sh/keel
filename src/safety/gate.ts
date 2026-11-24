@@ -1378,7 +1378,7 @@ export class Gate {
   // for a question asked on a phone: reads only). An answer says of each tool
   // why it does not run (the refusal the model gets), or nothing when it runs;
   // no answer: no limit. Keyed by the feature.
-  readonly toolLimits = new Map<string, (session: Session) => ((tool: { name: string; readOnly: boolean }) => string | undefined) | undefined>();
+  readonly toolLimits = new Map<string, (session: Session) => ((tool: { name: string; readOnly: boolean; acts?: boolean }) => string | undefined) | undefined>();
   // Features that show a session more of Keel's own state, read-only, in its
   // sandbox (a review's checkout reads its git folder there).
   readonly readMore = new Map<string, (session: Session) => string[]>();

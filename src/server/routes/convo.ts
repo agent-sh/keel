@@ -142,6 +142,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
   const NewContext: Tool = {
     name: "keel__new_context",
     readOnly: true,
+    acts: true,
     description: "Start a fresh context yourself: after this step, everything so far is replaced by your handoff note (no other summary is written), with the owner's own messages kept verbatim, and the turn goes on. Use it when the context is full of material you no longer need. The handoff must hold all you need to go on: the goal, decisions, files and their state, what is done, and the exact next step.",
     input_schema: { type: "object", properties: { handoff: { type: "string", description: "Everything you need to continue the work without the conversation so far." } }, required: ["handoff"], additionalProperties: false },
     async run(input, ctx) {
