@@ -1184,7 +1184,7 @@ test("a kind of tool call the store has nothing for is asked only now and then, 
   // The store starts answering the quiet kind: the next asked call gets its rule, a step later
   // (nothing waited for it), and the kind is asked in full again.
   let got = false;
-  for (let i = 0; i < 3 && !got; i++) { await w.run(t, `touch kw9`); await w.say(t, "next"); got = w.names(w.last(t)).includes("rule-kw9"); }
+  for (let i = 0; i < 3 && !got; i++) { await w.run(t, `cd . && touch kw9`); await w.say(t, "next"); got = w.names(w.last(t)).includes("rule-kw9"); }
   expect(got).toBe(true);
   await until(() => !w.tacit.stats().quiet.length);
   const before = asked(t);
@@ -1201,6 +1201,11 @@ test("a kind of tool call the store has nothing for is asked only now and then, 
   await asks(u, 1);
   await w.run(u, "git push elsewhere");
   await asks(u, 1);
+  // The answer came with `cd . && touch kw9`: it speaks for `touch`, which its rule is about, not for the `cd` before it.
+  await w.run(u, "touch plain");
+  await asks(u, 2);
+  await w.run(u, "cd .");
+  await asks(u, 2);
   const again = new Tacit(w.store, w.bus, { capture: () => ({}) } as any, st.bin, SPEED, { quietAfter: 3, sampleEvery: 2 });
   expect(again.stats().quiet).toEqual([{ kind: "shell", quiet: 3 }]);
   // The time of the hook processes is in the meter, for the asks nobody waited for as for the rest.

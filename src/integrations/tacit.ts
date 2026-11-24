@@ -56,11 +56,11 @@ import { toMessages } from "../engine/turn.ts";
 import { RECORD_FORMAT, toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
 import { ownerPrompt } from "../core/owner.ts";
-import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
+import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, namedPrograms, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered, tacitToolCall } from "./tacit-tools.ts";
 export { tacitToolCall };
 import { DenyKeys, stoppable } from "./deny-keys.ts";
-import { afterAnswer, afterAsk, callFamilies, callTopics, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
+import { afterAnswer, afterAsk, callFamilies, callTopics, freshYield, hitFamilies, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
 import { mayReadHome } from "../core/paths";
 
 // A call is known by its session and its id: ids are unique within a session only.
@@ -420,6 +420,12 @@ CREATE INDEX IF NOT EXISTS memory_owed_session ON memory_owed(session_id, id);
 CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, checkpoint TEXT);
 CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEGER NOT NULL, updated INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered INTEGER NOT NULL, updated INTEGER NOT NULL);`);
+    // Rows kept before a hit credited only the programs its facts name hold an answer for every program of the
+    // call it came with (`cd`, `ls`, `echo`): they are learned again.
+    if (!store.columnExists("memory_tool_families", "credit")) {
+      store.migrate("ALTER TABLE memory_tool_families ADD COLUMN credit INTEGER NOT NULL DEFAULT 1");
+      store.db.query("UPDATE memory_tool_families SET answered = 0 WHERE key LIKE 'shell %'").run();
+    }
     // A family not met for as long as the meter's rows are kept is learned again.
     store.db.query("DELETE FROM memory_tool_families WHERE updated < ?").run(Date.now() - KEEP_MS);
     for (const r of store.db.query<{ key: string; answered: number }, []>("SELECT key, answered FROM memory_tool_families").all()) this.families.set(r.key, r.answered);
@@ -1161,9 +1167,11 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   }
   // What an asked call answered. Kept on disk when the kind changes state, and every 25 answers
   // between: a restart goes on from about where it was, at one write in 25 calls.
-  private toolAnswered(kind: string, r: HookResult, families: string[]) {
+  private toolAnswered(kind: string, r: HookResult, input: { tool_name: string; tool_input: any }, asked: string[]) {
     if (r.outcome !== "hit" && r.outcome !== "empty") return; // the store did not answer: nothing learned
     if (r.outcome === "hit") {
+      // A hit speaks for the programs of a shell call its facts name, not for every program on the line (hitFamilies).
+      const families = kind === "shell" ? hitFamilies(input, namedPrograms(r.deny ?? r.text ?? "", (n) => this.denyKeys.bansOf(n))).map((f) => `${kind} ${f}`) : asked;
       const now = Date.now(), q = this.store.db.query("INSERT INTO memory_tool_families (key, answered, updated) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET answered = answered + 1, updated = excluded.updated");
       for (const f of families) { this.families.set(f, (this.families.get(f) ?? 0) + 1); q.run(f, now); }
     }
@@ -1328,7 +1336,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         const changes = direct ? !call.tool.readOnly : changesSomething(input);
         // Runs beside the tool; its answer joins the result, or the next request.
         const p = t.call(s, "pre-tool", input);
-        p.done.then((r) => t.toolAnswered(kind, r, families), () => {});
+        p.done.then((r) => t.toolAnswered(kind, r, input, families), () => {});
         // Whether the result is held for the answer: only for a call that changes something, of a kind asked in full.
         const holds = ask === "light" ? Promise.resolve(false) : call.tool.target ? call.tool.target(call.input, s.id).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
         t.preTool.set(preKey(s.id, call.id), { call: p, holds, light: ask === "light" });

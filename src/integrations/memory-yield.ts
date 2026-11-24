@@ -90,7 +90,7 @@ const PROGRAM = /^[a-z0-9][\w-]*$/;
 const SYNTAX = new Set(["for", "while", "until", "select", "do", "done", "if", "then", "else", "elif", "fi", "case", "esac", "in", "function", "break", "continue", "return", "exit", "shift", "local", "export", "unset", "read", "set", "eval", "true", "false", "declare", "typeset", "readonly", "let", "wait", "trap"]);
 // A function the line defines is not a program either (`p() { sed -n 1p x; }; p a`).
 const FUNCTION = /(?:^|[;&|{(\n])\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)/g;
-function shellPrograms(command: string): string[] {
+export function shellPrograms(command: string): string[] {
   const parts = splitCommand(command);
   // Not a line a shell would run: its first word, if that can be a program.
   if (!parts) { const w = words(command)[0]; return w && PROGRAM.test(baseName(w)) ? [baseName(w)] : []; }
@@ -106,6 +106,23 @@ export function callFamilies(call: StoreCall): string[] {
   if (call.tool_name.startsWith("mcp__")) return [call.tool_name];
   if (call.tool_name === "Bash" || (call.tool_name === "apply_patch" && !filesOf(call).length)) return shellPrograms(String(call.tool_input?.command ?? ""));
   return [...new Set(filesOf(call).map((f) => dirname(f)))];
+}
+
+// Programs that steer or filter a line and carry no fact of their own: a hit on a call that runs them says
+// nothing about them (a fact tied to `cd` is rare; `cd x && git push` is a `git` call).
+const TRIVIAL = new Set(["cd", "ls", "echo", "printf", "pwd", "cat", "head", "tail", "grep", "rg", "sed", "awk", "wc", "sort", "uniq", "cut", "tr", "tee", "test", "sleep", "seq", "ps", "date", "which", "xargs", "basename", "dirname", "stat", "diff", "jq", "pgrep", "tput", "id", "whoami", "wait", "time", "nice", "timeout", "waitfor"]);
+// The families a hit speaks for. A hit credits the programs of its call that the fact names (`named`: the
+// programs of its commands and of its deny keys, memory-meter.ts namedPrograms); one that names none of them
+// credits the call's first program that is not trivial, and a call of none credits nothing. Crediting every
+// program of the call made `cd`, `ls`, `echo` and `grep` answered by the first hit that came with them, and
+// so every call asked.
+export function hitFamilies(call: StoreCall, named: readonly string[]): string[] {
+  const all = callFamilies(call);
+  if (call.tool_name !== "Bash" && call.tool_name !== "apply_patch") return all;
+  const hit = all.filter((f) => named.includes(f));
+  if (hit.length) return hit;
+  const first = all.find((f) => !TRIVIAL.has(f));
+  return first ? [first] : [];
 }
 
 // How a kind has answered: calls answered in a row with nothing (`quiet`),

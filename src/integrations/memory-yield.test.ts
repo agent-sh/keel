@@ -1,6 +1,7 @@
 // The pure rules of which memory lookups are made and which facts are given.
 import { expect, test } from "bun:test";
-import { afterAnswer, afterAsk, callFamilies, callTopics, freshYield, toolAsk, toolKind, type KindYield } from "./memory-yield.ts";
+import { namedPrograms } from "./memory-meter.ts";
+import { afterAnswer, afterAsk, callFamilies, callTopics, freshYield, hitFamilies, toolAsk, toolKind, type KindYield } from "./memory-yield.ts";
 
 test("a kind of tool call is asked in full until the store has had nothing for it many times in a row", () => {
   let y = freshYield();
@@ -75,4 +76,19 @@ test("a call's families: the programs of a shell line, the folders of a write, a
   expect(callFamilies({ tool_name: "Edit", tool_input: { file_path: "/r/src/a.ts" } })).toEqual(["/r/src"]);
   expect(callFamilies({ tool_name: "Write", tool_input: { file_path: "a.ts" } })).toEqual(["."]);
   expect(callFamilies({ tool_name: "mcp__github__get_pr", tool_input: {} })).toEqual(["mcp__github__get_pr"]);
+});
+
+test("a hit speaks for the programs its facts name, else for the first program that is not trivial", () => {
+  const sh = (command: string) => ({ tool_name: "Bash", tool_input: { command } });
+  const line = "cd ~/x && git stash && ls | grep a";
+  // A fact that names `git stash` in backquotes, or whose deny key does: git, not cd, ls or grep.
+  expect(hitFamilies(sh(line), namedPrograms("- never-stash (past mistake): do not run `git stash` here."))).toEqual(["git"]);
+  expect(hitFamilies(sh(line), namedPrograms("- never-stash (past mistake): shared refs.", (n) => (n === "never-stash" ? ["git stash"] : [])))).toEqual(["git"]);
+  // A fact that names no program of the call: the call's first program that is not cd, ls, echo, grep and the like.
+  expect(hitFamilies(sh(line), namedPrograms("- note: remember the build is slow."))).toEqual(["git"]);
+  expect(hitFamilies(sh("cd x && echo hi | grep h"), [])).toEqual([]);
+  // A program the fact names that the call does not run is not credited.
+  expect(hitFamilies(sh("ls"), namedPrograms("- r: never `rm -rf` it."))).toEqual([]);
+  // Writes and MCP tools keep their families.
+  expect(hitFamilies({ tool_name: "Edit", tool_input: { file_path: "/r/src/a.ts" } }, [])).toEqual(["/r/src"]);
 });

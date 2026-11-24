@@ -34,7 +34,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { readsOf, type Reads } from "../server/reads.ts";
 import { isFactName } from "./memory-store.ts";
-import { callTopics } from "./memory-yield.ts";
+import { callTopics, shellPrograms } from "./memory-yield.ts";
 import { tacitToolCall, type StoreCall } from "./tacit-tools.ts";
 
 // Which inputs the store is asked about. Everything that asks for work is:
@@ -132,6 +132,18 @@ export function bansOf(text: string): string[] {
       const w = m[1]!.trim().toLowerCase().split(/\s+/);
       if (/^[a-z][\w.-]+$/.test(w[0]!) && !COMMON.has(w[0]!) && w.length <= 6 && isProgram(w[0]!)) out.add(w.join(" "));
     }
+  }
+  return [...out];
+}
+
+// The programs an answer's facts name: those of each command the fact's text puts in backquotes, and of each
+// command its deny keys hold (`denyKeys`: a fact's name to its keys' words).
+export function namedPrograms(answer: string, denyKeys: (name: string) => string[] = () => []): string[] {
+  const out = new Set<string>();
+  for (const line of factLines(answer)) {
+    const f = factOf(line);
+    for (const name of f.names) for (const key of denyKeys(name)) for (const p of shellPrograms(key)) out.add(p);
+    for (const m of f.text.matchAll(/`([^`\n]{2,200})`/g)) for (const p of shellPrograms(m[1]!)) out.add(p);
   }
   return [...out];
 }
