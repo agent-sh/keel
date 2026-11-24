@@ -4,7 +4,7 @@ import { chmodSync, cpSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFil
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Store } from "../core/store.ts";
-import { coveredFiles, Hooks, namesOf, parseHooks, pinKey, scriptsOf, skillHookTrust } from "./hooks.ts";
+import { coveredFiles, Hooks, namesOf, parseHooks, pinKey, projectRoot, scriptsOf, skillHookTrust } from "./hooks.ts";
 import { hooksOf } from "../tools/skills.ts";
 
 // Every folder a test makes is removed when the file's tests are over.
@@ -284,4 +284,29 @@ test("a skill's hook scripts named through its folder's variable are the owner's
   // The owner's own skill has no pin: its whole folder (what the script sources) is his.
   expect(files).toContain(dir);
   expect(scriptsOf(ws, { Stop: [{ hooks: [{ type: "command", command: "$KEEL_SKILL_DIR/x.sh" }] }] } as any, dir)).toEqual([join(dir, "x.sh")]);
+});
+
+test("the home folder is never a project root, so the owner's dot folder there is no project hook file", () => {
+  const home = scratch("keel-hooks-home-");
+  const was = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    mkdirSync(join(home, ".keel"), { recursive: true });
+    writeFileSync(join(home, ".keel/hooks.json"), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo owner" }] }] } }));
+    const plain = join(home, "work/notes");
+    mkdirSync(plain, { recursive: true });
+    const repo = join(home, "work/repo");
+    mkdirSync(join(repo, "sub"), { recursive: true });
+    git(repo, "init", "-q");
+    const h = new Hooks(new Store(scratch("keel-hooks-state-")));
+    // A folder under the home with no repository of its own is its own root, not the home.
+    expect(projectRoot(plain)).toBe(plain);
+    expect(h.sources(plain).some((s) => s.scope === "project")).toBe(false);
+    // The home itself holds no project file either.
+    expect(h.sources(home).some((s) => s.scope === "project")).toBe(false);
+    // A repository under the home is still found from inside it.
+    expect(projectRoot(join(repo, "sub"))).toBe(repo);
+  } finally {
+    if (was === undefined) delete process.env.HOME; else process.env.HOME = was;
+  }
 });

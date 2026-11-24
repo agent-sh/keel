@@ -27,6 +27,7 @@ import { tacitToolCall } from "./tacit.ts";
 import { configDir } from "../providers/config.ts";
 import { chunks, pumpText } from "../core/proc.ts";
 import { hookSaid } from "../engine/hooks.ts";
+import { homeOf } from "../safety/credentials.ts";
 import { shellText } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
 import { timed } from "../admin/stall.ts";
@@ -160,9 +161,13 @@ export const ownerHooksPath = () => process.env.KEEL_HOOKS ?? join(configDir(), 
 
 const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
 
-// The repository root of a folder (where .keel/ lives), else the folder.
+// The repository root of a folder (where .keel/ lives), else the folder. The walk stops at the home
+// folder: it holds the owner's own dot folders, so it is never a project's root (a `.keel/hooks.json` there
+// would be read as a project file for every session under the home), and a folder above it is not walked.
 export function projectRoot(cwd: string): string {
+  const home = homeOf();
   for (let d = cwd; ; d = dirname(d)) {
+    if (d === home) return cwd;
     if (existsSync(join(d, ".git")) || existsSync(join(d, ".keel"))) return d;
     if (dirname(d) === d) return cwd;
   }
@@ -540,6 +545,7 @@ export class Hooks {
   private projects = new Map<string, { text: string; groups: Source["groups"]; problems: string[]; bodies: Bodies }>();
 
   private projectSource(root: string, run: boolean): Source | undefined {
+    if (root === homeOf()) return undefined;
     const pin = this.pinned(root);
     if (run && !pin) return undefined;
     const path = join(root, ".keel", "hooks.json");
@@ -577,7 +583,7 @@ export class Hooks {
     const owner = this.ownerSource(root);
     if (owner) out.push({ scope: "owner", root, text: owner.sha256, groups: owner.groups });
     for (const p of this.pluginSources(root)) out.push({ scope: "plugin", root, text: p.sha256, groups: p.groups });
-    if (!this.pinned(root)) return out;
+    if (root === homeOf() || !this.pinned(root)) return out;
     let text: string;
     try { text = readFileSync(join(root, ".keel", "hooks.json"), "utf8"); } catch { return out; }
     const kept = this.projects.get(root);
