@@ -19,6 +19,8 @@ const tool = (name: string, input_schema: any, description = `${name} text`) => 
   server: "shapes", name, qualified: `shapes__${name}`, mcp: true, description, input_schema,
   run: async (input: any) => ({ content: `${name} got ${JSON.stringify(input)}` }),
 });
+// (Only this file's server: other files of the run may leave catalog sources of their own.)
+const shapes = <T extends { name: string }>(tools: T[]) => tools.filter((t) => t.name.startsWith("mcp__shapes__"));
 const listing = (tools: ReturnType<typeof tool>[]) => registerCatalog({ name: "shapes", tools: async () => tools, known: () => tools });
 const withStore = async (f: (store: Store, root: string) => Promise<void>) => {
   const root = mkdtempSync(join(tmpdir(), "keel-tool-fit-"));
@@ -36,7 +38,7 @@ test("a tool the fit leaves out is not loaded by the session's tool search, and 
   try {
     const s = store.createSession({ model: "p:m", workspace: "/" });
     const fit = new ToolFit(store, () => {});
-    const tools = fit.fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id));
+    const tools = shapes(fit.fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id)));
     expect(tools.map((t) => t.name)).toEqual(["mcp__shapes__echo"]);
     const search = toolSearch(() => []);
     const ctx = { sessionId: s.id } as any;
@@ -62,7 +64,7 @@ test("a restart tells a left-out tool no second time, and keeps a refused one ba
   try {
     const s = store.createSession({ model: "p:m", workspace: "/" });
     const first = new ToolFit(store, () => {});
-    const tools = first.fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id));
+    const tools = shapes(first.fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id)));
     first.fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id));
     expect(told).toEqual(["mcp__shapes__textual"]);
     const refusal = Object.assign(new Error("tools.0.custom.input_schema: JSON schema is invalid."), { status: 400 });
@@ -71,7 +73,7 @@ test("a restart tells a left-out tool no second time, and keeps a refused one ba
     // The next daemon: the same database, nothing in memory.
     const again = new Store(root);
     const next = new ToolFit(again, () => {});
-    const tools2 = next.fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id));
+    const tools2 = shapes(next.fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id)));
     expect(told).toEqual(["mcp__shapes__textual"]);
     expect(next.overlay(s.id, tools2).find((t) => t.name === "mcp__shapes__echo")!.input_schema).toEqual({ type: "object" });
     expect(next.refused(s, refusal, tools2, "anthropic_messages")).toBeUndefined();
@@ -86,7 +88,7 @@ test("a renamed argument is judged as the server gets it, and a server reloaded 
   listing([cells("Writes a cell.")]);
   try {
     const s = store.createSession({ model: "p:m", workspace: "/" });
-    const [t] = new ToolFit(store, () => {}).fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id));
+    const [t] = shapes(new ToolFit(store, () => {}).fit(s, "anthropic_messages", await withCatalog([], "claude", [], undefined, s.id)));
     const input = { unit_price: "4.20" };
     const judged = await t!.target!(input, s.id);
     expect(judged!.input).toEqual({ "unit price": "4.20" });
