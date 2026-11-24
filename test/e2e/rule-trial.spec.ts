@@ -64,8 +64,8 @@ test("an edit of the owner's rules shows its replay over the stored calls before
   await trial.getByTestId("trial-run").click();
   const result = trial.getByTestId("trial-result");
   await expect(result.getByTestId("trial-summary")).toContainText("1 allowed", { timeout: 60_000 });
-  await expect(result.locator('[data-testid="trial-tools-row"][data-key="Bash"]')).toBeVisible();
-  await expect(result.locator('[data-testid="trial-classes-row"][data-key="writes beyond your accounts"]')).toBeVisible();
+  await expect(result.locator('[data-testid="trial-tools"] [data-testid="trial-row"][data-key="Bash"]')).toBeVisible();
+  await expect(result.locator('[data-testid="trial-classes"] [data-testid="trial-row"][data-key="writes beyond your accounts"]')).toBeVisible();
   const row = result.getByTestId("trial-call");
   await expect(row).toHaveCount(1);
   await expect(row).toContainText("asked about to allowed");

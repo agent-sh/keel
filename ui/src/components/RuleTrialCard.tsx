@@ -97,7 +97,7 @@ export function RuleTrialCard() {
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.key} className="border-b border-line/60 last:border-0" data-testid={`${testid}-row`} data-key={r.key}>
+          <tr key={r.key} className="border-b border-line/60 last:border-0" data-testid="trial-row" data-key={r.key}>
             <td className="truncate px-2 py-1.5 font-medium">{r.key}</td>
             <td className={td}>{r.n}</td>
             <td className={cn(td, r.allow ? "text-fg" : "text-faint")}>{r.allow}</td>

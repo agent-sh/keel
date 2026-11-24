@@ -48,7 +48,11 @@ describe("the rule modules a trial replays", () => {
     // RULE_MODULES (a helper with no rule of its own, such as looked.ts or risk-reach.ts, is reached through them).
     const policy = [...graph(join(SRC, "safety", "policy.ts"))].map((f) => relative(join(SRC, "safety"), f)).filter((f) => !f.startsWith(".."));
     const listed = new Set(RULE_MODULES.map((m) => m.file));
-    const helpers = new Set(["looked.ts", "risk-reach.ts", "closed-code.ts", "shell-reads.ts", "secrets.ts", "addresses.ts", "own-places.ts", "chars.ts"]);
+    const helpers = new Set(["looked.ts", "risk-reach.ts", "closed-code.ts", "shell-reads.ts", "secrets.ts", "addresses.ts", "own-places.ts", "chars.ts",
+      // shared-branches.ts takes from ref-guard.ts only the name of the file its git notes made branches in (PAD), and
+      // ref-guard.ts reaches the sandbox's view and scope for the folders it offers the sandbox: no decision of a call
+      // is made in any of the three, so the replay has nothing of them to run.
+      "ref-guard.ts", "sandbox-view.ts", "sandbox-scope.ts"]);
     expect(policy.filter((f) => !listed.has(f) && !helpers.has(f))).toEqual([]);
   });
 

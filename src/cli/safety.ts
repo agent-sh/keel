@@ -7,6 +7,8 @@ import { Database } from "bun:sqlite";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { git } from "../core/git.ts";
+import { storePath } from "../core/store-files.ts";
 import type { Rule } from "../safety/policy.ts";
 import type { RuleChange, Row, TrialReport } from "../safety/trial.ts";
 import type { Rules, TrialAsk } from "../safety/trial-read.ts";
@@ -43,7 +45,7 @@ function repoOf(from: string): string | undefined {
 // rules loaded, and the stored calls replayed over a read-only connection with the daemon's facts.
 async function patchTrial(c: Client, repo: string, patch: string, days: number, change?: RuleChange): Promise<TrialReport | string> {
   const facts = await c.get<Omit<TrialAsk, "days" | "change">>("/api/safety/trial/facts");
-  const dbPath = join(facts.state, "keel.db");
+  const dbPath = storePath(facts.state);
   if (!existsSync(dbPath)) return `the daemon's store ${dbPath} is not on this machine: a patch is tried where the daemon runs`;
   const dir = mkdtempSync(join(tmpdir(), "keel-trial-"));
   try {
@@ -52,11 +54,10 @@ async function patchTrial(c: Client, repo: string, patch: string, days: number, 
       if (existsSync(join(repo, "node_modules"))) symlinkSync(join(repo, "node_modules"), join(dir, side, "node_modules"));
     }
     writeFileSync(join(dir, "change.patch"), patch);
-    // (The copy is no repository: git looks for none above it, so the paths are the patch's own.)
-    const env: Record<string, string | undefined> = { ...process.env, GIT_CEILING_DIRECTORIES: dir };
-    for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) delete env[k];
-    const p = Bun.spawnSync(["git", "apply", "--whitespace=nowarn", join(dir, "change.patch")], { cwd: join(dir, "cand"), env, stdout: "pipe", stderr: "pipe" });
-    if (p.exitCode !== 0) return `the patch does not apply to ${repo}: ${p.stderr.toString().trim().slice(0, 400)}`;
+    // (The copy is no repository: git looks for none above it, so the paths are the patch's own, and no repository's
+    // config is in force: "plain", through the one helper that runs git.)
+    const p = await git(join(dir, "cand"), ["apply", "--whitespace=nowarn", join(dir, "change.patch")], { mode: "plain", env: { GIT_CEILING_DIRECTORIES: dir }, timeout: 60_000 });
+    if (p.code !== 0) return `the patch does not apply to ${repo}: ${p.err.trim().slice(0, 400)}`;
     const base: Rules = await import(join(dir, "base", "src", "safety", "trial-rules.ts"));
     const cand: Rules = await import(join(dir, "cand", "src", "safety", "trial-rules.ts"));
     const { trialRead } = await import("../safety/trial-read.ts");
