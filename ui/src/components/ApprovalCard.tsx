@@ -24,6 +24,7 @@ import { trayGauge } from "./Composer.tsx";
 import { SecretCards } from "./SecretCards.tsx";
 import { TrustCards } from "./TrustCards.tsx";
 import { PlanCards } from "./PlanCard.tsx";
+import { WaitingSlot } from "./AnswerQueue.tsx";
 
 const TITLE: Record<Approval["kind"], string> = {
   shell: "Run this command?",
@@ -871,6 +872,8 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
   const [reason, setReason] = useState("");
   const [answering, setAnswering] = useState(false);
   const [err, setErr] = useState("");
+  // The Allow has the keyboard by a key (focus-visible): only then does the card say what Enter does.
+  const [keyOn, setKeyOn] = useState(false);
   const [closed, setClosed] = useState(false); // the daemon says it can no longer be answered
   const root = useRef<HTMLDivElement>(null);
   const once = useRef<HTMLButtonElement>(null);
@@ -1352,6 +1355,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
                 {a.why ? `High risk: ${a.why}` : "High risk"}
               </span>
             )}
+            {first && <WaitingSlot sessionId={a.session_id} />}
             {onLater && <LaterButton onPress={onLater} lone={a.risk !== "high"} />}
           </div>
           {notice}
@@ -1427,6 +1431,8 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
             data-ready={ready || undefined}
             data-testid="allow-once"
             data-stop={shut ? undefined : "card"}
+            onFocus={(e) => setKeyOn(e.currentTarget.matches(":focus-visible"))}
+            onBlur={() => setKeyOn(false)}
             onPointerDown={(e) => {
               // Pressed where the owner's own key put the keyboard, ready for a key (it says "Enter allows once"):
               // the press is judged as a key's is (lib/approvals.ts, KEY_MS). It stood whole and still that
@@ -1515,7 +1521,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
               <span className="ml-auto grid justify-items-end text-micro text-faint max-sm:hidden pointer-coarse:hidden">
                 <span className="invisible col-start-1 row-start-1" aria-hidden="true">Enter allows once, Esc to deny with a reason</span>
                 {heldLine && <span className="invisible col-start-1 row-start-1" aria-hidden="true">{heldLine}</span>}
-                {ready ? <span className="col-start-1 row-start-1" data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>
+                {ready ? <span className={cn("col-start-1 row-start-1", !keyOn && "invisible")} data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>
                   : arming ? <span className="col-start-1 row-start-1 opacity-70" data-testid="approval-arming">{arming}</span>
                   : null}
               </span>
@@ -1535,7 +1541,7 @@ export function LaterButton({ onPress, lone = true, all }: { onPress: () => void
       data-testid="ask-later"
       onClick={onPress}
       title={all ? "Put these away to the count in the head: the turn still waits for them" : "Put this away to the count in the head: the turn still waits for it"}
-      className={cn("inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40", lone && "ml-auto")}
+      className={cn("inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40", lone && "ml-auto [[data-waiting-slot]:not(:empty)+&]:ml-0")}
     >
       <Clock className="size-3.5" aria-hidden="true" />
       {all ? "All later" : "Later"}

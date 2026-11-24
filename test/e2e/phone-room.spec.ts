@@ -255,14 +255,13 @@ test.describe("on a phone", () => {
       await page.goto(`/s/${ask}`);
       await expect(pane.getByTestId("allow-once")).toBeVisible();
       await check("approval card");
-      // What else waits is said without the key that goes there, and without what is left of its words:
-      // a finger's way to the next stands in their place, and goes there.
-      await expect(pane.getByTestId("waiting-elsewhere")).toHaveText(/waits? for you\.\s*\nGo to the next$/, { useInnerText: true });
-      // (Beside the words, out of their live region: a screen reader tells a status's words, not a control in it.)
-      expect(await pane.getByTestId("waiting-next").evaluate((b) => !!b.closest('[role="status"]'))).toBe(false);
-      await expect(pane.getByTestId("waiting-elsewhere").getByRole("status")).toHaveText(/waits? for you\.\s*$/, { useInnerText: true });
+      // What else waits is a chip in the card's header, a finger's size, and it goes to the next.
+      const chip = pane.getByTestId("waiting-elsewhere");
+      await expect(chip).toHaveText(/more waits?$/);
+      expect(await chip.evaluate((b) => b.tagName)).toBe("BUTTON");
+      expect((await chip.boundingBox())!.height).toBeGreaterThanOrEqual(44);
       await shoot(page, "phone-04-targets-approval");
-      await pane.getByTestId("waiting-next").tap();
+      await chip.tap();
       await expect(page).not.toHaveURL(new RegExp(`/s/${ask}$`));
       await page.goto(`/s/${q}`);
       await expect(pane.getByTestId("question-option").first()).toBeVisible();

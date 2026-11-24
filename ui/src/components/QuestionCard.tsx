@@ -40,6 +40,7 @@ import { askedQuestions, questions, resultText, siteOf, type UiQuestion } from "
 import { cn, focusBox } from "../lib/utils.ts";
 import { justOnce, keepRuling, useOfferMark, type Scope } from "../lib/rulings.ts";
 import { Seg } from "./Seg.tsx";
+import { WaitingSlot } from "./AnswerQueue.tsx";
 
 type Picked = Record<string, string[]>;
 // Unsent answers, per session and call: they outlive the card (a pane
@@ -52,13 +53,14 @@ const at = <T,>(o: Record<string, T> | undefined, k: string): T | undefined => (
 
 // (`slim`: an open question of the agent's on a phone has no head row: the ring says it waits, the
 // card's label says who asks, and the question's header leads its text. Its choices get the room.)
-const Head = ({ open, answered, from, slim, onLater }: { open: boolean; answered: boolean; from?: string; slim?: boolean; onLater?: () => void }) => (
+const Head = ({ open, answered, from, slim, onLater, waiting }: { open: boolean; answered: boolean; from?: string; slim?: boolean; onLater?: () => void; waiting?: string }) => (
   <div className={cn("flex items-center gap-2 border-b border-line px-3.5 py-2 text-ui", slim && "max-md:hidden")}>
     <MessageCircleQuestion className={cn("size-3.5 shrink-0", open ? "text-accent-ink" : "text-muted")} />
     <span className="min-w-0 truncate font-medium" data-testid="question-from">{from !== undefined ? `MCP server ${from} is asking` : open ? "The agent is asking" : answered ? "Answered" : "Question"}</span>
+    {waiting && <WaitingSlot sessionId={waiting} />}
     {onLater && (
       // Put away to the count in the session's head (lib/later.ts): the turn still waits for the answer.
-      <button type="button" data-testid="ask-later" onClick={onLater} title="Put this away to the count in the head: the turn still waits for it" className="ml-auto inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40">
+      <button type="button" data-testid="ask-later" onClick={onLater} title="Put this away to the count in the head: the turn still waits for it" className="ml-auto [[data-waiting-slot]:not(:empty)+&]:ml-0 inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40">
         <Clock className="size-3.5" aria-hidden="true" />Later
       </button>
     )}
@@ -563,7 +565,7 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
       onKeyDownCapture={dropRepeats}
       onKeyDown={onKeyDown}
     >
-      <Head open answered={false} from={asked?.from} slim={!asked} onLater={slimPhone ? undefined : onLater} />
+      <Head open answered={false} from={asked?.from} slim={!asked} onLater={slimPhone ? undefined : onLater} waiting={first && !slimPhone ? sessionId : undefined} />
       <div className="flex flex-col gap-4 px-3.5 pt-3 max-md:pt-2">
         {asked && (
           // The server's own words: plain text set apart from the card's, never markup or a link.

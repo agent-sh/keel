@@ -46,6 +46,7 @@
 // card does not make it reading there (a phone has no pane to read beside);
 // a press outside what it asks, typing or a selection still does.
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { announce } from "../lib/announce.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
 import { answeredByOneKey, answeredHere, askIn, focusAsk, restInBox, sequenceAt, setSequence } from "../lib/asks.ts";
@@ -64,6 +65,7 @@ import { nextWaiting, waitingOrder } from "../lib/waiting.ts";
 import { useSessionStates, useToldStates } from "../lib/watch.ts";
 import { useAuto } from "../lib/automation.ts";
 import { sessionCosts } from "../lib/next-look.ts";
+import { cn } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
 
 const KEYS = "alt+a";
@@ -327,6 +329,24 @@ export function AnswerQueue() {
   return null;
 }
 
+// The place in a card's header where the count of the other sessions that wait stands, as a chip that goes to the
+// next. The first card of a session's asks claims it; the count is drawn there while it is, and above the cards
+// (one line) where no card has a header of its own to hold it.
+const slots = new Map<string, HTMLElement>();
+const slotSubs = new Set<() => void>();
+const slotSub = (f: () => void) => { slotSubs.add(f); return () => { slotSubs.delete(f); }; };
+export function WaitingSlot({ sessionId }: { sessionId: string }) {
+  const ref = useMemo(() => {
+    let mine: HTMLElement | null = null;
+    return (el: HTMLElement | null) => {
+      if (el) { mine = el; slots.set(sessionId, el); } else if (mine) { if (slots.get(sessionId) === mine) slots.delete(sessionId); mine = null; }
+      slotSubs.forEach((f) => f());
+    };
+  }, [sessionId]);
+  // (Where it holds the chip it takes the free room of the header's row, ahead of the answers' own.)
+  return <span ref={ref} data-waiting-slot="" className="[&:not(:empty)]:ml-auto [&:not(:empty)]:inline-flex" />;
+}
+
 // Above what a session asks: how many other sessions wait, and how to get to
 // them. In a sequence it says that the next one opens by itself. The session's
 // own agents are not elsewhere: what they ask is reached from this page.
@@ -334,9 +354,17 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
   const others = useQueue((s) => (s.order.includes(sessionId) ? s.order.filter((id) => id !== sessionId && !s.above[id]?.includes(sessionId)).length : 0));
   const on = useQueue((s) => s.on && s.at === sessionId);
   const helm = useUI((s) => s.route.name === "session" && s.route.id === sessionId);
+  const slot = useSyncExternalStore(slotSub, () => slots.get(sessionId) ?? null);
   if (!others || !helm) return null;
   const n = `${others} more session${others === 1 ? " waits" : "s wait"} for you`;
   const words = on ? `Answering in sequence. ${n}: the next opens when this is answered.` : `${n}.`;
+  if (slot) {
+    // In the card's header: a chip, not a line. In a sequence it is the status; else it is the way to the next.
+    const chip = "inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-accent-soft px-2.5 text-micro font-medium text-accent-ink pointer-coarse:h-tap";
+    return createPortal(on
+      ? <span role="status" className={chip} data-testid="waiting-elsewhere" data-on="true" title={words}><span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />{others} more · next opens after this</span>
+      : <button type="button" onClick={goNextOther} className={cn(chip, "hover:bg-accent-soft/70 focus-visible:ring-2 focus-visible:ring-accent/40 outline-none")} data-testid="waiting-elsewhere" aria-label={`${n}. Go to the next`} title={`${n}. Alt A goes to the next.`}><span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />{others} more {others === 1 ? "waits" : "wait"}</button>, slot);
+  }
   // One line of a fixed height, cut where the pane ends: its height never depends on the pane's width.
   // (A finger's screen has no key to name: there the way to the next is a button, a finger's size tall.
   // It stands beside the words, out of their live region: a screen reader tells the words as they

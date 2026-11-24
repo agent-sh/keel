@@ -627,11 +627,11 @@ test("what waits across sessions is answered in sequence, one key each", async (
   await ready(b);
   // The card says that it is a sequence and how many more wait.
   await expect(page.getByTestId("waiting-elsewhere")).toHaveAttribute("data-on", "true");
-  await expect(page.getByTestId("waiting-elsewhere")).toContainText("2 more sessions wait for you");
+  await expect(page.getByTestId("waiting-elsewhere")).toContainText("2 more · next opens after this");
   await shoot(page, "answer-keys-06-sequence");
   await press("Enter");
   await ready(c);
-  await expect(page.getByTestId("waiting-elsewhere")).toContainText("1 more session waits for you");
+  await expect(page.getByTestId("waiting-elsewhere")).toContainText("1 more · next opens after this");
   await press("Enter");
   await at(q);
   const question = cardIn(page, q, "question");
@@ -855,11 +855,20 @@ test("the sequence stays with the owner: it goes on through a grant, ends when t
   await expect(cards).toHaveCount(1);
   await expect(page).toHaveURL(new RegExp(`/s/${two}$`));
   await expect(cards.getByTestId("allow-once")).toBeFocused();
+  // With the keyboard on its Allow the card says what Enter does; a card whose Allow has
+  // no keyboard says nothing.
+  await expect(cards.getByTestId("approval-hint")).toBeVisible();
   // The owner types into the message box instead: the sequence is over, and an answer moves nothing.
   await page.getByTestId("composer").focus();
   await page.keyboard.type("x");
   await expect(page.getByTestId("waiting-elsewhere")).not.toHaveAttribute("data-on", "true");
-  await expect(page.getByTestId("waiting-elsewhere")).toHaveText(/^2 more sessions wait for you\.\s*Alt\s*A\s*goes to the next\.$/, { useInnerText: true });
+  // The count is a chip in the card's header that goes to the next, not a line of small text above the card; the
+  // key's hint stays on the card only while its Allow has the keyboard.
+  const chip = cards.getByTestId("waiting-elsewhere");
+  await expect(chip).toHaveText("2 more wait");
+  expect(await chip.evaluate((b) => b.tagName)).toBe("BUTTON");
+  await expect(chip).toHaveAttribute("title", "2 more sessions wait for you. Alt A goes to the next.");
+  expect(await chip.evaluate((b) => { const card = b.closest('[data-testid="approval"]'); return !!card && b.getBoundingClientRect().bottom <= card.querySelector('[data-testid="allow-once"]')!.getBoundingClientRect().top; }), "the chip is in the card's header, above the answers").toBe(true);
   await shoot(page, "answer-keys-09-waits-elsewhere");
   await page.getByTestId("composer").fill("");
   await expect(cards).toHaveAttribute("data-live", "true");
