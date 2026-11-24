@@ -229,6 +229,46 @@ test("mcp servers", async ({ page, request }) => {
 // each: one row per endpoint, Import all brings each in once, and a copy
 // follows its source (a change in Codex's file reaches Keel; a server Codex
 // drops is marked, not removed). Their files are never written.
+// A server that keeps a browser open (the Playwright server's pair browser_navigate and browser_close) can have it
+// closed once idle: the owner's switch per server, off by default, with a line saying what it ends. A server without
+// the pair has no switch.
+test("a server's browser is closed when idle only when the owner switches it on", async ({ page, request }) => {
+  await request.delete("/api/mcp/servers/echo").catch(() => {});
+  await request.delete("/api/mcp/servers/pwr").catch(() => {});
+  try {
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await expect(panel).toBeVisible();
+    await panel.getByTestId("toolkit-add-+add").click();
+    await panel.getByTestId("mcp-add-name").fill("echo");
+    await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE}`);
+    await panel.getByTestId("mcp-add-submit").click();
+    const plain = panel.locator('[data-testid="mcp-server"][data-name="echo"]');
+    await expect(plain).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+    await expect(plain.getByTestId("mcp-idle-browser")).toHaveCount(0);
+    await panel.getByTestId("toolkit-add-+add").click();
+    await panel.getByTestId("mcp-add-name").fill("pwr");
+    await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE} --browser`);
+    await panel.getByTestId("mcp-add-submit").click();
+    const row = panel.locator('[data-testid="mcp-server"][data-name="pwr"]');
+    await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+    const sec = row.getByTestId("mcp-idle-browser");
+    await expect(sec).not.toHaveAttribute("data-on");
+    await expect(row.getByTestId("mcp-idle-browser-says")).toContainText("Off");
+    await sec.getByTestId("mcp-idle-browser-toggle").click();
+    await expect(sec).toHaveAttribute("data-on", "true");
+    await expect(row.getByTestId("mcp-idle-browser-says")).toContainText("ends the whole browser");
+    await shoot(page, "mcp-idle-browser");
+    await sec.getByTestId("mcp-idle-browser-toggle").click();
+    await expect(sec).not.toHaveAttribute("data-on");
+  } finally {
+    await request.delete("/api/mcp/servers/pwr").catch(() => {});
+    await request.delete("/api/mcp/servers/echo").catch(() => {});
+  }
+});
+
 test("mcp import from other agents", async ({ page, request }) => {
   const imp = await (await request.get("/api/mcp/importable")).json();
   test.skip(!String(imp.home).includes("keel-work"), "needs a scratch import home (KEEL_IMPORT_HOME)");

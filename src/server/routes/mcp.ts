@@ -167,6 +167,11 @@ export const mcpRoutes: RouteModule = (deps) => {
   };
   // Each server with where its events go and what became of the latest ones.
   m.onServerGone = (name) => channels.forget(name);
+  // A browser closed for idleness is one line in the activity feed.
+  m.onIdleClose = (name, idleMs) => {
+    const min = Math.max(1, Math.round(idleMs / 60_000));
+    activity.record("daemon", "mcp_browser", null, `Closed the browser of the MCP server ${name}: no call for ${min} minute${min === 1 ? "" : "s"}`, { mcp: name, idle_ms: idleMs });
+  };
   const withChannels = (list: ReturnType<typeof m.list>) => list.map((x) => x.bundled ? x : ({
     ...x,
     channel: { ...x.channel, sessions: x.session ? [] : channels.sessionsOf(x.name, m.channelOf(x.name)?.ident ?? ""), recent: channels.recentOf(`mcp:${x.session ? `${x.name}@${x.session}` : x.name}`) },
@@ -281,6 +286,20 @@ export const mcpRoutes: RouteModule = (deps) => {
           return bad((e as Error).message, (e as { status?: number }).status ?? 400);
         }
         return session ? json({ servers: withChannels(m.list(session)) }) : servers();
+      },
+    },
+    // The owner's switch for closing a server's browser once it is idle (src/mcp/manager.ts closeIdle); off by
+    // default, never for a remote server. A remote device needs the passkey.
+    "/api/mcp/servers/:name/idle-browser": {
+      PUT: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const guard = needs(req);
+        if (guard) return guard;
+        const b = await body(req);
+        if (typeof b.on !== "boolean") return bad("on is true or false");
+        try { m.setCloseIdleBrowser(req.params.name, b.on); } catch (e) { return bad((e as Error).message, (e as { status?: number }).status ?? 400); }
+        return servers();
       },
     },
     // The owner marks tools of a server as reads; a remote device needs the passkey.

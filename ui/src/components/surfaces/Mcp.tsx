@@ -152,6 +152,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
         ) : <div><div className="k-sub k-label">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
         {s.class && <ClassSection s={s} base={base} act={act} />}
         {offered(s) && s.schema_fit?.length > 0 && <SchemaFit rows={s.schema_fit} />}
+        {s.idle_browser && !s.plugin && !s.session && (s.idle_browser.can || s.idle_browser.on) && <IdleBrowserSection s={s} base={base} act={act} />}
         {!s.bundled && <ChannelSection s={s} base={base} act={act} />}
         {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
         {(s.logging || s.log_rev > 0) && <ServerLog s={s} base={base} />}
@@ -205,6 +206,26 @@ const OUTCOME: Record<Outcome["state"], string> = {
 const outcomeWords = (o: Outcome) =>
   o.state === "held" ? (ownerStop(o.by) ? OUTCOME.held : o.reason ? `waits: ${o.reason}` : "waits behind a stop")
   : `${OUTCOME[o.state]}${o.reason && o.state === "refused" ? ` (${o.reason})` : ""}`;
+
+// A server that lists browser_navigate and browser_close (the Playwright server) keeps its browser open after
+// the call that used it. The switch has Keel call the server's own browser_close once no call used it for the
+// idle time. Off by default: it ends the whole browser context, a headed one a person may be signing in to included.
+function IdleBrowserSection({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
+  const b = s.idle_browser!;
+  return (
+    <div data-testid="mcp-idle-browser" data-on={b.on || undefined}>
+      <div className="k-sub k-label flex items-center gap-2">
+        <span className="min-w-0 flex-1">Close its browser when idle</span>
+        <Toggle testid="mcp-idle-browser-toggle" on={b.on} label={`${b.on ? "Stop closing" : "Close"} ${s.name}'s browser when idle`} onChange={(on) => act(`${base}/idle-browser`, { on }, "PUT")} />
+      </div>
+      <p className="text-caption text-muted" data-testid="mcp-idle-browser-says">
+        {b.on
+          ? `On: ${b.min > 0 ? `${b.min} minutes after its last call` : "never (the idle time in Settings is 0)"}, Keel calls its browser_close. That ends the whole browser: every open page and a login or form in progress in it, a visible window too. The server stays and the next browser call opens a new one.`
+          : "Off. It keeps its browser open after a call until the server ends. Turn on to have Keel call its browser_close after it has been idle; that ends every open page, a login or form in progress and a visible window included."}
+      </p>
+    </div>
+  );
+}
 
 // Events the server pushes into sessions (src/mcp/channel.ts). Off by
 // default: the switch says whether its events are taken at all, the list

@@ -16,6 +16,8 @@ const log = (at: string, data: unknown) => { if (LEVELS.indexOf(at) >= LEVELS.in
 const WHO = ["alice", "alfred", "bob"];
 // (What its server says of it is marked in the MCP panel.)
 if (learns) tools.push({ name: "learn", description: "Add the prompt farewell.", annotations: { destructiveHint: true, openWorldHint: true, idempotentHint: true }, inputSchema: { type: "object", properties: {}, required: [] } });
+// --browser: it lists the pair of tools of a server that keeps a browser open (browser_navigate, browser_close).
+if (process.argv.includes("--browser")) for (const name of ["browser_navigate", "browser_close"]) tools.push({ name, description: `A browser tool: ${name}.`, inputSchema: { type: "object", properties: {} } });
 let learned = false;
 
 const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
@@ -42,6 +44,7 @@ function handle(m: any) {
       const a = m.params?.arguments ?? {};
       if (m.params?.name === "echo") return reply({ content: [{ type: "text", text: `echo: ${a.text}` }] });
       if (m.params?.name === "add") return reply({ content: [{ type: "text", text: String(Number(a.a) + Number(a.b)) }] });
+      if (m.params?.name === "browser_navigate" || m.params?.name === "browser_close") return reply({ content: [{ type: "text", text: "ok" }] });
       if (m.params?.name === "learn" && learns) {
         learned = true;
         log("info", "added the prompt farewell");

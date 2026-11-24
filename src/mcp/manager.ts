@@ -36,6 +36,7 @@ import { serverName } from "../plugins/manifest.ts";
 import { changeDigest, defOf, diffTools, instructionsChange, offered, readPins, type InstructionsChange, type Pin, type ToolChange } from "./pins.ts";
 import { envHint, maskProxy, proxyCredentials, serverEnv } from "./env.ts";
 import { classify, type ClassKey, type ServerClass } from "./class.ts";
+import { registerSettings, settings } from "../admin/settings.ts";
 
 // How often one call's server may ask (2025-11-25 client/elicitation, security
 // considerations: "Clients SHOULD implement rate limiting"). A question past
@@ -146,6 +147,9 @@ export type McpServerState = {
   // Its pushed events (src/mcp/channel.ts): taken at all (the owner's switch, off by default),
   // whether the connected server declares the capability, and whether it asks to be told what became of each.
   // (The daemon's route adds the sessions that take them and the latest events, with what became of each.)
+  // The browser it opened, closed when idle (the owner's switch, off by default): `can` when the server is one
+  // Keel starts and lists the pair of tools that close it; `min` the idle minutes (the setting `mcp_idle`).
+  idle_browser?: { on: boolean; can: boolean; min: number };
   channel: { on: boolean; declared: boolean; status: boolean; sessions?: { id: string; title: string }[]; recent?: Pushed[] };
 };
 
@@ -206,6 +210,13 @@ type Entry = {
   // A remote server that failed on the network is tried again at `next` (src/mcp/retry.ts); `since` is its first failure.
   retry?: { attempt: number; since: number; next: number; timer: ReturnType<typeof setTimeout> };
   bundled?: BundledServer;
+  // The calls under way, and when the last one began or ended (the idle close of a browser the server opened).
+  inflight?: number;
+  used?: number;
+  // The `used` of the call whose browser was closed for idleness: not closed again until a call comes.
+  closedFor?: number;
+  // The close under way: a call that comes meanwhile waits for it, so it opens a browser after the close, not into it.
+  closing?: Promise<void>;
   resourcesRev: number;
   // Goes up when its prompt list changed (or it connected again): a cached list of an older one is not used.
   promptsRev: number;
@@ -350,7 +361,7 @@ export async function helperHeaders(cmd: string, timeoutMs = 10_000, run: { argv
 const pluginWord = (plugin: string) => `it comes with the plugin ${plugin}: turn the plugin off or remove it in Settings > Plugins`;
 
 // (Whether it is on and whether its events are taken are not what the server is: neither restarts it.)
-const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined, class: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined, class: undefined });
+const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined, class: undefined, close_idle_browser: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined, class: undefined, close_idle_browser: undefined });
 
 // How long the prompt list of a server that does not say when it changes is
 // used before it is read again: the composer's own window before it asked
@@ -360,6 +371,13 @@ const PROMPTS_FRESH_MS = 30_000;
 // How long a server that refused the Streamable HTTP request is given to name
 // its address the older way, when nothing says it speaks that transport.
 const SSE_TRY_MS = 4000;
+
+// How often servers are looked at for a browser left open, and the bound before one is closed: the same ten
+// minutes a job scope of an ended session idles before it is stopped (src/automation/leftover-rules.ts), long
+// enough for the next step of a task and short of holding a browser's memory for hours.
+const IDLE_PASS_MS = 60_000;
+registerSettings("mcp_idle", { close_browser_min: 10 }, (v) =>
+  typeof v.close_browser_min === "number" && Number.isFinite(v.close_browser_min) && v.close_browser_min >= 0 ? undefined : "close_browser_min is a number of minutes, 0 or more (0: never)");
 
 export class McpManager {
   private entries = new Map<string, Entry>();
@@ -724,10 +742,17 @@ export class McpManager {
     if (!runMode.client) setTimeout(() => {
       for (const e of this.entries.values()) if (e.state !== "disabled" && !e.bundled) this.ensure(e.name).catch(() => {});
     }, 50);
+    // (The pass over the servers for a browser left open: once a minute, off the loop's way.)
+    if (!runMode.client) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = setInterval(() => void this.closeIdle().catch((err) => this.errors.capture("server", err, { at: "idle browser close" })), IDLE_PASS_MS);
+      (this.idleTimer as { unref?: () => void }).unref?.();
+    }
   }
 
   dispose() {
     this.disposed = true;
+    clearInterval(this.idleTimer);
     for (const { w } of this.watchers.values()) w.close();
     this.watchers.clear();
     clearTimeout(this.syncTimer);
@@ -1051,12 +1076,76 @@ export class McpManager {
   }
 
   call(name: string, tool: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> {
-    const b = this.entries.get(name)?.bundled;
+    const e = this.entries.get(name);
+    const b = e?.bundled;
     const no = this.refusal(name, ctx.sessionId);
     if (no) return Promise.resolve({ content: no, is_error: true });
-    if (b?.call) return b.call(tool, input, ctx, (t, i, m) => this.callRaw(name, t, i, ctx, m));
-    return this.callRaw(name, tool, input, ctx);
+    if (e) { e.inflight = (e.inflight ?? 0) + 1; e.used = Date.now(); }
+    const done = () => { if (e) { e.inflight = Math.max(0, (e.inflight ?? 1) - 1); e.used = Date.now(); } };
+    const run = () => (b?.call ? b.call(tool, input, ctx, (t, i, m) => this.callRaw(name, t, i, ctx, m)) : this.callRaw(name, tool, input, ctx));
+    // (A call that comes while the server's browser is being closed goes on after the close.)
+    return (e?.closing ? e.closing.then(run) : run()).finally(done);
   }
+
+  // Whether a server's browser may be closed by Keel: one Keel starts (a command; never a remote URL, whose
+  // browser may be somebody else's or a shared one), not a plugin's or a session's, that lists the Playwright
+  // server's pair of tools, `browser_navigate` with `browser_close`. A name alone is not enough.
+  private browserClose(e: Entry): boolean {
+    if (e.bundled || e.session || e.plugin || !e.config.command || e.config.url) return false;
+    const names = new Set(e.tools.map((t) => t.name));
+    return names.has("browser_close") && names.has("browser_navigate");
+  }
+
+  // The owner's switch for one server: close its browser once no call has used it for `mcp_idle.close_browser_min`
+  // minutes. Playwright's server keeps its Chrome (and a dozen helper processes) open after the call that used it,
+  // until the server ends, and its `browser_close` ends the whole browser context, a headed one a person may be
+  // signing in to included: so it is the owner's to choose per server, never done by a name match.
+  setCloseIdleBrowser(name: string, on: boolean) {
+    const e = this.entries.get(name);
+    if (!e || e.session) throw Object.assign(new Error(`no MCP server named ${name}`), { status: 404 });
+    if (e.bundled) throw Object.assign(new Error(`${name} is built in: it opens no browser of its own`), { status: 409 });
+    if (e.plugin) throw Object.assign(new Error(pluginWord(e.plugin)), { status: 409 });
+    if (on && (e.config.url || !e.config.command)) throw Object.assign(new Error(`${name} is a remote server: Keel does not close a browser it did not start`), { status: 409 });
+    if (on && e.state === "ready" && !this.browserClose(e)) throw Object.assign(new Error(`${name} does not list browser_navigate and browser_close: there is no browser to close`), { status: 409 });
+    if (!!e.config.close_idle_browser === on) return;
+    const c: McpServerConfig = { ...e.config };
+    if (on) c.close_idle_browser = true;
+    else delete c.close_idle_browser;
+    this.save({ ...this.cfg.servers, [name]: c });
+    e.config = c;
+    e.closedFor = undefined;
+  }
+
+  // The browser of each server that has the switch on, closed when nobody used it for `minutes`: through the
+  // server's own `browser_close` tool, the one a model would call. The server stays; the next browser call opens
+  // a browser again. Never while a call is under way, once per idle stretch (not again until a call comes), and a
+  // call that comes during the close waits for it. Each close is told to `onIdleClose` (the activity feed).
+  async closeIdle(now = Date.now(), minutes = settings().mcp_idle.close_browser_min as number): Promise<string[]> {
+    if (!(minutes > 0)) return [];
+    const closed: string[] = [];
+    for (const e of [...this.entries.values()]) {
+      if (!e.config.close_idle_browser || !e.client || e.state !== "ready" || e.used === undefined || e.closedFor === e.used || (e.inflight ?? 0) > 0 || e.closing) continue;
+      if (now - e.used < minutes * 60_000 || !this.browserClose(e)) continue;
+      const client = e.client;
+      e.closedFor = e.used;
+      const idle = now - e.used;
+      const close = (async () => {
+        try {
+          await client.callTool("browser_close", {}, AbortSignal.timeout(30_000), 30_000);
+          closed.push(e.name);
+          try { this.onIdleClose?.(e.name, idle); } catch { /* the feed is not the close */ }
+        } catch (err) {
+          this.errors.capture("server", err, { mcp: e.name, at: "idle browser close" });
+        }
+      })();
+      e.closing = close;
+      try { await close; } finally { if (e.closing === close) e.closing = undefined; }
+    }
+    return closed;
+  }
+  // Told once for each browser closed for idleness: the server's name and how long it had been idle.
+  onIdleClose?: (name: string, idleMs: number) => void;
+  private idleTimer?: ReturnType<typeof setInterval>;
 
   private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext, meta?: Record<string, unknown>): Promise<ToolOutput> {
     const e = this.entries.get(name);
@@ -1466,6 +1555,7 @@ export class McpManager {
       log_rev: e.logRev,
       completions: !!e.client?.capabilities.completions,
       resource_updates: e.updates,
+      ...(e.bundled ? {} : { idle_browser: { on: !!e.config.close_idle_browser, can: this.browserClose(e), min: settings().mcp_idle.close_browser_min as number } }),
       channel: { on: this.channelOn(e), declared: !!e.client?.channel, status: !!e.client?.capabilities.experimental?.[STATUS_CAP] },
     } as McpServerState;
     });
