@@ -1,5 +1,6 @@
 // One HTTP path for every fetch-based driver: the request, the classification
 // of a failed answer, and the retry of a step that has shown nothing yet.
+import { timed } from "../admin/stall.ts";
 import { keyShaped } from "../core/conceal.ts";
 import { chunks } from "../core/proc.ts";
 import { EventStreamDecoder } from "./aws.ts";
@@ -209,7 +210,7 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   const w = wire();
   for (let renewed = false; ; renewed = true) {
     const t0 = Date.now();
-    const body = JSON.stringify(o.body);
+    const body = timed(() => "writing a model request as JSON", () => JSON.stringify(o.body));
     const bytes = Buffer.byteLength(body);
     if (o.maxBodyBytes && bytes > o.maxBodyBytes) {
       const mb = (n: number) => `${Math.round(n / 100_000) / 10} MB`;

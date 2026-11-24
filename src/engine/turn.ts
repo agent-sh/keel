@@ -2252,7 +2252,7 @@ export class Engine {
     if (session.parent_id && !bare && purpose !== "sampling") req.cacheLife = this.cacheLife(id, st, purpose);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
-    const base = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info, id);
+    const base = timed(() => "preparing a request's conversation for the model (attachments, images)", () => resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info, id));
     // Every image within what the model's host takes (a history may hold a
     // larger one from before images were scaled when stored): a refused image
     // would fail this request and every later one of the session.
@@ -2267,7 +2267,7 @@ export class Engine {
     // What this request shortened after a refusal, and the refusal that began it.
     const shortened: string[] = [];
     let shortCause: unknown;
-    let whole = shortenResults(base, short);
+    let whole = timed(() => "shortening the long results of a request's conversation", () => shortenResults(base, short));
     // Shown while copies are made: after a restart a history with many large
     // images takes seconds before its first request is sent.
     const preparing = quiet ? undefined : () => this.status(id, { kind: "model", since: Date.now(), model: st.info.name, preparing: "images" });

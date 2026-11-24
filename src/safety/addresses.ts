@@ -29,6 +29,7 @@
 //
 // Pure: the gate gives it the stored events and how to read each tool.
 import { domainToUnicode } from "node:url";
+import { timed } from "../admin/stall.ts";
 
 // What a tool does on the web, declared by the tool. `fetches`: the addresses
 // one call fetches, from its input. `links`: its result is the page's text
@@ -482,6 +483,21 @@ export class AddressBook {
 
   private add(list: string[]) {
     for (const a of list) this.known.add(a);
+  }
+
+  // `take`, in slices of `sliceMs` of the loop's time, the loop given back between them: a session's first read,
+  // after a start, covers every event it ever had, and one long pass over them held every page and turn for as long.
+  // `label` names a slice that is long anyway (one very large result). Events taken meanwhile by another reader of
+  // the same book are skipped by their number, so readers that overlap leave the book as one reader would.
+  async takeSliced(events: readonly BookEvent[], label: () => string, sliceMs = 12): Promise<void> {
+    for (let i = 0; i < events.length;) {
+      i = timed(label, () => {
+        const t0 = performance.now();
+        do { this.take([events[i++]!]); } while (i < events.length && performance.now() - t0 < sliceMs);
+        return i;
+      });
+      if (i < events.length) await new Promise<void>((r) => setImmediate(r));
+    }
   }
 
   take(events: readonly BookEvent[]) {

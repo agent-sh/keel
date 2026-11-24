@@ -101,3 +101,26 @@ test("mcp_call takes a server's tool by its own name: WebFetch through it is not
   callTool(u, "web__webfetch", { url: "https://pages.example/a" }, priv);
   expect(await judged(u, copy)).toBe("read");
 });
+
+test("the first check of a long session after a start reads its events in slices: the loop runs between them, and nothing is read whole on it", async () => {
+  const { store, session, say, callTool, judged } = rig();
+  const s = session();
+  say(s, "read the docs at https://docs.example/guide");
+  const page = (i: number) => `<p>${"lorem ipsum dolor sit amet ".repeat(400)}</p> see https://pages.example/item/${i} and https://cdn.example/a/${i}`;
+  for (let i = 0; i < 3000; i++) callTool(s, "WebFetch", { url: `https://pages.example/p/${i}`, prompt: "" }, page(i));
+  // A start: the gate's books are gone, the session's events are in the store.
+  const fresh = new Gate(store, new Bus(), () => false);
+  fresh.webUse = webUse;
+  fresh.setPerm(s.id, { mode: "full-auto", sandbox: "off" });
+  const cold = store.coldReads().n;
+  const fetchTool = toolsFor("claude").find((t) => t.name === "WebFetch")!;
+  const call: ToolCall = { id: crypto.randomUUID(), tool: fetchTool, input: { url: "https://pages.example/item/3", prompt: "" }, ctx: { sessionId: s.id, cwd: process.cwd(), signal: new AbortController().signal, spillDir: process.cwd(), seen: new Map() } as any };
+  let gap = 0, last = performance.now(), running = true;
+  const spin = () => { if (!running) return; const now = performance.now(); gap = Math.max(gap, now - last); last = now; setImmediate(spin); };
+  setImmediate(spin);
+  const verdict = ((await fresh.check(store.session(s.id)!, call)) as any).cls?.kind;
+  running = false;
+  expect(verdict).toBe("read");
+  expect(store.coldReads().n).toBe(cold);
+  expect(gap).toBeLessThan(90);
+});

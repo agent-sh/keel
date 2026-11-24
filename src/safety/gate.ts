@@ -503,7 +503,7 @@ export class Gate {
       // loop (a long session's first read would otherwise read them a run at a time on it).
       if (this.store.session(id)) await this.store.warmBodies(id, b.seq + 1);
       const book = b;
-      timed(() => `reading the web addresses session ${id} has seen`, () => book.take(this.store.events(id, book.seq)));
+      await book.takeSliced(this.store.events(id, book.seq), () => `reading the web addresses session ${id} has seen`);
       books.push(b);
     }
     // A secret in a path: a known value or one shaped like a key (nothing is added to the vault), or a placeholder.

@@ -1,6 +1,7 @@
 // Runs one request through a wire codec over a byte transport (HTTP, or a
 // plugin's chunks): build the body, feed the events to the parser, return the
 // step. A stream that ends before the wire's final event keeps what it showed.
+import { timed } from "../admin/stall.ts";
 import type { SseEvent } from "./sse.ts";
 import { ProviderError, streamEvents, type StreamOpts } from "./http.ts";
 import { reportUsage } from "./reported.ts";
@@ -14,7 +15,8 @@ export async function runEvents(
   onDelta: (d: Delta) => void,
   events: (body: Record<string, any>) => AsyncIterable<SseEvent>,
 ): Promise<ProviderResult> {
-  const body = req.extraBody ? { ...codec.body(req, ctx), ...req.extraBody } : codec.body(req, ctx);
+  const made = timed(() => "making a model request's body from the conversation", () => codec.body(req, ctx));
+  const body = req.extraBody ? { ...made, ...req.extraBody } : made;
   let shown = false;
   const parser = codec.parser(req, ctx, (d) => { shown = true; onDelta(d); });
   try {
