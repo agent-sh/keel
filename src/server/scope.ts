@@ -83,7 +83,7 @@ export function route(f: Frame): Route {
       if (f.name === "pictures" && f.session_id) return one(f.session_id);
       if (f.name === "artifacts") return { topics: [feedTopic("artifacts"), EVERY, ...(f.session_id ? [sessionTopic(f.session_id)] : [])] };
       if (f.name === "awake") return { topics: [feedTopic("awake"), EVERY] };
-      // A lesson proposed, drafted or decided (src/automation/lessons.ts): Settings > Lessons reads it.
+      // A lesson proposed, drafted or decided (src/automation/lessons.ts): Customize > Lessons reads it.
       if (f.name === "lessons") return { topics: [feedTopic("lessons"), EVERY] };
       // The daemon's incidents (src/automation/incidents.ts): the band at the top of every page reads
       // them, so every socket. A frame only when one changed, with the open ones and what cleared since.

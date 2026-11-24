@@ -341,7 +341,7 @@ export class AcpRunner {
   // What the agent is offered of Keel's tools: the MCP servers' tools this session reaches, by their full names.
   private async offer(s: Session, live: Live): Promise<ServedTool[]> {
     // The agent's provider is not known here: each schema fits every wire's rules (src/providers/wires/schema-fit.ts),
-    // and a tool that cannot be made to fit is not offered (Settings > MCP servers names it).
+    // and a tool that cannot be made to fit is not offered (Customize > MCP servers names it).
     const tools = (await catalogTools(s.id)).filter((t) => t.mcp && !t.hidden).flatMap((t) => {
       const f = fitted(t.input_schema, "portable");
       return "left" in f ? [] : [{ t, f }];

@@ -91,7 +91,7 @@ test("plugins: install as one unit, each part works, off, update, offered, remov
   copyFileSync(ECHO, join(twin, "server.ts"));
   const keyWarnings: string[] = [];
   page.on("console", (m) => { if (/same key|unique "key"/i.test(m.text())) keyWarnings.push(m.text()); });
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.getByTestId("toolkit-add-+install").click();
   await page.getByTestId("install-source").fill(twin);
   await page.getByTestId("install-read").click();
@@ -104,7 +104,7 @@ test("plugins: install as one unit, each part works, off, update, offered, remov
   await expect(plan).toHaveCount(0);
 
   // Read it: what it brings, what it does not take, its names, and each line it runs. Nothing runs yet.
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.getByTestId("toolkit-add-+install").click();
   await page.getByTestId("install-source").fill(`file://${repo}`);
   await page.getByTestId("install-read").click();
@@ -144,26 +144,26 @@ test("plugins: install as one unit, each part works, off, update, offered, remov
   await expect(page.getByTestId("slash-menu")).toContainText("e2e-kit:greet");
   await expect(page.getByTestId("slash-menu")).toContainText("e2e-kit:stamp");
   await page.getByTestId("composer").fill("");
-  // The server is in Settings > MCP servers, from the plugin; the hooks in Settings > Hooks.
-  await page.goto("/settings/mcp");
+  // The server is in Customize > MCP servers, from the plugin; the hooks in Customize > Hooks.
+  await page.goto("/customize/mcp");
   await expect(page.locator('[data-testid="toolkit-group"][data-group="plugins"] [data-testid="mcp-entry"]')).toContainText("e2e-kit-echo");
-  await page.goto("/settings/hooks");
+  await page.goto("/customize/hooks");
   await expect(page.locator('[data-testid="hook-source"][data-scope="plugin"]')).toHaveAttribute("data-plugin", "e2e-kit");
 
   // Off: its hooks, its server, its skills, its command and its agent stop at once.
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.locator('[data-testid="unit-entry"][data-id="e2e-kit"]').click();
   await page.getByTestId("unit-toggle").click();
   await expect(reader).toHaveAttribute("data-enabled", "false");
   expect((await servers()).some((s) => s.plugin === "e2e-kit")).toBe(false);
   expect((await skills()).some((n) => n.startsWith("e2e-kit:"))).toBe(false);
   expect(await agents()).not.toContain("e2e-kit:checker");
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.locator('[data-testid="unit-entry"][data-id="e2e-kit"]').click();
   await shoot(page, "plugins-03-off");
   await say(2);
   expect(await notes()).toHaveLength(1);
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.locator('[data-testid="unit-entry"][data-id="e2e-kit"]').click();
   await page.getByTestId("unit-toggle").click();
   await expect(reader.locator('[data-testid="unit-mcp"][data-name="e2e-kit-echo"]')).toHaveAttribute("data-state", /^(ready|idle)$/, { timeout: 30_000 });
@@ -192,7 +192,7 @@ test("plugins: install as one unit, each part works, off, update, offered, remov
 
   // Offered by the repository: shown, not installed, until read and said yes to.
   expect((await (await request.get(`/api/plugins/installed?cwd=${encodeURIComponent(ws)}`)).json()).offers).toEqual([expect.objectContaining({ key: "local-kit@e2e-market", input: market })]);
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   const offer = page.locator('[data-testid="offer-entry"][data-key="local-kit@e2e-market"]');
   await offer.click();
   expect((await skills()).some((n) => n.startsWith("local-kit:"))).toBe(false);

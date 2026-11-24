@@ -111,7 +111,7 @@ test("an edit's type error reaches the model and the tool card, and its fix", as
   expect(spans.find((s) => s.attrs.errors === 1).attrs).toMatchObject({ timed_out: false, late: false, count: 1 });
 
   // Settings: the server, running, with where and how.
-  await page.goto("/settings/lsp");
+  await page.goto("/customize/lsp");
   await expect(page.getByTestId("toolkit-folder")).toContainText(ws.split("/").pop()!);
   const entry = page.locator('[data-testid="lsp-server"][data-name="TypeScript"]');
   await expect(entry).toHaveAttribute("data-state", "running");
@@ -215,7 +215,7 @@ test("a slow, a flooding and a crashing server: the edit is never held", async (
     expect(one.error).toContain("no more than 1 of the language servers are alive at once");
     expect(one.pid).toBeUndefined();
 
-    await page.goto("/settings/lsp");
+    await page.goto("/customize/lsp");
     await page.locator('[data-testid="lsp-server"][data-name="standin-crash"]').click();
     await expect(page.getByTestId("lsp-running")).toHaveAttribute("data-state", "failed");
     await expect(page.getByTestId("lsp-run-error")).toContainText("it exited with code 3");
@@ -261,7 +261,7 @@ test("a workspace's own server waits for trust in a session that asks before com
   expect(tsOf(v).running[0].pid).toBeUndefined();
   expect(tsOf(v).running[0].error).toContain("its program is a file of this folder");
 
-  await page.goto("/settings/lsp");
+  await page.goto("/customize/lsp");
   await expect(page.getByTestId("toolkit-folder")).toContainText(ws.split("/").pop()!);
   await expect(page.getByTestId("lsp-trust-note")).toHaveAttribute("data-trusted", "false");
   await shoot(page, "lsp-05-waits-for-trust");

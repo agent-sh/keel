@@ -1,12 +1,10 @@
 // Lessons from repeated failures (src/automation/lessons.ts) as the page reads
-// them: the list in Settings > Lessons and the owner's acts on a lesson.
+// them: the list in Customize > Lessons and the owner's acts on a lesson.
 import { GraduationCap } from "lucide-react";
 import { createElement, lazy } from "react";
 import type { Lesson, LessonState, Outcome } from "../../../src/automation/lessons.ts";
 import { settingsSections } from "./extend.ts";
-import { registerCommand } from "./keys.ts";
 import { api } from "./store.ts";
-import { navigate } from "./ui.ts";
 
 export type { Lesson, LessonState, Outcome };
 export type Lessons = { lessons: Lesson[]; mine: { ts: number; found: number; ms: number } | null; metric: string; days: number };
@@ -28,4 +26,3 @@ settingsSections.add({
   order: 22,
   component: lazy(() => import("../components/LessonsPanel.tsx").then((m) => ({ default: m.LessonsPanel }))),
 });
-registerCommand({ id: "lessons", label: "Lessons from repeated failures", group: "General", words: "learned mistakes recurring notes", run: () => navigate({ name: "settings", section: "lessons" }) });

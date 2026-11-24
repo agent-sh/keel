@@ -278,7 +278,7 @@ export class Installer {
       let config: McpServerConfig;
       try { config = parseConfig(JSON.stringify({ servers: { [name]: raw } })).servers[name]!; } catch (e) { notTaken.push({ part: `MCP server ${name}`, why: (e as Error).message }); continue; }
       // Which tools run without asking is the owner's word, never a plugin's; and a plugin's server follows no other agent's entry.
-      if (config.read_tools) notTaken.push({ part: `MCP server ${name}: read_tools`, why: "which tools run without asking is yours to mark in Settings > MCP servers" });
+      if (config.read_tools) notTaken.push({ part: `MCP server ${name}: read_tools`, why: "which tools run without asking is yours to mark in Customize > MCP servers" });
       delete config.read_tools;
       delete config.sync;
       if ((raw as any).type === "ws") { notTaken.push({ part: `MCP server ${name}`, why: "a WebSocket server, which Keel's MCP client does not speak" }); continue; }

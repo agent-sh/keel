@@ -185,7 +185,7 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
             )}
           </Fragment>
         ))}
-        {ruled && <Under name="Kept" testid="question-ruling">{`For questions like it ${inScope(ruled)}. You did not see this question; revoke the ruling in Settings > Rulings.`}</Under>}
+        {ruled && <Under name="Kept" testid="question-ruling">{`For questions like it ${inScope(ruled)}. You did not see this question; revoke the ruling in Customize > Rulings.`}</Under>}
         {result && !given && <Under name={result.is_error && !stopKind(result.content) ? STATE_WORD.fail : "Result"} tone={result.is_error && !stopKind(result.content) ? "fail" : undefined} testid="question-result">{resultText(result)}</Under>}
       </div>
       </Collapsible.Panel>

@@ -1,4 +1,4 @@
-// The tools lane's entries in the workbench: Settings > MCP servers from the
+// The tools lane's entries in the workbench: Customize > MCP servers from the
 // palette and /mcp, one slash command per skill the session can run, and one
 // per MCP prompt (/server:prompt, Claude Code's form; /mcp__server__prompt too).
 import { slash } from "./extend.ts";
@@ -6,7 +6,7 @@ import { registerCommand } from "./keys.ts";
 import { api, reportError } from "./store.ts";
 import { navigate } from "./ui.ts";
 
-const openMcp = () => navigate({ name: "settings", section: "mcp" });
+const openMcp = () => navigate({ name: "customize", section: "mcp" });
 
 registerCommand({ id: "mcp", label: "MCP servers", group: "General", words: "tools servers mcp plugins connect", run: openMcp });
 slash.add({ id: "mcp", label: "Manage tool servers", run: openMcp });

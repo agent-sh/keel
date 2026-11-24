@@ -393,7 +393,7 @@ export async function helperHeaders(cmd: string, timeoutMs = 10_000, run: { argv
   return h as Record<string, string>;
 }
 
-const pluginWord = (plugin: string) => `it comes with the plugin ${plugin}: turn the plugin off or remove it in Settings > Plugins`;
+const pluginWord = (plugin: string) => `it comes with the plugin ${plugin}: turn the plugin off or remove it in Customize > Plugins`;
 
 // (Whether it is on and whether its events are taken are not what the server is: neither restarts it.)
 const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined, class: undefined, close_idle_browser: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined, class: undefined, close_idle_browser: undefined });
@@ -870,7 +870,7 @@ export class McpManager {
       failed: () => {
         const live = e.bundled?.live && e.state !== "disabled" ? e.bundled.live.state() : null;
         const state = live?.state ?? e.state;
-        if (state === "needs_auth") return [{ name: e.label ?? name, why: "it needs a sign-in, which the owner gives in Settings > MCP servers" }];
+        if (state === "needs_auth") return [{ name: e.label ?? name, why: "it needs a sign-in, which the owner gives in Customize > MCP servers" }];
         if (state !== "error" && state !== "unreachable") return [];
         return [{ name: e.label ?? name, why: (live?.error ?? e.error ?? "it failed to start").split("\nstderr:")[0]!.split("\n")[0]! }];
       },
@@ -2001,7 +2001,7 @@ export class McpManager {
       renameSync(this.pinsPath, to);
       kept = ` It is kept as ${to}.`;
     } catch {} // nothing to keep: the file could not be read at all
-    this.errors.capture("server", new Error(`The MCP pins file ${this.pinsPath} cannot be read (${err.message}): every server of the owner's is held until its tools are accepted again in Settings > MCP servers.${kept}`), { at: "mcp pins" });
+    this.errors.capture("server", new Error(`The MCP pins file ${this.pinsPath} cannot be read (${err.message}): every server of the owner's is held until its tools are accepted again in Customize > MCP servers.${kept}`), { at: "mcp pins" });
   }
 
   // The first start after pins began: every server of the owner's it finds

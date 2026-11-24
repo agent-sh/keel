@@ -1,4 +1,4 @@
-// Settings > Commands: everything the message box answers to after a slash.
+// Customize > Commands: everything the message box answers to after a slash.
 // Keel's own commands, command files (the older form of a skill) and the
 // skills you can run by name, each with where it comes from.
 import { useEffect, useState, useSyncExternalStore } from "react";

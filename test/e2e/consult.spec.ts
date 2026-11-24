@@ -11,7 +11,7 @@ test("consult: the advisor tool on another model, set in Settings and per sessio
   const advisor = models.find((m: any) => /sonnet/i.test(m.id) && m.provider === HAIKU.split(":")[0]);
   await request.put("/api/advisor", { data: { model: advisor.id } });
 
-  await page.goto("/settings/agents");
+  await page.goto("/customize/agents");
   await expect(page.getByTestId("advisor-current")).toContainText(advisor.name);
   await shoot(page, "consult-01-settings");
 

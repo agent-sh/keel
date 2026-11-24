@@ -1,4 +1,4 @@
-// Settings > Plugins, the plugins installed as one unit: what each brought,
+// Customize > Plugins, the plugins installed as one unit: what each brought,
 // on and off, an update said before it is applied, removal, and the install
 // field with its consent step (src/plugins/installer.ts). Nothing a plugin
 // runs starts before the owner said yes to its lines here.

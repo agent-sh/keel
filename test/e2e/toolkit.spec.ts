@@ -27,7 +27,7 @@ test.beforeAll(async ({ request }) => {
 test.afterAll(() => rmSync(outside, { force: true }));
 
 async function open(page: Page, section: string) {
-  await page.goto(`/settings/${section}`);
+  await page.goto(`/customize/${section}`);
   await expect(page.getByTestId("toolkit-folder")).toContainText(ws.split("/").pop()!);
 }
 
@@ -163,7 +163,7 @@ test("toolkit: instructions", async ({ page, request }) => {
 test("toolkit: hooks", async ({ page, request }) => {
   const owner = await (await request.get("/api/hooks/owner")).json();
   test.skip(!String(owner.path).includes("keel-work"), "needs a scratch owner hooks file");
-  await page.goto("/settings/hooks");
+  await page.goto("/customize/hooks");
   await page.locator('[data-testid="hook-source"][data-scope="owner"]').click();
   const text = page.getByTestId("editor-text");
   await text.fill('{ "hooks": { "Stop": [ ');
@@ -180,7 +180,7 @@ test("toolkit: hooks", async ({ page, request }) => {
 });
 
 test("toolkit: plugins", async ({ page }) => {
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await expect(page.locator('[data-testid="plugin-entry"]').filter({ hasText: "Chrome" }).first()).toBeVisible();
   await page.locator('[data-testid="plugin-entry"][data-name="plugins.toml"]').click();
   await expect(page.getByTestId("reader-title")).toHaveText("plugins.toml");

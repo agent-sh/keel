@@ -9,7 +9,7 @@ import { shoot } from "./shots.ts";
 // repository; a later agent of that repository that asks the same thing in
 // other words is answered from the ruling with no card, which its line and
 // its timeline say; an agent of another repository still gets the card. The
-// ruling is listed in Settings > Rulings with its use, and revoked there.
+// ruling is listed in Customize > Rulings with its use, and revoked there.
 const runner = (question: string) => ({
   name: "AskUserQuestion",
   input: { questions: [{ header: "Runner", question, options: [{ label: "bun test", description: "The runtime's own runner" }, { label: "vitest", description: "A separate package" }], multiSelect: false }] },
@@ -107,7 +107,7 @@ test("an answer kept as a ruling answers the same question from later agents of 
     await request.post(`/api/sessions/${third.session_id}/interrupt`, { data: { by: "owner" } });
 
     // Settings lists the ruling with its use; revoked, it answers no one.
-    await page.goto("/settings/rulings");
+    await page.goto("/customize/rulings");
     const row = page.locator(`[data-testid="ruling-row"][data-ruling="${kept}"]`);
     await expect(row).toHaveAttribute("data-state", "live");
     await expect(row.getByTestId("ruling-words")).toHaveText("bun test");

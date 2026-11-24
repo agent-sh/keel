@@ -1,4 +1,4 @@
-// Settings > Instructions: the files a session's prompt carries, in the order
+// Customize > Instructions: the files a session's prompt carries, in the order
 // it reads them, the ones not written yet, each one editable.
 import { useCallback, useEffect, useState } from "react";
 import { api, reportError } from "../../lib/store.ts";

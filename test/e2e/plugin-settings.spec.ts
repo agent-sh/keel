@@ -6,7 +6,7 @@ import { HAIKU, shoot } from "./shots.ts";
 // Feature: a plugin's settings (the userConfig of its manifest). The plan
 // says what it asks for, and a hook that would hand a value to a shell is
 // not taken. Installed with a required value missing, its server and hooks
-// wait and say for what. The owner gives the values in Settings > Plugins:
+// wait and say for what. The owner gives the values in Customize > Plugins:
 // the server starts with ${user_config.KEY} filled in, the hooks get
 // CLAUDE_PLUGIN_OPTION_<KEY> and their args the value; a sensitive value goes
 // to the system keyring only (or is refused, plainly, where there is none)
@@ -45,7 +45,7 @@ test("plugin settings: asked for, the plugin waits for a required one, values re
   mkdirSync(join(ws, ".git"), { recursive: true });
 
   // Read: the settings it asks for are said, and the hook that would hand a value to its shell is not taken.
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.getByTestId("toolkit-add-+install").click();
   await page.getByTestId("install-source").fill(kit);
   await page.getByTestId("install-read").click();
@@ -82,7 +82,7 @@ test("plugin settings: asked for, the plugin waits for a required one, values re
   };
   await say(1);
   expect(await notes()).not.toContain("opt-said");
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.locator('[data-testid="unit-entry"][data-id="e2e-set"]').click();
   await expect(reader.getByTestId("unit-waiting")).toBeVisible();
   await shoot(page, "plugin-settings-02-waiting");
@@ -108,7 +108,7 @@ test("plugin settings: asked for, the plugin waits for a required one, values re
   await say(2);
   await expect.poll(notes).toContain("opt-said-https://api.example.test/v1");
   expect(await notes()).toContain("arg-said-warm");
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.locator('[data-testid="unit-entry"][data-id="e2e-set"]').click();
   await expect(field("endpoint")).toHaveValue("https://api.example.test/v1");
   await reader.getByTestId("unit-servers").scrollIntoViewIfNeeded();

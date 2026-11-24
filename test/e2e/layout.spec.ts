@@ -459,7 +459,8 @@ test("settings search shows keyboard focus", async ({ page, request }) => {
   await nav.getByTestId("settings-hit").filter({ hasText: name }).click();
   await expect(page.getByTestId("settings-title")).toHaveText("MCP servers");
   await expect(page.getByTestId("settings-missing")).toContainText(`${name} is not on this page now`);
-  // Away from the field the mark goes.
+  // Away from the field the mark goes. (The search sits on Settings: back to it from the section it opened.)
+  await page.goto("/settings/general");
   await field.focus();
   await page.keyboard.press("Tab");
   expect((await mark()).shown).not.toContain((await mark()).ring);
@@ -850,8 +851,8 @@ test("a session placed in a chosen pane by keyboard", async ({ page, request }) 
 // rail keeps the groups the owner rarely needs folded until the section shown is in one.
 test("settings sections share one column and one title size, and the rail folds", async ({ page }) => {
   await page.setViewportSize({ width: 2200, height: 1040 });
-  const titleSize = async (id: string) => {
-    await page.goto(`/settings/${id}`);
+  const titleSize = async (id: string, page_ = "settings") => {
+    await page.goto(`/${page_}/${id}`);
     await expect(page.getByTestId("settings-title")).toBeVisible();
     return page.evaluate(() => {
       const title = document.querySelector<HTMLElement>("[data-testid=settings-title]")!;
@@ -862,8 +863,9 @@ test("settings sections share one column and one title size, and the rail folds"
     });
   };
   const sizes = new Set<number>();
-  for (const id of ["general", "network", "usage"]) {
-    const m = await titleSize(id);
+  // (Customize is the same frame: its sections stand in the same column under the same title.)
+  for (const [id, at] of [["general", "settings"], ["network", "settings"], ["usage", "settings"], ["skills", "customize"]] as const) {
+    const m = await titleSize(id, at);
     sizes.add(m.size);
     // Centred in the free space (a scrollbar's width at most apart).
     expect(Math.abs(m.left - m.right), `${id} column centred`).toBeLessThanOrEqual(20);

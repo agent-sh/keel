@@ -39,7 +39,7 @@ const HELP: &str = "keel-desktop: Keel in a window of its own
 
 usage: keel-desktop [options] [keel://LINK]
 
-  keel://session/ID     open a session (also keel://new, keel://inbox, keel://settings/SECTION, keel://project/ID)
+  keel://session/ID     open a session (also keel://new, keel://inbox, keel://settings/SECTION, keel://customize/SECTION, keel://project/ID)
   --new                 open on a new session
   --window PATH         open a path of the page in a window of its own (/s/ID)
   --hidden              start with the tray mark only

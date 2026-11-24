@@ -1,4 +1,4 @@
-// Settings > Lessons: causes that failed the same way across a repository's
+// Customize > Lessons: causes that failed the same way across a repository's
 // agent trees (src/automation/lessons.ts), each proposed as a short note with
 // its evidence. The owner accepts a note as drafted or in his own words, or
 // drops it. An accepted one is told to the repository's agents at their start

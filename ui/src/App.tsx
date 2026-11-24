@@ -18,6 +18,7 @@ import { IncidentBand } from "./components/IncidentBand.tsx";
 import { StaleMarks } from "./components/Stale.tsx";
 import "./lib/integrations-ui.ts";
 import "./lib/port-ui.ts";
+import "./lib/customize.ts";
 import "./lib/surfaces-ui.ts";
 import "./lib/rulings.ts";
 import "./lib/lessons.ts";
@@ -83,7 +84,7 @@ export function App() {
     connect();
     return installKeymap();
   }, []);
-  useEffect(() => { if (route.name !== "session") setBaseTitle(route.name === "settings" ? "Settings - Keel" : "Keel"); }, [route]);
+  useEffect(() => { if (route.name !== "session") setBaseTitle(route.name === "settings" ? "Settings - Keel" : route.name === "customize" ? "Customize - Keel" : "Keel"); }, [route]);
 
   const sidebar = useUI((s) => s.sidebar);
   const rail = useRail();
@@ -151,7 +152,7 @@ export function App() {
       });
     };
   }, [drawer]);
-  const page = route.name === "settings" || route.name === "project";
+  const page = route.name === "settings" || route.name === "customize" || route.name === "project";
   return (
     <Boundary>
       <Attention />
@@ -177,7 +178,7 @@ export function App() {
           {(rail.over || sidebar) && <div className="k-scrim" data-over={rail.over || undefined} onClick={() => (drawer ? closeDrawer() : toggleList(false))} aria-hidden="true" />}
           <div className="contents" inert={drawer} data-testid="under-drawer">
             {page ? (
-              <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}{route.name === "project" && <ProjectPage id={route.id} />}</Suspense></main>
+              <main className="k-page"><Suspense fallback={null}>{(route.name === "settings" || route.name === "customize") && <Settings kind={route.name} section={route.section} />}{route.name === "project" && <ProjectPage id={route.id} />}</Suspense></main>
             ) : <Suspense fallback={null}><Bridge /></Suspense>}
           </div>
         </div>

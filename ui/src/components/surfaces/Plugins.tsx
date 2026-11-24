@@ -1,4 +1,4 @@
-// Settings > Plugins: the plugins installed as one unit (skills, commands,
+// Customize > Plugins: the plugins installed as one unit (skills, commands,
 // agents, hooks and MCP servers together; PluginUnits.tsx), the ones this
 // folder's repository offers, the provider plugins Keel runs (protocol v1)
 // with their state, providers and conformance check, the servers Keel
@@ -116,7 +116,7 @@ export default function Plugins() {
               {b.error && <div className="k-issue mt-3" data-tone={b.state === "missing" || b.state === "not_armed" ? "quiet" : undefined}>{b.error}</div>}
             </ReaderHead>
             <div className="k-reader-body">
-              <button type="button" className="k-btn" onClick={() => navigate({ name: "settings", section: "mcp" }, true)}>Open in MCP servers</button>
+              <button type="button" className="k-btn" onClick={() => navigate({ name: "customize", section: "mcp" }, true)}>Open in MCP servers</button>
             </div>
           </>
         ) : sel === "toml" && toml ? (

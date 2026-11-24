@@ -15,7 +15,7 @@ test("the report lists broken before warnings before what is well, group by grou
   expect(doctorExit(report.counts)).toBe(1);
   expect(doctorExit({ ok: 3, warning: 2, broken: 0 })).toBe(0);
   const text = healthText(report);
-  expect(text).toContain("Hooks\n  broken  PreToolUse matcher\n          fix: name a tool\n          where: /c/hooks.json  |  Settings > Hooks");
+  expect(text).toContain("Hooks\n  broken  PreToolUse matcher\n          fix: name a tool\n          where: /c/hooks.json  |  Customize > Hooks");
   expect(text).toContain("  ok      A answers");
   expect(text.split("\n").at(-1)).toBe("1 broken, 1 warning, 2 ok (40 ms)");
   // --problems: what is well is left out.

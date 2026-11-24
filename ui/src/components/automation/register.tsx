@@ -59,7 +59,7 @@ settingsSections.add({
 });
 
 // /advisor [model | off | default]: the advisor of this session. A name matches
-// a listed model by id or name; without one it opens Settings > Agents.
+// a listed model by id or name; without one it opens Customize > Agents.
 slash.add({
   id: "advisor",
   label: "Choose the model this session may consult for advice",
@@ -67,7 +67,7 @@ slash.add({
   run: async (arg, { session }) => {
     const a = arg.trim();
     // Bare: the page opens on this session's own choice (this session, the default, off).
-    if (!a || !session) { setAdvisorSession(session ? { id: session.id, title: session.title || "this session" } : null); return navigate({ name: "settings", section: "agents" }); }
+    if (!a || !session) { setAdvisorSession(session ? { id: session.id, title: session.title || "this session" } : null); return navigate({ name: "customize", section: "agents" }); }
     if (a === "off" || a === "default") return void (await auto.setSessionAdvisor(session.id, a === "off" ? "off" : null));
     const w = a.toLowerCase();
     await ensureModels();

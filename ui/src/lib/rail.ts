@@ -70,7 +70,7 @@ export const panelWidth = (width = innerWidth) => Math.floor(Math.min(panelMax()
 // The width the panes on screen need at their narrowest; a panel beside the helm widens it.
 function needed(width: number): number {
   const ui = getUI();
-  if (ui.route.name === "settings") return paneMin();
+  if (ui.route.name === "settings" || ui.route.name === "customize") return paneMin();
   const beside = ui.panel && ui.route.name === "session" && panelBeside(width);
   return panes() * paneMin() + (beside ? sessionMin() - paneMin() + panelWidth(width) : 0);
 }

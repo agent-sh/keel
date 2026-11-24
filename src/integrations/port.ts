@@ -529,7 +529,7 @@ function planHooks(items: Planned[], fromPlugins: HookCandidate[]) {
 }
 
 // A project's Claude Code hooks go to its own .keel/hooks.json, which runs
-// nothing until the owner pins it (Settings > Hooks): bringing them never
+// nothing until the owner pins it (Customize > Hooks): bringing them never
 // trusts them. The personal settings.local.json stays out: .keel/hooks.json
 // is the repository's file, which it may share.
 function planProjectHooks(items: Planned[], deps: PortDeps) {
@@ -568,7 +568,7 @@ function planProjectHooks(items: Planned[], deps: PortDeps) {
             list.push({ ...(g.matcher ? { matcher: g.matcher } : {}), hooks: [portable(h)] });
             writeAtomic(target, JSON.stringify(file, null, 2) + "\n");
           }
-          return `added to ${tilde(join(root, ".keel", "hooks.json"))}: it runs once you pin it in Settings > Hooks`;
+          return `added to ${tilde(join(root, ".keel", "hooks.json"))}: it runs once you pin it in Customize > Hooks`;
         },
       });
     }

@@ -1,4 +1,4 @@
-// Settings > Agents: the advisor, and every subagent definition the model can
+// Customize > Agents: the advisor, and every subagent definition the model can
 // start (built in, yours, the repository's) with its file.
 import { useCallback, useEffect, useState } from "react";
 import { api, reportError } from "../../lib/store.ts";

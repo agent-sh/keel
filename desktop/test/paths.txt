@@ -12,6 +12,8 @@ ok /p/proj
 ok /p/proj_1-Z
 ok /settings
 ok /settings/models
+ok /customize
+ok /customize/hooks
 no s/abc
 no //evil.example/
 no /api/drain
@@ -24,6 +26,7 @@ no /p
 no /s/a/b
 no /settings/a/b
 no /settings/
+no /customize/a/b
 no /s/a?x=javascript:alert(1)
 no /ws
 no /s/a?q=a b

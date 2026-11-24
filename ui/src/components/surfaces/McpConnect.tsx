@@ -1,4 +1,4 @@
-// Settings > MCP servers > Connect an app: the vendors' own remote servers
+// Customize > MCP servers > Connect an app: the vendors' own remote servers
 // (GitHub, Gmail, Calendar, Drive, Slack, Notion, Linear), each with what it
 // takes to sign in as read from the server, and the official MCP registry to
 // find any other. Adding writes Keel's mcp.json; sign-in is the server's own.

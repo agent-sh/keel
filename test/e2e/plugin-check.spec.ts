@@ -2,13 +2,13 @@ import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: the protocol v1 conformance check of a configured plugin, from
-// Settings > Plugins (the same runner as `keel plugin check <id>`): fake
+// Customize > Plugins (the same runner as `keel plugin check <id>`): fake
 // credentials, a fake vendor, every fixture of the spec, one row each.
 test("plugin check: a configured plugin passes protocol v1", async ({ page, request }) => {
   const { plugins } = await (await request.get("/api/providers")).json();
   const plugin = plugins.find((p: any) => p.state === "ready");
   test.skip(!plugin, "no plugin is configured and ready");
-  await page.goto("/settings/plugins");
+  await page.goto("/customize/plugins");
   await page.getByTestId("plugin-entry").filter({ hasText: plugin.name ?? plugin.id }).first().click();
   const row = page.locator(`[data-testid="plugin-reader"][data-plugin="${plugin.id}"]`);
   await row.getByTestId("plugin-check-run").click();

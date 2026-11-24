@@ -1,4 +1,4 @@
-// Settings > Rulings: the answers the owner kept for questions like them
+// Customize > Rulings: the answers the owner kept for questions like them
 // (src/automation/rulings.ts). Each says what was asked, what the owner said,
 // where it holds, and how often it answered an agent since. A ruling is
 // revoked here: from then on the agents of its scope get the card again.

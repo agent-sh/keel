@@ -39,7 +39,7 @@ function ThisSession({ id, title, onDone }: { id: string; title: string; onDone:
   );
 }
 
-// Settings > Agents: the advisor the working model may consult.
+// Customize > Agents: the advisor the working model may consult.
 export default function AgentSettings() {
   const [model, setModel] = useState<string | null | undefined>(undefined);
   const [from, setFrom] = useState(advisorSession);

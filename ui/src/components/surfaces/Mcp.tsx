@@ -1,4 +1,4 @@
-// Settings > MCP servers: every server Keel connects to, its state and
+// Customize > MCP servers: every server Keel connects to, its state and
 // error, sign-in, its tools (each one a read or not), what else it publishes,
 // adding one (a local command or a remote URL) and importing what the other
 // harnesses already use. /mcp and the palette open it.
@@ -114,7 +114,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           ...(s.held ? [["Held", <span className="text-st-need" data-testid="mcp-held-count">{s.held.changes.length + (s.held.instructions ? 1 : 0)} not accepted</span>] as [string, React.ReactNode]] : []),
           ["Transport", s.sse ? "http, SSE (older)" : s.transport],
           ...(s.bundled ? [["Source", <span data-testid="mcp-bundled">Built in · {s.bundled}</span>] as [string, React.ReactNode]] : []),
-          ...(s.plugin ? [["Source", <button type="button" className="underline decoration-line-strong underline-offset-2 hover:text-accent" data-testid="mcp-plugin" onClick={() => navigate({ name: "settings", section: "plugins" })}>Plugin · {s.plugin}</button>] as [string, React.ReactNode]] : []),
+          ...(s.plugin ? [["Source", <button type="button" className="underline decoration-line-strong underline-offset-2 hover:text-accent" data-testid="mcp-plugin" onClick={() => navigate({ name: "customize", section: "plugins" })}>Plugin · {s.plugin}</button>] as [string, React.ReactNode]] : []),
           ...(s.sync ? [["Follows", <span data-testid="mcp-sync" data-gone={s.sync.gone || undefined}>{s.sync.label}{s.sync.name !== s.name ? ` (${s.sync.name})` : ""}{s.sync.gone ? ", which no longer has it" : ""}</span>] as [string, React.ReactNode]] : []),
           ...(s.state === "ready" && s.server_info?.name ? [["Server", `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""}, MCP ${s.version}`] as [string, string]] : []),
           ...((s.state === "ready" || s.state === "idle") && s.last_connected ? [[s.state === "idle" ? "Last started" : "Connected", ago(s.last_connected)] as [string, string]] : []),

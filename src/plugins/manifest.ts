@@ -75,7 +75,7 @@ function ownName(file: string, fallback: string): string {
 const TAKEN_KEYS = new Set(["$schema", "name", "displayName", "version", "description", "author", "homepage", "repository", "license", "keywords", "metadata", "icon", "documentationUrl", "supportUrl", "privacyPolicyUrl", "termsOfServiceUrl", "defaultEnabled", "engines", "network", "types", "skills", "commands", "agents", "hooks", "mcpServers", "userConfig", "strict", "source", "category", "tags", "relevance", "headers", "headersHelper"]);
 const NOT_TAKEN: Record<string, string> = {
   outputStyles: "Keel has no output style setting: a style's text belongs in an instructions file",
-  lspServers: "Keel finds and starts language servers itself (Settings > Language servers)",
+  lspServers: "Keel finds and starts language servers itself (Customize > Language servers)",
   channels: "Keel has no message channels from plugins",
   dependencies: "Keel does not install other plugins for one: install each yourself",
   workflows: "Keel has no plugin workflows",

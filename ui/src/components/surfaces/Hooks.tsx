@@ -1,4 +1,4 @@
-// Settings > Hooks: commands at fixed points of a session, in the hooks.json
+// Customize > Hooks: commands at fixed points of a session, in the hooks.json
 // shape Claude Code and Codex share. Yours runs and is edited here; a
 // repository's runs only once you read and pin exactly that file.
 import { useCallback, useEffect, useState } from "react";
@@ -113,14 +113,14 @@ export default function Hooks() {
             <ReaderHead
               title={cur.plugin ?? "Plugin"}
               path={cur.path}
-              desc="A plugin's hooks run as you agreed when you installed it, while the plugin is on. Turn it off or remove it in Settings > Plugins."
-              right={<button type="button" className="k-btn" data-testid="hook-plugin" onClick={() => navigate({ name: "settings", section: "plugins" })}>Open in Plugins</button>}
+              desc="A plugin's hooks run as you agreed when you installed it, while the plugin is on. Turn it off or remove it in Customize > Plugins."
+              right={<button type="button" className="k-btn" data-testid="hook-plugin" onClick={() => navigate({ name: "customize", section: "plugins" })}>Open in Plugins</button>}
               facts={Object.entries(cur.events).map(([e, n]) => [e, `${n}`] as [string, string])}
             >
               {cur.problems.length > 0 && <ul className="k-issue mt-3" data-testid="hook-problems">{cur.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
               <Reach s={cur} />
             </ReaderHead>
-            <FileEditor name="its hooks" text={cur.text} readOnly="a plugin's hooks change with the plugin: update it in Settings > Plugins" testid="hook-text" />
+            <FileEditor name="its hooks" text={cur.text} readOnly="a plugin's hooks change with the plugin: update it in Customize > Plugins" testid="hook-text" />
           </>
         ) : cur ? (
           <>

@@ -26,7 +26,7 @@ test("hooks", async ({ page, request }) => {
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
 
   // The repository's file is listed, not running until pinned.
-  await page.goto("/settings/hooks");
+  await page.goto("/customize/hooks");
   const project = page.locator(`[data-testid="hook-source"][data-scope="project"]`).filter({ hasText: ws.split("/").pop()! });
   await expect(project).toHaveAttribute("data-active", "false");
   await expect(page.locator('[data-testid="hook-source"][data-scope="owner"]').first()).toHaveAttribute("data-active", "true");

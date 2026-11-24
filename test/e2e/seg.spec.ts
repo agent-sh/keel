@@ -155,7 +155,7 @@ test("an arrow key never loosens permissions, and tabs keep to their own keys", 
 
   // The MCP form's Kind: an arrow does not switch it, and the lines typed for a kind are kept
   // while the other kind is looked at.
-  await page.goto("/settings/mcp");
+  await page.goto("/customize/mcp");
   await page.getByTestId("toolkit-add-+add").click();
   const kind = page.getByRole("radiogroup", { name: "Kind" });
   const lines = page.getByTestId("mcp-add-extra");

@@ -530,7 +530,7 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
 export function preloadSkill(name: string, cwd: string, sessionId: string): { text: string } | { error: string } {
   const skill = discoverSkills(cwd).find((s) => s.name === name);
   if (!skill) return { error: "no skill of that name here" };
-  if (!skill.enabled) return { error: "it is turned off in Settings > Skills" };
+  if (!skill.enabled) return { error: "it is turned off in Customize > Skills" };
   if (!skill.modelInvocable) return { error: "only the owner invokes it (disable-model-invocation)" };
   const { body } = frontmatter(readFileSync(skill.file, "utf8"));
   usage?.record(skill.name);
@@ -575,7 +575,7 @@ function ownerText(f: Found, args: string, sessionId: string, opts: { grant?: "n
   const { skill, raw, vars, grantable, machine, held } = f;
   const name = skill.name;
   if (!skill.userInvocable) return { error: `${name} is not meant to be invoked by hand` };
-  if (!skill.enabled) return { error: `${name} is turned off in Settings > Skills` };
+  if (!skill.enabled) return { error: `${name} is turned off in Customize > Skills` };
   const { body } = frontmatter(raw);
   const text = renderSkill(body, args, skill.arguments, vars);
   if (opts.count !== false) usage?.record(skill.name);

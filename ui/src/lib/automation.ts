@@ -591,7 +591,7 @@ export function placeName(sessions: Record<string, { title?: string } | undefine
   return on(parent ? `${parent} › ${kid}` : kid);
 }
 
-// The session a bare /advisor came from: Settings > Agents then sets its advisor first.
+// The session a bare /advisor came from: Customize > Agents then sets its advisor first.
 let advisorFrom: { id: string; title: string } | null = null;
 export const advisorSession = () => advisorFrom;
 export const setAdvisorSession = (s: { id: string; title: string } | null) => void (advisorFrom = s);

@@ -6,9 +6,7 @@ import { Gavel } from "lucide-react";
 import { createElement, lazy, useEffect, useSyncExternalStore } from "react";
 import type { OfferMark, Ruling, Scope } from "../../../src/automation/rulings.ts";
 import { settingsSections } from "./extend.ts";
-import { registerCommand } from "./keys.ts";
 import { api, onFeature, reportError, reportUnlessGone } from "./store.ts";
-import { navigate } from "./ui.ts";
 
 export type { OfferMark, Ruling, Scope };
 
@@ -61,4 +59,3 @@ settingsSections.add({
   order: 21,
   component: lazy(() => import("../components/RulingsPanel.tsx").then((m) => ({ default: m.RulingsPanel }))),
 });
-registerCommand({ id: "rulings", label: "Standing rulings", group: "General", words: "kept answers decisions revoke", run: () => navigate({ name: "settings", section: "rulings" }) });

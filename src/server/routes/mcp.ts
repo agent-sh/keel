@@ -68,7 +68,7 @@ export const mcpRoutes: RouteModule = (deps) => {
     // Entries that are one server (the same command, or the same tools) each report the change: one notice names them all.
     const names = [name, ...m.twinsOf(name)].sort();
     const who = names.length > 1 ? `${list(names.slice(0, -1))} and ${names.at(-1)}` : name;
-    const accept = "Sessions keep the definitions and instructions you accepted, and a new tool is not offered, until you accept the change in Settings > MCP servers.";
+    const accept = "Sessions keep the definitions and instructions you accepted, and a new tool is not offered, until you accept the change in Customize > MCP servers.";
     alertHook.raise?.("mcp", null, names.length > 1 ? `${who} changed their tools` : `${name} changed its tools`,
       names.length > 1 ? `The MCP servers ${who} are one server configured twice. It ${said}. ${accept}` : `The MCP server ${name} ${said}. ${accept}`,
       { mcp_server: name, ...(names.length > 1 ? { mcp_servers: names } : {}), mcp_change: changeDigest(changes, instructions) });
@@ -76,7 +76,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   // Servers set up before pins were kept are pinned as they list now: the owner is told once, to look them over.
   m.onUpgradePinned = (names) => {
     const n = names.length;
-    alertHook.raise?.("mcp", null, `${n} server${n === 1 ? " was" : "s were"} pinned as ${n === 1 ? "it is" : "they are"} now: review in Settings > MCP servers`, `Keel now pins each MCP server's tools and instructions, and holds a later change until you accept it. ${list(names)} ${n === 1 ? "was" : "were"} set up before, so what ${n === 1 ? "it lists" : "they list"} now was taken as accepted. Look ${n === 1 ? "it" : "them"} over in Settings > MCP servers.`, n === 1 ? { mcp_server: names[0] } : {});
+    alertHook.raise?.("mcp", null, `${n} server${n === 1 ? " was" : "s were"} pinned as ${n === 1 ? "it is" : "they are"} now: review in Customize > MCP servers`, `Keel now pins each MCP server's tools and instructions, and holds a later change until you accept it. ${list(names)} ${n === 1 ? "was" : "were"} set up before, so what ${n === 1 ? "it lists" : "they list"} now was taken as accepted. Look ${n === 1 ? "it" : "them"} over in Customize > MCP servers.`, n === 1 ? { mcp_server: names[0] } : {});
   };
   installMcpTools(m);
   // A call whose server asked the owner a question waits on the owner: a
@@ -99,13 +99,13 @@ export const mcpRoutes: RouteModule = (deps) => {
     const one = names.length === 1;
     if (isAgentKey(root)) {
       // An agent file's: said in the agent's session and in its parent's, where the owner follows it.
-      const text = `The agent file ${root} defines ${one ? "a server" : "servers"} of its own waiting for your approval: ${names.join(", ")}. The agent works without ${one ? "it" : "them"} until you approve ${one ? "it" : "them"} in Settings > MCP servers.`;
+      const text = `The agent file ${root} defines ${one ? "a server" : "servers"} of its own waiting for your approval: ${names.join(", ")}. The agent works without ${one ? "it" : "them"} until you approve ${one ? "it" : "them"} in Customize > MCP servers.`;
       // (Its session names its parent from its start, before its agent's record is written.)
       const parent = deps.store.db.query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM sessions WHERE id = ?").get(sid)?.parent_id;
       for (const id of parent ? [sid, parent] : [sid]) deps.bus.emit({ t: "event", event: deps.store.append(id, "note", { kind: "mcp-project", text, servers: names, root }) });
       return;
     }
-    const ev = deps.store.append(sid, "note", { kind: "mcp-project", text: `This project's .mcp.json (${root}) names ${one ? "a server" : "servers"} waiting for your approval: ${names.join(", ")}. ${one ? "It is" : "They are"} not started until you approve ${one ? "it" : "them"} in Settings > MCP servers.`, servers: names, root });
+    const ev = deps.store.append(sid, "note", { kind: "mcp-project", text: `This project's .mcp.json (${root}) names ${one ? "a server" : "servers"} waiting for your approval: ${names.join(", ")}. ${one ? "It is" : "They are"} not started until you approve ${one ? "it" : "them"} in Customize > MCP servers.`, servers: names, root });
     deps.bus.emit({ t: "event", event: ev });
   };
   // An agent file's own servers: given to its agent at its start and at each of its turns, ended when it finishes.
@@ -193,8 +193,8 @@ export const mcpRoutes: RouteModule = (deps) => {
   }));
   const servers = () => json({ servers: withChannels(m.list()) });
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
-  // A plugin's server goes and stops with its plugin (Settings > Plugins).
-  const plugins = (name: string) => { const p = m.pluginOf(name); return p ? bad(`${name} comes with the plugin ${p}: turn the plugin off or remove it in Settings > Plugins`, 409) : null; };
+  // A plugin's server goes and stops with its plugin (Customize > Plugins).
+  const plugins = (name: string) => { const p = m.pluginOf(name); return p ? bad(`${name} comes with the plugin ${p}: turn the plugin off or remove it in Customize > Plugins`, 409) : null; };
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
   // A server that is a command runs a program as the owner: from a remote device that takes the passkey.
   const needs = (req: Request) => (!presence || presence.allows(req, "mcp-command") ? null : json({ error: "this needs your passkey from a remote device", presence: { action: "mcp-command" } }, 428));

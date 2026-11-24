@@ -5,7 +5,7 @@ import { ask, HAIKU, pickModel, SCRIPTED, shoot } from "./shots.ts";
 
 const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
 
-// Feature: MCP servers. Add a stdio server from Settings > MCP servers, see it ready with
+// Feature: MCP servers. Add a stdio server from Customize > MCP servers, see it ready with
 // its tools, turn it off and on, reconnect it, then a model finds its tool
 // with ToolSearch (a tool_reference loads it, the cached prefix unchanged) and
 // calls it by its own name, mcp__echo__echo, as Claude Code names MCP tools.
@@ -457,7 +457,7 @@ test("tacit's tools reach a session, and a server that fails says so", async ({ 
 
 // Feature: a project's own servers (Claude Code's .mcp.json, project scope).
 // A session in the project is not given one until the owner approves it in
-// Settings > MCP servers; the session is told what waits. An approved one is
+// Customize > MCP servers; the session is told what waits. An approved one is
 // that project's sessions' own; a changed entry waits again; an approval the
 // owner gave in Claude Code (their own ~/.claude.json) is taken over.
 test("a project's .mcp.json servers run once the owner approves them", async ({ page, request }) => {
@@ -524,7 +524,7 @@ test("a project's .mcp.json servers run once the owner approves them", async ({ 
 
 // Feature: an agent file's own MCP servers (Claude Code's sub-agent
 // `mcpServers` with an inline definition). The agent starts without one until
-// the owner approves it in Settings > MCP servers, and its parent is told
+// the owner approves it in Customize > MCP servers, and its parent is told
 // what waits; an approved one runs for that agent alone while it works and
 // ends when it finishes; a changed entry waits again.
 test("an agent file's own MCP servers run for that agent once the owner approves them", async ({ page, request }) => {
@@ -562,7 +562,7 @@ test("an agent file's own MCP servers run for that agent once the owner approves
     // Not approved: the agent works without it, and its parent and the owner are told what waits.
     const first = await spawn("Before");
     expect(first.got).toContain(`No tool named ae${tag}__echo`);
-    expect(first.said).toContain(`its own MCP server (ae${tag}): it waits for the owner's approval in Settings > MCP servers`);
+    expect(first.said).toContain(`its own MCP server (ae${tag}): it waits for the owner's approval in Customize > MCP servers`);
     await page.goto(`/s/${session.id}`);
     await expect(page.getByTestId("note").filter({ hasText: `waiting for your approval: ae${tag}` })).toHaveCount(1);
 

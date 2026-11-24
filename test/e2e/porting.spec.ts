@@ -92,7 +92,7 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
   const keep = ["AGENTS.md", "skills.json", "hooks.json"].map((n) => join(config, n)).map((p) => [p, existsSync(p) ? readFileSync(p, "utf8") : null] as const);
   try {
     await page.setViewportSize({ width: 1920, height: 1040 });
-    await page.goto("/settings/port");
+    await page.goto("/customize/port");
     const panel = page.getByTestId("port");
     const row = (id: string) => panel.locator(`[data-port-item="${id}"]`);
     await expect(row("instructions:claude")).toContainText("New");

@@ -22,7 +22,7 @@ const SCAN_MAX = 500;
 
 export const viewOf = (): string => {
   const r = getUI().route;
-  return r.name === "settings" ? `settings/${r.section}` : r.name;
+  return r.name === "settings" || r.name === "customize" ? `${r.name}/${r.section}` : r.name;
 };
 const sessionOf = (): string | undefined => {
   const r = getUI().route;

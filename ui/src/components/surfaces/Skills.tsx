@@ -1,4 +1,4 @@
-// Settings > Skills: every skill from every folder Keel reads, where each one
+// Customize > Skills: every skill from every folder Keel reads, where each one
 // comes from, its file, on and off, and a new one.
 import { useCallback, useEffect, useState } from "react";
 import { api, reportError } from "../../lib/store.ts";

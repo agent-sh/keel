@@ -129,6 +129,8 @@
 .k-row-tag { max-width: min(5rem, 26cqi); }
 @container rail (max-width: 16rem) { .k-row-tag { display: none; } }
 @container rail (max-width: 16.5rem) {
+  /* The foot keeps its one row here: Customize steps out (the palette still opens it). */
+  .k-rail[data-open] .k-rail-foot > .k-foot-more { display: none; }
   .k-rail[data-open] .k-rail-foot .k-act-label { display: none; }
   /* Its buttons stand closer, so the five are one row with two-digit counts. Counts of more
      digits in every button: a second row, never a button outside the bar. */
@@ -1424,7 +1426,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-settings-nav { display: flex; flex-direction: column; gap: 1px; flex: 1; min-height: 0; overflow-y: auto; padding: 0 0.75rem 1rem; }
 .k-settings-group { padding: 0.875rem 0.625rem 0.25rem; }
 /* A group the wide rail folds at rest: its head is the button that opens it. */
-.k-settings-fold { display: flex; align-items: center; justify-content: space-between; width: 100%; border-radius: var(--radius-sm); color: inherit; text-align: left; }
+.k-settings-fold { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 1.5rem; border-radius: var(--radius-sm); color: inherit; text-align: left; }
 .k-settings-fold:hover { color: var(--fg); }
 .k-settings-fold-mark { width: 0.875rem; height: 0.875rem; transition: transform var(--dur-move) var(--ease-out); }
 .k-settings-fold[aria-expanded="false"] .k-settings-fold-mark { transform: rotate(-90deg); }

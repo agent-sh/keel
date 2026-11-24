@@ -141,7 +141,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
     if (!a.read) auto.read({ ids: [a.id] }).catch(reportError);
     // A server's changed tools are looked at where they are accepted.
     if (a.data?.mcp_server) {
-      navigate({ name: "settings", section: "mcp" });
+      navigate({ name: "customize", section: "mcp" });
       return onClose();
     }
     if (!a.session_id) return;

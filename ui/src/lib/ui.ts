@@ -3,11 +3,13 @@
 import { useSyncExternalStore } from "react";
 import type { PromptBlock } from "../../../src/core/types.ts";
 import { opened } from "./self-focus.ts";
+import { isCustomize } from "./customize-ids.ts";
 
 export type Route =
   | { name: "new" }
   | { name: "session"; id: string }
   | { name: "settings"; section: string }
+  | { name: "customize"; section: string }
   | { name: "project"; id: string };
 
 export type ThemePref = "light" | "dark" | "system";
@@ -49,6 +51,9 @@ type UIState = {
   fileAt: { session: string; path: string; line?: number; end?: number; n: number } | null;
 };
 
+// A Settings link that names a section of Customize is that section's place there (the section moved).
+const placed = (r: Route): Route => (r.name === "settings" && isCustomize(r.section) ? { name: "customize", section: r.section } : r);
+
 function parse(): Route {
   const p = location.pathname;
   const s = p.match(/^\/s\/([\w-]+)/);
@@ -59,7 +64,9 @@ function parse(): Route {
   const pr = p.match(/^\/p\/([\w-]+)/);
   if (pr) return { name: "project", id: pr[1]! };
   const st = p.match(/^\/settings(?:\/([\w-]+))?/);
-  if (st) return { name: "settings", section: st[1] ?? "general" };
+  if (st) return placed({ name: "settings", section: st[1] ?? "general" });
+  const cu = p.match(/^\/customize(?:\/([\w-]+))?/);
+  if (cu) return { name: "customize", section: cu[1] ?? "instructions" };
   return { name: "new" };
 }
 
@@ -130,14 +137,20 @@ export function useUI<T>(sel: (s: UIState) => T): T {
   return useSyncExternalStore(subscribe, () => sel(state));
 }
 
-export function navigate(r: Route, replace = false) {
-  const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : r.name === "project" ? `/p/${r.id}` : "/";
+const urlOf = (r: Route) => (r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : r.name === "customize" ? `/customize/${r.section}` : r.name === "project" ? `/p/${r.id}` : "/");
+
+export function navigate(to: Route, replace = false) {
+  const r = placed(to);
+  const url = urlOf(r);
   if (url !== location.pathname || location.hash) (replace ? history.replaceState : history.pushState).call(history, null, "", url);
   opened();
   setUI({ route: r, peek: false, ...(isPhone() ? { sidebar: false } : {}) });
 }
-addEventListener("popstate", () => { opened(); setUI({ route: parse() }); });
+// (An old Settings address of a Customize section is put right in the history entry, so Back does not meet it again.)
+const landed = () => { const r = parse(); if (r.name === "customize" && urlOf(r) !== location.pathname) history.replaceState(null, "", urlOf(r)); return r; };
+addEventListener("popstate", () => { opened(); setUI({ route: landed() }); });
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
+if (state.route.name === "customize") landed();
 
 // The side panel each session was left with: one the owner opened in a session comes back with it.
 export const stationPanels = () => { try { return JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string>; } catch { return {}; } };

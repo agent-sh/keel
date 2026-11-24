@@ -1,6 +1,7 @@
 import { ArrowLeft, Bot, ChevronDown, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { settingsSections } from "../lib/extend.ts";
+import { CUSTOMIZE_GROUPS, isCustomize } from "../lib/customize-ids.ts";
 import { actions, api, reportError, useStore, useModels } from "../lib/store.ts";
 import { ASK_USD_DEFAULT } from "../../../src/engine/switch-rule.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
@@ -189,21 +190,27 @@ settingsSections.add(
 );
 
 // Sections grouped by what the owner comes for, the most used first: the everyday
-// settings, then what customizes the agent, what it reaches, this computer, and the
-// rest. A section another lane adds falls in by id, else under Advanced.
-const GROUPS: [string, string[]][] = [
+// settings, what it reaches, this computer, and the rest. A section another lane adds
+// falls in by id, else under Advanced. The sections that shape the agent are Customize's
+// (lib/customize-ids.ts): Settings' rail leaves them out, and a search in Settings finds
+// them under their own group and opens them there.
+const SETTINGS_GROUPS: [string, string[]][] = [
   ["Basics", ["general", "models", "providers", "safety", "routes", "network", "alerts", "usage", "keyboard"]],
-  ["Customize", ["instructions", "rulings", "lessons", "skills", "commands", "agents", "plugins", "hooks", "mcp", "lsp", "port"]],
+  ["Customize", CUSTOMIZE_GROUPS.flatMap(([, ids]) => ids)],
   ["Connections", ["machines", "phone", "integrations", "pull-requests", "elsewhere", "acp-agents", "helper"]],
   ["This computer", ["health", "resources", "storage", "leftovers", "logs", "daemon"]],
   ["Advanced", ["telemetry", "observability", "experiments", "about"]],
 ];
-const GROUP: Record<string, string> = Object.fromEntries(GROUPS.flatMap(([g, ids]) => ids.map((id) => [id, g])));
-const RANK: Record<string, number> = Object.fromEntries(GROUPS.flatMap(([, ids]) => ids).map((id, i) => [id, i]));
-const ORDER = GROUPS.map(([g]) => g);
+type Kind = "settings" | "customize";
+const grouping = (groups: [string, string[]][], other: string) => {
+  const group: Record<string, string> = Object.fromEntries(groups.flatMap(([g, ids]) => ids.map((id) => [id, g])));
+  const rank: Record<string, number> = Object.fromEntries(groups.flatMap(([, ids]) => ids).map((id, i) => [id, i]));
+  const order = groups.map(([g]) => g);
+  return { rank, order, of: (id?: string) => (id ? group[id] ?? other : "") };
+};
+const BY_KIND: Record<Kind, ReturnType<typeof grouping>> = { settings: grouping(SETTINGS_GROUPS, "Advanced"), customize: grouping(CUSTOMIZE_GROUPS, "Extend it") };
 // The rows and headings of each section, read from the source when the page is bundled.
 const FIND: Record<string, string[]> = settingsFind();
-const groupOf = (id?: string) => (id ? GROUP[id] ?? "Advanced" : "");
 // The groups the rail keeps folded at rest: what the owner rarely comes for. A group opens when the
 // section shown is in it, when it is opened by its head, and while a word is searched.
 const FOLDED = new Set(["This computer", "Advanced"]);
@@ -240,7 +247,14 @@ function reveal(name: string, missed: (name: string) => void) {
 // page's own width, so the session list and the text size count) names the
 // section in a bar under the head: the bar is the section's title and opens
 // the same search and grouped list in place of the section.
-export function Settings({ section }: { section: string }) {
+// Customize is this page on its own sections: one component for both, so a search in Settings that
+// opens a Customize section keeps what was typed and the note of a row that is not drawn.
+const PAGE: Record<Kind, { title: string; find: string }> = {
+  settings: { title: "Settings", find: "Find a setting" },
+  customize: { title: "Customize", find: "Find in Customize" },
+};
+export function Settings({ kind = "settings", section }: { kind?: Kind; section: string }) {
+  const { rank: RANK, order: ORDER, of: groupOf } = BY_KIND[kind];
   useSyncExternalStore(settingsSections.subscribe, settingsSections.version);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
@@ -249,7 +263,10 @@ export function Settings({ section }: { section: string }) {
   const list = useRef<HTMLDivElement>(null);
   const find = useRef<HTMLInputElement>(null);
   const sidebar = useUI((s) => s.sidebar);
-  const all = settingsSections.all().sort((a, b) => ORDER.indexOf(groupOf(a.id)) - ORDER.indexOf(groupOf(b.id)) || (RANK[a.id] ?? 999) - (RANK[b.id] ?? 999) || (a.order ?? 50) - (b.order ?? 50));
+  // The sections of this page's rail; a word typed in Settings also finds the sections of Customize.
+  const mine = (s: { id: string }) => isCustomize(s.id) === (kind === "customize");
+  const everything = settingsSections.all().filter((s) => mine(s) || (kind === "settings" && q.trim()));
+  const all = everything.sort((a, b) => ORDER.indexOf(groupOf(a.id)) - ORDER.indexOf(groupOf(b.id)) || (RANK[a.id] ?? 999) - (RANK[b.id] ?? 999) || (a.order ?? 50) - (b.order ?? 50));
   // The grouped rail stands beside the section only on a wide page (there the bar that opens the list is not drawn);
   // a narrow page's list is the whole list, so the folds are the wide rail's own.
   const [railed, setRailed] = useState(false);
@@ -278,8 +295,8 @@ export function Settings({ section }: { section: string }) {
   // A row the search named that the page does not draw now: said under the title.
   const [missing, setMissing] = useState<string | null>(null);
   useEffect(() => setMissing(null), [section]);
-  const cur = all.find((s) => s.id === section) ?? all[0]!;
-  const folds = railed && !q.trim();
+  const cur = all.find((s) => s.id === section && mine(s)) ?? all.find(mine) ?? all[0]!;
+  const folds = kind === "settings" && railed && !q.trim();
   const foldedGroup = (g: string) => folds && FOLDED.has(g) && !unfolded.has(g) && g !== groupOf(cur.id);
   const Body = cur.component;
   // The section shown has its row in view: on a direct link to a late one, and when the list opens.
@@ -308,7 +325,7 @@ export function Settings({ section }: { section: string }) {
   // A section reached from elsewhere (the palette, a link, Back) while the list is open: the list gives way to it.
   useEffect(() => setOpen(false), [section]);
   const go = (id: string, row?: string) => {
-    navigate({ name: "settings", section: id }, true);
+    navigate(isCustomize(id) ? { name: "customize", section: id } : { name: "settings", section: id }, true);
     setMissing(null);
     if (row) reveal(row, setMissing);
     // Only where the bar is on screen (a narrow page): a rail click on a wide page keeps the search as typed.
@@ -316,7 +333,7 @@ export function Settings({ section }: { section: string }) {
   };
 
   return (
-    <div ref={root} className="k-settings flex min-h-0 flex-1 flex-col" data-testid="settings">
+    <div ref={root} className="k-settings flex min-h-0 flex-1 flex-col" data-testid={kind} data-kind={kind}>
       <header className="k-page-head k-surface-head">
         {!sidebar && (
           <button type="button" aria-label="Show the sidebar" onClick={() => savePref("sidebar", true)} className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg md:hidden">
@@ -326,10 +343,10 @@ export function Settings({ section }: { section: string }) {
         <button type="button" onClick={() => history.length > 1 ? history.back() : navigate({ name: "new" })} aria-label="Back" className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui text-muted hover:bg-hover hover:text-fg">
           <ArrowLeft className="size-4" /><span className="k-settings-back-word">Back</span>
         </button>
-        <h1 className="k-surface-title min-w-0 truncate">Settings</h1>
+        <h1 className="k-surface-title min-w-0 truncate">{PAGE[kind].title}</h1>
       </header>
       <div className="k-settings-main">
-        <nav className="k-settings-rail" aria-label="Settings sections" data-open={open || undefined} onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}>
+        <nav className="k-settings-rail" aria-label={`${PAGE[kind].title} sections`} data-open={open || undefined} onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); close(); } }}>
           <button ref={jump} type="button" className="k-settings-jump" data-testid="settings-jump" aria-expanded={open} aria-controls="settings-sections" onClick={() => (open ? close() : setOpen(true))}>
             <span className="k-settings-jump-icon" aria-hidden>{cur.icon}</span>
             <span className="min-w-0 flex-1">
@@ -342,7 +359,7 @@ export function Settings({ section }: { section: string }) {
           <div id="settings-sections" className="k-settings-sections">
             <label className="k-settings-find">
               <Search className="size-3.5 shrink-0 text-faint" />
-              <input ref={find} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={findKey} placeholder="Find a setting" aria-label="Find a setting" data-testid="settings-find" className="w-full min-w-0 bg-transparent outline-none placeholder:text-faint" />
+              <input ref={find} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={findKey} placeholder={PAGE[kind].find} aria-label={PAGE[kind].find} data-testid="settings-find" className="w-full min-w-0 bg-transparent outline-none placeholder:text-faint" />
             </label>
             <div ref={list} className="k-settings-nav" onKeyDown={listKey}>
               {shown.map((s, i) => (

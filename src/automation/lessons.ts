@@ -2,7 +2,7 @@
 // repository's agent trees (the miner: src/automation/lessons-mine.ts) becomes
 // one proposed lesson: a short note for the repository's agents, drafted by a
 // small model of the owner's chain from what the failures said, shown in
-// Settings > Lessons with its evidence (the trees, sessions and counts). The
+// Customize > Lessons with its evidence (the trees, sessions and counts). The
 // owner accepts it (as drafted or in his own words) or drops it; a dropped
 // cause is never proposed again.
 //

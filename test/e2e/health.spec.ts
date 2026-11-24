@@ -55,7 +55,7 @@ test("health: a broken skill and a dead hook matcher are rows with their fix and
 
     // The button goes where the file is fixed.
     await torn.getByTestId("health-open").click();
-    await expect(page).toHaveURL(/\/settings\/skills$/);
+    await expect(page).toHaveURL(/\/customize\/skills$/);
 
     // Fixed, and asked again: the two rows are gone.
     writeFileSync(join(skill, "SKILL.md"), "---\nname: torn-skill\ndescription: closed now\n---\nBody of the skill.\n");

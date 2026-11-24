@@ -6,7 +6,7 @@ import { scriptBash, shoot } from "./shots.ts";
 
 // Feature: channels. A connected MCP server that declares Claude Code's
 // channel capability pushes events into a session that is already running.
-// Off by default; the owner names the session in Settings > MCP servers. A
+// Off by default; the owner names the session in Customize > MCP servers. A
 // working session reads an event at its next step, an idle one starts a turn
 // with it, a resend under the same event id is not taken twice, and a session
 // the owner stopped keeps it behind the stop. The transcript shows each one
@@ -49,7 +49,7 @@ test("channels: a server's events reach a working, an idle and a stopped session
   await expect.poll(async () => (await told())[0]?.outcomes[0]?.reason, { timeout: 10_000 }).toBe("the owner does not take its events");
 
   // The owner names the session in the server's reader; that turns the channel on.
-  await page.goto("/settings/mcp");
+  await page.goto("/customize/mcp");
   await page.locator(`[data-testid="mcp-entry"][data-name="${NAME}"]`).click();
   const section = page.getByTestId("mcp-channel");
   await expect(section).toBeVisible();
@@ -114,7 +114,7 @@ test("channels: a server's events reach a working, an idle and a stopped session
   await expect(cards).toHaveCount(3);
 
   // The reader lists what became of the latest events.
-  await page.goto("/settings/mcp");
+  await page.goto("/customize/mcp");
   await page.locator(`[data-testid="mcp-entry"][data-name="${NAME}"]`).click();
   await expect(page.getByTestId("mcp-channel-event").first()).toContainText("deploy-3");
   await shoot(page, "channels-03-recent");

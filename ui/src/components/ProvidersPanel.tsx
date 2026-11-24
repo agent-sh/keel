@@ -208,7 +208,7 @@ export function ProvidersSettings() {
       {idle.length > 0 && <Card>{idle.map((p) => <ProviderRow key={p.id} p={p} />)}</Card>}
       {!!report?.plugins.length && (
         // The plugins themselves (state, check, plugins.toml) are on their own page.
-        <button type="button" className="k-after-card mt-4 flex w-full items-center gap-3 rounded-md border border-line bg-raised px-4 py-3 text-left hover:bg-hover" data-testid="providers-plugins-link" onClick={() => navigate({ name: "settings", section: "plugins" })}>
+        <button type="button" className="k-after-card mt-4 flex w-full items-center gap-3 rounded-md border border-line bg-raised px-4 py-3 text-left hover:bg-hover" data-testid="providers-plugins-link" onClick={() => navigate({ name: "customize", section: "plugins" })}>
           <Puzzle className="size-4 shrink-0 text-faint" aria-hidden="true" />
           <span className="min-w-0 flex-1 text-ui">
             <span className="text-fg">{report.plugins.length} provider plugin{report.plugins.length === 1 ? "" : "s"}</span>

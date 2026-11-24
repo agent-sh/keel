@@ -15,7 +15,7 @@ async function pinned(page: any, request: any, hooks: Record<string, unknown>, b
   mkdirSync(join(ws, ".keel"), { recursive: true });
   writeFileSync(join(ws, ".keel/hooks.json"), JSON.stringify({ hooks }, null, 1));
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
-  await page.goto("/settings/hooks");
+  await page.goto("/customize/hooks");
   const project = page.locator(`[data-testid="hook-source"][data-scope="project"]`).filter({ hasText: ws.split("/").pop()! });
   await expect(project).toHaveAttribute("data-active", "false");
   await project.click();

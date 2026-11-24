@@ -11,7 +11,7 @@
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, ArrowDown, Bug, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
 import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
@@ -1394,6 +1394,9 @@ export function Sidebar({ open }: { open: boolean }) {
         {!open && !phone() && <PanesButton />}
         <button type="button" className="k-act k-act-word" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>
           <Settings /><span className="k-act-label">Settings</span>
+        </button>
+        <button type="button" className="k-act k-act-word k-foot-more" data-testid="customize-button" aria-label="Customize" title="Customize: instructions, skills, hooks, MCP servers and the rest" aria-current={route.name === "customize" ? "page" : undefined} onClick={() => navigate({ name: "customize", section: "instructions" })}>
+          <Blocks /><span className="k-act-label">Customize</span>
         </button>
         {/* What waits on the owner first, then the loops, then the errors. */}
         <AutomationFooter />

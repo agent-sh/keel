@@ -179,7 +179,7 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
-    test("Settings > Lessons reads from the page's edge: its note over its controls, a long repository name inside the card", async ({ page, request }) => {
+    test("Customize > Lessons reads from the page's edge: its note over its controls, a long repository name inside the card", async ({ page, request }) => {
       const now = Date.now();
       const name = "a-repository-whose-folder-has-a-very-long-name-for-a-phone";
       const lesson = {
@@ -189,7 +189,7 @@ for (const size of SIZES) {
         created: now, updated: now, accepted: null, ended: null, exp_id: null, outcome: null, given: 0, chars: 0,
       };
       await page.route("**/api/lessons", (route) => route.fulfill({ json: { lessons: [lesson], mine: { ts: now, found: 1, ms: 2 }, metric: "trees that failed with the lesson's class", days: 14 } }));
-      await page.goto("/settings/lessons");
+      await page.goto("/customize/lessons");
       const card = page.getByTestId("lesson-proposal");
       await expect(card).toBeVisible();
       // The note is a column of the page's width, not a strip beside the button.
@@ -520,16 +520,22 @@ for (const size of SIZES) {
       }
     });
 
-    test("every Settings section pages through on a phone: inside the page, a finger's targets, no words cut off", async ({ page }) => {
+    test("every Settings and Customize section pages through on a phone: inside the page, a finger's targets, no words cut off", async ({ page }) => {
       test.setTimeout(240_000);
-      await page.goto("/settings");
-      await page.getByTestId("settings-jump").tap();
-      const ids = await page.locator("[data-section]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.section!));
-      // (The registered sections: every one is on the kit by now; the count only guards against a walk of none.)
-      expect(ids.length, "sections listed").toBeGreaterThan(30);
+      // Both pages: each lists its sections in its jump bar, and each section is walked at its own address.
+      const at: { path: string; id: string }[] = [];
+      for (const [path, least] of [["settings", 20], ["customize", 11]] as const) {
+        await page.goto(`/${path}`);
+        await page.getByTestId("settings-jump").tap();
+        const ids = await page.locator("[data-section]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.section!));
+        // (The registered sections: every one is on the kit by now; the count only guards against a walk of none.)
+        expect(ids.length, `${path} sections listed`).toBeGreaterThanOrEqual(least);
+        at.push(...ids.map((id) => ({ path, id })));
+      }
+      const ids = at.map((x) => x.id);
       const found: Record<string, string[]> = {};
-      for (const id of ids) {
-        await page.goto(`/settings/${id}`);
+      for (const { path, id } of at) {
+        await page.goto(`/${path}/${id}`);
         await expect(page.getByTestId("settings-title")).toBeVisible();
         // The section has drawn: its group heads or its first rows are there, and it stops changing.
         await page.waitForLoadState("networkidle").catch(() => {});

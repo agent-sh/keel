@@ -81,7 +81,7 @@ export function unavailableNote(session?: string): string {
   const down = offered(session).flatMap((s) => s.failed?.() ?? []);
   if (!down.length) return "";
   const why = (w: string) => w.replace(/\s+/g, " ").trim().slice(0, 200);
-  return `Not available now: ${down.map((d) => `${d.name} (${why(d.why)})`).join("; ")}. Their tools are missing from this list; the owner sees the same in Settings > MCP servers.`;
+  return `Not available now: ${down.map((d) => `${d.name} (${why(d.why)})`).join("; ")}. Their tools are missing from this list; the owner sees the same in Customize > MCP servers.`;
 }
 
 // What every source offers now, without waiting on a connection: the deferred

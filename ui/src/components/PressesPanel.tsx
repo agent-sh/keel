@@ -18,7 +18,7 @@ const NEVER_SHOWN = 12;
 type Days = "7" | "30" | "90";
 
 const VIEW: Record<string, string> = { new: "Start page", session: "A session", project: "A project" };
-export const viewName = (v: string) => VIEW[v] ?? (v.startsWith("settings/") ? `Settings: ${v.slice(9)}` : v);
+export const viewName = (v: string) => VIEW[v] ?? (v.startsWith("settings/") ? `Settings: ${v.slice(9)}` : v.startsWith("customize/") ? `Customize: ${v.slice(10)}` : v);
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 const SURFACE: Record<string, string> = { page: "browser", desktop: "desktop app", phone: "phone" };
 

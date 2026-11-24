@@ -722,7 +722,7 @@ export function refusedTool(message: string, tools: { name: string; defer?: bool
   return undefined;
 }
 
-// What became of each of a server's tools on each wire, for Settings > MCP
+// What became of each of a server's tools on each wire, for Customize > MCP
 // servers: the tools left out (where, and why) and the ones changed to fit
 // (where, and what changed). A tool that fits every wire as it is is not named.
 export type SchemaFitRow = { tool: string; left: { on: string[]; why: string }[]; changed: { on: string[]; notes: string[] }[] };

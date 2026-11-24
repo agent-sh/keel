@@ -10,7 +10,7 @@ fn id(s: &str) -> bool {
 }
 
 /// A page path the shell may open: `/`, `/s/<id>`, `/p/<id>`,
-/// `/settings[/<section>]`. The only queries are the ones the daemon itself
+/// `/settings[/<section>]`, `/customize[/<section>]`. The only queries are the ones the daemon itself
 /// writes for an alert's click: `inbox=1`, `approval=<id>`, `e=<id>`.
 pub fn page_path(p: &str) -> Option<String> {
     if p.len() > 300 {
@@ -25,6 +25,8 @@ pub fn page_path(p: &str) -> Option<String> {
         ["s", x] | ["p", x] => id(x),
         ["settings"] => true,
         ["settings", section] => id(section),
+        ["customize"] => true,
+        ["customize", section] => id(section),
         _ => false,
     };
     let query_ok = query.is_none_or(|q| {
@@ -38,7 +40,7 @@ pub fn page_path(p: &str) -> Option<String> {
 }
 
 /// `keel://session/<id>`, `keel://s/<id>`, `keel://new`, `keel://inbox`,
-/// `keel://settings[/<section>]`, `keel://project/<id>`. A link names a place
+/// `keel://settings[/<section>]`, `keel://customize[/<section>]`, `keel://project/<id>`. A link names a place
 /// and nothing more: it carries no query, so it cannot point at an approval
 /// or hand the page anything to act on.
 pub fn link_path(link: &str) -> Option<String> {
@@ -54,6 +56,8 @@ pub fn link_path(link: &str) -> Option<String> {
         ["project", x] | ["p", x] => format!("/p/{x}"),
         ["settings"] => "/settings".to_string(),
         ["settings", section] => format!("/settings/{section}"),
+        ["customize"] => "/customize".to_string(),
+        ["customize", section] => format!("/customize/{section}"),
         _ => return None,
     };
     page_path(&path)
@@ -148,6 +152,7 @@ mod tests {
         assert_eq!(link_path("keel://").as_deref(), Some("/"));
         assert_eq!(link_path("keel://inbox").as_deref(), Some("/?inbox=1"));
         assert_eq!(link_path("keel://settings/safety").as_deref(), Some("/settings/safety"));
+        assert_eq!(link_path("keel://customize/hooks").as_deref(), Some("/customize/hooks"));
         assert_eq!(link_path("keel://project/p1/").as_deref(), Some("/p/p1"));
         assert_eq!(link_path("keel:session/abc").as_deref(), Some("/s/abc"));
     }
@@ -208,7 +213,7 @@ mod tests {
 
     #[test]
     fn page_paths_are_a_closed_set() {
-        for good in ["/", "/?inbox=1", "/s/abc", "/s/01a1-ff?e=ev_1&approval=x", "/s/abc?approval=ap-1", "/p/proj", "/settings", "/settings/models"] {
+        for good in ["/", "/?inbox=1", "/s/abc", "/s/01a1-ff?e=ev_1&approval=x", "/s/abc?approval=ap-1", "/p/proj", "/settings", "/settings/models", "/customize", "/customize/hooks"] {
             assert!(page_path(good).is_some(), "{good}");
         }
         for bad in ["", "s/abc", "//evil.example/", "/api/drain", "/s/", "/s/a/b", "/settings/a/b", "/s/a?x=javascript:alert(1)", "/ws", "/s/a?q=a b", "/s/%2e%2e", "/s/a.b", "/s/a~b", "/?prompt=x", "/s/a?approval=", "/s/a?inbox=2", "/s/a?e=x&next=y"] {

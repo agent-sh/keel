@@ -1,9 +1,8 @@
-// The porting lane's place in the workbench: Settings > Bring your setup, a
+// The porting lane's place in the workbench: Customize > Bring your setup, a
 // palette command and /port.
 import { ArrowDownToLine } from "lucide-react";
 import { createElement, lazy } from "react";
 import { settingsSections, slash } from "./extend.ts";
-import { registerCommand } from "./keys.ts";
 import { navigate } from "./ui.ts";
 
 settingsSections.add({
@@ -15,6 +14,5 @@ settingsSections.add({
   component: lazy(() => import("../components/PortPanel.tsx").then((m) => ({ default: m.PortSettings }))),
 });
 
-const open = () => navigate({ name: "settings", section: "port" });
-registerCommand({ id: "port", label: "Bring your setup from other tools", group: "General", words: "port import migrate claude codex hermes", run: open });
+const open = () => navigate({ name: "customize", section: "port" });
 slash.add({ id: "port", label: "Bring your setup from Claude Code, Codex, Hermes or the Rust Keel", run: () => void open() });

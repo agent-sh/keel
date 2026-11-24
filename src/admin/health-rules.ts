@@ -51,7 +51,7 @@ export function hookRows(files: { path: string; scope: string; active: boolean; 
     const first = f.problems[0];
     if (!f.active) {
       // A repository's file is read and pinned by the owner before it runs: a state, not a fault.
-      rows.push({ id: `hooks:inactive:${f.path}`, group: "hooks", level: "warning", title: `${f.scope} hooks file does not run`, detail: first, fix: first?.startsWith("not pinned") || first?.startsWith("changed since") ? "read the file in Settings > Hooks and pin it" : "fix the file", link, path: f.path });
+      rows.push({ id: `hooks:inactive:${f.path}`, group: "hooks", level: "warning", title: `${f.scope} hooks file does not run`, detail: first, fix: first?.startsWith("not pinned") || first?.startsWith("changed since") ? "read the file in Customize > Hooks and pin it" : "fix the file", link, path: f.path });
       continue;
     }
     for (const p of f.problems) rows.push({ id: `hooks:problem:${f.path}:${p}`, group: "hooks", level: "broken", title: `${f.scope} hooks file: ${p}`, fix: "fix the entry in the file; the rest of the file still runs", link, path: f.path });

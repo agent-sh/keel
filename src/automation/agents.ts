@@ -1138,7 +1138,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // Its file's own servers, as far as the owner approved them; the rest wait for the owner, and it starts without them.
   if (def.ownServers?.length && def.file) {
     const given = agentServers.give ? agentServers.give(store.session(child.id) ?? child, def.file) : { pending: def.ownServers };
-    if (given.pending.length) left.push(`its own MCP ${given.pending.length === 1 ? "server" : "servers"} (${given.pending.join(", ")}): ${given.pending.length === 1 ? "it waits" : "they wait"} for the owner's approval in Settings > MCP servers, so it starts without ${given.pending.length === 1 ? "it" : "them"}`);
+    if (given.pending.length) left.push(`its own MCP ${given.pending.length === 1 ? "server" : "servers"} (${given.pending.join(", ")}): ${given.pending.length === 1 ? "it waits" : "they wait"} for the owner's approval in Customize > MCP servers, so it starts without ${given.pending.length === 1 ? "it" : "them"}`);
   }
   left.push(...(def.notTaken ?? []), ...scope.left);
   // Its memory folder, with what MEMORY.md holds now; on another machine it is not where the agent works.

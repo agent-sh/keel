@@ -1216,7 +1216,7 @@ keel plugin update review-kit       # says what changes before it applies it
 keel plugin remove review-kit
 ```
 
-The same is in Settings > Plugins. Reading a plugin runs nothing. Each hook
+The same is in Customize > Plugins. Reading a plugin runs nothing. Each hook
 command and each MCP server command or address it would run is shown line by
 line, and nothing of it runs before a yes to those lines; an update that
 changes them asks again. A copy is kept under `<config>/plugins/<id>/` by
@@ -1226,7 +1226,7 @@ and its record in `<config>/plugins.json`. Installing never writes your
 yours, a built-in one or another plugin's has it; then the plugin's id goes
 before it. A plugin that a repository's `.claude/settings.json` names
 (`enabledPlugins`, from a marketplace in `extraKnownMarketplaces`) is offered
-in Settings > Plugins for that folder and installed only when you say yes.
+in Customize > Plugins for that folder and installed only when you say yes.
 A plugin's settings (its manifest's `userConfig`) are given in Settings >
 Plugins after it is installed: a plain value is kept in its record, a
 sensitive one in the system keyring only. While a required value is missing,
@@ -1234,7 +1234,7 @@ its servers and hooks wait. A value reaches its MCP servers and a command
 hook's `args` as `${user_config.KEY}`, its skills and agents the same way (a
 sensitive one as a placeholder), and its hooks as `CLAUDE_PLUGIN_OPTION_<KEY>`;
 a shell-form hook command or a headers helper that names one is not taken.
-Settings > MCP servers shows a plugin's server with a sensitive value as the
+Customize > MCP servers shows a plugin's server with a sensitive value as the
 `${user_config.KEY}` it was written with, and nothing Keel keeps in its state
 folder holds the value.
 Parts Keel has no equivalent of (output styles, LSP servers, monitors, themes,

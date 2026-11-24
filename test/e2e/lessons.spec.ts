@@ -6,7 +6,7 @@ import { scriptBash, shoot } from "./shots.ts";
 
 // Feature: lessons from repeated failures (src/automation/lessons.ts). Three
 // sessions of one repository fail the same way; the miner proposes a lesson
-// with that evidence in Settings > Lessons, drafted by the small model; the
+// with that evidence in Customize > Lessons, drafted by the small model; the
 // owner edits and accepts it, which starts its trial; the repository's next
 // agents are drawn into the trial's arms at their start, and the ones in the
 // lesson's arm start with it in their task (never in a system prompt), the
@@ -44,7 +44,7 @@ test("a failure in three sessions of a repository is proposed as a lesson, accep
     // The miner reads them as one cause in three trees; the small model drafts its note. It is drafted at
     // once when the repository's pace of trees decides its trial within a week (a daemon whose store is a few
     // hours old reads three trees as a slow pace): else it waits behind the proposals, and the owner drafts it.
-    await page.goto("/settings/lessons");
+    await page.goto("/customize/lessons");
     await expect(page.getByTestId("lessons")).toBeVisible();
     await expect.poll(async () => {
       await request.post("/api/lessons/mine");
@@ -109,7 +109,7 @@ test("a failure in three sessions of a repository is proposed as a lesson, accep
     await shoot(page, "lessons-03-agent-told");
 
     // Retired, its trial stops and no agent is told it again.
-    await page.goto("/settings/lessons");
+    await page.goto("/customize/lessons");
     await live.getByTestId("lesson-retire").click();
     await expect(page.getByTestId("lessons-dropped")).toBeVisible();
     const after = await lessonOf(request, here);

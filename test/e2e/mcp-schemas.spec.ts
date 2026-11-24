@@ -21,7 +21,7 @@ test.afterEach(async ({ request }) => {
 // and a plain one. The session's requests go through: the oneOf tool is one
 // object whose description names its groups, the column is renamed for the
 // wire and given back to the server under its own name, the string tool is
-// left out and named once in the session's failures and in Settings > MCP
+// left out and named once in the session's failures and in Customize > MCP
 // servers (its tool search does not load it), and a schema the provider still refuses is sent once more with that
 // tool declared without its parameters.
 test("mcp schemas: a server with tools a provider refuses works end to end", async ({ page, request }) => {
@@ -30,7 +30,7 @@ test("mcp schemas: a server with tools a provider refuses works end to end", asy
   await request.delete("/api/mcp/servers/shapes").catch(() => {});
   expect((await request.post("/api/mcp/servers", { data: { name: "shapes", command: "bun", args: [FIXTURE] } })).ok()).toBe(true);
 
-  // Settings > MCP servers: which tools were changed to fit and where, and the one left out with why.
+  // Customize > MCP servers: which tools were changed to fit and where, and the one left out with why.
   await openMcp(page, "shapes");
   const server = page.locator('[data-testid="mcp-server"][data-name="shapes"]');
   await expect(server).toHaveAttribute("data-state", "ready", { timeout: 20_000 });

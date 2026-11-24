@@ -1,4 +1,4 @@
-// Settings > Language servers: what the model is told after an edit (the
+// Customize > Language servers: what the model is told after an edit (the
 // type errors and other compiler diagnostics the edit caused), in every
 // folder and in the one seen, and the servers that can serve that folder:
 // which were found, which run, where, confined how, and what each runs of

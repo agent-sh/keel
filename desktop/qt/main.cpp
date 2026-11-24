@@ -143,7 +143,7 @@ static bool isId(QStringView s)
     return true;
 }
 
-// A path the main frame may show: `/`, `/s/<id>`, `/p/<id>`, `/settings[/<section>]`, with no
+// A path the main frame may show: `/`, `/s/<id>`, `/p/<id>`, `/settings[/<section>]`, `/customize[/<section>]`, with no
 // query but the ones the daemon writes for an alert's click.
 static bool pagePath(QStringView p)
 {
@@ -154,9 +154,9 @@ static bool pagePath(QStringView p)
     const QList<QStringView> parts = path.mid(1).split(u'/');
     bool ok = false;
     if (parts.size() == 1)
-        ok = parts[0].isEmpty() || parts[0] == u"settings";
+        ok = parts[0].isEmpty() || parts[0] == u"settings" || parts[0] == u"customize";
     else if (parts.size() == 2)
-        ok = (parts[0] == u"s" || parts[0] == u"p" || parts[0] == u"settings") && isId(parts[1]);
+        ok = (parts[0] == u"s" || parts[0] == u"p" || parts[0] == u"settings" || parts[0] == u"customize") && isId(parts[1]);
     if (!ok)
         return false;
     if (q < 0)

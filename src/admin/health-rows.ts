@@ -45,6 +45,9 @@ export const SECTION_NAMES: Record<string, string> = {
   safety: "Safety", observability: "Observability", storage: "Storage", general: "General", daemon: "Daemon",
 };
 
+// The sections the page keeps under Customize rather than Settings (ui/src/lib/customize-ids.ts).
+const CUSTOMIZE = new Set(["skills", "commands", "agents", "plugins", "hooks", "mcp"]);
+
 const RANK: Record<Level, number> = { broken: 0, warning: 1, ok: 2 };
 
 // Broken first, then warnings, then what is well; each group keeps its place, rows keep their order.
@@ -85,7 +88,7 @@ export function healthText(report: HealthReport, { all = true }: { all?: boolean
       if (r.detail) out.push(`          ${r.detail}`);
       if (r.how) out.push(`          checked: ${r.how}`);
       if (r.fix) out.push(`          fix: ${r.fix}`);
-      const where = [r.path, r.link ? `Settings > ${SECTION_NAMES[r.link.section] ?? r.link.section}` : ""].filter(Boolean).join("  |  ");
+      const where = [r.path, r.link ? `${CUSTOMIZE.has(r.link.section) ? "Customize" : "Settings"} > ${SECTION_NAMES[r.link.section] ?? r.link.section}` : ""].filter(Boolean).join("  |  ");
       if (where) out.push(`          where: ${where}`);
     }
     out.push("");

@@ -53,7 +53,7 @@ test("skills: listed, run by the owner, loaded by the model", async ({ page, req
   expect(last).not.toContain("already loaded");
 
   // Past the listing's budget (a share of the default model's window), the skills
-  // loaded least are listed by name only, and Settings > Skills says so.
+  // loaded least are listed by name only, and Customize > Skills says so.
   const { listing } = await (await request.get(`/api/skills?cwd=${encodeURIComponent(ws)}`)).json();
   expect(listing.budget).toBeGreaterThanOrEqual(2_000);
   for (let i = 0; i < Math.ceil(listing.budget / 1_400) + 2; i++) skill(`many-${String(i).padStart(2, "0")}`, "Say done.", `Use when task ${i} comes up. ${"Long words about this one. ".repeat(52)}`);
@@ -61,7 +61,7 @@ test("skills: listed, run by the owner, loaded by the model", async ({ page, req
   expect(after.listing.name_only).toBeGreaterThan(0);
   const short = after.skills.find((s: any) => s.name_only).name as string;
   expect(after.skills.find((s: any) => s.name === "bird-fact").name_only).toBe(false); // loaded once: it keeps its description
-  await page.goto("/settings/skills");
+  await page.goto("/customize/skills");
   await expect(page.getByTestId("toolkit-folder")).toContainText("name only");
   const row = page.getByTestId("skill-entry").filter({ hasText: short });
   await expect(row).toContainText("name only");

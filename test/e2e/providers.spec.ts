@@ -33,7 +33,7 @@ test("providers and a cross-family session", async ({ page, request }) => {
   await expect(panel.locator('[data-provider="bedrock"]')).toContainText("models");
   await panel.getByTestId("providers-refresh").click();
   await expect(panel.getByTestId("providers-refresh")).toBeEnabled({ timeout: 120_000 });
-  // The plugins are Settings > Plugins's: here one line links there, no copy of their rows.
+  // The plugins are Customize > Plugins's: here one line links there, no copy of their rows.
   await expect(panel.getByTestId("plugin-row")).toHaveCount(0);
   if (providers.plugins.length) await expect(panel.getByTestId("providers-plugins-link")).toContainText(`${providers.plugins.length} provider plugin`);
   await shoot(page, "providers-01-panel");

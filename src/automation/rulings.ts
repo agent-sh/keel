@@ -14,7 +14,7 @@
 //   carries decides nothing. Every question of the call
 //   needs one, or the card is shown as before. The result names the ruling and
 //   quotes the owner's words; each use is a row of the session's timeline.
-// - A ruling is listed in Settings > Rulings with its uses, and revoked there.
+// - A ruling is listed in Customize > Rulings with its uses, and revoked there.
 //
 // A ruling rides as the answer of the call that asked, never as an edit of
 // any prompt: the session's cached prefix holds. A server's question and a
@@ -158,7 +158,7 @@ export function rulings(deps: Pick<Deps, "store" | "engine" | "bus" | "errors">)
     }
     const note = qs.map((q) => {
       const k = found.get(q.id)!;
-      return `[harness] Answered from the owner's standing ruling ${k.id.slice(-8)}, kept ${scopeWords(k.scope, k.scope_name)} for questions like it: asked "${k.question}", the owner said "${k.words}". The owner did not see this question; they can revoke the ruling in Settings > Rulings.`;
+      return `[harness] Answered from the owner's standing ruling ${k.id.slice(-8)}, kept ${scopeWords(k.scope, k.scope_name)} for questions like it: asked "${k.question}", the owner said "${k.words}". The owner did not see this question; they can revoke the ruling in Customize > Rulings.`;
     }).join("\n");
     const first = used[0]!;
     return { answers, ruled: { note, shown: { id: first.id, scope: first.scope, name: first.scope_name, words: used.map((k) => k.words) } } };
@@ -218,7 +218,7 @@ export function rulings(deps: Pick<Deps, "store" | "engine" | "bus" | "errors">)
   const oneOff = (sessionId: string, callId: string): OfferMark => {
     const r = offerOf(sessionId, callId);
     if (!r) throw fail("no answer of that call can be kept", 404);
-    if (r.state === "kept") throw fail("that answer is kept already: revoke its ruling in Settings > Rulings", 409);
+    if (r.state === "kept") throw fail("that answer is kept already: revoke its ruling in Customize > Rulings", 409);
     db.query("UPDATE ruling_offers SET state = 'one-off' WHERE session_id = ? AND call_id = ?").run(sessionId, callId);
     const mark = markOf(offerOf(sessionId, callId)!);
     told(sessionId, mark);

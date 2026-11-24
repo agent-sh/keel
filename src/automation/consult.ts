@@ -68,7 +68,7 @@ export const advisorTool: Tool = {
     const s = D().store.session(ctx.sessionId);
     if (!s) return fail("no such session");
     const model = advisorFor(s.parent_id ?? s.id); // an agent consults its parent's advisor
-    if (!model) return fail("No advisor is set for this session: the owner chooses one (Settings > Agents, or /advisor). Go on with your own judgment.");
+    if (!model) return fail("No advisor is set for this session: the owner chooses one (Customize > Agents, or /advisor). Go on with your own judgment.");
     const question = String(input.question ?? "").trim().slice(0, 4000);
     const t0 = Date.now();
     try {

@@ -104,7 +104,7 @@ function withModules(core: Record<string, any>, modules: RouteModule[], deps: De
 }
 
 // The UI's pages; the client routes the rest.
-const PAGES = ["/", "/s/:id", "/p/:id", "/settings", "/settings/:section"];
+const PAGES = ["/", "/s/:id", "/p/:id", "/settings", "/settings/:section", "/customize", "/customize/:section"];
 
 // Routes that name a session and read only its rows in the table, never its events as kept in
 // memory: a request to one brings nothing in (Store.warm). A session brought in stays for an hour,
