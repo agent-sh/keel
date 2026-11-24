@@ -137,12 +137,18 @@ export function namedSessions(path: string, search = ""): string[] {
   return out;
 }
 export const ABSENT = "no such session";
+// The import and port tools list and read the other harnesses' transcripts on this machine, those of the
+// sessions they run now among them: they are the owner's, and a caller blind to those sessions is refused them.
+// (Another machine's import reads what this one offers it, by its own route: src/server/routes/imports.ts.)
+export const OWNER_TOOLS = /^\/api\/(import|port)(\/|$)/;
+export const OWNER_TOOLS_ONLY = "the import and port tools read other harnesses' transcripts and are the owner's own, from the page or a terminal";
 
 // The answer it gets is the one a session that does not exist gets: a refusal the request would get anyway
 // comes first, and the rest the route answers as for an id no session has.
 export function peerVerdict(a: Authority, req: { method: string; path: string; ownAuth: boolean; open: boolean; search?: string; linked?: boolean }, lists: (session: string) => ListReach, outside: (session: string) => boolean = () => false): PeerVerdict {
   const v = callerVerdict(a, req, lists);
   if ("refuse" in v || !blindTo(a, req)) return v;
+  if (OWNER_TOOLS.test(req.path)) return { refuse: OWNER_TOOLS_ONLY };
   const ids = [...new Set(namedSessions(req.path, req.search).filter(outside))];
   return ids.length ? { absent: ABSENT, ids, then: v } : v;
 }

@@ -154,3 +154,27 @@ test("the stand-in: the sessions elsewhere id of an outside session is swapped, 
     expect(phone.url).toBe(`http://127.0.0.1:1/v1/chats/${OUT}/messages?session=${OUT}`);
   } finally { useSessionScopes(undefined); }
 });
+
+// The import and port tools list and read the other harnesses' transcripts, those of the sessions they run now
+// among them: a request another machine forwarded is refused them at the door, the owner's own is not.
+test("the door: the import and port tools are refused to a caller blind to outside sessions", async () => {
+  const { callerCheck, useSessionScopes } = await import("./admission.ts");
+  const { innerHeaders } = await import("../safety/presence.ts");
+  useSessionScopes({ cgroups: () => new Map(), loose: () => false, holder: () => null, lists: () => ({ reads: false, why: "" }), outside: () => false });
+  try {
+    const srv = { port: 1, hostname: "127.0.0.1", requestIP: () => ({ address: "127.0.0.1", port: 2, family: "IPv4" }) } as any;
+    const linked = (path: string, method = "GET") => new Request(`http://127.0.0.1:1${path}`, { method, headers: innerHeaders({ local: false, enrolled: true, present: null }, "far box") });
+    for (const [path, method] of [["/api/import/sessions?q=x&inside=1"], ["/api/import/running"], ["/api/import/preview?harness=claude&id=x"], ["/api/port?max=0"], ["/api/import", "POST"], ["/api/port", "POST"], ["/api/import/takeover", "POST"]] as const) {
+      const r = await callerCheck(linked(path, method), srv);
+      expect({ path, status: r?.status, said: r ? (await r.json()).error : undefined }).toEqual({ path, status: 403, said: expect.stringContaining("the owner's own") });
+    }
+  } finally { useSessionScopes(undefined); }
+  const owner: Authority = { kind: "owner" };
+  const req = (path: string, linked = false) => ({ method: "GET", path, ownAuth: false, open: false, linked });
+  expect(peerVerdict(owner, req("/api/import/sessions"), () => ({ reads: "top" }))).toEqual({ account: true });
+  expect(peerVerdict(owner, req("/api/import/sessions", true), () => ({ reads: "top" }))).toMatchObject({ refuse: expect.stringContaining("the owner's own") });
+  // Not a path that only begins with those letters.
+  expect(peerVerdict(owner, req("/api/imports-elsewhere", true), () => ({ reads: "top" }))).toEqual({ account: true });
+  // A session's command was refused them before, as every path that is not its own or a list.
+  expect(peerVerdict({ kind: "session", session: "s-a", by: "cgroup" }, req("/api/port"), () => ({ reads: "top" }))).toMatchObject({ refuse: expect.stringContaining("authority only") });
+});

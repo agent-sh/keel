@@ -6,15 +6,17 @@ import { Store } from "./store.ts";
 import { forPeers } from "./outside.ts";
 
 // What another machine's relay is shown (the fleet stream, src/server/routes/fleet.ts): nothing of a session another
-// harness runs, one there when the relay opened or one made after it.
-test("a relay to another machine carries no session, state or frame of an outside session", () => {
+// harness runs, one there when the relay opened or one made after it, and no frame whose kind says nothing of whose it is.
+test("a relay to another machine carries no session, state or frame of an outside session, and no frame it cannot attribute", () => {
   const dir = mkdtempSync(join(tmpdir(), "keel-outside-peers-"));
   try {
     const store = new Store(dir);
+    store.migrate("CREATE TABLE alerts (id TEXT PRIMARY KEY, session_id TEXT);");
     const mark = { harness: "claude" as const, source_id: "x", state: "working" as const, since: 1, files: 0, failures: 0 };
     const mine = store.createSession({ title: "mine", model: "m", workspace: dir });
     const out = store.createSession({ title: "elsewhere", model: "m", workspace: dir });
     store.updateSession(out.id, { outside: mark });
+    store.db.query("INSERT INTO alerts VALUES ('al-out', ?), ('al-mine', ?)").run(out.id, mine.id);
     const shared = forPeers(store.db);
     expect(shared.sessions(store.sessions()).map((s) => s.id)).toEqual([mine.id]);
     expect(Object.keys(shared.states({ [mine.id]: 1, [out.id]: 2 }))).toEqual([mine.id]);
@@ -27,10 +29,32 @@ test("a relay to another machine carries no session, state or frame of an outsid
       // The automation's frames say what they are about inside (an alert: src/automation/core.ts emit).
       { t: "feature", name: "automation", data: { kind: "alert", data: { id: "a1", session_id: id, title: "x" } } },
     ];
-    expect(frames(out.id).map((f) => shared.pass(f))).toEqual([false, false, false, false, false]);
-    expect(frames(later.id).map((f) => shared.pass(f))).toEqual([false, false, false, false, false]);
-    expect(frames(mine.id).map((f) => shared.pass(f))).toEqual([true, true, true, true, true]);
-    expect(shared.pass({ t: "ui", version: "1" })).toBe(true);
+    const goes = (f: any) => shared.relay(f) !== null;
+    expect(frames(out.id).map(goes)).toEqual([false, false, false, false, false]);
+    expect(frames(later.id).map(goes)).toEqual([false, false, false, false, false]);
+    expect(frames(mine.id).map(goes)).toEqual([true, true, true, true, true]);
+    expect(goes({ t: "ui", version: "1" })).toBe(true);
+    // The agent view's list names every session it found, outside ones too: it is this daemon's and stays home,
+    // as does a frame of a kind the relay has no rule for and one of a session's kind that names no session.
+    expect(goes({ t: "feature", name: "outside", data: { sessions: [{ id: "claude:x", name: "elsewhere", waiting_on: "a question" }] } })).toBe(false);
+    expect(goes({ t: "feature", name: "a-kind-added-later", data: { title: "elsewhere" } })).toBe(false);
+    expect(goes({ t: "feature", name: "state", data: {} })).toBe(false);
+    expect(goes({ t: "error", error: {} })).toBe(false);
+    // The inbox: its counts stay home; alerts read by id go without a hidden session's, and how many changed stays home.
+    const counts = { total: 2, sessions: { [out.id]: 1, [mine.id]: 1 } };
+    const read = shared.relay({ t: "feature", name: "automation", data: { kind: "alerts_read", data: { ids: ["al-out", "al-mine"], changed: 2, rev: 5 }, counts } })!;
+    expect(read.data).toEqual({ kind: "alerts_read", data: { ids: ["al-mine"], rev: 5 } });
+    expect(JSON.stringify(read)).not.toContain(out.id);
+    expect(goes({ t: "feature", name: "automation", data: { kind: "alerts_read", data: { ids: ["al-out"], rev: 6 }, counts } })).toBe(false);
+    expect(goes({ t: "feature", name: "automation", data: { kind: "alerts_read", data: { unread: "al-out", rev: 7 }, counts } })).toBe(false);
+    expect(goes({ t: "feature", name: "automation", data: { kind: "alerts_read", data: { session_id: out.id, rev: 8 }, counts } })).toBe(false);
+    const all = shared.relay({ t: "feature", name: "automation", data: { kind: "alerts_read", data: { all: true, changed: 2, rev: 9 }, counts } })!;
+    expect(all.data).toEqual({ kind: "alerts_read", data: { all: true, rev: 9 } });
+    const alert = shared.relay({ t: "feature", name: "automation", data: { kind: "alert", data: { id: "al-mine", session_id: mine.id }, counts } })!;
+    expect(alert.data).toEqual({ kind: "alert", data: { id: "al-mine", session_id: mine.id } });
+    // A question that waits goes without a hidden session's.
+    const q = shared.relay({ t: "questions", pending: [{ session_id: out.id, call_id: "c1" }, { session_id: mine.id, call_id: "c2" }] })!;
+    expect(q.pending).toEqual([{ session_id: mine.id, call_id: "c2" }]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

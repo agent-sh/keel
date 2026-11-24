@@ -763,7 +763,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         let ping: Timer | undefined;
         const enc = new TextEncoder();
         const mine = (readers[c.daemonId] ??= { feeds: new Set(), stalled: 0 });
-        // A session another harness runs is only shown here (src/core/outside.ts): nothing of it goes to another machine.
+        // A session another harness runs is only shown here, and a frame goes only as its kind's rule lets it (src/core/outside.ts).
         const shared = forPeers(store.db);
         const frame = (x: unknown) => enc.encode(`data: ${JSON.stringify(x)}\n\n`);
         // The opening frames are as large as this daemon's session list: they never cut a reader.
@@ -775,15 +775,15 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         }, {
           last: enc.encode(": stalled\n\n"),
           // The sessions, then each one's state (src/core/watch.ts) and the questions that wait: what the other daemon's pages show at once.
-          open: [frame({ t: "snapshot", sessions: shared.sessions(store.sessions()), ping_ms: RELAY_PING_MS }), frame({ t: "states", states: shared.states(board?.all() ?? {}), rev: bus.rev() }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
+          open: [frame({ t: "snapshot", sessions: shared.sessions(store.sessions()), ping_ms: RELAY_PING_MS }), frame({ t: "states", states: shared.states(board?.all() ?? {}), rev: bus.rev() }), frame(shared.relay({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() }))],
         });
         mine.feeds.add(feed);
         const send = (x: unknown) => feed.send(frame(x));
         off = bus.on((fr) => {
           if (fr.t === "feature" && fr.name === "fleet_outbox") { if (fr.data?.daemon_id === c.daemonId) send(fr); return; }
           if (fr.t === "error" || (fr.t === "feature" && fr.name.startsWith("fleet_"))) return; // never relay a relay
-          if (!shared.pass(fr)) return;
-          send(fr);
+          const out = shared.relay(fr);
+          if (out) send(out);
         });
         ping = setInterval(() => feed.send(enc.encode(": ping\n\n")), RELAY_PING_MS);
         if (feed.ended()) { off(); clearInterval(ping); }
