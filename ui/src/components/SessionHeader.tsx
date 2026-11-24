@@ -1,17 +1,17 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, ChevronDown, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, MailOpen, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
-import { composing } from "../lib/keys.ts";
+import { composing, runCommand } from "../lib/keys.ts";
 import { actions, getState, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { openPlaced } from "../lib/looks.ts";
 import { cn, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
-import { archive } from "../lib/sessops.ts";
+import { archive, isPinned } from "../lib/sessops.ts";
 import { auto } from "../lib/automation.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
@@ -199,6 +199,20 @@ function MoreTools({ tools, live, list, changed }: { tools: Tool[]; live: boolea
   );
 }
 
+// A phone's head holds no tools (bridge.css): the pane's pin and close are the first rows of the
+// session's menu there. (Read when the menu opens: the window may have crossed a phone's width since.)
+function PhoneItems({ session }: { session: Session }) {
+  if (!phone()) return null;
+  const pinned = isPinned(session);
+  return (
+    <>
+      <Menu.Item className={itemClass} data-testid="menu-pin" onClick={() => runCommand("station.pin")}>{pinned ? <PinOff /> : <Pin />} {pinned ? "Unpin from the top of the list" : "Pin to the top of the list"}</Menu.Item>
+      <Menu.Item className={itemClass} data-testid="menu-close" onClick={() => runCommand("station.close")}><X /> Close the session here</Menu.Item>
+      <Menu.Separator className="mx-1 my-1 h-px bg-line" />
+    </>
+  );
+}
+
 export function SessionHeader({ session }: { session: Session }) {
   const menuButton = useRef<HTMLButtonElement>(null); // where a menu item's failed copy is said
   const [editing, setEditing] = useState(false);
@@ -305,6 +319,7 @@ export function SessionHeader({ session }: { session: Session }) {
         <Menu.Portal>
           <Menu.Positioner sideOffset={6} align="end" className="z-50 outline-none">
             <Menu.Popup className={cn(popupClass, "min-w-52")}>
+              <PhoneItems session={session} />
               <Menu.Item className={itemClass} data-testid="menu-rename" onClick={() => setEditing(true)}><Pencil /> Rename</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => void copyOrSay(location.href, menuButton.current)}><Link2 /> Copy link</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => void copyOrSay(session.workspace, menuButton.current)}><Copy /> Copy folder path</Menu.Item>

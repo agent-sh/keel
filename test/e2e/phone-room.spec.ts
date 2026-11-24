@@ -685,6 +685,52 @@ test.describe("on a phone, what waits", () => {
   });
 });
 
+// At the largest text sizes a phone's head is the title and its state, read whole: pin and close are in
+// the session's menu, and a phone has no panes to focus. A waiting approval's three answers show with
+// no scroll. (390x844 at 150%: the heads took 245 px, the title cut to 10 characters.)
+test.describe("on a phone at a large text size, the head", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("leaves the room to what waits, and the title reads whole", async ({ browser, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Clean the docs cache ${tag}` } })).json();
+    try {
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch clean.txt" } }])}` } });
+      await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}/approvals`)).json()).approvals ?? []).length, { timeout: 30_000 }).toBe(1);
+      for (const [width, height] of [[390, 844], [412, 915]] as const) for (const scale of [1.3, 1.5]) {
+        const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width, height }, hasTouch: true, isMobile: true });
+        await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+        const page = await ctx.newPage();
+        try {
+          await page.goto(`/s/${session.id}`);
+          const pane = page.locator(".k-station[data-helm]");
+          await expect(pane.getByTestId("deny")).toBeAttached();
+          // The title whole, the head with no tools of its own.
+          await expect.poll(() => pane.getByTestId("station-title").evaluate((el) => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+          await expect(pane.getByTestId("station-focus")).toBeHidden();
+          // The three answers whole in the region, with no scroll.
+          const shown = () => pane.evaluate((el) => {
+            const t = el.querySelector('[data-testid="composer-tray"]')!.getBoundingClientRect();
+            return ["allow-once", "allow-always", "deny"].filter((k) => { const r = el.querySelector(`[data-testid="${k}"]`)!.getBoundingClientRect(); return r.top >= t.top - 1 && r.bottom <= t.bottom + 1; });
+          });
+          await expect.poll(shown, { timeout: 5000 }).toEqual(["allow-once", "allow-always", "deny"]);
+          // The heads keep under a quarter of the screen.
+          const heads = await pane.evaluate((el) => el.querySelector('[data-testid="session-header"]')!.getBoundingClientRect().bottom - el.querySelector('[data-testid="station-head"]')!.getBoundingClientRect().top);
+          expect(heads).toBeLessThan(height / 4);
+          await shoot(page, `phone-13-head-${width}-${scale}`);
+          // Pin and close are in the session's menu.
+          await pane.getByTestId("session-menu").tap();
+          await expect(page.getByTestId("menu-pin")).toBeVisible();
+          await expect(page.getByTestId("menu-close")).toBeVisible();
+          await page.keyboard.press("Escape");
+        } finally { await ctx.close(); }
+      }
+    } finally { await request.delete(`/api/sessions/${session.id}`); }
+  });
+});
+
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
 // another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
 // box is taken as it shows, cut by what clips it). A target is what a press acts on: a

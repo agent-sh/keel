@@ -1144,7 +1144,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-compose-tools[data-busy] .k-compose-send { gap: 0.125rem; }
   .k-station-head { padding: 0.625rem 0.875rem 0.5rem 1rem; }
   .k-station-title { font-size: var(--text-read); }
-  .k-station[data-helm] .k-station-title { font-size: var(--text-head); }
+  /* The helm's title in the head's size until that is more than a phone's width allows, then in the reading size. */
+  .k-station[data-helm] .k-station-title { font-size: min(var(--text-head), max(var(--text-read), 5.2vw)); }
   .k-station-tools .k-tool-move { display: none; }
   .k-station-tools { opacity: 1; }
   .k-dock {
@@ -1195,11 +1196,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
 @media (max-width: 767px) {
   .k-station-meta { display: none; }
-  /* A phone's header: the title beside the tools, on a second line when it is long, so that it
-     is read whole; the state and its reason under it, in the page's width. */
-  .k-station-identity .k-station-title { max-width: calc(100% - 3 * (var(--spacing-ctl-md) + 1px) - 0.5rem); display: -webkit-box; white-space: normal; }
+  /* A phone's header: the title in the page's width, on a second line when it is long, so that it
+     is read whole; the state and its reason under it. Pin and close are in the session's menu
+     (SessionHeader), and a phone has no panes to focus: the head holds no tools. */
+  .k-station-identity .k-station-title { max-width: 100%; display: -webkit-box; white-space: normal; }
   .k-station-identity .k-station-rest { flex-basis: 100%; }
-  .k-station .k-station-identity .k-station-tools { position: absolute; top: 0.5rem; right: 0.875rem; margin: 0; padding: 0; background: none; }
+  .k-station .k-station-identity .k-station-tools { display: none; }
 }
 
 /* ---------- Side panels ---------- */
@@ -1456,5 +1458,4 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   .k-home-state:not([data-quiet]) > .k-home-count { flex-shrink: 0; white-space: nowrap; }
   /* A question's choice is a row as tall as a target: its words stand in its middle. */
   .k-q-option { align-items: center; }
-  .k-station-identity .k-station-title { max-width: calc(100% - 3 * var(--spacing-tap) - 0.5rem); }
 }
