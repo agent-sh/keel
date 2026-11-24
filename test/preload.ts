@@ -6,13 +6,41 @@
 // reach on the machine, point into one fresh folder, removed when the last
 // test is done. A test that needs its own sets it over these.
 import { afterAll, afterEach, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { allHooks } from "../src/engine/hooks.ts";
 import { vault } from "../src/safety/secrets.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-test-"));
+// A run that is killed (a check's time limit ends it with SIGKILL) never reaches the afterAll at the end, and its
+// folder stays where it was made, often a /tmp in memory. Each run names its process in its folder (pid namespace,
+// pid and start time, so a reused pid is not taken for it), and a run removes the folders of runs of its own pid
+// namespace whose process is gone. A folder of another namespace (a sandboxed command has its own) or with no
+// readable name is kept: nothing tells whether its run lives. Without /proc nothing is removed.
+const RUN = ".keel-test-run";
+const stat = (pid: number | "self") => {
+  try { return readFileSync(`/proc/${pid}/stat`, "utf8"); } catch { return null; }
+};
+const started = (text: string | null) => text?.slice(text.lastIndexOf(") ") + 2).split(" ")[19] ?? null;
+const own = stat("self");
+let ns = "";
+try { ns = readlinkSync("/proc/self/ns/pid"); } catch {}
+if (own && ns) {
+  const mine = [ns, own.split(" ")[0], started(own)].join(" ");
+  writeFileSync(join(dir, `${RUN}.new`), `${mine}\n`);
+  renameSync(join(dir, `${RUN}.new`), join(dir, RUN));
+  for (const name of readdirSync(tmpdir())) {
+    const other = join(tmpdir(), name);
+    if (!name.startsWith("keel-test-") || other === dir) continue;
+    let owner: string[];
+    try { owner = readFileSync(join(other, RUN), "utf8").trim().split(" "); } catch { continue; } // not a run's, or one from before this
+    if (owner.length !== 3 || owner[0] !== ns || !/^\d+$/.test(owner[1]!)) continue;
+    if (started(stat(Number(owner[1]))) === owner[2]) continue;
+    Bun.spawnSync(["chmod", "-R", "u+rwX", other], { stdout: "ignore", stderr: "ignore" });
+    try { rmSync(other, { recursive: true, force: true }); } catch {}
+  }
+}
 const made = (...p: string[]) => {
   const d = join(dir, ...p);
   mkdirSync(d, { recursive: true });
