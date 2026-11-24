@@ -531,3 +531,49 @@ test("an agent on another machine is announced with its folder there", async () 
   expect(f.updates("p").find((u: any) => u.sessionUpdate === "subagent_update")).toMatchObject({ sessionId: "c1", cwd: "/srv/far", additionalDirectories: [] });
   expect(watched.at(-1)).toEqual({ c1: 0 });
 });
+
+test("a failure goes as a notice to an editor that takes them and as a line of the reply to another", async () => {
+  const s = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  for (const notices of [false, true]) {
+    const f = fixture([s], {});
+    f.d.post = (_m, path) => {
+      if (path.endsWith("/approvals/a1")) throw Object.assign(new Error("Open the request to read it first."), { held: true });
+      return path === "/api/sessions" ? { session: s } : path.endsWith("/mcp") ? { set: [{ name: "old", error: "not spoken" }] } : undefined;
+    };
+    await call(f.bridge, f.out, "initialize", { protocolVersion: 1, clientCapabilities: notices ? { session: { notices: {} } } : {} });
+    await call(f.bridge, f.out, "session/new", { cwd: "/w", mcpServers: [{ name: "old", command: "srv", args: [], env: [] }] });
+    await Bun.sleep(0);
+    const p = call(f.bridge, f.out, "session/prompt", { sessionId: "s", prompt: [{ type: "text", text: "go" }] });
+    await Bun.sleep(0);
+    f.frame({ t: "feature", name: "mcp-session", session_id: "s", data: { name: "fs", what: "failed", error: "exited" } });
+    const card = { id: "a1", session_id: "s", call_id: "c1", tool: "Bash", kind: "shell", state: "pending", summary: "ls", input: { command: "ls" }, risk: "low", suggest: [] };
+    f.frame({ t: "feature", name: "approval", data: card });
+    await Bun.sleep(5);
+    const ask = f.out.findLast((m) => m.method === "session/request_permission")!;
+    await f.bridge.handle({ jsonrpc: "2.0", id: ask.id, result: { outcome: { outcome: "selected", optionId: "once" } } });
+    await Bun.sleep(5);
+    f.frame({ t: "event", event: { session_id: "s", kind: "error", data: { message: "fixture provider unavailable" } } });
+    f.frame({ t: "event", event: { session_id: "s", kind: "turn_end", data: { reason: "error" } } });
+    await p;
+    const u = f.updates("s");
+    const lines = u.filter((x: any) => x.sessionUpdate === "agent_message_chunk").map((x: any) => x.content.text);
+    const got = u.filter((x: any) => x.sessionUpdate === "notice");
+    if (notices) {
+      expect(lines).toEqual([]);
+      expect(got).toEqual([
+        { sessionUpdate: "notice", severity: "warning", title: "Keel did not connect an MCP server the editor passed", description: "old: not spoken" },
+        { sessionUpdate: "notice", severity: "warning", title: "Keel could not connect the MCP server fs the editor passed", description: "exited" },
+        { sessionUpdate: "notice", severity: "warning", title: "Keel did not take that answer", description: "Open the request to read it first. The request still waits: answer it in the workbench." },
+        { sessionUpdate: "notice", severity: "error", title: "The turn failed", description: "fixture provider unavailable" },
+      ]);
+    } else {
+      expect(got).toEqual([]);
+      expect(lines).toEqual([
+        "Keel did not connect an MCP server the editor passed (old: not spoken).\n\n",
+        "Keel could not connect the MCP server fs the editor passed: exited.\n\n",
+        "Keel did not take that answer: Open the request to read it first. The request still waits: answer it in the workbench.\n\n",
+        "\n\nKeel: fixture provider unavailable",
+      ]);
+    }
+  }
+});

@@ -348,7 +348,10 @@ export class AcpBridge {
     }
     if (!list.length) this.served.delete(sessionId);
     // After the answer, so the editor knows the session first.
-    if (failed.length) queueMicrotask(() => this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not connect ${failed.length === 1 ? "an MCP server" : "MCP servers"} the editor passed (${failed.join("; ")}).\n\n` } }));
+    if (failed.length) {
+      const what = failed.length === 1 ? "an MCP server" : "MCP servers";
+      queueMicrotask(() => this.say(sessionId, "warning", `Keel did not connect ${what} the editor passed`, failed.join("; "), `Keel did not connect ${what} the editor passed (${failed.join("; ")}).\n\n`));
+    }
   }
 
   // The session's frames come to this editor from `cursor` on (null: from now;
@@ -528,6 +531,14 @@ export class AcpBridge {
     this.retried.set(id, key);
     if (this.caps?.session?.notices) this.notify(id, retryNotice(s));
     else if (first && t.shown) this.notify(id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n\n[Keel: the model request failed and is sent again.]\n\n" } });
+  }
+
+  // Something the editor's user should know that is not the conversation: a
+  // client that takes notices gets one, another the same words as a line of the
+  // reply (the protocol's fallback).
+  private say(id: string, severity: "info" | "warning" | "error", title: string, description: string, line: string) {
+    if (this.caps?.session?.notices) this.notify(id, { sessionUpdate: "notice", severity, title, ...(description ? { description } : {}) });
+    else this.notify(id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } });
   }
 
   // Resolves when the daemon was told what this editor held is let go.
@@ -909,7 +920,7 @@ export class AcpBridge {
     } else if (e.kind === "error" && !replay) {
       const t = this.live.get(sessionId);
       if (t) t.error = String(e.data.message ?? "the turn failed");
-      this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n\nKeel: ${e.data.message}` } });
+      this.say(sessionId, "error", "The turn failed", String(e.data.message ?? ""), `\n\nKeel: ${e.data.message}`);
     }
   }
 
@@ -938,7 +949,7 @@ export class AcpBridge {
       void this.queueChanged(f.session_id, f.queue ?? []);
     } else if (f.t === "feature" && f.name === "mcp-session" && f.data?.what === "failed" && this.served.has(f.session_id)) {
       // A server the editor passed that did not connect, or went away later: said by name, as a refusal is.
-      this.notify(f.session_id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel could not connect the MCP server ${f.data.name} the editor passed: ${f.data.error ?? "it failed"}.\n\n` } });
+      this.say(f.session_id, "warning", `Keel could not connect the MCP server ${f.data.name} the editor passed`, String(f.data.error ?? "it failed"), `Keel could not connect the MCP server ${f.data.name} the editor passed: ${f.data.error ?? "it failed"}.\n\n`);
     } else if (f.t === "session" && this.live.has(f.session.id) && f.session.title && this.titles.get(f.session.id) !== f.session.title) {
       // (A row can come twice: by the session's own topic and by the list's.)
       this.titles.set(f.session.id, f.session.title);
@@ -1033,7 +1044,7 @@ export class AcpBridge {
         // Held: the answer was not taken and the card still waits. The editor is told, and where to answer it.
         if ((e as { held?: boolean }).held) {
           this.notify(a.session_id, { sessionUpdate: "tool_call_update", toolCallId: a.call_id, status: "pending" });
-          this.notify(a.session_id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not take that answer: ${(e as Error).message} The request still waits: answer it in the workbench.\n\n` } });
+          this.say(a.session_id, "warning", "Keel did not take that answer", `${(e as Error).message} The request still waits: answer it in the workbench.`, `Keel did not take that answer: ${(e as Error).message} The request still waits: answer it in the workbench.\n\n`);
         }
         // Any other refusal: it was answered in the workbench first (or before the editor
         // held the session, and the card was read as open): a child does not wait on it.
