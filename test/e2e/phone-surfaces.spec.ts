@@ -323,5 +323,56 @@ for (const size of SIZES) {
         await drop(request, guest.session?.id ?? guest.id);
       }
     });
+
+    test("a selection in a reply offers Quote and Comment inside the page, by touch, and the quote reads whole once sent", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Phone quote");
+      const said = "The cache is warmed before the first request, and the loop starts only after that, so a reader that comes late finds every entry already in place. A second sentence follows to make the paragraph run over several lines on a phone.";
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:say ${said}` } });
+        await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        await page.goto(`/s/${id}`);
+        const reply = page.getByTestId("assistant-text").first().locator("p").first();
+        await expect(reply).toHaveText(said);
+        // A selection of the reply's words, the way a long press and its handles leave one.
+        const select = (from: number, to: number) => reply.evaluate((el, [a, b]) => {
+          const t = el.firstChild as Text;
+          const r = document.createRange();
+          r.setStart(t, a as number); r.setEnd(t, b as number);
+          const s = getSelection()!; s.removeAllRanges(); s.addRange(r);
+        }, [from, to]);
+        await select(0, said.length);
+        const bar = page.getByTestId("selection-bar");
+        await expect(bar).toBeVisible();
+        await inside(page, bar);
+        expect(await small(bar), "Quote and Comment are finger targets").toEqual([]);
+        // It is not over the words it is about.
+        const words = (await reply.boundingBox())!, b = (await bar.boundingBox())!;
+        expect(b.y >= words.y + words.height - 1 || b.y + b.height <= words.y + 1, "the bar stands clear of the words").toBe(true);
+        await shoot(page, `phone-surfaces-10-selection-${size.width}`);
+        // A selection at the foot of the page, under the composer's reach.
+        await page.getByTestId("selection-comment-open").tap();
+        const line = page.getByTestId("selection-comment");
+        await expect(line).toBeVisible();
+        await inside(page, bar);
+        await line.fill("Is that the order the code runs in, and what if the reader is early?");
+        expect(await small(bar), "the comment box's controls are finger targets").toEqual([]);
+        await inside(page, bar);
+        await shoot(page, `phone-surfaces-11-selection-comment-${size.width}`);
+        await page.getByTestId("selection-send").tap();
+        await expect(bar).toHaveCount(0);
+        const sent = page.getByTestId("user-message").filter({ hasText: "what if the reader is early" });
+        await expect(sent).toBeVisible({ timeout: 30_000 });
+        const quote = sent.getByTestId("user-quote");
+        await expect(quote).toHaveText(said);
+        // The quote is whole where it stands: not cut, inside the page.
+        expect(await quote.evaluate((el) => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1), "the quote is cut off").toBe(false);
+        await inside(page, quote);
+        await noSideScroll(page);
+        await shoot(page, `phone-surfaces-12-quote-sent-${size.width}`);
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }
