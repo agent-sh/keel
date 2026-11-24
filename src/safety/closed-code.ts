@@ -15,8 +15,8 @@ const ATTRS = new Set([...METHODS, "shape", "columns", "dtypes", "size"]);
 const IMPORTS = new Set(["json", "csv", "yaml", "pandas", "hashlib", "tomllib", "sys", "pathlib", "os"]);
 // Words that read as the shape of the code, not as a name.
 const WORDS = new Set(["True", "False", "None", "true", "false", "null", "undefined", "NaN", "if", "else", "elif", "for", "while", "in", "of", "not", "and", "or", "is", "const", "let", "var"]);
-// Names that run or reach code, bound or not, under any spelling.
-const NEVER = /^(exec|execfile|eval|compile|getattr|setattr|delattr|open|input|breakpoint|help|globals|locals|vars|system|require|process|import|Function|constructor|prototype|globalThis|window|global|self|module|exports|Reflect|Proxy|setTimeout|setInterval|setImmediate|Deno|Bun|__\w*)$/;
+// Names that run or reach code, or hold the environment (where the tokens are), bound or not, under any spelling.
+const NEVER = /^(environ|environb|getenv|getenvb|putenv|exec|execfile|eval|compile|getattr|setattr|delattr|open|input|breakpoint|help|globals|locals|vars|system|require|process|import|Function|constructor|prototype|globalThis|window|global|self|module|exports|Reflect|Proxy|setTimeout|setInterval|setImmediate|Deno|Bun|__\w*)$/;
 const STRING = /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
 const TOKEN = /\s+|(?<num>0[xX][\da-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|(?<chain>[$@%]?[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.|->)\s*[A-Za-z_$][\w$]*)*)|(?<dot>\?\.|\.|->)\s*(?<attr>[A-Za-z_$][\w$]*)|(?<str>"")|(?<punct>[()[\]{},:;+\-*/%<>=!&|^~?@])/y;
 

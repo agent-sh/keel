@@ -1195,17 +1195,41 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       const into = dirs[i] ? resolve(dirs[i]!, cloned.dir) : null;
       // The folders the clone is in: where it was cloned, and where the line copies, moves or links it.
       const there = into ? [into] : [];
-      if (into) for (let k = i + 1; k < n && k < i + 64; k++) {
-        const at = dirs[k], q = name(runs[k]!.words[0]);
-        if (at && there.some((d) => under(d, at)) && q !== "cd" && q !== "git" && !isReadOnly(parts[k]!)) { line.push({ rule: "hidden", why: `runs ${q} in ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}` }); break; }
-        // From outside it: a program, a script or code of the clone named by its path (python3 r/setup.py, ./r/install.sh),
-        // or a build or an install of it (pip install ./r, make -C r, npm --prefix r install, pytest r).
-        const inClone = (a: string) => (a.includes("/") || there.some((d) => a === name(d))) && !/[$`*?]/.test(a) && !!at && there.some((d) => under(d, resolve(at, a)));
-        const b = at ? builds(runs[k]!.words, inClone) : null;
-        if (b) { line.push({ rule: "hidden", why: `runs ${b} on ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}: it runs the repository's code` }); break; }
-        const t = at ? takes(runs[k]!.words, inClone, scripts) : null;
-        if (!t && at && /^(cp|mv|ln|install|rsync)$/.test(q)) for (const w of writtenFrom({ words: runs[k]!.words, redirects: [] }, runs[k]!.words.some(inClone), false)) there.push(resolve(at, w));
-        if (t) { line.push({ rule: "hidden", why: `${t.how === "runs" ? "runs" : t.how === "handed" ? `hands to ${t.by}, which is not known only to read them,` : `gives ${t.by} code that may run`} files of ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}` }); break; }
+      if (into) {
+        // The commands after the clone, and where each runs: a subshell's `cd` moves the commands in it that follow,
+        // `env -C` moves its own command, and a script given to a shell (-c) is read the same way from where that runs.
+        const ahead = (ps: Simple[], rs: Run[], ds: (string | null)[], from: number, deep: number): string | null => {
+          for (let k = from; k < ps.length && k < from + 64; k++) {
+            const q = name(rs[k]!.words[0]);
+            let at = ds[k] ?? null;
+            const lead = rs[k]!.wrapped ? ps[k]!.words.slice(ps[k]!.words.findIndex((a) => !ASSIGN.test(a))) : null;
+            if (at !== null && lead !== null && name(lead[0]) === "env") { const c = lead.findIndex((a) => a === "-C" || a === "--chdir"); const to = c > 0 ? lead[c + 1] : lead.find((a) => a.startsWith("--chdir="))?.slice(8); if (to !== undefined) at = /[$`*?]/.test(to) ? null : resolve(at, to); }
+            if (at && there.some((d) => under(d, at!)) && q !== "cd" && q !== "git" && !isReadOnly(ps[k]!)) return `runs ${q} in ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}`;
+            // From outside it: a program, a script or code of the clone named by its path (python3 r/setup.py, ./r/install.sh),
+            // or a build or an install of it (pip install ./r, make -C r, npm --prefix r install, pytest r).
+            const inClone = (a: string) => (a.includes("/") || there.some((d) => a === name(d))) && !/[$`*?]/.test(a) && !!at && there.some((d) => under(d, resolve(at!, a)));
+            const b = at ? builds(rs[k]!.words, inClone) : null;
+            if (b) return `runs ${b} on ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}: it runs the repository's code`;
+            const t = at ? takes(rs[k]!.words, inClone, scripts) : null;
+            if (!t && at && /^(cp|mv|ln|install|rsync)$/.test(q)) for (const w of writtenFrom({ words: rs[k]!.words, redirects: [] }, rs[k]!.words.some(inClone), false)) there.push(resolve(at, w));
+            if (t) return `${t.how === "runs" ? "runs" : t.how === "handed" ? `hands to ${t.by}, which is not known only to read them,` : `gives ${t.by} code that may run`} files of ${name(into)}, a repository the same line clones from ${url.slice(0, 80)}`;
+            // A script given to a shell: its commands run where the shell does.
+            if (at && SHELLS.test(q) && deep < DEPTH && !rs[k]!.words.includes("-n")) {
+              const a = rs[k]!.words.slice(1);
+              const c = a.findIndex((x) => /^-[a-zA-Z]*c$/.test(x));
+              const given = c >= 0 ? a[c + 1] : undefined;
+              const inner = given !== undefined && given.length <= SCRIPT_MAX ? splitCommand(given) : null;
+              if (inner) {
+                const l = laid(inner, at, w.home, false);
+                const found = ahead(inner, l.runs, dirsOf(inner, l.runs, at, w.home, true), 0, deep + 1);
+                if (found) return found;
+              }
+            }
+          }
+          return null;
+        };
+        const why = ahead(parts, runs, dirsOf(parts, runs, w.lost || w.away ? null : w.cwd, w.home, true), i + 1, 0);
+        if (why) line.push({ rule: "hidden", why });
       }
     }
     // A credential file staged in a line that pushes.

@@ -168,16 +168,24 @@ export function unwrap(words: string[]): Run {
 // and inside it only the commands chained to it (`(cd ui && rm -rf dist)`):
 // where the subshell ends is not known from the parts, so after the chain the
 // folder of what is nested is unknown until the next command outside.
-export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: string): (string | null)[] {
+// `through`: inside a subshell the commands after a `cd` joined by `;` or a newline run in its folder too
+// (where the subshell ends is still not known): for a reader that takes more commands as in a folder, never fewer.
+export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: string, through = false): (string | null)[] {
   // No part changes folder: every one runs where the line does.
   if (!runs.some((r) => r.words[0] === "cd" || r.words[0] === "pushd" || r.words[0] === "popd")) return new Array<string | null>(parts.length).fill(cwd);
   // A function the line gives the name: what `cd` does after it is not known, and no folder is followed.
   if (parts.some((s, i) => s.words.length === 1 && /^(cd|pushd|popd)$/.test(s.words[0]!) && !!parts[i + 1]?.flow && /^\{/.test(parts[i + 1]!.text))) return new Array<string | null>(parts.length).fill(null);
   let top: string | null = cwd;
   let inner: string | null | undefined; // undefined: nested parts run where the line is
-  const to = (from: string | null, w: string[]): string | null | undefined => {
+  const to = (from: string | null, w: string[], s?: Simple): string | null | undefined => {
     if (w[0] !== "cd" && w[0] !== "pushd" && w[0] !== "popd") return undefined;
-    const arg = w.slice(1).find((a) => !a.startsWith("-") || a === "-");
+    let arg = w.slice(1).find((a) => !a.startsWith("-") || a === "-");
+    // The folder the shell is in: $PWD and $(pwd) change nothing, and what follows them is relative to it.
+    const here = arg === undefined ? null : /^(?:\$PWD|\$\{PWD\}|\$\(pwd\)|`pwd`)(\/[^$`*?[\]{}]*)?$/.exec(arg);
+    if (here) arg = "." + (here[1] ?? "");
+    // $(pwd)/x: the one expansion the word has is the command pwd alone.
+    const made = s && arg !== undefined && /^\$\(\.\.\.\)(\/[^$`*?[\]{}]*)?$/.test(arg) ? s.how?.[s.dyn?.indexOf(w.indexOf(arg) + (s.words.length - w.length)) ?? -1] : undefined;
+    if (made && !made.vars.length && !made.rest && made.subs.length === 1 && made.subs[0]!.length === 1 && made.subs[0]![0]!.words.join(" ") === "pwd") arg = "." + arg!.slice(6);
     if (w[0] === "popd" || arg === "-" || (arg !== undefined && (/[$`*?[\]{}]/.test(arg) || (arg.startsWith("~") && arg !== "~" && !arg.startsWith("~/"))))) return null;
     const path = arg === undefined || arg === "~" ? home : arg.startsWith("~/") ? home + arg.slice(1) : arg;
     const next = isAbsolute(path) ? resolve(path) : from === null ? null : resolve(from, path);
@@ -190,14 +198,14 @@ export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: s
     if (!s.nested) {
       inner = undefined;
       const here = top;
-      const next = to(top, runs[i]!.words);
+      const next = to(top, runs[i]!.words, s);
       if (next !== undefined) top = next;
       return here;
     }
     const here = inner === undefined ? top : inner;
-    const next = to(here, runs[i]!.words);
-    if (next !== undefined) inner = s.sep === "&&" ? next : null;
-    else if (inner !== undefined && s.sep !== "&&" && s.sep !== "||" && s.sep !== "|" && s.sep !== "|&") inner = null;
+    const next = to(here, runs[i]!.words, s);
+    if (next !== undefined) inner = s.sep === "&&" || (through && (s.sep === undefined || s.sep === ";")) ? next : null;
+    else if (inner !== undefined && s.sep !== "&&" && s.sep !== "||" && s.sep !== "|" && s.sep !== "|&" && !(through && (s.sep === undefined || s.sep === ";"))) inner = null;
     return here;
   });
 }
