@@ -135,7 +135,12 @@ test("a small window keeps the message box on screen under a full stack", async 
     const at = (await tray.boundingBox())!;
     await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
     const frame = () => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-    for (let i = 0; i < 80 && (await oldest.getAttribute("data-must-open")) === "true"; i++) { await page.mouse.wheel(0, 12); await frame(); }
+    // The region may stand past the card's first rows (the phone's strip is a finger's height while a card waits):
+    // the owner scrolls back to it, then reads down, each until the card is read.
+    const unread = async () => (await oldest.getAttribute("data-must-open")) === "true";
+    const scrolled = () => tray.evaluate((el) => el.scrollTop);
+    for (let i = 0; i < 100 && (await unread()) && (await scrolled()) > 0; i++) { await page.mouse.wheel(0, -12); await frame(); }
+    for (let i = 0; i < 300 && (await unread()); i++) { await page.mouse.wheel(0, 12); await frame(); }
     await expect(oldest).not.toHaveAttribute("data-must-open", "true");
     await expect(oldest.getByTestId("allow-once")).toBeFocused();
     await expect.poll(focusShown).toEqual({ testid: "allow-once", shown: true });
