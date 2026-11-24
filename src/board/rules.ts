@@ -356,7 +356,8 @@ function landedWords(r: BoardRow, full: boolean): string {
   return s + lvs;
 }
 
-export const changeWords = (c: Change) => `${c.files}${c.more ? "+" : ""} ${c.files === 1 ? "file" : "files"} +${c.added} -${c.removed}`;
+// A part that was not counted leaves every figure a lower bound: each carries the plus.
+export const changeWords = (c: Change) => { const m = c.more ? "+" : ""; return `${c.files}${m} ${c.files === 1 ? "file" : "files"} +${c.added}${m} -${c.removed}${m}`; };
 const workWords = (w: Work | null) => [w?.uncommitted ? `uncommitted ${changeWords(w.uncommitted)}` : "", w?.branch ? `on branch ${changeWords(w.branch)}` : ""].filter(Boolean).join(", ");
 
 function reviewWords(v: BoardReview | null, full: boolean): string {

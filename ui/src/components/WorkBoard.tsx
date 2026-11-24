@@ -106,10 +106,10 @@ function Quote({ by, how, title, line, below, testid }: { by: string; how: strin
 // What a worktree changes: its files and lines, and where they are (uncommitted, or committed on the branch).
 function Changed({ c, where, testid }: { c: Change; where: string; testid: string }) {
   return (
-    <span className="inline-flex items-baseline gap-1" data-testid={testid}>
-      <span className="text-fg">{c.files}{c.more ? "+" : ""} {c.files === 1 ? "file" : "files"}</span>
-      <span className="font-mono text-micro text-ok">+{c.added}</span>
-      <span className="font-mono text-micro text-danger">-{c.removed}</span>
+    <span className="inline-flex flex-wrap items-baseline gap-x-1" data-testid={testid}>
+      <span className="whitespace-nowrap text-fg">{c.files}{c.more ? "+" : ""} {c.files === 1 ? "file" : "files"}</span>
+      <span className="font-mono text-micro text-ok">+{c.added}{c.more ? "+" : ""}</span>
+      <span className="font-mono text-micro text-danger">-{c.removed}{c.more ? "+" : ""}</span>
       <span className="text-muted">{where}</span>
     </span>
   );
@@ -138,14 +138,16 @@ function Card({ r, below, indent }: { r: BoardRow; below: Board["rows"]; indent:
         <p className="text-caption text-muted">{reviewing ? <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span></> : "no branch of its own"}{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>
       )}
       {r.work && (
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-caption" data-testid="board-work">
-          <FileDiff className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          {r.work.uncommitted && <Changed c={r.work.uncommitted} where="uncommitted" testid="board-uncommitted" />}
-          {r.work.branch && <Changed c={r.work.branch} where="on branch" testid="board-on-branch" />}
-          {!r.work.uncommitted && !r.work.branch && <span className="text-muted" data-testid="board-no-changes">no changes yet</span>}
+        <div className="flex min-w-0 items-start gap-x-3 text-caption" data-testid="board-work">
+          <FileDiff className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden="true" />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+            {r.work.uncommitted && <Changed c={r.work.uncommitted} where="uncommitted" testid="board-uncommitted" />}
+            {r.work.branch && <Changed c={r.work.branch} where="on branch" testid="board-on-branch" />}
+            {!r.work.uncommitted && !r.work.branch && <span className="text-muted" data-testid="board-no-changes">no changes yet</span>}
+          </div>
           {(r.work.uncommitted || r.work.branch) && (
             <button type="button" onClick={() => { rememberPanel(r.session_id, "changes"); openSession(r.session_id); }} data-testid="board-open-changes"
-              className="ml-auto inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-micro text-accent hover:bg-hover">Open changes</button>
+              className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-micro text-accent hover:bg-hover">Open changes</button>
           )}
         </div>
       )}

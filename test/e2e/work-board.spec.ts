@@ -155,6 +155,22 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(card(beta.id)).toBeVisible();
   await shoot(page, "work-board-02-phone");
   await page.setViewportSize({ width: 1920, height: 1040 });
+  // Past forty untracked files the lines are counted for the first forty only: every figure says so, and
+  // at the phone's width the Open changes button stays on the line of the first figure.
+  for (let i = 0; i < 45; i++) writeFileSync(join(gamma.worktree, `many-${i}.txt`), "x\n");
+  expect((await (await request.get(`/api/sessions/${coord}/board?fresh=1`)).json() as any).rows.find((r: any) => r.id === gamma.id).work.uncommitted).toMatchObject({ files: 47, more: true });
+  await page.reload();
+  await openPanel(page, "board");
+  await expect(card(gamma.id).getByTestId("board-uncommitted")).toHaveText("47+ files+41+-1+uncommitted");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const work = card(gamma.id).getByTestId("board-work");
+  await expect(work).toBeVisible();
+  const first = (await work.getByTestId("board-uncommitted").boundingBox())!;
+  const open = (await work.getByTestId("board-open-changes").boundingBox())!;
+  expect(open.y).toBeLessThan(first.y + first.height);
+  expect(open.x + open.width).toBeLessThanOrEqual(390);
+  await shoot(page, "work-board-03-phone-many-files");
+  await page.setViewportSize({ width: 1920, height: 1040 });
   // Open changes goes to the agent's session with its Changes panel.
   await card(gamma.id).getByTestId("board-open-changes").click();
   await expect(page).toHaveURL(new RegExp(`/s/${gamma.session_id}$`));
