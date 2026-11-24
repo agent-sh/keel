@@ -12,7 +12,7 @@ export type Run = {
   tree: string;
   head: string | null;
   session_id: string | null;
-  by: "agent" | "owner" | "queue"; // queue: the landing queue (src/landing/queue.ts)
+  by: "agent" | "owner" | "queue" | "beside"; // queue: the landing queue (src/landing/queue.ts); beside: Keel beside an agent (src/checks/beside-run.ts)
   result: Result;
   exit: number | null;
   pass: number | null;
@@ -92,7 +92,7 @@ export function baseWords(base: BaseState | undefined, name: string, now = Date.
 
 // The answer to a check that passed on this tree: it is not run again.
 export function answerText(r: Run, o: { session: string | undefined; now?: number }): string {
-  const who = r.by === "owner" ? "run by the owner" : r.by === "queue" ? "run by the landing queue" : r.session_id && r.session_id === o.session ? "in this session" : "in another session";
+  const who = r.by === "owner" ? "run by the owner" : r.by === "queue" ? "run by the landing queue" : r.by === "beside" ? `run by Keel beside ${r.session_id && r.session_id === o.session ? "this session's" : "another session's"} work` : r.session_id && r.session_id === o.session ? "in this session" : "in another session";
   const counts = countWords(r);
   return [
     `Not run: ${label(r)} passed on this tree at ${when(r.ended, o.now)}${counts ? ` (${counts})` : ""}, ${who}, and the files are the same now (uncommitted changes included).`,
@@ -159,7 +159,7 @@ export function proofLine(p: ProofIn): string {
   const said = (r: Run, full: boolean) => {
     const how = r.result === "answered" ? "passed (from the ledger)" : r.result === "pass" ? "passed" : r.result === "fail" ? "failed" : "ended, status unknown";
     const extra = full ? [r.result === "fail" ? countWords(r) : "", r.result === "fail" ? p.base?.get(r.id) ?? "" : ""].filter(Boolean).join("; ") : "";
-    return `${r.name} ${how} ${when(r.ended, p.now)}${extra ? ` (${extra})` : ""}`;
+    return `${r.name} ${how}${r.by === "beside" ? " (run by Keel)" : ""} ${when(r.ended, p.now)}${extra ? ` (${extra})` : ""}`;
   };
   const head = lastEdit === undefined ? "Checks" : after.length ? `Checks after its last edit (${when(lastEdit, p.now)})` : `Checks: none ran after its last edit (${when(lastEdit, p.now)})`;
   const editsAfterGreen = green === undefined ? undefined : p.edits.filter((t) => t > green).length;

@@ -6,7 +6,8 @@
         "node_modules",
         "node_modules/../bun.lock",
         "node_modules/.bin"
-      ]
+      ],
+      "beside": true
     },
     "unit": {
       "run": "bun test",
@@ -20,7 +21,8 @@
         "src/**/*.test.ts",
         "scripts/**/*.test.ts",
         "ui/src/**/*.test.ts"
-      ]
+      ],
+      "beside": true
     },
     "e2e": {
       "run": "bunx playwright test",

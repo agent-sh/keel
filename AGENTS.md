@@ -356,6 +356,19 @@ under `~/.cache/keel-work/bun/research/`.
   `together.quiet_s`; at most `together.at_once` run at once, each command after a slot of the heavy
   pool with what the landing queue gives its commands (`KEEL_LAND_REPO`), niced here or on
   `together.host` while its load leaves room.
+- A check a repository marks `beside` runs by itself after an agent's change
+  (`src/checks/beside.ts` decides, `src/checks/beside-run.ts` runs): the steps
+  of a 30 s window are one run (a turn's end runs it at once), one run at a
+  time per agent, only for a tree that is not the one checked last and that
+  changes something over the base. It runs on a copy of the agent's files in
+  a folder of Keel's own (its installed packages linked from its `inputs`), in
+  the agent's sandbox, behind every other command of the heavy pool (or on the
+  owner's `checks.beside.host` when this machine has no room). A check with
+  `tests` gets the tests the change touches: the changed tests, the tests of
+  a changed file's folder, the tests that import a changed file and the tests
+  that walk the source tree under one. Each run is a ledger row on its tree
+  (`by: "beside"`); a red one is told to the agent once as a harness message
+  (`checks_beside`, its next step takes it), a green one says nothing.
 - A session's agent slots are its tree's and count the agents that work. An
   agent that waits on a wait of its own holds none. Its wake, and an agent
   asked for while every slot works, wait in line as owed and take the next

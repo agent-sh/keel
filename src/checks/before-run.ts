@@ -80,12 +80,13 @@ export function bindBefore(deps: Deps): Promise<void> {
   return Promise.all([sweep(), stopLeftScopes(), cache.bindCache(d.store)]).then(() => {}, (e) => d!.capture(e, { at: "fails before sweep" }));
 }
 
-// A file's run outside the sandbox goes in a scope named for the daemon that started it (keel-before-<pid>-...):
+// A file's run outside the sandbox goes in a scope named for the daemon that started it (keel-before-<pid>-..., and
+// keel-beside-<pid>-... for a check run beside an agent, src/checks/beside-run.ts):
 // one a killed daemon left, with what it started, is stopped. Its own time limit (RuntimeMaxSec) ends it in any
 // case; this ends it at the next start. (A run in the sandbox ends with the daemon: bwrap dies with its parent.)
 async function stopLeftScopes() {
   if (!sandboxStatus().scope || !Bun.which("systemctl")) return;
-  const ls = Bun.spawn(["systemctl", "--user", "list-units", "--plain", "--no-legend", "--all", "keel-before-*.scope"], { stdout: "pipe", stderr: "ignore" });
+  const ls = Bun.spawn(["systemctl", "--user", "list-units", "--plain", "--no-legend", "--all", "keel-before-*.scope", "keel-beside-*.scope"], { stdout: "pipe", stderr: "ignore" });
   const out = await readText(ls.stdout, "systemctl list-units");
   await ls.exited;
   const units = leftScopes(out, (pid) => pid === process.pid || alive(pid));
@@ -94,7 +95,7 @@ async function stopLeftScopes() {
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as { code?: string }).code === "EPERM"; } };
 // The units of `systemctl list-units` output whose daemon is not alive.
 export function leftScopes(out: string, alive: (pid: number) => boolean): string[] {
-  return out.split("\n").map((l) => /^\s*(keel-before-(\d+)-\d+-\d+\.scope)\b/.exec(l)).filter((m): m is RegExpExecArray => !!m && !alive(Number(m[2]))).map((m) => m[1]!);
+  return out.split("\n").map((l) => /^\s*(keel-(?:before|beside)-(\d+)-\d+-\d+\.scope)\b/.exec(l)).filter((m): m is RegExpExecArray => !!m && !alive(Number(m[2]))).map((m) => m[1]!);
 }
 
 // Runs whose answers an agent's report owes its parent and that have them (the run ended, or a restart cut it).
@@ -425,8 +426,19 @@ const SCOPE_SLACK_S = 10;
 // in a systemd scope of its own when the machine has them, so what it started goes with it, also a process that
 // left its group. Its process group goes at its end in any case, also after a normal exit.
 // `session`: whose run it is; while it runs, a request it makes to the daemon's API has that session's authority only.
-type One = { cwd: string; tool: string; env: Record<string, string>; command: string; limitMs: number; wrap?: (argv: string[]) => string[]; unit: string; session?: string };
+// `mark`: the kind its processes are marked with (src/tools/jobs.ts sessionMark).
+type One = { cwd: string; tool: string; env: Record<string, string>; command: string; limitMs: number; wrap?: (argv: string[]) => string[]; unit: string; session?: string; mark?: string };
 export async function runOne(o: One, base?: BasePackages): Promise<Partial<FileResult>> {
+  const r = await runCommand(o);
+  if ("error" in r) return { state: "unrun", why: `it could not start: ${r.error}`, exit: null };
+  const v = verdictOf({ code: r.timedOut ? null : r.code, signal: r.signal, timedOut: r.timedOut, limitMs: o.limitMs, out: r.out }, base);
+  return { ...v, exit: r.timedOut ? null : r.code, ms: r.ms, cpu_ms: r.cpu_ms };
+}
+
+// A command run as one file's run is (above): its status, the end of its output (OUT_MAX), how long it took and
+// its processor time. `error`: it could not start.
+export type Ran = { code: number | null; signal: string | null; timedOut: boolean; out: string; ms: number; cpu_ms: number | null };
+export async function runCommand(o: One): Promise<Ran | { error: string }> {
   const times = join(o.tool, TIMES_FILE);
   rmSync(times, { force: true });
   const argv = [...LOW(), "bash", "-c", withTimes(o.command, times)];
@@ -437,9 +449,9 @@ export async function runOne(o: One, base?: BasePackages): Promise<Partial<FileR
   let timedOut = false;
   let p: ReturnType<typeof Bun.spawn>;
   const slice = scoped ? jobScope().slice : undefined;
-  const mark = o.session ? sessionMark(o.session, "before", slice ? `/sys/fs/cgroup${slice}/${o.unit}.scope` : undefined) : undefined;
+  const mark = o.session ? sessionMark(o.session, o.mark ?? "before", slice ? `/sys/fs/cgroup${slice}/${o.unit}.scope` : undefined) : undefined;
   try { p = Bun.spawn(full, { cwd: o.cwd, env: { ...o.env, ...mark?.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }); }
-  catch (e) { return { state: "unrun", why: `it could not start: ${(e as Error).message}`, exit: null }; }
+  catch (e) { return { error: (e as Error).message }; }
   if (mark) {
     const release = mark.hold(p.pid);
     void p.exited.then(release, release);
@@ -466,6 +478,5 @@ export async function runOne(o: One, base?: BasePackages): Promise<Partial<FileR
   let cpu_ms: number | null = null;
   try { cpu_ms = timesCpu(readFileSync(times, "utf8")); } catch {} // stopped before its end: not known
   rmSync(times, { force: true });
-  const v = verdictOf({ code: timedOut ? null : code, signal: timedOut || p.signalCode == null ? null : String(p.signalCode), timedOut, limitMs: o.limitMs, out: out.slice(-OUT_MAX) }, base);
-  return { ...v, exit: timedOut ? null : code, ms, cpu_ms };
+  return { code, signal: timedOut || p.signalCode == null ? null : String(p.signalCode), timedOut, out: out.slice(-OUT_MAX), ms, cpu_ms };
 }

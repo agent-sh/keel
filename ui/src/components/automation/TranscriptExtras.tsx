@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { AlertTriangle, Bot, ChevronRight, CornerDownRight, Eye, ExternalLink, Flag, FolderLock, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, Eye, ExternalLink, Flag, FolderLock, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, ShieldAlert, Sprout, Timer, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -265,6 +265,16 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     return (
       <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice" kind="loop">
         <p className="whitespace-pre-wrap text-ui text-muted">{text}</p>
+      </Shell>
+    );
+  }
+  // A red check Keel ran by itself on the agent's files (src/checks/beside-run.ts): open, since it is what the agent acts on.
+  if (kind === "checks_beside") {
+    const body = text.replace(/^\[harness\] Checks beside your work:\s*/, "");
+    const failed = body.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2).split(" (")[0]);
+    return (
+      <Shell icon={ShieldAlert} tone="danger" label="Checks beside the agent failed" sub={failed.join(", ")} testid="beside-notice" defaultOpen>
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-code p-2.5 font-mono text-caption text-muted">{body}</pre>
       </Shell>
     );
   }

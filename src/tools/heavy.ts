@@ -221,7 +221,7 @@ class Pool {
   // path or a name that is not the waiting session's to read.
   private holders(session: string): string[] {
     return [...this.held.values()].map((h) => {
-      const whose = h.session === session ? "this session" : h.who === "agent" ? "an agent" : h.who === "owner" ? "the owner's terminal" : "another session";
+      const whose = h.who === "beside" ? (h.session === session ? "Keel's checks of this session's files" : "Keel's checks of an agent's files") : h.session === session ? "this session" : h.who === "agent" ? "an agent" : h.who === "owner" ? "the owner's terminal" : "another session";
       return `${program(h.command)} (${whose})`;
     });
   }

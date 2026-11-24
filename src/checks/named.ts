@@ -38,6 +38,10 @@
 //          the repository's top, `**` for any folders; needs "args": true).
 //          A test file an agent adds or changes that one of them names is run
 //          on the base without the change (src/checks/before.ts).
+//   beside true: Keel runs it by itself after an agent's change, on a copy of
+//          the agent's files, and tells the agent when it fails
+//          (src/checks/beside.ts). One with `tests` is given the test files the
+//          change touches; any other runs as named. For fast checks only.
 // `wait`: commands that only wait for room before what follows them runs
 // (each named by its first words). `env`: variables whose setting on the
 // check's command does not change what it finds.
@@ -98,7 +102,7 @@ const NAME = /^[A-Za-z0-9][\w.:-]{0,39}$/;
 const RUN_MAX = 400;
 
 export type TreeSpec = { kind: "work" } | { kind: "folder"; arg: number } | { kind: "commit" };
-export type Check = { name: string; run: string; args: boolean; dir: string; cache: boolean; tree: TreeSpec; drop: string[]; inputs: string[]; tests?: string[] };
+export type Check = { name: string; run: string; args: boolean; dir: string; cache: boolean; tree: TreeSpec; drop: string[]; inputs: string[]; tests?: string[]; beside?: true };
 export type Named = { checks: Check[]; wait: string[]; env: string[]; problems: string[] };
 
 const squash = (s: string) => s.trim().replace(/\s+/g, " ");
@@ -143,7 +147,10 @@ function oneCheck(name: string, v: unknown, problems: string[]): Check | undefin
     if (!tests || !tests.length || tests.length > 16 || tests.some((x) => x.startsWith("/") || x.split("/").includes(".."))) { problems.push(`${name}: "tests" is a list of up to 16 globs from the repository's top`); return; }
     if (o!.args !== true || dir === "*") { problems.push(`${name}: "tests" needs "args": true and a folder of its own (not "*")`); return; }
   }
-  return { name, run, args: o!.args === true, dir, cache: o!.cache !== false, tree, drop, inputs, ...(tests ? { tests } : {}) };
+  if (o!.beside !== undefined && typeof o!.beside !== "boolean") { problems.push(`${name}: "beside" is true or false`); return; }
+  // (Run beside an agent: on a copy of its files, so a check of an argument's folder or a commit is not one.)
+  if (o!.beside && (tree.kind !== "work" || dir === "*" || o!.cache === false)) { problems.push(`${name}: "beside" needs a check of the work tree in a folder of its own, kept in the ledger`); return; }
+  return { name, run, args: o!.args === true, dir, cache: o!.cache !== false, tree, drop, inputs, ...(tests ? { tests } : {}), ...(o!.beside ? { beside: true as const } : {}) };
 }
 
 // The checks of a parsed file or setting, with what was wrong in it.

@@ -145,6 +145,9 @@ export function fromTop(repo: Repo, folder: string): string | undefined {
 // --- the tree
 
 const indexes = new Map<string, Promise<unknown>>();
+// Keel's own object folder for a repository's looks: the blobs of new and changed files and the trees a look
+// writes (a copy of the files is checked out from it and the repository's own objects: src/checks/beside-run.ts).
+export const objectsOf = (repo: Repo): string | undefined => store && join(store.stateDir, "checks", `objects-${createHash("sha256").update(repo.gitDir).digest("hex").slice(0, 20)}`);
 export type Look = { tree: string; head: string | null } | { tree: null; head: string | null; why: string };
 // The tree of the work tree as it is now, and the commit it has out; `tree` null with why when it was not read.
 export async function treeOf(repo: Repo): Promise<Look | undefined> {
@@ -152,7 +155,7 @@ export async function treeOf(repo: Repo): Promise<Look | undefined> {
   const dir = join(store.stateDir, "checks");
   const id = createHash("sha256").update(repo.gitDir).digest("hex").slice(0, 20);
   const index = join(dir, `index-${id}`);
-  const objects = join(dir, `objects-${id}`);
+  const objects = objectsOf(repo)!;
   const written = `${objects}.bytes`;
   // One look at a time per index: two at once would write it under each other.
   const prev = indexes.get(index) ?? Promise.resolve();

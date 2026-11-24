@@ -17,6 +17,7 @@ import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "n
 import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { BEFORE_DIR } from "../checks/before.ts";
+import { BESIDE_DIR } from "../checks/beside.ts";
 import type { Store } from "../core/store.ts";
 import { git, locate } from "../core/git.ts";
 import { contains, realOf } from "../core/paths.ts";
@@ -226,7 +227,7 @@ export async function settle(c: Ctx, a: AgentEnd): Promise<string> {
   for (const u of unitsOf(jobs)) if (!s.units?.includes(u)) { (s.units ??= []).push(u); record("unit", "not stopped", { name: u }); }
   // What is new in the repositories read at its start. Keel's own worktree and branch for it are told apart.
   // (Keel's own scratch worktrees: a fails-before run's, src/checks/before-run.ts, and the landing queue's, src/landing/queue.ts.)
-  const skip = { trees: new Set(a.worktree ? [a.worktree] : []), branches: new Set(a.branch ? [a.branch] : []), under: [join(store.stateDir, ...BEFORE_DIR), join(store.stateDir, "landing")] };
+  const skip = { trees: new Set(a.worktree ? [a.worktree] : []), branches: new Set(a.branch ? [a.branch] : []), under: [join(store.stateDir, ...BEFORE_DIR), join(store.stateDir, ...BESIDE_DIR), join(store.stateDir, "landing")] };
   const readings = store.db.query<{ repo: string; snap: string }, [string]>("SELECT repo, snap FROM agent_git_before WHERE agent_id = ?").all(a.id);
   for (const row of readings) {
     const top = topOf(row.repo);

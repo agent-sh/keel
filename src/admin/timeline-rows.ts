@@ -402,7 +402,7 @@ export function checkRow(c: CheckIn): TimelineRow {
   const name = c.name.replace(/[^\w.:-]/g, "").slice(0, 40) || "?";
   return clean({
     id: `c:${c.id}`, ts: c.ts, kind: "check" as const, sub: c.result, tone: (c.result === "fail" ? "failed" : "plain") as Tone,
-    text: `Check ${name} ${CHECK_SAID[c.result] ?? c.result}${counts && c.result !== "answered" ? ` (${counts})` : ""}${c.by === "owner" ? ", run by the owner" : ""}, ${c.tree ? `on tree ${c.tree.slice(0, 9)}` : "with no tree kept (its files were too large to read)"}`,
+    text: `Check ${name} ${CHECK_SAID[c.result] ?? c.result}${counts && c.result !== "answered" ? ` (${counts})` : ""}${c.by === "owner" ? ", run by the owner" : c.by === "beside" ? ", run by Keel beside the agent" : ""}, ${c.tree ? `on tree ${c.tree.slice(0, 9)}` : "with no tree kept (its files were too large to read)"}`,
     ms: c.result === "answered" ? undefined : Math.max(0, c.ts - c.started), ...refs({ call_id: c.call_id ?? undefined }),
   });
 }
