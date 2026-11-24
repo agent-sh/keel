@@ -1295,7 +1295,7 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
         </div>
       ) : (
         <>
-          <div className="flex items-center gap-2.5 px-4 pt-3">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3">
             {icon}
             {title}
             {machine}
