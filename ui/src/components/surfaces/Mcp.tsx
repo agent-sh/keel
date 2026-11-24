@@ -143,6 +143,12 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
             <p className="mt-0.5 text-muted">Keel now pins each server's tools and instructions. {s.name} was set up before, so what it listed{s.pinned_at ? ` on ${when(s.pinned_at)}` : ""} was taken as accepted. Look its tools over below; a later change waits for you.</p>
           </div>
         )}
+        {s.same_as && s.same_as.length > 0 && (
+          <div className="k-issue" data-tone="quiet" data-testid="mcp-twin" data-twins={s.same_as.join(",")}>
+            <div className="font-semibold">One server, configured twice</div>
+            <p className="mt-0.5 text-muted">{s.name} and {s.same_as.join(", ")} run the same command or list the same tools. Each entry connects on its own and holds a change of its tools on its own; a change is told once, naming both. Remove the one you do not need.</p>
+          </div>
+        )}
         {s.held && <ToolChanges s={s} base={base} act={act} />}
         {offered(s) && s.tool_names.length > 0 && (s.bundled || s.plugin ? (
           <div>

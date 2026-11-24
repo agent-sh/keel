@@ -269,6 +269,34 @@ test("a server's browser is closed when idle only when the owner switches it on"
   }
 });
 
+test("two entries of one server say so on the MCP page", async ({ page, request }) => {
+  await request.delete("/api/mcp/servers/echo").catch(() => {});
+  await request.delete("/api/mcp/servers/echo-again").catch(() => {});
+  try {
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await expect(panel).toBeVisible();
+    for (const name of ["echo", "echo-again"]) {
+      await panel.getByTestId("toolkit-add-+add").click();
+      await panel.getByTestId("mcp-add-name").fill(name);
+      await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE}`);
+      await panel.getByTestId("mcp-add-submit").click();
+      await expect(panel.locator(`[data-testid="mcp-server"][data-name="${name}"]`)).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+    }
+    const row = panel.locator('[data-testid="mcp-server"][data-name="echo-again"]');
+    await expect(row.getByTestId("mcp-twin")).toHaveAttribute("data-twins", "echo");
+    await expect(row.getByTestId("mcp-twin")).toContainText("One server, configured twice");
+    await shoot(page, "mcp-twin");
+    await request.delete("/api/mcp/servers/echo");
+    await expect(row.getByTestId("mcp-twin")).toHaveCount(0);
+  } finally {
+    await request.delete("/api/mcp/servers/echo-again").catch(() => {});
+    await request.delete("/api/mcp/servers/echo").catch(() => {});
+  }
+});
+
 test("mcp import from other agents", async ({ page, request }) => {
   const imp = await (await request.get("/api/mcp/importable")).json();
   test.skip(!String(imp.home).includes("keel-work"), "needs a scratch import home (KEEL_IMPORT_HOME)");

@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS alert_far (machine TEXT PRIMARY KEY, ts INTEGER NOT N
 CREATE INDEX IF NOT EXISTS alerts_approval_id ON alerts(json_extract(data, '$.approval_id')) WHERE kind = 'approval';
 CREATE INDEX IF NOT EXISTS alerts_call_id ON alerts(json_extract(data, '$.call_id')) WHERE kind = 'question';
 CREATE INDEX IF NOT EXISTS alerts_plan_id ON alerts(json_extract(data, '$.plan_id')) WHERE kind = 'question';
+-- A server's change of tools is told once, however many entries of the same server list it (raise).
+CREATE INDEX IF NOT EXISTS alerts_mcp_change ON alerts(json_extract(data, '$.mcp_change')) WHERE kind = 'mcp';
 CREATE TABLE IF NOT EXISTS alert_far_reads (machine TEXT NOT NULL, alert TEXT NOT NULL, PRIMARY KEY (machine, alert));`);
   sweep();
   const g = globalThis as { __keelAlertSweep?: ReturnType<typeof setInterval> };
@@ -448,7 +450,10 @@ export const LONG_TURN_MS = 5 * 60_000;
 const waits = (a: Pick<Alert, "kind" | "session_id" | "data" | "read">) => (a.data?.far ? !a.read : stillOpen(a));
 // A word about a machine is a notice, not a failure of work: it stays in the inbox too.
 const routine = (kind: AlertKind, data: unknown, st: AlertSettings) =>
-  kind === "snooze_over" || kind === "refused" || kind === "machine" || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
+  kind === "snooze_over" || kind === "refused" || kind === "machine"
+  // The helper's reply to a digest: its own decision to notify is the alert it raises (its notify tool); the end of its turn is never one.
+  || (kind === "finished" && (data as { digest_reply?: boolean } | undefined)?.digest_reply === true)
+  || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
 
 // `silent`: kept in the inbox and told on no channel (an update of a row the owner was told of already).
 // An open incident a session's failure is part of (src/automation/incidents.ts): its one alert
@@ -540,6 +545,9 @@ export function waitsNow(ids: string[]): Record<string, WaitNow> {
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown, silent = false): Alert | undefined {
   try {
     const { store } = D();
+    // One change of tools, told once: the entries of one server (or of servers that list the same tools) each report it.
+    const change = kind === "mcp" ? (data as { mcp_change?: unknown } | undefined)?.mcp_change : undefined;
+    if (typeof change === "string" && store.db.query("SELECT 1 FROM alerts WHERE kind = 'mcp' AND json_extract(data, '$.mcp_change') = ? LIMIT 1").get(change)) return undefined;
     if (COSTED.has(kind) && sessionId && !(data as { expired?: boolean } | undefined)?.expired) {
       let wait: WaitCost | undefined;
       try { wait = waitHook.of?.(sessionId); } catch (e) { capture(e, { at: "the cost of a wait", kind }); }
@@ -592,8 +600,10 @@ function file(x: Filing): Alert | undefined {
   const origin = x.far ? " AND json_extract(data, '$.far.machine') = ?" : " AND far_id IS NULL";
   const theirs = x.far ? [x.far.machine] : [];
   // One commit for the row it replaces, its number and the row itself (they were three); what is told of it goes out after.
+  let inPlace = false;
   const made = store.db.transaction(() => {
   let asked: number | undefined;
+  inPlace = false;
   // And the cost it had when it began to wait: the queue's key is read once (src/core/wait-rank.ts).
   let first: unknown;
   if (key && decision) {
@@ -613,6 +623,11 @@ function file(x: Filing): Alert | undefined {
     store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = '${kind}' AND json_extract(data, ${KEY_PATH[key]}) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
       .run(...[String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
   } else if (sid && failureFp(data)) {
+    // A newer count of a cause whose notification is still on screen (unread, told on the desktop) replaces that
+    // notification where it stands: the same desktop key, no sound.
+    if (x.silent && !(data as { in_incident?: string } | undefined)?.in_incident) {
+      inPlace = !!store.db.query(`SELECT 1 FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND json_extract(data, '$.failure_fp') = ? AND json_extract(delivery, '$.desktop.state') = 'sent' LIMIT 1`).get(sid, kind, failureFp(data)!);
+    }
     // Agents' failures of one cause are one row a cause: a newer count replaces the unread row of its cause, never the session's own failure.
     store.db.query(`DELETE FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND json_extract(data, '$.failure_fp') = ?`).run(sid, kind, failureFp(data)!);
   } else if (sid) {
@@ -636,7 +651,8 @@ function file(x: Filing): Alert | undefined {
   const withheld = calls && !x.far?.read && f.deliver && !f.quiet && routed.length > 0 && attending(sid, x.from);
   // Read where it was raised (the owner was at that daemon's own page, or it was put away there): kept, and told nowhere.
   const farRead = !!x.far?.read;
-  const sendTo = watched || withheld || farRead || x.silent || !f.deliver || f.quiet ? [] : routed;
+  const held = watched || withheld || farRead || !f.deliver || f.quiet;
+  const sendTo = held ? [] : inPlace ? routed.filter((c) => c === "desktop") : x.silent ? [] : routed;
   // Why nothing left the inbox when nothing did: no route chosen, or the
   // chosen ones are not set up (judged now, when it was raised).
   const inboxOnly = sendTo.length || watched || withheld || farRead || !f.deliver || f.quiet ? {}
@@ -644,7 +660,7 @@ function file(x: Filing): Alert | undefined {
     : { inbox_only: !chosen.length ? { no_route: true } : quietKind && chosen.some((c) => INTERRUPTS.has(c) && channels.get(c)?.available()) ? { routine: true } : { not_set_up: chosen } };
   const flags = { ...(f.deliver ? {} : { snoozed: true }), ...(f.quiet ? { held: true } : {}), ...(withheld ? { withheld: routed } : {}) };
   if (withheld) withheldMaybe = true;
-  const extra = { ...x.child, ...flags, ...inboxOnly, ...(first ? { wait: first } : {}) };
+  const extra = { ...x.child, ...flags, ...inboxOnly, ...(sendTo.length && inPlace ? { in_place: true } : {}), ...(first ? { wait: first } : {}) };
   const stored = Object.keys(extra).length ? { ...(data as object), ...extra } : data;
   const delivery: Delivery | undefined = sendTo.length ? Object.fromEntries(sendTo.map((c) => [c, { state: "pending" as const }])) : undefined;
   // When it came here, whoever raised it: the inbox is in the order things reached the owner
@@ -1173,7 +1189,8 @@ registerChannel({
     const cost = costs(now) ? costLine(now, Date.now()) : "";
     const a = cost ? { ...given, body: `${given.body}\n${cost}` } : given;
     const key = a.session_id ?? "_";
-    const sound = settings().sound;
+    // A count that grew on a notification already shown replaces it quietly.
+    const sound = settings().sound && !a.data?.in_place;
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
     // The desktop app's to show while one is attached: its click opens the
     // app's window. It is the app's once the app said the notification is on
@@ -1246,9 +1263,11 @@ registerChannel({
 // An agent's failure reaches the owner as its cause does in the session's own
 // record (session_failures, src/automation/failure-groups.ts): one alert a
 // cause a parent, "Coordinator: 6 agents failed: billing", its count raised as
-// more agents fail of it. A newer count replaces the unread row and is told on
-// no channel again (the owner was told of that cause once); one the owner has
-// read is news again when another agent fails of it. An agent's finished work
+// more agents fail of it. The owner is pushed once a cause (a session's row of it
+// is in the inbox, read or not): a newer count replaces the unread row, and where
+// its notification is still on the desktop it replaces that one in place with no
+// sound; a count that grows after the row was read is a new unread row told on no
+// channel (the owner read the cause already). An agent's finished work
 // is not an alert: its report goes to its parent, and the parent's own Done
 // says when the work is over (its alert waits while agents are out).
 const failureFp = (data: unknown) => { const fp = (data as { failure_fp?: unknown } | null | undefined)?.failure_fp; return typeof fp === "string" ? fp : undefined; };
@@ -1263,7 +1282,7 @@ export function agentsFailed(a: { id: string; parent_id: string; session_id?: st
     const n = named.length + (g.refs.find((r) => r.id === OTHERS)?.n ?? 0);
     const mine = named.find((r) => r.id === a.id);
     const why = failWord(g.cls) || exampleOf(g.sample);
-    const told = store.db.query<{ n: number }, [string, string]>("SELECT COUNT(*) AS n FROM alerts WHERE read = 0 AND kind = 'failed' AND session_id = ? AND json_extract(data, '$.failure_fp') = ?").get(parent.parent_id ?? parent.id, g.fp)!.n > 0;
+    const told = store.db.query<{ n: number }, [string, string]>("SELECT COUNT(*) AS n FROM alerts WHERE kind = 'failed' AND session_id = ? AND json_extract(data, '$.failure_fp') = ?").get(parent.parent_id ?? parent.id, g.fp)!.n > 0;
     raise("failed", parent.id, `${parent.title || "Session"}: ${n} ${n === 1 ? "agent" : "agents"} failed: ${why}`, `${mine?.label ? `Agent "${mine.label}": ` : ""}${exampleOf(mine?.eg ?? g.sample)}`, { failure_fp: g.fp, agents_failed: n, agent_id: a.id, cls: g.cls, ...(a.session_id ? { agent_session: a.session_id } : {}) }, told);
     // The session the owner sees counts as failed until they look at it (ui/src/lib/home.ts).
     let root = parent;
@@ -1355,7 +1374,9 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   // end starts the next turn, whose end is the finish (and replaces this row while it is unread).
   const commands = liveJobs().filter((j) => j.sessionId === sessionId && j.background && running(j)).length;
   const said = plainLine(text) || "The turn finished.";
-  const meta = { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}), ...(commands ? { live: { commands } } : {}) };
+  // The helper answered a digest: whether to tell the owner was its own call (it raised that alert, or none).
+  const digestReply = evs.findLast((e) => e.kind === "user")?.data.kind === "helper_digest";
+  const meta = { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}), ...(commands ? { live: { commands } } : {}), ...(digestReply ? { digest_reply: true } : {}) };
   raise("finished", sessionId, title, commands ? `${stillRuns(commands)}. ${said}` : said, Object.keys(meta).length ? meta : undefined);
 }
 

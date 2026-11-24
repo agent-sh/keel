@@ -9,6 +9,7 @@ import { ask, answer } from "../tools/interact.ts";
 import * as activity from "./activity.ts";
 import * as alerts from "./alerts.ts";
 import { clip, setDeps } from "./core.ts";
+import * as failures from "./failures.ts";
 import { IncidentBook } from "./incident-book.ts";
 import * as snooze from "./snooze.ts";
 
@@ -558,4 +559,70 @@ test("a failure with no session to open leads to the Errors panel; anything else
   expect([alerts.alertPath(loop.id), alerts.opensErrors(loop)]).toEqual(["/?errors=1", true]);
   const back = alerts.raise("snooze_over", null, "Alerts are back", "")!;
   expect([alerts.alertPath(back.id), alerts.opensErrors(back)]).toEqual(["/?inbox=1", false]);
+});
+
+// One cause, told once: a growing count replaces the notification on the desktop where it stands, with no sound.
+test("a failure cause pushes once: a growing count replaces its notification in place, quietly, also after it was read", async () => {
+  const { session, store } = scratch();
+  failures.migrate();
+  const parent = session("Coordinator");
+  const sent: { title: string; sound: boolean; key: string }[] = [];
+  alerts.registerChannel({
+    id: "desktop", label: "Desktop", available: () => true,
+    deliver: (a) => void sent.push({ title: a.title, sound: alerts.settings().sound && !a.data?.in_place, key: a.session_id ?? "_" }),
+  });
+  alerts.saveSettings({ route: { kind: "failed", channel: "desktop", on: true } });
+  const fail = async (n: number) => {
+    const kid = session(`Agent ${n}`, parent);
+    failures.record(parent, { kind: "agent", cls: "quota", message: "Your account has no available credit", ref: { id: kid, label: `Agent ${n}` } });
+    alerts.agentsFailed({ id: kid, parent_id: parent });
+    await settle();
+  };
+  await fail(1);
+  await fail(2);
+  expect(sent.map((s) => [s.title.replace(/^\S+ /, ""), s.sound])).toEqual([["1 agent failed: billing", true], ["2 agents failed: billing", false]]);
+  expect(new Set(sent.map((s) => s.key)).size).toBe(1);
+  expect(alerts.list({ unread: true }).filter((a) => a.kind === "failed")).toHaveLength(1);
+  // The owner reads it: a later count is a row of the inbox again, and no push.
+  alerts.markRead({ session_id: parent });
+  await fail(3);
+  expect(sent).toHaveLength(2);
+  const rows = alerts.list().filter((a) => a.kind === "failed");
+  expect(rows.map((a) => a.read)).toEqual([false, true]);
+  expect(rows[0]!.title).toContain("3 agents failed");
+});
+
+test("a change of tools reported by two entries of one server is one alert naming both", () => {
+  scratch();
+  const change = { mcp_server: "computer-use-linux", mcp_servers: ["computer-use-linux", "linux-computer-use"], mcp_change: "abc123" };
+  const first = alerts.raise("mcp", null, "computer-use-linux and linux-computer-use changed their tools", "one server configured twice", change);
+  const second = alerts.raise("mcp", null, "linux-computer-use changed their tools", "one server configured twice", { ...change, mcp_server: "linux-computer-use" });
+  expect(first).toBeDefined();
+  expect(second).toBeUndefined();
+  expect(alerts.list().filter((a) => a.kind === "mcp")).toHaveLength(1);
+  // Another change of the same server is another alert.
+  expect(alerts.raise("mcp", null, "changed", "again", { ...change, mcp_change: "def456" })).toBeDefined();
+});
+
+test("the helper's reply to a digest is never a push: its own notify is the decision", async () => {
+  const { session, store } = scratch();
+  const s = session("Helper");
+  const sent: string[] = [];
+  alerts.registerChannel({ id: "desktop", label: "Desktop", available: () => true, deliver: (a) => void sent.push(`${a.kind}:${a.title}`) });
+  for (const k of alerts.KINDS) alerts.saveSettings({ route: { kind: k, channel: "desktop", on: true } });
+  const turn = (kind: string | undefined, ms: number) => {
+    store.append(s, "turn_start", { model: "m" });
+    store.append(s, "user", { text: "[helper digest] ...", ...(kind ? { kind } : {}) });
+    store.append(s, "assistant", { blocks: [{ type: "text", text: "No notification: the Wi-Fi dropped." }] });
+    store.append(s, "turn_end", { ms });
+    alerts.onTurnEnd(s, "end_turn", { subagent: false, loopRun: false, more: false });
+  };
+  turn("helper_digest", alerts.LONG_TURN_MS + 1000);
+  await settle();
+  expect(sent).toEqual([]);
+  expect(alerts.list({ limit: 1 })[0]!.data.inbox_only).toEqual({ routine: true });
+  // The owner's own long chat with it is still a finish worth a notice.
+  turn(undefined, alerts.LONG_TURN_MS + 1000);
+  await settle();
+  expect(sent).toHaveLength(1);
 });

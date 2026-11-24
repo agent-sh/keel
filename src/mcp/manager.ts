@@ -119,6 +119,9 @@ export type McpServerState = {
   // offered as accepted meanwhile. `digest` names this set of changes; accepting names it back.
   // `instructions`: its instructions changed too (the system prompt keeps the accepted ones meanwhile).
   held?: { digest: string; changes: ToolChange[]; instructions?: InstructionsChange };
+  // Other entries of the owner's list that are this server under another name: the same command and
+  // arguments (or address), or the same tools. One server configured twice.
+  same_as?: string[];
   pinned_at?: number; // when its tool definitions were last accepted
   pinned_at_upgrade?: boolean; // pinned as it was when this build first ran, and the owner has not looked yet
   class?: ServerClass; // what kind of server it is (src/mcp/class.ts); not of a server Keel brings
@@ -1575,6 +1578,7 @@ export class McpManager {
   // The owner's servers and the ones Keel brings; with a session, that
   // session's own too (`session` on each), under the names it knows them by.
   list(session?: string): McpServerState[] {
+    const twins = this.twinNames();
     return [...this.entries.values()].filter((e) => !e.session || e.session === session).sort((a, b) => (a.label ?? a.name).localeCompare(b.label ?? b.name)).map((e) => {
       const live = e.bundled?.live && e.state !== "disabled" ? e.bundled.live.state() : null;
       // A plugin's server is shown as its plugin wrote it, a sensitive setting not filled in.
@@ -1596,6 +1600,7 @@ export class McpManager {
       schema_fit: e.bundled ? [] : fitReport(this.view(e)),
       tool_hints: e.bundled ? {} : Object.fromEntries(e.tools.map((t) => [t.name, hintWords(hintsOf(t.annotations))] as const).filter(([, w]) => w.length)),
       ...this.heldOf(e),
+      ...(twins.get(e.name) ? { same_as: twins.get(e.name) } : {}),
       ...(e.bundled ? {} : { class: classify(shown, !!e.config.url && this.oauth.signedIn(e.name)) }),
       last_connected: e.last,
       era: e.client?.era,
@@ -1879,6 +1884,27 @@ export class McpManager {
     e.diff = { from: e.tools, rev: this.pinsRev, instr, changes, ...(instructions ? { instructions } : {}) };
     return e.diff;
   }
+  // The owner's entries that are one server under several names (what the page says, and what one alert names):
+  // by entry name, the other names. The same command and arguments or address, or the same listed tools.
+  private twinNames(): Map<string, string[]> {
+    const by = new Map<string, string[]>();
+    for (const e of this.entries.values()) {
+      if (!this.leashed(e)) continue;
+      const keys = [`e:${endpoint(e.config)}`, ...(e.tools.length ? [`t:${digest(canon(e.tools.map(defOf).sort((a, b) => a.name.localeCompare(b.name))))}`] : [])];
+      for (const k of keys) (by.get(k) ?? by.set(k, []).get(k)!).push(e.name);
+    }
+    const out = new Map<string, string[]>();
+    for (const names of by.values()) {
+      if (names.length < 2) continue;
+      for (const n of names) out.set(n, [...new Set([...(out.get(n) ?? []), ...names.filter((m) => m !== n)])]);
+    }
+    return out;
+  }
+  // The names of this server's twins, for a notice that names them all.
+  twinsOf(name: string): string[] {
+    return this.twinNames().get(name) ?? [];
+  }
+
   private heldOf(e: Entry): Pick<McpServerState, "held" | "pinned_at" | "pinned_at_upgrade"> {
     const p = this.pinOf(e);
     if (!p) return {};

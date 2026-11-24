@@ -1,6 +1,7 @@
 import { mcpLine, say } from "../../admin/daemon-log.ts";
 import { registerSocket, type RouteModule } from "../app.ts";
 import { McpManager } from "../../mcp/manager.ts";
+import { changeDigest } from "../../mcp/pins.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
@@ -64,7 +65,13 @@ export const mcpRoutes: RouteModule = (deps) => {
     const added = changes.filter((c) => c.kind === "added").map((c) => c.name), changed = changes.filter((c) => c.kind === "changed").map((c) => c.name);
     const what = [changed.length ? `changed ${list(changed)}` : "", added.length ? `added ${list(added)}` : "", instructions ? "rewrote its instructions" : ""].filter(Boolean);
     const said = what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0];
-    alertHook.raise?.("mcp", null, `${name} changed its tools`, `The MCP server ${name} ${said}. Sessions keep the definitions and instructions you accepted, and a new tool is not offered, until you accept the change in Settings > MCP servers.`, { mcp_server: name });
+    // Entries that are one server (the same command, or the same tools) each report the change: one notice names them all.
+    const names = [name, ...m.twinsOf(name)].sort();
+    const who = names.length > 1 ? `${list(names.slice(0, -1))} and ${names.at(-1)}` : name;
+    const accept = "Sessions keep the definitions and instructions you accepted, and a new tool is not offered, until you accept the change in Settings > MCP servers.";
+    alertHook.raise?.("mcp", null, names.length > 1 ? `${who} changed their tools` : `${name} changed its tools`,
+      names.length > 1 ? `The MCP servers ${who} are one server configured twice. It ${said}. ${accept}` : `The MCP server ${name} ${said}. ${accept}`,
+      { mcp_server: name, ...(names.length > 1 ? { mcp_servers: names } : {}), mcp_change: changeDigest(changes, instructions) });
   };
   // Servers set up before pins were kept are pinned as they list now: the owner is told once, to look them over.
   m.onUpgradePinned = (names) => {
