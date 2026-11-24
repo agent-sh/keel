@@ -21,7 +21,7 @@ import { emptyUsage } from "../../core/types.ts";
 import { ProviderError } from "../http.ts";
 import { project, type WireRules } from "../project.ts";
 import type { ProviderRequest, ProviderResult } from "../types.ts";
-import { effortFor, parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
+import { effortFor, operatorTail, parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
 // openai: OpenAI's API. codex: the ChatGPT backend. xai: xAI's API. compat: a
 // configured server that speaks the protocol (OpenAI's request shape, the
@@ -138,7 +138,13 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
       if (texts.length) input.push({ type: "message", role: m.role, content: texts });
       texts = [];
     };
-    for (const b of m.content) {
+    // The harness's own text at the end of a user message is a developer message after it, where the
+    // route is OpenAI's (the API and the ChatGPT backend): "append a new developer message at the end of
+    // the model's context instead of changing the initial developer message"
+    // (developers.openai.com/api/docs/guides/keep-prefix-unchanged, read 2026-11-24), as Codex does it
+    // for what changes during a session. Earlier items keep their bytes.
+    const tail = m.role === "user" && SYSTEM_IN_INPUT.has(dialect) ? operatorTail(m.content) : 0;
+    for (const b of tail ? m.content.slice(0, -tail) : m.content) {
       if (b.type === "text") texts.push({ type: m.role === "user" ? "input_text" : "output_text", text: b.text });
       else if (b.type === "image") texts.push({ type: "input_image", image_url: dataUrl(b) });
       else if (b.type === "document") texts.push({ type: "input_file", filename: b.name, file_data: dataUrl(b) });
@@ -167,6 +173,7 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
       }
     }
     flush();
+    if (tail) input.push({ type: "message", role: "developer", content: m.content.slice(-tail).map((b) => ({ type: "input_text", text: (b as { text: string }).text })) });
   }
   const tools = req.tools.filter((t) => !(search && t.defer)).map((t) => t.search
     ? { type: "tool_search", execution: "client", description: t.description, parameters: t.input_schema }

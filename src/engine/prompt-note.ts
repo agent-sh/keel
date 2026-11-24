@@ -7,7 +7,9 @@
 // a clear, an expiry, another model: src/engine/build-pin.ts), and from then
 // no note is needed. OpenCode and Codex deliver an edited AGENTS.md the same
 // way, as a message after the history (OpenCode as a diff, or whole when that
-// is shorter), and fold it in at a compaction.
+// is shorter), and fold it in at a compaction. The note is stored as the harness's own text
+// (`system`): the Anthropic and OpenAI Responses wires carry it as a system or developer message
+// after the message it ends (src/providers/wires/common.ts), the others as user text.
 //
 // What the model holds as a block's text is the newest note about it since
 // the context's checkpoint, else the prompt it was sent. A note is written

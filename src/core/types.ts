@@ -5,7 +5,11 @@
 // `origin` is the "<provider>:<model>" that wrote a block carrying opaque
 // provider state (a signature, an encrypted reasoning item). That state is
 // replayed only to the same origin; every other wire gets the plain text.
-export type TextBlock = { type: "text"; text: string; signature?: string; origin?: string };
+// `system`: text the harness wrote itself (a notice, a changed block of the owner's prompt), not the
+// owner's words and not what a tool or an agent returned. A wire that documents a system or developer
+// message among the turns carries it so, after the user message it ends (src/providers/wires/common.ts
+// operatorTail); every other wire reads it as the user text it was stored as.
+export type TextBlock = { type: "text"; text: string; signature?: string; origin?: string; system?: true };
 // `bind`: the fingerprint of what was sent before the block (src/providers/wires/binding.ts).
 export type ThinkingBlock = { type: "thinking"; thinking: string; signature?: string; origin?: string; opaque?: unknown; bind?: string };
 export type RedactedThinkingBlock = { type: "redacted_thinking"; data: string; bind?: string };

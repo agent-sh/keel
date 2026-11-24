@@ -193,7 +193,7 @@ export function toMessages(events: readonly StoredEvent[]): Message[] {
       continue; // the checkpoint's summary leads (an older one in the tail is covered)
     } else if (e.kind === "user") {
       // An image sent without a caption has no text block (providers refuse an empty one).
-      const content: any[] = [...(e.data.images ?? []), ...(e.data.text ? [derived(e.data, "text", () => ({ type: "text", text: e.data.text }))] : [])];
+      const content: any[] = [...(e.data.images ?? []), ...(e.data.text ? [derived(e.data, "text", () => ({ type: "text", text: e.data.text, ...(e.data.system === true && { system: true }) }))] : [])];
       out.push({ role: "user", content });
     } else if (e.kind === "assistant") {
       // A declined reply is discarded: its partial output is not the model's answer.
@@ -209,7 +209,7 @@ export function toMessages(events: readonly StoredEvent[]): Message[] {
     } else if (e.kind === "note" && e.data.model) {
       // A note meant for the model (a background job ended): stored, so the
       // same bytes come back on every later request.
-      out.push({ role: "user", content: [derived(e.data, "note", () => ({ type: "text", text: e.data.text }))] });
+      out.push({ role: "user", content: [derived(e.data, "note", () => ({ type: "text", text: e.data.text, ...(e.data.system === true && { system: true }) }))] });
     }
   }
   // Consecutive same-role messages merge (an interrupted turn can leave two users).
@@ -2027,7 +2027,7 @@ export class Engine {
     if (latest.text === sent.text && !told.size) return false;
     const note = promptNote({ text: sent.text, blocks: sent.blocks }, latest, told);
     if (!note) return false;
-    this.append(session.id, "note", { kind: NOTE_KIND, model: true, short: note.short, blocks: note.blocks, text: note.text });
+    this.append(session.id, "note", { kind: NOTE_KIND, model: true, system: true, short: note.short, blocks: note.blocks, text: note.text });
     return true;
   }
 
@@ -2066,7 +2066,7 @@ export class Engine {
       const was: string = e.data.model;
       if (!was || was === st.info.id) return false;
       const name = (await this.providers.models()).find((m) => m.id === was)?.name ?? was;
-      this.append(id, "note", { kind: "model_told", model: true, from: was, to: st.info.id, text: `[harness] The session's model changed: you are ${st.info.name} from here. The replies above came from another model (the last one from ${name}); go on with the work as it stands.` });
+      this.append(id, "note", { kind: "model_told", model: true, system: true, from: was, to: st.info.id, text: `[harness] The session's model changed: you are ${st.info.name} from here. The replies above came from another model (the last one from ${name}); go on with the work as it stands.` });
       return true;
     }
     return false;
@@ -3028,7 +3028,7 @@ export class Engine {
         steps++;
         // The last step of the budget answers in words: the request keeps its
         // tools (the cached prefix), and calls it still makes are not run.
-        if (budget > 0 && steps === budget) this.append(id, "user", { text: `[harness] This is the last model step this turn may take (the session's step budget is ${budget}). Do not call tools: reply with where the work stands and what is left to do.`, origin: "harness" });
+        if (budget > 0 && steps === budget) this.append(id, "user", { text: `[harness] This is the last model step this turn may take (the session's step budget is ${budget}). Do not call tools: reply with where the work stands and what is left to do.`, origin: "harness", system: true });
         // (A history not counted yet is counted here in slices: the counts below then read what is kept.)
         await countPaced(this.lineage(id), st.info.id);
         let events = this.lineage(id);
@@ -4621,7 +4621,7 @@ export class Engine {
     }
     if (!owed && (parked || end.data.provider_waiting)) return true;
     const cutTools = cut.flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => stopKind(r.content) === "cut") : [])).length;
-    this.accept(id, { origin: "restart", text: restartText(cutTools, owed, !!end.data.unstarted) });
+    this.accept(id, { origin: "restart", system: true, text: restartText(cutTools, owed, !!end.data.unstarted) });
     return true;
   }
 

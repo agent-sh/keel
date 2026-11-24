@@ -7,7 +7,7 @@ import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { allPages, getJson, type ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
-import { anthropicWire } from "./wires/anthropic.ts";
+import { anthropicBody, anthropicWire } from "./wires/anthropic.ts";
 
 // The Messages API version the official TypeScript SDK sends.
 const API_VERSION = "2026-10-21";
@@ -123,6 +123,35 @@ export class AnthropicProvider implements Provider {
   // session. A route that does not take the setting goes on without it.
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     const route = `${this.id}:${req.model}`;
+    try {
+      return await this.bound(req, onDelta);
+    } catch (e) {
+      // The harness's own text goes as a system message among the turns, which the API documents on
+      // some models and answers with a 400 on the rest (no listing says which). A request refused as
+      // malformed that carried one is sent again with that text as user text; when that is accepted
+      // the route is known not to take it, and sends none from then on.
+      if ((e as any)?.status !== 400 || midRefused.has(route) || !this.carriesSystem(req)) throw e;
+      midRefused.add(route);
+      try {
+        return await this.bound(req, onDelta);
+      } catch {
+        midRefused.delete(route);
+        throw e;
+      }
+    }
+  }
+
+  // Whether the body of this request holds a system message among its turns.
+  private carriesSystem(req: ProviderRequest): boolean {
+    try {
+      return anthropicBody(req, { ...ctxFor(this.id, req, []), legacyIsMine: true, midSystem: true }).messages.some((m: { role: string }) => m.role === "system");
+    } catch {
+      return false;
+    }
+  }
+
+  private async bound(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
+    const route = `${this.id}:${req.model}`;
     if (bindingRefused.has(route)) return this.send(req, onDelta);
     const bound = (mode: "error" | "drop_block") => withBeta({ ...req, blockBinding: mode }, BINDING_BETA);
     try {
@@ -139,7 +168,7 @@ export class AnthropicProvider implements Provider {
 
   private async send(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult> {
     if (!this.auth) throw new Error(`${this.id}: no credentials`);
-    const ctx = { ...ctxFor(this.id, req, []), legacyIsMine: true };
+    const ctx = { ...ctxFor(this.id, req, []), legacyIsMine: true, midSystem: !midRefused.has(`${this.id}:${req.model}`) };
     // Deferred tools and tool_reference blocks: the beta each platform names
     // (Claude Code sends the same two).
     if (req.tools.some((t) => t.defer)) req = withBeta(req, this.id === "bedrock" ? "tool-search-tool-2025-10-19" : "advanced-tool-use-2025-11-20");
@@ -186,6 +215,8 @@ const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 const BOUND_ELSEWHERE = /The block is bound to a different conversation/;
 // Routes that refused the setting (a model or platform without it).
 const bindingRefused = new Set<string>();
+// Routes that refused a system message among the turns (a model without it).
+const midRefused = new Set<string>();
 
 function withBeta(req: ProviderRequest, beta: string): ProviderRequest {
   const have = req.extraHeaders?.["anthropic-beta"];

@@ -9,6 +9,9 @@ export type WireCtx = {
   sessionKey: string;
   efforts: string[];      // levels the model takes; empty: send none
   legacyIsMine?: boolean; // see project.ts
+  // The route carries the harness's own text (TextBlock.system) as a system message among the turns
+  // (the Anthropic wire, on the providers whose documentation says it takes one: src/providers/anthropic.ts).
+  midSystem?: boolean;
   // What is repaired in the history; absent: what the wire refuses (each
   // driver's own rules). A test passes {} to get the history as it is stored.
   rules?: WireRules;
@@ -25,6 +28,16 @@ export const askedLife = (wire: Wire | undefined, life: "short" | "long" | undef
   const l = cacheLives(wire);
   return l ? l[life ?? "long"] : undefined;
 };
+
+// How many blocks at the end of a user message are the harness's own text. Such a run is carried as a
+// system (Anthropic) or developer (OpenAI) message after the rest of the message, never alone: a message
+// that holds nothing else starts a turn, and the provider's rules (a system message follows a user turn)
+// and the model's habit (it answers the user) both want the harness's words as that turn's user text.
+export function operatorTail(content: readonly { type: string; system?: true }[]): number {
+  let n = 0;
+  for (let i = content.length - 1; i >= 0 && content[i]!.type === "text" && content[i]!.system === true; i--) n++;
+  return n < content.length ? n : 0;
+}
 
 export interface WireParser {
   event(e: SseEvent): void;

@@ -6,7 +6,7 @@ import { ProviderError } from "../http.ts";
 import { project, type WireRules } from "../project.ts";
 import { bindReply, carry, unbind, type Binder } from "./binding.ts";
 import type { ProviderRequest, ProviderResult } from "../types.ts";
-import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
+import { operatorTail, parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
 // The error types of a stream's error event that pass by waiting (the API's errors page).
 const STREAM_ERROR_KIND: Record<string, "overloaded" | "rate" | "server"> = { overloaded_error: "overloaded", rate_limit_error: "rate", api_error: "server" };
@@ -89,30 +89,52 @@ const image = (b: ImageBlock) => ({ type: "image", source: { type: "base64", med
 // "Pre-warming the cache"). A write happens only at a breakpoint, and the
 // entry a read there finds is the one it keeps: a breakpoint on the warm words
 // keeps an entry no later request looks up.
-export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine" | "rules"> & { sessionKey?: string }, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false, part = false, own = 0): any[] {
-  const out: any[] = project(messages, { origin: ctx.origin, legacyIsMine: ctx.legacyIsMine, sessionKey: ctx.sessionKey, rules: ctx.rules ?? ANTHROPIC_RULES, toolRefs, part }).map((m) => ({
-    role: m.role,
-    content: m.content.map((b): any => {
-      switch (b.type) {
-        case "image": return image(b);
-        case "document": return { type: "document", source: { type: "base64", media_type: b.media_type, data: b.data }, title: b.name };
-        case "text": return { type: "text", text: b.text };
-        case "thinking":
-          // A thought without a signature cannot be replayed on this wire.
-          return b.signature ? carry({ type: "thinking", thinking: b.thinking, signature: b.signature }, b.bind) : null;
-        case "redacted_thinking": return carry({ type: "redacted_thinking", data: b.data }, b.bind);
-        case "tool_use": return { type: "tool_use", id: b.id, name: b.name, input: b.input };
-        case "tool_result":
-          return {
-            type: "tool_result",
-            tool_use_id: b.tool_use_id,
-            is_error: b.is_error || undefined,
-            content: typeof b.content === "string" ? b.content
-              : b.content.map((c) => (c.type === "image" ? image(c) : c.type === "tool_reference" ? { type: "tool_reference", tool_name: c.tool_name } : { type: "text", text: c.text })),
-          };
-      }
-    }).filter(Boolean),
-  })).filter((m) => m.content.length);
+//
+// The harness's own text at the end of a user message (TextBlock.system) goes as a message of the role
+// "system" after it where the route takes one (`ctx.midSystem`): "Mid-conversation system messages"
+// (platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages and, for Bedrock
+// InvokeModel, docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-mid-conversation-system.html).
+// The message follows a user turn and is the last or is followed by an assistant turn, else it stays
+// text of the user message (the API answers 400 to any other place). It is after the rolling
+// breakpoint, which stays on the user block before it: "Append the system message after the
+// breakpoint", so the cached prefix is the one the earlier requests wrote.
+export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine" | "rules" | "midSystem"> & { sessionKey?: string }, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false, part = false, own = 0): any[] {
+  const tails = new Map<any, number>();
+  const mapped: any[] = project(messages, { origin: ctx.origin, legacyIsMine: ctx.legacyIsMine, sessionKey: ctx.sessionKey, rules: ctx.rules ?? ANTHROPIC_RULES, toolRefs, part }).map((m) => {
+    const wire = {
+      role: m.role,
+      content: m.content.map((b): any => {
+        switch (b.type) {
+          case "image": return image(b);
+          case "document": return { type: "document", source: { type: "base64", media_type: b.media_type, data: b.data }, title: b.name };
+          case "text": return { type: "text", text: b.text };
+          case "thinking":
+            // A thought without a signature cannot be replayed on this wire.
+            return b.signature ? carry({ type: "thinking", thinking: b.thinking, signature: b.signature }, b.bind) : null;
+          case "redacted_thinking": return carry({ type: "redacted_thinking", data: b.data }, b.bind);
+          case "tool_use": return { type: "tool_use", id: b.id, name: b.name, input: b.input };
+          case "tool_result":
+            return {
+              type: "tool_result",
+              tool_use_id: b.tool_use_id,
+              is_error: b.is_error || undefined,
+              content: typeof b.content === "string" ? b.content
+                : b.content.map((c) => (c.type === "image" ? image(c) : c.type === "tool_reference" ? { type: "tool_reference", tool_name: c.tool_name } : { type: "text", text: c.text })),
+            };
+        }
+      }).filter(Boolean),
+    };
+    const n = ctx.midSystem && m.role === "user" ? operatorTail(m.content) : 0;
+    if (n) tails.set(wire, n);
+    return wire;
+  }).filter((m) => m.content.length);
+  const out: any[] = [];
+  mapped.forEach((m, i) => {
+    const n = tails.get(m);
+    const next = mapped[i + 1];
+    if (n && (!next || next.role === "assistant")) out.push({ role: "user", content: m.content.slice(0, -n) }, { role: "system", content: m.content.slice(-n) });
+    else out.push(m);
+  });
   let skip = own;
   for (let i = out.length - 1; mark && i >= 0; i--) {
     const m = out[i]!;

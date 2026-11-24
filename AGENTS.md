@@ -24,7 +24,9 @@ under `~/.cache/keel-work/bun/research/`.
   anyway (`src/engine/build-pin.ts`; a change that must not wait is marked in
   `src/core/build.ts`, and a prompt block of the owner's data says so with a
   `SystemBlock`; a change of that data reaches a warm session as a note at the
-  tail of its history, `src/engine/prompt-note.ts`), long tool output spilled to a
+  tail of its history, `src/engine/prompt-note.ts`; that note and the harness's other own words, never a tool's or an agent's, go
+  in the system role (developer on OpenAI Responses) after the user message they end, where the provider documents it, the
+  cached prefix unchanged: `TextBlock.system`, `operatorTail` in `src/providers/wires/common.ts`), long tool output spilled to a
   file past an inline part sized by what carrying it costs the session
   (`src/tools/spill.ts`, `src/tools/carry.ts`), long material (pages, files, logs, a saved output)
   read in parts by cheaper reader models and compiled into one answer
