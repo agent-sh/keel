@@ -1161,6 +1161,8 @@ export class Gate {
       ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: diskLook() }),
       ...(session.parent_id ? { agent: true as const } : {}),
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
+      // (A command that runs in the sandbox: what its sandbox shows it, read as the file tools' own view of it.)
+      ...(() => { const confinedShown = this.confinedView(session, cls, p, workspace); return confinedShown ? { confinedShown } : {}; })(),
       ...(session.machine || cls.kind !== "read" ? {} : { shown: (path: string) => shownTo(path, workspace, this.readOpts(session, "read-only"), this.spills(session), true) }),
       ...(session.machine || cls.kind === "read" ? {} : {
         keel: (path: string) => { const k = this.keelOwn(path, workspace, scratch); return k?.where === "state" ? k.why : null; },
@@ -1179,6 +1181,13 @@ export class Gate {
         land: (x: string) => [...new Set([x, join(realOf(dirname(x)), basename(x)), realOf(x)])],
       }) }),
     });
+  }
+
+  // For a command that runs in the session's sandbox: whether the sandbox shows it a path. Nothing for a command that
+  // leaves the sandbox, for a session without one and for a session on another machine.
+  private confinedView(session: Session, cls: CallClass, p: SessionPerm, workspace: string): ((path: string) => { shown: boolean }) | undefined {
+    if (session.machine || cls.kind !== "shell" || cls.escalate || p.sandbox === "off" || !this.sandboxed(session, p)) return undefined;
+    return (path: string) => shownTo(path, workspace, this.readOpts(session, p.sandbox), this.spills(session), true);
   }
 
   // The credential a path is or is in: as it is named, and where it lands (a link in the folder to a key is the key).
@@ -1203,6 +1212,12 @@ export class Gate {
     else if (cls.kind === "shell" && cls.interpreter === undefined) {
       const parts = splitCommand(cls.command);
       if (parts) paths = shellCredentialReads(parts, cls.cwd ?? session.workspace, homeOf(), (p) => this.credentialOf(p), undefined, diskLook())?.paths ?? [];
+      // A command in the sandbox reads what the sandbox shows: its own folder's `.env` and kin as they always were,
+      // and a store the owner opened for it, whose values are kept from the model as an allowed read's are. What the
+      // sandbox hides it cannot read.
+      const p = this.perm(session.id);
+      const view = this.confinedView(session, cls, p, this.scope(session).workspace);
+      if (view) { const ws = realOf(session.workspace); paths = paths.filter((x) => view(x).shown && !contains(ws, realOf(x))); }
     }
     if (!paths.length) return;
     const files: string[] = [];

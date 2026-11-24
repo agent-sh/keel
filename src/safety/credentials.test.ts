@@ -210,3 +210,18 @@ test("on a disk that does not tell cases apart a listed name matches in any case
   expect(foldsCase(realpathSync(tmpdir()))).toBe(false);
   expect(credentialName("secrets")).toBe(true);
 });
+
+test("in the sandbox: what it hides asks nobody; what it shows runs, and an agent's is refused outside its own folder", () => {
+  const cmd = (c: string, f: Partial<Facts>) => verdict(decide({ kind: "shell", command: c, cwd: `${home}/projects/app` }, facts("auto-edits", { tool: "Bash", sandboxed: true, ...f })));
+  const shows = (...open: string[]) => ({ confinedShown: (p: string) => ({ shown: open.some((o) => p === o || p.startsWith(o + "/")) }) });
+  const mine = `${home}/projects/app/.env`, listed = `${home}/.aws/credentials`;
+  expect(cmd(`cat ${mine}`, shows(mine))).toBe("runs");
+  expect(cmd(`cat ${listed}`, shows())).toBe("runs");
+  expect(cmd(`cat ${listed}`, shows(listed))).toBe("runs");
+  expect(cmd(`cat ${listed}`, shows(listed))).toBe("runs");
+  expect(cmd(`cat ${listed}`, { ...shows(listed), agent: true })).toBe("refused");
+  expect(cmd(`cat ${listed}`, { ...shows(), agent: true })).toBe("runs");
+  expect(cmd(`cat ${mine}`, { ...shows(mine), agent: true })).toBe("runs");
+  // Without the sandbox's view (off, or the command leaves it) the owner is asked.
+  expect(cmd(`cat ${mine}`, {})).toBe("owner");
+});

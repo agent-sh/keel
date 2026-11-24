@@ -152,3 +152,30 @@ test("a folder named like a key file is not one", async () => {
   expect(await through(owner, "Glob", { pattern: "*", path: join(ws, "secrets") })).toBe("ran");
   expect(await bash("ls secrets")).toBe("ran");
 });
+
+test("a command that runs in the sandbox asks nobody for what the sandbox hides, and runs a credential file it shows with its values given to the vault", async () => {
+  const boxed = gate as any;
+  // (Sessions whose sandbox is on: the gate's check says so for these.)
+  const sb = new Gate((gate as any).store, new Bus(), (_s, p) => p.sandbox !== "off");
+  const run = async (s: Session, command: string) => {
+    const stop = new AbortController();
+    let done: unknown = "waiting";
+    const asked = sb.beforeTool(s, { id: `c${n++}`, tool: tool("Bash"), input: { command }, ctx: { sessionId: s.id, cwd: s.workspace, signal: stop.signal, spillDir: join(state, "spill", s.id), seen: new Map() } }).then((r) => (done = r));
+    const open = () => sb.approvals({ session: s.id, pending: true });
+    for (let i = 0; i < 100 && done === "waiting" && !open().length; i++) await Bun.sleep(5);
+    const card = open()[0];
+    if (card) sb.resolve(card.id, s.id, { choice: "deny" });
+    await asked;
+    return card ? "card" : done && typeof done === "object" && "deny" in done ? "refused" : "ran";
+  };
+  void boxed;
+  sb.setPerm(owner.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  sb.setPerm(agent.id, { mode: "auto", sandbox: "workspace-write" });
+  // The workspace's own `.env` and what the sandbox hides: no card, for the owner and for an agent.
+  for (const c of ["cat .env", "cat ~/.ssh/id_ed25519; cat .env", `ls ${state}/keel.db; cat ${state}/keel.db`, "cat ~/.aws/credentials", "grep -r TEST_TOKEN ~", "cat .envrc"])
+    expect([c, await run(owner, c), await run(agent, c)]).toEqual([c, "ran", "ran"]);
+  // Off the sandbox, or out of it, the owner is asked as before.
+  sb.setPerm(owner.id, { mode: "auto-edits", sandbox: "off" });
+  expect(await run(owner, "cat .env")).toBe("card");
+  expect(await run(owner, "cat ~/.aws/credentials")).toBe("card");
+});

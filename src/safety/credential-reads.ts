@@ -3,7 +3,7 @@
 // wildcard that can reach one, a copy of one, and a recursive search of a folder that holds the home's stores or
 // files named like credentials. A file tool's read of the same paths is the same class (policy.ts decides both).
 import { readdirSync, type Dirent } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
 import { credentialName, storesSaid, storesUnder, STORES, type Credential } from "./credentials.ts";
 import { laid, type Laid } from "./risk.ts";
@@ -90,11 +90,15 @@ export function wildNames(last: string): string[] {
 
 // ---- the command ----
 
-export type Reads = { what: string; by: string; paths: string[]; api?: string };
+// `hits`: each place the command reads that is a credential, where it is (a file, a store, or the folder a search
+// walks that holds some): what a sandbox that hides it keeps the command from, whatever the command is.
+export type Hit = { path: string; what: string; by: string; api?: string };
+export type Reads = { what: string; by: string; paths: string[]; api?: string; hits: Hit[] };
 // What the gate can add from the disk: the names of the files under a folder that hold credentials by their names
 // (a bounded look), and the files a pattern names. Without them, a command is judged by its words alone.
 const EXPANDED_MAX = 500;
-export type DiskLook = { named?: (folder: string) => string[]; expand?: (pattern: string, dir: string) => string[] };
+export type DiskLook = { named?: (folder: string) => string[]; // the files under a folder that hold credentials by their names, as full paths
+   expand?: (pattern: string, dir: string) => string[] };
 
 // A literal excluded by an option of a searcher or a find: `--exclude=.env`, `-g '!.env'`, `--ignore .env`.
 const globMatches = (glob: string, name: string) => { try { return new Bun.Glob(glob).match(name); } catch { return false; } };
@@ -114,6 +118,7 @@ function substituted(how: Made | undefined, depth = 0): string[] {
 export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre: Laid = laid(parts, cwd, home), look: DiskLook = {}): Reads | null {
   let first: { what: string; by: string; api?: string } | null = null;
   const paths: string[] = [];
+  const hits: Hit[] = [];
   // A word as a path: where it is, up to its first wildcard when it has one (the folder it lists).
   const at = (w: string, dir: string | null): string | null => {
     if (!w || w.length > 4096) return null;
@@ -129,6 +134,7 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
     const c = credential(p);
     if (!c) return false;
     paths.push(c.path);
+    hits.push({ path: c.path, what: c.what, by, ...(c.api ? { api: c.api } : {}) });
     first ??= { what: c.what, by, ...(c.api ? { api: c.api } : {}) };
     return true;
   };
@@ -159,13 +165,18 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
     if (note(folder, by)) return true;
     const stores = storesUnder(folder, home);
     if (stores.length) {
-      first ??= { what: `${folder === home ? "the home folder" : contains(home, folder) ? `~/${folder.slice(home.length + 1)}` : folder}, which holds the owner's credential stores (${storesSaid(stores, home)})`, by };
+      const what = `${folder === home ? "the home folder" : contains(home, folder) ? `~/${folder.slice(home.length + 1)}` : folder}, which holds the owner's credential stores (${storesSaid(stores, home)})`;
+      hits.push({ path: folder, what, by });
+      first ??= { what, by };
       return true;
     }
     if (look.named) {
-      const names = look.named(folder).filter((n) => !except(n) && (hidden || !n.startsWith(".")));
-      if (names.length) {
-        first ??= { what: `${folder === home ? "the home folder" : contains(home, folder) ? `~/${folder.slice(home.length + 1)}` : folder}, which holds files that hold credentials (${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}). Leave them out of the search (grep --exclude=${names[0]}, rg -g '!${names[0]}') or name the files you need`, by };
+      const found = look.named(folder).filter((n) => !except(basename(n)) && (hidden || !basename(n).startsWith(".")));
+      if (found.length) {
+        const names = found.map((n) => basename(n));
+        const what = `${folder === home ? "the home folder" : contains(home, folder) ? `~/${folder.slice(home.length + 1)}` : folder}, which holds files that hold credentials (${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}). Leave them out of the search (grep --exclude=${names[0]}, rg -g '!${names[0]}') or name the files you need`;
+        for (const f of found) { paths.push(f); hits.push({ path: f, what, by }); }
+        first ??= { what, by };
         return true;
       }
     }
@@ -312,7 +323,7 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
       if (to && !entered.includes(to)) entered.push(to);
     }
   }
-  return first ? { ...(first as { what: string; by: string; api?: string }), paths } : null;
+  return first ? { ...(first as { what: string; by: string; api?: string }), paths, hits } : null;
 }
 
 // ---- what the disk adds ----
@@ -322,7 +333,7 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
 const NOT_ENTERED = new Set([".git", "node_modules"]);
 const LOOK_ENTRIES = 4000, LOOK_NAMES = 20;
 
-// The names of the files under a folder that hold credentials by their names, as far as a look of a few thousand
+// The files under a folder (full paths) that hold credentials by their names, as far as a look of a few thousand
 // entries goes (a folder is read, then those in it, level by level).
 export function namedUnder(folder: string): string[] {
   const names = new Set<string>();
@@ -335,7 +346,7 @@ export function namedUnder(folder: string): string[] {
       for (const e of entries) {
         if (seen++ >= LOOK_ENTRIES) break;
         if (e.isDirectory()) { if (!NOT_ENTERED.has(e.name)) next.push(join(d, e.name)); }
-        else if (e.isFile() && credentialName(e.name)) names.add(e.name);
+        else if (e.isFile() && credentialName(e.name)) names.add(join(d, e.name));
       }
     }
     level = next;

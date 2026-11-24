@@ -508,6 +508,9 @@ export type Facts = {
   // Whether the session's sandbox shows a path to its commands (sandbox-view.ts, shownTo): a file tool of a
   // sandboxed session reads what they read. `store`: a credential store or one of Keel's own folders.
   shown?: (path: string) => { shown: true } | { shown: false; store: boolean; why: string };
+  // The same for a command that runs in the sandbox (given only then, not for one that leaves it): what the
+  // sandbox hides the command cannot read, so naming it asks nobody; what it shows is judged as below.
+  confinedShown?: (path: string) => { shown: boolean };
   // The credential a path is or is in (credentials.ts), as named and where it lands: the gate's, with Keel's own
   // folders. Without it the path as named is read against the home's stores and the names alone.
   credential?: (path: string) => Credential | null;
@@ -837,7 +840,16 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   // A credential file a reading command names, or a folder holding the home's stores that a searcher walks: the
   // same class as a file tool's read of it.
   const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look);
-  if (cred) return credentialRead(cred.what, f, cred.by, cred.api);
+  if (cred) {
+    // In the sandbox the command reads what the sandbox shows and nothing else: a credential it hides is not read,
+    // so it asks nobody. One it shows (the session's own folder's `.env`, a folder the owner opened) runs without a
+    // card: what it prints is given to the secrets vault first (the gate does, with the paths), so it reaches no
+    // model. An agent's command that shows one outside its own folder is refused.
+    const shown = f.confinedShown ? cred.hits.filter((h) => f.confinedShown!(h.path).shown) : null;
+    const outside = shown?.find((h) => !contains(f.workspace, h.path));
+    if (!shown) return credentialRead(cred.what, f, cred.by, cred.api);
+    if (outside && f.agent) return credentialRead(outside.what, f, outside.by, outside.api);
+  }
   if (f.mode === "full-auto") return { allow: true };
   // A variable the line's first words give a value is read as that value.
   const reads = (p: Simple) => { if (isReadOnly(p)) return true; const program = f.real && shimmedRead(p); return !!program && f.real!(program); };
