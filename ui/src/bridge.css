@@ -343,6 +343,8 @@
    in the failure's. The state word on the row's line would say it twice: the reason has that room. */
 .k-row-on { min-width: 0; max-width: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .k-row-on[data-on="need"] { color: var(--st-need-ink); }
+/* The word a reader hears before "you": hidden in the line, not taken out of it, so the row's text says "Needs you". */
+.k-row-said { display: inline-block; width: 1px; height: 1px; margin-right: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .k-row-on[data-on="fail"] { color: var(--st-fail-ink); }
 .k-row:has(> .k-row-end > .k-row-on) .k-row-sub > .k-row-state { display: none; }
 /* Where a session runs when that is not here (Where.tsx): a tag tinted with the

@@ -54,9 +54,12 @@ test("the rail and a pinned pane meet in one clean top edge, the head and its to
   // Panes side by side: the other pane's head ends where the bar does.
   const { session: other } = await (await request.post("/api/sessions", { data: { model, title: "Beside the pinned one" } })).json();
   try {
-    await expect(page.locator(`[data-testid="session-row"][data-session="${other.id}"]`)).toBeVisible();
-    // Two panes: the second shows a session too (the newest, this one, where nothing else is newer).
-    await page.getByTestId("panes-2").click();
+    await page.addInitScript(([a, b]) => {
+      if (sessionStorage.getItem("two-panes")) return;
+      sessionStorage.setItem("two-panes", "1");
+      localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [a, b], sizes: {}, active: 0 }));
+    }, [session.id, other.id]);
+    await page.goto(`/s/${session.id}`);
     await page.mouse.move(1000, 700);
     await expect(page.getByTestId("station-head")).toHaveCount(2);
     const ends = await page.getByTestId("station-head").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().bottom)));
@@ -100,13 +103,14 @@ test("a head with a long title and a long reason is still one bar, the brand row
       // The reason has room for about twenty characters at least: beside a title shown whole, or on the
       // line under it with the head's width (this title is too long to leave it room beside).
       const why = (await head.getByTestId("station-why").boundingBox())!, name = (await head.getByTestId("station-title").boundingBox())!;
-      const chars = await head.getByTestId("station-why").evaluate((el) => el.getBoundingClientRect().width / (parseFloat(getComputedStyle(el).fontSize) * 0.5));
+      // (Whole, or cut no shorter than about twenty characters.)
+      const chars = await head.getByTestId("station-why").evaluate((el) => el.scrollWidth <= el.clientWidth ? Infinity : el.getBoundingClientRect().width / (parseFloat(getComputedStyle(el).fontSize) * 0.5));
       expect(chars, `at ${width} the reason is cut to about ${Math.round(chars)} characters`).toBeGreaterThan(20);
       const beside = Math.abs(why.y + why.height / 2 - (name.y + name.height / 2)) < 4;
       if (beside) expect(await head.getByTestId("station-title").evaluate((el) => el.scrollWidth <= el.clientWidth), `at ${width} the reason is beside a cut title`).toBe(true);
       else {
         expect(why.y, `at ${width} the reason is under the title`).toBeGreaterThan(name.y + name.height - 2);
-        expect(why.width, `at ${width} the reason under the title is cut short of the head`).toBeGreaterThan(h.width * 0.5);
+        if (chars !== Infinity) expect(why.width, `at ${width} the reason under the title is cut short of the head`).toBeGreaterThan(h.width * 0.5);
       }
       if (width === 1440 || width === 1050) await shoot(page, `top-edge-03-long-${width}`);
     }

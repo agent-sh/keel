@@ -496,7 +496,8 @@ test("with four panes the list is still titles, one line a session, and folds to
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${ids.reader}`);
     await page.getByTestId("show-sidebar").first().click();
-    await expect(row(ids.need!).getByTestId("row-state")).toBeVisible();
+    // Who it waits on stands where its time would be.
+    await expect(row(ids.need!).getByTestId("row-on")).toBeVisible();
     await expect(page.getByTestId("sum-need")).toBeVisible();
     await shoot(page, "rail-stable-05-phone");
   } finally {
