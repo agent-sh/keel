@@ -41,7 +41,9 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
       const g = (await agentsOf(request, a!.session_id)).find((k) => k.title === "Gamma")!;
       ids.push(a!.session_id, b!.session_id, g.session_id);
       // Each is named by its path from this session: the grandchild under its parent.
-      await expect(ask(page, root).and(page.locator(`[data-agent="${g.session_id}"]`)).getByTestId("child-path")).toHaveText(/Alpha › Gamma/);
+      await expect(ask(page, root).and(page.locator(`[data-agent="${g.session_id}"]`)).getByTestId("child-path")).toHaveText(/^Agent Alpha › Gamma$/);
+      // (the same prefix at every depth)
+      await expect(ask(page, root).and(page.locator(`[data-agent="${a!.session_id}"]`)).getByTestId("child-path")).toHaveText(/^Agent Alpha$/);
       await expect(ask(page, root).and(page.locator(`[data-agent="${g.session_id}"]`))).toHaveAttribute("data-depth", "2");
       await expect(ask(page, root).and(page.locator(`[data-agent="${a!.session_id}"]`))).toHaveAttribute("data-depth", "1");
       const card = (id: string) => page.locator(`[data-station="${root}"] [data-agent="${id}"]`);

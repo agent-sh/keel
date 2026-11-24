@@ -56,7 +56,7 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
               className="mb-1 flex max-w-full items-center gap-1.5 text-caption text-muted hover:text-fg"
             >
               <Bot className="size-3.5 shrink-0 text-accent" />
-              <span className="min-w-0 truncate" data-testid="child-path" title={agent}>{path.length > 1 ? <>{names.slice(0, -1).join(" › ")} › <span className="text-fg">{names.at(-1)}</span></> : <>Agent <span className="text-fg">{names[0]}</span></>}</span>
+              <span className="min-w-0 truncate" data-testid="child-path" title={agent}>Agent {names.length > 1 && <>{names.slice(0, -1).join(" › ")} › </>}<span className="text-fg">{names.at(-1)}</span></span>
               <span className="shrink-0">{stateWords({ watch: "need", why: asks && !open[id]?.length ? "question" : "approval" }).phrase.toLowerCase()}</span>
             </button>
             {!!open[id]?.length && <Suspense fallback={null}><Approvals sessionId={id} asker={agent} where={where} /></Suspense>}
