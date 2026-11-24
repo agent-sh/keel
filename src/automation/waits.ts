@@ -1092,7 +1092,8 @@ function startMonitor(w: WaitRecord) {
 function monitorTimeout(w: WaitRecord): string {
   const base = "The monitor reached its deadline and was stopped. Start it again if it is still needed.";
   const st = live.get(w.id);
-  if (w.events || st?.seen === undefined) return base;
+  // (The record as it is now: the deadline's own flush may just have delivered an event the caller's copy does not count.)
+  if ((get(w.id)?.events ?? w.events) || st?.seen === undefined) return base;
   const match = (w.spec as { match?: string }).match;
   const what = st.seen === 0 ? "Its command wrote nothing" : `No line matched ${match ?? "the pattern"} among the ${st.seen} line${st.seen === 1 ? "" : "s"} its command wrote${st.errs ? `, ${st.errs} of them on stderr` : ""}`;
   let text = `The monitor reached its deadline with no event and was stopped. ${what}.`;

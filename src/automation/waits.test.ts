@@ -370,6 +370,8 @@ test("a monitor that reaches its deadline delivers the lines it still held, then
   expect(said).toContain("READY one");
   expect(said.indexOf("READY one")).toBeLessThan(said.indexOf('outcome="timeout"'));
   expect(waits.get(w.id)).toMatchObject({ status: "timeout", events: 1 });
+  // The line the deadline delivered is an event: the timeout says none of "no event".
+  expect(waits.get(w.id)!.outcome).not.toContain("No line matched");
 });
 
 test("a monitor that times out with no event says why: what it wrote, that part of it went to stderr, and a file", async () => {
