@@ -4,7 +4,7 @@ import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { draftPresent } from "./drafts.ts";
 import { deliver } from "../../automation/core.ts";
 import { momentumReport, momentumSocketPath, startMomentumSocket } from "../../integrations/momentum.ts";
-import { raise } from "../../automation/alerts.ts";
+import { raise, settleMetric } from "../../automation/alerts.ts";
 import { memoryMeter, MEMORY_PATHS } from "../../integrations/memory-meter.ts";
 import { watchFell } from "../../integrations/memory-fell.ts";
 import { isWriter, MemoryStore, memoryWriter as writer } from "../../integrations/memory-store.ts";
@@ -41,6 +41,7 @@ export const integrationRoutes: RouteModule = (deps) => {
     open: () => new Set(MEMORY_PATHS.filter((p) => store.db.query("SELECT 1 FROM admin_meta WHERE key = ?").get(meta(p)))),
     mark: (path, on) => void (on ? store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES (?, ?)").run(meta(path), String(Date.now())) : store.db.query("DELETE FROM admin_meta WHERE key = ?").run(meta(path))),
     raise: (f, t) => void raise("regression", null, t.title, t.body, { metric: "memory_recall", path: f.path, recent: f.recent, day: f.day }),
+    settle: (path) => settleMetric("memory_recall", path),
   }).catch((e) => errors.capture("server", e, { at: "memory recall check" }));
   const fl = globalThis as { __keelFellTimer?: ReturnType<typeof setInterval>; __keelFellFirst?: ReturnType<typeof setTimeout> };
   clearInterval(fl.__keelFellTimer); clearTimeout(fl.__keelFellFirst);

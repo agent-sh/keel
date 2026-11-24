@@ -6,10 +6,10 @@ const stand = (path: MemoryPath, recent: Window, day: Window): Standing => ({ pa
 const DAY: Window = { answered: 600, hits: 160 };
 
 function world(initial: Standing[]) {
-  const marks = new Set<string>(), alerts: string[] = [];
+  const marks = new Set<string>(), alerts: string[] = [], settled: string[] = [];
   let now = initial;
-  const deps: FellDeps = { standing: async () => now, open: () => new Set(marks), mark: (p, on) => void (on ? marks.add(p) : marks.delete(p)), raise: (f, t) => void alerts.push(`${f.path}: ${t.title} | ${t.body}`) };
-  return { deps, alerts, marks, set: (s: Standing[]) => void (now = s) };
+  const deps: FellDeps = { standing: async () => now, open: () => new Set(marks), mark: (p, on) => void (on ? marks.add(p) : marks.delete(p)), raise: (f, t) => void alerts.push(`${f.path}: ${t.title} | ${t.body}`), settle: (p) => void settled.push(p) };
+  return { deps, alerts, marks, settled, set: (s: Standing[]) => void (now = s) };
 }
 
 test("a fall of recall is told once, with its numbers, until recall was measured back", async () => {
@@ -31,6 +31,7 @@ test("a fall of recall is told once, with its numbers, until recall was measured
   w.set([stand("store_prompt", { answered: 60, hits: 18 }, DAY)]);
   await watchFell(w.deps);
   expect(w.marks.size).toBe(0);
+  expect(w.settled).toEqual(["store_prompt"]);
   w.set([stand("store_prompt", { answered: 80, hits: 1 }, DAY)]);
   await watchFell(w.deps);
   expect(w.alerts).toHaveLength(2);

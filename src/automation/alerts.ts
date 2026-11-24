@@ -634,6 +634,10 @@ function file(x: Filing): Alert | undefined {
     }
     // Agents' failures of one cause are one row a cause: a newer count replaces the unread row of its cause, never the session's own failure.
     store.db.query(`DELETE FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND json_extract(data, '$.failure_fp') = ?`).run(sid, kind, failureFp(data)!);
+  } else if (!sid && !x.far && metricOf(data)) {
+    // A fall of a measure told again (no session, the same measure and path): the unread row of it is the same fall.
+    const m = metricOf(data)!;
+    store.db.query("DELETE FROM alerts WHERE session_id IS NULL AND far_id IS NULL AND kind = ? AND read = 0 AND json_extract(data, '$.metric') = ? AND COALESCE(json_extract(data, '$.path'), '') = ?").run(kind, m.metric, m.path);
   } else if (sid) {
     // A newer notice of the same kind from the same source replaces the unread
     // one: one live row per session and kind (the activity list keeps each).
@@ -1283,6 +1287,16 @@ registerChannel({
 // says when the work is over (its alert waits while agents are out).
 // A cause recurring with a gap shorter than this is one episode: one push for it.
 export const EPISODE_GAP_MS = 60 * 60_000;
+// The measure a session-less alert tells of and where in it: one live row a measure and path (file).
+const metricOf = (data: unknown): { metric: string; path: string } | undefined => {
+  const d = data as { metric?: unknown; path?: unknown } | null | undefined;
+  return typeof d?.metric === "string" ? { metric: d.metric, path: typeof d.path === "string" ? d.path : "" } : undefined;
+};
+// A measure that is well again: its unread alerts are read (nothing of it waits on the owner).
+export function settleMetric(metric: string, path: string): void {
+  const ids = D().store.db.query<{ id: string }, [string, string]>("SELECT id FROM alerts WHERE session_id IS NULL AND far_id IS NULL AND read = 0 AND kept = 0 AND json_extract(data, '$.metric') = ? AND COALESCE(json_extract(data, '$.path'), '') = ?").all(metric, path).map((r) => r.id);
+  if (ids.length) markRead({ ids });
+}
 const failureFp = (data: unknown) => { const fp = (data as { failure_fp?: unknown } | null | undefined)?.failure_fp; return typeof fp === "string" ? fp : undefined; };
 export function agentsFailed(a: { id: string; parent_id: string; session_id?: string }) {
   try {

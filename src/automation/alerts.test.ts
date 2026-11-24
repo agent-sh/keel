@@ -649,3 +649,15 @@ test("a mark of read leaves the sessions it is told to leave, by ids and in a ma
   expect(of(b)).toEqual(bIds);
   expect(alerts.markRead({ all: true })).toBe(1);
 });
+
+test("a fall of a measure raised again replaces its unread row, another path stands beside it, and recovery reads it", () => {
+  scratch();
+  const fall = (path: string, hits: number) => alerts.raise("regression", null, `Memory recall fell ${path}`, `${hits} hits`, { metric: "memory_recall", path, recent: { answered: 86, hits } });
+  fall("store_prompt", 7);
+  fall("store_tool", 3);
+  fall("store_prompt", 5);
+  const rows = alerts.list({ unread: true });
+  expect(rows.map((a) => a.body).sort()).toEqual(["3 hits", "5 hits"]);
+  alerts.settleMetric("memory_recall", "store_prompt");
+  expect(alerts.list({ unread: true }).map((a) => a.body)).toEqual(["3 hits"]);
+});
