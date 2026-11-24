@@ -6,6 +6,10 @@ import { HAIKU, ask, openPanel, shoot } from "./shots.ts";
 
 // The checks of what a change added are soft: a run on a build without it names every one that fails.
 const soft = expect.configure({ soft: true });
+// The test ids of the dialog's land, send back and drop buttons that have a fill (the dark, primary ones). Read with the pointer away.
+const solidActions = (dlg: import("@playwright/test").Locator) => dlg.evaluate((el) => [...el.querySelectorAll<HTMLElement>('button[data-testid^="tree-land"], button[data-testid="tree-back"], button[data-testid="tree-drop"]')]
+  .filter((b) => { const c = getComputedStyle(b).backgroundColor; return c !== "rgba(0, 0, 0, 0)" && c !== "transparent"; }).map((b) => b.dataset.testid));
+
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
 
 // Feature: one review for a tree. A coordinator's three agents each leave a branch: alpha changes line 3 of
@@ -115,7 +119,11 @@ test("the tree review reads every agent's branch as one diff by area and lands, 
   await soft(set).toHaveText(new RegExp(`^Land 2 of 3: .*${alpha.branch.replace(/^keel\//, "")}`));
   await soft(set).toContainText(gamma.branch.replace(/^keel\//, ""));
   await soft(set).not.toContainText(beta.branch.replace(/^keel\//, ""));
-  await soft(dlg.getByTestId("tree-land-set-all")).toHaveText("Land all 3");
+  await soft(dlg.getByTestId("tree-land-set-all")).toHaveText("Land all 3, 1 would conflict");
+  // One land is dark: the header's, for the whole safe set. The area's lands, Send back and Drop are text, and the
+  // area's name its scope.
+  soft(await solidActions(dlg)).toEqual(["tree-land-set"]);
+  await soft(dlg.getByTestId("tree-land")).toHaveText("Land 1 in this area, 1 would conflict");
   await page.setViewportSize({ width: 390, height: 844 });
   await soft(set).toBeVisible();
   soft((await set.boundingBox())!.x + (await set.boundingBox())!.width).toBeLessThanOrEqual(390);
@@ -303,6 +311,8 @@ test("the tree review lands the branches that do not conflict, and asks before i
   await expect(dlg.getByTestId("tree-land")).toHaveAttribute("title", new RegExp(`${small.branch.replace(/^keel\//, "")} would conflict`));
   await expect(dlg.getByTestId("tree-land-all")).toHaveText("Land all 3");
   await page.mouse.move(0, 0);
+  // With one area, its main land is the one dark button; the rest are text.
+  expect(await solidActions(dlg)).toEqual(["tree-land"]);
   await shoot(page, "tree-review-03-safe-subset");
   await page.setViewportSize({ width: 390, height: 844 });
   await shoot(page, "tree-review-04-safe-subset-phone");

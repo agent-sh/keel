@@ -168,7 +168,7 @@ const decided = (a: TreeArea) => {
   return acts.length === 1 ? acts[0]! : acts.length ? "mixed" : "none";
 };
 
-function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeView; lanes: Lanes; onDecide: (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[], confirmed?: boolean) => Promise<boolean>; busy: boolean }) {
+function AreaHead({ a, view, lanes, onDecide, busy, headLands }: { a: TreeArea; view: TreeView; lanes: Lanes; onDecide: (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[], confirmed?: boolean) => Promise<boolean>; busy: boolean; headLands: boolean }) {
   const [back, setBack] = useState(false);
   const [note, setNote] = useState("");
   const agentsHere = view.branches.filter((b) => a.branches.includes(b.branch));
@@ -186,6 +186,11 @@ function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeV
   const carried = Object.entries(a.carries).filter(([b]) => !view.held[b]);
   const heldHere = a.branches.filter((b) => view.held[b]);
   const btn = "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-caption disabled:opacity-50";
+  // One land is the primary action of the dialog. Where the header lands the whole safe set (more than one area),
+  // every button here is text and says the area it acts on; with one area, the area's main land is that one.
+  const quiet = "text-muted hover:bg-hover hover:text-fg";
+  const lead = "bg-accent text-accent-fg hover:bg-accent-hover";
+  const here = headLands ? " in this area" : "";
   // The branches that would conflict when landed lie in the order after the one they meet: landing them is
   // the owner's call, so the main button lands the rest and the whole set asks first.
   const risky = wouldConflict(view, a.order);
@@ -207,16 +212,16 @@ function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeV
         {a.order.length > 0 && risky.length > 0 && safe.length > 0 && (
           <button type="button" disabled={busy} onClick={() => void onDecide("land", undefined, undefined, safe)} data-testid="tree-land"
             title={`Queues ${safe.map(short).join(", ")}. ${risky.map(short).join(", ")} would conflict when landing and stays for its agent to rebase.`}
-            className={cn(btn, "bg-accent text-accent-fg hover:bg-accent-hover")}>
-            <GitMerge className="size-3.5" />Land {safe.length}, {risky.length} would conflict
+            className={cn(btn, headLands ? quiet : lead)}>
+            <GitMerge className="size-3.5" />Land {safe.length}{here}, {risky.length} would conflict
           </button>
         )}
         <button type="button" disabled={busy || !a.order.length} onClick={() => void landAll()} data-testid={risky.length > 0 && safe.length > 0 ? "tree-land-all" : "tree-land"}
           title={a.order.length ? `Queued in this order: ${a.order.map(short).join(", ")}` : "No branch here can land now: see what holds it"}
-          className={cn(btn, risky.length > 0 && safe.length > 0 ? "border border-line text-fg hover:bg-hover" : "bg-accent text-accent-fg hover:bg-accent-hover")}>
-          <GitMerge className="size-3.5" />{risky.length > 0 && safe.length > 0 ? `Land all ${a.order.length}` : <>Land {a.order.length > 1 ? `${a.order.length} branches` : "it"}</>}
+          className={cn(btn, risky.length > 0 && safe.length > 0 || headLands ? quiet : lead)}>
+          <GitMerge className="size-3.5" />{risky.length > 0 && safe.length > 0 ? `Land all ${a.order.length}${here}` : <>Land {a.order.length > 1 ? `${a.order.length} branches` : "it"}{here}</>}
         </button>
-        <button type="button" disabled={busy} onClick={() => { if (!back) { setNote(""); setTo(agentsHere.map((b) => b.agent)); } setBack(!back); }} data-testid="tree-back" className={cn(btn, "border border-line text-fg hover:bg-hover")}>
+        <button type="button" disabled={busy} onClick={() => { if (!back) { setNote(""); setTo(agentsHere.map((b) => b.agent)); } setBack(!back); }} data-testid="tree-back" className={cn(btn, quiet)}>
           <CornerUpLeft className="size-3.5" />Send back
         </button>
         <button type="button" disabled={busy} onClick={() => void onDecide("drop")} data-testid="tree-drop" className={cn(btn, "text-muted hover:bg-hover hover:text-danger")}>
@@ -321,8 +326,8 @@ function TreeLand({ view, busy, onLand }: { view: TreeView; busy: boolean; onLan
         </button>
       )}
       {risky.length > 0 && (
-        <button type="button" disabled={busy} onClick={() => void landAll()} data-testid="tree-land-set-all" className={cn(btn, "border border-line text-fg hover:bg-hover")}>
-          Land all {order.length}
+        <button type="button" disabled={busy} onClick={() => void landAll()} data-testid="tree-land-set-all" title={`Queues all ${order.length} in the proposed order, ${risky.map(short).join(", ")} too: ${risky.length === 1 ? "it would conflict" : "they would conflict"} when landing`} className={cn(btn, "text-muted hover:bg-hover hover:text-fg")}>
+          Land all {order.length}, {risky.length} would conflict
         </button>
       )}
     </div>
@@ -567,7 +572,7 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
                     <ArrowLeft className="size-3.5" />Areas
                   </button>
                 )}
-                {view && area && <AreaHead a={area} view={view} lanes={lanes} onDecide={onDecide} busy={busy} />}
+                {view && area && <AreaHead a={area} view={view} lanes={lanes} onDecide={onDecide} busy={busy} headLands={view.areas.length >= 2 && view.order.steps.length > 0} />}
                 <div className="flex flex-col gap-3 p-4" data-testid="tree-area-files">
                   {detail && view && detail.key === at ? detail.files.map((f) => <File key={f.path} f={f} view={view} lanes={lanes} />) : <p className="text-caption text-faint">Reading the area…</p>}
                 </div>
