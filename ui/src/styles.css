@@ -344,21 +344,29 @@
 /* The instrument face (Martian Mono, narrow) has five jobs and no other. Everything
    else is set in the text face, code in the code face. A rule joins a role by
    being listed here; no other rule and no component names the face
-   (src/ui-conventions.test.ts). */
+   (src/ui-conventions.test.ts).
+   The session list (its top block, rows and foot, open or folded, and its hover card) and a
+   pane's top bar are one block of the text face: titles, actions, state words, clocks and counts
+   alike, at the same size and weight steps (a name at --text-ui, regular when read and semibold
+   when it calls the owner; a control at --text-caption; a label or a time at --text-micro). The
+   narrow face there was a third face beside two, for words a glance reads as well in the text
+   face's tabular figures. Only a call sign of the folded rail and a key keep it. */
 /* 1. A state word: Working, Needs you, Failed, Done, Stopped, Offline. */
-.k-face-state, .k-station-word, .k-row-state, .k-row-class, .k-child-state, .k-stuck-head, .k-marks-head, .k-rail-card-word, .k-where-reach, .k-needs, .k-act-mark, .k-pane-empty-word {
+.k-face-state, .k-needs, .k-pane-empty-word {
   /* Set in sentence case, a word of two parts ("Needs you") keeps them together: the face's own space is a whole letter wide. */
   font-family: var(--font-inst); font-stretch: 75%; word-spacing: -0.28em;
 }
 /* 2. A figure a glance reads: a clock, an age, a count. */
-.k-face-figure, .k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
+.k-face-figure, .k-pane-empty-time, .k-dock-need, .k-tally b {
   font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
 }
+/* (The list's and the top bar's figures, in the text face: tabular, so a clock does not jitter.) */
+.k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-act-count, .k-act-n, .k-inbox-count, .k-machine-sep-count { font-variant-numeric: tabular-nums; }
 /* 3. A session's call sign on the folded rail. */
 .k-hour-inferred { background-image: repeating-linear-gradient(135deg, transparent 0 0.1875rem, var(--hour-hatch) 0.1875rem 0.3125rem); }
 .k-tick-code, .k-dock-code { font-family: var(--font-inst); font-stretch: 75%; }
 /* 4. The name of a surface: the product, a page, a panel, a dialog. */
-.k-face-title, .text-display, .text-title, .k-page h1, .k-brand-name, .k-surface-title, .k-settings-jump-label, .k-reader-title h3 {
+.k-face-title, .text-display, .text-title, .k-page h1, .k-surface-title, .k-settings-jump-label, .k-reader-title h3 {
   font-family: var(--font-inst); font-stretch: 87.5%; letter-spacing: -0.02em;
 }
 /* At a page's size the narrow face is drawn at a book weight: bold it read as a stamp. A surface's

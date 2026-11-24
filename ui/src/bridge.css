@@ -43,7 +43,8 @@
 .k-rail[data-open] .k-rail-brand { justify-content: flex-start; padding: 0 0.5rem 0 1.125rem; }
 .k-logo { display: grid; place-items: center; color: var(--fg); }
 .k-logo:not([data-live]) { opacity: 0.4; }
-.k-brand-name { display: none; font-weight: 700; font-size: var(--text-read); letter-spacing: -0.02em; }
+/* The product's name in the text face, at the step and weight of the session's title beside it in the top bar. */
+.k-brand-name { display: none; font-weight: 600; font-size: var(--text-read); letter-spacing: -0.012em; }
 .k-rail[data-open] .k-brand-name { display: inline; }
 .k-fold { margin-left: auto; }
 
@@ -872,7 +873,7 @@ html[data-resizing] iframe { pointer-events: none; }
   content: attr(data-whole); position: absolute; z-index: 1; top: calc(100% + 0.25rem); left: 1rem; right: 1rem; padding: 0.5rem 0.75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-md);
   background: var(--raised); box-shadow: var(--shadow-2); font-size: var(--text-caption); line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; color: var(--fg); pointer-events: none;
 }
-.k-station-identity .k-station-word { font-family: var(--font-sans); font-stretch: normal; font-weight: 600; text-transform: none; letter-spacing: 0; word-spacing: normal; }
+.k-station-identity .k-station-word { font-weight: 600; text-transform: none; letter-spacing: 0; }
 /* The folder has only the room nothing else wants: it grows from nothing into what the state and its reason leave, and says nothing in a sliver. */
 .k-station-identity .k-station-meta { flex: 1 1 0; width: 0; max-width: 13rem; margin: 0; container-type: inline-size; }
 /* Set at the end of its room: the folder stands still while the state beside it says more or less. */

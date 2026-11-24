@@ -233,3 +233,60 @@ test("the foot names its places, and they open from one side in one style", asyn
     await request.delete(`/api/sessions/${session.id}`);
   }
 });
+
+// The session list (its top block, its rows, its foot) and the top bar beside it are one block of the
+// text face: names and actions, state words, clocks and counts. The sizes and weights step alike: the
+// product's name is the session title's step, New session and a row that calls the owner share a weight,
+// Search and a read row another.
+test("the list's top block, its rows and the top bar are set in one face, at the same steps", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === "scripted:stand-in"), "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
+  const tag = Date.now().toString(36);
+  const made: string[] = [];
+  const make = async (title: string, mode: string, text: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `${title} ${tag}` } })).json();
+    made.push(session.id);
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode } });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
+    return session.id as string;
+  };
+  try {
+    const asks = await make("One face: asks", "ask", `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo one-face > one-face.txt" } }])}`);
+    const failed = await make("One face: failed", "full-auto", "script:billing");
+    const seen = await make("One face: read", "full-auto", "script:say Done.");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${asks}`);
+    const pane = page.locator(`section.k-station[data-station="${asks}"]`);
+    await expect(pane).toHaveAttribute("data-watch", "need", { timeout: 15_000 });
+    await expect(page.locator(`[data-testid="session-row"][data-session="${failed}"]`)).toHaveAttribute("data-watch", "fail", { timeout: 15_000 });
+    await expect(pane.getByTestId("station-clock")).toBeVisible();
+    const seenRow = page.locator(`[data-testid="session-row"][data-session="${seen}"]`);
+    await expect(seenRow).toHaveAttribute("data-watch", "done", { timeout: 15_000 });
+    await request.post(`/api/sessions/${seen}/marks`, { data: { unread: false } });
+    await expect(seenRow).not.toHaveAttribute("data-unread", /.*/);
+    await page.mouse.move(1000, 700);
+    // Every word shown there, but a key's cap and a code: which face it is set in.
+    const faces = await page.evaluate((id) => {
+      const roots = [...document.querySelectorAll<HTMLElement>(".k-rail-brand, .k-rail-acts, .k-rail-top, .k-rail-body, .k-rail-foot"), document.querySelector<HTMLElement>(`section.k-station[data-station="${id}"] [data-testid="station-head"]`)!];
+      const out: Record<string, string[]> = {};
+      for (const root of roots) {
+        const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+          const el = n.parentElement!;
+          if (!n.textContent!.trim() || el.closest("kbd, code, .sr-only") || !el.getClientRects().length) continue;
+          const face = getComputedStyle(el).fontFamily.split(",")[0]!.replace(/"/g, "").trim();
+          (out[face] ??= []).push(`${el.className || el.tagName} "${n.textContent!.trim().slice(0, 20)}"`);
+        }
+      }
+      return out;
+    }, asks);
+    expect(Object.keys(faces), `faces in the list and the top bar: ${JSON.stringify(faces)}`).toEqual(["IBM Plex Sans Variable"]);
+    const font = (sel: string) => page.locator(sel).first().evaluate((el) => { const c = getComputedStyle(el); return `${c.fontSize} ${c.fontWeight}`; });
+    expect(await font(".k-brand-name"), "the product's name and the session's title are two steps").toBe(await font(`section.k-station[data-station="${asks}"] [data-testid="station-title"]`));
+    expect(await font('[data-testid="new-session"] .k-act-label')).toBe(await font(`[data-testid="session-row"][data-session="${asks}"] .k-row-title`));
+    expect(await font('[data-testid="open-palette"] .k-act-label')).toBe(await font(`[data-testid="session-row"][data-session="${seen}"] .k-row-title`));
+    await shoot(page, "rail-10-one-face");
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
+  }
+});
