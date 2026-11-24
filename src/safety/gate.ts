@@ -48,7 +48,8 @@ import { landing, type MarkArgs } from "./marks.ts";
 import { readOptsFor } from "./sandbox-config.ts";
 import { bindable, globBase, judgeWrite, ownerOpens, refusedWrites, scopes, shellWrites, type Base } from "./write-scope.ts";
 import { overlays, ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
-import { diskLook, type DiskLook, type LookKept } from "./credential-reads.ts";
+import { diskLook, keptKey, type Classifier, type DiskLook, type Found, type LookKept } from "./credential-reads.ts";
+import { lookUnder } from "./credential-look.ts";
 import { credentialAt, credentialValues, foreignAt, homeOf, linkedCredential, placesOf, type Credential, type CredentialPlaces } from "./credentials.ts";
 
 // Whether a file is, by its inode, one of the files Keel keeps at the top of its state or config folders (and one
@@ -1285,7 +1286,7 @@ export class Gate {
       ...((cls.kind === "shell" || cls.kind === "edit") && session.parent_id && !session.machine ? { shared: this.sharedOf(session) } : {}),
       // Where credentials are kept, as a path is named and where it lands, with Keel's own folders (credentials.ts).
       // An agent reads none. (A session on another machine is judged by the names and the home's stores alone.)
-      ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: this.look(cls) }),
+      ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: this.look(cls, facts?.looked) }),
       ...(session.parent_id ? { agent: true as const } : {}),
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
       // (A command that runs in the sandbox: what its sandbox shows it, read as the file tools' own view of it.)
@@ -1337,15 +1338,31 @@ export class Gate {
     return { as: placesOf(home, { state: this.store.stateDir, config: configDir() }), at: placesOf(realOf(home), { state: realOf(this.store.stateDir), config: realOf(configDir()) }) };
   }
 
-  // What a search of a folder looks at on the disk (credential-reads.ts): this gate's own places.
-  private look(cls: object): DiskLook {
+  // What a search of a folder looks at on the disk (credential-reads.ts): this gate's own places. `looked`: the call's
+  // answers, which hold the look of each folder made off the loop (named below).
+  private look(cls: object, looked?: Looked): DiskLook {
     let kept = lookKept.get(cls);
     if (!kept) lookKept.set(cls, kept = new Map());
+    return diskLook(() => this.classifier(), () => { const { as, at } = this.credentialPlaces(); return [...new Set([as.state, as.config, at.state, at.config].filter((x): x is string => !!x))]; }, kept,
+      looked?.named ? (folder) => looked.named!(folder) : undefined);
+  }
+
+  // How a walk of a folder tells a credential: where a path is, what it is called, and what it is another name for.
+  private classifier(): Classifier {
+    const { as, at } = this.credentialPlaces();
     const bare = (x: CredentialPlaces) => ({ ...x, dir: undefined });
-    return diskLook(() => {
-      const { as, at } = this.credentialPlaces();
-      return { by: (p) => credentialAt(p, bare(as)) ?? credentialAt(p, bare(at)), link: (p) => foreignAt(p, at) };
-    }, () => { const { as, at } = this.credentialPlaces(); return [...new Set([as.state, as.config, at.state, at.config].filter((x): x is string => !!x))]; }, kept);
+    return { by: (p) => credentialAt(p, bare(as)) ?? credentialAt(p, bare(at)), link: (p) => foreignAt(p, at) };
+  }
+
+  // The look of a folder for a call, made off the loop and kept (credential-look.ts); the call's own look keeps it
+  // too, for the reads of the same call that are made without the call's answers.
+  private async named(cls: object, folder: string): Promise<Found[]> {
+    const { as } = this.credentialPlaces();
+    const found = await lookUnder(folder, this.classifier(), { scope: `${as.state}\0${as.config}` });
+    let kept = lookKept.get(cls);
+    if (!kept) lookKept.set(cls, kept = new Map());
+    kept.set(keptKey(folder), { at: performance.now(), found });
+    return found;
   }
 
   // A read of where credentials are kept that is about to run (the owner allowed it, or Full auto runs it): the
@@ -1357,7 +1374,16 @@ export class Gate {
     if (cls.kind === "read") paths = (cls.paths ?? []).map((p) => this.credentialOf(p)?.path).filter((p): p is string => !!p);
     else if (cls.kind === "shell" && cls.interpreter === undefined) {
       const parts = splitCommand(cls.command);
-      const reads = parts ? shellCredentialReads(parts, cls.cwd ?? session.workspace, homeOf(), (p) => this.credentialOf(p), undefined, this.look(cls)) : null;
+      // (The folders it searches are looked through off the loop, as for the decision: the look is kept, so this is a stat of each.)
+      let reads: ReturnType<typeof shellCredentialReads> = null;
+      if (parts) {
+        const l = looking(session.workspace, undefined, undefined, (folder) => this.named(cls, folder));
+        for (let pass = 0, asked = new Map<string, () => Promise<unknown>>(); pass < 4; pass++, asked = new Map()) {
+          reads = shellCredentialReads(parts, cls.cwd ?? session.workspace, homeOf(), (p) => this.credentialOf(p), undefined, this.look(cls, l.view(asked)));
+          if (!asked.size || l.over()) break;
+          await l.answer(asked);
+        }
+      }
       paths = reads?.paths ?? [];
       const links = new Set(reads?.hits.filter((h) => h.foreign).map((h) => h.path));
       // A command in the sandbox reads what the sandbox shows: its own folder's `.env` and kin as they always were,
@@ -1665,7 +1691,7 @@ export class Gate {
     // here only after the calls before it have, however long the disk took over any of them.
     const prior = this.asking.get(session.id);
     const local = !session.machine && judged.kind === "shell";
-    const l = local ? looking(session.workspace) : null;
+    const l = local ? looking(session.workspace, undefined, undefined, (folder) => this.named(judged, folder)) : null;
     let asked = new Map<string, () => Promise<unknown>>();
     let dNow = this.evaluate(session, name, judged, target?.source, l ? { ...facts, looked: l.view(asked) } : facts);
     if (asked.size || prior) {

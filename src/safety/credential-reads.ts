@@ -103,7 +103,8 @@ export type Reads = { what: string; by: string; paths: string[]; api?: string; h
 const EXPANDED_MAX = 500;
 // A file a look found: `foreign` when it is a link to one of the owner's credentials, not a file named like one.
 // `unread`: the look of this folder did not finish in its time (a very slow disk): what it holds is not known.
-export type Found = { path: string; foreign?: true; unread?: true };
+// `why`: how the look of an unread folder ended (how long it took, how much it had read).
+export type Found = { path: string; foreign?: true; unread?: true; why?: string };
 export type DiskLook = { named?: (folder: string) => (string | Found)[]; // the files under a folder that hold credentials (by their names, by where they are, by being a link to one), as full paths
    expand?: (pattern: string, dir: string) => string[];
    own?: () => string[] }; // Keel's own folders (state, config), as named and where they land
@@ -189,7 +190,8 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
       const unread = [...all.values()].filter((f) => f.unread);
       // (A look that ran out of time says so: the command asks, as for a file that holds credentials. It is never taken as a look that found none.)
       if (unread.length) {
-        const what = `${where}, which could not be looked through in time for files that hold credentials. Search a smaller folder, or name the files you need`;
+        const why = unread.find((f) => f.why)?.why;
+        const what = `${where}, which could not be looked through in time for files that hold credentials${why ? ` (${why})` : ""}. Search a smaller folder (a subfolder of it), or name the files you need`;
         for (const f of unread) hits.push({ path: f.path, what, by, unread: true });
         first ??= { what, by };
         hit = true;
@@ -429,13 +431,20 @@ export function expanded(pattern: string): string[] {
   return out;
 }
 
-export const diskLook = (is?: () => Classifier, own?: () => string[], kept: LookKept = new Map()): DiskLook => {
+// Where a look of a folder is kept for a call (the gate's own look, made off the loop, puts its answer there).
+export const keptKey = (folder: string) => `${homeOf()}\0${folder}`;
+
+// `answered`: the look made off the loop (looked.ts): the files found, or "late" while it is not done, which reads as
+// a folder not looked through yet (the gate asks for it and decides again). Without it the look is made here, on the
+// loop, in the little time `LOOK_MS` allows.
+export const diskLook = (is?: () => Classifier, own?: () => string[], kept: LookKept = new Map(), answered?: (folder: string) => Found[] | "late"): DiskLook => {
   let how: Classifier | undefined;
   let left = LOOK_MS;
   return {
     named: (folder) => {
+      if (answered) { const r = answered(folder); return r === "late" ? [{ path: folder, unread: true, why: "its look has not been made" }] : r; }
       const now = performance.now();
-      const key = `${homeOf()}\0${folder}`;
+      const key = keptKey(folder);
       const had = kept.get(key);
       if (had && now - had.at < KEPT_MS) return had.found;
       const t = now;

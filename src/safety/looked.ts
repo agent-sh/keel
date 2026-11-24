@@ -6,6 +6,7 @@
 //   exists   whether a path is there, as a file or a folder
 //   targets  the files a patch or an archive would write
 //   read     the text of a small file a program is handed as its statements
+//   named    the files under a folder a search walks that hold credentials (credential-look.ts)
 //
 // A decision is made with what is known, the questions it asked are answered
 // off the loop, each within a deadline, and it is made again; a question
@@ -18,6 +19,7 @@ import { git, gitNames } from "../core/git.ts";
 import { contains } from "../core/paths.ts";
 import { chunks } from "../core/proc.ts";
 import type { Answer, Manifest, Remotes } from "./accounts.ts";
+import type { Found } from "./credential-reads.ts";
 
 // `n`: files git cannot bring back (0, 1, or 2 for more). `self`: the one such file is the path itself.
 // null: no repository there. "late": git did not answer in time.
@@ -35,6 +37,9 @@ export type Looked = {
   manifest?(dir: string): Answer<Manifest>;
   // The host an ssh name of the owner's config stands for (`ssh -G`); null: it names itself or is not a name.
   hostname?(host: string): Answer<string>;
+  // The files under a folder that hold credentials, looked for off the loop (credential-look.ts). "late": not made yet.
+  // Absent where no look is made for the call (a replay), where the search looks for itself.
+  named?(folder: string): Found[] | "late";
   // The line asked more than is looked up for one command (QUESTIONS): the rest were not asked, and read as not answered.
   over?(): boolean;
 };
@@ -215,7 +220,8 @@ export async function manifestIn(dir: string): Promise<Manifest | null | "late">
 // A decision that asks more than QUESTIONS at once is over: nothing is asked for it, and it stands as it is.
 // `seed`: answers given before (a stored call's, replayed: src/safety/trial-rules.ts). `may`: which questions may
 // be asked of the disk now (the others are noted in `missed` and read as not answered).
-export function looking(workspace: string, seed?: Iterable<[string, unknown]>, may?: (key: string) => boolean) {
+// `named`: how the files under a folder that hold credentials are looked for (the gate's, with its own places).
+export function looking(workspace: string, seed?: Iterable<[string, unknown]>, may?: (key: string) => boolean, named?: (folder: string) => Promise<Found[]>) {
   const known = new Map<string, unknown>(seed ?? []);
   const missed = new Set<string>();
   let over = false;
@@ -234,6 +240,7 @@ export function looking(workspace: string, seed?: Iterable<[string, unknown]>, m
       remotes: (dir) => get<Answer<Remotes>>(`remotes\0${dir}`, "late", () => remotesIn(dir)),
       manifest: (dir) => get<Answer<Manifest>>(`manifest\0${dir}`, "late", () => manifestIn(dir)),
       hostname: (host) => get<Answer<string>>(`ssh\0${host}`, "late", () => hostnameOf(host)),
+      ...(named ? { named: (folder: string) => get<Found[] | "late">(`named\0${folder}`, "late", () => named(folder)) } : {}),
       over: () => over,
     };
   };
@@ -249,7 +256,8 @@ export const textMark = (text: string): TextMark => ({ sha256: new Bun.CryptoHas
 export const isTextMark = (v: unknown): v is TextMark => !!v && typeof v === "object" && typeof (v as TextMark).sha256 === "string";
 function kept(known: Map<string, unknown>): [string, unknown][] {
   const out: [string, unknown][] = [];
-  for (const [k, v] of known) out.push([k, k.startsWith("read\0") && typeof v === "string" ? textMark(v) : v]);
+  // (What a search's look found is not kept with the call: a replay does not look, and the list is the disk's.)
+  for (const [k, v] of known) if (!k.startsWith("named\0")) out.push([k, k.startsWith("read\0") && typeof v === "string" ? textMark(v) : v]);
   return out;
 }
 // A question of the disk that a later look answers the same (a repository's remotes, a manifest's package, an
