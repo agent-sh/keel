@@ -374,5 +374,71 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+
+    test("Settings > Safety > Try a rule change: its form and its replay read whole and are pressed by a finger", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const NS = `127.0.0.1/phone-trial-${size.width}`;
+      const had = ((await (await request.get("/api/settings")).json()).settings.accounts?.namespaces ?? []) as string[];
+      test.skip(had.includes(NS), "needs a daemon whose namespaces do not hold the spec's own");
+      const work = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `phone-trial-${Date.now()}-${size.width}`);
+      mkdirSync(work, { recursive: true });
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: work, stdio: "ignore" });
+      git("init", "-q", "-b", "main");
+      git("-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "--allow-empty", "-m", "x");
+      git("remote", "add", "theirs", `http://127.0.0.1:1/phone-trial-${size.width}/lib.git`);
+      const { session } = await (await request.post("/api/sessions", { data: { workspace: work, model: STAND_IN, title: "Phone rule trial calls" } })).json();
+      const base = `/api/sessions/${session.id}`;
+      const turns = async () => { const r = await (await request.get(base)).json(); return r.running ? -1 : r.events.filter((e: any) => e.kind === "turn_end").length; };
+      const bash = (command: string) => ({ name: "Bash", input: { command } });
+      try {
+        await request.put(`${base}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+        await page.goto(`/s/${session.id}`);
+        await request.post(`${base}/messages`, { data: { text: calls([bash("git status --short"), bash("echo trial")]) } });
+        await expect.poll(turns, { timeout: 30_000 }).toBe(1);
+        await request.post(`${base}/messages`, { data: { text: calls([bash("git push theirs main")]) } });
+        const approval = page.getByTestId("approval");
+        await expect(approval).toHaveCount(1, { timeout: 30_000 });
+        await approval.getByTestId("deny").tap();
+        await approval.getByTestId("deny-send").tap();
+        await expect.poll(turns, { timeout: 30_000 }).toBe(2);
+
+        await page.goto("/settings/safety");
+        const trial = page.getByTestId("rule-trial");
+        await trial.scrollIntoViewIfNeeded();
+        await noSideScroll(page);
+        await trial.getByTestId("trial-namespace-input").fill(NS);
+        await trial.getByTestId("trial-namespace-add").tap();
+        await expect(trial.locator('[data-testid="trial-namespace"][data-state="new"]')).toHaveText(`+ ${NS}`);
+        await trial.getByTestId("trial-grant-pattern").fill("make a-target-with-a-name-that-goes-on-for-a-long-time-test");
+        await trial.getByTestId("trial-grant-scope").fill("/home/someone/projects/a-folder-with-a-long-name/and/more/below");
+        await trial.getByTestId("trial-grant-add").tap();
+        await trial.getByTestId("trial-days").tap();
+        await page.getByRole("option", { name: "1 day" }).tap();
+        await trial.getByTestId("trial-run").tap();
+        const result = trial.getByTestId("trial-result");
+        await expect(result.getByTestId("trial-summary")).toContainText("1 allowed", { timeout: 60_000 });
+        await expect(result.getByTestId("trial-call")).toHaveCount(1);
+        await trial.scrollIntoViewIfNeeded();
+        await noSideScroll(page);
+        // The form: every field and button inside the card's width, a finger's target.
+        const past = await trial.evaluate((el) => {
+          const c = el.getBoundingClientRect();
+          return [...el.querySelectorAll<HTMLElement>("*")].filter((e) => !e.closest("pre, code, details:not([open]), [aria-hidden=true]") && e.getBoundingClientRect().width && (e.getBoundingClientRect().right > c.right + 0.5 || e.getBoundingClientRect().left < c.left - 0.5)).map((e) => `${e.dataset.testid ?? e.tagName} ${Math.round(e.getBoundingClientRect().left)}-${Math.round(e.getBoundingClientRect().right)} of ${Math.round(c.left)}-${Math.round(c.right)}`);
+        });
+        expect(past, "parts of the card past its edge").toEqual([]);
+        expect(await small(trial), "every control of the card is a finger's target").toEqual([]);
+        // Nothing the replay says is cut off where a finger cannot read it whole: its tables fit, its rows wrap.
+        const cut = await result.evaluate((el) => [...el.querySelectorAll<HTMLElement>("td, th, li, span, p")].filter((e) => (getComputedStyle(e).textOverflow === "ellipsis" || getComputedStyle(e).overflow === "hidden") && e.scrollWidth > e.clientWidth + 1).map((e) => (e.textContent ?? "").slice(0, 40)));
+        expect(cut, "words of the replay cut off").toEqual([]);
+        const cutForm = await trial.evaluate((el) => [...el.querySelectorAll<HTMLElement>('[data-testid="trial-grants"] *, [data-testid="trial-namespaces"] *')].filter((e) => getComputedStyle(e).textOverflow === "ellipsis" && e.scrollWidth > e.clientWidth + 1).map((e) => (e.textContent ?? "").slice(0, 40)));
+        expect(cutForm, "words of the grants cut off").toEqual([]);
+        await shoot(page, `phone-surfaces-13-rule-trial-${size.width}`);
+        await result.getByTestId("trial-agreement").scrollIntoViewIfNeeded();
+        await shoot(page, `phone-surfaces-14-rule-trial-agreement-${size.width}`);
+      } finally {
+        await request.patch("/api/settings", { data: { accounts: { namespaces: had } } });
+        await drop(request, session.id);
+      }
+    });
   });
 }

@@ -81,29 +81,31 @@ export function RuleTrialCard() {
     <button
       type="button" data-testid={testid} data-state={state} onClick={onClick}
       title={state === "gone" ? "Keep it" : state === "new" ? "Take it out of the change" : "Take it away in this change"}
-      className={cn("rounded-md border px-2 py-0.5 font-mono text-caption transition-colors",
+      className={cn("max-w-full break-all rounded-md border px-2 py-0.5 text-left font-mono text-caption transition-colors",
         state === "gone" ? "border-danger/40 text-danger line-through" : state === "new" ? "border-accent/50 bg-accent-soft text-accent" : "border-line text-muted hover:border-line-strong hover:text-fg")}
     >{state === "new" ? "+ " : ""}{label}</button>
   );
-  const th = "px-2 py-1.5 font-normal", td = "px-2 py-1.5 tabular-nums text-right";
+  const th = "px-2 py-1.5 font-normal", td = "px-2 py-1.5 tabular-nums text-right max-md:p-0 max-md:text-left";
+  // (On a phone each count carries its own heading: the table's head row is not drawn.)
+  const lab = (w: string) => <span className="block text-micro text-faint md:hidden" aria-hidden="true">{w}</span>;
   const table = (first: string, rows: Row[], testid: string) => (
-    <table className="w-full table-fixed text-ui" data-testid={testid}>
-      <colgroup><col /><col className="w-20" /><col className="w-20" /><col className="w-20" /><col className="w-20" /><col className="w-32" /></colgroup>
-      <thead>
+    <table className="w-full table-fixed text-ui max-md:block" data-testid={testid}>
+      <colgroup className="max-md:hidden"><col /><col className="w-20" /><col className="w-20" /><col className="w-20" /><col className="w-20" /><col className="w-32" /></colgroup>
+      <thead className="max-md:hidden">
         <tr className="border-b border-line text-left text-caption text-faint">
           <th className={th}>{first}</th><th className={`${th} text-right`}>Calls</th><th className={`${th} text-right`}>Allowed</th>
           <th className={`${th} text-right`}>Asked</th><th className={`${th} text-right`}>Refused</th><th className={`${th} text-right`}>Had succeeded</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody className="max-md:block">
         {rows.map((r) => (
-          <tr key={r.key} className="border-b border-line/60 last:border-0" data-testid="trial-row" data-key={r.key}>
-            <td className="truncate px-2 py-1.5 font-medium">{r.key}</td>
-            <td className={td}>{r.n}</td>
-            <td className={cn(td, r.allow ? "text-fg" : "text-faint")}>{r.allow}</td>
-            <td className={cn(td, r.ask ? "text-warn" : "text-faint")}>{r.ask}</td>
-            <td className={cn(td, r.refuse ? "text-danger" : "text-faint")}>{r.refuse}</td>
-            <td className={td}>{r.succeeded} <span className="text-faint">({pct(r.share)})</span></td>
+          <tr key={r.key} className="border-b border-line/60 last:border-0 max-md:grid max-md:grid-cols-[1fr_1fr_1fr_1fr_1.6fr] max-md:gap-x-2 max-md:px-2 max-md:py-1.5" data-testid="trial-row" data-key={r.key}>
+            <td className="truncate px-2 py-1.5 font-medium max-md:col-span-5 max-md:whitespace-normal max-md:break-words max-md:p-0 max-md:pb-1">{r.key}</td>
+            <td className={td}>{lab("Calls")}{r.n}</td>
+            <td className={cn(td, r.allow ? "text-fg" : "text-faint")}>{lab("Allowed")}{r.allow}</td>
+            <td className={cn(td, r.ask ? "text-warn" : "text-faint")}>{lab("Asked")}{r.ask}</td>
+            <td className={cn(td, r.refuse ? "text-danger" : "text-faint")}>{lab("Refused")}{r.refuse}</td>
+            <td className={td}>{lab("Had succeeded")}{r.succeeded} <span className="text-faint">({pct(r.share)})</span></td>
           </tr>
         ))}
       </tbody>
@@ -126,9 +128,9 @@ export function RuleTrialCard() {
               {addNs.map((n) => chip(n, "new", () => setAddNs(addNs.filter((x) => x !== n)), "trial-namespace"))}
               {!names.length && !addNs.length && <span className="text-caption text-faint">None named yet.</span>}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input
-                data-testid="trial-namespace-input" value={typed} placeholder="github.com/you" spellCheck={false} className="k-field w-56"
+                data-testid="trial-namespace-input" value={typed} placeholder="github.com/you" spellCheck={false} className="k-field w-56 max-md:w-full"
                 onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) addName(); }}
               />
               <button type="button" className="k-btn k-btn-lg" disabled={!typed.trim()} onClick={addName} data-testid="trial-namespace-add">Add to the change</button>
@@ -142,19 +144,19 @@ export function RuleTrialCard() {
                 {grants.map((x) => {
                   const gone = removeG.includes(x.id);
                   return (
-                    <li key={x.id} className="flex items-center gap-3 text-ui" data-testid="trial-grant" data-state={gone ? "gone" : "kept"}>
+                    <li key={x.id} className="flex items-center gap-3 text-ui max-md:flex-wrap max-md:gap-y-0" data-testid="trial-grant" data-state={gone ? "gone" : "kept"}>
                       <span className="w-12 shrink-0 text-caption text-faint">{x.kind}</span>
-                      <span className={cn("min-w-0 flex-1 truncate font-mono", gone && "text-danger line-through")}>{x.pattern}</span>
-                      <span className="min-w-0 max-w-[40%] truncate text-caption text-faint">{x.scope}</span>
+                      <span className={cn("min-w-0 flex-1 truncate font-mono max-md:basis-[calc(100%-4rem)] max-md:whitespace-normal max-md:break-all", gone && "text-danger line-through")}>{x.pattern}</span>
+                      <span className="min-w-0 max-w-[40%] truncate text-caption text-faint max-md:max-w-none max-md:flex-1 max-md:whitespace-normal max-md:break-all">{x.scope}</span>
                       <button type="button" className={cn("text-caption", gone ? "text-fg" : "text-faint hover:text-danger")} onClick={() => toggle(removeG, setRemoveG, x.id)}>{gone ? "Keep" : "Revoke"}</button>
                     </li>
                   );
                 })}
                 {addG.map((x, i) => (
-                  <li key={`new-${i}`} className="flex items-center gap-3 text-ui" data-testid="trial-grant" data-state="new">
+                  <li key={`new-${i}`} className="flex items-center gap-3 text-ui max-md:flex-wrap max-md:gap-y-0" data-testid="trial-grant" data-state="new">
                     <span className="w-12 shrink-0 text-caption text-accent">{x.kind}</span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-accent">+ {x.pattern}</span>
-                    <span className="min-w-0 max-w-[40%] truncate text-caption text-faint">{x.scope === "/" ? "every folder" : x.scope}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-accent max-md:basis-[calc(100%-4rem)] max-md:whitespace-normal max-md:break-all">+ {x.pattern}</span>
+                    <span className="min-w-0 max-w-[40%] truncate text-caption text-faint max-md:max-w-none max-md:flex-1 max-md:whitespace-normal max-md:break-all">{x.scope === "/" ? "every folder" : x.scope}</span>
                     <button type="button" className="text-caption text-faint hover:text-fg" onClick={() => setAddG(addG.filter((_, j) => j !== i))}>Take out</button>
                   </li>
                 ))}
@@ -164,9 +166,9 @@ export function RuleTrialCard() {
               <Select data-testid="trial-grant-kind" value={g.kind} onChange={(e) => setG({ ...g, kind: e.target.value as Grant["kind"] })} className="w-24">
                 <option value="shell">shell</option><option value="edit">edit</option><option value="tool">tool</option>
               </Select>
-              <input data-testid="trial-grant-pattern" value={g.pattern} placeholder={g.kind === "shell" ? "make test" : g.kind === "edit" ? "/path/to/folder" : "tool name"} spellCheck={false} className="k-field w-56 font-mono"
+              <input data-testid="trial-grant-pattern" value={g.pattern} placeholder={g.kind === "shell" ? "make test" : g.kind === "edit" ? "/path/to/folder" : "tool name"} spellCheck={false} className="k-field w-56 max-md:w-full font-mono"
                 onChange={(e) => setG({ ...g, pattern: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) addGrant(); }} />
-              <input data-testid="trial-grant-scope" value={g.scope} placeholder="/ for every folder" spellCheck={false} className="k-field w-48 font-mono" onChange={(e) => setG({ ...g, scope: e.target.value })} />
+              <input data-testid="trial-grant-scope" value={g.scope} placeholder="/ for every folder" spellCheck={false} className="k-field w-48 max-md:w-full font-mono" onChange={(e) => setG({ ...g, scope: e.target.value })} />
               <button type="button" className="k-btn k-btn-lg" disabled={!g.pattern.trim() || !g.scope.trim().startsWith("/")} onClick={addGrant} data-testid="trial-grant-add">Add to the change</button>
             </div>
           </section>
@@ -205,10 +207,10 @@ export function RuleTrialCard() {
                   {r.changed.n > 0 && (
                     <ul className="flex flex-col divide-y divide-line/60 rounded-md border border-line" data-testid="trial-calls">
                       {listed.map((c) => (
-                        <li key={c.id} className="flex items-center gap-3 px-3 py-1.5 text-ui" data-testid="trial-call" data-call={c.id}>
-                          <span className="w-40 shrink-0 truncate font-mono text-caption">{c.tool}</span>
+                        <li key={c.id} className="flex items-center gap-3 px-3 py-1.5 text-ui max-md:flex-wrap max-md:gap-y-0.5" data-testid="trial-call" data-call={c.id}>
+                          <span className="w-40 shrink-0 truncate font-mono text-caption max-md:w-auto max-md:whitespace-normal max-md:break-all">{c.tool}</span>
                           <span className="shrink-0 text-caption"><span className="text-muted">{WORD[c.from]}</span> <span className="text-faint">to</span> <span className={c.to === "refuse" ? "text-danger" : c.to === "ask" ? "text-warn" : "text-fg"}>{WORD[c.to]}</span></span>
-                          <span className="min-w-0 flex-1 truncate text-caption text-faint">{c.cls}</span>
+                          <span className="min-w-0 flex-1 truncate text-caption text-faint max-md:basis-full max-md:whitespace-normal max-md:break-words">{c.cls}</span>
                           <span className={cn("shrink-0 text-caption", c.ok ? "text-muted" : "text-faint")}>{c.ok ? "had succeeded" : "had not run or failed"}</span>
                           <a href={c.link} className="shrink-0 text-caption text-accent hover:underline" onClick={(e) => { e.preventDefault(); open(c); }} data-testid="trial-call-open">Open</a>
                         </li>
