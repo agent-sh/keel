@@ -46,7 +46,7 @@ describe("boardText", () => {
     id: "a1", session_id: "s1", parent_id: "root", depth: 1, title: "Lane", type: "general-purpose", model: "m", state: "completed", created: 1, ended: 2, machine: null,
     branch: "keel/lane", repo: "/r", base: "main", head: "c".repeat(40), ahead: 1, behind: 0, worktree: "gone",
     checks: { state: "known", passed: ["typecheck"], failed: [], notRun: ["unit"] }, review: null, reviews: [],
-    landed: { state: "no", missing: 1 }, queue: null, live: null, ...o,
+    landed: { state: "no", missing: 1 }, queue: null, live: null, work: null, ...o,
   });
   const board = (rows: BoardRow[]): Board => ({ session_id: "root", rows, total: rows.length, repos: [{ repo: "/r", base: "main", base_tip: "b".repeat(40), deploys: [] }], at: 0, took_ms: 0 });
   test("agents that need the coordinator get a line each, the rest their ids", () => {

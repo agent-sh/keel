@@ -6,13 +6,15 @@
 // own, a few at a time; nothing waits on the loop. A board is kept for a few seconds, and what git said of
 // a pair of commits for as long as the daemon runs (a pair's answer never changes).
 import { existsSync } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import { join } from "node:path";
 import { checksOnTree, type ChecksOn } from "../automation/landing.ts";
 import { namedFor, repoOf } from "../checks/ledger.ts";
-import { git } from "../core/git.ts";
+import { git, gitNames } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import { readsOf } from "../server/reads.ts";
 import type { AgentFact, Facts, TreeRun } from "./facts.ts";
-import { landedFrom, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Deploy, type Landed } from "./rules.ts";
+import { landedFrom, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Change, type Deploy, type Landed, type Work } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -26,6 +28,11 @@ const GIT_MS = 15_000;          // one git call of the board
 const BOARD_MS = 30_000;        // every git call of one board: past it the rest is not asked, and says so
 const AT_ONCE = 4;              // git calls of one board at a time
 const PAIRS = 4_000;            // pairs of commits whose answer is kept
+const WORKTREES = 40;           // worktrees of one board read for what they change
+const UNTRACKED = 200;          // untracked files of one worktree listed
+const COUNTED = 40;             // of them, the files whose lines are counted
+const FILE_MAX = 256 * 1024;    // the most of one untracked file that is read for its lines
+const TOTAL_MAX = 1024 * 1024;  // and of one worktree's untracked files together
 
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -92,6 +99,47 @@ export class WorkBoard {
     return p;
   }
 
+  // What the commits of a branch change over the base (the answer for a pair of commits never changes: kept).
+  private spans = new Map<string, Promise<Change | null | undefined>>();
+  private span(repo: string, base: string, head: string, by: number): Promise<Change | null | undefined> {
+    const key = `${repo}\0${base}\0${head}`;
+    const kept = this.spans.get(key);
+    if (kept) return kept;
+    const p = this.git(repo, ["diff", "--shortstat", "--no-renames", `${base}...${head}`], undefined, by).then((r) => (r.code === 0 ? shortstat(r.out) : undefined));
+    this.spans.set(key, p);
+    if (this.spans.size > PAIRS) this.spans.delete(this.spans.keys().next().value!);
+    // (A git that failed or ran out of time is asked again next time.)
+    p.then((c) => { if (c === undefined && this.spans.get(key) === p) this.spans.delete(key); }, () => this.spans.delete(key));
+    return p;
+  }
+
+  // What a worktree holds uncommitted (tracked changes against its head, and its untracked files, a few of them
+  // counted by their lines) and what its commits change over the base. Both are bounded: the listing of untracked
+  // files, how many are read and how much of each, and the board's time for git.
+  private async changes(repo: string, dir: string, base: string | null, head: string, ahead: number | undefined, by: number): Promise<Work | null> {
+    const [branch, tracked, listed] = await Promise.all([
+      base && ahead !== 0 ? this.span(repo, base, head, by) : Promise.resolve(null),
+      this.git(dir, ["diff", "--shortstat", "--no-renames", "HEAD"], undefined, by),
+      gitNames(dir, ["ls-files", "-o", "--exclude-standard", "-z"], UNTRACKED + 1, Math.max(250, Math.min(GIT_MS, Math.ceil(by - performance.now())))),
+    ]);
+    this.stats.git += 2;
+    if (tracked.code !== 0 || listed.failed || listed.none) return null;
+    const uncommitted: Change = shortstat(tracked.out) ?? { files: 0, added: 0, removed: 0 };
+    if (listed.late || listed.names.length > UNTRACKED) uncommitted.more = true;
+    const names = listed.names.slice(0, UNTRACKED);
+    uncommitted.files += names.length;
+    let left = TOTAL_MAX;
+    for (const name of names.slice(0, COUNTED)) {
+      const lines = await linesOf(join(dir, name), Math.min(FILE_MAX, left));
+      if (lines === undefined) { uncommitted.more = true; continue; }
+      left -= lines.read;
+      uncommitted.added += lines.n;
+      if (lines.cut) uncommitted.more = true;
+    }
+    if (names.length > COUNTED) uncommitted.more = true;
+    return { uncommitted: uncommitted.files ? uncommitted : null, branch: branch ?? null };
+  }
+
   private async build(root: string): Promise<Board> {
     const t0 = performance.now();
     const by = t0 + BOARD_MS;
@@ -108,6 +156,7 @@ export class WorkBoard {
     const trees = new Map<string, string>(); // head -> its tree
     const work: (() => Promise<void>)[] = [];
     const revision = this.deps.revision();
+    let worktrees = 0;
     await pool([...byRepo.keys()], AT_ONCE, async (repo) => {
       const base = await this.deps.baseOf(repo).catch(() => null);
       const f = "%(refname)%00%(objectname)";
@@ -141,6 +190,8 @@ export class WorkBoard {
         r.ahead = tip.ahead ?? null;
         r.behind = tip.behind ?? null;
         heads.push(tip.sha);
+        // What its worktree changes: read for the newest agents' worktrees, never more than WORKTREES a board.
+        if (r.worktree === "here" && a.wt_path && !a.machine && worktrees++ < WORKTREES) work.push(async () => { r.work = await this.changes(repo, a.wt_path!, baseTip, tip.sha, tip.ahead, by); });
         if (!baseTip) { r.landed = { state: "unknown", why: "the repository has no base branch" }; continue; }
         work.push(async () => {
           r.landed = await this.holds(repo, tip.sha, baseTip, a.base_commit, by, a.created);
@@ -202,6 +253,32 @@ export class WorkBoard {
   }
 }
 
+// "3 files changed, 12 insertions(+), 4 deletions(-)": git's one line of what a diff changes, none for no change.
+export function shortstat(out: string): Change | null {
+  const m = /(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/.exec(out);
+  return m ? { files: Number(m[1]), added: Number(m[2] ?? 0), removed: Number(m[3] ?? 0) } : null;
+}
+
+// The lines of an untracked file, read up to `max` bytes: none for a link or a binary file, undefined when it could not be read.
+async function linesOf(path: string, max: number): Promise<{ n: number; read: number; cut: boolean } | undefined> {
+  if (max <= 0) return undefined;
+  try {
+    if (!(await lstat(path)).isFile()) return { n: 0, read: 0, cut: false };
+    const f = await open(path, "r");
+    try {
+      const buf = Buffer.alloc(max + 1);
+      const { bytesRead } = await f.read(buf, 0, max + 1, 0);
+      const cut = bytesRead > max;
+      const used = buf.subarray(0, Math.min(bytesRead, max));
+      if (used.subarray(0, 8000).includes(0)) return { n: 0, read: used.length, cut: false };
+      let n = 0;
+      for (const b of used) if (b === 10) n++;
+      if (used.length && used[used.length - 1] !== 10 && !cut) n++;
+      return { n, read: used.length, cut };
+    } finally { await f.close(); }
+  } catch { return undefined; }
+}
+
 function rowOf(a: AgentFact): BoardRow {
   let reviews: string[] = [];
   // (An agent with a branch of its own whose task named another branch is that branch's reviewer only
@@ -217,7 +294,7 @@ function rowOf(a: AgentFact): BoardRow {
     checks: !branch ? null : remote ? { state: "unknown", why: "its branch is on another machine" } : !a.repo_root ? { state: "unknown", why: "no worktree record names its repository" } : null,
     review: null, reviews,
     landed: !branch ? null : remote ? { state: "unknown", why: "its branch is on another machine" } : !a.repo_root ? { state: "unknown", why: "no worktree record names its repository" } : null,
-    queue: null, live: null,
+    queue: null, live: null, work: null,
   };
 }
 

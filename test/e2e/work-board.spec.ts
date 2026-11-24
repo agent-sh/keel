@@ -19,6 +19,9 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user
 // The board (the API, the coordinator's keel__work_board and the Board panel) says of each what git,
 // the check ledger, the landing queue and the agents table say: alpha landed as patches and live,
 // approved; beta not landed, refused with the reviewer's line; gamma working, not landed, no review.
+// Gamma also has work it did not commit: a changed line and a new file. Each card says what its worktree
+// changes (files and lines, uncommitted and on the branch) with a button to the agent's Changes panel, and the
+// cards are in the order of the tree: an agent's own agents follow it, indented.
 test("the work board keeps each agent's branch, checks, review, landed and live from facts", async ({ page, request }) => {
   test.setTimeout(240_000);
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
@@ -46,7 +49,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start three agents.", `script:batch ${JSON.stringify([
     lane("Lane alpha", [bash(commit("s/^line 1$/line 1 ALPHA/", "Lane alpha")), bash("sh check.sh")]),
     lane("Lane beta", [bash(commit("s/^line 12$/line 12 BETA/", "Lane beta"))]),
-    lane("Lane gamma", [bash(`${commit("s/^line 6$/line 6 GAMMA/", "Lane gamma")} && while [ ! -e '${gate}' ]; do sleep 0.2; done`, 600_000)]),
+    lane("Lane gamma", [bash(`${commit("s/^line 6$/line 6 GAMMA/", "Lane gamma")} && sed -i 's/^line 2$/line 2 WIP/' notes.md && printf 'one\\ntwo\\n' > wip.txt && while [ ! -e '${gate}' ]; do sleep 0.2; done`, 600_000)]),
   ])}`) } });
   const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
   await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(2);
@@ -55,6 +58,8 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   let gamma = await by("Lane gamma");
   await expect.poll(async () => { gamma = await by("Lane gamma"); return gamma.branch ? git(repo, "log", "-1", "--format=%s", gamma.branch).trim() : ""; }, { timeout: 60_000 }).toBe("Lane gamma");
   expect(gamma.status).toBe("running");
+  // (Its changed line and new file are in its worktree before the board is read.)
+  await expect.poll(() => existsSync(join(gamma.worktree, "wip.txt")), { timeout: 30_000 }).toBe(true);
   await idle(coord);
 
   // main moves twice: a commit of its own, and one with beta's subject but another change (the board must not take it for beta's).
@@ -106,6 +111,10 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(be.review).toMatchObject({ by: refuser.id, how: "named", verdict: "refused", source: "verdict", line: refusal, tip: betaTip, of: betaTip, current: true });
   expect(g).toMatchObject({ state: "running", landed: { state: "no", missing: 1 }, review: null, worktree: "here" });
   expect(rv).toMatchObject({ branch: null, reviews: [beta.branch], landed: null });
+  // What each worktree changes: gamma's commit, and its changed line and new file that no commit holds.
+  expect(g.work).toEqual({ uncommitted: { files: 2, added: 3, removed: 1 }, branch: { files: 1, added: 1, removed: 1 } });
+  expect(be.work).toEqual({ uncommitted: null, branch: { files: 1, added: 1, removed: 1 } });
+  expect(rv.work).toBeNull();
   expect(rowOf(b, approver.id).reviews).toEqual([alpha.branch]);
 
   // The coordinator reads the same rows in a few hundred tokens, with no model request behind them.
@@ -114,6 +123,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const text = await told();
   expect(text).toContain(`${gamma.id} working \\"Lane gamma\\"`);
   expect(text).toContain(`review refused by ${refuser.id}`);
+  expect(text).toContain("uncommitted 2 files +3 -1, on branch 1 file +1 -1");
   expect(text).toContain(`Landed (and live where a deploy is known): ${alpha.id}.`);
   expect(text).toContain(`Done, branch removed: ${approver.id}.`);
   expect(text.length).toBeLessThan(2400);
@@ -135,12 +145,22 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(card(approver.id).getByTestId("board-gone")).toBeVisible();
   await expect(card(gamma.id)).toHaveAttribute("data-state", "running");
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "none");
+  await expect(card(gamma.id).getByTestId("board-uncommitted")).toHaveText("2 files+3-1uncommitted");
+  await expect(card(gamma.id).getByTestId("board-on-branch")).toHaveText("1 file+1-1on branch");
+  await expect(card(beta.id).getByTestId("board-uncommitted")).toHaveCount(0);
+  await expect(card(approver.id).getByTestId("board-work")).toHaveCount(0);
   await page.mouse.move(0, 0);
   await shoot(page, "work-board-01-desktop");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(card(beta.id)).toBeVisible();
   await shoot(page, "work-board-02-phone");
   await page.setViewportSize({ width: 1920, height: 1040 });
+  // Open changes goes to the agent's session with its Changes panel.
+  await card(gamma.id).getByTestId("board-open-changes").click();
+  await expect(page).toHaveURL(new RegExp(`/s/${gamma.session_id}$`));
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "changes");
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "board");
 
   // Gamma ends when the spec lets it, then starts a child that approves gamma's own head: the board does not take it for a review.
   writeFileSync(gate, "");
@@ -153,6 +173,14 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const after = await board();
   expect(after.total).toBe(6);
   expect(rowOf(after, gamma.id).review).toBeNull();
+  // Gamma's own agent is its child: it follows gamma's card, indented one step.
+  const child = await own();
+  await page.reload();
+  await openPanel(page, "board");
+  await expect(card(child.id)).toHaveAttribute("data-indent", "1");
+  await expect(card(gamma.id)).toHaveAttribute("data-indent", "0");
+  const order = await panel.locator('[data-testid="board-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-agent")));
+  expect(order.indexOf(child.id)).toBe(order.indexOf(gamma.id) + 1);
 
   // A reviewer of the coordinator writes only "LAND: yes": its words, quoted, never approved.
   await send(coord, ask("Review gamma in words.", `script:batch ${JSON.stringify([{ name: "spawn_agent", input: { message: "Review it.\nscript:say Read the diff.\\n\\nLAND: yes", agent_type: "explorer", reviews: gamma.branch } }])}`));

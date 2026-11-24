@@ -27,7 +27,7 @@ import { usePanelBesideShown } from "./SidePanel.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
 import { getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
-import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
+import { getUI, navigate, savePref, setUI, stationPanels, useUI } from "../lib/ui.ts";
 import { watchPanes } from "../lib/automation.ts";
 import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
@@ -738,7 +738,7 @@ export function Bridge() {
   // The side panel starts closed in every session. One they opened in a
   // session comes back with it (and over a reload); closing it forgets it.
   const panel = useUI((s) => s.panel);
-  const panels = () => JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string>;
+  const panels = stationPanels;
   useEffect(() => {
     if (!helm) return;
     const want = panels()[helm] ?? null;

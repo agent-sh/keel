@@ -133,6 +133,11 @@ export function navigate(r: Route, replace = false) {
 addEventListener("popstate", () => { opened(); setUI({ route: parse() }); });
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
 
+// The side panel each session was left with: one the owner opened in a session comes back with it.
+export const stationPanels = () => { try { return JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string>; } catch { return {}; } };
+// A session that opens with this panel (the page goes to it next).
+export function rememberPanel(session: string, panel: string) { localStorage.setItem("keel.stationPanel", JSON.stringify({ ...stationPanels(), [session]: panel })); }
+
 export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" | "listW", v: unknown) {
   if (!(k === "sidebar" && isPhone()) && k !== "panel") localStorage.setItem(`keel.${k === "sidebar" ? "list" : k}`, JSON.stringify(v));
   setUI({ [k]: v } as Partial<UIState>);

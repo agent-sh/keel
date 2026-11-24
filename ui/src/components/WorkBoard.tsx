@@ -2,11 +2,14 @@
 // head, and four facts the daemon keeps of it (src/board/board.ts): the named checks on its head's tree,
 // the latest review of its branch, whether the base holds it, and whether what runs holds it. A
 // reviewer's words (its verdict's why, or its LAND line) are quoted under its card as its own.
-import { Check, CircleDashed, GitBranch, Loader2, Minus, RefreshCw, X } from "lucide-react";
+import { Check, CircleDashed, FileDiff, GitBranch, Loader2, Minus, RefreshCw, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
-import { branchGone } from "../../../src/board/rules.ts";
+import { treeOrder } from "../lib/board-order.ts";
+import { rememberPanel } from "../lib/ui.ts";
+import { useToldStates } from "../lib/watch.ts";
+import { branchGone, type Change } from "../../../src/board/rules.ts";
 import { loadBoard, useBoard, type Board, type BoardRow } from "../lib/board.ts";
 import { failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -100,11 +103,23 @@ function Quote({ by, how, title, line, below, testid }: { by: string; how: strin
   );
 }
 
-function Card({ r, below }: { r: BoardRow; below: Board["rows"] }) {
+// What a worktree changes: its files and lines, and where they are (uncommitted, or committed on the branch).
+function Changed({ c, where, testid }: { c: Change; where: string; testid: string }) {
+  return (
+    <span className="inline-flex items-baseline gap-1" data-testid={testid}>
+      <span className="text-fg">{c.files}{c.more ? "+" : ""} {c.files === 1 ? "file" : "files"}</span>
+      <span className="font-mono text-micro text-ok">+{c.added}</span>
+      <span className="font-mono text-micro text-danger">-{c.removed}</span>
+      <span className="text-muted">{where}</span>
+    </span>
+  );
+}
+
+function Card({ r, below, indent }: { r: BoardRow; below: Board["rows"]; indent: number }) {
   const st = STATE[r.state] ?? { word: r.state, dot: "bg-line-strong" };
   const reviewing = r.reviews.length > 0;
   return (
-    <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state}>
+    <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent}>
       <div className="flex min-w-0 items-center gap-2">
         <span className={cn("size-2 shrink-0 rounded-full", st.dot)} aria-hidden="true" />
         <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={r.title} data-testid="board-title">{r.title}</button>
@@ -122,6 +137,18 @@ function Card({ r, below }: { r: BoardRow; below: Board["rows"] }) {
       ) : (
         <p className="text-caption text-muted">{reviewing ? <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span></> : "no branch of its own"}{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>
       )}
+      {r.work && (
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-caption" data-testid="board-work">
+          <FileDiff className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+          {r.work.uncommitted && <Changed c={r.work.uncommitted} where="uncommitted" testid="board-uncommitted" />}
+          {r.work.branch && <Changed c={r.work.branch} where="on branch" testid="board-on-branch" />}
+          {!r.work.uncommitted && !r.work.branch && <span className="text-muted" data-testid="board-no-changes">no changes yet</span>}
+          {(r.work.uncommitted || r.work.branch) && (
+            <button type="button" onClick={() => { rememberPanel(r.session_id, "changes"); openSession(r.session_id); }} data-testid="board-open-changes"
+              className="ml-auto inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-micro text-accent hover:bg-hover">Open changes</button>
+          )}
+        </div>
+      )}
       {r.branch && branchGone(r) && <p className="text-caption text-muted" data-testid="board-gone">{r.reviews.length > 0 && <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span> · </>}Branch removed at its end; nothing left to land{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>}
       {r.branch && !branchGone(r) && (
         <div className="grid grid-cols-2 gap-1.5 @[30rem]:grid-cols-4">
@@ -136,6 +163,7 @@ function Card({ r, below }: { r: BoardRow; below: Board["rows"] }) {
 
 export function WorkBoard({ session }: { session: Session }) {
   const b = useBoard(session.id);
+  const told = useToldStates();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const refresh = () => {
@@ -145,6 +173,7 @@ export function WorkBoard({ session }: { session: Session }) {
   };
   if (!b) return <p className="k-empty px-3 py-4">{err || "Loading…"}</p>;
   const repo = b.repos.length === 1 ? b.repos[0] : undefined;
+  const ordered = treeOrder(b.rows, session.id, Object.fromEntries(b.rows.map((r) => [r.session_id, told[r.session_id]?.watch])));
   const working = b.rows.filter((r) => r.state === "running" || r.state === "waiting").length;
   const landed = b.rows.filter((r) => r.landed?.state === "yes").length;
   return (
@@ -168,7 +197,7 @@ export function WorkBoard({ session }: { session: Session }) {
         <p className="k-empty px-1"><b>No agents yet</b>Each agent this session starts shows here with its branch, checks, review and whether it landed, kept from what Keel sees.</p>
       ) : (
         <ul className="flex flex-col gap-2" data-testid="board-rows">
-          {b.rows.map((r) => <Card key={r.id} r={r} below={b.rows} />)}
+          {ordered.map(({ row, indent }) => <Card key={row.id} r={row} below={b.rows} indent={indent} />)}
         </ul>
       )}
       {b.total > b.rows.length && <p className="px-1 text-micro text-faint"><CircleDashed className="mr-1 inline size-3" />{b.total - b.rows.length} older agents are not shown.</p>}

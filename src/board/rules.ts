@@ -73,6 +73,12 @@ export type Deploy = { sha: string; how: "after step passed" | "this daemon"; at
 
 export type QueueFact = { id: string; state: string; why: string | null; landed: string | null; tip: string; current: boolean; updated: number };
 
+// What a branch changes: files, lines added and removed. `more`: a part was not counted (a bound of the read).
+export type Change = { files: number; added: number; removed: number; more?: true };
+// The work a card shows: what its worktree holds uncommitted, and what its commits change over the base. Each is
+// null when there is none; the whole is null when the worktree is not read (none here, another machine, no time left).
+export type Work = { uncommitted: Change | null; branch: Change | null };
+
 export type BoardRow = {
   id: string; session_id: string; parent_id: string; depth: number;
   title: string; type: string; model: string; state: string; created: number; ended: number | null;
@@ -86,6 +92,7 @@ export type BoardRow = {
   landed: Landed | null;        // null: no branch
   queue: QueueFact | null;      // its branch's latest landing queue entry
   live: Live | null;            // null: no branch, or not landed
+  work: Work | null;            // what its worktree changes; null: not read
 };
 
 export type Board = {
@@ -349,6 +356,9 @@ function landedWords(r: BoardRow, full: boolean): string {
   return s + lvs;
 }
 
+export const changeWords = (c: Change) => `${c.files}${c.more ? "+" : ""} ${c.files === 1 ? "file" : "files"} +${c.added} -${c.removed}`;
+const workWords = (w: Work | null) => [w?.uncommitted ? `uncommitted ${changeWords(w.uncommitted)}` : "", w?.branch ? `on branch ${changeWords(w.branch)}` : ""].filter(Boolean).join(", ");
+
 function reviewWords(v: BoardReview | null, full: boolean): string {
   if (!v) return full ? "review: none" : "";
   const head = v.current === false && v.verdict !== "stale" ? `, of an older head ${short(v.tip)}` : "";
@@ -376,6 +386,7 @@ export function rowLine(r: BoardRow, full = false): string {
     r.reviews.length ? `reviews ${r.reviews.join(", ")}` : "",
     checksWords(r.checks, full),
     r.branch ? reviewWords(r.review, full) : "",
+    workWords(r.work),
     landedWords(r, full),
     queueWords(r.queue, full),
   ].filter(Boolean);
