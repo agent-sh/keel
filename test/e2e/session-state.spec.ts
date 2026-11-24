@@ -536,7 +536,7 @@ test("the tab title counts each waiting thing once", async ({ page, request }) =
   }
 });
 
-test("the phone strip says how many need the owner in plain words, and its marks carry names", async ({ page, request }) => {
+test("the phone strip says how many need the owner, in plain words to a reader, and its marks carry names", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const made: string[] = [];
   try {
@@ -552,7 +552,10 @@ test("the phone strip says how many need the owner in plain words, and its marks
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${quiet}`);
     const dock = page.locator(".k-dock");
-    await expect(dock.getByTestId("dock-need")).toHaveText("1 needs you");
+    // Its mark and its figure on the strip, the words for a screen reader and the tooltip.
+    await expect(dock.getByTestId("dock-need")).toHaveAccessibleName("1 needs you");
+    await expect(dock.getByTestId("dock-need")).toHaveAttribute("title", "1 needs you");
+    await expect(dock.getByTestId("dock-need").locator(".k-dock-need-n")).toHaveText("1");
     // Every mark has the session's short code beside its state.
     // (The letters are the initials of the title unless another session on the daemon took them.)
     await expect(dock.locator('.k-dock-mark[data-watch="need"]').getByTestId("dock-code")).toHaveText(/^[A-Z0-9]{2}$/);
