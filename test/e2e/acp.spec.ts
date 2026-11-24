@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { ask, HAIKU, openPanel, scriptBash, shoot } from "./shots.ts";
+import { ask, HAIKU, openPanel, SCRIPTED, scriptBash, shoot } from "./shots.ts";
 
 // An editor's end of ACP: `keel acp` on stdio, JSON-RPC one message a line.
 class Editor {
@@ -129,6 +129,20 @@ test("acp", async ({ page, request, baseURL }) => {
   await expect.poll(() => ed.updates.slice(before).some((u) => u.update.sessionUpdate === "tool_call"), { timeout: 60_000 }).toBe(true);
   ed.notify("session/cancel", { sessionId: id });
   expect((await turn).stopReason).toBe("cancelled");
+
+  // A request sent again after its stream broke: what the editor shows of the reply is not sent
+  // again, and a short line says why it stopped. A reply that says something else comes whole, marked.
+  // (The stand-in breaks a stream on demand; a real model cannot be made to.)
+  if (SCRIPTED) {
+    const said = async (text: string) => {
+      const from = ed.updates.length;
+      expect((await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text }] })).stopReason).toBe("end_turn");
+      return ed.updates.slice(from).filter((u) => u.sessionId === id && u.update.sessionUpdate === "agent_message_chunk").map((u) => u.update.content.text).join("");
+    };
+    const line = "\n\n[Keel: the model request failed and is sent again.]\n\n";
+    expect(await said("script:drop-same")).toBe(`The same start ${line}and the whole rest.`);
+    expect(await said("script:drop")).toBe(`This half reply is dropped with the stream${line}\n\n[Keel: the model request failed and was sent again; the reply it gave is:]\n\nThe whole reply, after the dropped stream.`);
+  } else test.info().annotations.push({ type: "skipped: a real model", description: "a stream broken on demand needs the scripted stand-in" });
   ed.close();
 });
 

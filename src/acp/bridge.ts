@@ -16,6 +16,7 @@ import type { StoredEvent } from "../core/types.ts";
 import { cardForm, cardLines, type CardForm } from "../safety/card.ts";
 import type { Approval } from "../safety/gate.ts";
 import { spelled } from "../safety/chars.ts";
+import { RESTARTED, retryNotice, streamStep } from "./stream.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -205,11 +206,13 @@ export type DaemonApi = {
 // its prompt in: `after` is the seq of the stored prompt (null until the daemon
 // says where it went), `queueId` its queue row while it waits behind a running turn.
 type Prompt = { resolve: (r: Json) => void; reject: (e: Error) => void; after: number | null; queueId?: string; cancelled: boolean; settled: boolean };
-// What this editor waits on in one session: its open prompts, the reply text
-// streamed so far, and what passed while a prompt was still on its way to the
+// What this editor waits on in one session: its open prompts, and what passed while a prompt was still on its way to the
 // daemon (the queued prompts stored since, the turn ends since).
 // `seq`: the last event seen, where a prompt counts from when the daemon's answer names no event.
-type Live = { prompts: Prompt[]; streamed: string; error?: string; seq: number; delivered: Map<string, number>; ends: { seq: number; reason: string; error?: string }[] };
+type Live = { prompts: Prompt[]; error?: string; seq: number; delivered: Map<string, number>; ends: { seq: number; reason: string; error?: string }[] };
+// A reply as the editor shows it while it streams: `shown` of its text and its
+// thought, `streamed` of the attempt that streams now (src/acp/stream.ts streamStep).
+type Text = { shown: string; streamed: string; thoughtShown: string; thoughtStreamed: string };
 
 const LIST_PAGE = 200;
 
@@ -224,6 +227,8 @@ export class AcpBridge {
   private stopFrames?: () => void;
   private models: Json[] | null = null;
   private defaultModel = "";
+  private texts = new Map<string, Text>();
+  private retried = new Map<string, string>(); // session -> the retry status last told of its reply
 
   constructor(private daemon: DaemonApi, private out: Send, private log: (m: string) => void = () => {}) {}
 
@@ -298,6 +303,40 @@ export class AcpBridge {
     if (!list.length) this.served.delete(sessionId);
     // After the answer, so the editor knows the session first.
     if (failed.length) queueMicrotask(() => this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not connect ${failed.length === 1 ? "an MCP server" : "MCP servers"} the editor passed (${failed.join("; ")}).\n\n` } }));
+  }
+
+  private text(id: string): Text {
+    return this.texts.get(id) ?? this.texts.set(id, { shown: "", streamed: "", thoughtShown: "", thoughtStreamed: "" }).get(id)!;
+  }
+
+  // A delta of a reply: what the editor does not show yet of it goes.
+  private delta(id: string, kind: string, chunk: string) {
+    const t = this.text(id);
+    if (kind === "text") {
+      const step = streamStep(t.shown, (t.streamed += chunk));
+      t.shown = step.shown;
+      if (step.send) this.notify(id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.restarted ? RESTARTED + step.send : step.send } });
+    } else if (kind === "thinking") {
+      const step = streamStep(t.thoughtShown, (t.thoughtStreamed += chunk));
+      t.thoughtShown = step.shown;
+      if (step.send) this.notify(id, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: step.send } });
+    }
+  }
+
+  // The turn's request failed and is sent again: its reply streams from the
+  // start, and what the editor shows of it is not sent again (delta). A client
+  // that takes notices is told by one; another, when it shows part of the
+  // reply, by one short line in it.
+  private retry(id: string, s: Json) {
+    const t = this.text(id);
+    t.streamed = "";
+    t.thoughtStreamed = "";
+    const key = JSON.stringify([s.attempt, s.max, s.message, !!s.unreachable, s.limit ?? null]);
+    if (this.retried.get(id) === key) return; // the same wait told again
+    const first = !this.retried.has(id);
+    this.retried.set(id, key);
+    if (this.caps?.session?.notices) this.notify(id, retryNotice(s));
+    else if (first && t.shown) this.notify(id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n\n[Keel: the model request failed and is sent again.]\n\n" } });
   }
 
   // Resolves when the daemon was told what this editor held is let go.
@@ -506,7 +545,7 @@ export class AcpBridge {
         // Each call is its own entry: a second prompt while the first runs joins
         // the running turn or waits behind it, as the daemon decides, and neither
         // call takes the other's answer.
-        const live = this.live.get(id) ?? this.live.set(id, { prompts: [], streamed: "", delivered: new Map(), ends: [], seq: -1 }).get(id)!;
+        const live = this.live.get(id) ?? this.live.set(id, { prompts: [], delivered: new Map(), ends: [], seq: -1 }).get(id)!;
         let mine!: Prompt;
         const done = new Promise<Json>((resolve, reject) => live.prompts.push((mine = { resolve, reject, after: null, cancelled: false, settled: false })));
         // An advertised command (/server:prompt args) runs as the workbench runs it.
@@ -586,16 +625,16 @@ export class AcpBridge {
         this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `[${INPUT_LABEL[input]}]\n\n${e.data.text ?? ""}` }, _meta: { keel: { input } } });
       } else for (const content of userContent(e.data)) this.notify(sessionId, { sessionUpdate: "user_message_chunk", content });
     } else if (e.kind === "assistant") {
-      const t = replay ? undefined : this.live.get(sessionId);
       const texts = (e.data.blocks ?? []).filter((b: Json) => b.type === "text" && b.text).map((b: Json) => b.text as string);
       if (replay) for (const text of texts) this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
       else {
-        // The streamed deltas carried part (or all) of this reply: send what they missed.
+        // The streamed deltas carried part (or all) of this reply: send what the editor does not show yet.
         const committed = texts.join("");
-        const streamed = t?.streamed ?? "";
-        const missing = committed.startsWith(streamed) ? committed.slice(streamed.length) : `\n\n[Keel: the streamed text differs from the stored reply, which is:]\n\n${committed}`;
+        const shown = this.texts.get(sessionId)?.shown ?? "";
+        const missing = committed.startsWith(shown) ? committed.slice(shown.length) : `\n\n[Keel: the streamed text differs from the stored reply, which is:]\n\n${committed}`;
         if (missing) this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: missing } });
-        if (t) t.streamed = "";
+        this.texts.delete(sessionId);
+        this.retried.delete(sessionId);
       }
       for (const b of e.data.blocks ?? []) {
         if (b.type !== "tool_use") continue;
@@ -616,12 +655,13 @@ export class AcpBridge {
     } else if (e.kind === "compaction") {
       this.compaction(sessionId, e);
     } else if (e.kind === "turn_end" && !replay) {
+      this.texts.delete(sessionId);
+      this.retried.delete(sessionId);
       const l = this.live.get(sessionId);
       if (!l) return;
       const reason = String(e.data.reason ?? "end_turn");
       const error = l.error;
       l.error = undefined;
-      l.streamed = "";
       // A prompt still on its way to the daemon may turn out to be this turn's: its end is kept for it.
       if (l.prompts.some((p) => p.after === null && !p.queueId)) l.ends.push({ seq: e.seq, reason, error });
       // The end of a turn that ran before a prompt was stored is not that prompt's.
@@ -635,11 +675,9 @@ export class AcpBridge {
 
   private onFrame(f: Json) {
     if (f.t === "delta" && this.live.has(f.session_id)) {
-      const t = this.live.get(f.session_id)!;
-      if (f.kind === "text") {
-        t.streamed += f.text;
-        this.notify(f.session_id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: f.text } });
-      } else if (f.kind === "thinking") this.notify(f.session_id, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: f.text } });
+      this.delta(f.session_id, f.kind, String(f.text ?? ""));
+    } else if (f.t === "status" && f.status?.kind === "retry" && this.live.has(f.session_id)) {
+      this.retry(f.session_id, f.status);
     } else if (f.t === "event" && this.live.has(f.event.session_id)) {
       const l = this.live.get(f.event.session_id)!;
       if (typeof f.event.seq === "number" && f.event.seq > l.seq) l.seq = f.event.seq;

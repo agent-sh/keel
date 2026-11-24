@@ -353,3 +353,32 @@ test("the editor's servers are held by a socket of its own, and at its end the d
   // The empty list names no holder: it holds nothing.
   expect(log.slice(4)).toEqual(["PUT mcp 0 not held", "hold closed", "frames closed"]);
 });
+
+test("a reply sent again after a failed request is not repeated, and the retry is told", async () => {
+  const s = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  for (const notices of [false, true]) {
+    const f = fixture([s], {});
+    await call(f.bridge, f.out, "initialize", { protocolVersion: 1, clientCapabilities: notices ? { session: { notices: {} } } : {} });
+    const turn = async (frames: any[]) => {
+      const p = call(f.bridge, f.out, "session/prompt", { sessionId: "s", prompt: [{ type: "text", text: "go" }] });
+      await Bun.sleep(0);
+      const before = f.updates("s").length;
+      for (const x of frames) f.frame(x);
+      await p;
+      const u = f.updates("s").slice(before);
+      return { text: u.filter((x: any) => x.sessionUpdate === "agent_message_chunk").map((x: any) => x.content.text).join(""), notices: u.filter((x: any) => x.sessionUpdate === "notice") };
+    };
+    const delta = (text: string) => ({ t: "delta", session_id: "s", index: 0, kind: "text", text });
+    const retry = { t: "status", session_id: "s", status: { kind: "retry", attempt: 1, max: 4, at: 0, message: "Scripted: the stream broke" } };
+    const reply = (text: string) => ({ t: "event", event: { session_id: "s", kind: "assistant", data: { blocks: [{ type: "text", text }] } } });
+    const end = { t: "event", event: { session_id: "s", kind: "turn_end", data: { reason: "end_turn" } } };
+    const line = notices ? "" : "\n\n[Keel: the model request failed and is sent again.]\n\n";
+    // The same start again: only the rest goes.
+    const same = await turn([delta("The same "), delta("start "), retry, retry, delta("The same "), delta("start and the rest."), reply("The same start and the rest."), end]);
+    expect(same.text).toBe(`The same start ${line}and the rest.`);
+    expect(same.notices.length).toBe(notices ? 1 : 0);
+    // Another reply: the whole of it, after a line that says so.
+    const other = await turn([delta("This half reply "), retry, delta("The whole reply."), reply("The whole reply."), end]);
+    expect(other.text).toBe(`This half reply ${line}\n\n[Keel: the model request failed and was sent again; the reply it gave is:]\n\nThe whole reply.`);
+  }
+});

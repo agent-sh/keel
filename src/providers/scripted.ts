@@ -695,6 +695,14 @@ export class ScriptedProvider implements Provider {
           throw reportUsage(new ProviderError("network", "Scripted: the stream broke"), { ...usage, output: tokens("This half reply is dropped with the stream") });
         }
         return reply("The whole reply, after the dropped stream.");
+      case "drop-same":
+        // As drop, and the request sent again starts its reply as the broken one did (a client must not show that part twice).
+        if (attempt === 0) {
+          onDelta({ kind: "text", index: 0, text: "The same start " });
+          await Bun.sleep(300);
+          throw new ProviderError("network", "Scripted: the stream broke");
+        }
+        return reply("The same start and the whole rest.");
       case "cut":
         if (lastText.includes("[harness] Your last reply was cut off")) return reply("Part two, continued after the cut.");
         // A whole call, then one the limit cut (its input still parses): only the first runs.
