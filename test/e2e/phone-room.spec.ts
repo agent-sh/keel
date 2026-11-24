@@ -758,9 +758,7 @@ test.describe("on a phone at a large text size, a waiting question", () => {
     };
     try {
       await make("Other request", "ask", `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch other.txt" } }])}`);
-      // (A title of one line: at 150% a longer one takes a second line beside the menu button that stays in the
-      // title's row while a question waits, and the card gives that line's room back by scrolling.)
-      const id = await make("Fix scope", "full-auto", `script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ header: "Scope", question: "Fix only cart.js or the whole checkout module? The module has four other callers of the retry helper.", options: [{ label: "Only cart.js", description: "Smallest change, ships today" }, { label: "Whole module", description: "Every caller of the helper gets the bound" }, { label: "Ask the team first" }], multiSelect: false }] } }])}`);
+      const id = await make("Choose the fix scope for the whole checkout module", "full-auto", `script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ header: "Scope", question: "Fix only cart.js or the whole checkout module? The module has four other callers of the retry helper.", options: [{ label: "Only cart.js", description: "Smallest change, ships today" }, { label: "Whole module", description: "Every caller of the helper gets the bound" }, { label: "Ask the team first", description: "Wait for the owners of the four callers" }], multiSelect: false }] } }])}`);
       await expect.poll(async () => ((await (await request.get(`/api/sessions/${id}/questions`)).json()).pending ?? []).length, { timeout: 30_000 }).toBe(1);
       for (const [width, height] of [[390, 844], [412, 915]] as const) for (const scale of [1.3, 1.5]) {
         const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width, height }, hasTouch: true, isMobile: true });

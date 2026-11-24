@@ -21,7 +21,7 @@
 // on the Open link itself, and nothing else opens or fetches it.
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Clock, ExternalLink, MessageCircleQuestion } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Under } from "./ToolCall.tsx";
 import { CALL_STOPPED, NEEDS_ANSWER } from "../lib/work.ts";
 import { WaitMark } from "./WaitMark.tsx";
@@ -74,11 +74,36 @@ const Legend = ({ q }: { q: UiQuestion }) => (
 );
 
 // A phone cuts a long question at three lines (bridge.css), so that its choices show with it, and
-// offers the rest: one tap and it reads whole. The cut is read from the page as it is laid out.
+// offers the rest: one tap and it reads whole. The cut is read from the page as it is laid out. Where
+// the choices still do not all show (a large text size, a title of two lines), the cut goes to two
+// lines: the choices come before the words that lead to them.
+const CUT_LINES = 3, CUT_LEAST = 2;
 function QuestionText({ text, header }: { text: string; header?: string }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [cut, setCut] = useState(false);
   const [whole, setWhole] = useState(false);
+  const [lines, setLines] = useState(CUT_LINES);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const card = el?.closest<HTMLElement>(".k-question");
+    const tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
+    if (!el || !card || !tray || whole || !matchMedia("(max-width: 767px)").matches) return;
+    // Whether every choice stands in the tray, above the card's foot (the state the page has now).
+    const shows = () => {
+      const t = tray.getBoundingClientRect();
+      const bottom = Math.min(t.bottom, card.querySelector('[data-testid="question-foot"]')?.getBoundingClientRect().top ?? Infinity);
+      return [...card.querySelectorAll('[data-testid="question-option"]')].every((o) => { const r = o.getBoundingClientRect(); return r.bottom <= bottom + 1; });
+    };
+    const fit = () => setLines((n) => (n > CUT_LEAST && !shows() ? n - 1 : n));
+    const ro = new ResizeObserver(fit);
+    ro.observe(tray);
+    ro.observe(card);
+    const again = () => setLines(CUT_LINES);
+    // Cut short, the choices also sit closer (bridge.css): a title of three lines needs both.
+    card.toggleAttribute("data-tight", lines < CUT_LINES);
+    addEventListener("resize", again);
+    return () => { ro.disconnect(); removeEventListener("resize", again); };
+  }, [text, whole, lines]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || whole) return;
@@ -92,7 +117,7 @@ function QuestionText({ text, header }: { text: string; header?: string }) {
   const open = cut && !whole;
   return (
     <span className="relative min-w-0">
-      <span ref={ref} className="k-q-text text-read font-medium leading-snug" data-whole={whole || undefined} data-testid="question-text"
+      <span ref={ref} className="k-q-text text-read font-medium leading-snug" data-whole={whole || undefined} data-testid="question-text" style={lines < CUT_LINES ? ({ "--k-q-lines": lines } as CSSProperties) : undefined}
         role={open ? "button" : undefined} tabIndex={open ? 0 : undefined} aria-expanded={open ? false : undefined}
         onClick={open ? () => setWhole(true) : undefined} onKeyDown={open ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setWhole(true); } } : undefined}>{header && <span className="k-q-chip k-q-lead md:hidden">{header}</span>}{text}</span>
       {open && <span className="k-q-more" aria-hidden="true" data-testid="question-more">Read it all</span>}
@@ -539,7 +564,7 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
       onKeyDown={onKeyDown}
     >
       <Head open answered={false} from={asked?.from} slim={!asked} onLater={slimPhone ? undefined : onLater} />
-      <div className="flex flex-col gap-4 px-3.5 pt-3">
+      <div className="flex flex-col gap-4 px-3.5 pt-3 max-md:pt-2">
         {asked && (
           // The server's own words: plain text set apart from the card's, never markup or a link.
           <div className="k-quote flex flex-col gap-1" data-testid="question-message">
