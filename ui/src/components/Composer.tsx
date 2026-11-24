@@ -1,4 +1,5 @@
-import { ArrowUp, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
+import { ArrowUp, ChevronDown, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
@@ -7,7 +8,7 @@ import { promptArgAt, type PromptArg } from "../lib/prompt-args.ts";
 import { loadAgentCommands } from "../lib/acp-commands.ts";
 import { fromBlock, MAX_EDGE, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { boxRefused, ownFocus } from "../lib/asks.ts";
-import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
+import { BACKGROUND_KEYS, composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, keepText, keptText, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
@@ -24,6 +25,8 @@ import { registerBox, withQuote } from "../lib/quote.ts";
 import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
 import { appSaysNow, useAppSays } from "./Stale.tsx";
 import { cn, fmtSize, scrollMotion } from "../lib/utils.ts";
+import { Kbd } from "./Kbd.tsx";
+import { itemClass, popupClass, iconButton } from "./ui.tsx";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
@@ -93,6 +96,9 @@ type ComposerProps = {
   // The start box: makes a session with no first message and opens it, for a command typed
   // where no session exists yet (/goal starts one, as a plain prompt does).
   onStart?: () => Promise<{ id: string }>;
+  // The start box: Alt+Enter and the Send menu's "Start in background" make the session
+  // without opening it. The box empties and keeps the keyboard; the caller says it started.
+  onSendBackground?: (text: string, images: PromptBlock[], id?: string) => Promise<unknown> | void;
   onStop?: () => void;
   // What Escape does when no menu is open (default: stop a working turn).
   onEscape?: () => void;
@@ -127,7 +133,7 @@ export function Composer(props: ComposerProps) {
 }
 
 const SessionComposer = memo(function SessionComposer({
-  session, onSend, onQueue, onStart, onStop, onEscape, stopLabel, stopLeaves, working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
+  session, onSend, onQueue, onStart, onSendBackground, onStop, onEscape, stopLabel, stopLeaves, working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
@@ -709,7 +715,7 @@ const SessionComposer = memo(function SessionComposer({
   };
 
   const attempt = async (entry: SendDraft, fromBox: boolean) => {
-    const { id, text, images, queue } = entry;
+    const { id, text, images, queue, background } = entry;
     // Keel is not heard: the message waits on its shelf at once and goes out by itself, once, when
     // it is back. (Sent into a link that says nothing, it was nowhere on the page until the link answered.)
     if (named && !getState().connected) {
@@ -735,7 +741,7 @@ const SessionComposer = memo(function SessionComposer({
         void settled.then(() => { if (outgoing.get(shelf) === settled) outgoing.delete(shelf); });
         await (named ? whileHeard(mine) : mine);
       } else {
-        const out = onSend(text.trim(), images.map(toBlock), id);
+        const out = background && onSendBackground ? onSendBackground(text.trim(), images.map(toBlock), id) : onSend(text.trim(), images.map(toBlock), id);
         await (named ? whileHeard(Promise.resolve(out)) : out);
       }
     } catch (e) {
@@ -770,7 +776,7 @@ const SessionComposer = memo(function SessionComposer({
     setSendDraft(shelf, id);
   };
 
-  const submit = (queue = false) => {
+  const submit = (queue = false, background = false) => {
     sentHere.current = Date.now();
     const { text, images } = draft.current;
     const t = text.trim();
@@ -788,7 +794,7 @@ const SessionComposer = memo(function SessionComposer({
     setMenu(null);
     setNotice(null);
     ref.current?.focus();
-    void attempt({ id: crypto.randomUUID(), text, images, queue, state: "sending" }, true);
+    void attempt({ id: crypto.randomUUID(), text, images, queue, ...(background && { background }), state: "sending" }, true);
   };
 
   // What the selection bar hands this box (lib/quote.ts): a comment goes at once as the owner's own message,
@@ -1034,7 +1040,15 @@ const SessionComposer = memo(function SessionComposer({
           // Ctrl Shift Enter queues for after the running turn, whichever key sends; with no
           // turn running it sends (the turn may have ended a moment before the press).
           const queues = e.key === "Enter" && mod && e.shiftKey && !e.altKey;
-          // Alt Enter is the pane's (focus it, or show all): not a send.
+          // Alt Enter is the pane's (focus it, or show all): not a send. In the start box it starts
+          // the session without opening it.
+          if (onSendBackground && e.key === "Enter" && e.altKey && !mod && !e.shiftKey) {
+            e.preventDefault();
+            if (e.repeat) return;
+            const no = canSend ? boxRefused(e.currentTarget) : "";
+            if (no) return setNotice(no);
+            return submit(false, true);
+          }
           if (queues || (e.key === "Enter" && !e.altKey && ((enterSends && !e.shiftKey && !mod) || (!enterSends && mod)))) {
             e.preventDefault();
             // A held Enter sends nothing: it may have gone down somewhere else (on an answer that was
@@ -1127,6 +1141,32 @@ const SessionComposer = memo(function SessionComposer({
               <Square className="size-3 fill-current" />
               {stopLabel && <span>{stopLabel}</span>}
             </button>
+          )}
+          {onSendBackground && !busy && (
+            <Menu.Root>
+              <Menu.Trigger aria-label="More ways to start" title="More ways to start" data-testid="send-menu" className={cn(iconButton, "size-6 -mr-0.5")}>
+                <ChevronDown className="size-3.5" />
+              </Menu.Trigger>
+              <Menu.Portal>
+                <Menu.Positioner sideOffset={6} align="end" className="z-50 outline-none">
+                  <Menu.Popup className={cn(popupClass, "w-64")} data-testid="send-menu-popup" aria-label="More ways to start" finalFocus={ref}>
+                    <Menu.Item
+                      className={itemClass}
+                      data-testid="start-background"
+                      disabled={!canSend}
+                      onClick={() => {
+                        const no = ref.current ? boxRefused(ref.current) : "";
+                        if (no) return setNotice(no);
+                        submit(false, true);
+                      }}
+                    >
+                      <span className="min-w-0 flex-1 truncate">Start in background</span>
+                      <Kbd keys={BACKGROUND_KEYS} />
+                    </Menu.Item>
+                  </Menu.Popup>
+                </Menu.Positioner>
+              </Menu.Portal>
+            </Menu.Root>
           )}
           <button
             type="button"

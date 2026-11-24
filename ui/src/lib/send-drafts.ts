@@ -7,6 +7,8 @@ export type SendDraft = {
   text: string;
   images: Attachment[];
   queue: boolean;
+  // The start box: the session starts without being opened.
+  background?: boolean;
   // sending: the request is out. done: sent or discarded, its images are being
   // released. Neither is shown; the rest are the items the owner acts on.
   // waiting: the daemon was away or restarting; the message goes out by itself

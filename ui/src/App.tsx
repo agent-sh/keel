@@ -8,6 +8,7 @@ import { Boundary } from "./components/Boundary.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import "./lib/builtins.ts";
 import { AnswerQueue } from "./components/AnswerQueue.tsx";
+import { StartedToast } from "./components/StartedToast.tsx";
 import { UndoToast } from "./components/UndoToast.tsx";
 import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
@@ -157,6 +158,7 @@ export function App() {
       <StaleMarks />
       <AnswerQueue />
       <UndoToast />
+      <StartedToast />
       <div className="k-shell">
         <AdminBand />
         <IncidentBand />

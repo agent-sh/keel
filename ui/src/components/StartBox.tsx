@@ -1,8 +1,9 @@
 import type { PromptBlock } from "../../../src/core/types.ts";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, Fragment } from "react";
-import { actions, api, reportError, useStore, workspaces } from "../lib/store.ts";
+import { actions, api, getState, reportError, useStore, workspaces } from "../lib/store.ts";
 import { savePref, setUI, useUI } from "../lib/ui.ts";
 import { openPlaced } from "../lib/looks.ts";
+import { offerStarted, startedTitle } from "../lib/started.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { useStateLabel, useWatches } from "../lib/watch.ts";
 import { MachineSep, machineRuns } from "./Where.tsx";
@@ -78,7 +79,9 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
   const rulesKey = useFleet((s) => JSON.stringify(s.rules) + s.machines.map((m) => m.id + m.state).join());
   useEffect(() => { if (machine === "auto") fleet.previewAuto().catch(reportError); }, [machine, rulesKey]);
   const autoThere = machine === "auto" && !!place && place.machine_id !== "local";
-  const start = async (t: string, images: PromptBlock[]) => {
+  // `background`: the session starts and the box stays as it is (its picks kept for the next one);
+  // the toast says it started, with Open.
+  const start = async (t: string, images: PromptBlock[], background = false) => {
     const s = machine
       ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined, sshMachine ? remoteDir || undefined : undefined)
       : inWorktree && (await isGitFolder(workspace))
@@ -86,6 +89,10 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
       : await actions.create(t, model || undefined, workspace || undefined, images, { project: startProject(workspace, newProject) });
     // The pick was for this conversation: the next New starts on the default
     // again. A failed create keeps it for the retry.
+    if (background) {
+      offerStarted(s.id, startedTitle(getState().sessions[s.id]?.title, t));
+      return s;
+    }
     setUI({ newModel: "", newProject: "" });
     // The session they started is the pane's session: they mean to work in it (lib/looks.ts).
     openPlaced(s.id);
@@ -135,6 +142,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
               onEscape={onBack}
               hold={blocked ? "Not sent: the note above the box says why." : undefined}
               onSend={(t, images) => start(t, images)}
+              onSendBackground={(t, images) => start(t, images, true)}
               // A command typed here (/goal) starts its session on this machine; one placed on
               // another is started there with its first message.
               onStart={blocked || (machine && !(machine === "auto" && !autoThere)) ? undefined : () => start("", [])}

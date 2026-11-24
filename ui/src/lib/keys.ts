@@ -58,6 +58,8 @@ export const composing = (e: KeyboardEvent | { nativeEvent: KeyboardEvent }): bo
 
 // The message box's own keys, named once for the box and the shortcut sheet.
 export const QUEUE_KEYS = "mod+shift+enter";
+// In the start box: start the session and stay in the box, without opening it.
+export const BACKGROUND_KEYS = "alt+enter";
 // What sends and what makes a new line, by the owner's "Send with" setting.
 export const SEND_KEYS = (enterSends: boolean) => (enterSends ? { send: "enter", newline: "shift+enter" } : { send: "mod+enter", newline: "enter" });
 

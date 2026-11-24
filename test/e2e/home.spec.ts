@@ -658,3 +658,51 @@ test("the start page says what finished since you looked", async ({ page, reques
     for (const id of made) await request.delete(`/api/sessions/${id}`);
   }
 });
+
+// Feature: the start box starts a session in the background: Alt+Enter, or "Start in background"
+// in the menu beside Send. The box empties and keeps the keyboard, the page stays where it is, and a
+// toast says "Started <title>" with Open. Plain Enter still opens the session it starts.
+test("home: start in the background keeps the box and says what started", async ({ page, request }) => {
+  const count = async () => (await (await request.get("/api/sessions")).json()).sessions.length as number;
+  const before = await count();
+  await page.goto("/");
+  const box = page.getByTestId("new-composer").locator("textarea");
+  await expect(box).toBeVisible();
+  await box.fill("Reply with only the word one.");
+  await box.press("Alt+Enter");
+  await expect(page.getByTestId("started-toast")).toContainText(/^Started \S/);
+  await expect(box).toHaveValue("");
+  await expect(box).toBeFocused();
+  await expect(page).toHaveURL(/\/$/);
+  await expect.poll(count).toBe(before + 1);
+  await shoot(page, "start-background-01-toast");
+
+  // The menu beside Send does the same, and the toast is the newest one's.
+  await box.fill("Reply with only the word two.");
+  await page.getByTestId("send-menu").click();
+  await page.getByTestId("start-background").click();
+  await expect(box).toHaveValue("");
+  await expect(box).toBeFocused();
+  await expect(page).toHaveURL(/\/$/);
+  await expect.poll(count).toBe(before + 2);
+  await expect(page.getByTestId("started-toast")).toHaveCount(1);
+  await shoot(page, "start-background-02-menu");
+
+  // Open goes to that session; Enter in the box opens the session it starts, as before.
+  await page.getByTestId("started-open").click();
+  await expect(page).toHaveURL(/\/s\/[\w-]+/);
+  await page.goto("/");
+  await box.fill("Reply with only the word three.");
+  await box.press("Enter");
+  await expect(page).toHaveURL(/\/s\/[\w-]+/);
+  await expect(page.getByTestId("started-toast")).toHaveCount(0);
+
+  // A phone: the same toast over the same box.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await box.fill("Reply with only the word four.");
+  await box.press("Alt+Enter");
+  await expect(page.getByTestId("started-toast")).toBeVisible();
+  await expect(box).toHaveValue("");
+  await shoot(page, "start-background-03-phone");
+});

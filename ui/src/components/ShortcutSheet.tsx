@@ -1,7 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Keyboard, X } from "lucide-react";
 import { useSyncExternalStore } from "react";
-import { commandsVersion, everyCommand, keyLabel, onCommands, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
+import { commandsVersion, everyCommand, keyLabel, onCommands, BACKGROUND_KEYS, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { shortcutLines, type ShortcutRow } from "../lib/shortcut-lines.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { Kbd } from "./Kbd.tsx";
@@ -22,6 +22,7 @@ const fixed = (enterSends: boolean): [string, string, string, string?][] => [
   ["Message box", "Send", SEND_KEYS(enterSends).send],
   ["Message box", "New line", SEND_KEYS(enterSends).newline],
   ["Message box", "Queue for after the turn", QUEUE_KEYS],
+  ["Start box", "Start in the background", BACKGROUND_KEYS],
   ["Message box", "Commands", "/"],
   ["Message box", "Mention a file", "@"],
   // An empty box has no caret to move: the page keys (and End) scroll the conversation from it (Composer.tsx).
