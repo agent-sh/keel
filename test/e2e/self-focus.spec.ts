@@ -231,12 +231,17 @@ test("the keyboard goes to the message box when what held it goes away", async (
     await expect(rowOf(page, d)).toHaveCount(0);
     await expect(box).toBeFocused();
 
-    // 6. A press on blank space puts the keyboard nowhere, and it stays there.
-    await page.getByTestId("session-header").click({ position: { x: 600, y: 8 } });
+    // 6. A press on blank space puts the keyboard nowhere, and it stays there. (Blank space: the head's
+    // stretch between what it says and the pane's tools; the session's tools are a bar beside it.)
+    const blankOfHead = async () => {
+      const h = (await page.locator(".k-station[data-helm]").getByTestId("station-head").boundingBox())!;
+      await page.mouse.click(h.x + h.width * 0.75, h.y + 10);
+    };
+    await blankOfHead();
     await nothing("after a press on blank space");
     // ... also when the control that had it before goes away later.
     await rowOf(page, b).focus();
-    await page.getByTestId("session-header").click({ position: { x: 600, y: 8 } });
+    await blankOfHead();
     await request.patch(`/api/sessions/${b}`, { data: { archived: true } });
     await expect(rowOf(page, b)).toHaveCount(0);
     await nothing("after a press on blank space and the row going away");

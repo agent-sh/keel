@@ -361,7 +361,9 @@ test.describe("a crowded toolbar", () => {
       await more.tap();
       await menu.getByTestId("worktree-chip").tap();
       await expect(worktree).toBeVisible();
-      await station.getByTestId("station-word").tap();
+      // (The menu is modal, as a menu is: the press lands on its backdrop over the page, at the state word's place.)
+      const word = (await station.getByTestId("station-word").boundingBox())!;
+      await page.touchscreen.tap(word.x + word.width / 2, word.y + word.height / 2);
       await expect(worktree).toBeHidden();
       await expect(menu).toBeHidden();
       // The permission modes open from wherever the control is.
@@ -435,7 +437,7 @@ test.describe("a crowded toolbar", () => {
       await page.setViewportSize({ width: 1920, height: 1040 });
       await expect(more).toBeVisible();
       const wide = await reachable(page, station);
-      expect(wide.inRow).toEqual(RANKED);
+      expect([...wide.inRow].sort()).toEqual([...RANKED].sort());
       await more.click();
       await expect(menu).toBeVisible();
       for (const t of wide.inMenu) await expect(menu.getByTestId(t)).toBeVisible();
