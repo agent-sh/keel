@@ -37,7 +37,7 @@ export function AgentMark({ w, className }: { w: Watch; className?: string }) {
 }
 // The ink of a state word beside its mark.
 export const STATE_INK: Record<Watch, string> = {
-  need: "text-st-need", work: "text-st-work", wait: "text-st-wait", resume: "text-muted", fail: "text-st-fail", declined: "text-st-fail", stop: "text-faint", done: "text-faint", idle: "text-faint",
+  need: "text-st-need", work: "text-muted", wait: "text-st-wait", resume: "text-muted", fail: "text-st-fail", declined: "text-st-fail", stop: "text-faint", done: "text-faint", idle: "text-faint",
 };
 
 // Stop always asks first, with the keyboard on Cancel: a stop cannot be undone. The question says

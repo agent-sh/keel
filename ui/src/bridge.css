@@ -483,9 +483,10 @@
 .k-earlier-extra { overflow: hidden; text-overflow: ellipsis; }
 .k-child-below { flex: none; color: var(--faint); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
 .k-child-state { flex-shrink: 0; white-space: nowrap; font-weight: 500; font-size: var(--text-micro); line-height: 1rem; color: var(--faint); }
-.k-child-state:is([data-watch="need"], [data-watch="work"], [data-watch="wait"], [data-watch="resume"], [data-watch="fail"], [data-watch="declined"]) { font-weight: 700; }
+.k-child-state:is([data-watch="need"], [data-watch="wait"], [data-watch="resume"], [data-watch="fail"], [data-watch="declined"]) { font-weight: 700; }
 .k-child-state[data-watch="need"] { color: var(--st-need-ink); }
-.k-child-state[data-watch="work"] { color: var(--st-work-ink); }
+/* An agent at work is the normal case: its word is quiet, so what calls the owner is what stands out. */
+.k-child-state[data-watch="work"] { color: var(--muted); }
 .k-child-state[data-watch="wait"] { color: var(--st-wait-ink); }
 .k-child-state[data-watch="resume"] { color: var(--muted); }
 .k-child-state:is([data-watch="fail"], [data-watch="declined"]) { color: var(--st-fail-ink); }

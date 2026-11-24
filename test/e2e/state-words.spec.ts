@@ -149,7 +149,21 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     // parent (0b3664139): it rides the parent's next input, here the report of the agent that was allowed.
     const ci = await by("Watch CI on main");
     const park = station(page, coord).getByTestId("agent-park-notice").filter({ hasText: "Watch CI on main" }).first();
-    await expect(park).toContainText("Agent waiting");
+    await expect(park).toContainText("Waiting");
+    // An agent's line in the conversation has one shape and two weights: its name, heavier, then its state word and
+    // what follows, all of one lighter weight (a report and a park; an agent that asks has the same line in tree-approvals.spec.ts).
+    const weights = (loc: import("@playwright/test").Locator) => loc.first().evaluate((el) => [...el.querySelectorAll<HTMLElement>("span")].filter((n) => n.children.length === 0 && n.textContent?.trim()).map((n) => [n.textContent!.trim(), getComputedStyle(n).fontWeight] as const));
+    for (const [what, loc, name] of [["report", station(page, coord).getByTestId("agent-report"), /./], ["park", park, /Watch CI on main/]] as const) {
+      const w = await weights(loc);
+      expect(w[0]![0], `${what}: it starts with the name`).toMatch(name);
+      expect(new Set(w.map(([, weight]) => weight)).size, `${what}: ${JSON.stringify(w)}`).toBeLessThanOrEqual(2);
+      expect(w.filter(([, weight]) => weight !== "400").map(([t]) => t).join(" "), `${what}: only the name is heavier`).toMatch(name);
+    }
+    // At work is the normal case: its word is lighter than a failed agent's and not in its colour (nor in Needs you's).
+    const word = (title: string) => tree(title).getByTestId("child-state").evaluate((el) => ({ weight: Number(getComputedStyle(el).fontWeight), color: getComputedStyle(el).color }));
+    const working = await word("Port the parser"), asking = await word("Fetch the release notes");
+    expect(working.weight, "Working is not bold").toBeLessThan(asking.weight);
+    expect(working.color, "Working is not in the ink of what failed").not.toBe(asking.color);
     await park.click();
     await expect(park).toContainText("Watch CI on main waits for");
     await expect(park.getByTestId("agent-park-id")).toHaveText(`Agent ${ci.id}`);

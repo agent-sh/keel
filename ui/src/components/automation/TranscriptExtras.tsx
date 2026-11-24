@@ -216,10 +216,21 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   const parkCards = parks.map((p) => {
     const a = agents[p.agent_id as string];
     const title = (a && sessions[a.session_id]?.title) || a?.title || (typeof p.title === "string" && p.title) || `Agent ${p.agent_id}`;
+    // The line of an agent's report: its name first and heavier, its state word, then what gives way.
     return (
-      <Shell key={p.agent_id} icon={Timer} label={`Agent ${STATE_WORD.wait.toLowerCase()}`} sub={title} testid="agent-park-notice">
-        <p className="whitespace-pre-wrap text-ui text-muted">{title} waits for {p.waiting_on}. It has not ended. <span className="text-faint" data-testid="agent-park-id">Agent {p.agent_id}</span></p>
-      </Shell>
+      <Collapsible.Root key={p.agent_id} className="k-heard group/park animate-in" data-testid="agent-park-notice">
+        <Collapsible.Trigger className="k-heard-line">
+          <CornerDownRight />
+          <AgentMark w="wait" />
+          <span className="k-heard-who min-w-[3rem] shrink truncate" title={`${title} (agent ${p.agent_id})`}>{title}</span>
+          <span className={cn("shrink-0 whitespace-nowrap", STATE_INK.wait)}>{STATE_WORD.wait}</span>
+          <span className="k-report-rest text-faint"><span>· for {String(p.waiting_on)}</span></span>
+          <ChevronRight className="k-heard-chev group-data-[open]/park:rotate-90" />
+        </Collapsible.Trigger>
+        <Collapsible.Panel className="k-heard-body">
+          <p className="whitespace-pre-wrap text-ui text-muted">{title} waits for {p.waiting_on}. It has not ended. <span className="text-faint" data-testid="agent-park-id">Agent {p.agent_id}</span></p>
+        </Collapsible.Panel>
+      </Collapsible.Root>
     );
   });
   // What failed around the session, one entry per cause: open, since it is what needs a look.

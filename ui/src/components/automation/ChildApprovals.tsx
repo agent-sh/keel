@@ -1,9 +1,10 @@
-import { Bot } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef } from "react";
 import { openSession, useAuto } from "../../lib/automation.ts";
 import { asksBelow, below } from "../../lib/agent-tree.ts";
 import { safety, useSafety } from "../../lib/safety.ts";
 import { useStore } from "../../lib/store.ts";
+import { cn } from "../../lib/utils.ts";
+import { AgentMark, STATE_INK } from "./bits.tsx";
 import { stateWords } from "../../../../src/core/state-words.ts";
 const Questions = lazy(() => import("../QuestionCard.tsx").then((m) => ({ default: m.Questions })));
 const Approvals = lazy(() => import("../ApprovalCard.tsx").then((m) => ({ default: m.Approvals })));
@@ -55,9 +56,10 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
               onClick={() => openSession(id)}
               className="mb-1 flex max-w-full items-center gap-1.5 text-left text-caption text-muted hover:text-fg"
             >
-              <Bot className="size-3.5 shrink-0 text-accent" />
-              <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words" data-testid="child-path" title={agent}>Agent {names.length > 1 && <>{names.slice(0, -1).join(" › ")} › </>}<span className="text-fg">{names.at(-1)}</span></span>
-              <span className="shrink-0">{stateWords({ watch: "need", why: asks && !open[id]?.length ? "question" : "approval" }).phrase.toLowerCase()}</span>
+              <AgentMark w="need" />
+              {/* The same line an agent's report has: its name first and heavier, then its state word. */}
+              <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words" data-testid="child-path" title={agent}>Agent {names.length > 1 && <>{names.slice(0, -1).join(" › ")} › </>}<span className="font-semibold text-fg">{names.at(-1)}</span></span>
+              <span className={cn("shrink-0", STATE_INK.need)}>{stateWords({ watch: "need", why: asks && !open[id]?.length ? "question" : "approval" }).phrase.toLowerCase()}</span>
             </button>
             {!!open[id]?.length && <Suspense fallback={null}><Approvals sessionId={id} asker={agent} where={where} /></Suspense>}
             {asks && <Suspense fallback={null}><Questions sessionId={id} agent lead={i === firstQuestion} /></Suspense>}

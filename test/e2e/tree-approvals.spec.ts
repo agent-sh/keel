@@ -44,6 +44,10 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
       await expect(ask(page, root).and(page.locator(`[data-agent="${g.session_id}"]`)).getByTestId("child-path")).toHaveText(/^Agent Alpha › Gamma$/);
       // (the same prefix at every depth)
       await expect(ask(page, root).and(page.locator(`[data-agent="${a!.session_id}"]`)).getByTestId("child-path")).toHaveText(/^Agent Alpha$/);
+      // The line is an agent's line as its report has it: the name heavier, then the state word in the ink of Needs you.
+      const line = ask(page, root).and(page.locator(`[data-agent="${a!.session_id}"]`)).locator("> button");
+      expect(await line.locator("span.font-semibold").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("600");
+      expect(await line.locator("> span").last().evaluate((el) => getComputedStyle(el).fontWeight)).toBe("400");
       await expect(ask(page, root).and(page.locator(`[data-agent="${g.session_id}"]`))).toHaveAttribute("data-depth", "2");
       await expect(ask(page, root).and(page.locator(`[data-agent="${a!.session_id}"]`))).toHaveAttribute("data-depth", "1");
       const card = (id: string) => page.locator(`[data-station="${root}"] [data-agent="${id}"]`);
