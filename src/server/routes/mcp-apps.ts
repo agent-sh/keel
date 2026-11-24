@@ -35,15 +35,34 @@ const bad = (error: string, status = 400) => json({ error }, status);
 export const APP_PAGE_MAX = 8_388_608;
 // What the page keeps of one call's result text: the owner reads these rows, the model never does.
 const CALL_TEXT = 4 * 1024;
+// The pages one session keeps, at most, in bytes: room for the newest four at
+// the largest a page may be. Past it the oldest of the session's pages are let
+// go (their apps say so in their place); the newest, which the owner is using,
+// stay drawn.
+export const SESSION_PAGES_MAX = 4 * APP_PAGE_MAX;
+// Calls an app's server gets from its apps in one session in a minute, at
+// most (a bucket refilled evenly). Each is a press of the owner's in the app or
+// the app's own refresh: a person presses about one control a second at most,
+// and an app that refreshes once a second stays under it too. Past that it is
+// a loop, and a read runs with no card to stop it.
+export const CALLS_PER_MINUTE = 60;
 
-export type AppRow = { id: string; session_id: string; call_id: string | null; server: string; label: string; tool: string; uri: string; page: string | null; meta: AppResourceMeta; input: unknown; result: McpCallResult | null; error: string | null; height: number | null; created: number };
+export type AppRow = { id: string; session_id: string; call_id: string | null; server: string; source: string; label: string; tool: string; uri: string; page: string | null; meta: AppResourceMeta; input: unknown; result: McpCallResult | null; error: string | null; height: number | null; created: number };
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS mcp_app_pages (hash TEXT PRIMARY KEY, html TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS mcp_app_pages (hash TEXT PRIMARY KEY, html TEXT NOT NULL, bytes INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS mcp_apps (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  call_id TEXT, server TEXT NOT NULL, label TEXT NOT NULL, tool TEXT NOT NULL, uri TEXT NOT NULL, page TEXT, meta TEXT NOT NULL,
+  call_id TEXT, server TEXT NOT NULL, source TEXT NOT NULL, label TEXT NOT NULL, tool TEXT NOT NULL, uri TEXT NOT NULL, page TEXT, meta TEXT NOT NULL,
   input TEXT, result TEXT, error TEXT, height INTEGER, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS mcp_apps_session ON mcp_apps(session_id);
+CREATE INDEX IF NOT EXISTS mcp_apps_page ON mcp_apps(page) WHERE page IS NOT NULL;
+-- A page goes with the last app that points to it: its row deleted (its session's delete cascades here) or its page let go.
+CREATE TRIGGER IF NOT EXISTS mcp_app_page_gone AFTER DELETE ON mcp_apps WHEN OLD.page IS NOT NULL BEGIN
+  DELETE FROM mcp_app_pages WHERE hash = OLD.page AND NOT EXISTS (SELECT 1 FROM mcp_apps WHERE page = OLD.page);
+END;
+CREATE TRIGGER IF NOT EXISTS mcp_app_page_let_go AFTER UPDATE OF page ON mcp_apps WHEN OLD.page IS NOT NULL AND OLD.page IS NOT NEW.page BEGIN
+  DELETE FROM mcp_app_pages WHERE hash = OLD.page AND NOT EXISTS (SELECT 1 FROM mcp_apps WHERE page = OLD.page);
+END;
 CREATE TABLE IF NOT EXISTS mcp_app_calls (id TEXT PRIMARY KEY, app TEXT NOT NULL REFERENCES mcp_apps(id) ON DELETE CASCADE,
   session_id TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS mcp_app_calls_app ON mcp_app_calls(app, seq);
@@ -88,7 +107,7 @@ export const mcpAppRoutes: RouteModule = ({ store, bus, engine, errors }) => {
 
   // The keeper: the page is read when the result comes, and kept (one copy of the same page for every result).
   const keeper: NonNullable<McpManager["apps"]> = {
-    async keep({ server, shown, tool, uri, input, result, ctx }) {
+    async keep({ server, source, shown, tool, uri, input, result, ctx }) {
       const m = mcp();
       let html: string | undefined, meta: AppResourceMeta = {}, error: string | undefined;
       try {
@@ -106,23 +125,41 @@ export const mcpAppRoutes: RouteModule = ({ store, bus, engine, errors }) => {
         error = `${shown} could not give ${uri}: ${(e as Error).message.split("\n")[0]}`;
       }
       const id = Bun.randomUUIDv7();
-      let page: string | null = null;
-      if (html !== undefined) {
-        page = createHash("sha256").update(html).digest("hex");
-        db.query("INSERT OR IGNORE INTO mcp_app_pages (hash, html) VALUES (?, ?)").run(page, html);
-      }
+      const page = html === undefined ? null : createHash("sha256").update(html).digest("hex");
       const r = keptResult(result);
-      db.query(`INSERT INTO mcp_apps (id, session_id, call_id, server, label, tool, uri, page, meta, input, result, error, height, created)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
-        .run(id, ctx.sessionId, ctx.callId ?? null, server, shown, tool.name, uri, page, JSON.stringify(meta), JSON.stringify(input ?? {}), r, error ?? null, Date.now());
+      db.transaction(() => {
+        if (page !== null) db.query("INSERT OR IGNORE INTO mcp_app_pages (hash, html, bytes) VALUES (?, ?, ?)").run(page, html!, Buffer.byteLength(html!));
+        db.query(`INSERT INTO mcp_apps (id, session_id, call_id, server, source, label, tool, uri, page, meta, input, result, error, height, created)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
+          .run(id, ctx.sessionId, ctx.callId ?? null, server, source, shown, tool.name, uri, page, JSON.stringify(meta), JSON.stringify(input ?? {}), r, error ?? null, Date.now());
+        if (page !== null) fit(ctx.sessionId, page);
+      })();
       return { id, server: shown, tool: tool.name, uri, ...(error ? { error } : {}) };
     },
   };
   const m = mcp();
   if (m) m.apps = keeper;
 
+  // The session's pages within SESSION_PAGES_MAX: the oldest let go first, never `kept` (the page just kept).
+  const LET_GO = `the page was let go: a session keeps at most ${SESSION_PAGES_MAX / 1024 / 1024} MB of app pages, the newest`;
+  function fit(session: string, kept: string) {
+    const pages = db.query<{ page: string; bytes: number }, [string]>(
+      `SELECT a.page AS page, p.bytes AS bytes FROM mcp_apps a JOIN mcp_app_pages p ON p.hash = a.page WHERE a.session_id = ?
+       GROUP BY a.page ORDER BY MAX(a.created) ASC`).all(session);
+    let total = pages.reduce((n, p) => n + p.bytes, 0);
+    for (const p of pages) {
+      if (total <= SESSION_PAGES_MAX) break;
+      if (p.page === kept) continue;
+      db.query("UPDATE mcp_apps SET page = NULL, error = ? WHERE session_id = ? AND page = ?").run(LET_GO, session, p.page);
+      total -= p.bytes;
+    }
+  }
+
   // Messages an app sends to the model in a minute, at most: an outside source's rate (src/mcp/channel.ts PER_MINUTE).
   const buckets = new Map<string, Bucket>();
+  // Calls of a server's apps in one session (CALLS_PER_MINUTE).
+  const callBuckets = new Map<string, Bucket>();
+  const bucketOf = (map: Map<string, Bucket>, key: string, perMinute?: number) => map.get(key) ?? map.set(key, new Bucket(perMinute)).get(key)!;
 
   const view = (a: AppRow) => ({
     id: a.id, server: a.label, tool: a.tool, uri: a.uri, error: a.error, prefers_border: a.meta.prefersBorder ?? null, csp: appliedCsp(a.meta.csp),
@@ -174,11 +211,12 @@ export const mcpAppRoutes: RouteModule = ({ store, bus, engine, errors }) => {
         if (typeof b.name !== "string" || !b.name) return bad("name is required");
         const args = b.arguments === undefined ? {} : b.arguments;
         if (!args || typeof args !== "object" || Array.isArray(args)) return bad("arguments must be an object");
+        if (!bucketOf(callBuckets, `${sid}\u0000${a.server}`, CALLS_PER_MINUTE).take()) return bad(`the app called its server more than ${CALLS_PER_MINUTE} times in a minute`, 429);
         const seq = (db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM mcp_app_calls WHERE app = ?").get(a.id)?.n ?? 0) + 1;
         const call: AppCallRow = { id: `mcpapp_${Bun.randomUUIDv7().replace(/-/g, "")}`, app: a.id, seq, tool: b.name, input: args, state: "running", text: "", started: Date.now() };
         const end = (state: AppCallRow["state"], text: string) => { Object.assign(call, { state, text: clip(text), ended: Date.now() }); saveCall(sid, call); };
         const manager = mcp();
-        const found = manager ? await manager.appTool(a.server, b.name, sid) : { refused: "MCP servers are not running" };
+        const found = manager ? await manager.appTool(a.server, a.source, b.name, sid) : { refused: "MCP servers are not running" };
         if ("refused" in found) {
           end("refused", found.refused);
           return json({ refused: found.refused, call });
@@ -194,7 +232,8 @@ export const mcpAppRoutes: RouteModule = ({ store, bus, engine, errors }) => {
           },
           run: (input, ctx) => manager!.call(a.server, found.def.name, input, ctx, { raw: (r) => { raw = r; } }),
         };
-        const r = await engine.runForApp(sid, tool, args, call.id, new AbortController().signal);
+        // A page that goes away (closed, reloaded) takes its call with it: a call waiting on a card does not wait on.
+        const r = await engine.runForApp(sid, tool, args, call.id, req.signal ?? new AbortController().signal, `The ${a.label} app`);
         const how = r.is_error ? engine.verdictOf(r) : undefined;
         if (how === "denied" || (r.is_error && !raw)) {
           end(how === "denied" ? "denied" : "error", textOf(r));
@@ -216,8 +255,7 @@ export const mcpAppRoutes: RouteModule = ({ store, bus, engine, errors }) => {
         if (typeof b.text !== "string" || !b.text.trim()) return bad("text is required");
         if (b.text.length > MESSAGE_MAX) return bad(`a message holds at most ${MESSAGE_MAX} characters`);
         const key = `${sid}\u0000${a.server}`;
-        const bucket = buckets.get(key) ?? buckets.set(key, new Bucket()).get(key)!;
-        if (!bucket.take()) return bad("the app sent too many messages in a minute", 429);
+        if (!bucketOf(buckets, key).take()) return bad("the app sent too many messages in a minute", 429);
         const source = `${a.label} app`;
         const sent = engine.message(sid, frame(source, { content: b.text.trim(), attrs: {} }), { kind: "channel", source, source_key: `mcp_app:${a.server}`, via: "mcp_app" });
         return json({ ok: true, state: sent.held ? "held" : sent.event ? "started" : "waiting" });

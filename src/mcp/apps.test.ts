@@ -59,6 +59,15 @@ test("the frame's policy reaches only the origins its server declared", () => {
   expect(wide).toContain("connect-src 'none'");
   for (const o of ["https://127.0.0.1", "https://[::1]", "https://169.254.169.254", "https://keel.localhost", "https://2130706433"]) expect(originOk(o)).toBe(false);
   expect(originOk("https://api.example.com:8443")).toBe(true);
+  // A wildcard covers the names under one domain, never a whole top-level one.
+  expect(originOk("https://*.com")).toBe(false);
+  expect(originOk("wss://*.io")).toBe(false);
+  expect(originOk("https://*.example.com")).toBe(true);
+  // A loopback in any form a browser reads as one, and the shared 100.64.0.0/10 (a tailnet's), are refused.
+  for (const o of ["https://127.1", "https://0x7f.0.0.1", "https://0x7f000001", "https://0177.0.0.1", "https://127.000.000.001", "https://017700000001", "https://1.2.3", "https://*.127.0.0.1",
+    "https://100.64.0.1", "https://100.101.102.103", "https://100.127.255.254", "https://0.0.0.0", "https://router.home.arpa", "https://999.1.1.1"]) expect([o, originOk(o)]).toEqual([o, false]);
+  // Public addresses next to those ranges stay usable.
+  for (const o of ["https://100.63.255.1", "https://100.128.0.1", "https://93.184.215.14"]) expect([o, originOk(o)]).toEqual([o, true]);
   // What the host tells the app it applied is the same list, without what it left out.
   expect(appliedCsp({ connectDomains: ["https://api.example.com/", "*", "http://127.0.0.1:1"], frameDomains: ["'self'"] })).toEqual({ connectDomains: ["https://api.example.com"] });
 });

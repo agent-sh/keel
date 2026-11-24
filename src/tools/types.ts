@@ -18,6 +18,9 @@ export type ToolContext = {
   cwd: string;
   signal: AbortSignal;
   spillDir: string;
+  // Who asked for the call when it is not the model: an MCP App in the
+  // transcript (src/server/routes/mcp-apps.ts). A card for it says so.
+  asker?: string;
   // Tokens left in the model's context window after its last request (set by
   // the engine before each round of calls): what a large read may fill.
   room?: number;

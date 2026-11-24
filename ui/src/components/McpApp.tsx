@@ -38,6 +38,13 @@ const context = (width: number) => ({
   containerDimensions: { width, maxHeight: frameHeight(Infinity, window.innerHeight) }, locale: navigator.language, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, platform: "web",
 });
 
+// How long a page has to start speaking (its ui/initialize) before the owner is
+// told it has not. The spec sets no time. A page served from this machine runs
+// its first script well within a second; one that loads its script from a
+// declared origin over a slow network takes a few. Ten with no word is a page
+// that will not speak. It is only told: a page that speaks later is drawn.
+export const HANDSHAKE_MS = 10_000;
+
 const STATE: Record<AppCallRow["state"], { name: string; tone?: "fail" | "warn" | "note" }> = {
   running: { name: "Calling", tone: "note" }, ok: { name: "Called" }, error: { name: "Failed", tone: "fail" }, denied: { name: "Denied", tone: "warn" }, refused: { name: "Refused", tone: "warn" },
 };
@@ -50,6 +57,7 @@ export function McpApp({ sessionId, shown }: { sessionId?: string; shown: AppSho
   const [height, setHeight] = useState<number | null>(null);
   const [link, setLink] = useState<{ url: string; answer: (opened: boolean) => void } | null>(null);
   const [said, setSaid] = useState<string | null>(null);
+  const [stalled, setStalled] = useState(false);
   const base = sessionId ? `/api/sessions/${sessionId}/mcp-apps/${encodeURIComponent(shown.id)}` : "";
   const error = shown.error ?? app?.error ?? failed;
   const usable = !!app?.page && !!sessionId;
@@ -61,12 +69,18 @@ export function McpApp({ sessionId, shown }: { sessionId?: string; shown: AppSho
     const answer = (id: string | number, result: unknown) => post({ jsonrpc: "2.0", id, result });
     const refuse = (id: string | number, code: number, message: string) => post({ jsonrpc: "2.0", id, error: { code, message } });
     let initialized = false, lastSaved = 0, saveTimer: ReturnType<typeof setTimeout> | undefined;
+    let spoke = false;
+    setStalled(false);
+    const handshake = setTimeout(() => { if (!spoke) setStalled(true); }, HANDSHAKE_MS);
     const onMessage = async (e: MessageEvent) => {
       // Only this frame's own page speaks to its host; any other window's message is not read.
       if (!win() || e.source !== win()) return;
       const m = readAppMessage(e.data);
       switch (m.kind) {
         case "initialize":
+          spoke = true;
+          clearTimeout(handshake);
+          setStalled(false);
           return answer(m.id, {
             protocolVersion: APP_PROTOCOL, hostInfo: { name: "keel", version: "1" },
             hostCapabilities: { serverTools: {}, openLinks: {}, logging: {}, message: { text: {} }, sandbox: { permissions: {}, csp: app!.csp } },
@@ -125,7 +139,7 @@ export function McpApp({ sessionId, shown }: { sessionId?: string; shown: AppSho
       post({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: now, styles: { variables: looks() } } });
     });
     watch.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => { window.removeEventListener("message", onMessage); watch.disconnect(); clearTimeout(saveTimer); };
+    return () => { window.removeEventListener("message", onMessage); watch.disconnect(); clearTimeout(saveTimer); clearTimeout(handshake); };
   }, [usable, base, app]);
 
   const drawn = height ?? (app?.height ? frameHeight(app.height, window.innerHeight) : null);
@@ -136,7 +150,7 @@ export function McpApp({ sessionId, shown }: { sessionId?: string; shown: AppSho
     setLink(null);
   };
   return (
-    <div ref={box} className="k-mcpapp" data-testid="mcp-app" data-app={shown.id} data-state={error ? "error" : !app ? "loading" : ready ? "ready" : "loading"}>
+    <div ref={box} className="k-mcpapp" data-testid="mcp-app" data-app={shown.id} data-state={error ? "error" : !app ? "loading" : ready ? "ready" : stalled ? "stalled" : "loading"}>
       <div className="k-mcpapp-head">
         <AppWindow className="size-3.5 text-faint" aria-hidden />
         <span className="k-mcpapp-name" data-testid="mcp-app-server">{shown.server}</span>
@@ -151,7 +165,12 @@ export function McpApp({ sessionId, shown }: { sessionId?: string; shown: AppSho
             <ContentFrame what="app" frameRef={frame} title={`${shown.server} app`} src={`${base}/page`} sandbox="allow-scripts" referrerPolicy="no-referrer"
               className="block size-full bg-transparent" data-testid="mcp-app-frame" />
           )}
-          {!ready && <p className="k-mcpapp-status k-mcpapp-loading" role="status" data-testid="mcp-app-loading">Loading app</p>}
+          {!ready && !stalled && <p className="k-mcpapp-status k-mcpapp-loading" role="status" data-testid="mcp-app-loading">Loading app</p>}
+          {!ready && stalled && (
+            <p className="k-mcpapp-status k-mcpapp-loading" data-tone="warn" role="status" data-testid="mcp-app-stalled">
+              The app has not started: its page said nothing to Keel in {HANDSHAKE_MS / 1000} seconds.
+            </p>
+          )}
         </div>
       )}
       {link && (

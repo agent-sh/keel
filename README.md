@@ -1241,11 +1241,18 @@ Keel hosts MCP Apps (the `io.modelcontextprotocol/ui` extension, version
 
 - The page is read from its server once, when the result comes, and kept with
   the session. A reload draws the same app at the height it last asked for,
-  even when the server is gone.
+  even when the server is gone. A page goes when the last app that points to
+  it goes (its session deleted). A session keeps at most 32 MB of pages, four
+  at the largest size a page may be; past that its oldest pages are let go and
+  their apps say so.
+- A page that sends no `ui/initialize` within 10 seconds gets a status line
+  saying it has not started. It is still drawn if it speaks later.
 - The frame runs scripts only, in an opaque origin: no same origin, no forms,
   no popups. Its content policy is sent by the daemon and allows only the
-  origins the server declared in `_meta.ui.csp`. A loopback or private
-  address, a keyword and a wildcard are left out. With nothing declared the
+  origins the server declared in `_meta.ui.csp`. Left out: a loopback,
+  private or shared (100.64.0.0/10) address, a host in any form but its
+  canonical one (`127.1`, `0x7f.0.0.1`), a keyword, a bare `*`, and a wildcard
+  over a single label (`https://*.com`). With nothing declared the
   page reaches nothing. The daemon refuses every request from an opaque
   origin, so the page cannot reach the API.
 - The app's messages are the spec's set, read by `src/mcp/apps.ts`. Anything
@@ -1253,8 +1260,11 @@ Keel hosts MCP Apps (the `io.modelcontextprotocol/ui` extension, version
   - `tools/call` reaches only the app's own server. The tool must be one the
     owner accepted and its server must not keep it from apps
     (`_meta.ui.visibility`). The call goes through the hooks and the permission
-    gate as a model's call does. Each call is listed under the app, refused
-    ones too.
+    gate as a model's call does, and a card for it says the app asks. The
+    server is the one the page came from: a server added later under the same
+    name with another command, address or account is refused. A server takes
+    60 calls a minute from its apps in one session. A call ends when the page
+    that asked goes away. Each call is listed under the app, refused ones too.
   - `ui/message` reaches the model as an outside input. The transcript shows
     it as the app's, not the owner's words, and the model reads it framed as
     data.

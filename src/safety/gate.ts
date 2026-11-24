@@ -1906,6 +1906,8 @@ export class Gate {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
+    // A call an app asked for, not the model: the card names who asks.
+    const asker = call.ctx.asker ? `${call.ctx.asker} asks to use ${name}.` : undefined;
     const parked = this.recovered(session.id, call, once);
     // A new card is about to open: the owner's PermissionRequest hooks first.
     // A deny refuses the call. An allow answers the card where a PreToolUse
@@ -1920,7 +1922,7 @@ export class Gate {
     }
     const a: Approval = parked ?? {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
-      summary, cut: ask.cut, notice: [ask.notice, changed].filter(Boolean).join(" ") || undefined,
+      summary, cut: ask.cut, notice: [asker, ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
       input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls), ...(ask.rule ? { rule: ask.rule } : {}),

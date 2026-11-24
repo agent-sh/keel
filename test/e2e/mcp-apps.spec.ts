@@ -80,7 +80,8 @@ test("mcp apps: drawn beside the call, calling its own tools through the gate", 
   await press("#tally");
   const card = page.getByTestId("approval").first();
   await expect(card).toBeVisible({ timeout: 20_000 });
-  await expect(card).toContainText("tally");
+  // The card says the app asks, not the model.
+  await expect(card.getByTestId("approval-notice")).toHaveText(`The ${NAME} app asks to use ${NAME}__tally.`);
   await shoot(page, "mcp-apps-02-asks");
   await card.getByTestId("allow-once").click();
   await expect(frame.locator("#out")).toHaveText("tally: blue has 1 points");
@@ -130,6 +131,35 @@ test("mcp apps: drawn beside the call, calling its own tools through the gate", 
   await expect(again.getByTestId("mcp-app-call")).toHaveCount(3);
   await shoot(page, "mcp-apps-05-reloaded");
 
+  // The owner replaces the server by another under the same name: the kept app reaches nothing of it.
+  expect((await request.delete(`/api/mcp/servers/${NAME}`)).ok()).toBe(true);
+  expect((await request.post("/api/mcp/servers", { data: { name: NAME, command: "bun", args: [FIXTURE] } })).ok()).toBe(true);
+  await expect.poll(async () => (await server())?.state, { timeout: 30_000 }).toBe("ready");
+  await press("#tally");
+  await expect(frame.locator("#out")).toHaveText(`tally refused: this app came from another server named ${NAME}`);
+  await expect(again.getByTestId("mcp-app-call")).toHaveCount(4);
+  await expect(page.getByTestId("approval")).toHaveCount(0);
+
   const errors = (await (await request.get("/api/errors")).json()).errors as any[];
   expect(errors.length, JSON.stringify(errors.slice(0, 3).map((e) => e.message))).toBe(errorsBefore);
+});
+
+test("mcp apps: a page that never speaks is told, not left loading", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "needs the scripted provider: the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await request.delete(`/api/mcp/servers/${NAME}`).catch(() => {});
+  expect((await request.post("/api/mcp/servers", { data: { name: NAME, command: "bun", args: [FIXTURE] } })).ok()).toBe(true);
+  await expect.poll(async () => ((await (await request.get("/api/mcp/servers")).json()).servers as any[]).find((s) => s.name === NAME)?.state, { timeout: 30_000 }).toBe("ready");
+  expect((await request.put(`/api/mcp/servers/${NAME}/reads`, { data: { tools: ["mute"] } })).ok()).toBe(true);
+  const { session } = await (await request.post("/api/sessions", { data: { title: `Mute app ${Date.now()}`, model: STAND_IN } })).json();
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "mcp_call", input: { tool: `${NAME}__mute`, arguments: {} } }])}`);
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 60_000 });
+  const app = page.getByTestId("mcp-app");
+  await expect(app.getByTestId("mcp-app-loading")).toBeVisible();
+  // Its handshake time passes with no word from the page (HANDSHAKE_MS, ten seconds).
+  await expect(app).toHaveAttribute("data-state", "stalled", { timeout: 25_000 });
+  await expect(app.getByTestId("mcp-app-stalled")).toHaveText("The app has not started: its page said nothing to Keel in 10 seconds.");
+  await shoot(page, "mcp-apps-06-stalled");
 });

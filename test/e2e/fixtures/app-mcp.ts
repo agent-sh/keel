@@ -5,11 +5,14 @@
 // button is pressed, and tries `secret` (a tool only the model sees) and a tool
 // of another server, which the host refuses. It also asks to open a link and
 // sends a message, which wait for the owner. `--domains` declares a connect
-// origin, so the frame's policy names it.
+// origin, so the frame's policy names it. Its tool `mute` names a page that
+// never speaks to its host.
 const APP = "ui://board/app.html";
+const MUTE = "ui://board/mute.html";
 const tools = [
   { name: "board", description: "Show the score board as an app.", inputSchema: { type: "object", properties: { team: { type: "string" } } }, _meta: { ui: { resourceUri: APP } } },
   { name: "tally", description: "Add a point (for the app).", inputSchema: { type: "object", properties: { team: { type: "string" } } }, _meta: { ui: { resourceUri: APP, visibility: ["app"] } } },
+  { name: "mute", description: "Show a page that never starts.", inputSchema: { type: "object", properties: {} }, _meta: { ui: { resourceUri: MUTE } } },
   { name: "secret", description: "Read the secret (for the model only).", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model"] } } },
 ];
 let points = 0;
@@ -84,6 +87,7 @@ function handle(m: any) {
       const a = m.params?.arguments ?? {};
       if (m.params?.name === "board") return reply({ content: [{ type: "text", text: `${a.team ?? "blue"} has ${points} points` }], structuredContent: { team: a.team ?? "blue", points } });
       if (m.params?.name === "tally") { points++; return reply({ content: [{ type: "text", text: `${a.team ?? "blue"} has ${points} points` }] }); }
+      if (m.params?.name === "mute") return reply({ content: [{ type: "text", text: "a quiet page" }] });
       if (m.params?.name === "secret") return reply({ content: [{ type: "text", text: "the secret is 42" }] });
       return reply({ content: [{ type: "text", text: `unknown tool ${m.params?.name}` }], isError: true });
     }
@@ -91,6 +95,7 @@ function handle(m: any) {
       return reply({ resources: [{ uri: APP, name: "board app", mimeType: "text/html;profile=mcp-app" }] });
     case "resources/read":
       if (m.params?.uri === APP) return reply({ contents: [{ uri: APP, mimeType: "text/html;profile=mcp-app", text: HTML, _meta: { ui: { prefersBorder: true, csp: domains ? { connectDomains: ["https://api.example.com"], resourceDomains: ["https://cdn.example.com"] } : {} } } }] });
+      if (m.params?.uri === MUTE) return reply({ contents: [{ uri: MUTE, mimeType: "text/html;profile=mcp-app", text: "<!doctype html><p>A page with no script.</p>" }] });
       return error(-32002, `no resource ${m.params?.uri}`);
     default:
       return error(-32601, `Method not found: ${m.method}`);

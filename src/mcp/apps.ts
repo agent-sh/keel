@@ -53,17 +53,40 @@ export function resourceMetaOf(meta: Meta): AppResourceMeta {
 }
 
 // One origin a server declared, as it may stand in the policy: https or wss,
-// a host name (a leading `*.` allowed), a port at most. Never a keyword
-// ('self', 'unsafe-eval'), a bare scheme or `*`, a path, or anything that
-// would end the directive. A loopback or private host is refused too: it
-// would reach this machine (the daemon's API among it) or the owner's
-// network, which no server's app has any business with.
+// a host name (a leading `*.` allowed over a name of two labels or more, so
+// never `https://*.com`), a port at most. Never a keyword ('self',
+// 'unsafe-eval'), a bare scheme or `*`, a path, or anything that would end
+// the directive. A loopback, private or shared (100.64.0.0/10, a carrier's
+// and a tailnet's) address is refused too: it would reach this machine (the
+// daemon's API among it) or the owner's network, which no server's app has
+// any business with. A host written in any form but its canonical one
+// (`127.1`, `0x7f.0.0.1`, `2130706433`, a number for a last label) is refused
+// before it is read: a browser reads those as addresses.
 const ORIGIN = /^(https|wss):\/\/(\*\.)?([a-z0-9-]+\.)*[a-z0-9-]+(:\d{1,5})?$/i;
-const PRIVATE = /^(localhost|.*\.localhost|.*\.local|.*\.internal|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|0\.0\.0\.0|\d+)$/i;
+const QUAD = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const PRIVATE_NAME = /^(localhost|.*\.localhost|.*\.local|.*\.internal|.*\.home\.arpa)$/i;
+function privateQuad(host: string): boolean {
+  const q = QUAD.exec(host);
+  if (!q) return false;
+  const [a, b] = [Number(q[1]), Number(q[2])];
+  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+}
 export function originOk(o: string): boolean {
   if (!ORIGIN.test(o)) return false;
-  const host = o.replace(/^[a-z]+:\/\//i, "").replace(/:\d+$/, "").replace(/^\*\./, "").toLowerCase();
-  return !PRIVATE.test(host);
+  const named = o.replace(/^[a-z]+:\/\//i, "").replace(/:\d+$/, "").toLowerCase();
+  const wild = named.startsWith("*.");
+  const host = wild ? named.slice(2) : named;
+  let canonical: string;
+  try { canonical = new URL(`https://${host}`).hostname; } catch { return false; }
+  if (canonical !== host) return false;
+  const labels = host.split(".");
+  if (/^\d+$/.test(labels.at(-1)!)) {
+    // A number for a last label is an address: only a dotted quad, of the public internet, never under a wildcard.
+    if (wild || !QUAD.test(host) || host.split(".").some((n) => Number(n) > 255)) return false;
+    return !privateQuad(host);
+  }
+  if (wild && labels.length < 2) return false;
+  return !PRIVATE_NAME.test(host);
 }
 const origins = (l: string[] | undefined) => [...new Set((l ?? []).map((o) => o.trim().replace(/\/+$/, "")).filter(originOk))];
 // What of a declared policy the frame applies (the host tells the app, as hostCapabilities.sandbox.csp).

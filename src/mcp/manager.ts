@@ -1259,22 +1259,27 @@ export class McpManager {
     const def = tools?.find((t) => t.name === tool);
     const uri = !app && def ? appUriOf(def) : undefined;
     if (uri && e && this.apps) {
-      const kept = await this.apps.keep({ server: name, shown, tool: def!, uri, input, result: r, ctx }).catch((err) => { this.errors.capture("tool", err, { mcp: name, tool, at: "mcp app", session: ctx.sessionId }); return undefined; });
+      const kept = await this.apps.keep({ server: name, source: binding(sourced(e.config), this.bindKey), shown, tool: def!, uri, input, result: r, ctx }).catch((err) => { this.errors.capture("tool", err, { mcp: name, tool, at: "mcp app", session: ctx.sessionId }); return undefined; });
       if (kept !== undefined) out.shown = { mcp_app: kept };
     }
     return out;
   }
 
   // MCP Apps: what keeps a tool's app with its result (src/server/routes/mcp-apps.ts sets it).
-  apps?: { keep(at: { server: string; shown: string; tool: McpTool; uri: string; input: unknown; result: McpCallResult; ctx: ToolContext }): Promise<unknown> };
+  // `source`: which server it is (src/mcp/sources.ts binding), so a later call of the app goes to that server only.
+  apps?: { keep(at: { server: string; source: string; shown: string; tool: McpTool; uri: string; input: unknown; result: McpCallResult; ctx: ToolContext }): Promise<unknown> };
 
   // A tool an app of this server may call: one the owner accepted (as the
   // model is offered it), that its server does not keep from apps. `name` is
-  // the server's own entry; nothing of another server is looked at.
-  async appTool(name: string, tool: string, session?: string): Promise<{ tool: CatalogTool; def: McpTool } | { refused: string }> {
+  // the server's own entry; nothing of another server is looked at. `source`
+  // is the server the app came from, as it was when its page was kept: a
+  // server under the same name with another command, address or account is
+  // another server, and the app reaches nothing of it.
+  async appTool(name: string, source: string, tool: string, session?: string): Promise<{ tool: CatalogTool; def: McpTool } | { refused: string }> {
     const e = this.entries.get(name);
     if (!e || e.bundled) return { refused: `the server ${e?.label ?? name} is not connected any more` };
     const shown = e.label ?? name;
+    if (binding(sourced(e.config), this.bindKey) !== source) return { refused: `this app came from another server named ${shown}` };
     if (e.session && e.session !== session) return { refused: `${shown} is another session's server` };
     const no = this.refusal(name, session);
     if (no) return { refused: no };
