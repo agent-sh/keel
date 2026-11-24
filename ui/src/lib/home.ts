@@ -147,3 +147,17 @@ export function withAgentFailures<S extends AgentFailing & Failing>(list: S[], s
   }
   return { states: out, unseen };
 }
+
+// Where a session counted Failed for its agents opens: at the agent of its tree that failed last
+// (the one the count is about), not at the session's own end, where that agent may be named far up.
+// Null when no agent of its tree is known to have failed: the session opens as itself.
+type AgentLike = { session_id: string; parent_id: string; status: string; ended?: number | null; created: number };
+export function failedAgentOf(rootId: string, agents: AgentLike[], parentOf: (session: string) => string | null | undefined): string | null {
+  const rootOf = (id: string) => { let at = id; for (let n = 0, up = parentOf(at); up && n < 64; n++, up = parentOf(at)) at = up; return at; };
+  let best: AgentLike | null = null;
+  for (const a of agents) {
+    if (a.status !== "failed" || rootOf(a.parent_id) !== rootId) continue;
+    if (!best || (a.ended ?? a.created) > (best.ended ?? best.created)) best = a;
+  }
+  return best?.session_id ?? null;
+}

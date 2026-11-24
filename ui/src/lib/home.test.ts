@@ -91,3 +91,18 @@ test("a state the headline counts keeps a row, and the line under the rows says 
   expect(sayMore(more)).toBe("3 more: 2 need you, 1 failed");
   expect(pickRows(rows.slice(0, 5), 6)).toEqual({ shown: rows.slice(0, 5), more: [] });
 });
+
+test("a session counted Failed for its agents opens at the agent of its tree that failed last", async () => {
+  const { failedAgentOf } = await import("./home.ts");
+  const parents: Record<string, string> = { "s-mid": "s-root", "s-a": "s-root", "s-b": "s-mid", "s-c": "s-root", "s-x": "s-other" };
+  const up = (id: string) => parents[id];
+  const agents = [
+    { session_id: "s-a", parent_id: "s-root", status: "failed", ended: 10, created: 1 },
+    { session_id: "s-b", parent_id: "s-mid", status: "failed", ended: 30, created: 2 },
+    { session_id: "s-c", parent_id: "s-root", status: "running", created: 40 },
+    { session_id: "s-x", parent_id: "s-other", status: "failed", ended: 50, created: 3 },
+  ];
+  expect(failedAgentOf("s-root", agents, up)).toBe("s-b");
+  expect(failedAgentOf("s-other", agents, up)).toBe("s-x");
+  expect(failedAgentOf("s-none", agents, up)).toBe(null);
+});

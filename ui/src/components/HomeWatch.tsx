@@ -35,10 +35,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { Session } from "../../../src/core/types.ts";
 import { READ_MS, SETTLE_MS, settled, stand, type Stand } from "../lib/approvals.ts";
 import { focusAsk } from "../lib/asks.ts";
-import { focusApproval, useAuto } from "../lib/automation.ts";
-import { pickRows, rowKind, rowLine, sayMore, watchSummary, wholeCommand, withAgentFailures } from "../lib/home.ts";
+import { autoState, focusApproval, useAuto } from "../lib/automation.ts";
+import { agentFailNews, failedAgentOf, pickRows, rowKind, rowLine, sayMore, watchSummary, wholeCommand, withAgentFailures } from "../lib/home.ts";
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
-import { actions, reportError, useStore } from "../lib/store.ts";
+import { actions, getState, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow } from "../../../src/core/state-words.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
@@ -61,7 +61,19 @@ const MOST = { attention: 6, working: 4 };
 // keyboard goes to that card, as the owner's own doing (lib/asks.ts): never to
 // an answer, and a secret's field takes it, since they came to give it.
 // Every way from this screen to a session goes through here.
-export function openWaiting(id: string, child?: string) {
+// `why`: the reason of the state the session is counted in (`agents`: Failed for its agents).
+export function openWaiting(id: string, child?: string, why?: string) {
+  // A session counted Failed for its agents opens at the agent that failed, its failure in the head;
+  // the owner has looked at what the count was about, so the session no longer counts it.
+  const s = getState().sessions[id];
+  if (why === "agents" && !child && s && agentFailNews(s)) {
+    const agent = failedAgentOf(id, Object.values(autoState().agents), (sid) => getState().sessions[sid]?.parent_id);
+    if (agent && getState().sessions[agent]) {
+      navigate({ name: "session", id: agent });
+      actions.patch(id, { agents_fail_seen: s.settings.agents_failed_ms } as never).catch(reportError);
+      return;
+    }
+  }
   const to = child ?? id;
   const first = getSafety().approvals[to]?.[0];
   navigate({ name: "session", id: to });
@@ -100,7 +112,7 @@ export function WatchHeadline() {
   return (
     <h1 className="k-home-state" data-testid="home-watch">
       {head.map((p) => (
-        <button key={p.kind} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.kind}`} title={`${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child)}>
+        <button key={p.kind} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.kind}`} title={`${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
           <Mark w={p.w} />{headCount(p.text)}
         </button>
       ))}
@@ -202,7 +214,7 @@ function Row({ s, st, lead, stands, onAnswer, room }: { s: Session; st: SessionS
   useEffect(() => setNote(null), [a?.id]);
   useEffect(() => { if (!note || note.review) return; const t = setTimeout(() => setNote(null), 4000); return () => clearTimeout(t); }, [note]);
   // The card is where a request is read: the keyboard lands on the list of requests, on no answer.
-  const open = () => openWaiting(s.id, st.child);
+  const open = () => openWaiting(s.id, st.child, st.why);
   const deny = () => { navigate({ name: "session", id: s.id }); if (a) focusApproval(a.id, "deny"); };
   // A turn a restart cut that Keel did not resume: the row resumes it.
   const held = w === "need" && st.why === "resume";
@@ -336,7 +348,7 @@ function List({ title, rows, most, testid, className, counted }: { title: string
           : byId[id] && states[id] && <Row key={id} s={byId[id]!} st={states[id]!} lead={id === still.order.find((x) => !still.gone.has(x))} stands={stands} onAnswer={still.answered} room={still.held ? still.height(id) : undefined} />)}
       </div>
       {/* What did not fit, in the headline's own words, so the two counts read as one. */}
-      {next && <button type="button" className="k-home-more" data-testid="home-more" onClick={() => openWaiting(next, states[next]?.child)}>{sayMore(more)}</button>}
+      {next && <button type="button" className="k-home-more" data-testid="home-more" onClick={() => openWaiting(next, states[next]?.child, states[next]?.why)}>{sayMore(more)}</button>}
     </section>
   );
 }

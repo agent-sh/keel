@@ -826,6 +826,40 @@ test.describe("on a phone, the dock", () => {
   });
 });
 
+// The home's "N failed" for a session that failed through its agents opens the agent that failed, its
+// failure in its head, and the session no longer counts it. (It opened the coordinator at its end, the
+// failed agent named only far up, the head saying what another agent ran.)
+test.describe("on a phone's home, a failed agent", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("is one tap from the failed count", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Coordinator ${tag}` } })).json();
+    const spawn = (message: string) => ({ name: "spawn_agent", input: { message } });
+    try {
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn(`Linter ${tag}\nscript:say lint clean`), spawn(`Fetcher ${tag}\nscript:billing`)])}` } });
+      const agents = async () => ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents ?? []) as any[];
+      await expect.poll(async () => (await agents()).find((a) => a.status === "failed")?.session_id ?? null, { timeout: 60_000 }).not.toBeNull();
+      const failed = (await agents()).find((a) => a.status === "failed")!.session_id as string;
+      await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings.agents_failed_ms ?? null, { timeout: 30_000 }).not.toBeNull();
+      await page.goto("/");
+      const count = page.getByTestId("home-count-fail");
+      await expect(count).toBeVisible();
+      await shoot(page, "phone-16-home-failed");
+      await count.tap();
+      await expect(page).toHaveURL(new RegExp(`/s/${failed}$`));
+      const pane = page.locator(".k-station[data-helm]");
+      await expect(pane.getByTestId("station-word")).toHaveText(/Failed/);
+      await expect(pane.getByTestId("station-head")).toBeInViewport();
+      await shoot(page, "phone-17-failed-agent");
+      // Looked at: the coordinator counts its agents' failure no more.
+      await expect.poll(async () => { const s = (await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings; return s.agents_fail_seen_ms === s.agents_failed_ms; }).toBe(true);
+    } finally { await request.delete(`/api/sessions/${session.id}`); }
+  });
+});
+
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
 // another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
 // box is taken as it shows, cut by what clips it). A target is what a press acts on: a
