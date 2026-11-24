@@ -202,7 +202,7 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
       >
         {text && (
           <>
-            <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{parts.map((p, i) => p.quote ? <blockquote key={i} data-testid="user-quote" className="my-1.5 border-l-2 border-line-strong pl-3 text-muted">{p.text}</blockquote> : <Fragment key={i}>{p.text}</Fragment>)}</div>
+            <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{parts.map((p, i) => p.quote ? <blockquote key={i} data-testid="user-quote" className="k-quote my-1.5 text-muted">{p.text}</blockquote> : <Fragment key={i}>{p.text}</Fragment>)}</div>
             {long && (
               <button type="button" onClick={() => setFull(!full)} className="k-link mt-1 text-caption font-medium text-accent-ink hover:underline">
                 {full ? "Show less" : "Show all"}
