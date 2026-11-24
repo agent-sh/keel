@@ -1235,7 +1235,36 @@ function Index({ current }: { current: string | null }) {
   );
 }
 
+// The foot names Inbox, Loops and Errors in words where the words and their counts fit, and is glyphs
+// where they do not. What they need is measured with the words shown (the counts change it), and kept
+// while the glyphs show, so a width is decided by one number and the foot does not flip at its edge.
+function useFootFit(open: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !open) return;
+    let need = 0;
+    const measure = () => {
+      el.removeAttribute("data-tight");
+      const cs = getComputedStyle(el);
+      const kids = [...el.children].filter((k): k is HTMLElement => k instanceof HTMLElement && k.getClientRects().length > 0);
+      need = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + (parseFloat(cs.columnGap) || 0) * Math.max(0, kids.length - 1);
+      for (const k of kids) need += Math.max(k.getBoundingClientRect().width, k.scrollWidth);
+    };
+    const fit = () => el.toggleAttribute("data-tight", el.clientWidth + 0.5 < need);
+    measure(); fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    // A count that comes or grows needs room: measured again with the words shown, before the frame is drawn.
+    const mo = new MutationObserver(() => { measure(); fit(); });
+    mo.observe(el, { subtree: true, childList: true, characterData: true });
+    return () => { ro.disconnect(); mo.disconnect(); el.removeAttribute("data-tight"); };
+  }, [open]);
+  return ref;
+}
+
 export function Sidebar({ open }: { open: boolean }) {
+  const foot = useFootFit(open);
   const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts && !e.read_ts).length);
   // The link in a word: connected, slow to answer, reconnecting, or catching up (the rows are not current before that is done).
   const link = useLink();
@@ -1350,7 +1379,7 @@ export function Sidebar({ open }: { open: boolean }) {
         </HandCtx.Provider>
       </CardCtx.Provider>
       {card && <RailCard s={card.s} y={card.y} left={card.left} row={card.row} cut={card.cut} />}
-      <div className="k-rail-foot">
+      <div ref={foot} className="k-rail-foot" data-testid="rail-foot">
         {!open && (
           <button type="button" className="k-act" data-testid="tab-archived" aria-label="Archived sessions" title="Archived sessions" onClick={() => { openOn = "archived"; toggleList(true); }}>
             <Archive />
