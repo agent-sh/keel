@@ -91,26 +91,66 @@ test("a session on another machine is not told to wait for a file of its machine
 });
 
 // Models sent pid 0 or 1 with a few seconds' timeout as a pause, and their own command's log path
-// with no pid: each refusal leads with the kind that does what the call meant.
-test("a process wait with no process to wait on names the kind the call meant", async () => {
+// with no pid: the wait they meant is set, and the result says so.
+test("a process wait with no process to wait on is set as the wait the call meant", async () => {
   const spill = mkdtempSync(join(tmpdir(), "keel-spill-"));
   const own = { ...ctx, spillDir: spill };
-  const before = waits.list(s.id).length;
-  const pause = await tool("WaitFor").run({ kind: "process", pid: 1, timeout_seconds: 1, note: "noop" }, own);
-  expect(pause.is_error).toBe(true);
-  expect(text(pause)).toStartWith('pid 1 is no process to wait on. For a pause, use kind "timer" with seconds.');
-  expect(text(pause)).toContain("wakes this session by itself when it ends");
+  const pause = await tool("WaitFor").run({ kind: "process", pid: 1, timeout_seconds: 5, note: "noop" }, own);
+  expect(pause.is_error).toBeFalsy();
+  expect(text(pause)).toContain("Scheduled timer wait");
+  expect(text(pause)).toContain('pid 1 is no process: set a pause of 5 s instead. For a pause, use kind "timer" with seconds.');
   mkdirSync(join(spill, "jobs"));
   const log = join(spill, "jobs", "b1run.log");
   writeFileSync(log, "");
   const path = await tool("WaitFor").run({ kind: "process", path: log, timeout_seconds: 1800, note: "remote run" }, own);
-  expect(path.is_error).toBe(true);
-  expect(text(path)).toStartWith(`kind "process" waits on a process id, not a path. ${log} is the output of your background command b1run.`);
-  expect(text(path)).toContain("it needs no wait.");
-  expect(text(path)).toContain(`use kind "file" with path "${log}.exit"`);
+  expect(path.is_error).toBeFalsy();
+  expect(text(path)).toContain("Scheduled file wait");
+  expect(text(path)).toContain("waited for the end of your background command b1run (its exit file) instead");
+  expect(waits.list(s.id).some((w) => w.kind === "file" && (w.spec as any).path === `${log}.exit`)).toBe(true);
+  // What names nothing to reframe stays a refusal that says what to use.
   const other = await tool("WaitFor").run({ kind: "process", path: join(spill, "out.txt") }, own);
+  expect(other.is_error).toBe(true);
   expect(text(other)).toContain('To wait for that file, use kind "file"');
-  expect(waits.list(s.id)).toHaveLength(before);
+  const none = await tool("WaitFor").run({ kind: "process", pid: 0 }, own);
+  expect(none.is_error).toBe(true);
+  for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
+});
+
+// A pid with a kind that takes none is ignored.
+test("a pid given with another kind is ignored", async () => {
+  const r = await tool("WaitFor").run({ kind: "timer", seconds: 30, pid: 1 }, ctx);
+  expect(r.is_error).toBeFalsy();
+  expect(text(r)).toContain("Scheduled timer wait");
+  for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
+});
+
+// A loopback http wait is answered with the exact other way, per family.
+test("a local http wait names the monitor call that does it", async () => {
+  const r = await tool("WaitFor").run({ kind: "http", url: "http://127.0.0.1:48555/api/health" }, ctx);
+  expect(r.is_error).toBe(true);
+  expect(text(r)).toContain("no running background command of this session names or listens on port 48555");
+  expect(text(r)).toContain('Monitor (command: "until curl -fsS -o /dev/null http://127.0.0.1:48555/api/health;');
+  const other = await tool("wait_for").run({ kind: "http", url: "http://10.0.0.5/x" }, ctx);
+  expect(text(other)).toContain("monitor (command:");
+});
+
+
+// A server the session started is its own: its port is in a running command of the session.
+test("an http wait on a loopback port of the session's own running command is set", async () => {
+  const { startJob, stopJob } = await import("../tools/jobs.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-job-"));
+  const job = startJob({ sessionId: s.id, command: "exec tail -f /dev/null # serve 48777", cwd: dir, logDir: join(dir, "jobs"), background: true });
+  try {
+    const ok = await tool("WaitFor").run({ kind: "http", url: "http://127.0.0.1:48777/health" }, ctx);
+    expect(ok.is_error).toBeFalsy();
+    expect(text(ok)).toContain("Scheduled http wait");
+    const other = await tool("WaitFor").run({ kind: "http", url: "http://127.0.0.1:48778/health" }, ctx);
+    expect(other.is_error).toBe(true);
+    expect(text(other)).toContain("names or listens on port 48778");
+  } finally {
+    await stopJob(job);
+    for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
+  }
 });
 
 test("CronDelete deletes the model's own scheduled tasks, not the owner's", async () => {

@@ -12,6 +12,7 @@ import { timed } from "../admin/stall.ts";
 import { localTime, zonedClock } from "../core/clock.ts";
 import { waitsFor } from "../core/state-words.ts";
 import { homedir } from "node:os";
+import { addressBytes, carried as mappedV4 } from "../core/hosts.ts";
 import { conceal } from "../core/conceal.ts";
 import { endNoticeOwed, findJob, jobHasProcesses, jobLive, jobPidsOf, jobsOf, running, type Job } from "../tools/jobs.ts";
 import { CARRY_MAX, carryText, HELD_ON_FILE, jobLine, opensForWrite, othersText, spentAtTurnEnd, stalled, waitingProc, WRITER_GRACE_MS, writerGone, writesPath, type ProcLook, type ThreadLook } from "./wait-carry.ts";
@@ -556,6 +557,68 @@ function processRefusal(spec: any, cwd: string, o: { elsewhere?: boolean; job?: 
     ? `pid ${Number(spec.pid)} is no process to wait on. ${pause}`
     : `a process wait needs a running process's id (a number above 1, as \`echo $!\` prints it). ${pause}`;
   return `${head} ${woken}${o.elsewhere ? "" : ' To wait on one all the same, use kind "file" on its log\'s path plus ".exit", which its end writes.'}`;
+}
+
+// A process wait that names no process, answered with the wait it meant instead of a refusal (each refusal
+// cost a step, and the next call was this one). `process` with pid 0 or 1 (or none) and a few seconds' timeout
+// is a pause; with the path of the output of the session's own background command, or its id as writer, it is
+// that command's end. Nothing else is reframed: a real pid, another kind, and a call that says nothing of
+// what it waits for stay as they are (a pid given with another kind is ignored by `normalize`).
+// `job`: the background command of the session a path is the output of (its id); `log`: the output file of one
+// by its id. Neither is given for a session whose commands run elsewhere.
+export function reframe(
+  input: any,
+  cwd: string,
+  o: { job?: (path: string) => string | undefined; log?: (id: string) => string | undefined } = {},
+): { input: any; said: string } | undefined {
+  const spec = input?.spec && typeof input.spec === "object" ? input.spec : input;
+  if (spec?.kind !== "process") return undefined;
+  const given = spec.pid !== undefined && spec.pid !== null && spec.pid !== "";
+  if (given && !(Number.isInteger(Number(spec.pid)) && Number(spec.pid) <= 1)) return undefined;
+  const why = given ? `pid ${Number(spec.pid)} is no process` : "a process wait needs a process id, and none was given";
+  const keep = { timeout_seconds: input.timeout_seconds, note: input.note };
+  let log: string | undefined;
+  let id: string | undefined;
+  if (typeof spec.path === "string" && spec.path.trim()) {
+    const path = resolvePath(spec.path.trim(), cwd);
+    log = path.endsWith(".exit") ? path.slice(0, -".exit".length) : path;
+    id = o.job?.(log);
+    if (!id) return undefined;
+  } else if (typeof spec.writer === "string" && spec.writer.trim()) {
+    const w: string = spec.writer.trim();
+    log = o.log?.(w);
+    if (!log) return undefined;
+    id = w;
+  }
+  if (id && log) {
+    return {
+      input: { kind: "file", path: `${log}.exit`, ...(o.log?.(id) ? { writer: id } : {}), ...keep },
+      said: ` ${why}: waited for the end of your background command ${id} (its exit file) instead. kind "process" is for a process id; a background command you started wakes this session by itself when it ends, so a wait on it is not needed.`,
+    };
+  }
+  const secs = Number(spec.seconds ?? spec.timeout_seconds);
+  if (!(secs > 0)) return undefined;
+  return {
+    input: { kind: "timer", seconds: secs, note: input.note },
+    said: ` ${why}: set a pause of ${secs} s instead. For a pause, use kind "timer" with seconds.`,
+  };
+}
+
+// Whether a wait may probe a local address: the address is this machine's own and its port is one the session's
+// running background commands name in their command line or listen on. A wait runs unasked as a read, so it does
+// not reach other local services (the owner's own daemons and databases); a server the session started is its own.
+// `host`: the URL's host; `jobs`: the session's commands that run; `listening`: ports their processes listen on.
+export function localProbe(url: URL, jobs: readonly { command: string }[], listening: readonly number[]): boolean {
+  const bytes = addressBytes(url.hostname);
+  const v4 = bytes && bytes.length === 16 ? mappedV4(bytes) : null;
+  const loopback = bytes
+    ? (v4 ?? (bytes.length === 4 ? bytes : null))?.[0] === 127 || (bytes.length === 16 && !v4 && bytes.slice(0, 15).every((b) => b === 0) && bytes[15] === 1)
+    : /^(localhost|.*\.localhost)\.?$/i.test(url.hostname);
+  if (!loopback) return false;
+  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+  if (listening.includes(port)) return true;
+  const word = new RegExp(`(?<![\\w.])${port}(?![\\w])`);
+  return jobs.some((j) => word.test(j.command));
 }
 
 // Validates a spec the way the model or the page wrote it; throws the reason.

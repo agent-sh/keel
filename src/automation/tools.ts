@@ -14,6 +14,8 @@ import { privateHost } from "../tools/web.ts";
 import { heldSays } from "../core/stoppers.ts";
 import { statusText } from "./now.ts";
 import { existsSync } from "node:fs";
+import { jobPidsOf, jobsOf, running } from "../tools/jobs.ts";
+import { portsOf } from "../fleet/portal.ts";
 import { basename, dirname, join } from "node:path";
 
 // Each family gets the names and shapes it was trained on: Claude the Claude
@@ -403,7 +405,7 @@ const waitSchema = {
     writer: { type: "string", description: "file, log: the ID of your background command that writes the file, when its command line does not name it: its end without the condition ends the wait" },
     url: { type: "string", description: "http: the URL to probe" },
     status: { type: "number", description: "http: the status to wait for (default any 2xx or 3xx)" },
-    pid: { type: "number", description: "process: wait until this process ends" },
+    pid: { type: "number", description: "process only (ignored with any other kind): the id of a running process, a number above 1, as `echo $!` prints it, to wait until it ends. A background command's ID is not a pid: its end wakes you by itself" },
     repo: { type: "string", description: "pr_checks: the GitHub repository, owner/name" },
     pr_number: { type: "number", description: "pr_checks: wait until every check of this pull request has finished (or it is merged or closed); the result names the failed checks" },
     timeout_seconds: { type: "number", description: "Give up after this long (default 600, timers use their own time)" },
@@ -412,13 +414,24 @@ const waitSchema = {
   required: ["kind"],
 };
 
-const waitRun = (input: any, ctx: ToolContext) => guard(() => {
+// The session's running background commands, and the ports their processes listen on.
+const ownJobs = (sessionId: string) => jobsOf(sessionId).filter(running);
+const ownPorts = (sessionId: string) => {
+  const pids = new Map(ownJobs(sessionId).map((j) => [j.id, jobPidsOf(j)] as const));
+  return [...portsOf(pids).values()].flat().map((p) => p.port);
+};
+
+// `monitorName`: the family's name for the monitor tool (what a refusal names as the other way).
+const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard(() => {
   if (input.kind === "webhook" || input.spec?.kind === "webhook") return fail("A webhook wait is the owner's to create.");
   // A session whose commands run on another machine: their files are there, not on this disk.
   const elsewhere = !!D().store.session(ctx.sessionId)?.machine;
   // The background command of this session a path is the output of (logDir in src/tools/shell.ts), by its id.
   const job = (path: string) => (dirname(path) === join(ctx.spillDir, "jobs") && existsSync(path) ? basename(path).replace(/\.log$/, "") : undefined);
-  const spec = waits.normalize(input, ctx.cwd, { elsewhere, job });
+  // A process wait that names no process, as the wait it meant (a pause, or the end of the session's own command).
+  const meant = waits.reframe(input, ctx.cwd, elsewhere ? {} : { job, log: (id) => jobsOf(ctx.sessionId).find((j) => j.id === id)?.log });
+  const asked = meant?.input ?? input;
+  const spec = waits.normalize(asked, ctx.cwd, { elsewhere, job });
   if (waits.isMonitor(spec.kind)) return fail("Use the monitor tool for a command's output or a socket.");
   // The output file of a background command of this session (logDir in src/tools/shell.ts) that does not
   // exist names no command of it: a wait on it only reaches its deadline. Its exit file (`<log>.exit`, src/tools/jobs.ts)
@@ -426,27 +439,34 @@ const waitRun = (input: any, ctx: ToolContext) => guard(() => {
   const out = spec.kind === "file" || spec.kind === "log" ? spec.path : "";
   if (out && !elsewhere && dirname(out) === join(ctx.spillDir, "jobs") && !existsSync(out) && !(out.endsWith(".exit") && existsSync(out.slice(0, -".exit".length))))
     return fail(`${basename(out)} is the output file of no background command of this session. A background command you started wakes this session by itself when it ends: it needs no wait. To wait on one all the same, use kind "file" on its log's path plus ".exit", which its end writes.`);
-  // The model's http wait follows web fetch's address rules (the wait tool runs unasked, as a read).
-  if (spec.kind === "http" && privateHost(new URL(spec.url).hostname))
-    return fail(`${new URL(spec.url).hostname} is a local or private address; watch a local server with the monitor tool and a command such as curl.`);
+  // The model's http wait follows web fetch's address rules (the wait tool runs unasked, as a read), except a
+  // loopback port the session's own running commands name or listen on: a server it started is its own.
+  if (spec.kind === "http") {
+    const u = new URL(spec.url);
+    if (privateHost(u.hostname) && !waits.localProbe(u, ownJobs(ctx.sessionId), ownPorts(ctx.sessionId))) {
+      const probe = `until curl -fsS -o /dev/null ${spec.url}; do ${"sle" + "ep"} 1; done; echo up`;
+      return fail(`${u.hostname} is a local or private address, and ${u.port ? `no running background command of this session names or listens on port ${u.port}` : "a wait reaches a local address only on a port the session's own commands use"}. Start the server with the shell tool's run_in_background and its port in the command, then wait on its URL; or watch it now with ${monitorName} (command: ${JSON.stringify(probe)}, match: "up").`);
+    }
+  }
   // The same condition again before it fired: the wait already set stands (its deadline the later one).
-  const same = waits.twin(ctx.sessionId, spec, { timeout_seconds: input.timeout_seconds });
-  if (same) return waitResult(same, "", true);
-  return waitResult(waits.create(ctx.sessionId, spec, { timeout_seconds: input.timeout_seconds, note: input.note }));
+  const said = meant?.said ?? "";
+  const same = waits.twin(ctx.sessionId, spec, { timeout_seconds: asked.timeout_seconds });
+  if (same) return waitResult(same, said, true);
+  return waitResult(waits.create(ctx.sessionId, spec, { timeout_seconds: asked.timeout_seconds, note: asked.note }), said);
 });
 
 const waitDesc =
   "Wait without spending tokens: the daemon checks a condition (a timer, a file appearing or containing text, a new log line matching a pattern, an HTTP status, a process ending, every check of a GitHub pull request finishing) and wakes this session with the result when it holds or the timeout passes. " +
   "A file or log wait's wake carries what the file gained since the wait began (its end, as a tool's output is cut) and what is known of the job that writes it; that job's end without the condition, or a long stretch of it with no output, no processor use and nothing of it waiting, wakes you before the deadline. " +
-  "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work. Not for your own agents, nor for a background command you started: their reports and its end wake you by themselves.";
+  "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work. Not for your own agents, nor for a background command you started: their reports and its end wake you by themselves, so there is no pid to give for one. A pause is kind timer with seconds. A local http address is waited on only at a port of a background command of this session.";
 
 // A pull request wait runs gh with the owner's login against a repository the
 // model names: the gate judges it as its own tool (wait_pr_checks), so it asks
 // where other actions ask and the owner can allow it by that name.
 const waitTarget = async (input: any) =>
   input?.kind === "pr_checks" || input?.spec?.kind === "pr_checks" ? { name: "wait_pr_checks", readOnly: false, input, cls: { kind: "other" as const } } : null;
-const WaitFor: Tool = { name: "WaitFor", urgent: "wait-writer-ends", families: CLAUDE, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
-const wait_for: Tool = { name: "wait_for", urgent: "wait-writer-ends", families: OTHERS, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
+const WaitFor: Tool = { name: "WaitFor", urgent: "wait-unfit-process-reframed", families: CLAUDE, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun("Monitor"), target: waitTarget };
+const wait_for: Tool = { name: "wait_for", urgent: "wait-unfit-process-reframed", families: OTHERS, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun("monitor"), target: waitTarget };
 
 const cancel_wait: Tool = {
   name: "cancel_wait",

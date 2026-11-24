@@ -72,6 +72,45 @@ test("a process wait with no pid says what a pid is and what to use instead", ()
   }
 });
 
+// The wait a process wait with no process meant, and the local ports an http wait may probe.
+test("reframe turns a process wait with no process into the wait it meant", () => {
+  const log = (id: string) => (id === "b1run" ? join(dir, "jobs", "b1run.log") : undefined);
+  const job = (path: string) => (path === join(dir, "jobs", "b1run.log") ? "b1run" : undefined);
+  // A pause: pid 0 or 1, or none, with the seconds in the timeout.
+  for (const pid of [0, 1, undefined]) {
+    const r = waits.reframe({ kind: "process", pid, timeout_seconds: 5, note: "n" }, dir)!;
+    expect(r.input).toEqual({ kind: "timer", seconds: 5, note: "n" });
+    expect(r.said).toContain('use kind "timer" with seconds');
+  }
+  // The end of the session's own command, by its output path or as the writer.
+  const byPath = waits.reframe({ kind: "process", path: join(dir, "jobs", "b1run.log"), timeout_seconds: 900 }, dir, { job, log })!;
+  expect(byPath.input).toMatchObject({ kind: "file", path: join(dir, "jobs", "b1run.log.exit"), writer: "b1run", timeout_seconds: 900 });
+  const byWriter = waits.reframe({ kind: "process", writer: "b1run" }, dir, { job, log })!;
+  expect(byWriter.input).toMatchObject({ kind: "file", path: join(dir, "jobs", "b1run.log.exit"), writer: "b1run" });
+  // What it cannot answer stays for the refusal: a real pid, another kind, no seconds, an unknown command.
+  expect(waits.reframe({ kind: "process", pid: 4242, timeout_seconds: 5 }, dir)).toBeUndefined();
+  expect(waits.reframe({ kind: "timer", pid: 1, seconds: 5 }, dir)).toBeUndefined();
+  expect(waits.reframe({ kind: "process", pid: 0 }, dir)).toBeUndefined();
+  expect(waits.reframe({ kind: "process", writer: "b9" }, dir, { job, log })).toBeUndefined();
+  expect(waits.reframe({ kind: "process", path: join(dir, "x.txt"), timeout_seconds: 5 }, dir, { job, log })).toBeUndefined();
+});
+
+test("a local http wait is allowed only on a loopback port the session's own commands use", () => {
+  const jobs = [{ command: "scripts/dev.sh 48555" }, { command: "sleep 300" }];
+  const u = (s: string) => new URL(s);
+  expect(waits.localProbe(u("http://127.0.0.1:48555/api/health"), jobs, [])).toBe(true);
+  expect(waits.localProbe(u("http://localhost:48555/"), jobs, [])).toBe(true);
+  expect(waits.localProbe(u("http://[::1]:48555/"), jobs, [])).toBe(true);
+  expect(waits.localProbe(u("http://127.0.0.1:9000/"), jobs, [9000])).toBe(true);
+  // Another port, a longer number that holds it, another local service, a private network, an address in a path.
+  expect(waits.localProbe(u("http://127.0.0.1:8555/"), jobs, [])).toBe(false);
+  expect(waits.localProbe(u("http://127.0.0.1:4855/"), jobs, [])).toBe(false);
+  expect(waits.localProbe(u("http://127.0.0.1:47950/"), jobs, [])).toBe(false);
+  expect(waits.localProbe(u("http://127.0.0.1/"), jobs, [])).toBe(false);
+  expect(waits.localProbe(u("http://10.0.0.5:48555/"), jobs, [])).toBe(false);
+  expect(waits.localProbe(u("http://169.254.169.254:48555/"), jobs, [])).toBe(false);
+});
+
 test("a replaced file is read from its start, whatever its size", async () => {
   for (const [n, text] of [["small", "READY\n"], ["equal", "READY\nab\n"], ["large", "READY\nabcd\n"]] as const) {
     const p = log(`${n}.log`, "12345678");
