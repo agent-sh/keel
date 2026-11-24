@@ -50,8 +50,13 @@ test("announced children past the tree's agent limit are not shown, and the sess
   announce("c0", { state: { state: "idle", stopReason: "end_turn" } });
   announce("late", { title: "Late", state: { state: "running" } });
   expect(rows.size).toBe(3);
+  // The total is of the live and the recent: past it the oldest finished ones are forgotten by the connection (their rows stay).
   for (let i = 0; i < 100; i++) { announce(`d${i}`, { state: { state: "idle", stopReason: "end_turn" } }); }
-  expect(rows.size).toBe(2 * 16);
+  expect(live.children.size).toBeLessThanOrEqual(2 * 16);
+  expect(rows.size).toBe(3 + 100);
+  announce("c1", { state: { state: "idle", stopReason: "end_turn" } });
+  announce("last", { title: "Last", state: { state: "running" } });
+  expect(rows.size).toBe(3 + 100 + 1);
   expect(errors).toEqual([]);
 });
 
@@ -179,3 +184,51 @@ test("no input reaches a child's session through the engine: a prompt, a message
   expect(engine.inputRefused(other.id)).toBeUndefined();
   try { engine.send(child.id, "x"); } catch (e) { expect((e as any).status).toBe(409); }
 });
+
+test("an id longer than any id is not taken: an announce with one is left out, a message's ids are cut", () => {
+  const { rows, writes, announce, feed, live, errors } = world(4);
+  for (let i = 0; i < 4; i++) announce("i".repeat(20_000_000) + i, { title: "Big", state: { state: "running" } });
+  expect(rows.size).toBe(0);
+  expect(live.children.size).toBe(0);
+  expect(writes.filter((w) => w.kind === "note" && /does not read/.test(w.data.text))).toHaveLength(1);
+  announce("ok", { title: "Fine", state: { state: "running" } });
+  expect(rows.size).toBe(1);
+  feed("root", { sessionUpdate: "session_message_chunk", messageId: "m".repeat(20_000_000), senderSessionId: "s".repeat(20_000_000), recipientSessionId: "r".repeat(20_000_000), content: [{ type: "text", text: "hi" }] });
+  for (const k of live.chunks.keys()) expect(k.length).toBeLessThan(1000);
+  for (const m of live.chunks.values()) { expect(m.to.length).toBeLessThan(1000); expect(m.from.length).toBeLessThan(1000); }
+  expect(errors).toEqual([]);
+});
+
+test("a child said to be at work again after it was over takes a place at work, and none past the limit", () => {
+  const { rows, announce, live, writes } = world(1);
+  announce("a", { title: "A", state: { state: "idle", stopReason: "end_turn" } });
+  announce("b", { title: "B", state: { state: "running" } });
+  expect(rows.size).toBe(2);
+  const a = [...rows.values()][0]!;
+  const before = a.patches.length;
+  announce("a", { state: { state: "running" } });
+  expect(a.patches.length).toBe(before);
+  expect(readStatus(live, "a")).toBe("completed");
+  expect(writes.filter((w) => w.kind === "note" && /more agents than Keel shows/.test(w.data.text))).toHaveLength(1);
+  // When the one at work is done, the other may be at work again.
+  announce("b", { state: { state: "idle", stopReason: "end_turn" } });
+  announce("a", { state: { state: "running" } });
+  expect(readStatus(live, "a")).toBe("running");
+});
+
+test("a child its parent's end made incomplete is not revived past the limit", async () => {
+  const { rows, announce, live, runner } = world(1);
+  announce("a", { title: "A", state: { state: "running" } });
+  (runner as any).kidsOutlive(live);
+  announce("b", { title: "B", state: { state: "running" } });
+  expect(rows.size).toBe(2);
+  const a = [...rows.values()][0]!;
+  const before = a.patches.length;
+  announce("a", { state: { state: "running" } });
+  expect(a.patches.length).toBe(before);
+});
+
+function readStatus(live: any, id: string): string {
+  const c = live.children.get(id);
+  return c.over ? "over" : c.state.state?.state === "running" ? "running" : c.state.state?.stopReason === "end_turn" ? "completed" : "other";
+}

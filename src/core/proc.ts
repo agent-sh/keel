@@ -72,13 +72,32 @@ export async function readText(pipe: Pipe, where?: string): Promise<string> {
   return out;
 }
 
-// Lines as they come (the last one without its newline at the end).
-export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: string): Promise<void> {
+// Lines as they come (the last one without its newline at the end). With `limit`, a line longer than `limit.max`
+// characters is never held or handed on: what comes of it is dropped up to its newline, and `limit.over` is told
+// its length once (a program that writes one without a newline cannot make this process hold it).
+export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: string, limit?: { max: number; over: (chars: number) => void }): Promise<void> {
   let buf = "";
+  if (!limit) {
+    return pumpText(pipe, (t) => {
+      buf += t;
+      for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) onLine(buf.slice(0, i));
+    }, where).then(() => { if (buf) onLine(buf); });
+  }
+  const { max, over } = limit;
+  let skipped = 0; // characters of the line being dropped, 0 when none is
   return pumpText(pipe, (t) => {
-    buf += t;
-    for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) onLine(buf.slice(0, i));
-  }, where).then(() => { if (buf) onLine(buf); });
+    let from = 0;
+    for (let i; (i = t.indexOf("\n", from)) >= 0; from = i + 1) {
+      if (skipped) { over(skipped + i - from); skipped = 0; continue; }
+      const line = buf + t.slice(from, i);
+      buf = "";
+      if (line.length > max) over(line.length); else onLine(line);
+    }
+    const rest = from ? t.slice(from) : t;
+    if (skipped) skipped += rest.length;
+    else if (buf.length + rest.length > max) { skipped = buf.length + rest.length; buf = ""; }
+    else buf += rest;
+  }, where).then(() => { if (skipped) over(skipped); else if (buf) onLine(buf); });
 }
 
 // stdout, stderr and the exit code of a spawned process, read together.

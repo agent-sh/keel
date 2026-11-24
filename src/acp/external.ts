@@ -37,7 +37,7 @@ import { catalogTools } from "../tools/catalog.ts";
 import { clearServed, SERVED_NAME, ServedTools, type ServedTool } from "./served.ts";
 import { AcpTerminals } from "./terminals.ts";
 import { fitted, noted, unrename } from "../providers/wires/schema-fit.ts";
-import { messageText, MESSAGE_MAX, patchChild, readState, turnReason, type ChildState, type Reading } from "./children.ts";
+import { clip, messageText, MESSAGE_MAX, patchChild, readState, turnReason, type ChildState, type Reading } from "./children.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { AgentStatus, ExternalInfo, StopBy } from "../automation/agents.ts";
 import type { TurnStatus } from "../core/types.ts";
@@ -183,6 +183,7 @@ type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; sid: str
   children: Map<string, Child>;
   chunks: Map<string, { to: string; from?: string; text: string }>;
   capped?: boolean;  // the owner was told that announced children past the limit are not shown
+  odd?: boolean;     // the owner was told that something the agent sent was left out for its size (an id, a line)
   served?: ServedTools; offered: Set<string>; terms: AcpTerminals; commands?: SlashCommand[];
   // The offered tools whose parameters were renamed to fit (by the name the agent calls), with the server's names.
   renamed?: Map<string, Record<string, string>>;
@@ -192,6 +193,8 @@ type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; sid: str
 // messages it may send in pieces at once (they are put together and shown when the next update comes).
 const TOTAL_PER_LIVE = 16;
 const CHUNKS_MAX = 64;
+// The longest id of a child or a message that Keel keeps: the agent's own are short; a longer one is not an id.
+const ID_MAX = 256;
 // A child the agent announced: its row (`agent`) and session, the transcript's state, and what it was last said to be.
 type Child = { id: string; agent: string; session: string; outer: string; state: ChildState; turn: TurnState; abort: AbortController;
   sig: string; tasks: number; stopBy?: StopBy; ran?: number; over?: boolean; plans?: Map<string, Json[]> };
@@ -290,6 +293,7 @@ export class AcpRunner {
     live.conn = conn;
     conn.onNotification = (method, params) => { if (method === "session/update") this.update(live, params); };
     conn.onRequest = (method, params) => this.request(live, method, params);
+    conn.onOversize = (n) => this.odd(live, `a message of ${n} characters`);
     void conn.exited.then(() => { this.closeLive(live); if (this.live.get(s.id) === live) this.live.delete(s.id); });
     try {
       const init = await conn.request("initialize", {
@@ -545,6 +549,7 @@ export class AcpRunner {
     if (!kids) return;
     const holder = outer === live.acpSession ? live.sid : live.children.get(outer)?.session;
     const id = typeof u.sessionId === "string" ? u.sessionId : "";
+    if (id.length > ID_MAX) return this.odd(live, "a child with an id of " + id.length + " characters");
     // (A child has one parent, and is never its own parent's parent: nothing moves or loops.)
     if (!holder || !id || id === outer || id === live.acpSession) return;
     let c = live.children.get(id);
@@ -552,6 +557,9 @@ export class AcpRunner {
     try {
       const state = patchChild(c?.state, u);
       const reading = readState(state.state);
+      // A child that was not at work and is said to be again takes a place at work like a new one: the agent
+      // cannot get past the limit by moving finished children back.
+      if (c && Object.prototype.hasOwnProperty.call(u, "state") && !this.working(c) && this.isLive(reading) && !this.vacancy(live, holder)) return;
       if (!c) {
         const parent = this.store.session(holder);
         if (!parent) return;
@@ -615,17 +623,43 @@ export class AcpRunner {
   // owner's list. The rest are not shown, and the session is told once.
   private room(live: Live, holder: string, reading: Reading): boolean {
     const limit = Math.max(1, this.kids!.limit(live.sid));
-    let running = 0;
-    for (const c of live.children.values()) { const st = readState(c.state.state).status; if (!c.over && (st === "running" || st === "waiting")) running++; }
-    const isLive = reading.status === "running" || reading.status === "waiting";
-    if ((isLive && running >= limit) || live.children.size >= limit * TOTAL_PER_LIVE) {
-      if (!live.capped) {
-        live.capped = true;
-        this.kids!.io(holder).append("note", { kind: "acp", text: `${live.agent.name} announced more agents than Keel shows (at most ${limit} at work, ${limit * TOTAL_PER_LIVE} in all, the agent limit of this session): the others are not shown.` });
+    if (this.isLive(reading) && !this.vacancy(live, holder)) return false;
+    // The total is of the live and the recent: past it the oldest finished ones are forgotten by this connection
+    // (their rows and sessions stay in the store; an update of one later takes its row up again).
+    const total = limit * TOTAL_PER_LIVE;
+    if (live.children.size >= total) {
+      for (const [id, c] of live.children) {
+        if (live.children.size < total) break;
+        if (!this.working(c)) live.children.delete(id);
       }
-      return false;
+      if (live.children.size >= total) return this.capNote(live, holder, limit);
     }
     return true;
+  }
+
+  private isLive = (r: Reading) => r.status === "running" || r.status === "waiting";
+  // Whether Keel shows the child as at work (a child its parent's end made incomplete is not).
+  private working = (c: Child) => !c.over && this.isLive(readState(c.state.state));
+  // Whether one more child may be at work: at most the tree's agent limit at once, each connection's own.
+  private vacancy(live: Live, holder: string): boolean {
+    const limit = Math.max(1, this.kids!.limit(live.sid));
+    let n = 0;
+    for (const c of live.children.values()) if (this.working(c)) n++;
+    return n < limit || this.capNote(live, holder, limit);
+  }
+  private capNote(live: Live, holder: string, limit: number): boolean {
+    if (!live.capped) {
+      live.capped = true;
+      this.kids!.io(holder).append("note", { kind: "acp", text: `${live.agent.name} announced more agents than Keel shows (at most ${limit} at work, ${limit * TOTAL_PER_LIVE} in all, the agent limit of this session): the others are not shown.` });
+    }
+    return false;
+  }
+  // Something the agent sent is left out because of its size: the session is told once.
+  private odd(live: Live, what: string) {
+    if (live.odd) return;
+    live.odd = true;
+    try { this.kids?.io(live.sid).append("note", { kind: "acp", text: `${live.agent.name} sent ${what}, which Keel does not read (ids and lines have a size limit): it is left out.` }); }
+    catch (e) { this.capture(e, { session: live.sid, agent: live.agent.id, at: "acp child" }); }
   }
 
   // The child's work is cut off by something that is not its own end: its words are stored and the calls it had open are told so.
@@ -679,10 +713,11 @@ export class AcpRunner {
   private said(live: Live, outer: string, u: Json) {
     const kids = this.kids;
     if (!kids) return;
-    const to = typeof u.recipientSessionId === "string" ? u.recipientSessionId : outer;
-    const from = typeof u.senderSessionId === "string" ? u.senderSessionId : undefined;
+    // (Ids are looked up and kept as keys only: one longer than any id is cut, and then names no child.)
+    const to = typeof u.recipientSessionId === "string" ? clip(u.recipientSessionId, ID_MAX) : clip(outer, ID_MAX);
+    const from = typeof u.senderSessionId === "string" ? clip(u.senderSessionId, ID_MAX) : undefined;
     if (u.sessionUpdate === "session_message_chunk") {
-      const id = String(u.messageId ?? "");
+      const id = clip(String(u.messageId ?? ""), ID_MAX);
       const k = `${to}\0${id}`;
       const had = live.chunks.get(k) ?? (live.chunks.size < CHUNKS_MAX ? { to, from, text: "" } : undefined);
       if (!had) return;

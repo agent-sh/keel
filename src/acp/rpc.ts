@@ -9,12 +9,19 @@ import { scrubbedEnv } from "../safety/env-secret.ts";
 type Json = any;
 export type RpcFailure = Error & { code?: number; data?: unknown };
 
+// The most characters Keel reads in one line from an agent. Messages are lines, and what a tool shows is cut by the
+// agent itself to far less than this (a file read or a command's output is tens of KB), so a line this long is
+// not a message to take: reading one holds the loop for as long as it takes to parse (about 0.04 s a MB).
+export const LINE_MAX = 4 * 1024 * 1024;
+
 export class AcpConnection {
   private proc: ReturnType<typeof Bun.spawn>;
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: Json) => void; reject: (e: RpcFailure) => void }>();
   private stderr = "";
   readonly exited: Promise<number>;
+  // A line the agent wrote that is longer than LINE_MAX is dropped unread (told here and in the log with its length).
+  onOversize: (chars: number) => void = () => {};
   onNotification: (method: string, params: Json) => void = () => {};
   onRequest: (method: string, params: Json) => Promise<Json> = async (m) => { throw Object.assign(new Error(`method not found: ${m}`), { code: -32601 }); };
 
@@ -22,7 +29,10 @@ export class AcpConnection {
     this.proc = Bun.spawn(argv, { cwd: opts.cwd, env: opts.pass ? scrubbedEnv(process.env, opts.pass, opts.env) : { ...process.env, ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     const end = begin("acp_agents");
     void this.proc.exited.then(end, end);
-    void pumpLines(this.proc.stdout as ReadableStream<Uint8Array>, (l) => this.line(l), "acp agent stdout");
+    void pumpLines(this.proc.stdout as ReadableStream<Uint8Array>, (l) => this.line(l), "acp agent stdout", {
+      max: LINE_MAX,
+      over: (n) => { this.log(`a line of ${n} characters from the agent was dropped (the most Keel reads in one is ${LINE_MAX})`); this.onOversize(n); },
+    });
     // The tail of what the agent wrote to stderr: said when it ends early.
     void pumpText(this.proc.stderr as ReadableStream<Uint8Array>, (t) => { this.stderr = (this.stderr + t).slice(-4000); }, "acp agent stderr");
     this.exited = this.proc.exited.then((code) => {
