@@ -11,25 +11,39 @@ import { gitViewsDir } from "../core/git.ts";
 import type { SessionPerm } from "./gate.ts";
 import { IN_SANDBOX, proxyDir, RELAY_START, relayFiles, viewOnThread } from "./net-proxy.ts";
 import { sandboxRoot, sandboxScope, scopeDir } from "./sandbox-scope.ts";
+import { FILTER_FD, filterFile, withFilter } from "./seccomp.ts";
 import { envPlan, flockPath, forgetViews, namedConfig, offeredPaths, overlays, readView, SLOT, type ReadOpts, type View } from "./sandbox-view.ts";
 
 const SSH_SNIPPETS = "/etc/ssh/ssh_config.d";
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
-export type SandboxStatus = { available: boolean; reason?: string; bwrap?: string; scope: boolean; scopeReason?: string };
+// `seccomp`: every command also runs under the syscall filter (src/safety/seccomp.ts). A machine where bubblewrap
+// cannot load it still sandboxes, without it, and `seccompReason` says why.
+export type SandboxStatus = { available: boolean; reason?: string; bwrap?: string; scope: boolean; scopeReason?: string; seccomp: boolean; seccompReason?: string };
 
 let status: SandboxStatus | undefined;
+// The file the filter is read from (made again by `confine` when it is gone).
+let filterPath: string | undefined;
 
 export function sandboxStatus(): SandboxStatus {
   if (status) return status;
   const bwrap = Bun.which("bwrap");
   let available = false;
   let reason: string | undefined;
+  let seccomp = false;
+  let seccompReason: string | undefined;
   if (!bwrap) reason = "bubblewrap (bwrap) is not installed; install it from the distribution's package to sandbox commands";
   else {
-    const r = Bun.spawnSync([bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "true"], { stdout: "ignore", stderr: "pipe" });
+    const probe = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net"];
+    let file: string | undefined;
+    try { file = filterFile(); } catch (e) { seccompReason = `the filter file could not be written: ${e instanceof Error ? e.message : e}`; }
+    if (file) {
+      const f = Bun.spawnSync([...withFilter(file), ...probe, "--seccomp", String(FILTER_FD), "true"], { stdout: "ignore", stderr: "pipe" });
+      if (f.success) { seccomp = true; filterPath = file; } else seccompReason = `bubblewrap could not load the syscall filter: ${f.stderr.toString().trim().slice(0, 300) || `exit ${f.exitCode}`}`;
+    } else seccompReason ??= `no syscall filter for ${process.platform}/${process.arch}`;
+    const r = seccomp ? { success: true } as const : Bun.spawnSync([...probe, "true"], { stdout: "ignore", stderr: "pipe" });
     available = r.success;
-    if (!available) reason = `bwrap cannot start a sandbox here: ${r.stderr.toString().trim().slice(0, 300) || `exit ${r.exitCode}`} (on Ubuntu, load the bwrap-userns-restrict AppArmor profile)`;
+    if (!r.success) reason = `bwrap cannot start a sandbox here: ${r.stderr.toString().trim().slice(0, 300) || `exit ${r.exitCode}`} (on Ubuntu, load the bwrap-userns-restrict AppArmor profile)`;
   }
   const sr = Bun.which("systemd-run");
   let scope = false;
@@ -40,7 +54,7 @@ export function sandboxStatus(): SandboxStatus {
     scope = r.success;
     if (!scope) scopeReason = `no systemd user manager: ${r.stderr.toString().trim().slice(0, 200)}`;
   }
-  status = { available, reason, bwrap: bwrap ?? undefined, scope, scopeReason };
+  status = { available, reason, bwrap: bwrap ?? undefined, scope, scopeReason, seccomp, seccompReason };
   return status;
 }
 
@@ -451,7 +465,7 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
   // The profile is the same for every command of a session until one of its
   // inputs changes: it is built once and kept for a short while (profileOf).
   const extra = (typeof scratch === "string" ? [scratch] : scratch ?? []).filter((p) => p && existsSync(p));
-  const b = [...cleaned(profileOf(st.bwrap!, perm, workspace, extra, read), st.bwrap!, read), ...argv];
+  const b = [...cleaned(profileOf(st.bwrap!, perm, workspace, extra, read), st.bwrap!, read, st.seccomp ? withFilter(filterPath && existsSync(filterPath) ? filterPath : (filterPath = filterFile()!)) : []), ...argv];
   return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;
 }
 
@@ -465,16 +479,18 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
 // and stays.
 const ENV_HERE = "\0keel-env\0";
 let envProgram: string | null | undefined;
-function cleaned(profile: string[], bwrap: string, read: ReadOpts): string[] {
+// `filter`: the head that opens the syscall filter's file on the descriptor bubblewrap reads it from, put right
+// before bubblewrap (it becomes bubblewrap, so nothing of it stays around the command).
+function cleaned(profile: string[], bwrap: string, read: ReadOpts, filter: string[]): string[] {
   const at = profile.indexOf(ENV_HERE);
   if (at < 0) return profile;
   if (envProgram === undefined) envProgram = ["/usr/bin/env", "/bin/env"].find((p) => existsSync(p)) ?? null;
   const plan = envPlan(process.env, read.env);
   const to = profile.indexOf(bwrap, at);
   const fixed = profile.slice(at + 1, to).filter((x) => x !== "-u");
-  if (envProgram) return [...profile.slice(0, at), envProgram, ...[...plan.drop, ...fixed].flatMap((n) => ["-u", n]), ...plan.set.map(([k, v]) => `${k}=${v}`), ...profile.slice(to)];
+  if (envProgram) return [...profile.slice(0, at), envProgram, ...[...plan.drop, ...fixed].flatMap((n) => ["-u", n]), ...plan.set.map(([k, v]) => `${k}=${v}`), ...filter, ...profile.slice(to)];
   // (No env program on this machine: bubblewrap takes them out for the command it starts; its own start keeps them.)
-  return [...profile.slice(0, at), bwrap, ...[...plan.drop, ...fixed].flatMap((n) => ["--unsetenv", n]), ...plan.set.flatMap(([k, v]) => ["--setenv", k, v]), ...profile.slice(to + 1)];
+  return [...profile.slice(0, at), ...filter, bwrap, ...[...plan.drop, ...fixed].flatMap((n) => ["--unsetenv", n]), ...plan.set.flatMap(([k, v]) => ["--setenv", k, v]), ...profile.slice(to + 1)];
 }
 
 // A session's profile is kept: building one reads a few hundred names on
@@ -555,6 +571,7 @@ function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[]
   // goes through the proxy this process runs for the repository (src/safety/net-proxy.ts).
   // (ENV_HERE: where the command's environment is cleaned, before bubblewrap starts: confine puts it in per call.)
   const b = [ENV_HERE, ...view.unset.flatMap((name) => ["-u", name]), bwrap, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-net",
+    ...(sandboxStatus().seccomp ? ["--seccomp", String(FILTER_FD)] : []),
     "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", ...view.before];
   // The cache layers of the slot the command's wrapper takes: read by bubblewrap from a file of that slot (HOLD).
   const layers = view.layers && flock ? layerFiles(view.layers, perm.sandbox) : undefined;
