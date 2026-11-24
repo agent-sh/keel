@@ -23,6 +23,8 @@ const where = (k: string) => (k === "." ? "top level" : k);
 const NAMES = 5;
 // Lane dots of one area's row: past this many, a count, so the row's counts stay on one line.
 const DOTS = 6;
+// The area key that names the whole tree in a landing decision (src/server/routes/tree-review.ts).
+const WHOLE = "*";
 
 type Lanes = Map<string, number>;
 const Dot = ({ i, className }: { i: number; className?: string }) => (
@@ -291,6 +293,42 @@ function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeV
   );
 }
 
+// What the header lands: every area's branches that can land now, in the proposed order. Of them, the ones
+// that would conflict when landed wait for the owner's confirm, as in an area (the server asks the same).
+function TreeLand({ view, busy, onLand }: { view: TreeView; busy: boolean; onLand: (branches: string[] | undefined, confirmed: boolean) => Promise<boolean> }) {
+  const order = view.order.steps.flatMap((s) => s.branches);
+  const risky = wouldConflict(view, order);
+  const safe = order.filter((b) => !risky.includes(b));
+  const total = view.branches.length;
+  if (view.areas.length < 2 || !order.length) return null;
+  const names = `${safe.slice(0, NAMES).map(short).join(", ")}${safe.length > NAMES ? ` and ${safe.length - NAMES} more` : ""}`;
+  const landAll = async () => {
+    if (risky.length && !(await confirmAction({
+      title: `Land all ${order.length} branches?`,
+      body: `${risky.map(short).join(", ")} would conflict when landing: ${risky.length === 1 ? "its agent rebases it" : "their agents rebase them"} onto the branch that lands first.`,
+      action: `Land all ${order.length}`,
+    }))) return;
+    await onLand(undefined, risky.length > 0);
+  };
+  const btn = "inline-flex h-7 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-caption disabled:opacity-50";
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2" data-testid="tree-land-bar">
+      {safe.length > 0 && (
+        <button type="button" disabled={busy} onClick={() => void onLand(safe, false)} data-testid="tree-land-set"
+          title={`Queues ${safe.map(short).join(", ")} in the proposed order.${risky.length ? ` ${risky.map(short).join(", ")} would conflict when landing and stays for its agent to rebase.` : ""}`}
+          className={cn(btn, "bg-accent text-accent-fg hover:bg-accent-hover")}>
+          <GitMerge className="size-3.5 shrink-0" /><span className="truncate">{safe.length === total ? `Land all ${total}` : `Land ${safe.length} of ${total}`}: {names}</span>
+        </button>
+      )}
+      {risky.length > 0 && (
+        <button type="button" disabled={busy} onClick={() => void landAll()} data-testid="tree-land-set-all" className={cn(btn, "border border-line text-fg hover:bg-hover")}>
+          Land all {order.length}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Steps of the order shown before "show all": the list of areas stays in sight under a long order.
 const STEPS = 8;
 function Order({ view, lanes }: { view: TreeView; lanes: Lanes }) {
@@ -446,13 +484,13 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
   }, [session.id, at, view]);
   const lanes: Lanes = useMemo(() => new Map((view?.branches ?? []).map((b, i) => [b.branch, i])), [view]);
   const area = view?.areas.find((a) => a.key === at) ?? null;
-  const onDecide = async (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[], confirmed?: boolean) => {
-    if (!area) return false;
+  const onDecide = async (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[], confirmed?: boolean, whole = false) => {
+    if (!area && !whole) return false;
     setBusy(true);
     setErr("");
     setSaid("");
     try {
-      const r = await decide(session.id, { area: area.key, action, note, agents, branches, confirmed, repo: view?.repo });
+      const r = await decide(session.id, { area: whole ? WHOLE : area!.key, action, note, agents, branches, confirmed, repo: view?.repo });
       if (r.view) setView(r.view);
       setSaid(r.outcome ?? "");
       return true;
@@ -506,6 +544,7 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
             </button>
             <Dialog.Close aria-label="Close" className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-4" /></Dialog.Close>
           </div>
+          {view && <TreeLand view={view} busy={busy} onLand={(branches, confirmed) => onDecide("land", undefined, undefined, branches, confirmed, true)} />}
           {(err || said) && (
             <p className={cn("flex items-start gap-2 border-b border-line px-4 py-2 text-caption", err ? "text-danger" : "text-fg")} data-testid={err ? "tree-error" : "tree-said"}>
               {err ? <TriangleAlert className="mt-0.5 size-3.5 shrink-0" /> : <Check className="mt-0.5 size-3.5 shrink-0 text-ok" />}{err || said}

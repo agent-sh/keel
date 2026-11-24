@@ -15,6 +15,8 @@ import { overlaps } from "./overlaps.ts";
 import { presence } from "./permissions.ts";
 
 export let treeReview: TreeReview | undefined;
+// The area key that names the whole tree in a landing decision.
+const TREE = "*";
 const MOVED_MS = 400; // head moves within this are one frame (an agent's commit and its rebase often come together)
 
 
@@ -59,8 +61,11 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
 
   // What the owner's decision on an area does, and the words it is recorded with.
   async function decide(root: string, v: TreeView, key: string, action: string, note: string, only: string[] | undefined, subset?: string[], confirmed = false): Promise<{ status: number; body: unknown }> {
-    const area = v.areas.find((a) => a.key === key);
-    if (!area || !v.repo) return { status: 404, body: { error: "no such area in this tree's review (read it again)" } };
+    // The whole tree at once ("*"): only landing, over every area's branches, recorded on each area that holds one.
+    const whole = key === TREE && action === "land";
+    const found = v.areas.find((a) => a.key === key);
+    if ((!found && !whole) || !v.repo) return { status: 404, body: { error: "no such area in this tree's review (read it again)" } };
+    const area = found ?? { key: TREE, branches: [...new Set(v.areas.flatMap((a) => a.branches))], marks: {} as Record<string, string>, files: [] as never[] };
     const all = area.branches.map((b) => ({ branch: b, head: area.marks[b]! }));
     if (action === "undo") { tr.undo(root, v.repo, key); return { status: 200, body: { ok: true } }; }
     if (action === "drop") {
@@ -114,7 +119,10 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
     ].filter(Boolean).join(" ");
     if (!r.queued.length) return { status: 409, body: { error: outcome } };
     const queued = new Set(r.queued.map((e) => e.branch));
-    tr.record(root, v.repo, key, { action: "land", note, branches: all.filter((b) => queued.has(b.branch)), outcome });
+    for (const a of whole ? v.areas : [found!]) {
+      const here = a.branches.filter((b) => queued.has(b)).map((b) => ({ branch: b, head: a.marks[b]! }));
+      if (here.length) tr.record(root, v.repo, a.key, { action: "land", note, branches: here, outcome });
+    }
     return { status: 200, body: { ok: true, outcome, queued: r.queued.map((e) => ({ id: e.id, branch: e.branch })) } };
   }
 

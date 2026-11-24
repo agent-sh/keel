@@ -109,6 +109,18 @@ test("the tree review reads every agent's branch as one diff by area and lands, 
   await expect(dlg.getByTestId("tree-area-order")).toContainText(`${alpha.branch.replace(/^keel\//, "")}`);
   await page.mouse.move(0, 0);
   await shoot(page, "tree-review-01-overlap");
+  // The header names the whole set that can land (beta would conflict with alpha): one action, and on a phone it
+  // shows with the list of areas, before any area is picked.
+  const set = dlg.getByTestId("tree-land-set");
+  await soft(set).toHaveText(new RegExp(`^Land 2 of 3: .*${alpha.branch.replace(/^keel\//, "")}`));
+  await soft(set).toContainText(gamma.branch.replace(/^keel\//, ""));
+  await soft(set).not.toContainText(beta.branch.replace(/^keel\//, ""));
+  await soft(dlg.getByTestId("tree-land-set-all")).toHaveText("Land all 3");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await soft(set).toBeVisible();
+  soft((await set.boundingBox())!.x + (await set.boundingBox())!.width).toBeLessThanOrEqual(390);
+  await shoot(page, "tree-review-01b-land-set-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
 
   // Send beta back with a note: its agent reads it.
   const note = "Keep rule3 as alpha has it; only change rule4.";
@@ -323,4 +335,71 @@ test("the tree review lands the branches that do not conflict, and asks before i
   await expect(dlg.getByTestId("tree-said")).toContainText("Queued in this order");
   await expect.poll(async () => (await entries()).sort(), { timeout: 30_000 }).toEqual([big.branch, own.branch].sort());
   await expect(dlg.getByTestId("tree-said")).not.toContainText(`Not queued: ${small.branch}`);
+});
+
+// Landing from the header: three agents, two areas. Two change line 3 of one file (src/board) and the third adds a
+// file of its own in another area. The header names the two that do not conflict and lands them in one decision,
+// each area it touches shows it as queued; landing all three asks first, and the server refuses the whole tree
+// with no confirm.
+test("the tree review lands the whole safe set from its header", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+  const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `tree-set-${Date.now()}`, "repo");
+  mkdirSync(join(repo, "src/board"), { recursive: true });
+  mkdirSync(join(repo, "src/own"), { recursive: true });
+  mkdirSync(join(repo, ".keel"));
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "src/board/rules.ts"), Array.from({ length: 10 }, (_, i) => `export const rule${i + 1} = ${i + 1};`).join("\n") + "\n");
+  writeFileSync(join(repo, "src/own/keep.ts"), "export const keep = 1;\n");
+  writeFileSync(join(repo, "check.sh"), "echo checking; test -f src/board/rules.ts\n");
+  writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { files: "sh check.sh" }, land: { checks: ["files"] } }));
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "init");
+  const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`;
+  const commit = (msg: string) => `git add -A && git -c user.name=k -c user.email=k@k commit -qm '${msg}'`;
+  const lane = (title: string, command: string) => ({ name: "spawn_agent", input: { message: `${title}\n${calls([{ name: "Bash", input: { command } }])}` } });
+  const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start three agents.", `script:batch ${JSON.stringify([
+    lane("Lane big", `sed -i 's/rule3 = 3/rule3 = 300/; s/rule4 = 4/rule4 = 400/' src/board/rules.ts && ${commit("Lane big")}`),
+    lane("Lane small", `sed -i 's/rule3 = 3/rule3 = 30/' src/board/rules.ts && ${commit("Lane small")}`),
+    lane("Lane own", `printf 'export const own = 1;\\n' > src/own/own.ts && ${commit("Lane own")}`),
+  ])}`) } });
+  const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
+  await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(3);
+  const by = async (title: string) => (await agentsOf()).find((a) => a.title === title)!;
+  const big = await by("Lane big"), small = await by("Lane small"), own = await by("Lane own");
+  const short = (b: string) => b.replace(/^keel\//, "");
+  const entries = async () => ((await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as any[]).map((e) => e.branch);
+
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "board");
+  await page.getByTestId("board-review-tree").click();
+  const dlg = page.getByTestId("tree-review");
+  await expect(dlg.getByTestId("tree-summary")).toContainText("3 branches to land · 2 areas", { timeout: 60_000 });
+  const set = dlg.getByTestId("tree-land-set");
+  await soft(set).toContainText("Land 2 of 3: ");
+  await soft(set).toContainText(short(big.branch));
+  await soft(set).toContainText(short(own.branch));
+  await soft(set).not.toContainText(short(small.branch));
+  await page.mouse.move(0, 0);
+  await shoot(page, "tree-review-06-land-set");
+
+  // The whole tree asks first, and the server holds the same line: no confirm, no queue.
+  await dlg.getByTestId("tree-land-set-all").click();
+  const sure = page.getByTestId("confirm");
+  await soft(sure).toContainText("Land all 3 branches?");
+  await sure.getByRole("button", { name: "Cancel" }).click();
+  await expect(sure).toHaveCount(0);
+  const refused = await request.post(`/api/sessions/${coord}/tree-review/decide`, { data: { area: "*", action: "land" } });
+  soft(refused.status()).toBe(409);
+  soft(await refused.json()).toMatchObject({ needs_confirm: true, would_conflict: [small.branch] });
+  expect(await entries()).toEqual([]);
+
+  // The header action queues the two that do not conflict; each area that holds one shows it queued.
+  await set.click();
+  await soft(dlg.getByTestId("tree-said")).toContainText("Queued in this order");
+  await expect.poll(async () => (await entries()).sort(), { timeout: 30_000 }).toEqual([big.branch, own.branch].sort());
+  await soft(dlg.locator('[data-testid="tree-area"][data-area="src/own"]')).toHaveAttribute("data-decision", "land");
+  await soft(dlg.locator('[data-testid="tree-area"][data-area="src/board"]')).toHaveAttribute("data-decision", "land");
 });
