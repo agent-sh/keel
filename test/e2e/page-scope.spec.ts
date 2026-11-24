@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page, type WebSocketRoute } from "./isolate.ts";
+import { expect, test, type APIRequestContext, type Locator, type Page, type WebSocketRoute } from "./isolate.ts";
 import { calls, create, drop, folder, open, pane, row, scripted, settle } from "./answering.ts";
 import { shoot } from "./shots.ts";
 
@@ -312,4 +312,85 @@ test("a pane read far up keeps its place under a look while its session works on
   expect(after.oldest).toBe(before.oldest);
   await shoot(page, "page-scope-04-place-kept-under-a-look");
   await drop(request, reader, beside, looked);
+});
+
+// A session opened as its turn goes on. Its snapshot is read, its turn moves on, and the session's
+// row (with the head the turn reached) comes by the socket before the snapshot is in the page: the
+// page then holds a part of the branch that does not reach the head it was told. Its transcript is
+// drawn from that part, and is whole once the rest is in: by the stream the page asks for from
+// the snapshot's end, or, when that stream does not bring it, by a read of the end its row names.
+// The page's ask for the stream waits until the test lets it go.
+async function lateSnapshot(page: Page, request: APIRequestContext, title: string) {
+  await scripted(request);
+  await settle(request);
+  const id = await create(request, title, folder("page-scope-late"));
+  const ends = async () => (((await (await request.get(`/api/sessions/${id}`)).json()).events ?? []) as { kind: string }[]).filter((e) => e.kind === "turn_end").length;
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say The first answer." } });
+  await expect.poll(ends, { timeout: 30_000 }).toBe(1);
+  const rows: { head: string | null }[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let asked = false;
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((m) => {
+      let f: any;
+      try { f = JSON.parse(String(m)); } catch { return void server.send(m); }
+      if (f.op === "sub" && f.cursors && id in f.cursors) { asked = true; void held.then(() => server.send(m)); return; }
+      server.send(m);
+    });
+    server.onMessage((m) => {
+      try { const f = JSON.parse(String(m)); if (f.t === "session" && f.session?.id === id) rows.push(f.session); } catch {}
+      ws.send(m);
+    });
+  });
+  // The snapshot is read at once, and reaches the page only after the second turn ended and its row came.
+  await page.route(new RegExp(`/api/sessions/${id}\\?page=`), async (r) => {
+    const res = await r.fetch();
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "echo second" } }]) } });
+    await expect.poll(ends, { timeout: 30_000 }).toBe(2);
+    const head = (await (await request.get(`/api/sessions/${id}?events=0`)).json()).session.head;
+    await expect.poll(() => rows.some((s) => s.head === head), { timeout: 20_000 }).toBe(true);
+    await r.fulfill({ response: res });
+  });
+  await page.goto(`/s/${id}`);
+  const p = pane(page, id);
+  // The snapshot is in the page, its stream asked for, and its transcript drawn before that stream comes.
+  await expect.poll(() => asked, { timeout: 30_000 }).toBe(true);
+  await expect(p.getByTestId("transcript")).toBeAttached();
+  return { id, p, release };
+}
+async function whole(p: Locator, turns: number) {
+  await expect(p.getByTestId("turn-end")).toHaveCount(turns, { timeout: 30_000 });
+  await expect(p.getByTestId("user-message")).toHaveCount(turns);
+  await expect(p.getByTestId("tool-call")).toHaveCount(1);
+  await expect(p.getByText("No messages yet")).toHaveCount(0);
+}
+
+test("a session whose row came before its snapshot shows its whole transcript once its stream comes", async ({ page, request }) => {
+  // Only the stream brings the rest here: the page's reads of a part of the session wait meanwhile.
+  let reads!: () => void;
+  const parts = new Promise<void>((r) => (reads = r));
+  await page.route(/\/api\/sessions\/[^/]+\/page\?/, (r) => void parts.then(() => r.continue()));
+  const { id, p, release } = await lateSnapshot(page, request, "Late snapshot: the importer");
+  release();
+  await whole(p, 2);
+  reads();
+  await shoot(page, "page-scope-05-late-snapshot-whole");
+  // The stream goes on from there, with nothing twice.
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say The third answer." } });
+  await whole(p, 3);
+  await expect(p.getByTestId("assistant-text").last()).toContainText("The third answer.");
+  await drop(request, id);
+});
+
+test("a session whose row came before its snapshot reads the end of its branch when its stream does not bring it", async ({ page, request }) => {
+  const { id, p, release } = await lateSnapshot(page, request, "Late snapshot: the release notes");
+  await whole(p, 2);
+  // The stream, when it comes, adds nothing twice and goes on.
+  release();
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say The third answer." } });
+  await whole(p, 3);
+  await expect(p.getByTestId("assistant-text").last()).toContainText("The third answer.");
+  await drop(request, id);
 });

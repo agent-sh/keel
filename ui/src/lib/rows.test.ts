@@ -77,6 +77,17 @@ test("a head named before its event arrives keeps the branch until it does", () 
   expect(line.out.map((e) => e.id)).toEqual(lineage([...list, next], next.id).map((e) => e.id));
 });
 
+test("a branch first read before any of its head's events came is read again when they come", () => {
+  // The session's row (with the head its turn reached) came before the page's older snapshot.
+  const list = all.slice(0, 20);
+  const head = all[24]!.id;
+  let line = nextLineage(undefined, list, head);
+  expect(line.out).toEqual([]);
+  line = nextLineage(line, all.slice(0, 22), head); // a part of what came after the snapshot
+  line = nextLineage(line, all.slice(0, 25), head);
+  expect(line.out.map((e) => e.id)).toEqual(lineage(all.slice(0, 25), head).map((e) => e.id));
+});
+
 test("going back to a branch gives its rows as the objects they were", () => {
   const a = all.find((e) => e.data.text === "prompt 31")!;
   const leafA = all[all.findIndex((e) => e.id === a.id) + 6]!;

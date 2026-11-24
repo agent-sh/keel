@@ -379,8 +379,10 @@ export const actions = {
     });
     void loadLegacyQuestions(id);
     pollQuestions();
-    // The branch may have changed while the page was away from it (no transcript asked for).
-    if (!transcript) headSoon(id);
+    // The branch may have changed while the page was away from it (no transcript asked for), or
+    // the session's row came before this snapshot with a head the snapshot does not hold yet:
+    // what the stream does not bring of it soon is read.
+    headSoon(id);
   },
   // A part of a branch the page does not hold yet (pageOf in src/core/tree.ts):
   // older or newer than a seq, around an event, or the end of the branch `head`

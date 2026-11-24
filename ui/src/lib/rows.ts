@@ -321,7 +321,11 @@ export function nextSiblings(prev: SiblingsOf | undefined, all: StoredEvent[]): 
 export type LineageOf = { all: StoredEvent[]; head: string | null; out: StoredEvent[] };
 export function nextLineage(prev: LineageOf | undefined, all: StoredEvent[], head: string | null): LineageOf {
   const n = prev?.all.length ?? 0;
-  if (prev && n > 0 && all.length >= n && all[0] === prev.all[0] && all[n - 1] === prev.all[n - 1]) {
+  // Only a branch that ends at its head grows from it. One read while its head was not held yet
+  // (a snapshot older than the session's row: the row names a head its events are still coming
+  // to) is empty, and is read again when they come.
+  const ends = !!prev && (prev.out.at(-1)?.id ?? null) === prev.head;
+  if (prev && ends && n > 0 && all.length >= n && all[0] === prev.all[0] && all[n - 1] === prev.all[n - 1]) {
     if (head === prev.head) return { all, head, out: prev.out };
     const fresh = new Map<string, StoredEvent>();
     for (let i = n; i < all.length; i++) fresh.set(all[i]!.id, all[i]!);
