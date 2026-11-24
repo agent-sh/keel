@@ -52,7 +52,9 @@ describe("the rule modules a trial replays", () => {
       // shared-branches.ts takes from ref-guard.ts only the name of the file its git notes made branches in (PAD), and
       // ref-guard.ts reaches the sandbox's view and scope for the folders it offers the sandbox: no decision of a call
       // is made in any of the three, so the replay has nothing of them to run.
-      "ref-guard.ts", "sandbox-view.ts", "sandbox-scope.ts"]);
+      // env-secret.ts is the sandbox view's rule of which variable names and values hold a secret: it hides them from a
+      // command's environment and decides no call.
+      "ref-guard.ts", "sandbox-view.ts", "sandbox-scope.ts", "env-secret.ts"]);
     expect(policy.filter((f) => !listed.has(f) && !helpers.has(f))).toEqual([]);
   });
 
