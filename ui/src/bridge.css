@@ -58,7 +58,10 @@
    the foot itself: Sidebar.tsx, useFootFit), they are glyphs again. */
 .k-rail[data-open] .k-rail-foot .k-act-word .k-act-label { display: none; }
 .k-foot-word { display: none; }
-.k-rail[data-open] .k-foot-named { gap: 0.3125rem; min-width: 0; padding: 0 0.5rem; font-size: var(--text-caption); font-weight: 500; }
+/* Tight enough that the words and their counts fit the list's default width: the glyphs at either end
+   take a control's width, not a wide one's, and the words their own and a little air. */
+.k-rail[data-open] .k-foot-named { gap: 0.3125rem; min-width: 0; padding: 0 0.375rem; font-size: var(--text-caption); font-weight: 500; }
+.k-rail[data-open] .k-rail-foot > .k-act:not(.k-foot-named) { min-width: var(--spacing-ctl-md); padding-inline: 0.375rem; }
 .k-rail[data-open] .k-foot-named .k-foot-word { display: inline; }
 .k-rail[data-open] .k-foot-named > svg, .k-rail[data-open] .k-foot-named:not([data-held]) > span:first-child > svg { display: none; }
 .k-rail[data-open] .k-foot-named:not([data-held]) > span:first-child { display: contents; }
