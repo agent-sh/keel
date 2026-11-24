@@ -88,7 +88,7 @@ function Sentence({ row }: { row: TimelineRow }) {
 }
 
 // A turn's node says how it ended: ink when it finished, red when it failed,
-// amber while it runs, a ring when it was stopped, cut or never began.
+// blue while it runs, a ring when it was stopped, cut or never began.
 function Mark({ row }: { row: TimelineRow }) {
   if (row.kind === "turn") {
     return (

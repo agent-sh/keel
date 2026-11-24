@@ -37,7 +37,7 @@ export function AgentMark({ w, className }: { w: Watch; className?: string }) {
 }
 // The ink of a state word beside its mark.
 export const STATE_INK: Record<Watch, string> = {
-  need: "text-st-need", work: "text-accent", wait: "text-warn", resume: "text-warn", fail: "text-danger", declined: "text-danger", stop: "text-faint", done: "text-faint", idle: "text-faint",
+  need: "text-st-need", work: "text-st-work", wait: "text-st-wait", resume: "text-muted", fail: "text-st-fail", declined: "text-st-fail", stop: "text-faint", done: "text-faint", idle: "text-faint",
 };
 
 // Stop always asks first, with the keyboard on Cancel: a stop cannot be undone. The question says
@@ -65,8 +65,8 @@ export const ALERT_LABEL = ALERT_WORD as Record<Alert["kind"], string>;
 
 export const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", command: "Command hook", push: "Phone" };
 
-// What each alert kind means in the Bridge's state colors: violet needs you,
-// amber is work (an agent speaking, a limit closing in), red failed, sea green done.
+// What each alert kind means in the Bridge's state colors: yellow needs you,
+// blue is work (an agent speaking, a limit closing in), red failed, green done.
 export const ALERT_STATE: Record<Alert["kind"], Watch> = {
   approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle", regression: "fail", refused: "work", declined: "fail", machine: "idle", outage: "wait", review: "done", mcp: "need",
 };

@@ -125,6 +125,39 @@ test("amber state words and brass text read on every surface in both themes", as
   }
 });
 
+// One palette for a state (ui/src/styles.css): the word of each state is 4.5:1 on every surface and its mark (a
+// dot's ring, an edge, a bar, an icon) is 3:1, in both themes; a fill with words on it (the yellow chip of what
+// needs you) has its own ink at 4.5:1 on it.
+test("a state's words read at 4.5:1, its marks at 3:1, and its chip has its own ink", async ({ page }) => {
+  await page.goto("/settings/general");
+  await page.getByTestId("text-size").waitFor();
+  const states = ["need", "work", "wait", "fail", "done"];
+  const words = await measure(page, states.map((t) => ({ name: `${t} word`, color: `--st-${t}-ink` })));
+  expect(words).toHaveLength(40);
+  expect(words.filter((g) => g.ratio < 4.5)).toEqual([]);
+  const marks = await measure(page, states.map((t) => ({ name: `${t} mark`, color: `--st-${t}` })));
+  expect(marks.filter((g) => g.ratio < 3)).toEqual([]);
+  const chip = await page.evaluate(() => {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 1;
+    const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+    const rgb = (c: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = c; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+    const lum = (c: number[]) => { const [r, g, b] = c.map((v) => { const x = v / 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
+    const root = document.documentElement;
+    const was = root.classList.contains("dark");
+    const out: number[] = [];
+    for (const dark of [false, true]) {
+      root.classList.toggle("dark", dark);
+      const css = getComputedStyle(root);
+      const [x, y] = [lum(rgb(css.getPropertyValue("--st-need-fill"))), lum(rgb(css.getPropertyValue("--st-need-on")))].sort((a, b) => b - a);
+      out.push(Math.round(((x! + 0.05) / (y! + 0.05)) * 100) / 100);
+    }
+    root.classList.toggle("dark", was);
+    return out;
+  });
+  expect(chip.filter((r) => r < 4.5)).toEqual([]);
+});
+
 // The ring is drawn on the surface around the control (offset out of it), so
 // the surface is what it has to stand off from: the grey rail and panels too.
 test("the focus ring stands off every surface in both themes", async ({ page }) => {
@@ -150,8 +183,8 @@ test("the focus ring stands off every surface in both themes", async ({ page }) 
 test("every text reads in both themes, an earlier turn's stats and a diff's line numbers too", async ({ page, request }) => {
   await page.goto("/settings/general");
   await page.getByTestId("text-size").waitFor();
-  const tokens = await measure(page, ["faint", "muted", "danger", "ok", "st-fail", "st-done", "st-need", "accent-ink"].map((t) => ({ name: t, classes: `text-caption text-${t}` })));
-  expect(tokens).toHaveLength(64);
+  const tokens = await measure(page, ["faint", "muted", "danger", "ok", "st-fail", "st-done", "st-need", "st-work", "st-wait", "accent-ink"].map((t) => ({ name: t, classes: `text-caption text-${t}` })));
+  expect(tokens).toHaveLength(80);
   expect(tokens.filter((g) => g.ratio < 4.5)).toEqual([]);
 
   const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";

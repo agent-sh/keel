@@ -2,7 +2,7 @@
    instructions): one instrument. A ledger of what the daemon loads, grouped
    by where each entry comes from, and beside it the reader with the file
    itself. Marks speak the Bridge's shape language: a dot is on, a hollow
-   ring is off, a violet diamond waits for the owner, a red square failed. */
+   ring is off, a yellow diamond waits for the owner, a red square failed. */
 
 .k-folder { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.875rem; margin: -0.25rem 0 1rem; }
 .k-folder-label { line-height: 1; }
@@ -64,7 +64,7 @@
 .k-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .k-editor-bar { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; height: 2.375rem; padding: 0 0.625rem 0 1.375rem; border-bottom: 1px solid var(--line); font-weight: 500; font-size: var(--text-micro); line-height: 1; color: var(--faint); }
 .k-editor-bar > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.k-editor-bar .k-dirty { color: var(--st-work-ink); }
+.k-editor-bar .k-dirty { color: var(--warn-ink); }
 .k-editor-bar .k-saved { color: var(--st-done-ink); }
 .k-editor-bar > .k-btn:first-of-type { margin-left: auto; }
 .k-editor textarea { flex: 1; min-height: 12rem; resize: none; padding: 0.875rem 1.375rem 1.75rem; border: 0; outline: none; background: var(--sunken); color: var(--fg); font: var(--text-caption)/1.65 var(--font-mono); tab-size: 2; }
@@ -154,7 +154,7 @@
 .k-parts dd { display: flex; flex-wrap: wrap; gap: 0.25rem; min-width: 0; }
 .k-plain-list { display: grid; gap: 0.3125rem; font-size: var(--text-caption); line-height: 1.5; color: var(--muted); }
 .k-plain-list code { overflow-wrap: anywhere; }
-/* What it runs on the machine: each line the owner says yes to, as it will run. Violet: it waits for the owner. */
+/* What it runs on the machine: each line the owner says yes to, as it will run. Yellow: it waits for the owner. */
 .k-runs { padding: 0.75rem 0.875rem 0.8125rem; border-radius: var(--radius-md); background: color-mix(in oklch, var(--st-need) 8%, transparent); box-shadow: inset 3px 0 0 var(--st-need); }
 .k-runs:not([data-asks]) { background: var(--sunken); box-shadow: inset 3px 0 0 var(--line-strong); }
 .k-runs h4 { font-weight: 600; font-size: var(--text-ui); line-height: 1.3; color: var(--fg); }

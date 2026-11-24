@@ -6,7 +6,7 @@ import { shoot, setPanes } from "./shots.ts";
 // 40rem pane and up), its head and the session's tools are one bar, and panes side by side end on
 // one line. The head in the bar is one line or two: the title whole with the reason beside it,
 // else the title over the state and its reason, which then have the head's width. Nothing is drawn at the pane's edge where it meets the rail: a
-// pinned session's head once wore an ink tab there, a short white line in the dark theme; then the violet outline of a pane
+// pinned session's head once wore an ink tab there, a short white line in the dark theme; then the outline of a pane
 // that needs the owner, the red edge of a failed or declined head and the ink rule over the pane worked in stood there.
 
 // What lies at a point, top first: the classes of each element whose own background is the ink.

@@ -22,7 +22,7 @@ const countChecks = (l: LoopRecord) => `${l.checks ?? 0} check${l.checks === 1 ?
 
 function RunIcon({ r }: { r: RunRecord }) {
   if (r.skip_reason) return <CircleSlash className="size-3.5 shrink-0 text-faint" />;
-  if (!r.ended_ms) return <span className="grid size-3.5 place-items-center"><span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /></span>;
+  if (!r.ended_ms) return <span className="grid size-3.5 place-items-center"><span className="size-1.5 rounded-full bg-st-work animate-pulse-dot" /></span>;
   if (r.outcome === "ok") return <CircleCheck className="size-3.5 shrink-0 text-ok" aria-label={STATE_WORD.done} />;
   if (r.outcome === "stopped") return <CircleSlash className="size-3.5 shrink-0 text-muted" aria-label={STATE_WORD.stop} />;
   if (r.outcome === "incomplete") return <CircleDashed className="size-3.5 shrink-0 text-warn" aria-label="Did not finish" />;
@@ -325,7 +325,7 @@ function LoopItem({ l, picked, onPick }: { l: LoopRecord; picked: boolean; onPic
       onKeyDown={(e) => e.key === "Enter" && onPick()}
       className={cn("group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-2 outline-none hover:bg-hover", picked && "k-picked")}
     >
-      {waits ? <span className="grid size-2 shrink-0 place-items-center"><Mark w="need" /></span> : <span className={cn("size-2 shrink-0 rounded-full", l.last_status === "running" ? "bg-brass animate-pulse-dot" : l.enabled ? (l.last_status === "failed" ? "bg-danger" : "bg-ok") : "bg-line-strong")} />}
+      {waits ? <span className="grid size-2 shrink-0 place-items-center"><Mark w="need" /></span> : <span className={cn("size-2 shrink-0 rounded-full", l.last_status === "running" ? "bg-st-work animate-pulse-dot" : l.enabled ? (l.last_status === "failed" ? "bg-danger" : "bg-ok") : "bg-line-strong")} />}
       <div className="min-w-0 flex-1">
         <div className={cn("truncate text-ui", !l.enabled && "text-muted")}>{l.name}</div>
         <div className="truncate text-micro text-faint" data-testid="loop-item-state">

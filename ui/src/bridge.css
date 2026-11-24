@@ -103,11 +103,11 @@
 .k-rail[data-open] .k-new-session { color: var(--fg); font-weight: 600; }
 .k-act-count {
   position: absolute; right: 1px; top: 1px; min-width: 1rem; height: 1rem; padding: 0 0.25rem; border-radius: 999px;
-  font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--st-need);
+  font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--st-need-on); background: var(--st-need-fill);
 }
 .k-rail[data-open] .k-act-count { position: static; margin-left: auto; }
 /* The New session button's word for a message kept in its box; folded, a dot at the button's corner. */
-.k-act-mark { flex-shrink: 0; padding: 0 0.375rem; border-radius: var(--radius-xl); font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--st-need); }
+.k-act-mark { flex-shrink: 0; padding: 0 0.375rem; border-radius: var(--radius-xl); font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--st-need-on); background: var(--st-need-fill); }
 .k-rail[data-open] .k-act-mark { margin-left: auto; }
 /* A word of a button is one line: cut with an ellipsis where the bar is narrower than it. */
 .k-rail[data-open] .k-act-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -425,7 +425,7 @@
 /* A dollar cap on the session: the share spent, and the rate an hour; amber from 80 percent, red at the cap. */
 .k-row-cap { display: inline-flex; align-items: center; gap: 0.125rem; flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
 .k-row-cap svg { width: 0.75rem; height: 0.75rem; }
-.k-row-cap[data-level="warn"] { color: var(--st-work-ink); }
+.k-row-cap[data-level="warn"] { color: var(--warn-ink); }
 .k-row-cap[data-level="spent"] { color: var(--st-fail-ink); }
 .k-row-cap-rate { margin-left: 0.125rem; font-weight: 500; color: var(--faint); }
 /* The row a count above the list went to: ringed and washed for a moment, so it is found among
@@ -486,7 +486,8 @@
 .k-child-state:is([data-watch="need"], [data-watch="work"], [data-watch="wait"], [data-watch="resume"], [data-watch="fail"], [data-watch="declined"]) { font-weight: 700; }
 .k-child-state[data-watch="need"] { color: var(--st-need-ink); }
 .k-child-state[data-watch="work"] { color: var(--st-work-ink); }
-.k-child-state:is([data-watch="wait"], [data-watch="resume"]) { color: var(--st-wait-ink); }
+.k-child-state[data-watch="wait"] { color: var(--st-wait-ink); }
+.k-child-state[data-watch="resume"] { color: var(--muted); }
 .k-child-state:is([data-watch="fail"], [data-watch="declined"]) { color: var(--st-fail-ink); }
 @container kid (max-width: 12.5rem) { .k-child-state { display: none; } }
 .k-child-dot { display: flex; align-items: center; flex-shrink: 0; }
@@ -733,7 +734,7 @@ html[data-resizing] iframe { pointer-events: none; }
    pane, above). Its height is the same in every state, so the bars end on one line. */
 .k-band { height: var(--k-band-h); flex-shrink: 0; position: relative; overflow: hidden; background-color: transparent; }
 /* The header's working line: the same breath, in opacity. */
-.k-wake-line { position: absolute; inset: auto 0 -1px; height: 2px; pointer-events: none; background: var(--brass); animation: k-breathe-o 3.2s ease-in-out infinite; }
+.k-wake-line { position: absolute; inset: auto 0 -1px; height: 2px; pointer-events: none; background: var(--st-wait); animation: k-breathe-o 3.2s ease-in-out infinite; }
 @keyframes k-breathe-o { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 /* A turn held on the owner (an approval, a question) is not at work: the line goes quiet. */
 .k-station:is([data-watch="need"], [data-watch="wait"]) .k-wake-line { display: none; }
@@ -1031,10 +1032,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-home-row-what { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.375rem 0.5rem; margin-top: 0.25rem; padding-left: 1.75rem; font-size: var(--text-caption); line-height: 1.5; }
 /* The kind of thing that waits (a command, a question, a failure): said once, in the state's ink. */
 .k-home-row-word { flex-shrink: 0; padding: 0.125rem 0; font-weight: 600; color: var(--muted); }
-.k-home-row[data-watch="need"] .k-home-row-word { color: var(--st-need); }
+.k-home-row[data-watch="need"] .k-home-row-word { color: var(--st-need-ink); }
 .k-home-row[data-watch="work"] .k-home-row-word { color: var(--st-work-ink); }
-.k-home-row:is([data-watch="fail"], [data-watch="declined"]) .k-home-row-word { color: var(--st-fail); }
-.k-home-row:is([data-watch="wait"], [data-watch="resume"]) .k-home-row-word { color: var(--st-wait-ink); }
+.k-home-row:is([data-watch="fail"], [data-watch="declined"]) .k-home-row-word { color: var(--st-fail-ink); }
+.k-home-row[data-watch="wait"] .k-home-row-word { color: var(--st-wait-ink); }
+.k-home-row[data-watch="resume"] .k-home-row-word { color: var(--muted); }
 /* A request the gate rates high risk says so beside its kind. */
 .k-home-row-risk { flex-shrink: 0; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); background: var(--danger-soft); font-weight: 600; color: var(--danger); }
 .k-home-row-line { flex: 1 1 8rem; min-width: 0; padding: 0.125rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--muted); }
@@ -1086,10 +1088,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* Recent: a session's state in a word when it is not simply done (it joins the state face by its class). */
 .k-home-recent .k-mark { width: 0.5rem; height: 0.5rem; }
 .k-home-recent-word { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1.1875rem; letter-spacing: 0; color: var(--faint); }
-.k-home-recent[data-watch="need"] .k-home-recent-word { color: var(--st-need); }
+.k-home-recent[data-watch="need"] .k-home-recent-word { color: var(--st-need-ink); }
 .k-home-recent[data-watch="work"] .k-home-recent-word { color: var(--st-work-ink); }
-.k-home-recent:is([data-watch="fail"], [data-watch="declined"]) .k-home-recent-word { color: var(--st-fail); }
-.k-home-recent:is([data-watch="wait"], [data-watch="resume"]) .k-home-recent-word { color: var(--st-wait-ink); }
+.k-home-recent:is([data-watch="fail"], [data-watch="declined"]) .k-home-recent-word { color: var(--st-fail-ink); }
+.k-home-recent[data-watch="wait"] .k-home-recent-word { color: var(--st-wait-ink); }
+.k-home-recent[data-watch="resume"] .k-home-recent-word { color: var(--muted); }
 
 /* ---------- Components in the Bridge language ---------- */
 .prose-keel { font-size: var(--text-read); line-height: 1.65; }
@@ -1098,11 +1101,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-composer-box { border-radius: var(--radius-md); box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
 .k-composer-box:focus-within { box-shadow: 0 0 0 2px var(--ring); border-color: transparent; }
 .k-send { border-radius: var(--radius-md); }
-/* Approvals and open questions: the one thing in violet. */
+/* Approvals and open questions: the one thing in yellow. */
 .k-approval, .k-question[data-state="open"] { border-radius: var(--radius-md); border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 13%, transparent); }
 .k-approval[data-risk="high"] { border-color: var(--st-fail); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-fail) 13%, transparent); }
-/* Several requests: the violet frame is on the one that has the keyboard (Enter answers it) and on
-   the ones a pointed "allow all" covers. The rest step back to a violet edge, and only the one with
+/* Several requests: the yellow frame is on the one that has the keyboard (Enter answers it) and on
+   the ones a pointed "allow all" covers. The rest step back to a yellow edge, and only the one with
    the keyboard keeps a filled Allow. A lone request steps back the same way while another list's
    request (an agent's) has the keyboard. */
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within, [data-hot]) { border-color: var(--line-strong); box-shadow: inset 0.1875rem 0 0 var(--st-need); }
@@ -1280,7 +1283,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   /* What needs the owner: a finger's size of its own beside the marks, the pill inside it. */
   .k-dock-need { flex-shrink: 0; display: grid; place-items: center; height: 2.75rem; padding: 0 0.125rem; border-radius: var(--radius-md); }
   .k-dock-need { min-width: 2.75rem; }
-  .k-dock-need-n { display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0 0.5rem; border-radius: 999px; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--accent-fg); background: var(--st-need); }
+  .k-dock-need-n { display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0 0.5rem; border-radius: 999px; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--st-need-on); background: var(--st-need-fill); }
   .k-dock-need-mark { width: 0.4375rem; height: 0.4375rem; rotate: 45deg; background: currentColor; }
   .k-dock-need:active .k-dock-need-n { filter: brightness(0.92); }
 }
@@ -1603,11 +1606,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .prose-keel[data-live] > :is(p, h1, h2, h3, h4, blockquote):last-child::after,
 .prose-keel[data-live] > :is(ul, ol):last-child > li:last-child::after {
   content: ""; display: inline-block; width: 0.5em; height: 1.05em; margin-left: 0.1875rem; vertical-align: -0.16em;
-  border-radius: 1px; background: var(--st-work);
+  border-radius: 1px; background: var(--brass);
 }
 
 /* ---------- Night (dark) ---------- */
-/* Inside a station the band already says it works and a running tool row has its amber edge:
+/* Inside a station the band already says it works and a running tool row has its blue edge:
    the inline pulsing dots stay still (the clocks still count). One moving thing per station. */
 .k-station .animate-pulse-dot { animation: none; opacity: 0.75; }
 
@@ -1624,14 +1627,14 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-turn-end > span, .k-notes { white-space: nowrap; }
 
 /* ---------- Cards, each saying what it wants from the owner ---------- */
-/* A secret the model asks for: it waits on them, so it is violet like an approval; the value is set in mono. */
+/* A secret the model asks for: it waits on them, so it is yellow like an approval; the value is set in mono. */
 .k-secret-request { border-radius: var(--radius-md); border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 12%, transparent); background: var(--raised); }
 .k-secret-request input { font-family: var(--font-mono); letter-spacing: 0.08em; border-radius: var(--radius-sm); }
 .k-secret-give { border-radius: var(--radius-sm); }
 /* A secret caught in a message: handled already, worth a look. An amber edge, no alarm. */
-.k-secret-found { border-radius: var(--radius-md); box-shadow: none; border-left: 0.1875rem solid var(--st-work); }
+.k-secret-found { border-radius: var(--radius-md); box-shadow: none; border-left: 0.1875rem solid var(--warn); }
 /* No provider yet: an unconnected instrument. Dashed frame, amber edge, the failing provider's name in mono. */
-.k-setup-providers { border-radius: var(--radius-md); border: 1px dashed var(--line-strong); border-left: 0.1875rem solid var(--st-work); background: var(--raised); box-shadow: none; }
+.k-setup-providers { border-radius: var(--radius-md); border: 1px dashed var(--line-strong); border-left: 0.1875rem solid var(--warn); background: var(--raised); box-shadow: none; }
 .k-setup-failing { font-size: var(--text-caption); }
 /* Starters: four plain switches, not pills. */
 .k-starter { border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-ui); }
@@ -1645,11 +1648,11 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-finding { border-radius: var(--radius-sm); box-shadow: inset 3px 0 0 var(--line-strong); padding-left: 0.625rem; }
 .k-finding:has(input:checked) { box-shadow: inset 3px 0 0 var(--st-need); }
 .k-findings-fix { border-radius: var(--radius-sm); }
-/* Trust: a held file waits on them (violet); quarantine is a safety catch (red); trusted files are quiet. */
+/* Trust: a held file waits on them (yellow); quarantine is a safety catch (red); trusted files are quiet. */
 .k-held-file { border-radius: var(--radius-md); box-shadow: inset 3px 0 0 var(--st-need); }
 .k-quarantine-batch { border-radius: var(--radius-md); box-shadow: inset 3px 0 0 var(--st-fail); }
 .k-trusted-files { color: var(--muted); }
-/* Approvals a subagent waits on, in the parent's station: the same violet. */
+/* Approvals a subagent waits on, in the parent's station: the same yellow. */
 .k-child-approvals > * { border-radius: var(--radius-md); }
 /* An agent's report row: after the title and the state word, what is left of the line. It is cut at its
    end while its first words have room, and goes whole where they have not (an empty first item lets it wrap out of sight). */

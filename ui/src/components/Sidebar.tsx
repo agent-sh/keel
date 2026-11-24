@@ -581,7 +581,7 @@ function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }
         <button key={m.machine} type="button" className="k-late-line" data-testid="machine-foot" data-machine={m.machine} title={`The sessions on ${machineName(m.machine) ?? m.machine}, below`}
           onClick={() => nav.current?.querySelector(`[data-testid="machine-sep"][data-machine="${CSS.escape(m.machine)}"]`)?.scrollIntoView({ block: "start" })}>
           <ArrowDown aria-hidden="true" /><span className="min-w-0 truncate">{machineName(m.machine) ?? m.machine}</span>
-          {(["need", "work"] as const).map((w) => { const n = m.list.filter((s) => states[s.id]?.watch === w).length; return n > 0 ? <span key={w} className={cn("shrink-0 tabular-nums", w === "need" ? "text-st-need" : "text-accent")} data-testid={`machine-foot-${w}`}>{countWord(w, n)}</span> : null; })}
+          {(["need", "work"] as const).map((w) => { const n = m.list.filter((s) => states[s.id]?.watch === w).length; return n > 0 ? <span key={w} className={cn("shrink-0 tabular-nums", w === "need" ? "text-st-need" : "text-st-work")} data-testid={`machine-foot-${w}`}>{countWord(w, n)}</span> : null; })}
           <span className="ml-auto tabular-nums text-faint">{m.list.length}</span>
         </button>
       ))}

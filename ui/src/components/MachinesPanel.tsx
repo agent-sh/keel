@@ -19,7 +19,7 @@ const heading = (t: string, extra?: ReactNode) => (
   <h3 className="k-after-card mt-7 mb-2 flex items-center gap-2 k-label">{t}{extra}</h3>
 );
 
-const TONE: Record<string, string> = { ready: "bg-ok", busy: "bg-brass", starting: "bg-brass animate-pulse-dot", offline: "bg-danger", unknown: "bg-line-strong" };
+const TONE: Record<string, string> = { ready: "bg-ok", busy: "bg-st-work", starting: "bg-st-work animate-pulse-dot", offline: "bg-danger", unknown: "bg-line-strong" };
 const gb = (mb?: number) => (mb === undefined ? "?" : `${(mb / 1024).toFixed(mb < 10240 ? 1 : 0)} GB`);
 
 function StatePill({ state }: { state: string }) {

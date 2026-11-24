@@ -47,21 +47,17 @@
   --find-now-fg: oklch(0.2 0.02 260);
   --danger: oklch(0.55 0.2 27);
   --danger-soft: oklch(0.95 0.025 25);
-  --ok: oklch(0.52 0.09 168);
+  --ok: oklch(0.5 0.13 150);
   --warn: oklch(0.62 0.14 62);
   /* Amber as text: the fill above is under 4.5:1 on the light surfaces, so words take
      this ink (text-warn); dots, bars, borders, tints and icons keep the fill. */
   --warn-ink: oklch(0.47 0.11 62);
   /* The other two ambers (brass, and "working" among the state colors) read as words in the same ink. */
   --brass-ink: var(--warn-ink);
-  --st-work-ink: var(--warn-ink);
-  /* Red and green as text, for the same reason: the fills are under 4.5:1 on the rail and on their own tints. */
+  /* Red and green as text, for the same reason: the fills are under 4.5:1 on the rail and on their own tints.
+     Green is the hue of the done dot (--dot-done), so a success mark and the done state are one green. */
   --danger-ink: oklch(0.5 0.2 27);
-  --ok-ink: oklch(0.45 0.09 168);
-  --st-fail-ink: var(--danger-ink);
-  --st-done-ink: var(--ok-ink);
-  /* Violet as a word: the fill is 4.2:1 on its own tint over the rail (the Need tally). */
-  --st-need-ink: oklch(0.46 0.2 295);
+  --ok-ink: oklch(0.45 0.12 150);
   --code-bg: oklch(0.95 0.005 250);
   /* A switch's thumb: one color on every surface, never the card's own. */
   --switch-thumb: oklch(0.995 0.001 250);
@@ -72,16 +68,27 @@
   --shadow-1: 0 1px 0 oklch(0.3 0.02 255 / 0.05);
   --shadow-2: 0 1px 2px oklch(0.3 0.02 255 / 0.06), 0 4px 14px -6px oklch(0.3 0.02 255 / 0.14);
   --shadow-3: 0 2px 6px oklch(0.3 0.02 255 / 0.08), 0 22px 50px -14px oklch(0.25 0.02 255 / 0.3);
-  /* State: one color per watch word (needs you, working, failed, done, not started). */
-  --st-need: oklch(0.52 0.22 295);
-  --st-work: oklch(0.64 0.15 62);
-  /* Waiting: nothing runs, a timer, a command or an agent will wake it. Steel blue, between work and rest. */
-  --st-wait: oklch(0.5 0.11 240);
-  /* As words on the rail's grey, a hovered row included, the fill is under 4.5:1: text takes this ink. */
-  --st-wait-ink: oklch(0.45 0.11 240);
-  --st-fail: oklch(0.55 0.2 27);
-  --st-done: oklch(0.52 0.09 168);
+  /* State: one palette for every place a state shows (the dot, the word, a chip, a card's edge, a pane head's band, a bar).
+     Each state has the hue of its dot below, in three forms: the mark (--st-X: a dot, an icon, an edge, a bar, 3:1 on every
+     surface), the word (--st-X-ink: text, 4.5:1) and, for a state that is also a solid fill with words on it, the fill and
+     the ink on it (--st-X-fill, --st-X-on). Yellow is the light one: its mark and its word are a darker amber of the same
+     hue. Components use these names and never a color of their own (src/ui-conventions.test.ts). */
+  --st-need: var(--dot-need-edge);
+  --st-need-ink: oklch(0.46 0.1 82);
+  --st-need-fill: var(--dot-need);
+  --st-need-on: oklch(0.2 0.02 260);
+  --st-work: var(--dot-work);
+  --st-work-ink: oklch(0.47 0.15 255);
+  /* Waiting: nothing runs, a timer, a command or an agent will wake it. The dot of work, half filled: one blue. */
+  --st-wait: var(--st-work);
+  --st-wait-ink: var(--st-work-ink);
+  --st-fail: var(--dot-fail);
+  --st-fail-ink: var(--danger-ink);
+  --st-done: var(--dot-done);
+  --st-done-ink: var(--ok-ink);
   --st-idle: oklch(0.56 0.015 255); /* 3:1 on a hovered row of the rail */
+  /* Steel blue: the chart's own color for time spent waiting on others (the hours bars). Not a state's. */
+  --steel: oklch(0.5 0.11 240);
   /* The state dot (a row's mark, bridge.css): blue works and waits on what it left going, yellow needs the owner,
      red failed or declined, green done. Each is 3:1 or more on the rail's grey (test/e2e/state-dots.spec.ts). Yellow
      is too light to stand off the rail by its fill alone (about 2:1), so it has an edge of its own (a darker amber ring). */
@@ -124,20 +131,20 @@
   --lane-1: var(--series-1);
   --lane-2: var(--series-2);
   --lane-3: var(--series-3);
-  --lane-4: var(--st-need);
+  --lane-4: oklch(0.52 0.22 295);
   --lane-5: var(--syn-keyword);
   --lane-6: var(--syn-type);
 
   /* Where the hours went (src/admin/hours-rows.ts): one color a class, in
      families. Working is the chart series, waiting on others the steel blue
-     of Waiting in three strengths, the owner violet, failures red, Keel's own
+     of Waiting in three strengths, the owner's time yellow, failures red, Keel's own
      work grey. Made of the tokens above, so each theme gets its own. */
   --hour-model: var(--series-1);
   --hour-tools: var(--series-3);
   --hour-compaction: var(--brass);
-  --hour-agents: var(--st-wait);
-  --hour-review: color-mix(in oklch, var(--st-wait) 62%, var(--bg));
-  --hour-wait: color-mix(in oklch, var(--st-wait) 36%, var(--bg));
+  --hour-agents: var(--steel);
+  --hour-review: color-mix(in oklch, var(--steel) 62%, var(--bg));
+  --hour-wait: color-mix(in oklch, var(--steel) 36%, var(--bg));
   --hour-slot: var(--series-2);
   --hour-owner: var(--st-need);
   --hour-provider: color-mix(in oklch, var(--st-fail) 55%, var(--bg));
@@ -175,14 +182,13 @@
   --find-now-fg: oklch(0.2 0.016 255);
   --danger: oklch(0.7 0.18 27);
   --danger-soft: oklch(0.29 0.055 25);
-  --ok: oklch(0.74 0.09 168);
+  --ok: oklch(0.75 0.13 150);
   --warn: oklch(0.8 0.14 72);
   --warn-ink: var(--warn);
   --brass-ink: var(--brass);
-  --st-work-ink: var(--st-work);
   --danger-ink: var(--danger);
   --ok-ink: var(--ok);
-  --st-need-ink: var(--st-need);
+  --lane-4: oklch(0.74 0.17 295);
   --code-bg: oklch(0.18 0.015 255);
   /* At night the track is ink when on, so the thumb turns with it: light when off, dark when on. */
   --switch-thumb: oklch(0.93 0.008 250);
@@ -192,13 +198,11 @@
   --shadow-1: 0 1px 0 oklch(0 0 0 / 0.2);
   --shadow-2: 0 1px 2px oklch(0 0 0 / 0.3), 0 8px 22px -8px oklch(0 0 0 / 0.5);
   --shadow-3: 0 2px 8px oklch(0 0 0 / 0.35), 0 30px 70px -14px oklch(0 0 0 / 0.65);
-  --st-need: oklch(0.74 0.17 295);
-  --st-work: oklch(0.8 0.15 72);
-  --st-wait: oklch(0.77 0.1 240);
-  --st-wait-ink: var(--st-wait);
-  --st-fail: oklch(0.7 0.18 27);
-  --st-done: oklch(0.74 0.09 168);
+  /* At night a state's mark and its word are one color (the dot's), and the yellow fill takes its own dark ink. */
+  --st-need-ink: var(--st-need);
+  --st-work-ink: var(--st-work);
   --st-idle: oklch(0.55 0.015 255);
+  --steel: oklch(0.77 0.1 240);
   --dot-work: oklch(0.72 0.16 250);
   --dot-need: oklch(0.85 0.16 95);
   --dot-need-edge: var(--dot-need);
@@ -263,7 +267,9 @@
   --color-st-need: var(--st-need);
   --text-color-st-need: var(--st-need-ink);
   --color-st-work: var(--st-work);
+  --text-color-st-work: var(--st-work-ink);
   --color-st-wait: var(--st-wait);
+  --text-color-st-wait: var(--st-wait-ink);
   --color-st-fail: var(--st-fail);
   --text-color-st-fail: var(--st-fail-ink);
   --color-st-done: var(--st-done);
@@ -497,6 +503,8 @@ svg.text-ok { color: var(--ok); }
 svg.text-st-fail { color: var(--st-fail); }
 svg.text-st-done { color: var(--st-done); }
 svg.text-st-need { color: var(--st-need); }
+svg.text-st-work { color: var(--st-work); }
+svg.text-st-wait { color: var(--st-wait); }
 button { cursor: default; }
 /* A sent image's size toggle: the pointer says which way it goes, and its ring keeps the image's corners. */
 .k-image-toggle { cursor: zoom-in; border-radius: var(--radius-lg); }

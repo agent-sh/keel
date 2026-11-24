@@ -76,7 +76,7 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await page.getByTestId("mark-all-read").click();
   await expect(page.getByTestId("inbox-item").first()).not.toHaveAttribute("data-unread", "true");
 
-  // Each kind speaks in its state color: violet needs you, amber an agent
+  // Each kind speaks in its state color: yellow needs you, blue an agent
   // speaking, red failed; the bell shows them as news, a dot (a count is for what waits on the owner).
   for (const kind of ["agent", "failed", "approval"]) await request.post("/api/alerts/test", { data: { kind } });
   await page.keyboard.press("Escape");

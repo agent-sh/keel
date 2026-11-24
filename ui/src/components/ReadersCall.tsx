@@ -30,7 +30,7 @@ onFeature({
 });
 const subscribe = (cb: () => void) => { subs.add(cb); return () => void subs.delete(cb); };
 
-const DOT: Record<PartState["state"], string> = { waiting: "bg-faint", reading: "bg-brass animate-pulse-dot", read: "bg-ok", nothing: "bg-line-strong", unread: "bg-danger" };
+const DOT: Record<PartState["state"], string> = { waiting: "bg-faint", reading: "bg-st-work animate-pulse-dot", read: "bg-ok", nothing: "bg-line-strong", unread: "bg-danger" };
 const WORD: Record<PartState["state"], string> = { waiting: "waiting", reading: "reading", read: "findings", nothing: "nothing relevant", unread: "unread" };
 
 // A reading job: the question, its parts and who read each, what it cost

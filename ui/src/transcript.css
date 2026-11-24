@@ -2,7 +2,7 @@
    The owner's words stand on a tint. The model's reply is plain text at the
    reading size, with no edge. The work between them is a rail: a steel rule
    with a line a step, set in the interface size, where the color of a step's
-   part of the rule is its state (amber while it runs, red where it failed).
+   part of the rule is its state (blue while it runs, red where it failed).
    It is the one strong rule in the conversation. What Keel itself says (to the
    model, from an agent, a wake, a failure notice) is the quietest: a line, and
    what it holds under a hairline when opened. No card and no shadow. Unlayered,
@@ -50,7 +50,7 @@
 button.k-heard-line:hover { color: var(--fg); }
 .k-heard-line > svg:first-child { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
 /* Each kind its own ink, so a wake, a goal and a loop read apart before their words do: a wake is the
-   wait that ended (steel blue), a goal is the owner's aim (Keel's ink), a loop a run on a schedule (green). */
+   wait that ended (blue), a goal is the owner's aim (Keel's ink), a loop a run on a schedule (green). */
 .k-heard[data-kind="wake"] .k-heard-line > svg:first-child { color: var(--st-wait-ink); }
 .k-heard[data-kind="goal"] .k-heard-line > svg:first-child { color: var(--accent-ink); }
 .k-heard[data-kind="loop"] .k-heard-line > svg:first-child { color: var(--ok-ink); }

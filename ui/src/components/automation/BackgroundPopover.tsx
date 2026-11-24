@@ -92,7 +92,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
           live ? "border-accent/40 bg-accent-soft text-accent" : "border-line text-faint hover:text-fg",
                   )}
       >
-        {live ? <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /> : <Activity className="size-3.5" />}
+        {live ? <span className="size-1.5 rounded-full bg-st-work animate-pulse-dot" /> : <Activity className="size-3.5" />}
         {live ? counts : "Background"}
       </Popover.Trigger>
       <BackgroundPopup sessionId={sessionId} agents={agents} waits={waits} loops={loops} />

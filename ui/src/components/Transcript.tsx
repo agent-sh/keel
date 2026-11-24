@@ -579,7 +579,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
     <div className="flex min-h-[1.875rem] items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
         {/* Waiting on the owner is their color and does not pulse: nothing runs until they answer. */}
-        {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", needs ? "bg-st-need" : "bg-brass animate-pulse-dot")} style={needs ? undefined : { animationDelay: `${i * 160}ms` }} />)}
+        {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", needs ? "bg-st-need" : "bg-st-work animate-pulse-dot")} style={needs ? undefined : { animationDelay: `${i * 160}ms` }} />)}
       </span>
       <span data-testid="working-what" title={st?.kind === "model" ? st.limit?.why : undefined}>{what}</span>
       {s >= 2 ? <span className="tabular-nums text-faint">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null}

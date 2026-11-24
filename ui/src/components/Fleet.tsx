@@ -80,7 +80,7 @@ export function MachineChip({ session }: { session: Session }) {
     <>
       <WhereBody w={where} />
       {lives && <span className="text-faint">remote</span>}
-      {h?.state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
+      {h?.state === "running" && <span className="size-1.5 rounded-full bg-st-work animate-pulse-dot" />}
     </>
   ) : (
     // Here: its name says nothing the page does not, so the bar shows the machine's glyph and keeps the
@@ -88,7 +88,7 @@ export function MachineChip({ session }: { session: Session }) {
     <>
       <Server aria-hidden="true" className="size-3.5" />
       <span className="sr-only">Runs on {name}</span>
-      {h?.state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
+      {h?.state === "running" && <span className="size-1.5 rounded-full bg-st-work animate-pulse-dot" />}
     </>
   );
   const cls = where
@@ -121,7 +121,7 @@ export function MachineChip({ session }: { session: Session }) {
             </div>
             {waiting && (
               <div className="flex items-start gap-2 border-b border-line px-3.5 py-2.5" data-testid="move-waiting">
-                <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-brass animate-pulse-dot" />
+                <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-st-work animate-pulse-dot" />
                 <p className="min-w-0 flex-1 text-caption leading-snug text-fg">Moves to {waiting.machine} when the turn ends.<span className="block text-muted">Until then it works here; a restart of Keel calls the move off.</span></p>
                 <button type="button" data-testid="move-waiting-cancel" onClick={() => api(`/api/sessions/${session.id}/handoff`, { method: "DELETE" }).then(() => setWaiting(null), (e) => setErr(failed(e, { at: "Fleet" })))}
                   className="h-6 shrink-0 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg">Call off</button>
@@ -175,8 +175,8 @@ export function MachineChip({ session }: { session: Session }) {
                 <ol className="flex flex-col gap-1">
                   {h.steps.map((st) => (
                     <li key={st.name} className="flex items-center gap-2 text-caption">
-                      <span className={cn("grid size-4 place-items-center rounded-full", st.state === "done" ? "bg-ok text-bg" : st.state === "failed" ? "bg-danger text-bg" : st.state === "running" ? "bg-brass-soft" : "bg-sunken")}>
-                        {st.state === "done" ? <Check className="size-2.5" /> : st.state === "running" ? <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /> : null}
+                      <span className={cn("grid size-4 place-items-center rounded-full", st.state === "done" ? "bg-ok text-bg" : st.state === "failed" ? "bg-danger text-bg" : st.state === "running" ? "bg-st-work/15" : "bg-sunken")}>
+                        {st.state === "done" ? <Check className="size-2.5" /> : st.state === "running" ? <span className="size-1.5 rounded-full bg-st-work animate-pulse-dot" /> : null}
                       </span>
                       <span className={cn(st.state === "skipped" || st.state === "pending" ? "text-faint" : "text-fg")}>{STEP_LABEL[st.name] ?? st.name}</span>
                       {st.state === "skipped" && <span className="text-micro text-faint">skipped</span>}

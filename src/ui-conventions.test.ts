@@ -778,10 +778,63 @@ test("every time is on the 24-hour clock", () => {
 });
 test("the look is set by components and tokens, not by test ids or utility names", () => expect(selectors(sheets, page)).toEqual([]));
 test("a label, a picked row and a switch are their shared class", () => expect(shared(page)).toEqual([]));
+test("each state's colors are the hue of its dot, in both themes", () => expect(stateHues(sheets.find((x) => x.file === "styles.css")!.text)).toEqual([]));
+test("no component or stylesheet writes a color of its own", () => expect(ownColors(page, sheets)).toEqual([]));
 test("a state word is written once, in the vocabulary", () => expect(stateLiterals(page)).toEqual([]));
 test("a test id interpolates only a reviewed, fixed set of names", () => expect(testIds(page)).toEqual([]));
 test("a state word is set in sentence case", () => expect(shoutedStates(sheets)).toEqual([]));
 test("a Settings section is made of the Settings kit", () => expect(offKit(page, sectionFiles(page))).toEqual([]));
+
+// One palette for a state. A state's color is the hue of its dot, wherever it shows: the tokens (--st-need, --st-work,
+// --st-fail, --st-done, and their -ink words) resolve, in each theme, to a hue within 15 degrees of --dot-X, and no
+// component or stylesheet but styles.css writes a color of its own (black and white for a mask or a shadow, and the
+// browser's theme-color, are not colors of a state).
+const STATE_DOT = { need: "dot-need", work: "dot-work", fail: "dot-fail", done: "dot-done" } as const;
+function resolveOklch(vars: Map<string, string>, name: string, seen = new Set<string>()): { l: number; c: number; h: number } | undefined {
+  if (seen.has(name)) return undefined;
+  const v = vars.get(name);
+  if (!v) return undefined;
+  const ref = /^var\(--([\w-]+)\)$/.exec(v.trim());
+  if (ref) return resolveOklch(vars, ref[1]!, new Set([...seen, name]));
+  const m = /^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(v.trim());
+  return m ? { l: Number(m[1]), c: Number(m[2]), h: Number(m[3]) } : undefined;
+}
+function stateHues(styles: string): string[] {
+  const out: string[] = [];
+  const all = rules(styles);
+  const own = (sel: string) => new Map(all.filter((r) => r.selector === sel && !r.within.length).flatMap((r) => r.decls).map((d) => [d.prop.replace(/^--/, ""), d.value] as const));
+  const light = own(":root");
+  const night = new Map([...light, ...own(".dark")]);
+  for (const [theme, vars] of [["light", light], ["dark", night]] as const) {
+    for (const [state, dot] of Object.entries(STATE_DOT)) {
+      const want = resolveOklch(vars, dot);
+      if (!want) { out.push(`${theme}: --${dot} is not a color`); continue; }
+      for (const token of [`st-${state}`, `st-${state}-ink`, ...(state === "need" ? ["st-need-fill"] : [])]) {
+        const got = resolveOklch(vars, token);
+        if (!got) { out.push(`${theme}: --${token} is not a color`); continue; }
+        const d = Math.abs(got.h - want.h) % 360;
+        if (Math.min(d, 360 - d) >= 15 || got.c < 0.04) out.push(`${theme}: --${token} is hue ${got.h} (chroma ${got.c}), its dot ${want.h}`);
+      }
+    }
+    const wait = resolveOklch(vars, "st-wait"), work = resolveOklch(vars, "st-work");
+    if (!wait || !work || wait.h !== work.h) out.push(`${theme}: waiting is the dot of work, half filled: one blue`);
+  }
+  return out;
+}
+const COLOR_WORD = /oklch\(|oklab\(|#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(|\b(?:text|bg|border|ring|fill|stroke|from|to|via|outline|decoration|divide|accent|caret|shadow)-(?:red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone)-\d{2,3}\b/g;
+function ownColors(pageList: Src[], sheetList: Src[]): string[] {
+  const out: string[] = [];
+  for (const s of [...pageList, ...sheetList]) {
+    if (s.file === "styles.css" || s.file === "lib/ui.ts") continue;
+    const text = code(s.text, s.file.endsWith(".css"));
+    for (const m of text.matchAll(COLOR_WORD)) {
+      const tail = text.slice(m.index! + m[0].length, m.index! + m[0].length + 8);
+      if (/^#(000|fff)(000|fff)?$/i.test(m[0]) || (m[0] === "oklch(" && /^\s*0\s+0\s+0\b/.test(tail))) continue;
+      out.push(at(s, lineOf(text, m.index!), m[0]));
+    }
+  }
+  return out;
+}
 
 // ---------- The checks themselves ----------
 
@@ -907,4 +960,9 @@ test("each check lets ordinary edits through", () => {
   expect(pageTimes(tsx("const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;\nconst rx = /^https?:\\/\\//; const after = new Date(ts).toLocaleDateString();"))).toEqual([]);
   expect(segmented(tsx('const first = el.querySelector(\'[role="radio"]\');'), [])).toEqual([]);
   expect(shared(tsx('<Switch.Root\n  checked={on}\n  className="k-switch"><Switch.Thumb className="k-switch-thumb" /></Switch.Root>\n<h3 className="k-label mt-2">Tools</h3>\n<span className="rounded-xs bg-sunken px-1 text-micro font-medium text-muted">tag</span>'))).toEqual([]);
+  // A state's token that leaves its dot's hue is refused, one that follows it is let through; a color written in a component is refused, a mask's black is not.
+  const palette = (need: string, ink: string) => `:root { --dot-need: oklch(0.8 0.17 88); --dot-need-edge: oklch(0.55 0.12 80); --dot-work: oklch(0.56 0.19 255); --dot-fail: oklch(0.55 0.2 27); --dot-done: oklch(0.5 0.13 150); --st-need: ${need}; --st-need-ink: ${ink}; --st-need-fill: var(--dot-need); --st-work: var(--dot-work); --st-work-ink: oklch(0.47 0.15 255); --st-wait: var(--st-work); --st-fail: var(--dot-fail); --st-fail-ink: var(--dot-fail); --st-done: var(--dot-done); --st-done-ink: oklch(0.45 0.12 150); }`;
+  expect(stateHues(palette("var(--dot-need-edge)", "oklch(0.46 0.1 82)"))).toEqual([]);
+  expect(stateHues(palette("var(--dot-need-edge)", "oklch(0.46 0.2 295)"))).toHaveLength(2);
+  expect(ownColors(tsx('<i style={{ color: "oklch(0.5 0.2 295)" }} className="text-violet-500" />'), css(".k-a { color: #7c3aed; background: rgb(1 2 3); mask-image: linear-gradient(#000, transparent); box-shadow: 0 1px oklch(0 0 0 / 0.2); }"))).toHaveLength(4);
 });
