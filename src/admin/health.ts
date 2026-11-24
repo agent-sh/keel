@@ -15,6 +15,7 @@ import { EndpointProvider } from "../providers/endpoint.ts";
 import { CodexProvider } from "../providers/codex.ts";
 import { XaiProvider } from "../providers/xai.ts";
 import { configDir } from "../providers/config.ts";
+import { mayReadHome } from "../core/paths.ts";
 import { readsOf } from "../server/reads.ts";
 import { Hooks, namesOf } from "../integrations/hooks.ts";
 import { toolFacts } from "../tools/registry.ts";
@@ -249,7 +250,7 @@ export async function runHealth(deps: HealthDeps, cwd: string): Promise<HealthRe
     bounded("telemetry", "telemetry", CHECK_MS, () => telemetryRows(settings().observe ?? {}, process.env)),
     bounded("disk", "disk", CHECK_MS, () => disk(deps.store)),
   ]);
-  const layers = layerRows({ unreadable: settingsUnreadable(), refused: refusedConfigs(), observe: settings().observe ?? {}, env: process.env });
+  const layers = layerRows({ unreadable: settingsUnreadable(), refused: refusedConfigs(), observe: settings().observe ?? {}, env: process.env, homeWithheld: !mayReadHome() });
   const layerOut = [...layers, ...held];
   const rows = ordered([...fileRows, ...hookRowsOut, ...(layerOut.length ? layerOut : [layersOk]), ...sandboxOut, ...providerOut, ...mcpOut, ...telemetryOut, ...diskOut]);
   return { at: t0, took_ms: Date.now() - t0, rows, counts: countsOf(rows) };

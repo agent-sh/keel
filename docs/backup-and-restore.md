@@ -16,6 +16,12 @@ The config folder is a second folder, outside the state: `$KEEL_CONFIG_DIR`,
 else `$XDG_CONFIG_HOME/keel-bun` (`~/.config/keel-bun`). A backup carries its
 files, and a restore puts them back only when asked (see Restore).
 
+A daemon with a config folder of its own (a scratch daemon) and the account's
+own home reads nothing of the owner's home: no tacit, momentum, ssh hosts,
+imported sessions, other harnesses' skills and MCP servers or web search keys.
+Health says so. To let it read them, start it with a `HOME` of its own, or set
+`KEEL_ACCOUNT_HOME` to a folder that is not its home.
+
 ## What a backup holds
 
 `keel backup` writes `<state>/backups/keel-<time>/`:

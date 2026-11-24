@@ -250,12 +250,15 @@ export type LayerFacts = {
   refused: { name: string; path: string; folder: string }[];
   observe: ObserveFacts;
   env: Record<string, string | undefined>;
+  // The daemon has a config folder of its own and the account's home: it reads nothing of the owner's home.
+  homeWithheld?: boolean;
 };
 
 const REFUSED_LINK: Record<string, string> = { KEEL_HOOKS: "hooks", KEEL_MCP_CONFIG: "mcp", KEEL_ACP_AGENTS: "acp-agents", KEEL_ACP_FOLDERS: "acp-agents" };
 
 export function layerRows(f: LayerFacts): Row[] {
   const rows: Row[] = [];
+  if (f.homeWithheld) rows.push({ id: "settings:home-withheld", group: "settings", level: "warning", title: "this daemon does not read your home folder", detail: "its config folder is not the default one and its home is the account's own, so it takes none of tacit, momentum, the ssh hosts, imported sessions, the other harnesses' skills and MCP servers or the web search keys from your home", fix: "to let it read them, set KEEL_ACCOUNT_HOME to a folder that is not your home (the daemon then treats its home as its own), or start it with a HOME of its own (a scratch daemon)", link: { section: "daemon" } });
   if (f.unreadable !== undefined) rows.push({ id: "settings:unreadable", group: "settings", level: "broken", title: "settings.json cannot be read", detail: `${f.unreadable}; the defaults are used and saving is refused`, fix: "fix the file and restart the daemon, or reset it (the file moves aside)", link: { section: "storage" } });
   for (const r of f.refused) rows.push({ id: `settings:refused:${r.name}`, group: "settings", level: "broken", title: `${r.name} is not loaded`, detail: `${r.path} lies in ${r.folder}, a folder sessions work in: a command of a session could write it`, fix: "keep the file outside the folders sessions work in, then restart the daemon", link: { section: REFUSED_LINK[r.name] ?? "daemon" }, path: r.path });
   // A setting wins over the variable that names the same thing: the variable is read and ignored.

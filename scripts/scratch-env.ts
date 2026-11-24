@@ -39,6 +39,7 @@ export function standIns(dir: string, { host = false } = {}): Record<string, str
     KEEL_MCP_REGISTRY: `file://${join(dir, "registry.json")}`,
     TACIT_BIN: fixture("tacit-standin.sh"),
     MOMENTUM_BIN: join(dir, "no-momentum"),
+    KEEL_WEB_ENV: join(dir, "no-web-env"),
     TACIT_STANDIN_STORE: join(dir, "tacit-store"),
     KEEL_MAIL_STANDIN: join(dir, "mail"),
     KEEL_PARLAR: join(dir, "parlar/parlar"),

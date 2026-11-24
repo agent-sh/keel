@@ -90,6 +90,10 @@ test("settings layers: a setting that hides a variable, a file that is not loade
   });
   expect(rows.map((r) => [r.id, r.level])).toEqual([["settings:unreadable", "broken"], ["settings:refused:KEEL_HOOKS", "broken"], ["settings:otlp-endpoint", "warning"], ["settings:otlp-metrics", "warning"]]);
   expect(rows[1]!.link).toEqual({ section: "hooks" });
+  // A daemon on the account's home with a config folder of its own says it reads none of that home, and how to change it.
+  const withheld = layerRows({ ...none, homeWithheld: true });
+  expect(withheld.map((r) => [r.id, r.level])).toEqual([["settings:home-withheld", "warning"]]);
+  expect(withheld[0]!.fix).toContain("KEEL_ACCOUNT_HOME");
   // A setting and a variable that agree hide nothing.
   expect(layerRows({ ...none, observe: { otlp_metrics: true }, env: { OTEL_METRICS_EXPORTER: "otlp" } })).toEqual([]);
 });

@@ -68,7 +68,7 @@ export function findBin(envVar: string, name: string, env = process.env): string
   const given = env[envVar]?.trim();
   if (given) return existsSync(given) ? given : null;
   // A scratch daemon on the owner's home finds none of his tools (tacit, momentum) on the PATH.
-  if (env === process.env && !mayReadHome()) return null;
+  if (!mayReadHome()) return null;
   for (const dir of (env.PATH ?? "").split(delimiter)) if (dir && existsSync(join(dir, name))) return join(dir, name);
   const local = join(env.HOME ?? "", ".local/bin", name);
   return existsSync(local) ? local : null;

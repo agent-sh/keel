@@ -17,24 +17,26 @@ import { privateHost } from "../core/hosts.ts";
 import { noteOutward } from "../safety/egress.ts";
 import { vettedFetch, viaProxy } from "./pinned.ts";
 import { endpointOf, requestBytes } from "../safety/egress-count.ts";
-import { homeDir } from "../core/paths";
+import { mayReadHome, ownerEnv, ownerHome } from "../core/paths";
 
-const HOME = homeDir();
-const findBin = (name: string, env?: string) =>
-  [env && process.env[env], Bun.which(name), join(HOME, ".local/bin", name)].find((p): p is string => !!p && existsSync(p));
+// The web programs: the one the setting names, else (for a daemon that may read
+// the owner's home) the PATH and ~/.local/bin. A scratch daemon on the owner's
+// home finds none of his.
+export const findBin = (name: string, env?: string) =>
+  [env && process.env[env], mayReadHome() ? Bun.which(name, { PATH: process.env.PATH }) : null, join(ownerHome(), ".local/bin", name)].find((p): p is string => !!p && existsSync(p));
 
 // Keys and a local SearXNG for the search chain: the process env first, then
 // the harness web server's own .env when it sits in its usual place.
-function webEnv(): Record<string, string> {
+export function webEnv(): Record<string, string> {
   const out: Record<string, string> = {};
-  const file = process.env.KEEL_WEB_ENV ?? join(HOME, ".claude/mcp-servers/harness-web/.env");
+  const file = process.env.KEEL_WEB_ENV ?? join(ownerHome(), ".claude/mcp-servers/harness-web/.env");
   try {
     for (const raw of readFileSync(file, "utf8").split("\n")) {
       const m = /^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/.exec(raw);
       if (m) out[m[1]!] = m[2]!.replace(/^(["'])(.*)\1$/, "$2");
     }
   } catch {}
-  for (const k of ["BRAVE_API_KEY", "TAVILY_API_KEY", "SEARXNG_URL", "WEBSEARCH_ENGINE_ORDER"]) if (process.env[k]) out[k] = process.env[k]!;
+  for (const k of ["BRAVE_API_KEY", "TAVILY_API_KEY", "SEARXNG_URL", "WEBSEARCH_ENGINE_ORDER"]) if (ownerEnv(k)) out[k] = ownerEnv(k)!;
   return out;
 }
 

@@ -31,6 +31,7 @@ const scratch: Record<string, string> = {
   TACIT_BIN: noStore,
   // The supervisor's report: the same stand-in, so no test reads the owner's.
   MOMENTUM_BIN: noStore,
+  KEEL_WEB_ENV: join(dir, "no-web-env"),
   KEEL_CONFIG_DIR: made("config"),
   KEEL_STATE_DIR: made("state"),
   // The other agents' setup and session stores (MCP import, keel port, session import).

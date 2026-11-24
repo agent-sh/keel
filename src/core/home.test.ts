@@ -50,13 +50,20 @@ test("a daemon with a config folder of its own may not read the account's home, 
   const { findBin } = await import("../integrations/tacit.ts");
   const { claudeRoot } = await import("../integrations/import/claude.ts");
   const dir = mkdtempSync(join(tmpdir(), "keel-owner-home-"));
-  const keys = ["HOME", "KEEL_CONFIG_DIR", "KEEL_ACCOUNT_HOME", "KEEL_SSH_CONFIG", "KEEL_IMPORT_CLAUDE_DIR", "MOMENTUM_BIN", "CODEX_HOME", "PATH"];
+  const { webEnv, findBin: webBin } = await import("../tools/web.ts");
+  const keys = ["HOME", "KEEL_CONFIG_DIR", "KEEL_ACCOUNT_HOME", "KEEL_SSH_CONFIG", "KEEL_IMPORT_CLAUDE_DIR", "MOMENTUM_BIN", "CODEX_HOME", "PATH", "KEEL_WEB_ENV", "BRAVE_API_KEY", "TACIT_BIN"];
   const was = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   try {
     const home = join(dir, "home");
     mkdirSync(join(home, ".ssh"), { recursive: true });
     mkdirSync(join(home, ".local/bin"), { recursive: true });
     writeFileSync(join(home, ".ssh/config"), "Host owners-host\n");
+    mkdirSync(join(home, ".claude/mcp-servers/harness-web"), { recursive: true });
+    writeFileSync(join(home, ".claude/mcp-servers/harness-web/.env"), "TAVILY_API_KEY=owners-key\n");
+    writeFileSync(join(home, ".local/bin/harness-websearch-cli"), "#!/bin/sh\n", { mode: 0o755 });
+    process.env.BRAVE_API_KEY = "owners-brave";
+    delete process.env.KEEL_WEB_ENV;
+    delete process.env.TACIT_BIN;
     writeFileSync(join(home, ".local/bin/momentum"), "#!/bin/sh\n", { mode: 0o755 });
     for (const k of ["KEEL_SSH_CONFIG", "KEEL_IMPORT_CLAUDE_DIR", "MOMENTUM_BIN"]) delete process.env[k];
     process.env.HOME = home;
@@ -67,6 +74,8 @@ test("a daemon with a config folder of its own may not read the account's home, 
     expect(mayReadHome()).toBe(true);
     expect(sshHosts()).toEqual(["owners-host"]);
     expect(findBin("MOMENTUM_BIN", "momentum")).toBe(join(home, ".local/bin/momentum"));
+    expect(webEnv().TAVILY_API_KEY).toBe("owners-key");
+    expect(webBin("harness-websearch-cli")).toBe(join(home, ".local/bin/harness-websearch-cli"));
     // The account's home with a config folder of its own: none of it.
     process.env.KEEL_ACCOUNT_HOME = home;
     expect(mayReadHome()).toBe(false);
@@ -78,6 +87,16 @@ test("a daemon with a config folder of its own may not read the account's home, 
     expect(sshHosts()).toEqual([]);
     expect(findBin("MOMENTUM_BIN", "momentum")).toBeNull();
     expect(claudeRoot().startsWith(home)).toBe(false);
+    // Another environment handed in (a copy of the owner's) finds none of his tools either.
+    expect(findBin("MOMENTUM_BIN", "momentum", { PATH: join(home, ".local/bin"), HOME: home })).toBeNull();
+    // No search key of his, no web program of his, whether the .env or the environment holds it.
+    expect(webEnv()).toEqual({});
+    expect(webBin("harness-websearch-cli")).toBeUndefined();
+    // The one the daemon is given is used.
+    process.env.KEEL_WEB_ENV = join(dir, "own.env");
+    writeFileSync(join(dir, "own.env"), "TAVILY_API_KEY=its-own\n");
+    expect(webEnv()).toEqual({ TAVILY_API_KEY: "its-own" });
+    delete process.env.KEEL_WEB_ENV;
     // What a scratch daemon names itself is honoured.
     process.env.MOMENTUM_BIN = join(home, ".local/bin/momentum");
     expect(findBin("MOMENTUM_BIN", "momentum")).toBe(join(home, ".local/bin/momentum"));
