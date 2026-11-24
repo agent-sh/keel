@@ -3,7 +3,7 @@
 // one line per hit and the schema only for the hits shown, so finding a tool
 // costs a few hundred tokens instead of every server's schemas on every request.
 import { registerHooks } from "../engine/hooks.ts";
-import { catalogSources, catalogTools, judgedOf, registerCatalog, score, stale, unavailableNote, type CatalogTool, type Judged } from "../tools/catalog.ts";
+import { catalogSources, catalogTools, judgedOf, registerCatalog, score, stale, surfaced, unavailableNote, type CatalogTool, type Judged } from "../tools/catalog.ts";
 export { score };
 import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
@@ -62,6 +62,7 @@ const SearchTools: Tool = {
         .map((x) => x.t);
     }
     const page = hits.slice(offset, offset + limit);
+    surfaced(page, ctx?.sessionId);
     if (!page.length) return ok(`No tool matches "${query}"${offset ? ` at offset ${offset}` : ""} among ${all.length}.${note}`);
     const more = hits.length > offset + limit ? `\n${hits.length - offset - limit} more: search again with offset ${offset + limit}.` : "";
     const body = page.map((t) => `${t.qualified}: ${oneLine(t.description)}\n  input: ${compactSchema(t.input_schema)}`).join("\n");
@@ -137,14 +138,7 @@ function builtins(m: McpManager): CatalogTool[] {
     input_schema: { type: "object", properties, required, additionalProperties: false }, run,
   });
   const offering = async (cap: "resources" | "prompts") => {
-    const names: string[] = [];
-    for (const s of m.ready()) {
-      try {
-        const c = await m.ensure(s, 3000);
-        if (c.capabilities[cap]) names.push(s);
-      } catch {}
-    }
-    return names;
+    return m.capable(cap);
   };
   // A server a session may not reach (memory off, for the store's) is refused before it is asked.
   const guard = async (f: () => Promise<string>, server?: unknown, ctx?: { sessionId?: string }) => {

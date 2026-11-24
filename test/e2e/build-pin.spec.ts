@@ -250,7 +250,7 @@ test("a deferred tool the conversation loaded keeps its definition across an upg
     writeFileSync(join(state, "work", "AGENTS.md"), "# Rules\n\nAlways answer in one line.\n");
   });
   const { call, turn, open, restart } = r;
-  const ready = () => expect.poll(async () => (await call("/api/mcp/servers")).servers.find((s: any) => s.name === "echo")?.state, { timeout: 30_000 }).toBe("ready");
+  const ready = () => expect.poll(async () => (await call("/api/mcp/servers")).servers.find((s: any) => s.name === "echo")?.state, { timeout: 30_000 }).toMatch(/^(ready|idle)$/); // (a command server asleep from its kept listing is there too)
   // The requests of one session, by a word in its prompts.
   const of = (tag: string) => fake.bodies.filter((b) => JSON.stringify(b.messages).includes(tag));
   const def = (b: any, name: string) => b.tools.find((t: any) => t.name === name);

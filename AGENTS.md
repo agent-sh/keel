@@ -257,6 +257,15 @@ under `~/.cache/keel-work/bun/research/`.
   and is itself reachable, not overloaded and not shut; never back (the agent finishes where it moved);
   its transcript says so and its parent hears one line. A target that cannot take the work leaves the
   agent waiting, said once in its failures.
+- A command MCP server holds no process until it is used. Its last listing (tools, instructions, whether it
+  has resources or prompts, its prompts) is kept in the state keyed by a hash of its command, arguments and
+  environment names (`mcp-tools.json`, `src/mcp/manager.ts` `keep`/`useKept`), and a server with one and an
+  accepted pin starts asleep: its tools are in the catalog, nothing runs. Its first call, or a search that
+  shows one of its tools, starts it; the listing it gives then replaces the kept one, and a changed list is a
+  tool change for the owner's review as before (`settle`). With no call for `mcp_idle.stop_min` minutes it
+  loses its process again (`stopIdle`); not one with a call under way, resources it is told about, a channel
+  the owner takes, `keep_running` set, or a browser the owner did not choose to close when idle. A server
+  with no kept listing connects at start, as before.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

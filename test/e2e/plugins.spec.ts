@@ -166,7 +166,7 @@ test("plugins: install as one unit, each part works, off, update, offered, remov
   await page.goto("/settings/plugins");
   await page.locator('[data-testid="unit-entry"][data-id="e2e-kit"]').click();
   await page.getByTestId("unit-toggle").click();
-  await expect(reader.locator('[data-testid="unit-mcp"][data-name="e2e-kit-echo"]')).toHaveAttribute("data-state", "ready", { timeout: 30_000 });
+  await expect(reader.locator('[data-testid="unit-mcp"][data-name="e2e-kit-echo"]')).toHaveAttribute("data-state", /^(ready|idle)$/, { timeout: 30_000 });
 
   // An update: what changes is said before it is applied, and a changed hook asks again.
   put(repo, {

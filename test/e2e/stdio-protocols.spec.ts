@@ -159,7 +159,7 @@ test("every byte on a protocol's stream is the protocol, while the daemon logs e
     d = await ownDaemon(state, d.port, env);
     await expect.poll(async () => !!(await call("/api/daemon")).last_start?.settled_ms, { timeout: 60_000 }).toBe(true);
     await idle(long);
-    await expect.poll(async () => ((await call("/api/mcp/servers")).servers as any[]).find((s) => s.name === "tapped")?.state, { timeout: 30_000 }).toBe("ready");
+    await expect.poll(async () => ((await call("/api/mcp/servers")).servers as any[]).find((s) => s.name === "tapped")?.state, { timeout: 30_000 }).toMatch(/^(ready|idle)$/); // (asleep from its kept listing: the round's call starts it)
     await round(2);
     // A stop that was asked for, and the next start.
     d.proc.kill("SIGTERM");

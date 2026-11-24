@@ -39,6 +39,8 @@ export type CatalogSource = {
   // The tools listed right now, without connecting anything (an MCP server's
   // last listing while it is ready). A source without it is asked with tools().
   known?(): CatalogTool[];
+  // A search found a tool of this source: start what a call would need (a server with no process).
+  warm?(): void;
   // Families that have these tools among their own (the web pair for Claude):
   // where tools load natively they are left out for those families.
   except?: string[];
@@ -88,6 +90,12 @@ export async function catalogReady(family?: string, session?: string): Promise<C
   const use = offered(session).filter((s) => !family || !s.except?.includes(family));
   const lists = await Promise.allSettled(use.map((s) => (s.known ? s.known() : s.tools())));
   return lists.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+}
+
+// Tools a search showed the model: each one's source is told, so a server asleep is starting when the call comes.
+export function surfaced(tools: { server: string }[], session?: string) {
+  const by = new Set(tools.map((t) => t.server));
+  for (const s of offered(session)) if (by.has(s.name)) try { s.warm?.(); } catch { /* a start that fails shows when the tool is called */ }
 }
 
 export async function catalogTools(session?: string): Promise<CatalogTool[]> {

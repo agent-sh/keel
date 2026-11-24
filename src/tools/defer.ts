@@ -13,7 +13,7 @@
 import { testBuild } from "../core/build.ts";
 import { SessionMap } from "../core/session-map.ts";
 import type { Message } from "../core/types.ts";
-import { catalogReady, catalogTools, judgedOf, score, stale, unavailableNote, type CatalogTool, type Judged } from "./catalog.ts";
+import { catalogReady, catalogTools, judgedOf, score, stale, surfaced, unavailableNote, type CatalogTool, type Judged } from "./catalog.ts";
 import { fail, type Tool, type ToolOutput } from "./types.ts";
 
 export const TOOL_SEARCH = "ToolSearch";
@@ -276,6 +276,7 @@ export function toolSearch(builtins: (sessionId?: string) => Tool[]): Tool {
           .map((x) => x.t);
         if (!hits.length) return { content: [`No deferred tool matches "${query}". An empty query lists them all.`, unavailableNote(ctx?.sessionId)].filter(Boolean).join("\n") };
       }
+      surfaced(hits.slice(0, limit), ctx?.sessionId);
       // The provider takes tool_reference blocks alone in a result (mixed with text it answers 400).
       return { content: hits.slice(0, limit).map((t) => ({ type: "tool_reference" as const, tool_name: t.name })) };
     },

@@ -39,6 +39,10 @@ export type McpServerConfig = {
   // for `mcp_idle.close_browser_min` minutes. Off by default; only for a server Keel starts (a command), never a
   // remote one (src/mcp/manager.ts closeIdle).
   close_idle_browser?: boolean;
+  // The owner's: this command server runs from the daemon's start and is never ended for idleness. Off by default:
+  // a command server is started by its first call, from the tool list kept of its last run, and ended after
+  // `mcp_idle.stop_min` minutes with no call (src/mcp/manager.ts). For one that holds state in memory between calls.
+  keep_running?: boolean;
   // The owner's answers of what kind of server it is (src/mcp/class.ts); one not given is read from the config.
   class?: Partial<Record<"outside" | "sends" | "account", boolean>>;
 };
@@ -149,6 +153,7 @@ function normalize(c: any): McpServerConfig {
   if (c.sync && typeof c.sync.source === "string" && typeof c.sync.name === "string") out.sync = { source: c.sync.source, name: c.sync.name };
   if (c.channel === true) out.channel = true;
   if (c.close_idle_browser === true) out.close_idle_browser = true;
+  if (c.keep_running === true) out.keep_running = true;
   if (c.class && typeof c.class === "object") {
     const k = Object.fromEntries(["outside", "sends", "account"].filter((x) => typeof c.class[x] === "boolean").map((x) => [x, c.class[x]]));
     if (Object.keys(k).length) out.class = k;

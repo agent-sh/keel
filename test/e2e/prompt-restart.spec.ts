@@ -92,7 +92,7 @@ test("a restart sends the same system prompt, with a slow MCP server's instructi
     // More sessions take a turn than the daemon keeps prompts in memory for,
     // and an input changes meanwhile (the server is turned off): the first
     // session's prompt stays as it is while the daemon runs.
-    await expect.poll(async () => (await call("/api/mcp/servers")).servers.find((s: any) => s.name === "slow")?.state, { timeout: 30_000 }).toBe("ready");
+    await expect.poll(async () => (await call("/api/mcp/servers")).servers.find((s: any) => s.name === "slow")?.state, { timeout: 30_000 }).toMatch(/^(ready|idle)$/); // (asleep from its kept listing: nothing here calls it)
     for (let i = 0; i < 65; i++) {
       const other = await open();
       await call(`/api/sessions/${other}/messages`, { text: "hello" });
