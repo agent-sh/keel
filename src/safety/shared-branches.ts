@@ -92,6 +92,8 @@ function gitOf(words: string[]): Git | null {
       config.push(at < 0 ? [kv, undefined] : [kv.slice(0, at), w === "-c" ? kv.slice(at + 1) : undefined]);
       continue;
     }
+    // (`-ckey=value`, the attached form.)
+    if (/^-c.+/.test(w)) { const kv = w.slice(2), at = kv.indexOf("="); config.push(at < 0 ? [kv, undefined] : [kv.slice(0, at), kv.slice(at + 1)]); continue; }
     if (w.startsWith("--config-env=")) { const kv = w.slice(13), e = kv.indexOf("="); config.push([e < 0 ? kv : kv.slice(0, e), undefined]); continue; }
     const key = eq > 0 ? w.slice(0, eq) : w;
     const value = eq > 0 ? w.slice(eq + 1) : GLOBAL_VALUED.test(w) ? words[i + 1] : undefined;

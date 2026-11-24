@@ -138,6 +138,8 @@ test("git archive reads: a candidate's tree is built in another checkout, and an
     "git -c tar.foo.command='rm -rf ~/y' -C /r archive --format=foo HEAD",
     "git -c core.fsmonitor=x -C /r archive HEAD",
     "git --config-env=tar.foo.command=CMD -C /r archive --format=foo HEAD",
+    "git -ctar.foo.command='git -C /r branch -D main' -C /r archive --format=foo HEAD", "git -calias.x='!git branch -D main' x",
+    "GIT_DIR=(/r/.git); git branch -D keel/agent-2", "GIT_WORK_TREE=(/r); GIT_DIR=(/r/.git); git reset --hard",
   ]) expect([line, refused(line) !== null]).toEqual([line, true]);
 });
 

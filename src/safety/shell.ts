@@ -36,6 +36,19 @@ const OPS_START = "&|;\n"; // the characters an operator starts with: most chara
 const PLAIN = /^[a-z_][a-z0-9_]*$/;
 // What stands before the ( of an array assignment: NAME=, NAME+=, or an element's NAME[n]=.
 const ARRAY_NAME = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/;
+// The elements of an array assignment's body when each is a plain word (a letter, a digit or one of the characters of a path, in
+// quotes or not), else null.
+function literalElements(body: string): string[] | null {
+  const items = body.trim().split(/\s+/).filter(Boolean);
+  if (!items.length || items.length > 32) return null;
+  const out: string[] = [];
+  for (const it of items) {
+    const w = /^(["'])(.*)\1$/.exec(it)?.[2] ?? it;
+    if (!/^[A-Za-z0-9_.\/~@%+,:=-]+$/.test(w)) return null;
+    out.push(w);
+  }
+  return out;
+}
 // Leading words that are syntax, not commands.
 const CONTROL = /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/;
 // What a redirect may write to without changing anything.
@@ -416,14 +429,17 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare:
         if (!r) return null;
         out.push(...nestedIn(r.parts));
         if (/[$`]/.test(cmd.slice(i + 1, r.end))) { expands(word.length, true); cur.rest = true; }
-        word += "(...)"; text += cmd.slice(i, r.end + 1); i = r.end;
+        // An array given to a name a program reads (PATH, LD_PRELOAD, GIT_DIR) sets that name: its elements stand where the value does.
+        const name = /^([A-Za-z_][A-Za-z0-9_]*)=$/.exec(word)?.[1];
+        const elements = name !== undefined && (!PLAIN.test(name) || KEPT.test(name)) ? literalElements(cmd.slice(i + 1, r.end)) : null;
+        word += elements ? elements.join(":") : "(...)"; text += cmd.slice(i, r.end + 1); i = r.end;
         continue;
       }
       // (( ... )) where a command starts (or after for, while, if): arithmetic, its substitutions run, its words are no command.
       if (c === "(" && cmd[i + 1] === "(" && !inWord && !bare && words.every((w) => CONTROL.test(w) || w === "for")) {
         const end = arithmetic(i + 2);
         if (end === null) return null;
-        if (end !== undefined) { flushCmd(); unknown = true; i = end; continue; }
+        if (end !== undefined) { flushCmd(); text = cmd.slice(i, end + 1); unknown = true; i = end; continue; }
       }
       flushCmd();
       if (c === ")" && inner && depth === 0) return bad ? null : { parts: out, end: i };

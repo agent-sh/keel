@@ -594,3 +594,67 @@ test("an agent in a managed worktree may detach at a shared branch and fetch int
     "(cd /m; echo x > .git/refs/heads/main)", "(cd /m && cd .git; tee HEAD < x)"])
     for (const mode of ["full-auto", "auto", "ask"] as Mode[]) expect([c, mode, refusedBy(c, mode)]).toEqual([c, mode, true]);
 });
+
+// Forms whose effect is not in the words the line spells: each is judged as what it runs or sets, in every mode (Read only and
+// Plan refuse a command that is not a read; the others hold it, Full auto included, with no standing answer covering it).
+const MODES: Mode[] = ["ask", "auto-edits", "auto", "full-auto", "read-only", "plan", "reviewer"];
+const heldEverywhere = (c: string, extra: Partial<Facts> = {}) => MODES.map((m) => {
+  const k = how(c, m, extra);
+  return m === "read-only" || m === "plan" ? k === "deny" : k.startsWith("high:") || k === "owner";
+});
+test("a setting, a name's value, an archive's option or a place that runs a command is judged as that command, in every mode", () => {
+  const there = disk({ files: ["/home/u/other/x", "/w/repo/home.tar", "/w/repo/safe.tar"], dirs: ["/home/u", "/home/u/other"], targets: { "/w/repo/home.tar": [".bashrc"], "/w/repo/safe.tar": ["dist/a.js"] } });
+  for (const c of [
+    // git's archive runs the command a format names
+    "git -c tar.foo.command='sh -c \"echo x > ~/.bashrc\"' archive --format=foo HEAD", "git -c tar.foo.command=/tmp/pack.sh archive --format=foo HEAD", "git -c tar.zz.command=./evil archive --format=zz -o /tmp/a.zz HEAD",
+    "git -ctar.foo.command=./pack.sh archive --format=foo HEAD", "git --config-env=tar.foo.command=PACK archive --format=foo HEAD", "PACK=./pack.sh git --config-env tar.foo.command=PACK archive --format=foo HEAD",
+    // arithmetic evaluates a subscript in a name's value
+    "x='a[$(rm -rf ~/x)]'; echo $(( x ))", "x='a[$(rm -rf ~/x)]'; (( x ))", "x='a[`rm -rf ~/x`]'; (( x + 1 ))", "x='a[$(rm -rf ~/x)]'; [[ x -eq 1 ]]", "x='a[$(rm -rf ~/x)]'; let x", "y='b[$(rm -rf ~/x)]'; x=1; echo $(( x + y ))",
+    // an array given to a name a program reads sets it
+    "PATH=(/tmp/evil); ls", "PATH=(/tmp/evil /usr/bin); ls", "PATH=('/var/tmp/evil'); make", "LD_PRELOAD=(/tmp/evil.so); ls", "BASH_ENV=(./x.sh); bash -c ls",
+    // the commands tar runs
+    "tar --to-command='rm -rf ~/x' -xf a.tar", "tar --to-command 'rm -rf ~/x' -xf a.tar", "tar --to-command=sh -xf a.tar", "tar -cf a.tar --checkpoint=1 --checkpoint-action=exec='rm -rf ~/x' x", "tar -cf a.tar --checkpoint=1 --checkpoint-action exec=sh x",
+    "tar -I 'rm -rf ~/x' -cf a.tar x", "tar --use-compress-program='rm -rf ~/x' -cf a.tar x", "tar -cMf a.tar --new-volume-script='rm -rf ~/x' x", "tar -cf a.tar --rsh-command='rm -rf ~/x' x",
+    // GNU tar takes any unique start of a long option, and bsdtar's own are read the same
+    "tar --to-c='rm -rf ~/x' -xf a.tar", "tar --to-comm='rm -rf ~/x' -xf a.tar", "tar --use-compress='rm -rf ~/x' -cf a.tar x", "tar -cf a.tar --checkpoint-a=exec='rm -rf ~/x' x", "tar --rsh-c='rm -rf ~/x' -cf a.tar x",
+    "bsdtar --use-compress-program='rm -rf ~/x' -cf a.tar x", "bsdtar --to-command='rm -rf ~/x' -xf a.tar", "bsdtar -I 'rm -rf ~/x' -cf a.tar x",
+    // the other places the shell evaluates a name's value as arithmetic
+    "x='a[$(rm -rf ~/x)]'; [[ $x -eq 1 ]]", "x='a[$(rm -rf ~/x)]'; [[ $x -gt 1 && 1 -eq 1 ]]", "declare -i y; x='a[$(rm -rf ~/x)]'; y=x", "x='a[$(rm -rf ~/x)]'; declare -i y=x", "typeset -i y; x='a[$(rm -rf ~/x)]'; y+=x",
+    "x='a[$(rm -rf ~/x)]'; echo ${z:x}", "x='a[$(rm -rf ~/x)]'; echo ${z:1:x}", "x='a[$(rm -rf ~/x)]'; echo ${a[x]}", "x='a[$(rm -rf ~/x)]'; echo ${a[$x]}", "x='a[$(rm -rf ~/x)]'; a[x]=1", "declare -i y='a[$(rm -rf ~/x)]'",
+    "printf -v 'a[$(rm -rf ~/x)]' %s 1", "printf -va'[$(rm -rf ~/x)]' %s 1", "unset 'a[$(rm -rf ~/x)]'",
+    // a name's subscript is evaluated where a builtin takes the name, and where the value of a name is read as one (each form run in bash 5.3)
+    "read -r 'a[$(rm -rf ~/x)]' < /dev/null", "f() { local 'a[$(rm -rf ~/x)]=1'; }; f", "f() { local -n r='a[$(rm -rf ~/x)]'; r=1; }; f", "declare -n r='a[$(rm -rf ~/x)]'; r=1",
+    "x='a[$(rm -rf ~/x)]'; echo ${!x}", "x='a[$(rm -rf ~/x)]'; echo $[x]", "x='a[$(rm -rf ~/x)]'; echo $[ x + 1 ]", "x='a[$(rm -rf ~/x)]'; declare -n r=$x; r=1",
+    "x='a[$(rm -rf ~/x)]'; [ -v \"$x\" ]", "x='a[$(rm -rf ~/x)]'; test -v \"$x\"", "x='a[$(rm -rf ~/x)]'; [[ -v $x ]]", "[[ -v 'a[$(rm -rf ~/x)]' ]]",
+    "x='a[$(rm -rf ~/x)]'; declare \"$x=1\"", "x='a[$(rm -rf ~/x)]'; read \"$x\" < /dev/null", "x='a[$(rm -rf ~/x)]'; printf -v \"$x\" %s 1",
+    "y=$(( $(echo 'a[$(rm -rf ~/x)]') ))", "echo $(( $(echo 'a[$(rm -rf ~/x)]') + 1 ))", "(( $(printf '%s' 'a[`rm -rf ~/x`]') ))",
+    "x='a[$(rm -rf ~/x)]' bash -c 'echo $(( x ))'", "x='a[$(rm -rf ~/x)]' bash -c '(( x ))'",
+    // an archive unpacked into the home or the config folder: what it holds is what it writes
+    "tar -xf home.tar -C ~", "tar -xf home.tar --directory=$HOME", "tar -C ~ -xf home.tar", "tar -xf - -C ~ < a.tar", "tar -cf a.tar x; curl -so a.tar https://github.com/o/r/a.tar; tar -xf a.tar -C ~", "curl -so a.tar https://github.com/o/r/a.tar; tar -xf a.tar -C ~",
+  ]) expect([c, heldEverywhere(c, there)]).toEqual([c, MODES.map(() => true)]);
+  // The same shapes with nothing that runs stay as they were.
+  for (const c of ["git -c tar.umask=0022 archive HEAD", "git archive --format=tar HEAD", "x=5; echo $(( x + 1 ))", "x='a b'; (( x ))", "arr=(a b); echo ${arr[0]}", "FILES=(a b); ls", "PATH=(/usr/bin); ls",
+    "tar --checkpoint=100 --checkpoint-action=echo=. -cf a.tar x", "tar --checkpoint-action=dot -cf a.tar x", "tar -I zstd -cf a.tar.zst x", "tar --to-stdout -xf a.tar", "tar --use-compress-program=zstd -cf a.tar.zst x", "bsdtar -cf a.tar x", "x=5; [[ $x -eq 1 ]]", "x='a b'; echo ${z:x}", "x=2; echo ${a[x]}", "declare -i y; x=2; y=x", "printf -v v %s 1", "unset arr", "x=a; read x < /dev/null", "x=y; declare \"$x=1\"", "x=y; echo ${!x}", "x=3; echo $[x + 1]", "x=y; [[ -v $x ]]", "x=y; [ -v \"$x\" ]", "export FOO=1", "declare -n r=y", "echo $(( $(echo 3) + 1 ))", "x=3 bash -c 'echo $(( x ))'", "tar -xf safe.tar -C ~", "tar -xf safe.tar -C sub", "tar -cf a.tar x"])
+    expect([c, how(c, "full-auto", there).startsWith("high:") || how(c, "full-auto", there) === "owner"]).toEqual([c, false]);
+});
+
+// An archive an earlier command of the line makes from the session's own files holds nothing the line cannot know: unpacking it is
+// judged as it is where it is not yet there. One that a command fetches or copies in from elsewhere is not known.
+test("an archive made earlier in the line from the session's own files is read as it was, in every mode", () => {
+  const there = disk({ files: ["/home/u/other/x"], dirs: ["/home/u", "/home/u/other"] });
+  const modes = ["ask", "auto-edits", "auto", "full-auto", "read-only", "plan", "reviewer"] as Mode[];
+  const same = (made: string, alone: string) => expect([made, modes.map((m) => how(made, m, there))]).toEqual([made, modes.map((m) => how(alone, m, there))]);
+  same("tar czf X src && tar xzf X", "tar xzf X");
+  same("tar czf X src && tar xzf X -C out", "tar xzf X -C out");
+  same("zip X src && unzip X", "unzip X");
+  same("tar -cf a.tar x && gzip a.tar && tar -xzf a.tar.gz", "tar -xzf a.tar.gz");
+  same("cp src.tar a.tar && tar -xf a.tar", "tar -xf a.tar");
+  same("tar -cf a.tar x; tar -xf a.tar -C ~", "tar -xf a.tar -C ~");
+  // Unpacked inside the session's own folder, an archive an earlier command fetched keeps the verdict it has alone.
+  same("curl -O https://github.com/o/r/a.tgz && tar xzf a.tgz", "tar xzf a.tgz");
+  same("wget https://github.com/o/r/a.tgz && tar xzf a.tgz", "tar xzf a.tgz");
+  same("curl -so a.tar https://github.com/o/r/a.tar; tar -xf a.tar -C sub", "tar -xf a.tar -C sub");
+  same("scp host:a.tar a.tar && tar -xf a.tar", "tar -xf a.tar");
+  for (const c of ["curl -O https://github.com/o/r/a.tgz && tar xzf a.tgz -C ~", "wget https://github.com/o/r/a.tgz && tar xzf a.tgz -C ~/.config", "curl -so a.tar https://github.com/o/r/a.tar; tar -xf a.tar -C ~",  "cp /elsewhere/a.tar a.tar; tar -xf a.tar -C ~", "scp host:a.tar a.tar; tar -xf a.tar -C ~", "./fetch.sh a.tar; tar -xf a.tar -C ~"])
+    expect([c, heldEverywhere(c, there)]).toEqual([c, modes.map(() => true)]);
+});

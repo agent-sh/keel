@@ -257,6 +257,10 @@ function gitParts(words: string[]): { sub: string; args: string[]; set: string[]
   let i = 1;
   for (; i < words.length && words[i]!.startsWith("-"); i++) {
     if (words[i] === "-c" && words[i + 1] !== undefined) set.push(words[i + 1]!);
+    // `-ckey=value` (attached) and `--config-env=key=NAME` (the value is in the environment variable NAME) set a key too.
+    else if (/^-c.+/.test(words[i]!)) set.push(words[i]!.slice(2));
+    else if (words[i]!.startsWith("--config-env=")) set.push(words[i]!.slice(13));
+    else if (words[i] === "--config-env" && words[i + 1] !== undefined) set.push(words[i + 1]!);
     if (GIT_VALUED.test(words[i]!)) i++;
   }
   return words[i] === undefined ? null : { sub: words[i]!, args: words.slice(i + 1), set };
@@ -352,6 +356,33 @@ function gitRuns(words: string[]): string | null {
   if (g.sub === "bisect" && g.args[0] === "run") return g.args.slice(1).join(" ") || null;
   if (g.sub === "submodule" && g.args.includes("foreach")) return g.args.slice(g.args.indexOf("foreach") + 1).filter((a) => !a.startsWith("--")).join(" ") || null;
   return null;
+}
+
+// The commands tar is given to run, with how: --to-command (each extracted file on its input), --checkpoint-action=exec=, the
+// compressor (-I, --use-compress-program), the volume scripts (-F, --info-script, --new-volume-script) and --rsh-command.
+const TAR_RUNS = ["to-command", "use-compress-program", "info-script", "new-volume-script", "rsh-command", "checkpoint-action"];
+const SUBSTITUTION = /\$\((?!\.\.\.\))|`/;
+const NAMERS = /^(declare|typeset|local|export|readonly|read|mapfile|readarray|unset|getopts)$/;
+const integerDecl = (q: Simple) => /^(declare|typeset|local|integer)$/.test(name(q.words[0])) && (name(q.words[0]) === "integer" || q.words.some((a) => /^-[A-Za-z]*i/.test(a)));
+function tarRuns(args: string[]): { cmd: string; how: string }[] {
+  const out: { cmd: string; how: string }[] = [];
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    // GNU tar takes any unique start of a long option (--to-c, --use-compress, --checkpoint-a): a start of three letters or more.
+    const lname = /^--([a-z][a-z-]*)(?:=([^]*))?$/.exec(a);
+    const full = lname && lname[1]!.length >= 3 && lname[1] !== "checkpoint" ? TAR_RUNS.find((n) => n.startsWith(lname[1]!)) : undefined;
+    const long = full ? [a, full, lname![2]] as const : null;
+    const short = /^-(I|F)$/.exec(a);
+    let v: string | undefined, how = "";
+    if (long) { v = long[2] ?? args[k + 1]; if (long[2] === undefined) k++; how = `run (${long[1]})`; }
+    else if (short) { v = args[k + 1]; k++; how = `run (${a})`; }
+    else if (/^-[A-Za-z]*I.+/.test(a) && /^-[xcrutdA]*I/.test(a)) { v = a.slice(a.indexOf("I") + 1); how = "run (-I)"; }
+    if (v === undefined) continue;
+    // A checkpoint action runs only when it is exec=CMD (or sleep=, echo=, ttyout= ... which run nothing).
+    if (long?.[1] === "checkpoint-action") { for (const part of v.split(/,(?=exec=)|,/)) { const m = /^exec=([^]*)$/.exec(part); if (m) out.push({ cmd: m[1]!, how }); } continue; }
+    out.push({ cmd: v, how });
+  }
+  return out;
 }
 
 // ---- class: hidden ----
@@ -806,7 +837,7 @@ function opens(x: Part, w: Where, vals: Values): Risk[] {
 const KNOWN = new Set([...REACHES, ...DELETES, ...ADMIN, "service", "tar", "zip", "ln", "awk", "gawk", "lua", "brew", "sort", "sponge", "osascript", "vi", "vim", "nvim", "ex", "view", "make", "gmake", "find", "chmod", "chown", "chgrp", "git", "kill", "pkill", "killall", "killall5", "tmux", "loginctl", "systemctl", "launchctl", "crontab", "at", "batch", "eval", "source", ".",
   "alias", "trap", "su", "script", "nix-shell", "mv", "cp", "install", "tee", "dd", "sed", "perl", "sh", "bash", "zsh", "dash", "ksh", "fish", "node", "nodejs", "ruby", "php", "pip", "pip3", "pipx", "uvx", "pdm", "npx",
   "bunx", "go", "ngrok", "cloudflared", "lt", "localtunnel", "serve", "http-server", "parallel", "nc", "ncat", "netcat", "socat", "scp", "sftp", "ftp", "tftp", "rclone", "mail", "mailx", "mutt", "sendmail", "telnet", "websocat", "croc", "wormhole", "kubectl", "oc", "export", "declare", "typeset", "readonly",
-  "aria2c"]);
+  "aria2c", "bsdtar"]);
 const known = (p: string) => KNOWN.has(p) || p.startsWith("python");
 
 // What the lines of a here-document are to the command they feed: a shell
@@ -915,6 +946,13 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
   if (passes && !parts.some((s) => s.flow && s.words.length && /^\$(@|\*|1)$/.test(s.words[0]!) && s.words.slice(1).every((a) => /^\$(@|\*|\d)$/.test(a)))) passes = null;
   const lined: number[] = []; // the parts the line's own rules look at again
   const copies = new Map<string, string>(); // the names the line gave a copy of a credential file
+  // The first command of the line that declares a name an integer: its later assignments are evaluated as arithmetic.
+  let firstInteger: number | undefined;
+  // What the line gave its names with a command substitution in the value, gathered once by name as the parts go by
+  // (each part that reads names in arithmetic looks them up), and the values already read as the commands they hold.
+  const gave = new Map<string, string[]>();
+  let gaveTo = 0;
+  const evaluated = new Set<string>();
   const script = (text: string, dir: string | null, out: Risk[], w0: Where = w, sure = true) => {
     if (depth >= DEPTH) { out.push({ rule: "hidden", why: "nests scripts deeper than the rules read" }); return; }
     if (text.length > SCRIPT_MAX) { out.push({ rule: "hidden", why: `runs a nested script of ${text.length} characters, longer than the rules read through: put it in a file` }); return; }
@@ -940,6 +978,51 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       if (f.as !== "shell" || f.long) continue;
     }
     if (run.deep) { at(i).push({ rule: "hidden", why: "starts its command through more wrappers than the rules read" }); continue; }
+    // Arithmetic evaluates the names in it, and a subscript in a name's value runs the command it holds: x='a[$(CMD)]'; echo $(( x )).
+    // The value is read as the command text it is, when the line gave it earlier with the substitution quoted.
+    const lets = name(first) === "let", cond = name(first) === "[[" && s.words.some((a) => /^-(eq|ne|lt|le|gt|ge)$/.test(a));
+    // Where else the shell evaluates text as arithmetic: a substring offset or an array index in an expansion, an index in an
+    // assignment, and the value given to a name declared with -i.
+    const regions: string[] = [];
+    if (lets || cond) regions.push(s.words.slice(1).join(" "));
+    else if (s.text.includes("((")) regions.push(...[...s.text.matchAll(/\(\(([^]*?)\)\)/g)].map((m) => m[1]!));
+    for (const m of s.text.matchAll(/\$\{[!#]?[A-Za-z_][A-Za-z0-9_]*(?:\[([^\]]*)\])?(?::([^-=+?}][^}]*)?)?\}/g)) { if (m[1]) regions.push(m[1]); if (m[2]) regions.push(m[2]); }
+    const ints = (firstInteger ??= parts.findIndex(integerDecl)) >= 0 && firstInteger <= i;
+    for (const word of s.words) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?\+?=(.*)$/s.exec(word);
+      if (!m) continue;
+      if (m[2]) regions.push(m[2]);
+      if (ints) { regions.push(m[3]!); if (/\$\((?!\.\.\.\))|`/.test(m[3]!)) script(`: ${m[3]!}`, dirs[i] ?? null, at(i), w, firm[i] === true); }
+    }
+    // The words a builtin reads as the names it sets or tests (declare, read, printf -v, unset, [ -v ]): a subscript in one is
+    // evaluated, and so is the value a name in one holds.
+    const nameWords: string[] = [];
+    const cn = name(first);
+    if (cn === "printf") { for (const [k, a] of s.words.entries()) { const word = /^-v./.test(a) ? a.slice(2) : s.words[k - 1] === "-v" ? a : ""; if (word) nameWords.push(word); } }
+    else if (NAMERS.test(cn)) {
+      const ref = s.words.some((a) => /^-[A-Za-z]*n/.test(a));
+      for (const a of s.words.slice(1)) { if (a.startsWith("-")) continue; const eq = a.indexOf("="); nameWords.push(ref || eq <= 0 ? a : a.slice(0, eq)); }
+    } else if (cn === "[" || cn === "[[" || cn === "test") for (const [k, a] of s.words.entries()) if ((a === "-v" || a === "-R") && s.words[k + 1] !== undefined) nameWords.push(s.words[k + 1]!);
+    for (const word of nameWords) {
+      if (/\[[^\][]*(\$\(|`)/.test(word)) script(`: ${word}`, dirs[i] ?? null, at(i), w, firm[i] === true);
+      if (word.includes("$")) regions.push(word);
+    }
+    // The old arithmetic form, and an indirect expansion: the name's value is the name expanded.
+    for (const m of s.text.matchAll(/\$\[([^\][]*)\]/g)) regions.push(m[1]!);
+    for (const m of s.text.matchAll(/\$\{!([A-Za-z_][A-Za-z0-9_]*)\}/g)) regions.push(m[1]!);
+    if (regions.length) {
+      // Text in quotes inside the arithmetic is the name it evaluates (`$(( $(echo 'a[$(CMD)]') ))`).
+      for (const r of regions) for (const m of r.matchAll(/'([^']*)'|"([^"]*)"/g)) { const t = m[1] ?? m[2]!; if (SUBSTITUTION.test(t) && !evaluated.has(t)) { evaluated.add(t); script(`: ${t}`, dirs[i] ?? null, at(i), w, firm[i] === true); } }
+      for (; gaveTo <= i; gaveTo++) for (const word of parts[gaveTo]!.words) {
+        const m = /^([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)$/s.exec(word);
+        if (m && SUBSTITUTION.test(m[2]!)) (gave.get(m[1]!) ?? gave.set(m[1]!, []).get(m[1]!)!).push(m[2]!);
+      }
+      if (gave.size) for (const t of new Set(regions.join(" ").match(/(?<![\w.])[A-Za-z_][A-Za-z0-9_]*/g) ?? [])) for (const v of gave.get(t) ?? []) {
+        if (evaluated.has(v)) continue;
+        evaluated.add(v);
+        script(`: ${v}`, dirs[i] ?? null, at(i), w, firm[i] === true);
+      }
+    }
     const spelled = first === undefined || (!s.dyn?.includes(run.at) && !(GLOB.test(first) && first !== "[" && first !== "[["));
     // A function of the line that runs its arguments as a command: a call of it is the command it is given.
     const passed = spelled && passes !== null && first !== undefined && passes.has(first) && run.words.length > 1;
@@ -1074,6 +1157,13 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     } else if (x.p === "git") {
       const given = gitRuns(words);
       if (given) sub(given, dir, out);
+    } else if (x.p === "tar" || x.p === "bsdtar") {
+      // The commands tar runs: on each file it extracts (--to-command, which gets the file on its input), at a checkpoint,
+      // as its compressor, between volumes, or as its remote shell. Each is read as the command it is.
+      for (const c of tarRuns(args)) {
+        if (/^(sh|bash|zsh|dash|ash|ksh|python[0-9.]*|node|perl|ruby)(\s*)$/.test(c.cmd.trim())) out.push({ rule: "hidden", why: `makes tar ${c.how} ${c.cmd.trim()}, which runs the files it is handed as a script` });
+        else sub(c.cmd, dir, out);
+      }
     } else if (x.p === "eval") {
       const dynamic = args.map((_, k) => made(k)).filter((m): m is Made => !!m);
       // The output of one program is that program's to answer for (eval "$(ssh-agent -s)"); text a decoder, a fetcher, echo or a variable carries is not in the command.

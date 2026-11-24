@@ -158,6 +158,14 @@ test("a line of many commands that change folder, write, run elsewhere or delete
     ["echo x > fN", (n) => many(n, (k) => `echo x > f${k}`), [[5_000, true]]],
     ["rm -rf dN", (n) => many(n, (k) => `rm -rf d${k}`), [[4_000, true], [5_000, true]]],
     ["rm -rf with N paths", (n) => `rm -rf ${many(n, (k) => `d${k}`, " ")}`, [[5_000, true]]],
+    // (A name's value that holds a substitution is read once for the line: one part after another that reads names does not read the parts before it again.)
+    ["xN='$(echo N)'; (( xN ))", (n) => many(n, (k) => `x${k}='$(echo ${k})'; (( x${k} ))`), [[2_000, false]]],
+    ["many vN='a[$(..)]' then (( vN ))", (n) => `${many(n, (k) => `v${k}='a[$(echo ${k})]'`)}; ${many(n, (k) => `(( v${k} ))`)}`, [[1_500, false]]],
+    ["many vN='a[$(..)]' then echo $(( y ))", (n) => `${many(n, (k) => `v${k}='a[$(echo ${k})]'`)}; ${many(n, () => "echo $(( y ))")}`, [[1_500, false]]],
+    ["let \"y=N\"", (n) => many(n, (k) => `let "y=${k}"`), [[2_000, false]]],
+    ["${a[N]}", (n) => many(n, (k) => `echo \${a[${k}]}`), [[2_000, false]]],
+    ["[[ $x -eq N ]]", (n) => `x='a[$(echo 1)]'; ${many(n, (k) => `[[ $x -eq ${k} ]]`)}`, [[2_000, false]]],
+    ["read xN, ${!xN}, [ -v xN ]", (n) => `x='a[$(echo 1)]'; ${many(n, () => 'read "$x" < /dev/null; echo ${!x}; [ -v "$x" ]')}`, [[1_000, false]]],
     ["mv dN dN+1, then rm", (n) => `${many(n, (k) => `mv d${k} d${k + 1}`)}; rm -rf d${n}`, [[4_000, true]]],
   ];
   const best = (command: string, mode: "ask" | "full-auto") => {

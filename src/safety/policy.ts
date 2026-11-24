@@ -426,6 +426,19 @@ function applied(p: Simple, run: string[]): { kind: "patch" | "archive"; file?: 
   const file = f >= 0 ? rest[f + 1] : rest.find((a) => a.startsWith("--file="))?.slice(7);
   return { kind: "archive", file: file === "-" ? undefined : file, into: c >= 0 ? rest[c + 1] ?? "." : rest.find((a) => a.startsWith("--directory="))?.slice(12) ?? "." };
 }
+// Whether a command can put into a file what the line does not hold: a fetcher or a remote copy, a copy or a move from outside
+// the session's folder, a program the rules do not know. A program that makes an archive from files it is given, a pack or a
+// compress, brings only what the session's folder holds.
+const LOCAL_MAKERS = new Set(["tar", "bsdtar", "zip", "gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "zstd", "unzstd", "7z", "7za", "7zr", "lz4", "cpio", "ar", "touch", "mkdir", "rm", "echo", "printf", "ls", "cat", "true", "test", "sha256sum", "md5sum", "stat", "file", "chmod"]);
+function bringsContent(run: string[], at: string, workspace: string, home: string): boolean {
+  const name = (run[0] ?? "").replace(/^.*\//, "");
+  if (LOCAL_MAKERS.has(name)) return false;
+  if (/^(cp|mv|install|ln)$/.test(name)) {
+    const words = run.slice(1).filter((w) => !w.startsWith("-"));
+    return words.slice(0, -1).some((w) => { const p = /[$`*?]/.test(w) ? null : spelled(w, at, home); return p === null || !contains(workspace, p); });
+  }
+  return true;
+}
 const LANDS = new Set(["cp", "install", "mv", "rsync", "scp", "ln", "tar", "bsdtar", "unzip", "git", "patch", "node", "nodejs", "bun", "deno", "perl", "ruby", "php"]);
 // A folder that holds folders of files that run later: something moved or copied under its name brings them.
 const HOLDS_RUNS_LATER = /(^|\/)\.(github|gitlab|circleci|buildkite|forgejo|gitea|woodpecker|tekton|husky|githooks|keel|claude|codex|gemini|vscode|azure-pipelines|semaphore|teamcity|git)$/;
@@ -978,7 +991,11 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
         const what = a.kind === "patch" ? "applies a patch" : "unpacks an archive";
         const file = a.file === undefined || /[$`*?]/.test(a.file) ? null : isAbsolute(a.file) ? a.file : resolve(at!, a.file);
         // One that is not there unpacks nothing; one that is there and cannot be read is not known.
-        const files = file === null ? null : f.looked.exists(file) === "none" ? [] : f.looked.targets(a.kind, file);
+        // (A file an earlier command of the line names may be fetched or copied there: what is on the disk now is not what it
+        // holds then. A command that only makes it from the session's own files, a tar create or a zip, brings nothing the line cannot know.
+        // Unpacked inside the session's folder the archive keeps the verdict it has with no earlier command: the row held what lands in the home.)
+        const later = a.file !== undefined && !contains(f.workspace, into) && parts.slice(0, i).some((q, j) => !q.heredoc && q.words.some((w) => w === a.file || baseName(w) === baseName(a.file!)) && !isReadOnly(q) && bringsContent(pre.runs[j]?.words ?? q.words, pre.dirs[j] ?? at!, f.workspace, home));
+        const files = file === null || later ? null : f.looked.exists(file) === "none" ? [] : f.looked.targets(a.kind, file);
         if (!files) return unread(`${what} the rules could not read${a.file ? ` (${a.file})` : ""}`);
         for (const t of files) { const o = ownerOnlyNamed(join(a.into, t), at!, f, "writes", sureWord(a.into)); if (o) return owners(o); }
       }
