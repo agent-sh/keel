@@ -215,4 +215,3 @@ export function scanFiles(ask: FilesAsk): FilesResult {
   }
   return { findings, counts, truncated };
 }
-

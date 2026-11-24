@@ -122,8 +122,10 @@ test("a successor is not started on a route out of credit: it starts on the next
     other = (await api("/api/sessions", { model: PARENT, title: "Out of credit", text: "script:billing" })).session.id;
     await expect.poll(async () => ((await api(`/api/sessions/${other}`)).events as any[]).some((e) => e.kind === "error" && /credit balance/.test(String(e.data.message))), { timeout: 30_000 }).toBe(true);
     // The parent's route is marked under its provider, for a time.
-    const marked = ((await api("/api/providers")).providers as any[]).find((p) => p.id === "scripted")?.routes?.find((r: any) => r.route === PARENT);
-    expect(marked?.kind).toBe("billing");
+    // (The mark is noted when the refused request ends, which can come a moment after its error event.)
+    const routeMark = async () => ((await api("/api/providers")).providers as any[]).find((p) => p.id === "scripted")?.routes?.find((r: any) => r.route === PARENT);
+    await expect.poll(async () => (await routeMark())?.kind, { timeout: 15_000 }).toBe("billing");
+    const marked = await routeMark();
     expect(marked.open).toBe(false);
     expect(marked.until).toBeGreaterThan(Date.now());
     writeFileSync(go, "go\n");
