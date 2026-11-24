@@ -336,6 +336,8 @@
 .k-row[data-watch="done"]:not([aria-current]) > .k-mark { background: var(--st-idle); transform: scale(0.7); }
 .k-row .k-unread-dot { width: 0.375rem; height: 0.375rem; background: var(--accent-ink); }
 .k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"], [data-gone]) .k-unread-dot { display: none; }
+/* The row's end holds one kind of thing: a row at work or waiting keeps its clock, and the dot of news comes back when it rests. */
+.k-row:has(.k-row-time[data-live]) .k-unread-dot { display: none; }
 /* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
 .k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1.25rem; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); font-weight: 500; }

@@ -236,6 +236,22 @@ test("a row red for its agents says how many failed, and a calm list says a time
     await expect(row(page, two).getByTestId("unread-dot")).toBeVisible();
     await expect(row(page, two).getByTestId("row-time")).toBeHidden();
     await expect(row(page, two).getByTestId("row-time")).toHaveAttribute("title", /\d/);
+    // A row at work with news keeps its clock alone: the right column holds one kind of thing in every state
+    // (a word for who it waits on, the clock of a step, a time, or the dot of news).
+    const busy = await make("Rest bar: at work with news", "script:say Done.");
+    await expect(row(page, busy)).toHaveAttribute("data-watch", "done", { timeout: 30_000 });
+    await request.post(`/api/sessions/${busy}/messages`, { data: { text: `script:hold ${gate()}/never` } });
+    await expect(row(page, busy)).toHaveAttribute("data-watch", "work", { timeout: 30_000 });
+    expect((await request.post(`/api/sessions/${busy}/marks`, { data: { unread: true } })).ok()).toBe(true);
+    await expect(row(page, busy)).toHaveAttribute("data-unread", "true");
+    await expect(row(page, busy).getByTestId("row-time")).toHaveAttribute("data-live", "true");
+    const kinds = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="session-row"]')].map((r) => ({
+      id: r.dataset.session!, watch: r.dataset.watch,
+      kinds: [...r.querySelectorAll<HTMLElement>('.k-row-end [data-testid="row-time"], .k-row-end [data-testid="row-on"], .k-row-end [data-testid="row-class"], .k-row-end [data-testid="unread-dot"]')].filter((e) => { const b = e.getBoundingClientRect(); return getComputedStyle(e).display !== "none" && b.width > 0; }).map((e) => e.dataset.testid),
+    })));
+    await expect.poll(async () => (await kinds()).filter((r) => r.kinds.length > 1)).toEqual([]);
+    expect((await kinds()).find((r) => r.id === busy)!.kinds).toEqual(["row-time"]);
+    expect((await kinds()).find((r) => r.id === coord)!.kinds).toHaveLength(1);
     await shoot(page, "rest-bar-04-rows");
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);
