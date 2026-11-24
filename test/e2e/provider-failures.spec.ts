@@ -31,7 +31,8 @@ test("a burst of overloaded answers longer than the retries is waited out and is
     expect(events.filter((e) => e.kind === "error").map((e) => e.data.message)).toEqual([]);
     expect(events.filter((e) => e.kind === "assistant").at(-1)?.data.blocks.find((b: any) => b.type === "text")?.text).toBe("Answered after the burst passed.");
     const rows = ((await (await request.get(`/api/errors?session=${session.id}`)).json()).errors as any[]).filter((r) => /unable to process/.test(r.message));
-    expect(rows.map((r) => r.count)).toEqual([12]);
+    // One row for the cause; another spec of the run may have added to its total, so the burst is read at its site.
+    expect(rows.map((r) => r.sites.filter((x: any) => x.session_id === session.id).map((x: any) => x.count))).toEqual([[12]]);
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
   }
