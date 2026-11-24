@@ -164,6 +164,7 @@ export function judgePrompt(a: ReviewAsk, asked: Asked, policy?: string): JudgeT
     a.high?.facts ? `Facts:\n${a.high.facts}` : "",
     a.settled ? a.settled : "",
     a.own ? a.own : "",
+    a.provenance ? a.provenance : "",
     `The action: tool ${a.tool} (${a.kind})\n${a.mode === "auto" ? a.summary : a.summary.slice(0, REVIEW_SUMMARY_LIMIT)}`,
     a.mode === "auto" ? `Its ${a.interpreter ? "options" : "input"}: ${JSON.stringify(a.input ?? {})}` :
       a.kind === "other" ? `Its input: ${JSON.stringify(a.input ?? {}).slice(0, REVIEW_INPUT_LIMIT)}` : "",

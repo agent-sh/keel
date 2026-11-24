@@ -284,6 +284,16 @@ under `~/.cache/keel-work/bun/research/`.
   removal: what else is new in its repositories since it started is only listed, with what is in it, in
   its report and on Settings > Leftovers (and `keel leftovers`). There the owner removes an item, or all
   that lose nothing at once; each act names the item as it was listed and is refused when it changed since.
+- A target that outside content named first is held. A host, an email address, a git remote or a branch name is
+  kept per session with where it first appeared (`src/safety/provenance.ts`, read from the stored events;
+  `src/safety/provenance-books.ts` for the sessions above, the agents below and the repository). Outside content is
+  a page, an MCP server's answer (every server but Keel's own until servers are classed), the output of curl,
+  wget or gh, a channel event, an imported transcript, and an agent's report when that agent read any of these;
+  a search result lists an address (a page fetch to it goes on). A call that sends to such a target (a fetch, a
+  push, curl, ssh, scp, mail, an MCP tool that does not only read) asks the owner in every mode, a hook's or a
+  grant's allow included, and its card says where the target first appeared; an agent is refused with the same
+  words. A target the owner typed, one the repository held before the session, one the model's own call named
+  first, or one the owner allowed on a card is not held. The judge's input carries the same fact.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

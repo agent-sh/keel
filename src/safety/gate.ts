@@ -35,6 +35,8 @@ import { AddressBook, addressOf, dataIn, groupOf, sendShown, wholeOf, type WebUs
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
+import { Provenance } from "./provenance-books.ts";
+import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, type Hit, type Reach } from "./provenance.ts";
 import { ownerDenial } from "../core/stops.ts";
 // What a card a hook asked for says before the hook's reason.
 export const HOOK_ASKS = "A hook of yours asks";
@@ -191,7 +193,7 @@ export const REVIEW_SUMMARY_LIMIT = 4000;
 export const REVIEW_INPUT_LIMIT = 2000;
 // `own`: the session's own folders as the judge reads them (own-places.ts); `settled`: what Keel's facts settled of
 // why the rules flagged the call, when it is judged as an ordinary call after that.
-export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; interpreter?: string; high?: { why: string; facts?: string }; own?: string; settled?: string };
+export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; interpreter?: string; high?: { why: string; facts?: string }; own?: string; settled?: string; provenance?: string };
 export type Verdict = { allow: boolean; risk: string; reason: string; model: string; ms?: number } | { unavailable: string };
 // A call refused without the owner (the judge's refusal, a judge that could
 // not answer, a repeat); the owner can let one retry of it through.
@@ -223,8 +225,10 @@ type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: 
 // own forms, which the full-auto rules can settle.
 // `own`: in Auto, the session's own folders (own-places.ts): the ones its parent's task or the owner named are read as
 // its scratch, and the judge is told all of them.
-type CallFacts = { real?: (program: string) => boolean; looked?: Looked; settles?: boolean; own?: OwnPlace[] };
+type CallFacts = { real?: (program: string) => boolean; looked?: Looked; settles?: boolean; own?: OwnPlace[]; provenance?: string };
 const FROM_PARENT = "Message from the session that started you:\n";
+// A shell line is read for the places it sends to only when it holds one of the programs that send.
+const SENDS = /\b(curl|wget|https?|xhs?|aria2c|lynx|w3m|links|elinks|nc|ncat|netcat|telnet|socat|ssh|scp|sftp|rsync|ftp|lftp|mosh|rclone|mail|mailx|mutt|neomutt|sendmail|msmtp|swaks|mailsend|s-nail|mpack|ssmtp|git)\b/;
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
 type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
 type AutoShell = { path: string; identity: string; interpreter: string };
@@ -376,6 +380,50 @@ export class Gate {
   webUse: (name: string, dispatched?: boolean) => WebUse | undefined = () => undefined;
   // The addresses each session has seen, read from its events as they come (one book a session, kept while the daemon runs).
   private books = new Map<string, AddressBook>();
+  // Where each target first appeared in a session, and which the owner has answered for (src/safety/provenance.ts).
+  private provenance: Provenance;
+
+  // Whether what a call brings back is outside content, and how a card names it: a page or a search result, an MCP
+  // server's answer (any server but Keel's own), the output of curl, wget or gh.
+  private outsideSource(name: string, input: any): { listed?: boolean; where: string } | undefined {
+    const web = this.webCall(name, input);
+    if (web) return { ...("search" in web.use ? { listed: true } : {}), where: `a ${name} result` };
+    const tool = name === "mcp_call" ? String(input?.tool ?? "") : name;
+    const server = serverOf(tool);
+    if (server && !OWN_SERVERS.has(server)) return { where: `a ${tool} result` };
+    const cmd = typeof input?.command === "string" ? input.command : typeof input?.cmd === "string" ? input.cmd : undefined;
+    const prog = cmd ? outsideCommand(cmd) : null;
+    return prog ? { where: `a ${name} result (${prog} output)` } : undefined;
+  }
+
+  // The targets a call sends to that first appeared in outside content (src/safety/provenance.ts): a page fetch to a
+  // host, a push to a remote or branch, curl, ssh, scp, mail, an MCP tool that is not read-only given an address.
+  // (A call that names no target goes on in the same tick: it is answered at once, not as a promise.)
+  private heldTargets(session: Session, call: ToolCall, target: Target, raw: CallClass): { hits: Hit[]; ids: string[] } | Promise<{ hits: Hit[]; ids: string[] }> {
+    const none = { hits: [] as Hit[], ids: [] as string[] };
+    const name = target?.name ?? call.tool.name;
+    const dir = cwdOf(call) ?? call.ctx.cwd;
+    let reaches: Reach[] = [];
+    if (raw.kind === "read" && raw.fetches?.length) reaches = fetchReaches(raw.fetches);
+    else if (raw.kind === "send") reaches = fetchReaches(raw.to).map((r) => ({ ...r, how: "send" as const }));
+    else if (raw.kind === "shell") {
+      if (!SENDS.test(raw.command)) return none;
+      const remoteUrl = (n: string, d: string) => session.machine ? undefined : lookRepo(d)?.remotes[n];
+      reaches = shellReaches(raw.command, { cwd: raw.cwd ?? dir, remoteUrl });
+    } else if (raw.kind === "other") {
+      const server = serverOf(name);
+      if (server && !OWN_SERVERS.has(server)) reaches = inputTargets(target ? target.input : call.input).map((t) => ({ target: t, how: "send" as const }));
+    }
+    if (!reaches.length) return none;
+    return this.provenance.hits(session, reaches, session.machine ? null : (raw.kind === "shell" ? raw.cwd ?? dir : dir));
+  }
+
+  // What the judge is told of a call whose targets outside content named first (not only the sends).
+  private async provenanceFact(session: Session, cls: CallClass, input: unknown, summary: string): Promise<string | undefined> {
+    if (cls.kind === "read" || cls.kind === "control") return undefined;
+    const hits = await this.provenance.soft(session, summary, input);
+    return hits.length ? judgeFact(hits, Date.now()) : undefined;
+  }
 
   // What a session has seen of the web: whether it has seen an address (in its own events or a parent session's: the
   // owner's words reach an agent through its parent) and what an unseen one carries. Each book reads only the
@@ -426,6 +474,7 @@ export class Gate {
   }
 
   constructor(private store: Store, private bus: Bus, private sandboxed: (s: Session, p: SessionPerm) => boolean = () => false) {
+    this.provenance = new Provenance(store, (name, input) => this.outsideSource(name, input));
     store.migrate(SCHEMA);
     store.migrate("CREATE TABLE IF NOT EXISTS session_roots (session_id TEXT NOT NULL, workspace TEXT NOT NULL, real TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (session_id, workspace))");
     // (Pinned when the session is made; one made before this was here, at its first sight.)
@@ -1468,6 +1517,9 @@ export class Gate {
     }) : undefined;
     const asJudged = (c: CallClass) => sentAs(c, fresh);
     const cls = asJudged(raw);
+    // A target that first appeared in outside content (a page, an issue, a tool server's answer) is held in every mode.
+    const prov = this.heldTargets(session, call, target, raw);
+    const provHeld = prov instanceof Promise ? await prov : prov;
     // (Only an agent with a scope waits for it: every other call goes on in the same tick, as before.)
     if (!session.machine && scopes.of?.(session.id)) {
       const r = this.scopeRefusal(session, call, cls);
@@ -1554,6 +1606,18 @@ export class Gate {
     if (checkShell && (cls.kind !== "shell" || !shell || shell.command !== cls.command || !dir))
       return { deny: 'Refused: Auto cannot verify this shell invocation. Use a supported local non-login Bash command (for exec_command, shell: "bash" and login: false), or use Ask.' };
     const invocation = dir && shell ? { ...dir, interpreter: shell.interpreter } : undefined;
+    // The owner decides what goes to a target outside content named (in every mode, a hook's or a grant's allow
+    // included): their card says where it came from. An agent is refused, and says why to its parent.
+    if (provHeld.hits.length) {
+      const now = Date.now();
+      if (session.parent_id) return { deny: provRefusal(provHeld.hits, now) };
+      const why = [provReason(provHeld.hits, now), "ask" in d ? d.ask.why : undefined].filter(Boolean).join("; and ");
+      const out = await this.askOnce(session, call, name, why);
+      if (out) return out;
+      // Answered: the owner has said these targets (they are theirs from here on in this session).
+      this.provenance.clear(provHeld.ids, provHeld.hits);
+      return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
+    }
     if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     if (cls.kind === "control") return { cls };
     if (mode !== "auto" && cls.kind === "shell" && call.tool.answeredBefore && this.takeAnswered(session.id, cls.command)) return { cls };
@@ -1585,7 +1649,7 @@ export class Gate {
     if (mode === "reviewer" && d.ask.risk === "low" && !readWhole(cls, target ? target.input : call.input)) notice = "Too long for the reviewer to read whole. The owner answers this one.";
     else if (mode === "reviewer" && d.ask.risk === "low") {
       if (this.retries.delete(`${session.id}\u0000${key}`)) return { cls };
-      const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
+      const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input), provenance: await this.provenanceFact(session, cls, call.input, summary) });
       const record = (decision: "allow" | "deny", blocked_id?: string) => "unavailable" in v ? undefined
         : this.verdict({ session_id: session.id, tool: name, by: "reviewer", decision, class: "ordinary", place: "unknown", risk: v.risk, model: v.model, shape: shapeOf(name, summary), blocked_id });
       if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
@@ -1735,7 +1799,7 @@ export class Gate {
     const accounts = high && cls.kind === "shell" ? accountContext(cls.command, cwd, this.checking.get(callKey(session.id, call.id))?.looked, accountNames()) : "";
     const facts = repo === undefined ? undefined : accounts ? `${repo}\n${accounts}` : repo;
     const own = places.length ? ownFacts(places) : undefined;
-    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined, own, settled });
+    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined, own, settled, provenance: await this.provenanceFact(session, cls, auto ? auto.input : call.input, summary) });
     if (auto && !await auto.valid()) return changedReview;
     if ("unavailable" in v) {
       const b = this.block({ ...base, calls: [call.id], reason: `The judge could not review it: ${v.unavailable}`, risk: "unknown", model: "", key, by: "unavailable" });
