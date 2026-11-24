@@ -24,7 +24,9 @@
 // outside host named only in GitHub text (src/safety/provenance.ts, kind
 // "steward" is outside); and an alias already in the owner's own git or gh
 // configuration is not read (git cannot shadow a built-in with one, and gh
-// aliases are refused to be set here, not unwound).
+// aliases are refused to be set here, not unwound); hooks, merge drivers and
+// filters that files of the repository or the owner's configuration set run
+// when git does and are not read.
 import { resolve } from "node:path";
 import { contains } from "../core/paths.ts";
 import { gitCall, pushPlan } from "../safety/autonomy.ts";
@@ -50,19 +52,35 @@ function words(s: Simple): string[] { return unwrap(s.words).words; }
 // Flags of gh's pr, issue and run commands that take a value: the word after one is not a target.
 const VALUED = new Set(["-b", "--body", "-F", "--body-file", "-t", "--title", "-q", "--jq", "--json", "-H", "--header", "-m", "--message", "--template", "-B", "--base", "-j", "--job", "-l", "--label", "--assignee", "-A", "--author", "-s", "--state", "-L", "--limit", "-S", "--search", "--hostname"]);
 
-// The words of a gh command that are not options or their values, and the repository it names (-R/--repo take a value).
-function ghWords(args: string[]): { group?: string; verb?: string; target?: string; repo?: string } {
+// The short flags of gh's pr, issue and run commands that take a value (a cluster of short flags ends at one).
+const SHORT_VALUED = new Set([...VALUED].filter((f) => /^-[A-Za-z]$/.test(f)).map((f) => f[1]!));
+
+// The words of a gh command that are not options or their values, and the repositories it names: -R and --repo take a
+// value, attached or not (`-Rowner/repo`, `-R=owner/repo`, `-wR owner/repo`, `--repo=owner/repo`).
+function ghWords(args: string[]): { group?: string; verb?: string; target?: string; repo?: string; repos: string[]; all: string[] } {
   const out: string[] = [];
-  let repo: string | undefined;
+  const repos: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "-R" || a === "--repo") { repo = args[++i]; continue; }
-    if (a.startsWith("--repo=")) { repo = a.slice(7); continue; }
+    if (a === "--repo") { repos.push(args[++i] ?? ""); continue; }
+    if (a.startsWith("--repo=")) { repos.push(a.slice(7)); continue; }
     if (VALUED.has(a)) { i++; continue; }
+    if (/^-[A-Za-z]/.test(a) && !a.startsWith("--")) {
+      // A cluster of short flags: the first one that takes a value takes the rest of the word (or the next word).
+      for (let k = 1; k < a.length; k++) {
+        const c = a[k]!;
+        if (c !== "R" && !SHORT_VALUED.has(c)) continue;
+        const rest = a.slice(k + 1).replace(/^=/, "");
+        const v = rest || args[++i] || "";
+        if (c === "R") repos.push(v);
+        break;
+      }
+      continue;
+    }
     if (a.startsWith("-")) continue;
     out.push(a);
   }
-  return { group: out[0], verb: out[1], target: out[2], repo };
+  return { group: out[0], verb: out[1], target: out[2], repo: repos[0], repos, all: out };
 }
 
 // A pull request or issue named by a word of a command: a number, #N, a URL, owner/repo#N or a branch.
@@ -77,12 +95,8 @@ function targetOf(word: string): { repo?: string; number?: number; branch?: stri
 }
 
 // Every word that names a repository (a URL, owner/repo#N) must name this one.
-function namesOther(args: string[], g: Guard): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]!;
-    if (VALUED.has(a)) { i++; continue; }
-    if (a === "-R" || a === "--repo") { i++; continue; }
-    if (a.startsWith("-")) continue;
+function namesOther(words: string[], g: Guard): string | undefined {
+  for (const a of words) {
     const t = targetOf(a);
     if (t.repo && t.repo.toLowerCase() !== g.repo.toLowerCase()) return t.repo;
   }
@@ -145,7 +159,7 @@ function apiRefusal(args: string[], g: Guard): string | null {
 }
 
 function ghRefusal(s: Simple, args: string[], g: Guard): string | null {
-  const { group, verb, target, repo } = ghWords(args);
+  const { group, verb, target, repos, all } = ghWords(args);
   const text = args.join(" ");
   // A word made by an expansion where the group or the verb stands: not known, so not allowed. gh api's endpoint too.
   if (s.dyn?.length && (s.dyn.some((i) => i <= 3) || group === "api")) return why("run a gh command it cannot read here", g);
@@ -155,9 +169,9 @@ function ghRefusal(s: Simple, args: string[], g: Guard): string | null {
   if (group === "pr" && verb === "edit" && /auto-?merge/i.test(text)) return why("turn on auto-merge", g);
   if ((group === "api" || group === "graphql") && MERGE_API.test(text)) return why("merge, auto-merge or approve through the API", g);
   if (group === "api" && REVIEW_API.test(text) && /\bAPPROVE\b/i.test(text)) return why("approve the pull request", g);
-  if (repo && repo.toLowerCase() !== g.repo.toLowerCase()) return why(`act on ${repo}: this turn belongs to ${g.repo}`, g);
+  for (const repo of repos) if (repo.toLowerCase() !== g.repo.toLowerCase()) return why(`act on ${repo || "another repository"}: this turn belongs to ${g.repo}`, g);
   if (group !== "api") {
-    const other = namesOther(args, g);
+    const other = namesOther(all, g);
     if (other) return why(`act on ${other}: this turn belongs to ${g.repo}`, g);
     // Saying something is for this pull request only (an issue of the same number is the same thread).
     if ((group === "pr" && (verb === "comment" || verb === "review")) || (group === "issue" && verb === "comment")) {
@@ -180,7 +194,38 @@ function ghRefusal(s: Simple, args: string[], g: Guard): string | null {
 // subtree, lfs, http-push, submodule, remote, config, worktree, symbolic-ref, update-ref ...).
 const GIT_ALLOWED = new Set(["status", "diff", "log", "show", "add", "commit", "push", "fetch", "pull", "rebase", "merge", "restore", "stash", "rev-parse", "rev-list", "branch", "checkout", "switch", "reset", "cherry-pick", "revert", "blame", "ls-files", "ls-tree", "cat-file", "show-ref", "merge-base", "diff-tree", "diff-index", "for-each-ref", "describe", "name-rev", "shortlog", "grep", "apply", "mv", "rm", "clean", "tag", "reflog", "help", "version", "whatchanged", "range-diff", "count-objects", "check-ignore", "merge-file"]);
 // An option that runs a command, in any subcommand that takes it.
-const GIT_RUNS = /^(--exec(=.*)?|--upload-pack(=.*)?|--receive-pack(=.*)?|--open-files-in-pager(=.*)?|-O.+|--ext-diff|--textconv|--tool(=.*)?|--extcmd(=.*)?)$/;
+// git takes any unambiguous prefix of a long option (`--exe`, `--ex=`), so a name that starts one of these is one of them.
+const RUNS_NAMES = ["exec", "upload-pack", "receive-pack", "open-files-in-pager", "ext-diff", "textconv", "tool", "extcmd"];
+function runsCommand(a: string): boolean {
+  if (/^-O./.test(a)) return true;
+  const m = a.match(/^--([A-Za-z][A-Za-z-]*)(=.*)?$/s);
+  return !!m && RUNS_NAMES.some((n) => n.startsWith(m[1]!.toLowerCase()));
+}
+// The remote of a branch's upstream or a start point: only origin is this turn's.
+const originRef = (v: string | undefined) => v !== undefined && v.startsWith("origin/");
+// `git branch -u X`, `--set-upstream-to[=]X` (or a prefix of it): where the branch's plain push and pull go from now on.
+function upstreamTarget(args: string[]): string | undefined | null {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    const lo = a.match(/^--([A-Za-z][A-Za-z-]*)(=(.*))?$/s);
+    if (lo && "set-upstream-to".startsWith(lo[1]!.toLowerCase()) && lo[1]!.length >= 2) return lo[2] !== undefined ? lo[3] : (args[i + 1] ?? undefined);
+    if (lo && "set-upstream".startsWith(lo[1]!.toLowerCase()) && lo[1]!.length >= 2) return lo[2] !== undefined ? lo[3] : (args[i + 1] ?? undefined);
+    if (/^-[A-Za-z]*u/.test(a) && !a.startsWith("--")) { const rest = a.slice(a.indexOf("u") + 1); return rest || args[i + 1] || undefined; }
+  }
+  return null;
+}
+// The words of a push that are not options (the remote, then refspecs).
+function positional(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--") { out.push(...args.slice(i + 1)); break; }
+    if (a === "-o" || a === "--push-option") { i++; continue; }
+    if (a.startsWith("-") && a !== "-") continue;
+    out.push(a);
+  }
+  return out;
+}
 const GIT_MOVES = new Set(["checkout", "switch", "branch", "reset"]);
 const ENV_SET = /^(GIT_[A-Za-z_]+|GH_REPO|GH_HOST|GH_TOKEN|GH_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_PATH|GITHUB_TOKEN|GITHUB_ENTERPRISE_TOKEN)=/;
 
@@ -210,14 +255,24 @@ function part(s: Simple, g: Guard, depth: number, seen: Seen): string | null {
     if (c.dir !== base && !(g.dir !== undefined && c.dir !== null && contains(g.dir, c.dir))) return why("run git in another folder (-C)", g);
     if (!GIT_ALLOWED.has(c.sub)) return why(`run git ${c.sub}: it may run another command or change where the work goes`, g);
     // rebase and difftool run what -x/--exec names (-x may stand in a cluster of short options).
-    if (c.args.some((a) => GIT_RUNS.test(a) || (c.sub === "rebase" && /^-[a-zA-Z]*x/.test(a)))) return why(`run git ${c.sub} with an option that runs a command`, g);
+    if (c.args.some((a) => runsCommand(a) || (c.sub === "rebase" && /^-[a-zA-Z]*x/.test(a)))) return why(`run git ${c.sub} with an option that runs a command`, g);
     if (GIT_MOVES.has(c.sub) || (c.sub === "rebase" && c.args.filter((a) => !a.startsWith("-")).length >= 2)) seen.moves++;
+    if (c.sub === "branch") {
+      const to = upstreamTarget(c.args);
+      if (to !== null && !originRef(to)) return why(`set the upstream of a branch to ${to || "something it cannot read here"}: this turn pushes and pulls through origin`, g);
+    }
     if (c.sub !== "push") return null;
     seen.pushes++;
     if (g.head === undefined) return why("push from here: a helper of this turn does not push", g);
     const here = g.head();
     if (!here) return why("push: it cannot tell which branch the worktree is on", g);
     if (here !== g.branch) return why(`push from ${here}: the worktree must be on ${g.branch}`, g);
+    // A push that names no remote goes where the branch's upstream says; one whose upstream is not on origin names its place.
+    const up = g.upstream?.();
+    if (up && !originRef(up)) {
+      const pos = positional(c.args);
+      if (pos.length < 2) return why(`push with no remote and branch named: the branch follows ${up}, not origin (say \`git push origin ${g.branch}\`)`, g);
+    }
     const plan = pushPlan(c.args, { branch: here, upstream: g.upstream?.() ?? `origin/${g.branch}`, remotes: { origin: "" } });
     if (!plan) return why("push in a form it cannot read here", g);
     if (plan.wide) return why(`push with ${plan.wide}`, g);

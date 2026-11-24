@@ -125,3 +125,28 @@ test("a tool's name is read as words: merge and approve on any server, repositor
   }
   for (const t of ["mcp__acme__get_pull_request", "mcp__acme__listBranches".replace("listBranches", "list_branches"), "mcp__acme__search_commits", "mcp__acme__add_issue_comment", "mcp__build__run_tests", "mcp__fs__read_text_file", "mcp__github__get_file_contents", "mcp__merge_queue__get_status"]) expect(tool(t), t).toBeNull();
 });
+
+test("git takes a prefix of a long option, so a prefix of one that runs a command is refused too", () => {
+  for (const c of ["git rebase --exe 'gh pr merge 3' main", "git rebase --ex='gh pr merge 3' main", "git rebase -i --e 'x' main", "git fetch --upload-p=x origin", "git pull --upload-pa x origin", "git push --receive-p=x origin", "git grep --open-files-in-p=x y", "git diff --ext-d", "git diff --textc", "git log --too=x", "git diff --extc=x"]) {
+    expect(refused(c), c).toContain("Refused: this turn belongs to PR Steward");
+  }
+  for (const c of ["git rebase --continue", "git rebase --abort", "git log --oneline --stat", "git diff --stat --name-only", "git pull --rebase origin main", "git fetch --prune origin", "git commit --amend --no-edit", "git rebase --autostash origin/main"]) expect(refused(c), c).toBeNull();
+});
+
+test("-R names the repository whether it is attached, joined with =, or in a cluster of flags", () => {
+  for (const c of ["gh pr comment 12 -Rother/repo -b x", "gh issue comment 12 -Rother/repo", "gh run rerun 5 -Rother/repo", "gh pr comment 12 -R=other/repo -b x", "gh run rerun 5 -R=other/repo", "gh pr view 12 -wR other/repo", "gh pr view 12 -R", "gh pr comment 12 --repo=other/repo -b x", "gh pr comment 12 --repo other/repo -b x"]) {
+    expect(refused(c), c).toContain("Refused: this turn belongs to PR Steward");
+  }
+  for (const c of ["gh pr comment 12 -Ra/b -b x", "gh pr comment 12 -R=A/B -b x", "gh run rerun 5 -R a/b", "gh pr comment 12 -bRother/repo", "gh pr view 12 -wR a/b"]) expect(refused(c), c).toBeNull();
+});
+
+test("a push that names no remote follows the upstream, so an upstream away from origin is refused", () => {
+  const away = { upstream: () => "other/x" as string | undefined };
+  for (const c of ["git push", "git push origin", `git push -u origin`, "git push -o x"]) expect(refused(c, away), c).toContain("Refused: this turn belongs to PR Steward");
+  for (const c of [`git push origin ${B}`, "git push origin HEAD", `git push -u origin HEAD:${B}`]) expect(refused(c, away), c).toBeNull();
+  expect(refused("git push", { upstream: () => `origin/${B}` })).toBeNull();
+  expect(refused("git push", { upstream: () => "main" })).toContain("Refused");
+  // And the upstream is not set away from origin.
+  for (const c of ["git branch -u other/x", "git branch -uother/x", "git branch --set-upstream-to=other/x", "git branch --set-upstream-to other/x", "git branch --set-up=other/x", "git branch -u main", "git branch -u"]) expect(refused(c), c).toContain("Refused");
+  for (const c of [`git branch -u origin/${B}`, "git branch --set-upstream-to=origin/x", "git branch --unset-upstream", "git branch -a", "git branch --show-current"]) expect(refused(c), c).toBeNull();
+});
