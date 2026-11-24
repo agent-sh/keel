@@ -146,6 +146,23 @@ test("a set cap rests below the permission mode in the bar once half of it is sp
       }
       await shoot(page, `cap-03-bar-${width}`);
     }
+    // (A cap is whole cents: the nearest cent from below puts the share between half and all of it.)
+    // Raise from past half: the share falls under half, and the chip that came to rest stays in the bar with its popup open, on the new figure.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${session.id}`);
+    await request.put(`/api/sessions/${session.id}/cap`, { data: { usd: Math.max(0.01, Math.floor((await cap())!.spent * 200) / 100) } });
+    const resting = header.getByTestId("cap-chip");
+    await expect(resting).toBeVisible();
+    const before = (await cap())!.pct;
+    expect(before).toBeGreaterThanOrEqual(0.5);
+    await resting.click();
+    await expect(page.getByTestId("cap-popup")).toBeVisible();
+    await page.getByTestId("cap-raise").click();
+    await expect.poll(async () => (await cap())!.pct).toBeLessThan(0.5);
+    await expect(page.getByTestId("cap-spent")).toContainText(`(${Math.floor((await cap())!.pct * 100)}%)`);
+    await expect(page.getByTestId("cap-popup")).toBeVisible();
+    await expect(resting).toBeVisible();
+    await shoot(page, "cap-04-raised-under-half");
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
   }

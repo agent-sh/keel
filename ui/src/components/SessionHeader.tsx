@@ -253,7 +253,14 @@ export function SessionHeader({ session }: { session: Session }) {
   const folder = session.workspace.split("/").pop();
   // A cap that is set rests in the row, below the permission mode (a safety state) and above the worktree, once half of it
   // is spent; far from it the chip is quiet, in the menu with the button that sets one.
-  const capped = (useCap(session.id, !!session.settings.cap_usd || !!session.parent_id)?.pct ?? 0) >= REST_AT;
+  // A chip that came to rest stays for this view of the session: Raise or Change can take the share under half
+  // mid-press, and the chip leaving the bar would close the popup under the owner's hand. A removed cap lets it go.
+  const share = useCap(session.id, !!session.settings.cap_usd || !!session.parent_id);
+  const rested = useRef({ id: session.id, on: false });
+  if (rested.current.id !== session.id) rested.current = { id: session.id, on: false };
+  if (!share) rested.current.on = false;
+  else if (share.pct >= REST_AT) rested.current.on = true;
+  const capped = rested.current.on;
 
   // In the row's order; the rank says which stays longest when the row is short. `rest`: it has a place in
   // the row (the rest are in the menu, in this order).
