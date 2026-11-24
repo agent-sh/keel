@@ -53,6 +53,8 @@ const money = (n?: number) => (n === undefined ? "" : n < 0.01 ? `$${n.toFixed(4
 export const advisorTool: Tool = {
   name: "advisor",
   families: ["claude", "gpt", "gemini", "other"],
+  // A read: it changes nothing but its own result. It sends the question and the conversation to a model the
+  // owner chose (a cost, and the owner's own channel), which the modes do not guard; an act on the session is "own".
   readOnly: true,
   description:
     "Consult your advisor: a second model the owner chose reads this whole conversation (every tool call and result) and gives guidance. " +

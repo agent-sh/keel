@@ -475,10 +475,19 @@ const waitDesc =
 // A pull request wait runs gh with the owner's login against a repository the
 // model names: the gate judges it as its own tool (wait_pr_checks), so it asks
 // where other actions ask and the owner can allow it by that name.
-const waitTarget = async (input: any) =>
-  input?.kind === "pr_checks" || input?.spec?.kind === "pr_checks" ? { name: "wait_pr_checks", readOnly: false, input, cls: { kind: "other" as const } } : null;
-const WaitFor: Tool = { name: "WaitFor", urgent: "wait-unfit-process-reframed", families: CLAUDE, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("Monitor"), target: waitTarget };
-const wait_for: Tool = { name: "wait_for", urgent: "wait-unfit-process-reframed", families: OTHERS, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("monitor"), target: waitTarget };
+// The files and addresses a wait reads are judged as the read they are (as helper__memory_import does): a credential
+// path or a path outside the sandbox asks, an address the session has not seen that a model chose is held by the
+// unseen-address rule. A timer or a process wait reads nothing, so it is the session's own act.
+const waitTarget = (name: string) => async (input: any) => {
+  const spec = input?.spec && typeof input.spec === "object" ? input.spec : input;
+  const kind = spec?.kind ?? input?.kind;
+  if (kind === "pr_checks") return { name: "wait_pr_checks", readOnly: false, input, cls: { kind: "other" as const } };
+  if (kind === "http" || (!kind && typeof spec?.url === "string")) return { name, readOnly: true, input, cls: { kind: "read" as const, fetches: [String(spec?.url ?? "")] } };
+  if (kind === "file" || kind === "log" || (!kind && typeof spec?.path === "string")) return { name, readOnly: true, input };
+  return null;
+};
+const WaitFor: Tool = { name: "WaitFor", urgent: "wait-unfit-process-reframed", families: CLAUDE, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("Monitor"), target: waitTarget("WaitFor") };
+const wait_for: Tool = { name: "wait_for", urgent: "wait-unfit-process-reframed", families: OTHERS, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("monitor"), target: waitTarget("wait_for") };
 
 const cancel_wait: Tool = {
   name: "cancel_wait",

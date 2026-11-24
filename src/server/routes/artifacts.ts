@@ -11,6 +11,7 @@ import { artifactsDir, contains, realOf } from "../../core/paths.ts";
 import type { Session } from "../../core/types.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { classifyCall } from "../../safety/gate.ts";
+import { changesNoFiles } from "../../safety/checkpoints.ts";
 import { toolEnv } from "../../tools/jobs.ts";
 import type { RouteModule } from "../app.ts";
 import { checkpoints } from "./checkpoints.ts";
@@ -100,7 +101,7 @@ export const artifactRoutes: RouteModule = ({ store, bus, errors }) => {
         if (p && !result.is_error) {
           for (const path of p.paths) if (existsSync(path)) upsert(s.id, path, !p.existed.has(path), "edit", call.tool.name);
           told(s.id);
-        } else if (!p && classifyCall(call).kind !== "read") {
+        } else if (!p && !changesNoFiles(classifyCall(call))) {
           commanded.add(s.id);
           if (scanDir(s)) told(s.id);
         }
