@@ -8,6 +8,7 @@ import { composing, runCommand } from "../lib/keys.ts";
 import { actions, getState, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { openPlaced } from "../lib/looks.ts";
+import { useStations } from "../lib/stations.ts";
 import { cn, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { archive, isPinned } from "../lib/sessops.ts";
@@ -298,14 +299,17 @@ export function SessionHeader({ session }: { session: Session }) {
     const ok = await confirmAction({ title: "Delete this session?", body: `"${session.title || "New session"}" and its whole history are removed${kids ? `, with the sessions of its ${kids === 1 ? "subagent" : `${kids} subagents`}` : ""}. This cannot be undone; Archive keeps it.`, action: "Delete", danger: true });
     if (ok) { actions.remove(session.id).catch(reportError); navigate({ name: "new" }); }
   };
-  // A phone's head holds no tools (bridge.css): the pane's pin and close are the first rows of the menu there.
+  // A phone's head holds no tools (bridge.css), and a pane alone has none at rest: the pane's pin and close are the
+  // first rows of the menu then.
   const pinned = isPinned(session);
+  const panes = useStations((x) => x.count);
+  const alone = phone() || panes < 2;
   const acts: Act[] = [
-    ...(phone() ? [
+    ...(alone ? [
       { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, run: () => runCommand("station.pin") },
       { id: "menu-close", label: "Close the session here", icon: <X />, run: () => runCommand("station.close") },
     ] : []),
-    { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: phone(), run: () => setEditing(true) },
+    { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) },
     { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },
     { id: "menu-path", label: "Copy folder path", icon: <Copy />, run: () => void copyOrSay(session.workspace, menuButton.current) },
     { id: "menu-new-here", label: "New session here", icon: <FolderPlus />, run: () => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); } },

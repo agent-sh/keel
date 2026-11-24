@@ -44,9 +44,11 @@ test("the rail and a pinned pane meet in one clean top edge, the head and its to
   expect(t.x).toBeGreaterThan(h.x + h.width / 2);
   // One top edge: the bar (band included) is the brand row's height.
   expect(Math.abs(h.y + h.height - (brand.y + brand.height)), "the bar and the brand row end apart").toBeLessThanOrEqual(1);
-  // Pinned is said with the pointer away: the pane's tools rest in view, and the pin is pressed, in ink.
-  await expect(head.getByTestId("station-pin")).toHaveAttribute("aria-pressed", "true");
-  expect(await head.locator(".k-station-tools").evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
+  // A pane alone has no tools of its own: pinned is said by the menu's row and the list.
+  await expect(head.locator(".k-station-tools")).toHaveCount(0);
+  await tools.getByTestId("session-menu").click();
+  await expect(page.getByTestId("menu-pin")).toHaveText("Unpin from the top of the list");
+  await page.keyboard.press("Escape");
   // The tools are as wide as what they show: the head has the rest of the bar.
   const top = (await pane.locator(".k-top").boundingBox())!;
   expect(t.width, "the tools keep a share of the bar they do not use").toBeLessThan(top.width / 2 - 8);

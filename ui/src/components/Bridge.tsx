@@ -150,7 +150,9 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const cardTool = useSafety((x) => (w === "need" && st.why === "approval" ? x.approvals[st.child ?? s.id]?.[0]?.tool ?? "" : ""));
   const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : cardTool ? askBrief(st, cardTool) : st.text ? briefText(st, now) : "";
   // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
-  const tools = 3;
+  // Alone there is nothing for them to do that the session's menu and the keys do not (focus changes nothing,
+  // a close only empties the pane): they rest only where there are panes to choose between.
+  const tools = panes > 1 ? 3 : 0;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}
       style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
@@ -171,7 +173,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         <span className="k-station-meta" title={s.workspace}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>
         </span>
-        <StationTools id={s.id} helm={helm} pinned={pinned} focus={focus} panes={panes} />
+        {panes > 1 && <StationTools id={s.id} helm={helm} pinned={pinned} focus={focus} panes={panes} />}
         </div>
       </div>
       {!helm && <p className="k-station-line truncate">{line || " "}</p>}

@@ -20,7 +20,11 @@ test("pin, tags, done, step budget, peer marks, archive with a job", async ({ pa
   // Pin: the station's pin follows, and the list leads with it.
   await page.getByTestId("pin-toggle").click();
   await expect(page.getByTestId("pin-toggle")).toHaveAttribute("aria-checked", "true");
-  await expect(page.getByTestId("station-pin")).toHaveAttribute("aria-pressed", "true");
+  // (A pane alone has no pin of its own at rest: its menu says it.)
+  await page.getByTestId("session-menu").click();
+  await expect(page.getByTestId("menu-pin")).toHaveText("Unpin from the top of the list");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("menu-pin")).toBeHidden();
   expect((await api()).settings.pinned_ms).toBeGreaterThan(0);
 
   // Tags: added in the panel, shown on the row, filter the list.

@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from "./isolate.ts";
+import { expect, test, type Locator, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,15 +12,21 @@ const opacity = (l: Locator) => l.evaluate((el) => Number(getComputedStyle(el).o
 // Opacity is eased (a short transition): poll until it settles.
 const settles = (l: Locator, to: number) => expect.poll(() => opacity(l)).toBe(to);
 
+// Two panes side by side, laid out before the page loads: the pane's tools rest only where there are panes to choose between.
+const twoPanes = (page: Page, a: string, b: string) => page.addInitScript(([x, y]) => {
+  localStorage.setItem("keel.focus", "false");
+  localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [x, y], sizes: {}, active: 0 }));
+}, [a, b]);
+
 test("a pane's head shows its tools at rest, quietly, and lifts them when it is pointed at or focused", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Quiet pane head" } })).json();
+  const { session: beside } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Quiet pane beside" } })).json();
+  await twoPanes(page, session.id, beside.id);
   await page.goto(`/s/${session.id}`);
-  const head = page.getByTestId("station-head");
+  const head = page.getByTestId("station-head").first();
   const tools = head.locator(".k-station-tools");
   const close = head.getByTestId("station-close");
   await expect(close).toBeAttached();
-  // One pane: nowhere to move it, so no arrows.
-  await expect(head.locator(".k-tool-move")).toHaveCount(0);
   // Pointer away from the head: its tools are there, in the faint ink of the page's quietest controls.
   const ink = (v: string) => page.evaluate((name) => { const p = document.createElement("span"); p.style.color = `var(${name})`; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; }, v);
   const color = () => close.evaluate((el) => getComputedStyle(el).color);
@@ -68,10 +74,12 @@ test.describe("on a touch screen", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 1180, height: 820 } });
   test("a pane's head shows its tools with nothing pointed at", async ({ page, request }) => {
     const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Touch pane head" } })).json();
+    const { session: beside } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Touch pane beside" } })).json();
+    await twoPanes(page, session.id, beside.id);
     await page.goto(`/s/${session.id}`);
     expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(true);
-    const tools = page.getByTestId("station-head").locator(".k-station-tools");
-    await expect(page.getByTestId("station-head").getByTestId("station-close")).toBeAttached();
+    const tools = page.getByTestId("station-head").first().locator(".k-station-tools");
+    await expect(page.getByTestId("station-head").first().getByTestId("station-close")).toBeAttached();
     await settles(tools, 1);
     await shoot(page, "quiet-06-touch-head");
   });

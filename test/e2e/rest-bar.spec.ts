@@ -123,7 +123,12 @@ test("a turn that starts or ends moves no line of the head, and its tools rest b
       expect(working, `a title of ${n} characters moves ${working - still}px when a reason shows`).toBe(still);
     }
     // The pane's tools are seen at rest, and under the pointer they cover nothing of the reason (1050: the tightest bar).
+    // They rest where there are panes to choose between: this is the busy session's pane beside another.
     await page.setViewportSize({ width: 1050, height: 900 });
+    await page.addInitScript(([x, y]) => {
+      localStorage.setItem("keel.focus", "false");
+      localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [x, y], sizes: {}, active: 0 }));
+    }, [busy, idle]);
     await page.goto(`/s/${busy}`);
     const head = pane(page, busy).getByTestId("station-head");
     const tools = head.locator(".k-station-tools");
@@ -138,6 +143,44 @@ test("a turn that starts or ends moves no line of the head, and its tools rest b
     await shoot(page, "rest-bar-03-tools-1050");
   } finally {
     await import("node:fs").then((fs) => { fs.mkdirSync(done.replace(/\/[^/]+$/, ""), { recursive: true }); fs.writeFileSync(done, ""); });
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
+  }
+});
+
+test("a pane alone has no tools at rest, its menu has them; beside another pane they rest in its head", async ({ page, request }) => {
+  const model = await scripted(request);
+  test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
+  const made: string[] = [];
+  const make = async (title: string) => { const { session } = await (await request.post("/api/sessions", { data: { model, title } })).json(); made.push(session.id); return session.id as string; };
+  try {
+    const a = await make("Rest bar: a pane alone");
+    const b = await make("Rest bar: a pane beside");
+    for (const width of [1050, 1366, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`/s/${a}`);
+      const head = pane(page, a).getByTestId("station-head");
+      await expect(head).toBeVisible();
+      // Alone: focus does nothing, a close only empties the pane, and pin is one key and one row away.
+      await expect(head.locator(".k-station-tools")).toHaveCount(0);
+      for (const id of ["station-pin", "station-focus", "station-close"]) await expect(head.getByTestId(id)).toHaveCount(0);
+      await pane(page, a).getByTestId("session-menu").click();
+      await expect(page.getByTestId("menu-pin")).toBeVisible();
+      await expect(page.getByTestId("menu-close")).toBeVisible();
+      if (width !== 1920) await shoot(page, `rest-bar-05-alone-${width}`);
+      await page.keyboard.press("Escape");
+      // Beside another pane they rest in each head, and the menu has no second copy.
+      await page.getByTestId("panes-2").click();
+      const second = page.getByTestId("bridge").locator(':scope > [data-slot="1"]');
+      await page.locator(`[data-testid="session-row"][data-session="${b}"]`).dragTo(second);
+      await expect(second).toHaveAttribute("data-station", b);
+      for (const id of [a, b]) for (const t of ["station-pin", "station-focus", "station-close"]) await expect(pane(page, id).getByTestId("station-head").getByTestId(t)).toBeVisible();
+      await page.getByTestId("session-menu").click();
+      await expect(page.getByTestId("menu-rename")).toBeVisible();
+      await expect(page.getByTestId("menu-pin")).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await page.getByTestId("panes-1").click();
+    }
+  } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);
   }
 });

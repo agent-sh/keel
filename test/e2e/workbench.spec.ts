@@ -243,9 +243,10 @@ test("the side panel sits beside the conversation when the pane has room, else l
     await opened();
     await expect(close).toBeInViewport({ ratio: 1 });
     await expect(station.getByTestId("session-menu")).toBeInViewport({ ratio: 1 });
-    // The pane's close, Session actions and the panel's close share one column.
+    // A pane alone has no tools of its own at rest: Session actions and the panel's close share one column.
+    await expect(station.getByTestId("station-close")).toHaveCount(0);
     const mid = async (l: ReturnType<typeof page.getByTestId>) => { const r = (await l.boundingBox())!; return r.x + r.width / 2; };
-    const column = [await mid(station.getByTestId("station-close")), await mid(station.getByTestId("session-menu")), await mid(close)];
+    const column = [await mid(station.getByTestId("session-menu")), await mid(close)];
     expect(Math.max(...column) - Math.min(...column)).toBeLessThanOrEqual(1.5);
     // The conversation under the sheet is out of reach: nothing there takes focus or text.
     await expect(station.locator(".k-session")).toHaveAttribute("inert", "");
