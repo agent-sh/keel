@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
+import { calls, colors, create, folder, pending } from "./answering.ts";
 import { inHead, leaveHead, shoot } from "./shots.ts";
 
 // Feature: the surfaces that landed after the phone page was last checked fit a phone and are
@@ -166,6 +167,54 @@ for (const size of SIZES) {
       await noSideScroll(page);
       expect(await small(card), "every control of the card is a finger's target").toEqual([]);
       await shoot(page, `phone-surfaces-04-lessons-${size.width}`);
+    });
+
+    // Round 10: the surfaces that landed after round 9.
+    test("the tree's approvals and questions are answered by a finger, whole, inside the page", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const ws = folder("phone-tree-asks");
+      const root = await create(request, "Coordinator", ws);
+      const ids = [root];
+      const bash = (command: string) => ({ name: "Bash", input: { command } });
+      const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
+      try {
+        await request.put(`/api/sessions/${root}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+        // A nested agent with a long name asks to run a command; a second asks a question.
+        const inner = `Gamma the agent with a very long name that a phone cannot hold on one line\n${calls([bash("touch gamma-with-a-long-file-name-that-goes-on-and-on-past-the-edge.txt"), colors])}`;
+        const alpha = `Alpha\n${calls([spawn(inner)])}`;
+        const beta = `Beta\n${calls([colors])}`;
+        await request.post(`/api/sessions/${root}/messages`, { data: { text: calls([spawn(alpha), spawn(beta)]) } });
+        await page.goto(`/s/${root}`);
+        const station = page.locator(`[data-station="${root}"]`);
+        const asks = station.getByTestId("child-asks");
+        await expect(asks).toHaveCount(2, { timeout: 45_000 });
+        const kids = ((await (await request.get(`/api/sessions/${root}/agents`)).json()).agents as { session_id: string; title: string }[]);
+        for (const k of kids) ids.push(k.session_id);
+        const al = kids.find((k) => k.title === "Alpha")!;
+        const g = ((await (await request.get(`/api/sessions/${al.session_id}/agents`)).json()).agents as { session_id: string }[])[0]!;
+        ids.push(g.session_id);
+        const all = station.getByTestId("child-approvals");
+        await expect(all).toBeVisible();
+        await noSideScroll(page);
+        for (const c of await asks.all()) await inside(page, c.getByTestId("child-path"));
+        // The agent's name is a line a finger can press, and the name is not cut off without a way to read it.
+        for (const path of await asks.getByTestId("child-path").all()) {
+          expect(await path.evaluate((el) => el.closest("button")!.getBoundingClientRect().height), "the agent's name is a target").toBeGreaterThanOrEqual(43);
+          // (A title shows on hover only: a finger reads the name where it stands.)
+          expect(await path.evaluate((el) => el.scrollWidth > el.clientWidth + 1), "the agent's path is cut off").toBe(false);
+        }
+        expect(await small(all), "every control of the tree's cards is a finger's target").toEqual([]);
+        await shoot(page, `phone-surfaces-05-tree-asks-${size.width}`);
+        // Answered by touch, in place.
+        const card = (id: string) => station.locator(`[data-agent="${id}"]`);
+        const bt = kids.find((k) => k.title === "Beta")!.session_id;
+        await card(bt).getByTestId("question-option").filter({ hasText: "Teal" }).tap();
+        await card(bt).getByTestId("question-submit").tap();
+        await expect.poll(() => pending(request, bt), { timeout: 30_000 }).toHaveLength(0);
+        await noSideScroll(page);
+      } finally {
+        await drop(request, ...ids.reverse());
+      }
     });
   });
 }
