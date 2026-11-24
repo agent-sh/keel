@@ -23,6 +23,7 @@ export const RULE_MODULES: { file: string; fn: string; what: string }[] = [
   { file: "credentials.ts", fn: "credentialAt", what: "where the owner's credentials are kept" },
   { file: "credential-reads.ts", fn: "shellCredentialReads", what: "a command's reads of credentials" },
   { file: "shared-branches.ts", fn: "sharedRefusal", what: "an agent's worktree guard of the branches it shares" },
+  { file: "resolved-line.ts", fn: "resolvedLine", what: "a line whose program words are variables it set, written out for the rules to judge" },
   { file: "autonomy.ts", fn: "neverAllowed", what: "the commands that never run without the owner" },
   { file: "marks.ts", fn: "classOf", what: "a stored call as the gate classes it" },
 ];

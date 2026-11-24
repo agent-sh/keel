@@ -447,7 +447,7 @@ const shown = (w: string) => (w.length > 60 ? `${w.slice(0, 57)}...` : w);
 export const envUnreadMessage = (why: string) =>
   `Refused: the command ${why}. A variable or a substitution there can be \`-i\`, or env itself, and env -i drops the git settings Keel gives every command, which hold an agent to its own branch. Write the program and env's options out as words (\`env NAME=value cmd\`; a path may start with $HOME), and keep a value that needs an expansion as the value of a named assignment (\`env NAME=$VALUE cmd\`).`;
 // A program word the shell fills in only with a variable that names a known folder, then a written-out path.
-const KNOWN_PATH = /^(?:\$\{?(?:HOME|PWD|OLDPWD|TMPDIR|USER)\}?|~)\/[^$`]*$/;
+export const KNOWN_PATH = /^(?:\$\{?(?:HOME|PWD|OLDPWD|TMPDIR|USER)\}?|~)\/[^$`]*$/;
 // What an option of env does: -i, --ignore-environment or a lone dash clear the environment (also inside a cluster,
 // -vi); -S splits a string into more words; an option with its own value (-u, -C) ends a cluster.
 function envOption(w: string): "clear" | "split" | undefined {
@@ -494,7 +494,9 @@ const SSH_VALUED = /^-[bcDEeFIiJLlmOopQRSWw]$/;
 const LOCAL_HOSTS = /^(localhost|localhost\.localdomain|127(\.\d+){3}|::1|0\.0\.0\.0|\[::1\])$/i;
 
 // Why a command run from the agent's worktree is refused, or null. `cwd`: the folder it starts in.
-export function sharedRefusal(command: string, cwd: string | null, home: string, s: Shared, depth = 0): string | null {
+// `resolved`: the line is judged beside the one its variables written out (resolved-line.ts), which has the program words
+// this one cannot read: they are not refused here.
+export function sharedRefusal(command: string, cwd: string | null, home: string, s: Shared, depth = 0, resolved = false): string | null {
   const parts = splitCommand(command);
   if (!parts) return /\bgit\b/.test(command) ? "runs git in text the rules cannot read" : null;
   const start = depth === 0 && s.real && cwd !== null ? s.real(cwd) : cwd;
@@ -540,7 +542,7 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
     const prog = name(words[0]);
     if (prog === "unset" && words.some((w) => /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(w))) return "unsets the git settings Keel gives the command";
     // A program the shell names with an expansion (`$X -i ...`, `$(which env)`) may be env, or anything: it is not read.
-    if (!KNOWN_PATH.test(words[0]!) && /[$`]/.test(words[0]!)) return `${ENV_UNREAD} the program word ${shown(words[0]!)}`;
+    if (!resolved && !KNOWN_PATH.test(words[0]!) && /[$`]/.test(words[0]!)) return `${ENV_UNREAD} the program word ${shown(words[0]!)}`;
     // `env -i` and `env -u GIT_CONFIG_COUNT` take away what Keel gives the command; `env -C DIR` moves it. Any program
     // that starts without the settings may run git (an interpreter, a script of the worktree), so each is refused
     // unless the command gives the whole settings back. A word of env's own the shell fills in is not read: it may be -i.

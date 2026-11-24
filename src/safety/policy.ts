@@ -9,6 +9,7 @@ import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.t
 import type { Looked } from "./looked.ts";
 import { RULE_WORDS, codeGiven, laid, risksAt } from "./risk.ts";
 import type { PartRisk } from "./own-places.ts";
+import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { isReadOnly, matchRule, readForm, redirectTargets, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
@@ -810,12 +811,27 @@ function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign
   return { ask: { risk: "high", why: `${agent ? `An agent's write, to a remote of the repository it works in: ${what}` : what} ${why}`, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: hit.account ? say(hit.account) : "", ...(hit.account ? { mine: namespaceOf(hit.account) } : {}) } };
 }
 
+// The decision on a line whose program words are variables it gave a written-out value is the stricter of two: the
+// line written out, which every rule judges exactly as if the owner had typed it (resolved-line.ts), and the line as
+// it is. An agent in a worktree of its own has no card to ask on, and its lines were refused for the word the rules
+// cannot read: there the written line's verdict stands in its place (the line as it is counts only when it refuses or
+// asks as high risk; its low risk is the program word it cannot name). The owner's own sessions keep the high risk
+// of a program hidden in a variable, which the card shows him, and gain the written line's findings besides.
+const SEVERITY = (d: Decision) => ("deny" in d ? 3 : "ask" in d ? (d.ask.risk === "high" ? 2 : 1) : 0);
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
+  const written = resolvedLine(command);
+  if (written === null) return decideLine(command, f, cwd, interpreter);
+  const beside = !!f.shared;
+  const a = decideLine(command, f, cwd, interpreter, beside), b = decideLine(written, f, cwd, interpreter);
+  return beside ? (SEVERITY(a) >= 2 && SEVERITY(a) > SEVERITY(b) ? a : b) : SEVERITY(a) >= SEVERITY(b) ? a : b;
+}
+
+function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: string, resolved = false): Decision {
   const parts = splitCommand(command);
   const home = f.home ?? homeOf();
   // An agent in a worktree Keel made for it changes its own branch only, in every mode, Full auto included.
   // (A program of another language is not read as a shell line: the hook holds what git it starts, ref-guard.ts.)
-  if (f.shared && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) { const why = sharedRefusal(command, cwd, home, f.shared); if (why) return { deny: sharedMessage(why, f.shared) }; }
+  if (f.shared && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) { const why = sharedRefusal(command, cwd, home, f.shared, 0, resolved); if (why) return { deny: sharedMessage(why, f.shared) }; }
   const worst = f.mode === "read-only" ? null : parts ? neverAllowed(parts, cwd, home) : neverAllowedText(command, home);
   const shellRules = f.rules.filter((r) => r.kind === "shell");
   // A standing rule of the owner's that names this command and does not cover it: the card says so.
@@ -947,7 +963,7 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
       if (code) for (const m of code.matchAll(/"([^"]*)"|'([^']*)'/g)) { const t = m[1] ?? m[2]!; const o = t.length >= 3 && t.length <= 300 && !/\s/.test(t) && /[\/.]/.test(t) ? here(t) : null; if (o) return owners(o); }
     }
   }
-  const risks = risksAt(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)) }, pre);
+  const risks = risksAt(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)), ...(resolved ? { beside: true as const } : {}) }, pre);
   if (risks.length) {
     if (f.mode === "read-only") return { deny: `This session is read-only, and the command ${risks[0]!.why}.` };
     // (The rule is the first reason in a few words: its own when it is that short, else its class's. A line of

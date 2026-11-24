@@ -21,7 +21,9 @@ export type Risk = { rule: RiskRule; why: string; git?: true; said?: true };
 // machine or in a container (its name): nothing there is the session's own, and no relative path is known.
 // `firm`: for each part, whether the folder it runs in is certain (firmOf). `shaky`: the folder this script starts
 // in is not.
-export type Where = { cwd: string; home: string; workspace: string; scratch?: string[]; looked?: Looked; land?: (p: string) => string[]; sandboxed?: boolean; lost?: true; away?: string; firm?: boolean[]; shaky?: true };
+// `beside`: the line is judged beside the one its program-word variables written out (resolved-line.ts), which has those
+// words to judge: they are not high risk here.
+export type Where = { cwd: string; home: string; workspace: string; scratch?: string[]; looked?: Looked; land?: (p: string) => string[]; sandboxed?: boolean; lost?: true; away?: string; firm?: boolean[]; shaky?: true; beside?: true };
 
 // Each class in a few words: what the ask carries as its rule, and a folded call is marked with in the transcript.
 export const RULE_WORDS: Record<RiskRule, string> = {

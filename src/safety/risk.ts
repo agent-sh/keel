@@ -963,6 +963,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       if (stands === "sh" && !rest.some((a) => !a.startsWith("-") || /^-[a-zA-Z]*c$/.test(a))) continue;
       // (Only as the whole command: `$1 -rf src` gives its own words to a program nobody named.)
       if (/^\$(@|\*|1)$/.test(first!) && s.flow && (depth > 0 || passes !== null) && rest.every((a) => /^\$(@|\*|\d)$/.test(a))) continue;
+      if (w.beside && how && !how.rest && !how.subs.length && how.vars.length && how.vars.every((v) => { const k = values.get(v.name); return k?.text !== undefined && k.at < i; })) continue;
       if (!stands || stands === "sh") { out.push({ rule: "hidden", why: `runs a program whose name the line builds as it runs (${first}): write the program out` }); continue; }
       words = [stands, ...rest];
     }
