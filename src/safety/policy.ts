@@ -11,7 +11,7 @@ import { RULE_WORDS, codeGiven, laid, risksAt } from "./risk.ts";
 import type { PartRisk } from "./own-places.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
-import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
+import { isReadOnly, matchRule, readForm, redirectTargets, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains, homeDir } from "../core/paths.ts";
 import { RESERVED } from "../mcp/config.ts";
 import type { ToolKind } from "../tools/types.ts";
@@ -360,7 +360,8 @@ const WRITERS_FIRST = /^(?:curl|wget|git|yq|perl|sponge|patch|chmod|chown|chgrp|
 // `run`: the command the part runs, when the caller has worked it out already.
 export function writesOf(p: Simple, run?: Run): string[] {
   const out: string[] = [];
-  if (p.redirects) for (const m of p.text.matchAll(/(?:&>>?|>>|>\||>)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g)) out.push(m[1]!);
+  // (Read outside quotes: a > inside a quoted word is text, as in echo "x>=1" > file.)
+  if (p.redirects) out.push(...redirectTargets(p.text));
   let i = p.words.findIndex((w) => WRITERS.test(w));
   if (i < 0) { run ??= unwrap(p.words); if (WRITERS_FIRST.test((run.words[0] ?? "").replace(/^.*\//, ""))) i = run.at; }
   if (i < 0) return out;

@@ -17,7 +17,7 @@ import { gitCall, located } from "./autonomy.ts";
 import { globBase, pathsSaid, placeOf, type OwnPlace } from "./own-places.ts";
 export { globBase };
 import { writesOf } from "./policy.ts";
-import { isReadOnly, splitCommand } from "./shell.ts";
+import { isReadOnly, redirectTargets, splitCommand } from "./shell.ts";
 
 // The owner's base checkout (the main checkout of the repository the agent
 // works in) and its git directory, and the branches checked out in a checkout
@@ -119,39 +119,6 @@ export function shellWrites(command: string, cwd: string, home: string): { paths
 }
 const MAKERS = /^(?:.*\/)?(?:touch|mkdir|rmdir|mkfifo|unlink)$/;
 
-// The files a command part's redirects write, read from its text outside quotes: `>`, `>>`, `>|`, `&>`, `&>>`,
-// `<>` and `>&` to a file (not to a descriptor). A `>` inside a quoted argument is text (printf 'a > b'), and a
-// quoted target loses its quotes. A target that expands is kept as written (the caller leaves it out).
-export function redirectTargets(text: string): string[] {
-  const out: string[] = [];
-  let i = 0, q: "'" | '"' | null = null;
-  const end = /[\s;|&<>()]/;
-  while (i < text.length) {
-    const c = text[i]!;
-    if (q) { if (c === "\\" && q === '"') i++; else if (c === q) q = null; i++; continue; }
-    if (c === "\\") { i += 2; continue; }
-    if (c === "'" || c === '"') { q = c; i++; continue; }
-    const amp = c === "&" && text[i + 1] === ">";
-    if (!(c === ">" || amp || (c === "<" && text[i + 1] === ">"))) { i++; continue; }
-    let j = i + (amp || c === "<" ? 2 : 1);
-    let dup = false;
-    if (!amp && c === ">") { if (text[j] === ">" || text[j] === "|") j++; else if (text[j] === "&") { j++; dup = true; } }
-    else if (amp && text[j] === ">") j++;
-    while (text[j] === " " || text[j] === "\t") j++;
-    let w = "", wq: "'" | '"' | null = null;
-    for (; j < text.length; j++) {
-      const d = text[j]!;
-      if (wq) { if (d === wq) wq = null; else if (d === "\\" && wq === '"' && j + 1 < text.length) w += text[++j]; else w += d; continue; }
-      if (d === "'" || d === '"') { wq = d; continue; }
-      if (d === "\\" && j + 1 < text.length) { w += text[++j]; continue; }
-      if (end.test(d)) break;
-      w += d;
-    }
-    if (w && !(dup && /^(\d+-?|-)$/.test(w))) out.push(w);
-    i = Math.max(j, i + 1);
-  }
-  return out;
-}
 // git subcommands that write nothing in the folder they run in (a fetch or a push writes refs, read by refsMoved).
 const GIT_READS = /^(status|log|show|diff|blame|grep|rev-parse|rev-list|ls-files|ls-tree|cat-file|describe|for-each-ref|merge-base|shortlog|reflog|config|remote|help|version|fetch|push|worktree|branch|tag|update-ref|symbolic-ref)$/;
 

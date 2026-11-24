@@ -377,3 +377,15 @@ test("the folders of a PATH inside a workspace: whole paths there, relative entr
   expect(edit("/w/repo/mytools/fmt", ["tools"])).toBe("allow");
   expect(edit("/w/repo/src/a.ts", ["/w/repo/bin", "tools"])).toBe("allow");
 });
+
+// A > inside a double-quoted word is text. With a real redirect in the command it was read as a redirect to
+// the rest of the word, and a command run in Keel's state folder was refused as a write to a file named "=1".
+test("a quoted > in a command with a real redirect is not a write to the folder the command runs in", () => {
+  const keep = { keel: (p: string) => (p === "/home/u/state" || p.startsWith("/home/u/state/") ? "Keel's own state" : null) };
+  const run = (cmd: string) => how(decide(classify(exec, { cmd }, ws), facts("auto", keep)));
+  expect(run('cd /home/u/state && echo "x>=1" > /w/repo/out.txt')).not.toBe("deny");
+  expect(run("cd /home/u/state && echo 'x>=1' > /w/repo/out.txt")).not.toBe("deny");
+  // The redirect itself is still read: into the state folder it is refused, quoted or not.
+  expect(run('echo "x>=1" > /home/u/state/out.txt')).toBe("deny");
+  expect(run('cd /home/u/state && echo "a > b" > out.txt')).toBe("deny");
+});
