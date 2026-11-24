@@ -27,7 +27,7 @@ test("park refuses while a background command runs in the worktree, and stops it
   const store = new Store(join(root, "state"));
   store.db.run("CREATE TABLE IF NOT EXISTS perm_settings (key TEXT PRIMARY KEY, value TEXT)"); // the gate's, where the retention setting lives
   const bus = new Bus();
-  const providers = { defaultModel: async () => "m", resolve: async () => ({}) };
+  const providers = { defaultModel: async () => "m", resolve: async () => ({ provider: { id: "p" }, info: { id: "p:m" } }) };
   const routes = worktreeRoutes({ store, bus, errors: new ErrorTracker(store, bus), providers, workspace: repo, engine: { isRunning: () => false, send() {} } } as any) as any;
   const call = (path: string, method: string, body: unknown, params: Record<string, string> = {}) =>
     routes[path][method](Object.assign(new Request(`http://x${path}`, { method, body: JSON.stringify(body), headers: { "content-type": "application/json" } }), { params }));
@@ -78,7 +78,7 @@ test("a worktree create sends the first message with its images", async () => {
   store.db.run("CREATE TABLE IF NOT EXISTS perm_settings (key TEXT PRIMARY KEY, value TEXT)");
   const bus = new Bus();
   const sent: unknown[][] = [];
-  const providers = { defaultModel: async () => "m", resolve: async () => ({}) };
+  const providers = { defaultModel: async () => "m", resolve: async () => ({ provider: { id: "p" }, info: { id: "p:m" } }) };
   const routes = worktreeRoutes({ store, bus, errors: new ErrorTracker(store, bus), providers, workspace: repo, engine: { isRunning: () => false, send: (...a: unknown[]) => void sent.push(a) } } as any) as any;
   const make = async (body: unknown) => (await (await routes["/api/worktrees"].POST(new Request("http://x/api/worktrees", { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }))).json()).session.id as string;
   const image = { type: "image", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" };
