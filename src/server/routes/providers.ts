@@ -46,7 +46,7 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
       keys_read,
       providers: providers.statuses().map((s) => {
         const l = providers.listing(s.id);
-        return { ...s, listing: { state: l.state, fetched_ms: l.fetched, error: l.error, models: count.get(s.id) ?? 0 }, problem: providers.problem(s.id) };
+        return { ...s, listing: { state: l.state, fetched_ms: l.fetched, error: l.error, models: count.get(s.id) ?? 0 }, problem: providers.problem(s.id), routes: providers.routeProblems(s.id) };
       }),
       plugins: providers.plugins.summary(),
       plugins_file: providers.plugins.file,

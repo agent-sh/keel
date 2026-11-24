@@ -4,7 +4,7 @@
 import { Popover } from "@base-ui/react/popover";
 import { AlertTriangle, ExternalLink, Gauge } from "lucide-react";
 import { useEffect, memo } from "react";
-import { actions, reportError, useStore, type LimitWindow, type ProviderProblem } from "../lib/store.ts";
+import { actions, reportError, useStore, type LimitWindow, type ProviderProblem, type RouteProblem } from "../lib/store.ts";
 import { cn, fmtCost, when } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
 
@@ -61,6 +61,34 @@ export function ProblemNote({ p, label, detail }: { p: ProviderProblem; label: s
         )}
       </div>
       <div className="mt-0.5 text-muted">{text}</div>
+      <div className="mt-0.5 break-words text-faint" title={when(p.at)}>{p.message}</div>
+    </div>
+  );
+}
+
+// One route of a provider, or one model, its account refuses: new work passes it over until its
+// time passes, then its next request clears the mark or marks it again for longer.
+export function RouteProblemNote({ p, provider }: { p: RouteProblem; provider: string }) {
+  const model = p.route.startsWith("model:");
+  const id = model ? p.route.slice(6) : p.route;
+  const part = id.startsWith(`${provider}:`) ? id.slice(provider.length + 1) : id;
+  const head = p.kind === "billing" ? "Billing" : p.kind === "access" ? "Model refused" : "Sign-in refused";
+  const what = p.kind === "billing" ? "is out of credit or suspended" : p.kind === "access" ? "is not open to this account" : "refuses its sign-in";
+  const left = p.open || !p.until ? "Its time is over: new work goes to it again, and its next request clears this or marks it again." : `New work passes it over for ${fmtUntil(p.until)} more, then its next request decides.`;
+  return (
+    <div className={cn("mt-1.5 rounded-md border px-2.5 py-2 text-caption", p.open ? "border-line bg-sunken" : p.kind === "billing" ? "border-warn/40 bg-warn/5" : "border-danger/40 bg-danger/5")} data-testid="route-problem" data-route={p.route} data-kind={p.kind} data-open={p.open ? "" : undefined}>
+      <div className="flex items-center gap-1.5 font-medium text-fg">
+        <AlertTriangle className={cn("size-3.5", p.open ? "text-faint" : p.kind === "billing" ? "text-warn" : "text-danger")} />
+        {head}
+        <code className="truncate rounded-xs bg-code px-1 font-mono font-normal">{part}</code>
+        {p.strikes && p.strikes > 1 ? <span className="font-normal text-faint">{p.strikes} times in a row</span> : null}
+        {p.link && (
+          <a className="ml-auto inline-flex items-center gap-1 font-normal text-accent-ink hover:underline" href={p.link} target="_blank" rel="noreferrer">
+            {p.kind === "billing" ? "Open billing" : "Open the provider page"} <ExternalLink className="size-3" />
+          </a>
+        )}
+      </div>
+      <div className="mt-0.5 text-muted">{model ? "This model" : "This route"} {what}. {left}</div>
       <div className="mt-0.5 break-words text-faint" title={when(p.at)}>{p.message}</div>
     </div>
   );

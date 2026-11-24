@@ -27,6 +27,7 @@
 // The brief carries no word of the declined reply or of what the lost agent
 // wrote: its task, the facts of its work (files, commits, checks) and its last
 // failure as a class. Pure: src/automation/agents.ts reads the facts and acts.
+import { skippedWords, type Skipped } from "../providers/account.ts";
 import type { Family } from "../providers/types.ts";
 
 export const MAX_SUCCESSORS = 2;
@@ -89,12 +90,27 @@ export type Candidate = { id: string; provider: string; family: Family; tools?: 
 // lists several families), then any; the newest first. None: no listed model
 // of another family takes tools.
 export function otherFamily(models: readonly Candidate[], o: { current: string; avoid: readonly Family[]; parent?: string; preferred?: string }): string | undefined {
-  const ok = (m: Candidate | undefined): m is Candidate => !!m && m.tools !== false && !o.avoid.includes(m.family);
+  return ranked(models, (m) => !o.avoid.includes(m.family), o)[0];
+}
+
+// The models that take tools and pass `fit`, in otherFamily's order.
+function ranked(models: readonly Candidate[], fit: (m: Candidate) => boolean, o: { current: string; parent?: string; preferred?: string }): string[] {
+  const ok = (m: Candidate | undefined): m is Candidate => !!m && m.tools !== false && fit(m);
   const byId = (id?: string) => (id ? models.find((m) => m.id === id) : undefined);
-  for (const id of [o.parent, o.preferred]) { const m = byId(id); if (ok(m)) return m.id; }
   const provider = byId(o.current)?.provider ?? o.current.slice(0, o.current.indexOf(":"));
   const newest = (xs: Candidate[]) => [...xs].sort((a, b) => (b.release ?? "").localeCompare(a.release ?? ""));
-  return (newest(models.filter((m) => ok(m) && m.provider === provider))[0] ?? newest(models.filter(ok))[0])?.id;
+  const out = [...[o.parent, o.preferred].map(byId).filter(ok), ...newest(models.filter((m) => ok(m) && m.provider === provider)), ...newest(models.filter(ok))].map((m) => m.id);
+  return [...new Set(out)];
+}
+
+// Every model a successor can start on, best first. After a second refusal:
+// otherFamily's order. Otherwise the lost model, then the others of its family,
+// then the rest: the first whose route takes work is chosen
+// (src/providers/account.ts firstOpen), so a route out of credit or signed out
+// is passed over for the next.
+export function successorOrder(models: readonly Candidate[], o: { current: string; family: Family; switchFamily: boolean; avoid: readonly Family[]; parent?: string; preferred?: string }): string[] {
+  if (o.switchFamily) return ranked(models, (m) => !o.avoid.includes(m.family), o);
+  return [...new Set([o.current, ...ranked(models, (m) => m.family === o.family, o), ...ranked(models, (m) => m.family !== o.family, o)])];
 }
 
 // The facts a capsule carries: the harness's own records, never the model's words.
@@ -145,8 +161,10 @@ export function capsuleBrief(f: CapsuleFacts): string {
 }
 
 // The one line the parent hears.
-export function parentLine(o: { title: string; id: string; loss: LossKind; category?: string; n: number; model: string; moved: boolean }): string {
-  return `[harness] Agent "${o.title}" (${o.id}) lost its context: ${LOSS_WORDS[o.loss]}${o.category ? ` (${o.category})` : ""}. Keel started it again with a fresh context from a capsule of its work, in the same worktree, on ${o.model}${o.moved ? ", a model of another family" : ""} (successor ${o.n} of at most ${MAX_SUCCESSORS}). Its report comes when it finishes: nothing to do.`;
+// `skipped`: the models passed over because their routes take no work now, each with why.
+export function parentLine(o: { title: string; id: string; loss: LossKind; category?: string; n: number; model: string; moved: boolean; skipped?: readonly Skipped[] }): string {
+  const passed = o.skipped?.length ? ` It skipped ${skippedWords(o.skipped)}.` : "";
+  return `[harness] Agent "${o.title}" (${o.id}) lost its context: ${LOSS_WORDS[o.loss]}${o.category ? ` (${o.category})` : ""}. Keel started it again with a fresh context from a capsule of its work, in the same worktree, on ${o.model}${o.moved ? ", a model of another family" : ""} (successor ${o.n} of at most ${MAX_SUCCESSORS}).${passed} Its report comes when it finishes: nothing to do.`;
 }
 
 // What its report says when no successor starts.

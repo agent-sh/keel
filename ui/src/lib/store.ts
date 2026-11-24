@@ -18,7 +18,7 @@ import { CoverCtx, makeGate, type Gate } from "./cover.ts";
 
 export type ProvidersReport = {
   keys_read?: boolean; // false: a key is still being looked for, and an "available" may be unconfirmed
-  providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number }; problem?: ProviderProblem })[];
+  providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number }; problem?: ProviderProblem; routes?: RouteProblem[] })[];
   plugins: { id: string; state: string; name?: string; version?: string; reason?: string; stderr_tail?: string; violations: { count: number; last: string } }[];
   plugins_file?: string | null;
   choices: { default?: string; hidden: Record<string, string[]>; hidden_providers?: string[]; pinned?: string[] };
@@ -31,7 +31,10 @@ export type LimitWindow = {
   provider: string; id: string; label: string; used_percent?: number; remaining?: number; limit?: number;
   unit?: "requests" | "tokens" | "usd"; resets_at_ms?: number; spent_usd?: number; overage_enabled?: boolean; note?: string; observed_ms: number;
 };
-export type ProviderProblem = { kind: "auth" | "billing"; message: string; at: number; source: string; link?: string };
+export type ProviderProblem = { kind: "auth" | "billing" | "access"; message: string; at: number; source: string; link?: string; until?: number; strikes?: number };
+// One route of a provider (an ACP agent's upstream, a stand-in) or one model (`model:<provider>:<model>`)
+// with an account problem. `open`: its time passed; new work goes to it again and its next request decides.
+export type RouteProblem = ProviderProblem & { route: string; open: boolean };
 export type Limits = { windows: LimitWindow[]; close: string[]; problems: Record<string, ProviderProblem>; close_percent: number };
 export type ChoiceChange = { pin?: string[]; unpin?: string[]; provider?: string; hide?: string[]; show?: string[]; hide_provider?: string; show_provider?: string };
 

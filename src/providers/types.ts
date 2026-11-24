@@ -218,6 +218,11 @@ export interface Provider {
   // The wire one of its models stands for, when it is not the provider's own
   // (the scripted stand-in of each family): what decides how its tools load.
   wireOf?(model: string): Wire | undefined;
+  // The account one of its models is billed and signed in through, as a route
+  // id (`<provider>:<part>`), when the provider reaches several (an ACP agent
+  // and the upstream its choice names, the scripted stand-in of each family).
+  // Absent: the provider is one account. An account problem is kept by it.
+  accountOf?(model: string): string | undefined;
   available(): boolean;
   // Looks again for a credential last found missing (at least `olderThanMs`
   // ago), so available() can change without a restart.

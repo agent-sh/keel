@@ -28,7 +28,7 @@ export function switchCompactionBlock(providers: Providers, model: string): stri
   const label = providers.get(pid)?.label ?? pid;
   const failure = providers.listingFailure(pid);
   if (failure) return failure;
-  const problem = providers.problem(pid);
+  const problem = providers.shut(model);
   if (problem) return `${label}: ${problem.message}`;
   if (!providers.cachedModel(model)) return `the current model ${model} is unavailable`;
 }

@@ -5,6 +5,7 @@
 // failures are "unreachable" (the request could not be sent) is said in
 // src/providers/unreachable.ts, and a turn waits those out instead of failing
 // (src/providers/outage.ts).
+import { ACCESS_WORDS, BILLING_WORDS, CREDENTIAL_WORDS, SIGNED_OUT_WORDS } from "../providers/account.ts";
 import { imageRefusal } from "../providers/image-limits.ts";
 import { unreachable, unreachableText } from "../providers/unreachable.ts";
 
@@ -22,8 +23,10 @@ const WORDS: [RegExp, ErrorClass][] = [
   [/overloaded|at capacity|serviceunavailable|unable to process your request/i, "overloaded"],
   [/rate.?limit|too many requests|throttl/i, "rate_limit"],
   [/prompt is too long|context.?(window|length)|maximum context|too many tokens|input is too long|input token count|exceeds? the maximum number of tokens|exceed.{0,30}context/i, "context_overflow"],
+  [BILLING_WORDS, "quota"],
   [/unauthori[sz]ed|forbidden|invalid.{0,12}(api.?key|token|credential)|expired.{0,12}token|no credentials/i, "auth"],
-  [/quota|billing|insufficient.{0,10}(credit|balance|funds)|payment/i, "quota"],
+  [SIGNED_OUT_WORDS, "auth"],
+  [/quota|payment/i, "quota"],
   [/econnreset|etimedout|socket|terminated|stream (ended|closed|broke|went silent)|premature close|fetch failed|network|timed? ?out/i, "stream_drop"],
   [/internal server error|service unavailable|bad gateway/i, "server"],
 ];
@@ -59,10 +62,11 @@ export function errorClass(e: unknown): ErrorClass | null {
   if (err.name === "AbortError" || err.name === "TimeoutError") return "stream_drop";
   const status = Number(err.status ?? err.statusCode ?? 0);
   const msg = String(err.message ?? err ?? "");
-  if (status === 429) return "rate_limit";
+  // An account out of credit, in any 4xx (as src/providers/http.ts classify reads it), and a 429 in quota words.
+  if (status === 402 || (status >= 400 && status < 500 && BILLING_WORDS.test(msg))) return "quota";
+  if (status === 429) return /quota|credit|balance/i.test(msg) ? "quota" : "rate_limit";
   if (status === 529) return "overloaded";
   if (status === 401 || status === 403) return "auth";
-  if (status === 402) return "quota";
   if (status === 413) return "context_overflow";
   if (status === 408) return "stream_drop";
   // (A 503 is the model at capacity only when its words say so, as src/providers/http.ts classify reads it.)
@@ -71,3 +75,28 @@ export function errorClass(e: unknown): ErrorClass | null {
   for (const [re, c] of WORDS) if (re.test(msg)) return c;
   return "other";
 }
+
+// The account state a failure says, when it says one: a refused or missing
+// sign-in ("auth"), an account out of credit or suspended for billing
+// ("billing"), or a model the account may not use ("access", that model's
+// alone). Billing only in a provider's phrase or code, or the provider's own
+// 402 (a web page sent as a 402 is a proxy's, not the account's word). A 403
+// is the route's sign-in only in words of a credential or a sign-in: one that
+// refuses a permission is the model's, or nothing of the account. A 429 in
+// quota words without billing words is a plan's usage window, which passes
+// by itself: not an account state.
+export function accountState(e: unknown): "auth" | "billing" | "access" | undefined {
+  const c = errorClass(e);
+  const err = e as any;
+  const status = Number(err?.status ?? err?.statusCode ?? 0);
+  const msg = String(err?.message ?? err ?? "");
+  if (c === "quota") {
+    if (BILLING_WORDS.test(msg)) return "billing";
+    return status === 402 && !PAGE.test(msg) ? "billing" : undefined;
+  }
+  if (c !== "auth") return ACCESS_WORDS.test(msg) && (status === 403 || !status) ? "access" : undefined;
+  if (status === 403 && !CREDENTIAL_WORDS.test(msg) && !SIGNED_OUT_WORDS.test(msg)) return ACCESS_WORDS.test(msg) ? "access" : undefined;
+  return "auth";
+}
+// A web page as a reply's body, as the stored text carries it ("P: HTTP 402: <html>...").
+const PAGE = /(?:^|: )\s*<(?:!doctype|html|head|body|title)\b/i;

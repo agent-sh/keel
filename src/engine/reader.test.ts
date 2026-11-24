@@ -89,6 +89,17 @@ const host = (fail: Set<string>, seen: string[], refuse = new Set<string>()): Re
   },
 });
 
+test("a reader whose route takes no work is not asked: the next choice reads, and the line names it", async () => {
+  const text = lines(5_000).replace("line 3 ", "MARKER ");
+  const seen: string[] = [];
+  const h = { ...host(new Set(), seen), shut: (m: { id: string }) => (m.id === "p:small" ? "P is out of credit or suspended for billing: no balance" : undefined) };
+  const o = await readMaterial(h, [{ source: "a.log", text }], "where is the marker?", new AbortController().signal);
+  expect(seen.some((s) => s.startsWith("p:small"))).toBe(false);
+  expect(o.models).toEqual(["older"]);
+  expect(o.skipped).toEqual(["small (P is out of credit or suspended for billing: no balance)"]);
+  expect(coverageNote(o, 1)).toContain("Not asked to read, their routes take no work now: small (P is out of credit");
+});
+
 test("a failed reader hands its part to the next choice; the findings are compiled; a part every choice failed on is named", async () => {
   const text = (marked: boolean) => lines(5_000).replace("line 3 ", marked ? "MARKER " : "line 3 ");
   const seen: string[] = [];

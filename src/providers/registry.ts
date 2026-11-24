@@ -26,6 +26,8 @@ import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus,
 import { XaiProvider } from "./xai.ts";
 import { AcpProvider } from "../acp/agents.ts";
 import { runMode } from "../core/runmode.ts";
+import { accountState } from "../admin/classes.ts";
+import { shutFor, SHUT_TRY_MS } from "./account.ts";
 
 const LISTING_MAX_AGE = 30 * 60_000;
 
@@ -46,7 +48,10 @@ export type Choices = { default?: string; hidden: Record<string, string[]>; hidd
 // An account state the owner has to act on: a refused credential, or turns
 // refused over billing. Kept (also across restarts) until a call succeeds, so
 // Settings says it once instead of every turn failing anew.
-export type Problem = { kind: "auth" | "billing"; message: string; at: number; source: "listing" | "turn"; link?: string };
+// An account problem of a provider, a route of it or one model (`model:<provider>:<model>`).
+// `until`: new work passes it over until then (src/providers/account.ts shutFor); `strikes`: how
+// many times in a row it was marked, each past the time of the one before.
+export type Problem = { kind: "auth" | "billing" | "access"; message: string; at: number; source: "listing" | "turn"; link?: string; until?: number; strikes?: number };
 
 // Keep each provider's listing timeouts in their own recoverable group.
 const timeoutGroup = (id: string) => `provider listing timeout: ${Bun.hash(id).toString(16).replace(/\d/g, (n) => String.fromCharCode(103 + Number(n)))}`;
@@ -55,6 +60,10 @@ const USAGE_MAX_AGE = 60_000;
 type ListingResult = { ok: true } | { ok: false; error: unknown };
 
 type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown, at?: { recovered?: true; group?: string }) => void; recover?: (group: string) => void; providers?: Provider[] };
+
+// When a problem stops gating new work: its own time, or (a mark saved before marks had one) the
+// first time from when it was made.
+const untilOf = (p: Problem) => p.until ?? p.at + shutFor(1);
 
 // A key read this recently is not read again by the refresh that asked for it.
 const JUST_LOOKED_MS = 1000;
@@ -78,6 +87,8 @@ export class Providers {
   readonly limits = new Limits();
   private usageAt = new Map<string, number>();
   private problems = new Map<string, Problem>();
+  // A mark past its time that a choice of new work is trying again, and since when (shut).
+  private trying = new Map<string, number>();
   readonly probes: Probes;
   // The providers that cannot be reached now, and the wait their sessions share (src/providers/outage.ts).
   readonly outages: Outages;
@@ -116,16 +127,85 @@ export class Providers {
     return this.problems.get(id);
   }
 
+  // The account a model is billed and signed in through: its provider's, or one route of it where
+  // one provider reaches several accounts (an ACP agent and its upstream, a scripted stand-in).
+  // Account problems of a turn are kept by it.
+  routeOf(model: string): string {
+    const pid = model.slice(0, Math.max(0, model.indexOf(":")));
+    return this.get(pid)?.accountOf?.(model.slice(pid.length + 1)) ?? pid;
+  }
+
+  // What its last answer said keeps a model's route from taking work: a refused or missing sign-in,
+  // an account out of credit or suspended, or the model refused to the account. Each mark holds for
+  // its time (`until`); past it the route takes work again, and the first request clears the mark
+  // or marks it again for longer (note). An answer on the route clears it at once.
+  // Past its time, the first choice to ask takes the route and the others pass it over until that
+  // try is answered (account.ts SHUT_TRY_MS): every call is a choice that would send on the route.
+  shut(model: string, now = Date.now()): (Problem & { route: string; label: string; trying?: boolean }) | undefined {
+    const pid = model.slice(0, Math.max(0, model.indexOf(":")));
+    const route = this.routeOf(model);
+    const label = this.get(pid)?.label ?? pid;
+    // (A provider's listing refused is every route's; a turn's refusal is its own route's.)
+    const listed = this.problems.get(pid);
+    const routeKey = this.problems.has(route) ? route : route !== pid && listed?.source === "listing" ? pid : undefined;
+    const marks = [[`model:${model}`, `model:${model}`], [routeKey, route]] as const;
+    for (const [key, shown] of marks) {
+      const p = key ? this.problems.get(key) : undefined;
+      if (p && untilOf(p) > now) return { ...p, until: untilOf(p), route: shown, label };
+    }
+    const tries: string[] = [];
+    for (const [key, shown] of marks) {
+      const p = key ? this.problems.get(key) : undefined;
+      if (!p || !key) continue;
+      const since = this.trying.get(key);
+      if (since !== undefined && now - since < SHUT_TRY_MS) return { ...p, until: untilOf(p), route: shown, label, trying: true };
+      tries.push(key);
+    }
+    for (const key of tries) this.trying.set(key, now);
+    return undefined;
+  }
+
+  // A provider's account problems below the provider itself: each route of it and each model
+  // refused, for the Providers view. `open`: past its time, the next request decides.
+  routeProblems(pid: string, now = Date.now()): (Problem & { route: string; open: boolean })[] {
+    const out: (Problem & { route: string; open: boolean })[] = [];
+    for (const [k, p] of this.problems) {
+      if (!k.startsWith(`${pid}:`) && !k.startsWith(`model:${pid}:`)) continue;
+      out.push({ ...p, until: untilOf(p), route: k, open: untilOf(p) <= now });
+    }
+    return out.sort((a, b) => b.at - a.at);
+  }
+
+  // The end of a turn another harness ran on a model (an ACP agent's): its failure or its answer is
+  // the route's last answer, as a request of Keel's own is.
+  turnAnswered(model: string, e?: unknown) {
+    const route = this.routeOf(model);
+    if (e === undefined) { this.cleared(route); this.cleared(`model:${model}`); }
+    else this.note(route, e, "turn", model);
+  }
+
   // A refused credential or billing, from a listing or a turn; anything else is not an account state.
-  private note(id: string, e: unknown, source: Problem["source"]) {
+  // `model`: the model a turn asked for; a refusal of that model alone is kept by it.
+  private note(id: string, e: unknown, source: Problem["source"], model?: string) {
     // No key at all is a provider that is not set up, not a key that was refused.
-    if (!(e instanceof ProviderError) || e instanceof NoKey) return;
-    const billing = e.kind === "quota" && e.status !== 429;
-    if (e.kind !== "auth" && !billing) return;
-    const link = /https:\/\/[^\s"'<>)]+/.exec(e.message)?.[0]?.replace(/[.,]$/, "");
-    const p: Problem = { kind: billing ? "billing" : "auth", message: e.message, at: Date.now(), source, link };
+    if (e instanceof NoKey) return;
+    const state = accountState(e);
+    if (!state) return;
+    if (state === "access") {
+      if (!model) return;
+      id = `model:${model}`;
+    }
+    const now = Date.now();
+    const message = String((e as Error)?.message ?? e);
+    const link = /https:\/\/[^\s"'<>)]+/.exec(message)?.[0]?.replace(/[.,]$/, "");
     const prev = this.problems.get(id);
-    if (prev?.message === p.message && prev.source === p.source) return;
+    this.trying.delete(id);
+    // Inside its time a failure keeps the mark's time; past it, the request that failed marks it
+    // again for twice as long.
+    const live = !!prev && untilOf(prev) > now;
+    if (live && prev.kind === state && prev.message === message && prev.source === source) return;
+    const strikes = live ? (prev.strikes ?? 1) : (prev?.strikes ?? 0) + 1;
+    const p: Problem = { kind: state, message, at: now, source, link, until: live ? untilOf(prev) : now + shutFor(strikes), strikes };
     this.problems.set(id, p);
     this.saveProblems();
   }
@@ -134,6 +214,7 @@ export class Providers {
     const p = this.problems.get(id);
     if (!p || (source && p.source !== source)) return;
     this.problems.delete(id);
+    this.trying.delete(id);
     this.saveProblems();
   }
 
@@ -580,11 +661,12 @@ export class Providers {
           }
           // Only an API reply or successful listing releases unrelated waiters.
           p.broker?.noteRefusal(e);
-          this.note(p.id, e, "turn");
+          this.note(p.accountOf?.(req.model) ?? p.id, e, "turn", `${p.id}:${req.model}`);
           throw billed(e);
         }
         onAnswer();
-        this.cleared(p.id);
+        this.cleared(p.accountOf?.(req.model) ?? p.id);
+        this.cleared(`model:${p.id}:${req.model}`);
         const origin = `${p.id}:${req.model}`;
         for (const b of res.blocks) if ((b.type === "thinking" || b.type === "tool_use" || b.type === "text") && !b.origin && (b.type === "thinking" || b.signature)) b.origin = origin;
         res.usage = bill(res.usage, res.served);

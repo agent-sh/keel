@@ -26,6 +26,7 @@ import type { AssistantBlock, ErrorRecord, Message, QueueItem, Session, StoredEv
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
+import { shutWords } from "../providers/account.ts";
 import { EFFORT_LADDER, type ModelInfo, type Price, type Provider, type ProviderRequest, type ProviderResult } from "../providers/types.ts";
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
@@ -1072,6 +1073,8 @@ export class Engine {
     if (!s) return undefined;
     for (const m of choices) {
       if (signal.aborted) return undefined;
+      // (A route out of credit or signed out would refuse at once.)
+      if (this.providers.shut(m.id)) continue;
       try {
         const { provider, info } = await this.providers.resolve(m.id);
         const effort = ["none", "minimal", "low"].find((e) => info.efforts.includes(e));
@@ -1968,6 +1971,13 @@ export class Engine {
     const cachedAt = Math.max(lastWarm(this.lineage(id), st.info.id), this.cachePlans.warmedAt(id, st.info.id));
     const why = movesToFallback({ ...f, cacheMs: req.cacheMs, cachedAt, now });
     if (!why) return undefined;
+    // A fallback whose route its last answer shut (out of credit, signed out) would refuse the turn at
+    // once: the turn waits for its own model instead, and the session's errors say why (one row a cause).
+    const shut = shutWords(this.providers.shut(fb));
+    if (shut) {
+      this.errors.capture("provider", new Error(`The fallback ${fb} was skipped for an overloaded model: ${shut}`), { session: id, at: "the fallback model for an overloaded one", fallback: fb });
+      return undefined;
+    }
     let to: Step;
     try {
       to = await this.step(session, fb);
@@ -2381,8 +2391,12 @@ export class Engine {
       });
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : r.reason;
       if (r.usage) { usage = r.usage; this.store.addUsage(id, usage); this.emitSession(id); }
+      // (It answered: an account problem its route had is over. A test's stand-in registry may keep none.)
+      if (!signal.aborted) this.providers.turnAnswered?.(session.model);
     } catch (e) {
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : "error";
+      // Its failure is the route's last answer: out of credit or signed out, no new work starts on it.
+      if (!signal.aborted) this.providers.turnAnswered?.(session.model, e);
       if (!signal.aborted) throw e;
     } finally {
       this.deltas.end(id);
@@ -4171,6 +4185,7 @@ export class Engine {
       // Only models of the providers the session's folder allows read for it (src/safety/content-routes.ts).
       models: async () => allowedOnly(routeOf(this.store, id), await this.providers.models()),
       current: async () => (await this.providers.resolve(session.model)).info,
+      shut: (m) => shutWords(this.providers.shut(m.id)),
       listPrice: (m) => this.providers.catalog.lookup(m.model)?.price,
       capture: (e, c) => this.errors.capture("provider", e, { session: id, ...c }),
       progress: callId ? (p) => this.bus.emit({ t: "feature", name: "readers", session_id: id, data: { call_id: callId, ...p } }) : undefined,

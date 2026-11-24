@@ -41,7 +41,9 @@ import { checkpointAt } from "../engine/compact.ts";
 import { isWay, WAY_WORDS, type Way } from "../engine/follow-up.ts";
 import { readerFor, readRunsOf } from "../engine/read-run.ts";
 import { smallModels } from "../engine/readers.ts";
-import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, otherFamily, parentLine, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
+import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, parentLine, successorOrder, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
+import { firstOpen, skippedWords } from "../providers/account.ts";
+import { routeShut } from "./incidents.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
 import { agentMemory, memoryDir, memoryOff, memoryOver, SCOPES, type MemoryScope } from "./agent-memory.ts";
@@ -617,6 +619,19 @@ async function pickModel(parent: Session, want?: string): Promise<string> {
   throw new Error(`no listed model matches "${want}"; omit model to use the session's own`);
 }
 
+// The model an agent starts on, past a route that takes no work now (its account out of credit,
+// suspended or signed out: it would fail at once). The parent's own model is never passed over: the
+// parent's turn answers on it. A model the call named is refused with why, so the caller picks
+// another; a definition's model is passed over for the parent's, said in the parent's failures.
+function openModel(parent: Session, asked: string, named: boolean, title: string): string {
+  if (asked === parent.model) return asked;
+  const why = routeShut(asked);
+  if (!why) return asked;
+  if (named) throw new Error(`${asked} takes no work now: ${why}. Name another model, or omit model to use the session's own.`);
+  failures.record(parent.id, { kind: "provider", cls: "route_shut", message: `Agent "${title}" was started on ${parent.model}, not on its definition's ${skippedWords([{ model: asked, why }])}` });
+  return parent.model;
+}
+
 // --- permissions ---------------------------------------------------------------
 
 // A child never runs in a mode that asks less than its parent's (plan and
@@ -960,6 +975,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     if (input.model || !allows(route, providerOf(parent.model))) throw Object.assign(new RouteRefused(cross), { status: 409 });
     model = parent.model;
   }
+  // A route out of credit, suspended or signed out takes no new work (src/providers/account.ts).
+  model = openModel(parent, model, !input.fork && !!input.model, agentTitle(input));
   const { info } = await D().providers.resolve(model);
   if (signal?.aborted) throw new Error("cancelled");
   await checkUsd(mergeBudget(def.budget, parseBudget(input.budget)), model, info);
@@ -2193,14 +2210,20 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   const category = refusal?.data.stop_details?.category ? String(refusal.data.stop_details.category).slice(0, 60) : undefined;
   const plan = decideSuccessor(loss, lost, info.family);
   if (!plan.go) return { note: givenUpNote({ why: plan.why, lost }) };
-  let model = a.model;
-  if (plan.switchFamily) {
-    // Only models of the providers the folder allows (src/safety/content-routes.ts).
-    const models = allowedOnly(routeOf(store, a.session_id), await providers.models());
-    const other = otherFamily(models.map((m) => ({ id: m.id, provider: m.provider, family: m.family, tools: m.tools, release: m.release })), { current: a.model, avoid: plan.avoid, parent: parent.model, preferred: await providers.namedDefault().catch(() => undefined) });
-    if (!other) return { note: givenUpNote({ why: `the model declined it twice, and no listed model of another family than ${plan.avoid.join(" and ")} takes tools`, lost }) };
-    model = other;
+  // The lost model, or after a second refusal one of another family; a route whose account is out
+  // of credit, suspended or signed out is passed over for the next (it would fail at once), and said.
+  // Only models of the providers the folder allows (src/safety/content-routes.ts).
+  const models = allowedOnly(routeOf(store, a.session_id), await providers.models());
+  const order = successorOrder(models.map((m) => ({ id: m.id, provider: m.provider, family: m.family, tools: m.tools, release: m.release })), { current: a.model, family: info.family, switchFamily: plan.switchFamily, avoid: plan.avoid, parent: parent.model, preferred: await providers.namedDefault().catch(() => undefined) });
+  const pick = firstOpen(order, routeShut);
+  if (pick.skipped.length) failures.record(a.parent_id, { kind: "provider", cls: "route_shut", message: `A fresh context of agent "${a.title}" was not started on ${skippedWords(pick.skipped)}`, ref: { id: a.id, label: a.title } }, a.session_id);
+  if (!pick.model) {
+    const why = plan.switchFamily && !order.length ? `the model declined it twice, and no listed model of another family than ${plan.avoid.join(" and ")} takes tools`
+      : `every model it could go on has a route that takes no work now: ${skippedWords(pick.skipped)}`;
+    return { note: givenUpNote({ why, lost }) };
   }
+  const model = pick.model;
+  const otherFamily = model !== a.model && (models.find((m) => m.id === model)?.family ?? info.family) !== info.family;
   const { head, task, base, steers } = taskOf(a, got.events);
   // A declined brief is restated (what the work builds or checks) by a small model that reads the task alone.
   const reworded = loss === "refusal" ? await engine.reword(a.session_id, model, task, AbortSignal.timeout(120_000)).catch(() => undefined) : undefined;
@@ -2253,8 +2276,8 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   const g = perm.gate;
   if (g) g.setPerm(child.id, g.perm(old.id), g.tieOf(old.id));
   bus.emit({ t: "session", session: store.session(child.id)! });
-  const line = parentLine({ title: attr(a.title), id: a.id, loss, category, n: plan.n, model, moved: plan.switchFamily });
-  activity.record("agent", "successor", a.parent_id, `Agent "${a.title}" lost its context (${LOSS_WORDS[loss]}); successor ${plan.n} started on ${model}`, { agent_id: a.id, child_session: child.id, lost_session: a.session_id, loss, ...(category ? { category } : {}), model });
+  const line = parentLine({ title: attr(a.title), id: a.id, loss, category, n: plan.n, model, moved: otherFamily, skipped: pick.skipped });
+  activity.record("agent", "successor", a.parent_id, `Agent "${a.title}" lost its context (${LOSS_WORDS[loss]}); successor ${plan.n} started on ${model}${pick.skipped.length ? `, skipping ${skippedWords(pick.skipped)}` : ""}`, { agent_id: a.id, child_session: child.id, lost_session: a.session_id, loss, ...(category ? { category } : {}), model, ...(pick.skipped.length ? { skipped: pick.skipped } : {}) });
   emit("agent", brief(get(a.id)!));
   // The parent hears one line, with its next input: nothing for it to act on.
   deliver(a.parent_id, line, { kind: "harness", agent_id: a.id, successor: plan.n }, { ride: true });

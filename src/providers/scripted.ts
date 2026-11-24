@@ -133,6 +133,11 @@ export class ScriptedProvider implements Provider {
     return scriptedEnabled();
   }
 
+  // The stand-in of each family stands for its vendor's route, with an account of its own; the rest are one.
+  accountOf(model: string): string | undefined {
+    return FAMILY_STAND_INS.some((f) => f.model === model) ? `${this.id}:${model}` : undefined;
+  }
+
   wireOf(model: string): Wire | undefined {
     return FAMILY_STAND_INS.find((m) => m.model === model)?.wire;
   }

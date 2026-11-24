@@ -13,7 +13,8 @@
 // the judge's verdicts, stall rows of the errors table, the start record of
 // a daemon that went down by itself, and the store's disk state.
 import { restarts } from "../admin/life.ts";
-import { classOfText } from "../admin/classes.ts";
+import { classOfText, errorClass } from "../admin/classes.ts";
+import { shutWords } from "../providers/account.ts";
 import { span } from "../core/watch.ts";
 import type { Outage } from "../providers/outage.ts";
 import { bodyOf, causeOfClass, IncidentBook, lineOf, owesAlert, titleOf, wentDownByItself, type Hit, type Incident } from "./incident-book.ts";
@@ -43,6 +44,19 @@ const who = (id: string) => {
 };
 const providerOf = (model: string) => (model.includes(":") ? model.slice(0, model.indexOf(":")) : model);
 const labelOf = (id: string) => D().providers.get(id)?.label ?? id;
+const routeLabel = (pid: string, route: string) => (route === pid ? labelOf(pid) : `${labelOf(pid)} (${route.slice(route.indexOf(":") + 1)})`);
+
+// Why new work is not started on a model's route now: its last answer said its account is out of
+// credit, suspended or signed out, or that the account may not use the model, and the mark's time
+// has not passed (the registry keeps it, src/providers/registry.ts shut). Nothing: it takes work.
+// A successor, an agent, a reader and an overload fallback are not started on such a route
+// (src/providers/account.ts firstOpen). The account incident is the owner's alert, not a gate: it
+// would hold the route shut with no request to clear it.
+export function routeShut(model: string): string | undefined {
+  try {
+    return shutWords(D().providers.shut(model));
+  } catch (e) { capture(e, { at: "route shut", model }); return undefined; }
+}
 
 const UPSERT = `INSERT INTO activity (id, ts, kind, sub, session_id, text, data) VALUES (?, ?, 'daemon', 'incident', NULL, ?, ?)
   ON CONFLICT(id) DO UPDATE SET text = excluded.text, data = excluded.data`;
@@ -113,19 +127,24 @@ export function onTurnEnd(sessionId: string, reason: string) {
     if (!s?.model) return;
     const pid = providerOf(s.model);
     const at = Date.now();
+    // An account is its route's (one provider can reach several: an ACP agent's upstreams).
+    const route = D().providers.routeOf(s.model);
     if (reason === "error") {
       const row = store.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'error' ORDER BY seq DESC LIMIT 1").get(sessionId);
-      const message = row ? String(JSON.parse(row.data).message ?? "") : "";
-      const cls = classOfText(message);
+      const data = row ? JSON.parse(row.data) : {};
+      const message = String(data.message ?? "");
+      // (The driver's own kind and status, where the event kept them, else the stored words.)
+      const cls = typeof data.kind === "string" ? errorClass({ kind: data.kind, status: data.status, message }) ?? classOfText(message) : classOfText(message);
       const cause = causeOfClass(cls);
       if (!cause) return;
-      hit({ key: `${cause}:${pid}`, cause, label: labelOf(pid), cls, at, message, session: who(sessionId), failed: true });
+      const key = cause === "account" ? `account:${route}` : `provider:${pid}`;
+      hit({ key, cause, label: cause === "account" ? routeLabel(pid, route) : labelOf(pid), cls, at, message, session: who(sessionId), failed: true });
       return;
     }
     if (reason !== "end_turn" && reason !== "max_tokens") return;
     changed(book().answered(`provider:${pid}`, "it answers again", at));
-    // (A credential that went through works now: an account's incident ends at the first turn on it.)
-    changed(book().clear(`account:${pid}`, "a turn on it went through", at));
+    // (A credential that went through works now: an account's incident ends at the first turn on its route.)
+    changed(book().clear(`account:${route}`, "a turn on it went through", at));
   } catch (e) { capture(e, { at: "incident turn end", session: sessionId }); }
 }
 

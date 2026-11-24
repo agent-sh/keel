@@ -34,6 +34,8 @@ export type ReaderHost = {
   capture(e: unknown, context: Record<string, unknown>): void;
   progress?(p: ReadProgress): void;
   env?: Record<string, string | undefined>;
+  // Why a model's route takes no work now (out of credit, suspended, signed out: src/providers/account.ts), else nothing.
+  shut?(m: ModelInfo): string | undefined;
 };
 
 export type PartState = { k: number; covers: string; chars: number; model?: string; state: "waiting" | "reading" | "read" | "nothing" | "unread"; error?: string };
@@ -55,6 +57,7 @@ export type ReadOutcome = {
   // the preview in `text` shows whole, shows the start of, and leaves out.
   uncompiled?: { findings: string; error: string; whole: number; cut: number; left: number };
   checked?: Checked;       // the answer held against the material
+  skipped?: string[];      // reader choices whose route takes no work now, each with why
 };
 
 const short = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 200);
@@ -112,6 +115,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   let partTokens = 0;
   const used = new Set<string>();
   const billed = new Set<string>();
+  const skipped = new Map<string, string>();
   const tell = (compiling = false) => { try { host.progress?.({ parts: parts.map((p) => ({ ...p })), compiling }); } catch (e) { host.capture(e, { at: "reader progress" }); } };
 
   // One request, through the choices in order; the failure of each is captured once.
@@ -121,6 +125,9 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     for (const m of choices) {
       if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
       if (!holds(m, prompt)) { last = `${m.name}: the request is over its window (${m.context} tokens)`; continue; }
+      // A route its last answer shut (out of credit, signed out) is not asked: it would refuse at once.
+      const shut = host.shut?.(m);
+      if (shut) { last = `${m.name}: skipped, ${shut}`; skipped.set(m.id, `${m.name} (${shut})`); continue; }
       sent = true;
       onModel?.(m);
       try {
@@ -238,6 +245,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   return {
     text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled, ...(uncompiled ? { uncompiled } : {}), ...(text ? { checked: checkAnswer(text, kept, readSpans) } : {}),
     ...(billed.size === 1 && billed.has("subscription") ? { plan: true } : {}),
+    ...(skipped.size ? { skipped: [...skipped.values()] } : {}),
     working: { model: cur.name, tokens: Math.round(tokens), cost: rate === undefined || cur.billing !== "per_token" ? undefined : (tokens * rate) / 1e6 },
   };
 }
@@ -276,6 +284,7 @@ export function coverageNote(o: ReadOutcome, sources: number, saved?: string, fi
   }
   const checked = o.checked ? checkedNote(o.checked, o.uncompiled ? "preview" : "answer") : "";
   if (checked) lines.push(checked);
+  if (o.skipped?.length) lines.push(`[Not asked to read, their routes take no work now: ${o.skipped.join("; ")}]`);
   if (o.unread.length) lines.push(`[Not read, so not covered by this answer:\n- ${o.unread.join("\n- ")}]`);
   return lines.join("\n");
 }

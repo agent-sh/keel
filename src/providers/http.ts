@@ -4,6 +4,7 @@ import { keyShaped } from "../core/conceal.ts";
 import { chunks } from "../core/proc.ts";
 import { EventStreamDecoder } from "./aws.ts";
 import { directBrokerOrigin, refusedOrigins } from "./broker-address.ts";
+import { BILLING_WORDS } from "./account.ts";
 import { gatewayDown, neverSent } from "./unreachable.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
 import { keptHeaders, redactHeaders, requestId, safeUrl, wire } from "./wiretap.ts";
@@ -87,7 +88,12 @@ export function classify(label: string, status: number, headers: Headers, body: 
   // failure of this machine, not a refusal of the credential: it is tried
   // again like a dropped connection. A refused credential says nothing of time.
   if ((status === 401 || status === 403) && /did not answer in time|timed? ?out/.test(low)) return new ProviderError("network", text, status);
+  // An account out of credit or suspended for billing, in any 4xx its provider sends it as (Anthropic's is a 400, a key suspended for billing a 403),
+  // in a provider's phrase or code only (src/providers/account.ts).
+  if (status !== 429 && status >= 400 && status < 500 && BILLING_WORDS.test(low)) return new ProviderError("quota", text, status, wait);
   if (status === 401 || status === 403) return new ProviderError("auth", text, status);
+  // A 402 is the account's when the provider sent it; a web page sent as one is a proxy's, said as it is.
+  if (status === 402 && startsHtml(body)) return new ProviderError("invalid", text, status);
   if (status === 402 || /insufficient_quota|quota|billing|credit|balance|usage limit|plan limit/.test(low) && status === 429)
     return new ProviderError("quota", text, status, wait);
   // A model the plan does not include, sent as a 429 by some plans: waiting does not help.

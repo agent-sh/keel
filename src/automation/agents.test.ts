@@ -85,7 +85,7 @@ let nextPlan: any;
 const bus = new Bus();
 // (The providers whose outage is open: src/providers/outage.ts.)
 const outageOpen = new Set<string>();
-const baseDeps = { store, bus, errors: { capture() {} }, engine, providers: { models: async () => [], resolve: async () => ({ info: {} }), current: () => [], outages: { active: (id: string) => outageOpen.has(id) } } } as any;
+const baseDeps = { store, bus, errors: { capture() {} }, engine, providers: { models: async () => [], resolve: async () => ({ info: {} }), current: () => [], namedDefault: async () => undefined, routeOf: (m: string) => m, shut: () => undefined, outages: { active: (id: string) => outageOpen.has(id) } } } as any;
 setDeps(baseDeps);
 store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT"); // the fleet adds it in the daemon
 agents.migrate();

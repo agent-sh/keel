@@ -63,3 +63,35 @@ test("limits: windows in Settings, account states, the chip by the picker", asyn
     await request.delete(`/api/sessions/${clear}`);
   }
 });
+
+// One route of a provider refused over billing (here the scripted Claude stand-in, an account of its
+// own) is shown under its provider with how long new work passes it over; an answer on it clears it.
+test("limits: a route of a provider out of credit is shown under it until it answers", async ({ page, request }) => {
+  const ROUTE = "scripted:claude-stand-in";
+  const { models } = await (await request.get("/api/models")).json();
+  test.skip(!models.some((m: any) => m.id === ROUTE), "needs the scripted Claude stand-in: the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const routes = async () => ((await (await request.get("/api/providers")).json()).providers as any[]).find((p) => p.id === "scripted")?.routes as any[] ?? [];
+  const t = (await (await request.post("/api/sessions", { data: { model: ROUTE, title: "A route out of credit", text: "script:billing" } })).json()).session;
+  try {
+    await expect.poll(async () => (await routes()).find((r) => r.route === ROUTE)?.kind, { timeout: 30_000 }).toBe("billing");
+    const r = (await routes()).find((r) => r.route === ROUTE);
+    // Passed over for the first time a mark holds (15 minutes), not for good.
+    expect(r.open).toBe(false);
+    expect(r.until - r.at).toBe(15 * 60_000);
+    await page.goto("/settings/providers");
+    const note = page.locator(`[data-provider="scripted"] [data-testid="route-problem"][data-route="${ROUTE}"]`);
+    await expect(note).toBeVisible();
+    await expect(note).toContainText("claude-stand-in");
+    await expect(note).toContainText("New work passes it over for");
+    await note.scrollIntoViewIfNeeded();
+    await shoot(page, "limits-03-route");
+    // A turn on the route that goes through clears it, here and in the view.
+    await request.post(`/api/sessions/${t.id}/messages`, { data: { text: "Say anything." } });
+    await expect.poll(async () => (await routes()).some((r) => r.route === ROUTE), { timeout: 30_000 }).toBe(false);
+    await page.reload();
+    await expect(page.getByTestId("providers-panel")).toBeVisible();
+    await expect(note).toHaveCount(0);
+  } finally {
+    await request.delete(`/api/sessions/${t.id}`);
+  }
+});

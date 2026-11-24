@@ -88,3 +88,66 @@ test("a declined agent goes on in a fresh context, moves family after a second r
   await card.getByTestId("agent-lost").scrollIntoViewIfNeeded();
   await shoot(page, "successor-02-lost");
 });
+
+// A route whose account its last answer said is out of credit is not chosen for a successor: the
+// choice passes it over for the next route, and the parent's line and failures say which and why.
+// The parent runs on the Claude stand-in, an account of its own: nothing else of the run answers on it,
+// so its mark holds until the successor is chosen.
+test("a successor is not started on a route out of credit: it starts on the next, and says what it skipped", async ({ request }) => {
+  const PARENT = "scripted:claude-stand-in";
+  test.setTimeout(150_000);
+  const api = async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") => (await request.fetch(path, { method, ...(body === undefined ? {} : { data: body }) })).json();
+  const models = (await api("/api/models")).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === WORKER) || !models.some((m) => m.id === PARENT), "needs the scripted GPT stand-in: the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const repo = join(DEV, `repo-credit-${Date.now()}`);
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "README.md"), "# successor\n");
+  git(repo, "add", "-A");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "first");
+  const go = join(repo, "..", `go-${Date.now()}`);
+  const turnOver = async (id: string) => { const d = await api(`/api/sessions/${id}`); return !d.running && d.events.at(-1)?.kind === "turn_end"; };
+
+  const { session } = await api("/api/sessions", { model: PARENT, title: "Successor past a route out of credit", workspace: repo });
+  let other: string | undefined;
+  try {
+    await api(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+    // The worker waits for the spec before it declines: by then the parent's route is out of credit.
+    const gate = { name: "Bash", input: { command: `while [ ! -f ${go} ]; do sleep 0.2; done; echo go` } };
+    await api(`/api/sessions/${session.id}/messages`, { text: calls([{ name: "Agent", input: { description: "Wait for the go", prompt: `Wait for the go\n${calls([gate])}\nscript:then-refuse`, model: WORKER, run_in_background: true } }]) });
+    const agent = async () => (await api(`/api/sessions/${session.id}/agents`)).agents[0];
+    await expect.poll(async () => (await agent())?.status, { timeout: 30_000 }).toBe("running");
+    await expect.poll(() => turnOver(session.id), { timeout: 30_000 }).toBe(true);
+    // Another session on the parent's route is refused over billing: the route's last answer.
+    other = (await api("/api/sessions", { model: PARENT, title: "Out of credit", text: "script:billing" })).session.id;
+    await expect.poll(async () => ((await api(`/api/sessions/${other}`)).events as any[]).some((e) => e.kind === "error" && /credit balance/.test(String(e.data.message))), { timeout: 30_000 }).toBe(true);
+    // The parent's route is marked under its provider, for a time.
+    const marked = ((await api("/api/providers")).providers as any[]).find((p) => p.id === "scripted")?.routes?.find((r: any) => r.route === PARENT);
+    expect(marked?.kind).toBe("billing");
+    expect(marked.open).toBe(false);
+    expect(marked.until).toBeGreaterThan(Date.now());
+    writeFileSync(go, "go\n");
+
+    await expect.poll(async () => (await agent())?.status, { timeout: 120_000 }).toBe("incomplete");
+    const a = await agent();
+    expect(a.lost.map((l: any) => [l.kind, l.model])).toEqual([["refusal", WORKER], ["refusal", WORKER]]);
+    // The second refusal moves family; the parent's model is out of credit, so the next route took it.
+    expect(a.model).not.toBe(PARENT);
+    expect(a.model).not.toBe(WORKER);
+    const heard = async () => ((await api(`/api/sessions/${session.id}`)).events as any[]).filter((e) => e.kind === "user").map((e) => String(e.data.text ?? "")).join("\n");
+    await expect.poll(heard, { timeout: 30_000 }).toContain('status="incomplete"');
+    const said = await heard();
+    expect(said).toContain(`on ${a.model}, a model of another family`);
+    expect(said).toMatch(new RegExp(`It skipped ${PARENT} \\(Scripted \\(test\\) \\(claude-stand-in\\) is out of credit or suspended for billing; tried again in \\d+ min: Scripted: your credit balance is too low`));
+    // The parent's failures say it too.
+    const record = (await api(`/api/errors?session=${session.id}`)).failures as any[];
+    expect(record.some((g) => g.cls === "route_shut" && g.sample.includes(`was not started on ${PARENT}`))).toBe(true);
+    await expect.poll(() => turnOver(session.id), { timeout: 30_000 }).toBe(true);
+    // A turn on the route that goes through clears its mark.
+    await api(`/api/sessions/${other}/messages`, { text: "Say anything." });
+    await expect.poll(async () => ((await api("/api/providers")).providers as any[]).find((p) => p.id === "scripted")?.routes?.some((r: any) => r.route === PARENT), { timeout: 30_000 }).toBe(false);
+  } finally {
+    if (other) await request.delete(`/api/sessions/${other}`);
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});

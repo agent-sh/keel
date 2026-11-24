@@ -9,7 +9,7 @@ import { AddProviderHost, openAddProvider } from "./AddProvider.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ProviderModels } from "./ProviderModels.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
-import { ProblemNote, WindowMeter } from "./Limits.tsx";
+import { ProblemNote, RouteProblemNote, WindowMeter } from "./Limits.tsx";
 
 type Row = ProvidersReport["providers"][number];
 
@@ -27,6 +27,7 @@ function Dot({ tone }: { tone: "ok" | "warn" | "danger" | "off" }) {
 function tone(p: Row): "ok" | "warn" | "danger" | "off" {
   if (!p.available) return p.sign_in ? "warn" : "off";
   if (p.problem) return p.problem.kind === "billing" ? "warn" : "danger";
+  if (p.routes?.some((r) => !r.open)) return "warn";
   if (p.listing.state === "failed") return p.listing.models ? "warn" : "danger";
   return p.listing.models ? "ok" : "warn";
 }
@@ -127,6 +128,7 @@ function ProviderRow({ p }: { p: Row }) {
         {p.detail && <div className="truncate text-caption text-faint" title={p.detail}>{p.detail}{p.account ? ` · ${p.account}` : ""}</div>}
         {p.available && l.fetched_ms && l.state !== "failed" && <div className="text-micro text-faint">listed {ago(l.fetched_ms)}</div>}
         {p.available && p.problem && <ProblemNote p={p.problem} label={p.label} detail={p.problem.kind === "auth" ? p.detail : undefined} />}
+        {p.available && p.routes?.map((r) => <RouteProblemNote key={r.route} p={r} provider={p.id} />)}
         {p.available && l.state === "failed" && !listingSaid && (
           <div className="mt-0.5 text-caption text-danger" data-testid="listing-error">
             {l.models ? "The listing failed; the last good list is kept: " : "The listing failed: "}

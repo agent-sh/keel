@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { basename, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { commandsOf, listedOf, mergeChoices, type Learned, type SlashCommand } from "./choices.ts";
+import { commandsOf, listedOf, mergeChoices, splitModel, type Learned, type SlashCommand } from "./choices.ts";
 import { readFolders } from "./confine.ts";
 import { AcpConnection } from "./rpc.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
@@ -249,6 +249,15 @@ export class AcpProvider implements Provider {
 
   available() {
     return true;
+  }
+
+  // Each agent is an account of its own, and each upstream a choice of it names (an agent that routes
+  // to several providers lists its models as `<upstream>/<model>`): one can be out of credit while
+  // the others answer.
+  accountOf(model: string): string {
+    const { agent, choice } = splitModel(model);
+    const up = choice?.includes("/") ? choice.slice(0, choice.indexOf("/")) : "";
+    return `${this.id}:${agent}${up ? `/${up}` : ""}`;
   }
 
   // Each installed agent, and each model (else mode) it stated it offers
