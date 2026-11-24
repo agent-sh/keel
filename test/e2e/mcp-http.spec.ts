@@ -1,6 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import type { APIRequestContext } from "./isolate.ts";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { shoot } from "./shots.ts";
@@ -200,5 +201,39 @@ test("mcp sse: an old SSE-only server connects, named or found, and its tool run
   } finally {
     for (const n of names) await request.delete(`/api/mcp/servers/${n}`).catch(() => {});
     fx.kill();
+  }
+});
+
+// Feature: a remote server that is down when it is added comes back by itself. The panel says it is being tried
+// again and when; once the server listens, its tools are offered with no action from the owner.
+test("mcp http: a server that was down is connected again by itself", async ({ page, request }) => {
+  const name = "late-http";
+  const free = await new Promise<number>((res) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => res(p)); }); });
+  const row = async () => ((await (await request.get("/api/mcp/servers")).json()).servers as any[]).find((s) => s.name === name);
+  let fx: ReturnType<typeof spawn> | undefined;
+  try {
+    await request.delete(`/api/mcp/servers/${name}`).catch(() => {});
+    await request.post("/api/mcp/servers", { data: { name, url: `http://127.0.0.1:${free}/mcp` } });
+    await expect.poll(async () => (await row())?.retry?.attempt, { timeout: 20_000 }).toBeGreaterThan(0);
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: name }).first().click();
+    const shown = panel.locator(`[data-testid="mcp-server"][data-name="${name}"]`);
+    await expect(shown).toHaveAttribute("data-state", "error");
+    await expect(shown.getByTestId("mcp-retry")).toContainText("failed, next");
+    await shoot(page, "mcp-http-07-retrying");
+    // The server starts listening; nobody reconnects it.
+    fx = spawn("bun", [join(import.meta.dirname, "fixtures/legacy-http-mcp.ts")], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, MCP_PORT: String(free) } });
+    await new Promise<string>((res) => createInterface({ input: fx!.stdout! }).once("line", res));
+    await expect.poll(async () => (await row())?.state, { timeout: 90_000 }).toBe("ready");
+    await expect(shown).toHaveAttribute("data-state", "ready");
+    await expect(shown.getByTestId("mcp-retry")).toHaveCount(0);
+    expect((await row()).tool_names).toContain("echo");
+    await shoot(page, "mcp-http-08-back");
+  } finally {
+    await request.delete(`/api/mcp/servers/${name}`).catch(() => {});
+    fx?.kill();
   }
 });

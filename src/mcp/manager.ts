@@ -12,6 +12,7 @@ import { detached, type ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
+import { networkFailure, RETRY, retryDelay } from "./retry.ts";
 import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputHandler, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { formOf, linkOf, linksRequired, plain, URL_REQUIRED, type ElicitResult } from "./elicit.ts";
 import { cardText, samplingOf, stopReason, type SampleRequest } from "./sampling.ts";
@@ -133,6 +134,7 @@ export type McpServerState = {
   log_rev: number;       // goes up with each line of its log
   completions: boolean;  // the connected server suggests prompt and template arguments (completion/complete)
   resource_updates: Record<string, number>; // per subscribed URI: goes up when its body changed
+  retry?: { attempt: number; next_ms: number; until_ms: number }; // a failed remote server is tried again at next_ms, for a day from its first failure
   sync?: { source: string; name: string; label: string; gone: boolean }; // follows another agent's entry
   plugin?: string; // the installed plugin it comes with (it goes and stops with the plugin)
   endpoint?: string; // what the server is, whatever it is called (sources.ts endpoint)
@@ -196,6 +198,8 @@ type Entry = {
   noSse?: boolean;
   www?: string | null;
   failures: number;
+  // A remote server that failed on the network is tried again at `next` (src/mcp/retry.ts); `since` is its first failure.
+  retry?: { attempt: number; since: number; next: number; timer: ReturnType<typeof setTimeout> };
   bundled?: BundledServer;
   resourcesRev: number;
   // Goes up when its prompt list changed (or it connected again): a cached list of an older one is not used.
@@ -723,6 +727,7 @@ export class McpManager {
     this.watchers.clear();
     clearTimeout(this.syncTimer);
     for (const e of this.entries.values()) {
+      this.clearRetry(e);
       e.abort?.abort(); // one still connecting ends with the manager
       e.client?.close();
       unregisterCatalog(e.name);
@@ -957,6 +962,7 @@ export class McpManager {
         e.era = client.era;
         e.state = "ready";
         e.ran = true;
+        this.clearRetry(e);
         this.told(e, "started");
         this.publish(e, client.instructions);
         e.last = Date.now();
@@ -998,6 +1004,7 @@ export class McpManager {
               this.errors.capture("server", err, { mcp: name });
               this.told(e, "failed", err.message);
             }
+            this.retryLater(e, name, err);
           }
           if (this.upgradePending.has(name)) this.tellUpgrade();
           throw err;
@@ -1009,6 +1016,28 @@ export class McpManager {
       e.connecting,
       new Promise<McpClient>((_, rej) => setTimeout(() => rej(new Error(`${name} is still connecting`)), wait)),
     ]);
+  }
+
+  // A remote server that failed on the network is connected again after a wait that doubles (src/mcp/retry.ts),
+  // for a day from its first failure. Nothing else is retried: a refusal or a bad answer would only fail again.
+  private retryLater(e: Entry, name: string, err: Error) {
+    if (this.disposed || !e.config.url || e.bundled || !networkFailure(err)) return this.clearRetry(e);
+    const now = Date.now();
+    const attempt = (e.retry?.attempt ?? 0) + 1;
+    const since = e.retry?.since ?? now;
+    this.clearRetry(e);
+    if (now - since >= RETRY.giveUp) return void (e.error = `${e.error ?? err.message} (Keel stopped trying again after a day; reconnect it from here.)`);
+    const wait = retryDelay(attempt);
+    const timer = setTimeout(() => {
+      if (this.disposed || this.entries.get(name) !== e || e.state !== "error" || e.retry?.timer !== timer) return;
+      this.ensure(name).catch(() => {}); // a failure schedules the next try
+    }, wait);
+    timer.unref?.();
+    e.retry = { attempt, since, next: now + wait, timer };
+  }
+  private clearRetry(e: Entry) {
+    if (e.retry) clearTimeout(e.retry.timer);
+    e.retry = undefined;
   }
 
   // Why a session may not reach a server Keel brings, or nothing.
@@ -1418,6 +1447,7 @@ export class McpManager {
       endpoint: e.bundled ? undefined : endpoint(maskedServer(shown)),
       sign_in: !!e.config.url && !e.config.bearer_env && !e.config.headers_helper,
       ...(e.plugin ? { plugin: e.plugin } : {}),
+      ...(e.retry && e.state === "error" ? { retry: { attempt: e.retry.attempt, next_ms: e.retry.next, until_ms: e.retry.since + RETRY.giveUp } } : {}),
       sync: e.config.sync ? { ...e.config.sync, label: this.labels.get(e.config.sync.source) ?? e.config.sync.source, gone: this.gone.has(e.name) } : undefined,
       signed_in: !!e.config.url && this.oauth.signedIn(e.name),
       bundled: e.bundled?.label,
@@ -1788,6 +1818,7 @@ export class McpManager {
     const c = e.client;
     e.client = undefined;
     this.entries.delete(name);
+    this.clearRetry(e);
     unregisterCatalog(name);
     // One still connecting ends now: its process is not left to the handshake's own limit.
     e.abort?.abort();
@@ -1833,6 +1864,7 @@ export class McpManager {
       e.client = undefined;
       e.tools = [];
       e.state = "disabled";
+      this.clearRetry(e);
       e.error = undefined;
     } else {
       e.state = "connecting";
@@ -1864,6 +1896,7 @@ export class McpManager {
     }
     e.client?.close();
     e.client = undefined;
+    this.clearRetry(e); // asked for by the owner: the count of tries starts again
     e.era = undefined;
     e.noSse = undefined; // asked for by the owner: the older transport is tried again
     if (e.state === "disabled" || e.state === "missing") return;

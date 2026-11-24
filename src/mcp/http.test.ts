@@ -9,6 +9,7 @@ import { startLegacyMcp } from "../../test/e2e/fixtures/legacy-http-mcp.ts";
 import { startSseMcp } from "../../test/e2e/fixtures/legacy-sse-mcp.ts";
 import { McpClient } from "./client.ts";
 import { McpManager } from "./manager.ts";
+import { networkFailure, RETRY, retryDelay } from "./retry.ts";
 
 const until = async (ok: () => boolean | Promise<boolean>, what: string, ms = 3000) => {
   const end = Date.now() + ms;
@@ -324,4 +325,42 @@ test("what a server sends back to Keel's answer never answers Keel's own request
     c.close();
     server.stop(true);
   }
+});
+
+// A remote server that is down when Keel starts comes back by itself, with no owner: the connection is
+// tried again after a wait that doubles to a cap, and the tools are offered when it answers.
+test("a remote server that failed on the network is connected again in the background", async () => {
+  const probe = Bun.serve({ port: 0, fetch: () => new Response("") });
+  const port = probe.port;
+  probe.stop(true);
+  const m = new McpManager({ capture() {} } as any, mkdtempSync(join(tmpdir(), "keel-mcp-")), "/");
+  const was = { ...RETRY };
+  Object.assign(RETRY, { first: 40, cap: 160 });
+  let s: ReturnType<typeof startLegacyMcp> | undefined;
+  try {
+    (m as any).addEntry("late", { url: `http://127.0.0.1:${port}/mcp`, timeout_secs: 2 });
+    await expect(m.ensure("late")).rejects.toThrow();
+    const down = () => m.list().find((x) => x.name === "late")!;
+    expect(down()).toMatchObject({ state: "error", tools: 0, retry: { attempt: 1 } });
+    // It keeps failing while nothing listens, and the waits double up to the cap.
+    await until(() => (down().retry?.attempt ?? 0) >= 3, "a third try");
+    expect(down().state).toBe("error");
+    s = startLegacyMcp({ port });
+    await until(() => down().state === "ready", "the server back, with no owner action");
+    expect(down().tools).toBeGreaterThan(0);
+    expect(down().retry).toBeUndefined();
+  } finally {
+    Object.assign(RETRY, was);
+    m.dispose();
+    s?.stop();
+  }
+});
+
+test("a refusal is not retried, and the waits double to the cap", () => {
+  expect([1, 2, 3, 4, 5, 6, 7, 8].map((n) => retryDelay(n))).toEqual([5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]);
+  expect(networkFailure(Object.assign(new Error("Unable to connect."), { code: "ConnectionRefused" }))).toBe(true);
+  expect(networkFailure(new Error("initialize timed out after 30s"))).toBe(true);
+  expect(networkFailure(new Error("HTTP 503"))).toBe(true);
+  expect(networkFailure(new Error("HTTP 401"))).toBe(false);
+  expect(networkFailure(new Error("the server sent a malformed reply"))).toBe(false);
 });

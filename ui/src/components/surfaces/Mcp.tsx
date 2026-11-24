@@ -16,6 +16,7 @@ import { ownerStop } from "../../../../src/core/stoppers.ts";
 import { Select } from "../Select.tsx";
 import { ago, clock, cn, when } from "../../lib/utils.ts";
 import { Connect } from "./McpConnect.tsx";
+import { inMs } from "../../lib/automation.ts";
 import { navigate } from "../../lib/ui.ts";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { Blank, FolderLine, Ledger, ReaderHead, Seg, tail, tilde, Toggle, type Group, type Mark } from "./kit.tsx";
@@ -116,6 +117,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           ...(s.sync ? [["Follows", <span data-testid="mcp-sync" data-gone={s.sync.gone || undefined}>{s.sync.label}{s.sync.name !== s.name ? ` (${s.sync.name})` : ""}{s.sync.gone ? ", which no longer has it" : ""}</span>] as [string, React.ReactNode]] : []),
           ...(s.state === "ready" && s.server_info?.name ? [["Server", `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""}, MCP ${s.version}`] as [string, string]] : []),
           ...(s.state === "ready" && s.last_connected ? [["Connected", ago(s.last_connected)] as [string, string]] : []),
+          ...(s.retry ? [["Retry", <span data-testid="mcp-retry" data-attempt={s.retry.attempt}>try {s.retry.attempt} failed, next {inMs(s.retry.next_ms)}, until {clock(s.retry.until_ms, { weekday: true })}</span>] as [string, React.ReactNode]] : []),
         ]}
       >
         <div className="mt-3.5 flex flex-wrap items-center gap-2">

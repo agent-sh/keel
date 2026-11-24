@@ -25,7 +25,7 @@ export type LegacyStats = {
 // `get`: what a GET is answered. "stream" holds one open; "decline" is 405;
 // "retry0" names a zero wait and closes at once (a server that would be
 // polled without pause); "flood" sends a megabyte and a half with no line end.
-export function startLegacyMcp(opt: { get?: "stream" | "decline" | "retry0" | "flood" } = {}) {
+export function startLegacyMcp(opt: { get?: "stream" | "decline" | "retry0" | "flood"; port?: number } = {}) {
   const stats: LegacyStats = { initializes: 0, sessions: [], calls: [], cursors: [], gets: 0, responses: [], streams_opened: 0, streams_closed: 0, last_event_ids: [], gets_declined: 0, aborted: 0, cancelled: [], deletes: 0 };
   const live = new Set<string>();
   const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
@@ -57,7 +57,7 @@ export function startLegacyMcp(opt: { get?: "stream" | "decline" | "retry0" | "f
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
-    port: 0,
+    port: opt.port ?? 0,
     idleTimeout: 0, // the GET stream and the hung response stay open
     async fetch(req) {
       const url = new URL(req.url);
@@ -169,4 +169,4 @@ export function startLegacyMcp(opt: { get?: "stream" | "decline" | "retry0" | "f
   };
 }
 
-if (import.meta.main) console.log(String(startLegacyMcp().port));
+if (import.meta.main) console.log(String(startLegacyMcp({ port: Number(process.env.MCP_PORT) || 0 }).port));
