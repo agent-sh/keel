@@ -22,9 +22,9 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { damageNotes, headTail, readLines } from "./files.ts";
 import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
-import { homeDir } from "../../core/paths";
+import { ownerHome } from "../../core/paths";
 
-export const geminiHome = () => process.env.KEEL_IMPORT_GEMINI_DIR ?? join(homeDir(), ".gemini");
+export const geminiHome = () => process.env.KEEL_IMPORT_GEMINI_DIR ?? join(ownerHome(), ".gemini");
 // The newest files a listing reads: older ones wait for a later version of the list.
 const LISTED_MAX = 400;
 // A legacy file is read whole to be listed (once: see `known`), one between a

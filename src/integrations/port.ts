@@ -33,7 +33,7 @@ import type { RuleKind } from "../safety/policy.ts";
 import { Database } from "bun:sqlite";
 import { claudeAllow, overlaps, parseRule, rustRule, type Mapped } from "./port-permissions.ts";
 import { keelDb } from "./import/keel.ts";
-import { homeDir } from "../core/paths";
+import { homeDir, ownerEnv, ownerHome } from "../core/paths";
 
 export type Area = "instructions" | "memory" | "skills" | "plugins" | "mcp" | "hooks" | "permissions" | "sessions" | "settings";
 export const AREAS: Area[] = ["instructions", "memory", "skills", "plugins", "mcp", "hooks", "permissions", "sessions", "settings"];
@@ -299,8 +299,8 @@ function planMemory(items: Planned[], store: Store) {
 
 // ---- skills and plugins ------------------------------------------------------
 
-const codexDir = () => (process.env.KEEL_IMPORT_HOME ? join(portHome(), ".codex") : process.env.CODEX_HOME ?? join(homeDir(), ".codex"));
-const rustConfig = () => (process.env.KEEL_IMPORT_HOME ? join(portHome(), ".config", "keel") : join(process.env.XDG_CONFIG_HOME?.startsWith("/") ? process.env.XDG_CONFIG_HOME : join(homeDir(), ".config"), "keel"));
+const codexDir = () => (process.env.KEEL_IMPORT_HOME ? join(portHome(), ".codex") : ownerEnv("CODEX_HOME") ?? join(ownerHome(), ".codex"));
+const rustConfig = () => (process.env.KEEL_IMPORT_HOME ? join(portHome(), ".config", "keel") : join(ownerEnv("XDG_CONFIG_HOME")?.startsWith("/") ? ownerEnv("XDG_CONFIG_HOME")! : join(ownerHome(), ".config"), "keel"));
 const skillDirs = (d: string) => list(d).filter((n) => !n.startsWith(".") && existsSync(join(d, n, "SKILL.md")));
 
 function addRoot(dir: string, label: string, extra: Partial<SkillRoot> = {}) {

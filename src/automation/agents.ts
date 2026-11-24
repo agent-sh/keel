@@ -27,7 +27,7 @@ import { git as gitRead, locate } from "../core/git.ts";
 import { matchableTips, namedIn, reviewsInput } from "../board/rules.ts";
 import * as leftovers from "./leftovers.ts";
 import * as loops from "./loops.ts";
-import { contains, realOf, homeDir } from "../core/paths.ts";
+import { contains, realOf, homeDir, ownerEnv, ownerHome } from "../core/paths.ts";
 import { isReviewer, parseWrites } from "../safety/write-scope.ts";
 import * as writeAsks from "./write-asks.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
@@ -582,13 +582,13 @@ export function defFor(defs: readonly AgentDef[], type: string | undefined): Age
 // repository's root down to `cwd`. `codex`: TOML files of Codex's format, else Markdown. The health
 // check walks the same list (src/admin/health.ts).
 export function agentFolders(cwd: string): { dir: string; layer: "owner" | "project"; codex: boolean }[] {
-  const config = process.env.XDG_CONFIG_HOME ?? join(homeDir(), ".config");
-  const codexHome = process.env.CODEX_HOME ?? join(homeDir(), ".codex");
+  const config = ownerEnv("XDG_CONFIG_HOME") ?? join(ownerHome(), ".config");
+  const codexHome = ownerEnv("CODEX_HOME") ?? join(ownerHome(), ".codex");
   // The owner's: the Rust Keel's folder, Codex's, Claude Code's, then keel-bun's own (it wins a name).
   const out: { dir: string; layer: "owner" | "project"; codex: boolean }[] = [
     { dir: join(config, "keel", "agents"), layer: "owner", codex: false },
     { dir: join(codexHome, "agents"), layer: "owner", codex: true },
-    { dir: join(homeDir(), ".claude", "agents"), layer: "owner", codex: false },
+    { dir: join(ownerHome(), ".claude", "agents"), layer: "owner", codex: false },
     { dir: join(configDir(), "agents"), layer: "owner", codex: false },
   ];
   const dirs: string[] = [];

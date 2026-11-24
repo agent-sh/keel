@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { readText } from "../core/proc.ts";
-import { homeDir } from "../core/paths";
+import { ownerHome } from "../core/paths";
 
 const MAX_DEPTH = 16;
 
@@ -15,7 +15,7 @@ export const plainAlias = (a: string) => /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(a)
 // scratch daemon's, which includes the owner's and adds its stand-in host).
 const configFile = (home: string) => process.env.KEEL_SSH_CONFIG || join(home, ".ssh", "config");
 
-export function sshHosts(home = homeDir()): string[] {
+export function sshHosts(home = ownerHome()): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   const sshDir = join(home, ".ssh");
@@ -86,7 +86,7 @@ export function resolveAlias(alias: string): { user?: string; hostname?: string;
   return { user: out.user, hostname: out.hostname, port: out.port ? Number(out.port) : undefined, hostkeyalias: out.hostkeyalias && out.hostkeyalias !== "none" ? out.hostkeyalias : undefined };
 }
 
-export function hostGroups(home = homeDir()): HostGroup[] {
+export function hostGroups(home = ownerHome()): HostGroup[] {
   const hosts = sshHosts(home);
   let stamp = hosts.join(",");
   try { stamp += statSync(configFile(home)).mtimeMs; } catch {}

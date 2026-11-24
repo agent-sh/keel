@@ -8,9 +8,9 @@ import { readdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { Builder, clip, resultText, type Found, type Read } from "./types.ts";
 import { damageNotes, headTail, readLines, scanBack, scanFor } from "./files.ts";
-import { homeDir } from "../../core/paths";
+import { ownerEnv, ownerHome } from "../../core/paths";
 
-export const claudeRoot = () => process.env.KEEL_IMPORT_CLAUDE_DIR ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homeDir(), ".claude"), "projects");
+export const claudeRoot = () => process.env.KEEL_IMPORT_CLAUDE_DIR ?? join(ownerEnv("CLAUDE_CONFIG_DIR") ?? join(ownerHome(), ".claude"), "projects");
 
 // Every transcript file with its size and time (no file is opened).
 export function* claudeFiles(root = claudeRoot()): Generator<{ path: string; size: number; mtime: number }> {

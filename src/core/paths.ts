@@ -1,6 +1,6 @@
-import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 // Under `bun test` (it sets NODE_ENV to "test") the owner's own folders are
@@ -25,6 +25,59 @@ export function homeDir(): string {
   const h = process.env.HOME;
   return h && isAbsolute(h) ? h : homedir();
 }
+
+// The owner's default config folder (what a daemon uses when KEEL_CONFIG_DIR is not set).
+export function defaultConfigDir(): string {
+  const x = process.env.XDG_CONFIG_HOME;
+  return join(x && x.startsWith("/") ? x : join(homeDir(), ".config"), "keel-bun");
+}
+
+// Whether this daemon may read what the owner keeps in the home folder: the
+// other harnesses' sessions and setups, the ssh configuration, the memory and
+// supervisor tools, the voice and browser bridges. It may when it is the
+// owner's own (its config folder is the default one) or when its home is not
+// the account's (a scratch HOME: what it reads there is its own). A scratch
+// daemon started from the owner's shell (its own config and state folders, the
+// account's HOME) may not: it would show and act on his data. A daemon names
+// a stand-in for each of these by its own variable (KEEL_IMPORT_*, KEEL_SSH_CONFIG,
+// TACIT_BIN, MOMENTUM_BIN, ...), which is always honoured.
+export function mayReadHome(): boolean {
+  const own = process.env.KEEL_CONFIG_DIR;
+  if (!own || resolve(own) === resolve(defaultConfigDir())) return true;
+  return resolve(homeDir()) !== resolve(accountHome());
+}
+
+// The account's own home folder, as the system names it: its entry in the
+// password file (os.userInfo() answers with $HOME where that is set, so a
+// scratch HOME would stand for the account). KEEL_ACCOUNT_HOME names it where
+// a test needs another folder to stand for it.
+let passwdHome: string | undefined;
+function accountHome(): string {
+  const named = process.env.KEEL_ACCOUNT_HOME;
+  if (named && isAbsolute(named)) return named;
+  if (passwdHome === undefined) {
+    passwdHome = "";
+    try {
+      const uid = String(process.getuid?.() ?? "");
+      for (const line of readFileSync("/etc/passwd", "utf8").split("\n")) {
+        const f = line.split(":");
+        if (f[2] === uid && f[5] && isAbsolute(f[5])) { passwdHome = f[5]; break; }
+      }
+    } catch {}
+  }
+  return passwdHome || userInfo().homedir;
+}
+
+// The home folder to read the owner's files from: the home, or for a daemon
+// that may not read it (mayReadHome) a folder that is never there, so every
+// "~/.something" read finds nothing.
+export function ownerHome(): string {
+  return mayReadHome() ? homeDir() : join(resolve(process.env.KEEL_CONFIG_DIR!), ".owner-home-withheld");
+}
+
+// An environment variable that points into the owner's home (CODEX_HOME,
+// CLAUDE_CONFIG_DIR, XDG_*): as set for a daemon that may read the home, else unset.
+export const ownerEnv = (name: string): string | undefined => (mayReadHome() ? process.env[name] : undefined);
 
 // The daemon's state folder: --state-dir, else KEEL_STATE_DIR, else the XDG state home.
 export const defaultStateDir = () => {

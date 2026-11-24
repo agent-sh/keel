@@ -43,3 +43,49 @@ test("a process started with a scratch HOME loads agents and skill folders from 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a daemon with a config folder of its own may not read the account's home, and reads its own scratch home", async () => {
+  const { mayReadHome, ownerHome, ownerEnv, defaultConfigDir } = await import("./paths.ts");
+  const { sshHosts } = await import("../fleet/sshconfig.ts");
+  const { findBin } = await import("../integrations/tacit.ts");
+  const { claudeRoot } = await import("../integrations/import/claude.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-owner-home-"));
+  const keys = ["HOME", "KEEL_CONFIG_DIR", "KEEL_ACCOUNT_HOME", "KEEL_SSH_CONFIG", "KEEL_IMPORT_CLAUDE_DIR", "MOMENTUM_BIN", "CODEX_HOME", "PATH"];
+  const was = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    mkdirSync(join(home, ".local/bin"), { recursive: true });
+    writeFileSync(join(home, ".ssh/config"), "Host owners-host\n");
+    writeFileSync(join(home, ".local/bin/momentum"), "#!/bin/sh\n", { mode: 0o755 });
+    for (const k of ["KEEL_SSH_CONFIG", "KEEL_IMPORT_CLAUDE_DIR", "MOMENTUM_BIN"]) delete process.env[k];
+    process.env.HOME = home;
+    process.env.PATH = "/usr/bin:/bin";
+    process.env.CODEX_HOME = join(home, "codex");
+    // Not the account's home: what it reads there is its own.
+    process.env.KEEL_CONFIG_DIR = join(dir, "config");
+    expect(mayReadHome()).toBe(true);
+    expect(sshHosts()).toEqual(["owners-host"]);
+    expect(findBin("MOMENTUM_BIN", "momentum")).toBe(join(home, ".local/bin/momentum"));
+    // The account's home with a config folder of its own: none of it.
+    process.env.KEEL_ACCOUNT_HOME = home;
+    expect(mayReadHome()).toBe(false);
+    expect(ownerHome().startsWith(join(dir, "config"))).toBe(true);
+    expect(ownerEnv("CODEX_HOME")).toBeUndefined();
+    expect(sshHosts()).toEqual([]);
+    expect(findBin("MOMENTUM_BIN", "momentum")).toBeNull();
+    expect(claudeRoot().startsWith(home)).toBe(false);
+    // What a scratch daemon names itself is honoured.
+    process.env.MOMENTUM_BIN = join(home, ".local/bin/momentum");
+    expect(findBin("MOMENTUM_BIN", "momentum")).toBe(join(home, ".local/bin/momentum"));
+    // The owner's own daemon (the default config folder) reads it.
+    process.env.KEEL_CONFIG_DIR = defaultConfigDir();
+    expect(mayReadHome()).toBe(true);
+    expect(sshHosts()).toEqual(["owners-host"]);
+    delete process.env.KEEL_CONFIG_DIR;
+    expect(mayReadHome()).toBe(true);
+  } finally {
+    for (const k of keys) { if (was[k] === undefined) delete process.env[k]; else process.env[k] = was[k]; }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

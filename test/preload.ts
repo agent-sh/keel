@@ -29,6 +29,8 @@ const scratch: Record<string, string> = {
   // and the like finds nothing of the owner's.
   HOME: home,
   TACIT_BIN: noStore,
+  // The supervisor's report: the same stand-in, so no test reads the owner's.
+  MOMENTUM_BIN: noStore,
   KEEL_CONFIG_DIR: made("config"),
   KEEL_STATE_DIR: made("state"),
   // The other agents' setup and session stores (MCP import, keel port, session import).

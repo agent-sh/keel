@@ -17,7 +17,7 @@ import type { RuleKind } from "../safety/policy.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { offerToSandbox } from "../safety/sandbox-view.ts";
 import { holdChoice } from "./skill-turn.ts";
-import { contains } from "../core/paths.ts";
+import { contains, ownerHome } from "../core/paths.ts";
 import { yamlWithin } from "../core/yaml-bound.ts";
 import { homeDir } from "../core/paths";
 
@@ -120,8 +120,8 @@ function topOf(cwd: string, stop?: string): string {
 export function skillRoots(cwd: string, stop?: string): { dir: string; scope: Skill["scope"] }[] {
   const home = homeDir();
   const roots: { dir: string; scope: Skill["scope"] }[] = [
-    { dir: join(home, ".claude/skills"), scope: "personal" },
-    { dir: join(home, ".agents/skills"), scope: "personal" },
+    { dir: join(ownerHome(), ".claude/skills"), scope: "personal" },
+    { dir: join(ownerHome(), ".agents/skills"), scope: "personal" },
     { dir: join(configDir(), "skills"), scope: "personal" },
   ];
   const top = topOf(cwd, stop);
@@ -163,7 +163,7 @@ export function mayGrant(skill: Skill): boolean {
 export function commandRoots(cwd: string, stop?: string): { dir: string; scope: Skill["scope"] }[] {
   const home = homeDir();
   const roots: { dir: string; scope: Skill["scope"] }[] = [
-    { dir: join(home, ".claude/commands"), scope: "personal" },
+    { dir: join(ownerHome(), ".claude/commands"), scope: "personal" },
     { dir: join(configDir(), "commands"), scope: "personal" },
   ];
   const top = topOf(cwd, stop);

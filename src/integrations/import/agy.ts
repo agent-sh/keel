@@ -20,9 +20,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { damageNotes, headTail, readLines } from "./files.ts";
 import { Builder, clip, type Found, type Read } from "./types.ts";
-import { homeDir } from "../../core/paths";
+import { ownerHome } from "../../core/paths";
 
-export const agyHome = () => process.env.KEEL_IMPORT_AGY_DIR ?? join(homeDir(), ".gemini");
+export const agyHome = () => process.env.KEEL_IMPORT_AGY_DIR ?? join(ownerHome(), ".gemini");
 const STORES = ["antigravity-cli", "antigravity", "antigravity-acp"] as const;
 const TRANSCRIPT = ".system_generated/logs/transcript_full.jsonl";
 

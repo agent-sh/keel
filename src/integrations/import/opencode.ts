@@ -28,9 +28,9 @@ import { fitImage, imageKey } from "../../engine/image-fit.ts";
 import { STORE } from "../../providers/image-limits.ts";
 import type { ImageBlock } from "../../core/types.ts";
 import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
-import { homeDir } from "../../core/paths";
+import { ownerEnv, ownerHome } from "../../core/paths";
 
-export const opencodeHome = () => process.env.KEEL_IMPORT_OPENCODE_DIR ?? join(process.env.XDG_DATA_HOME?.startsWith("/") ? process.env.XDG_DATA_HOME : join(homeDir(), ".local", "share"), "opencode");
+export const opencodeHome = () => process.env.KEEL_IMPORT_OPENCODE_DIR ?? join(ownerEnv("XDG_DATA_HOME")?.startsWith("/") ? ownerEnv("XDG_DATA_HOME")! : join(ownerHome(), ".local", "share"), "opencode");
 export const opencodeDb = () => join(opencodeHome(), "opencode.db");
 
 let open: { path: string; ino: number; db: Database } | null = null;

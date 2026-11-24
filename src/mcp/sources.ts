@@ -7,13 +7,13 @@ import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { McpServerConfig } from "./config.ts";
-import { homeDir } from "../core/paths";
+import { ownerHome } from "../core/paths";
 
 export type SourceServer = { source: string; label: string; file: string; name: string; config: McpServerConfig; project?: boolean };
 
 // KEEL_IMPORT_HOME points the readers at a scratch home (the e2e writes its
 // fixtures there); the real home otherwise.
-export const importHome = () => process.env.KEEL_IMPORT_HOME ?? homeDir();
+export const importHome = () => process.env.KEEL_IMPORT_HOME ?? ownerHome();
 
 const read = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : null);
 const json = (path: string): any => { const t = read(path); return t === null ? null : JSON.parse(t); };

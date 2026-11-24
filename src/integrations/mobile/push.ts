@@ -10,7 +10,7 @@ import { configDir } from "../../providers/config.ts";
 import { sha256Hex } from "./sig.ts";
 import { outward } from "../../safety/egress.ts";
 import type { MobileStore, PushRecord } from "./store.ts";
-import { homeDir } from "../../core/paths";
+import { homeDir, ownerEnv, ownerHome } from "../../core/paths";
 
 const FILE = "fcm-service-account.json";
 const SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
@@ -18,8 +18,8 @@ const SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
 export function accountPath(): string {
   const own = join(configDir(), FILE);
   if (existsSync(own)) return own;
-  const x = process.env.XDG_CONFIG_HOME;
-  const shared = join(x?.startsWith("/") ? x : join(homeDir(), ".config"), "keel", FILE);
+  const x = ownerEnv("XDG_CONFIG_HOME");
+  const shared = join(x?.startsWith("/") ? x : join(ownerHome(), ".config"), "keel", FILE);
   return existsSync(shared) ? shared : own;
 }
 export const configured = () => existsSync(accountPath());

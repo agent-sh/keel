@@ -37,14 +37,13 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { removeOwnFile, writeOwnFile } from "../core/ownfile.ts";
-import { contains, ownersFolder, homeDir } from "../core/paths.ts";
+import { contains, defaultConfigDir, ownersFolder } from "../core/paths.ts";
 import type { Price, Wire } from "./types.ts";
 
 export function configDir(): string {
   if (process.env.KEEL_CONFIG_DIR) return process.env.KEEL_CONFIG_DIR;
   ownersFolder("config folder", "KEEL_CONFIG_DIR");
-  const x = process.env.XDG_CONFIG_HOME;
-  return join(x && x.startsWith("/") ? x : join(homeDir(), ".config"), "keel-bun");
+  return defaultConfigDir();
 }
 // A file of Keel's own config folder: an edit of one keeps what it held as <name>.prev (core/ownfile.ts).
 export const inConfigDir = (path: string) => {

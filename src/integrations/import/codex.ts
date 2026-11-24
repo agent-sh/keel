@@ -6,9 +6,9 @@ import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { damageNotes, headTail, readLines, scanFor } from "./files.ts";
 import { Builder, clip, FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN, resultText, type Found, type Read } from "./types.ts";
-import { homeDir } from "../../core/paths";
+import { ownerEnv, ownerHome } from "../../core/paths";
 
-export const codexHome = () => process.env.KEEL_IMPORT_CODEX_DIR ?? process.env.CODEX_HOME ?? join(homeDir(), ".codex");
+export const codexHome = () => process.env.KEEL_IMPORT_CODEX_DIR ?? ownerEnv("CODEX_HOME") ?? join(ownerHome(), ".codex");
 
 export function* codexFiles(home = codexHome()): Generator<{ path: string; size: number; mtime: number }> {
   const walk = function* (dir: string, depth: number): Generator<{ path: string; size: number; mtime: number }> {

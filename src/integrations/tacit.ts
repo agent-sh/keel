@@ -59,6 +59,7 @@ import { ownerPrompt } from "../core/owner.ts";
 import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
 import { afterAnswer, afterAsk, callFamilies, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
+import { mayReadHome } from "../core/paths";
 
 // A call is known by its session and its id: ids are unique within a session only.
 const preKey = (session: string, call: string) => `${session}\0${call}`;
@@ -66,6 +67,8 @@ const preKey = (session: string, call: string) => `${session}\0${call}`;
 export function findBin(envVar: string, name: string, env = process.env): string | null {
   const given = env[envVar]?.trim();
   if (given) return existsSync(given) ? given : null;
+  // A scratch daemon on the owner's home finds none of his tools (tacit, momentum) on the PATH.
+  if (env === process.env && !mayReadHome()) return null;
   for (const dir of (env.PATH ?? "").split(delimiter)) if (dir && existsSync(join(dir, name))) return join(dir, name);
   const local = join(env.HOME ?? "", ".local/bin", name);
   return existsSync(local) ? local : null;

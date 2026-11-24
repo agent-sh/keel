@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { configDir } from "../config.ts";
-import { homeDir } from "../../core/paths";
+import { homeDir, ownerEnv, ownerHome } from "../../core/paths";
 
 export type PluginEntry = {
   id: string;
@@ -31,7 +31,7 @@ const PROVIDER_KEYS = new Set(["enabled", "label", "catalog", "system_prompt", "
 export function pluginsFile(): string | null {
   const own = join(configDir(), "plugins.toml");
   if (existsSync(own)) return own;
-  const keel = join(process.env.XDG_CONFIG_HOME?.startsWith("/") ? process.env.XDG_CONFIG_HOME : join(homeDir(), ".config"), "keel", "plugins.toml");
+  const keel = join(ownerEnv("XDG_CONFIG_HOME")?.startsWith("/") ? ownerEnv("XDG_CONFIG_HOME")! : join(ownerHome(), ".config"), "keel", "plugins.toml");
   return existsSync(keel) ? keel : null;
 }
 

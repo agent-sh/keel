@@ -7,9 +7,9 @@ import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { Builder, clip, resultText, type Found, type Read } from "./types.ts";
-import { homeDir } from "../../core/paths";
+import { ownerEnv, ownerHome } from "../../core/paths";
 
-export const keelDb = () => process.env.KEEL_IMPORT_KEEL_DB ?? join(process.env.XDG_DATA_HOME ?? join(homeDir(), ".local/share"), "keel-stable/state/keel.db");
+export const keelDb = () => process.env.KEEL_IMPORT_KEEL_DB ?? join(ownerEnv("XDG_DATA_HOME") ?? join(ownerHome(), ".local/share"), "keel-stable/state/keel.db");
 
 let open: { path: string; ino: number; db: Database } | null = null;
 function db(path = keelDb()): Database | null {

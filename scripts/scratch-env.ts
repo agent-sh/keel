@@ -14,10 +14,11 @@ import { dirname, join, resolve } from "node:path";
 const REPO = resolve(import.meta.dirname, "..");
 const fixture = (name: string) => join(REPO, "test/e2e/fixtures", name);
 
-// `owner`: the daemon runs in the caller's world (scripts/dev.sh): its ssh
-// configuration includes the caller's own, beside the stand-in host (the ssh
-// machine e2e enables it). A daemon made from nothing has an empty one.
-export function standIns(dir: string, { owner = false } = {}): Record<string, string> {
+// `host`: the ssh configuration names the stand-in host (the ssh machine e2e
+// enables it); a daemon made from nothing has an empty one. Neither includes
+// the caller's own ~/.ssh/config: a scratch daemon lists none of his machines.
+// MOMENTUM_BIN names no file, so no supervisor report of his is read either.
+export function standIns(dir: string, { host = false } = {}): Record<string, string> {
   return {
     KEEL_CONFIG_DIR: join(dir, "config"),
     KEEL_DESKTOP_NOTIFY: "off",
@@ -37,6 +38,7 @@ export function standIns(dir: string, { owner = false } = {}): Record<string, st
     // A saved listing beside the state (the connect e2e writes it), not the public registry.
     KEEL_MCP_REGISTRY: `file://${join(dir, "registry.json")}`,
     TACIT_BIN: fixture("tacit-standin.sh"),
+    MOMENTUM_BIN: join(dir, "no-momentum"),
     TACIT_STANDIN_STORE: join(dir, "tacit-store"),
     KEEL_MAIL_STANDIN: join(dir, "mail"),
     KEEL_PARLAR: join(dir, "parlar/parlar"),
@@ -45,14 +47,14 @@ export function standIns(dir: string, { owner = false } = {}): Record<string, st
     KEEL_SSH_STANDIN_HOST: "keel-standin",
     KEEL_SSH_STANDIN_HOME: join(dir, "box"),
     KEEL_SSH: fixture("ssh-standin.sh"),
-    KEEL_SSH_CONFIG: join(dir, owner ? "ssh/config" : "ssh/config-empty"),
+    KEEL_SSH_CONFIG: join(dir, host ? "ssh/config" : "ssh/config-empty"),
   };
 }
 
 // The folders and files the list names, for the values it gave (a value the
 // caller named instead is the caller's to make).
-export function prepare(env: Record<string, string | undefined>, dir: string, { owner = false } = {}): void {
-  const own = standIns(dir, { owner });
+export function prepare(env: Record<string, string | undefined>, dir: string, { host = false } = {}): void {
+  const own = standIns(dir, { host });
   const mine = (k: string) => env[k] === own[k];
   for (const k of ["KEEL_CONFIG_DIR", "KEEL_IMPORT_HOME", "KEEL_SSH_STANDIN_HOME"]) if (env[k]) mkdirSync(env[k]!, { recursive: true });
   if (env.KEEL_PHONE_SOCKET) mkdirSync(dirname(env.KEEL_PHONE_SOCKET), { recursive: true });
@@ -63,7 +65,7 @@ export function prepare(env: Record<string, string | undefined>, dir: string, { 
   }
   if (mine("KEEL_SSH_CONFIG")) {
     mkdirSync(dirname(own.KEEL_SSH_CONFIG!), { recursive: true });
-    writeFileSync(own.KEEL_SSH_CONFIG!, owner ? `Include ~/.ssh/config\nHost ${env.KEEL_SSH_STANDIN_HOST}\n` : "");
+    writeFileSync(own.KEEL_SSH_CONFIG!, host ? `Host ${env.KEEL_SSH_STANDIN_HOST}\n` : "");
   }
 }
 
@@ -73,7 +75,7 @@ if (import.meta.main) {
   const dir = process.argv[2];
   if (!dir) { console.error("usage: bun scripts/scratch-env.ts DIR"); process.exit(2); }
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(standIns(dir, { owner: true }))) env[k] = process.env[k]?.trim() || v;
-  prepare(env, dir, { owner: true });
+  for (const [k, v] of Object.entries(standIns(dir, { host: true }))) env[k] = process.env[k]?.trim() || v;
+  prepare(env, dir, { host: true });
   for (const [k, v] of Object.entries(env)) console.log(`export ${k}=${quote(v)}`);
 }

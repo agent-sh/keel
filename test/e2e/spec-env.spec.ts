@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { exited, listening, sessionsFolder, specEnv } from "./own-daemon.ts";
@@ -45,9 +45,9 @@ test("the run's environment names none of the owner's tools or setups", () => {
 type Api = (path: string, body?: unknown, method?: string) => Promise<any>;
 
 // A daemon on specEnv, its sessions in their own folder; `wrap` runs it under another program (strace).
-async function start(state: string, wrap: string[] = []) {
+async function start(state: string, wrap: string[] = [], more: Record<string, string | undefined> = {}) {
   mkdirSync(state, { recursive: true });
-  const env = specEnv(state);
+  const env = specEnv(state, more);
   const [cmd, ...args] = [...wrap, "bun", "src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", sessionsFolder(state)];
   const proc: ChildProcess = spawn(cmd!, args, { env, stdio: ["ignore", "pipe", "pipe"] });
   const { url } = await listening(proc);
@@ -153,5 +153,40 @@ test("a spec's own daemon opens, runs and reaches nothing of the owner's", async
   } finally {
     if (d) await stop(d);
     for (const dir of [state, `${state}-ws`, trace]) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A scratch daemon started from the owner's shell has the account's HOME with its own config and
+// state folders. KEEL_ACCOUNT_HOME makes the spec's fixture home stand for the account's, so the
+// owner's ssh hosts, supervisor report and tool on the PATH are in a home we can fill.
+test("a scratch daemon on the owner's home lists none of his machines and reads no supervisor report", async () => {
+  test.setTimeout(120_000);
+  const state = join(ROOT, `spec-env-home-${Date.now().toString(36)}`);
+  const home = `${state}-ws`;
+  mkdirSync(join(home, ".ssh"), { recursive: true });
+  mkdirSync(join(home, ".local/bin"), { recursive: true });
+  writeFileSync(join(home, ".ssh/config"), "Host owners-real-host\n  HostName 192.0.2.7\n");
+  const bin = join(home, ".local/bin/momentum");
+  writeFileSync(bin, '#!/bin/sh\necho \'{"sessions":[],"disk":{"used":"owners-real-report"}}\'\n');
+  chmodSync(bin, 0o755);
+  const names = async (d: Awaited<ReturnType<typeof start>>) => ((await d.api("/api/fleet/machines")).machines as { name: string }[]).map((m) => m.name);
+  const fresh = { MOMENTUM_BIN: undefined, KEEL_SSH_CONFIG: undefined };
+  let d: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    // Control: a daemon whose home is not the account's reads its own home, so the fixtures are found.
+    d = await start(state, [], fresh);
+    expect(await names(d)).toContain("owners-real-host");
+    expect((await d.api("/api/momentum")).available).toBe(true);
+    await stop(d);
+    d = undefined;
+    // The same home as the account's: none of it is read.
+    d = await start(state, [], { ...fresh, KEEL_ACCOUNT_HOME: home });
+    expect(await names(d)).not.toContain("owners-real-host");
+    const memory = await d.api("/api/momentum");
+    expect(memory).toEqual({ available: false });
+    expect((await d.api("/api/integrations")).momentum.available).toBe(false);
+  } finally {
+    if (d) await stop(d);
+    for (const dir of [state, home]) rmSync(dir, { recursive: true, force: true });
   }
 });

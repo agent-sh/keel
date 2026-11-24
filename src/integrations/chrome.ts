@@ -21,6 +21,7 @@ import type { McpManager } from "../mcp/manager.ts";
 import type { McpTool } from "../mcp/client.ts";
 import type { ToolOutput } from "../tools/types.ts";
 import shipped from "./chrome_bridge_tools.json" with { type: "json" };
+import { ownerHome } from "../core/paths";
 
 export const CHROME_SERVER = "chrome";
 
@@ -124,7 +125,7 @@ export function tabOfResult(out: ToolOutput): number | undefined {
   }
 }
 
-export function installChromeBridge(m: McpManager, home = process.env.HOME ?? "", env: (k: string) => string | undefined = (k) => process.env[k]) {
+export function installChromeBridge(m: McpManager, home = ownerHome(), env: (k: string) => string | undefined = (k) => process.env[k]) {
   const found = discoverChromeBridge(home, env);
   const tools = shipped.tools as McpTool[];
   const known = new Set(tools.map((t) => t.name));
