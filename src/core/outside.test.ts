@@ -184,7 +184,7 @@ test("a request that acts on an outside session is refused, past copying, archiv
   for (const [m, path] of [["POST", "recap"], ["POST", "compact"], ["POST", "summarize"], ["POST", "side"], ["DELETE", "side"], ["POST", "review"], ["POST", "clear"], ["POST", "export-to"], ["POST", "handoff"], ["POST", "messages"], ["POST", "terminal/run"], ["POST", "clone"], ["POST", "some/new/act"]] as const) {
     expect(await outsideRefused(req(m), `${m} /api/sessions/:id/${path}`)).toBe(true);
   }
-  for (const [m, path] of [["POST", "outside/copy"], ["POST", "marks"], ["POST", "files/exist"], ["GET", "recap"], ["GET", "events"]] as const) {
+  for (const [m, path] of [["POST", "outside/copy"], ["POST", "marks"], ["POST", "files/exist"], ["POST", "call-marks"], ["GET", "recap"], ["GET", "events"]] as const) {
     expect(await outsideRefused(req(m), `${m} /api/sessions/:id/${path}`)).toBe(false);
   }
   expect(await outsideRefused(req("DELETE"), "DELETE /api/sessions/:id")).toBe(false);

@@ -131,8 +131,10 @@ const OUTSIDE_ACTS = new Set([
   "POST /api/sessions/:id/unread",
   "PUT /api/sessions/:id/snooze",
   "DELETE /api/sessions/:id/snooze",
-  // (A read sent as a POST for its body: which of the paths the page shows are files.)
+  // (Reads sent as a POST for their body: which of the paths the page shows are files, and what the
+  // transcript marks on the calls of the events it holds.)
   "POST /api/sessions/:id/files/exist",
+  "POST /api/sessions/:id/call-marks",
 ]);
 export async function outsideRefused(req: Request, route: string): Promise<boolean> {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS" || !route.startsWith(`${req.method} /api/sessions/:id`)) return false;
