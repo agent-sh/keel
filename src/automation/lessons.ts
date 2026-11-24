@@ -26,6 +26,7 @@
 // days its trial would need, and move up as the owner settles the ones shown.
 // A trial with no winner at its sample size keeps its lesson in use, undecided,
 // with its numbers; only a trial that shows the lesson hurt drops it.
+import { during } from "../admin/activity.ts";
 import type { Database } from "bun:sqlite";
 import { basename } from "node:path";
 import { repoRoot } from "../core/repo-root.ts";
@@ -177,7 +178,7 @@ export function lessons(deps: Pick<Deps, "store" | "engine" | "bus" | "errors">)
   const mine = (): Promise<{ found: number; added: number }> => {
     if (mining) return mining;
     const t0 = Date.now();
-    const p = readsOf(store).run("lessons.mine", { now: t0 }).then((found) => {
+    const p = during("task", () => readsOf(store).run("lessons.mine", { now: t0 }), "lessons: mining the review findings").then((found) => {
       let added = 0;
       const now = Date.now();
       const has = db.query<{ id: string; state: LessonState }, [string, string]>("SELECT id, state FROM lessons WHERE repo = ? AND key = ?");

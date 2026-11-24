@@ -11,6 +11,7 @@
 import type { Store } from "../core/store.ts";
 import { storePath } from "../core/store-files.ts";
 import { tasks, type TaskName, type Tasks } from "./read-tasks.ts";
+import { begin, duringSync } from "../admin/activity.ts";
 
 declare const __KEEL_READS_JS__: string | undefined;
 
@@ -96,18 +97,20 @@ export class Reads {
     if (!w) return new Promise((resolve) => resolve(this.onLoop(name, args) as Result<K>));
     this.counts.thread++;
     clearTimeout(this.idle);
+    // What the thread read, for the memory step or the stall that a report names (src/admin/activity.ts).
+    const end = begin("read", `read on the thread: ${name}`);
     return new Promise<Result<K>>((resolve, reject) => {
       const id = ++this.seq;
       const due = setTimeout(() => this.ended(w, `no answer in ${this.deadlineMs >= 1000 ? `${Math.round(this.deadlineMs / 1000)} s` : `${this.deadlineMs} ms`}`), this.deadlineMs);
       due.unref?.();
       this.waiting.set(id, { resolve, reject, name, args, due });
       w.postMessage({ id, name, args });
-    });
+    }).finally(end);
   }
 
   private onLoop(name: TaskName, args: unknown): unknown {
     this.counts.loop++;
-    return (tasks[name] as (db: Store["db"], a: unknown) => unknown)(this.store.db, args);
+    return duringSync("read", `read on the loop: ${name}`, () => (tasks[name] as (db: Store["db"], a: unknown) => unknown)(this.store.db, args));
   }
 
   // The rows of one statement.

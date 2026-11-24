@@ -11,6 +11,7 @@
 // is a row of the ledger on that tree; a red one reaches a working agent as
 // one harness input at its next step, and the session that started a finished
 // one in its failures notice (toWhom in beside.ts).
+import { during } from "../admin/activity.ts";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -195,7 +196,7 @@ async function settleOwed(id: string) {
 type Done = { tree: string | null; told?: string | null; said?: string | null };
 async function run(id: string): Promise<Done> {
   const held: string[] = [];
-  try { return await runIn(id, held); } finally { for (const k of held) cache.release(k); }
+  try { return await during("task", () => runIn(id, held), "checks beside an agent"); } finally { for (const k of held) cache.release(k); }
 }
 async function runIn(id: string, held: string[]): Promise<Done> {
   const s = d!.store.session(id);

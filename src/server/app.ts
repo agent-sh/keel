@@ -31,6 +31,7 @@ import { fitted } from "../engine/image-fit.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { KEEL_FILE_MAX } from "../core/keel-file.ts";
 import { inFlight, timed } from "../admin/stall.ts";
+import { begin as beginSpan, duringSync } from "../admin/activity.ts";
 import { moduleTook } from "../core/start-trace.ts";
 import { routeTable } from "./stable-api.ts";
 import { onProxyTrouble, ownPort } from "../safety/net-proxy.ts";
@@ -119,6 +120,12 @@ function routeOf(req: Request & { params?: Record<string, string> }): string {
   return `${req.method} ${parts.join("/")}`;
 }
 
+// A socket frame by what it asks: its `op` (resume, sub, unsub, ping), read off the start of its text, never parsed twice.
+function frameOf(h: unknown, m: string | Buffer): string {
+  const op = /"op"\s*:\s*"(\w+)"/.exec(typeof m === "string" ? m.slice(0, 200) : m.subarray(0, 200).toString())?.[1];
+  return `socket frame ${h ? "of a terminal or stream" : "of the page"}${op ? `: ${op}` : ""}`;
+}
+
 // What a request may do to a session another harness runs (src/core/outside.ts), past reading it:
 // copy it into Keel, archive or delete it, and the owner's own marks on its row and its alerts
 // (local to this list, nothing of its text goes anywhere). Every other request that changes a
@@ -195,6 +202,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       // What the daemon was answering, should it stop responding meanwhile (src/admin/stall.ts).
       const label = () => `answering ${req.method} ${new URL(req.url).pathname}`;
       const answered = inFlight(req, label);
+      // And for what the daemon's memory or a stall says it ran (src/admin/activity.ts): the route as registered, no value of the path.
+      const spanned = beginSpan("route", () => routeOf(req));
       // (The session a request names stays in memory until it is answered: Store.hold.)
       let release: (() => void) | undefined;
       // A session another harness runs, named by a caller it does not exist for: answered as one that does not,
@@ -242,6 +251,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       } finally {
         release?.();
         answered();
+        spanned();
         clearTimeout(timer);
         if (slow) srv.timeout(req, IDLE_S);
       }
@@ -769,7 +779,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
 
     websocket: {
       open(ws) { const h = socketKind(ws); if (h) h.open?.(ws); else live.open(ws); },
-      message(ws, m) { const h = socketKind(ws); timed(() => "handling a page's socket message", () => (h ? h.message?.(ws, m) : live.message(ws, m))); },
+      message(ws, m) { const h = socketKind(ws); duringSync("socket", () => frameOf(h, m), () => timed(() => "handling a page's socket message", () => (h ? h.message?.(ws, m) : live.message(ws, m)))); },
       close(ws, code, reason) { socketKind(ws)?.close?.(ws, code, reason); },
       // Pings while quiet; a client silent for 40 s is gone. One that stops
       // reading is closed instead of buffered without end: a page resumes on reconnect.

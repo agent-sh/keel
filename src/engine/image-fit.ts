@@ -11,6 +11,7 @@
 //     prefix is the same bytes from request to request.
 // Bun.Image decodes and encodes (libjpeg-turbo, libspng, libwebp built into
 // Bun): no dependency.
+import { during } from "../admin/activity.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ImageBlock, Message, TextBlock, ToolRefBlock } from "../core/types.ts";
@@ -77,7 +78,7 @@ export async function fitImage(b: ImageBlock, l: ImageLimits): Promise<Fitted> {
   // (not even its base64), so an ordinary image costs no memory here.
   const size = imageSize(b.data), sniffed = sniff(b.data);
   if (size && sniffed && within(size.w, size.h, l) && l.formats.includes(sniffed) && !heavy(b.data)) return { block: b.media_type === sniffed ? b : { type: "image", media_type: sniffed, data: b.data } };
-  return decoding(async () => {
+  return decoding(() => during("task", async () => {
     const bytes = Buffer.from(b.data, "base64");
     // Within the limits it passed above as it is; here it would have to be made again.
     if (animatedWebp(bytes)) return { refused: "it is an animated WebP, which cannot be scaled here", fix: "save one frame as PNG with a tool and read that" };
@@ -100,7 +101,7 @@ export async function fitImage(b: ImageBlock, l: ImageLimits): Promise<Fitted> {
       return why(e, size);
     }
     return { refused: `it is over ${MB(l.base64!)} of base64 even scaled down`, fix: SCALE };
-  });
+  }, "decoding an image to fit its limits"));
 }
 
 const changed = (f: Extract<Fitted, { block: ImageBlock }>) =>

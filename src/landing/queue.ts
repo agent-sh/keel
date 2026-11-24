@@ -45,6 +45,7 @@
 // the stop cut runs again. A check longer than the time between restarts
 // never ends; a repository with such checks raises land.timeout_minutes and
 // restarts less often.
+import { during } from "../admin/activity.ts";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -412,7 +413,10 @@ export class LandingQueue {
     if (root) this.d.failed(root.session, { cls: clsOf(why), message: failureText(l, base), ...(root.ref ? { ref: root.ref } : {}) });
   }
 
-  private async pass(repo: string) {
+  private pass(repo: string): Promise<void> {
+    return during("task", () => this.passOf(repo), "the landing queue's pass");
+  }
+  private async passOf(repo: string) {
     this.prune();
     const entries = this.store.db.query<Entry, [string]>("SELECT * FROM landing_queue WHERE repo = ? AND state = 'queued' ORDER BY pos").all(repo);
     if (!entries.length) return;

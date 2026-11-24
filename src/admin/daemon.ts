@@ -18,6 +18,7 @@ import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
 import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
 import { IDLE_MAX_MS, pulse } from "../core/pulse.ts";
 import { beatLife, endLife, lifeDraining, restarts } from "./life.ts";
+import { ranWords } from "./activity.ts";
 import { describeStall, Recurrence, type Stall, stallCapture, StallMonitor, timed, TurnWatch, unanswered, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
@@ -190,7 +191,7 @@ export class Daemon {
       if (!c) {
         // Under the row's mark: the log line and the stall's own row, so a trend of short stalls can be read.
         try { keepStall(this.deps.store.db, { ts_ms: ended, ms: d.ms, what: d.what, kind: d.kind }); } catch (e) { console.warn(`[daemon] a stall was not kept: ${(e as Error).message}`); }
-        return console.warn(`[daemon] ${d.message}`);
+        return console.warn(`[daemon] ${d.message}${stall.ran?.length ? `; ran: ${ranWords(stall.ran)}` : ""}`);
       }
       const { context } = c;
       const rec = this.deps.errors.capture("server", Object.assign(new Error(c.message), { stack: undefined }), context, c.at);

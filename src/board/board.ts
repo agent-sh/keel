@@ -5,6 +5,7 @@
 // quoted as its. The database is read on the read thread (src/board/facts.ts), git in processes of its
 // own, a few at a time; nothing waits on the loop. A board is kept for a few seconds, and what git said of
 // a pair of commits for as long as the daemon runs (a pair's answer never changes).
+import { during } from "../admin/activity.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
@@ -57,7 +58,7 @@ export class WorkBoard {
     this.stats.reads++;
     const kept = this.boards.get(root);
     if (kept && (!fresh || Date.now() - kept.at < 250) && Date.now() - kept.at < KEEP_MS) return kept.board;
-    const board = this.build(root);
+    const board = during("task", () => this.build(root), "the work board of a tree");
     this.boards.set(root, { at: Date.now(), board });
     if (this.boards.size > 64) this.boards.delete(this.boards.keys().next().value!);
     board.catch(() => { if (this.boards.get(root)?.board === board) this.boards.delete(root); });

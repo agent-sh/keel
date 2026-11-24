@@ -1,4 +1,5 @@
 import { type Wire, wireOf, wireScope } from "../providers/wiretap.ts";
+import { during } from "../admin/activity.ts";
 import { outward } from "../safety/egress.ts";
 import { timed } from "../admin/stall.ts";
 import { heldFile } from "../core/store-files.ts";
@@ -1135,7 +1136,10 @@ export class Engine {
   // One request for the title, through the owner's small models in order (the
   // readers' choices: src/engine/reader.ts), each at its lowest effort. The
   // title is saved only if nobody renamed the session meanwhile.
-  private async writeTitle(id: string, s: Session, line: readonly StoredEvent[], gen: number) {
+  private writeTitle(id: string, s: Session, line: readonly StoredEvent[], gen: number): Promise<void> {
+    return during("task", () => this.writeTitleOf(id, s, line, gen), "a session title");
+  }
+  private async writeTitleOf(id: string, s: Session, line: readonly StoredEvent[], gen: number) {
     const prompts = ownerPrompts(line);
     // (The owner's prompts and the model's reply: their own words, src/safety/secrets.ts Words.)
     const prompt = conceal(titlePrompt(prompts, firstReply(line)), id, "own");
@@ -4170,7 +4174,10 @@ export class Engine {
   // Summarize the context into a checkpoint. Runs inside a turn (auto, before a
   // call that would not fit) or on the owner's request between turns.
   // `trigger`: what started it (the threshold, a request that did not fit, the owner).
-  async compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner" | "follow_up"; signal?: AbortSignal; step?: Step; next?: ModelInfo } = {}) {
+  compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner" | "follow_up"; signal?: AbortSignal; step?: Step; next?: ModelInfo } = {}) {
+    return during("task", () => this.compactNowOf(id, opts), "a compaction");
+  }
+  private async compactNowOf(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner" | "follow_up"; signal?: AbortSignal; step?: Step; next?: ModelInfo } = {}) {
     const session = this.store.session(id)!;
     // (Asked for between turns too: a history not read or counted yet is read and counted in slices first.)
     await this.warmContext(id);

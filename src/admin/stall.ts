@@ -35,6 +35,7 @@ import { KICK, packBeat, packIdle } from "./stall-beat.ts";
 import { type Cause, UNSEEN } from "./stall-cause.ts";
 import { secs } from "./stall-rows.ts";
 import { IDLE_MAX_MS } from "../core/pulse.ts";
+import { ran, type Ran } from "./activity.ts";
 
 const G = globalThis as { __keelStall?: State; __keelStallMonitor?: StallMonitor };
 
@@ -193,7 +194,15 @@ export type Stall = {
   cause?: Cause;     // what the watcher saw the main thread do meanwhile
   in_flight: string[]; // requests taken shortly before it and still open: they waited for it to end
   work?: string[];     // the daemon's own passes in progress then (see during)
+  ran?: Ran[];         // the requests, socket frames, reads on the thread and background tasks that ran in the window (src/admin/activity.ts)
   turns: RunningTurn[];
+};
+
+// What ran in the last `ms` (a stall's window), for its row.
+const ranIn = (ms: number): { ran?: Ran[] } => {
+  const to = Date.now();
+  const r = ran(to - ms, to, 8);
+  return r.length ? { ran: r } : {};
 };
 
 const defined = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && !(v && typeof v === "object" && !Array.isArray(v) && Object.values(v).every((x) => x === undefined)))) as T;
@@ -253,6 +262,7 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
       ...(c ? { cause: defined({ ...c, ...(busy && !kernel && !c.note ? { note: UNSEEN } : {}) }) } : {}),
       ...(s.in_flight.length ? { in_flight: s.in_flight.slice(0, 8) } : {}),
       ...(s.work?.length ? { work: s.work } : {}),
+      ...(s.ran?.length ? { ran: s.ran } : {}),
       ...(s.turns.length ? { turns: s.turns.slice(0, 8) } : {}),
     },
   };
@@ -439,6 +449,7 @@ export class StallMonitor {
       // One open for long before it (a stream, a long poll) did not.
       in_flight: [...st.flights.values()].filter((f) => f.t0 <= began + TICK_MS && began - f.t0 < WAITING_MS).map((f) => f.label()),
       ...(work.length ? { work } : {}),
+      ...ranIn(now - began),
       // In the middle of the time the loop was held: its start is known only to within a tick.
       turns: this.deps.turns(now - held / 2),
     };
@@ -466,6 +477,7 @@ export class StallMonitor {
       busy_ms: Math.min(Math.max(0, cpuMs() - this.cpuLast), ms),
       in_flight: [],
       ...(work.length ? { work } : {}),
+      ...ranIn(ms + IDLE_TICK_MS),
       turns: this.deps.turns(now - ms / 2),
     };
     try {

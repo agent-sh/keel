@@ -20,6 +20,7 @@
 // the same scratch path, so two runs of one commit draw the same page. What still differs is found by taking
 // the base again with the specs whose pictures differ, and a pair that moves only where the base moves too is
 // unstable, not changed.
+import { during } from "../admin/activity.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -264,7 +265,10 @@ function enqueue(run: PictureRun, known?: { cfg: PicturesConfig; paths: string[]
 
 // --- running
 
-async function execute(run: PictureRun, known?: { cfg: PicturesConfig; paths: string[] }): Promise<PictureRun> {
+function execute(run: PictureRun, known?: { cfg: PicturesConfig; paths: string[] }): Promise<PictureRun> {
+  return during("task", () => executeOf(run, known), "a pictures run");
+}
+async function executeOf(run: PictureRun, known?: { cfg: PicturesConfig; paths: string[] }): Promise<PictureRun> {
   const repo = repoOf(run.repo) ?? { top: run.repo, gitDir: run.common, common: run.common, scope: run.repo };
   const cfg = known?.cfg ?? (await configAt(repo.top, run.head))?.config;
   if (!cfg) { run.state = "failed"; run.why = `the head's ${FILE} could not be read again`; return run; }

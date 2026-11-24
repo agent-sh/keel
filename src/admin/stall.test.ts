@@ -10,6 +10,7 @@ import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
 import { spike, SPIKE_COUNT, SPIKE_WINDOW_MS, spikeCounts } from "../helper/policy.ts";
 import { describeStall, dropBeat, during, inFlight, Recurrence, RECUR_MS, shareBeat, type Stall, stallCapture, StallMonitor, timed, TurnWatch } from "./stall.ts";
+import { begin, reset as resetActivity } from "./activity.ts";
 import { ALLOW_MASK, IDLE_ALLOW } from "./stall-beat.ts";
 import { type Cause, decide, type Sample, unknown, UNSEEN } from "./stall-cause.ts";
 
@@ -18,6 +19,8 @@ afterEach(() => { performance.now = real; });
 // The clock starts well after anything an earlier test touched.
 let epoch = 0;
 const monitor = (watch = new TurnWatch()) => {
+  // (The work other tests of the process left in the activity ring is not this stall's.)
+  resetActivity();
   const clock = { now: (epoch += 1_000_000), cpu: 0, working: true, ticks: 0 };
   performance.now = () => clock.now;
   const seen: Stall[] = [];
@@ -463,4 +466,18 @@ test("with the default bar, a stall of 0.3 s or more is noted for its row in dae
   clock.now += 2_600; clock.cpu += 2_600;
   expect(m.tick()!.ms).toBe(2_500);
   expect(seen.map((s) => s.ms)).toEqual([2_500]);
+});
+
+test("a stall names the work that was open while the loop was held, and its row carries it", () => {
+  const { m, seen, pass } = monitor();
+  const end = begin("read", "read on the thread: board.facts");
+  try {
+    pass(100); m.tick();
+    pass(2500, 2400);
+    m.tick();
+  } finally { end(); resetActivity(); }
+  expect(seen).toHaveLength(1);
+  expect(seen[0]!.ran).toMatchObject([{ label: "read on the thread: board.facts", open: 1 }]);
+  const d = describeStall(seen[0]!);
+  expect(d.context.ran).toMatchObject([{ label: "read on the thread: board.facts" }]);
 });

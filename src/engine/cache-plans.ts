@@ -10,6 +10,7 @@
 // request wrote the context again failed, and the note says so ("warm_missed").
 // Nothing here enters the history the model reads: a warm request is sent
 // beside it, and the note is not sent.
+import { during } from "../admin/activity.ts";
 import type { Store } from "../core/store.ts";
 import type { Message, Session, StoredEvent, Usage } from "../core/types.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -194,7 +195,10 @@ export class CachePlans {
   }
 
   // Before the cache lapses: decided again with what was spent, then done.
-  private async act(r: Run) {
+  private act(r: Run): Promise<void> {
+    return during("task", () => this.actOf(r), "a cache plan's act");
+  }
+  private async actOf(r: Run) {
     if (this.runs.get(r.id) !== r || this.d.draining()) return;
     const s = this.d.store.session(r.id);
     if (!s || s.archived) return this.end(r.id, "gone");
