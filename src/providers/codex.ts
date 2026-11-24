@@ -204,9 +204,13 @@ export class CodexProvider implements Provider {
   // item (the totals stay). Codex sends the same on every Responses request
   // and WebSocket handshake (codex-rs core client.rs build_responses_headers,
   // openai/codex#62863 and #63219); the echo repeats the whole catalog in each
-  // response event of a stream.
+  // response event of a stream. A second header drops stream fields Keel never
+  // reads: the ciphertext on a reasoning item when it is first added (replay
+  // takes it from the done item) and the sequence number on text and tool input
+  // deltas (openai/codex#63461, #63479). It is a header of its own so a server
+  // that knows only x-codex-exclude is not confused by it.
   private responseHeaders(a: AuthFile, sessionKey?: string): Record<string, string> {
-    return { ...this.headers(a, sessionKey), "x-codex-exclude": "tools,usage.attribution" };
+    return { ...this.headers(a, sessionKey), "x-codex-exclude": "tools,usage.attribution", "x-codex-exclude-stream-fields": "reasoning.added.encrypted_content,delta.sequence_number" };
   }
 
   // The plan's windows as Codex's /status reads them.

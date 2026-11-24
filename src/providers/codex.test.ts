@@ -51,17 +51,23 @@ test("the listing asks for the installed Codex's version over an older cache, an
 // in it the tool catalog the request sent and the usage's attribution per item,
 // unless the request's x-codex-exclude names them.
 function echoingBackend() {
-  const seen: { via: string; exclude: string | null }[] = [];
+  const seen: { via: string; exclude: string | null; fields: string | null }[] = [];
   let bytes = 0;
-  const events = (body: any, exclude: string) => {
+  const events = (body: any, exclude: string, fields = "") => {
     const drop = new Set(exclude.split(",").map((s) => s.trim()));
     const usage = { input_tokens: 1200, output_tokens: 7, input_tokens_details: { cached_tokens: 1000 }, ...(drop.has("usage.attribution") ? {} : { attribution: (body.tools ?? []).map((t: any) => ({ tool: t.name, input_tokens: 40 })) }) };
     const response = (status: string, more: object = {}) => ({ id: "resp_1", status, model: body.model, ...(drop.has("tools") ? {} : { tools: body.tools ?? [] }), ...more });
     const item = { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] };
+    // A reasoning item: the ciphertext comes with it when added unless the request
+    // asked to drop it, and always on the done item.
+    const rs = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "think" }] };
+    const addedFields = fields.includes("reasoning.added.encrypted_content") ? rs : { ...rs, encrypted_content: "ENC-ADDED" };
     return [
       { type: "response.created", response: response("in_progress") },
       { type: "response.in_progress", response: response("in_progress") },
-      { type: "response.output_item.done", output_index: 0, item },
+      { type: "response.output_item.added", output_index: 0, item: addedFields },
+      { type: "response.output_item.done", output_index: 0, item: { ...rs, encrypted_content: "ENC-DONE" } },
+      { type: "response.output_item.done", output_index: 1, item },
       { type: "response.completed", response: response("completed", { output: [item], usage }) },
     ].map((e) => JSON.stringify(e));
   };
@@ -69,19 +75,20 @@ function echoingBackend() {
     port: 0,
     async fetch(req, s) {
       const exclude = req.headers.get("x-codex-exclude");
+      const fields = req.headers.get("x-codex-exclude-stream-fields");
       if (req.headers.get("upgrade") === "websocket") {
-        seen.push({ via: "ws", exclude });
-        return s.upgrade(req, { data: { exclude: exclude ?? "" } }) ? undefined : new Response("no", { status: 400 });
+        seen.push({ via: "ws", exclude, fields });
+        return s.upgrade(req, { data: { exclude: exclude ?? "", fields: fields ?? "" } }) ? undefined : new Response("no", { status: 400 });
       }
-      seen.push({ via: new URL(req.url).pathname, exclude });
-      const out = events(await req.json(), exclude ?? "").map((e) => `data: ${e}\n\n`).join("");
+      seen.push({ via: new URL(req.url).pathname, exclude, fields });
+      const out = events(await req.json(), exclude ?? "", fields ?? "").map((e) => `data: ${e}\n\n`).join("");
       bytes += out.length;
       return new Response(out, { headers: { "content-type": "text/event-stream" } });
     },
     websocket: {
-      data: {} as { exclude: string },
+      data: {} as { exclude: string; fields: string },
       message(ws, raw) {
-        for (const e of events(JSON.parse(String(raw)), ws.data.exclude)) { bytes += e.length; ws.send(e); }
+        for (const e of events(JSON.parse(String(raw)), ws.data.exclude, ws.data.fields)) { bytes += e.length; ws.send(e); }
       },
     },
   });
@@ -105,7 +112,10 @@ test("a response is asked without the echoed tool catalog over HTTP and the sock
   try {
     const http = await ask();
     const ws = await ask("s1");
-    expect(b.seen).toEqual([{ via: "/responses", exclude: "tools,usage.attribution" }, { via: "ws", exclude: "tools,usage.attribution" }]);
+    const fields = "reasoning.added.encrypted_content,delta.sequence_number";
+    expect(b.seen).toEqual([{ via: "/responses", exclude: "tools,usage.attribution", fields }, { via: "ws", exclude: "tools,usage.attribution", fields }]);
+    // The ciphertext replays from the done item, though the added one carried none.
+    for (const r of [http, ws]) expect((r.blocks.find((c) => c.type === "thinking") as any)?.opaque).toMatchObject({ type: "reasoning", encrypted_content: "ENC-DONE" });
     for (const r of [http, ws]) expect(r.usage).toMatchObject({ input: 200, cache_read: 1000, output: 7 });
     // Four response events with the catalog in three would be over 450 KB a call.
     expect(b.bytes()).toBeLessThan(4000);
