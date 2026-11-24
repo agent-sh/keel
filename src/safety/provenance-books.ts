@@ -60,7 +60,7 @@ export class Provenance {
     if (this.cleared.size > MAX_BOOKS) this.cleared.delete(this.cleared.keys().next().value!);
   }
 
-  // The first sighting of a key over the chain: the owner's word wins, then outside content, then a search result.
+  // The first sighting of a key over the chain: the owner's word wins, then a search result or a page's link, then other outside content.
   // What a session read that it could not keep whole: a target it has no sighting of may be one that was in it.
   private unread(books: ProvenanceBook[]): Origin | undefined {
     for (const b of books) if (b.unbounded) return b.unbounded;
@@ -75,7 +75,8 @@ export class Provenance {
       // What the model spells after the book went unbounded may come from what was not kept: not a sighting of its own.
       if (o.model && b.unbounded && o.seq >= b.unbounded.seq) continue;
       if (o.cls === "owner") return o;
-      if (!best || (best.cls === "inside" && o.cls !== "inside") || (best.cls === "listed" && o.cls === "outside")) best = o;
+      // (A host that outside text named in one session and a search listed in another is the web's: a plain read of it goes on.)
+      if (!best || (best.cls === "inside" && o.cls !== "inside") || (best.cls === "outside" && o.cls === "listed")) best = o;
     }
     return best;
   }

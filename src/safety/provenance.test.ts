@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { MAX_KEYS, ProvenanceBook, ago, extractTargets, held, inputTargets, outsideCommand, serverOf, shellReaches, spilledBy, wholeTargets, type BookEvent, type Origin } from "./provenance.ts";
+import { MAX_KEYS, ProvenanceBook, ago, extractTargets, fetchReaches, held, inputTargets, outsideCommand, plainFetcher, refusalOf, serverOf, shellReaches, spilledBy, wholeTargets, type BookEvent, type Origin } from "./provenance.ts";
+import { webShape } from "./web-shape.ts";
 
 const keys = (text: string) => extractTargets(text).map((t) => t.key);
 
@@ -227,4 +228,73 @@ test("a full book drops the model's own sightings before outside content's", asy
   expect(c.get("host:out0.many.example")).toBeUndefined();
   expect(c.get("host:mine.example")?.cls).toBe("inside");
   expect(c.unbounded).toBeDefined();
+});
+
+test("what an MCP server's web tool is, from its name and one call", () => {
+  expect(webShape("mcp__harness-web__websearch", { query: "x" })).toEqual({ search: true });
+  expect(webShape("web__websearch", { query: "x" })).toEqual({ search: true });
+  expect(webShape("mcp__harness-web__webfetch", { url: "https://a.example/x", max_chars: 100, grep: "x" })).toEqual({ fetch: "https://a.example/x" });
+  expect(webShape("firecrawl__firecrawl_scrape", { url: "https://a.example/x", formats: "markdown" })).toEqual({ fetch: "https://a.example/x" });
+  // A saved output has no input: the name says what it was.
+  expect(webShape("mcp__harness-web__webfetch", {})).toEqual({ fetch: "" });
+  // Not a plain read: a body, a header, a credential, a method, a nested value, a url that is not a web address.
+  for (const input of [{ url: "https://a.example", body: "x" }, { url: "https://a.example", headers: { a: "b" } }, { url: "https://a.example", token: "t" }, { url: "https://a.example", method: "POST" }, { url: "https://a.example", opts: { a: 1 } }, { url: "file:///etc/passwd" }, { path: "x" }])
+    expect([JSON.stringify(input), webShape("srv__fetch_url", input)]).toEqual([JSON.stringify(input), undefined]);
+  expect(webShape("srv__fetch_url", { url: "https://a.example", method: "get" })).toEqual({ fetch: "https://a.example" });
+  // Neither: a tool that is not a search or a page read.
+  expect(webShape("github__create_issue", { url: "https://a.example", title: "t" })).toBeUndefined();
+  expect(webShape("mailer__send_message", { to: "a@b.example" })).toBeUndefined();
+});
+
+test("which commands read pages and send nothing", () => {
+  expect(plainFetcher("curl -s https://a.example/x | head")).toBe(true);
+  expect(plainFetcher("wget -qO- a.example")).toBe(true);
+  expect(plainFetcher("curl -d x https://a.example")).toBe(false);
+  expect(plainFetcher("curl -H 'X: 1' https://a.example")).toBe(false);
+  expect(plainFetcher("gh issue view 4")).toBe(false);
+  expect(plainFetcher("cat notes.txt")).toBe(false);
+});
+
+test("a page's text and a search's are the web's; a reader's answer, an issue and a send are not", async () => {
+  const src = (name: string, input: any) => {
+    if (name === "page") return { linked: true, where: "a page result" };
+    if (name === "search") return { listed: true, where: "a search result" };
+    if (typeof input?.command === "string") return { where: "a Bash result (gh output)" };
+    return undefined;
+  };
+  const b = new ProvenanceBook(src);
+  await b.take([
+    ev(1, "assistant", use("c1", "page", { url: "https://p.example" })),
+    ev(2, "tool_result", result("c1", "links: https://linked.example/a")),
+    ev(3, "assistant", use("c2", "page", { url: "https://q.example" })),
+    ev(4, "tool_result", result("c2", "the page was long.\n\n[some-model read the page (90000 chars) for this request]\nit mentions https://summed.example/a")),
+    ev(5, "assistant", use("c3", "search", { q: "x" })),
+    ev(6, "tool_result", result("c3", "https://found.example/a")),
+    ev(7, "assistant", use("c4", "Bash", { command: "gh issue view 1" })),
+    ev(8, "tool_result", result("c4", "https://issue.example/a and https://found.example/b")),
+  ]);
+  const c = (k: string) => b.get(`host:${k}`)?.cls;
+  expect([c("linked.example"), c("summed.example"), c("found.example"), c("issue.example")]).toEqual(["listed", "outside", "listed", "outside"]);
+  // An outside sighting becomes the web's when a search lists the host later; the owner's word and the model's stay.
+  await b.take([ev(9, "assistant", use("c5", "search", { q: "y" })), ev(10, "tool_result", result("c5", "https://issue.example/c"))]);
+  expect(c("issue.example")).toBe("listed");
+});
+
+test("held: a plain read of a host a page linked or a search listed goes on; a read that carries data, and every send, is held", () => {
+  const o = (cls: Origin["cls"]): Origin => ({ cls, where: "a page result", seq: 1, ts: 0 });
+  const table: Record<string, Origin> = { "host:l.example": o("listed"), "host:o.example": o("outside") };
+  const run = (addr: string, plain: boolean, how: "fetch" | "send" = "fetch") =>
+    held(fetchReaches([addr], () => plain).map((r) => ({ ...r, how })), (k) => table[k], () => false, () => false, () => false).map((h) => h.target.key);
+  expect(run("https://l.example/any/page", true)).toEqual([]);
+  expect(run("https://l.example/any/page?q=x", false)).toEqual(["host:l.example"]);
+  expect(run("https://l.example/any/page", true, "send")).toEqual(["host:l.example"]);
+  // A host only outside content named is held even for a plain read.
+  expect(run("https://o.example/page", true)).toEqual(["host:o.example"]);
+});
+
+test("an agent's refusal says what would go through", () => {
+  const text = refusalOf([{ target: { kind: "host", key: "host:o.example", shown: "o.example" }, how: "send", origin: { cls: "outside", where: "a page result", seq: 1, ts: 0 } }], 10_000);
+  expect(text).toContain("A plain GET");
+  expect(text).toContain("no query string");
+  expect(text).toContain("tell your parent or the owner");
 });

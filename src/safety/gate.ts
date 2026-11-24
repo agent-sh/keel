@@ -40,7 +40,8 @@ import { timed } from "../admin/stall.ts";
 import { buildId } from "../core/build.ts";
 import { ruledOf, type Ruled } from "./trial.ts";
 import { Provenance } from "./provenance-books.ts";
-import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, type Hit, type Reach } from "./provenance.ts";
+import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, type Hit, type Reach } from "./provenance.ts";
+import { webShape } from "./web-shape.ts";
 import { ownerDenial } from "../core/stops.ts";
 // What a card a hook asked for says before the hook's reason.
 export const HOOK_ASKS = "A hook of yours asks";
@@ -288,6 +289,12 @@ function callClass(call: ToolCall, target: Target): CallClass {
   if ((landed.kind === "edit" || landed.kind === "read" || landed.kind === "other") && landed.paths?.length) lookedAt.set(landed, landed.paths.map(look));
   return landed;
 }
+// A fetch word as an address: a URL as written, a bare name as the fetch tools read it (https). Null for any other scheme.
+function asAddress(word: string): string | null {
+  const w = word.trim();
+  const a = addressOf(/^[a-z][a-z0-9+.-]*:\/\//i.test(w) ? w : `https://${w}`);
+  return a;
+}
 // The folders looked through for a call, which its judgments share (credential-reads.ts).
 const lookKept = new WeakMap<object, LookKept>();
 const lookedAt = new WeakMap<object, { path: string; id: string | null; linked: boolean }[]>();
@@ -385,26 +392,30 @@ export class Gate {
 
   // Whether what a call brings back is outside content, and how a card names it: a page or a search result, an MCP
   // server's answer (any server but Keel's own), the output of curl, wget or gh.
-  private outsideSource(name: string, input: any): { listed?: boolean; where: string } | undefined {
+  private outsideSource(name: string, input: any): { listed?: boolean; linked?: boolean; where: string } | undefined {
     const web = this.webCall(name, input);
-    if (web) return { ...("search" in web.use ? { listed: true } : {}), where: `a ${name} result` };
+    // A search's result is the web's index; a page read with a plain GET is the page's own text (provenance.ts, `listed`).
+    if (web) return { ...("search" in web.use ? { listed: true } : web.use.links && (web.use.public?.(web.input, () => false) ?? true) ? { linked: true } : {}), where: `a ${name} result` };
     const tool = name === "mcp_call" ? String(input?.tool ?? "") : name;
     const server = serverOf(tool);
-    if (server && !OWN_SERVERS.has(server)) return { where: `a ${tool} result` };
+    if (server && !OWN_SERVERS.has(server)) {
+      const shape = webShape(tool, name === "mcp_call" ? input?.arguments : input);
+      return { ...(shape ? ("search" in shape ? { listed: true } : { linked: true }) : {}), where: `a ${tool} result` };
+    }
     const cmd = typeof input?.command === "string" ? input.command : typeof input?.cmd === "string" ? input.cmd : undefined;
     const prog = cmd ? outsideCommand(cmd) : null;
-    return prog ? { where: `a ${name} result (${prog} output)` } : undefined;
+    return prog ? { ...(cmd && plainFetcher(cmd) ? { linked: true } : {}), where: `a ${name} result (${prog} output)` } : undefined;
   }
 
   // The targets a call sends to that first appeared in outside content (src/safety/provenance.ts): a page fetch to a
   // host, a push to a remote or branch, curl, ssh, scp, mail, an MCP tool that is not read-only given an address.
   // (A call that names no target goes on in the same tick: it is answered at once, not as a promise.)
-  private heldTargets(session: Session, call: ToolCall, target: Target, raw: CallClass): { hits: Hit[]; ids: string[] } | Promise<{ hits: Hit[]; ids: string[] }> {
+  private heldTargets(session: Session, call: ToolCall, target: Target, raw: CallClass, carrying?: Map<string, string>): { hits: Hit[]; ids: string[] } | Promise<{ hits: Hit[]; ids: string[] }> {
     const none = { hits: [] as Hit[], ids: [] as string[] };
     const name = target?.name ?? call.tool.name;
     const dir = cwdOf(call) ?? call.ctx.cwd;
     let reaches: Reach[] = [];
-    if (raw.kind === "read" && raw.fetches?.length) reaches = fetchReaches(raw.fetches);
+    if (raw.kind === "read" && raw.fetches?.length) reaches = fetchReaches(raw.fetches, (a) => !carrying?.has(a));
     else if (raw.kind === "send") reaches = fetchReaches(raw.to).map((r) => ({ ...r, how: "send" as const }));
     else if (raw.kind === "shell") {
       if (!SENDS.test(raw.command)) return none;
@@ -412,10 +423,44 @@ export class Gate {
       reaches = shellReaches(raw.command, { cwd: raw.cwd ?? dir, remoteUrl });
     } else if (raw.kind === "other") {
       const server = serverOf(name);
-      if (server && !OWN_SERVERS.has(server)) reaches = inputTargets(target ? target.input : call.input).map((t) => ({ target: t, how: "send" as const }));
+      if (server && !OWN_SERVERS.has(server)) {
+        const input = target ? target.input : call.input;
+        const shape = webShape(name, input);
+        // A plain read of one address (a call that carries no body, header or credential) is a fetch; every other address in
+        // its input, and any other call of the server, is a send.
+        if (shape && "fetch" in shape && shape.fetch) {
+          const { url: _url, ...rest } = input as Record<string, unknown>;
+          // (The address names its host, and a forge's repository too: both are read as the fetch it is.)
+          reaches = [...inputTargets({ url: shape.fetch }).filter((t) => t.kind !== "email").map((t) => ({ target: t, how: "fetch" as const, word: shape.fetch })), ...inputTargets(rest).map((t) => ({ target: t, how: "send" as const }))];
+        } else reaches = inputTargets(input).map((t) => ({ target: t, how: "send" as const }));
+      }
     }
     if (!reaches.length) return none;
-    return this.provenance.hits(session, reaches, session.machine ? null : (raw.kind === "shell" ? raw.cwd ?? dir : dir));
+    const cwd = session.machine ? null : (raw.kind === "shell" ? raw.cwd ?? dir : dir);
+    // A fetch the call wrote itself (a curl line, an MCP tool's address) is read for what it carries before the books are asked.
+    const words = reaches.filter((r) => r.how === "fetch" && r.word !== undefined && r.plain === undefined).map((r) => r.word!);
+    if (!words.length) return this.provenance.hits(session, reaches, cwd);
+    return (async () => {
+      const data = await this.unseenData(session, words.map(asAddress).filter((a): a is string => !!a));
+      return this.provenance.hits(session, reaches.map((r) => r.how === "fetch" && r.word !== undefined && r.plain === undefined ? { ...r, plain: !!asAddress(r.word) && !data.has(asAddress(r.word)!) } : r), cwd);
+    })();
+  }
+
+  // The addresses among `addresses` that the session has not seen and that carry data of the session (src/safety/addresses.ts
+  // `dataIn`), each with what it carries.
+  private async unseenData(session: Session, addresses: string[]): Promise<Map<string, string>> {
+    const web = await this.seen(session);
+    const tally = new Map<string, number>();
+    const held = new Map<string, string>();
+    for (const a of addresses) {
+      if (web.has(a)) continue;
+      const host = groupOf(addressOf(a) ?? a) ?? "";
+      const earlier = tally.get(host) ?? 0;
+      tally.set(host, earlier + 1);
+      const why = web.carries(a, earlier);
+      if (why) held.set(a, why);
+    }
+    return held;
   }
 
   // What the judge is told of a call whose targets outside content named first (not only the sends).
@@ -1653,23 +1698,11 @@ export class Gate {
     const name = target?.name ?? call.tool.name;
     // A page fetch to an address the session has not seen is judged as the send it is (src/safety/addresses.ts).
     const raw = callClass(call, target);
-    const fresh = raw.kind === "read" && raw.fetches?.length ? await this.seen(session).then((web) => {
-      const tally = new Map<string, number>();
-      const held = new Map<string, string>();
-      for (const a of raw.fetches!) {
-        if (web.has(a)) continue;
-        const host = groupOf(addressOf(a) ?? a) ?? "";
-        const earlier = tally.get(host) ?? 0;
-        tally.set(host, earlier + 1);
-        const why = web.carries(a, earlier);
-        if (why) held.set(a, why);
-      }
-      return held;
-    }) : undefined;
+    const fresh = raw.kind === "read" && raw.fetches?.length ? await this.unseenData(session, raw.fetches) : undefined;
     const asJudged = (c: CallClass) => sentAs(c, fresh);
     const cls = asJudged(raw);
     // A target that first appeared in outside content (a page, an issue, a tool server's answer) is held in every mode.
-    const prov = this.heldTargets(session, call, target, raw);
+    const prov = this.heldTargets(session, call, target, raw, fresh);
     const provHeld = prov instanceof Promise ? await prov : prov;
     // (Only an agent with a scope waits for it: every other call goes on in the same tick, as before.)
     if (!session.machine && scopes.of?.(session.id)) {
