@@ -114,3 +114,67 @@ test("a response is asked without the echoed tool catalog over HTTP and the sock
     for (const [k, v] of [["CODEX_HOME", env.home], ["KEEL_CODEX_BASE_URL", env.base], ["KEEL_PROVIDER_ENV_FILE", env.broker]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
   }
 });
+
+// A request over the socket's message limit: the server closes with 1009 before
+// any text (openai/codex#60840). It goes over HTTP once with the session's cache
+// key, no retry is counted, and the size is remembered so the next one that large
+// is not uploaded again. Smaller requests keep using the socket.
+test("a request over the socket's message limit goes over HTTP once with its cache key, and the socket serves the next", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-codex-"));
+  writeFileSync(join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "fixture-access", refresh_token: "fixture-refresh" }, last_refresh: new Date().toISOString() }));
+  const LIMIT = 20_000;
+  const log: string[] = [];
+  const httpKeys: unknown[] = [];
+  const answer = (id: string) => [
+    { type: "response.created", response: { id, status: "in_progress" } },
+    { type: "response.completed", response: { id, status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }], usage: { input_tokens: 5, output_tokens: 1 } } },
+  ].map((e) => JSON.stringify(e));
+  const srv = Bun.serve({
+    port: 0,
+    async fetch(req, s) {
+      if (req.headers.get("upgrade") === "websocket") {
+        log.push("handshake");
+        return s.upgrade(req, { data: {} }) ? undefined : new Response("no", { status: 400 });
+      }
+      const body: any = await req.json();
+      log.push("http");
+      httpKeys.push(body.prompt_cache_key);
+      return new Response(answer("resp_http").map((e) => `data: ${e}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+    },
+    websocket: {
+      data: {} as Record<string, never>,
+      message(ws, raw) {
+        const text = String(raw);
+        log.push(`ws ${text.length > LIMIT ? "big" : "small"}`);
+        if (text.length > LIMIT) { ws.close(1009, "message too big"); return; }
+        for (const e of answer("resp_ws")) ws.send(e);
+      },
+    },
+  });
+  const env = { home: process.env.CODEX_HOME, base: process.env.KEEL_CODEX_BASE_URL, broker: process.env.KEEL_PROVIDER_ENV_FILE };
+  process.env.CODEX_HOME = dir;
+  process.env.KEEL_CODEX_BASE_URL = `http://127.0.0.1:${srv.port}`;
+  delete process.env.KEEL_PROVIDER_ENV_FILE;
+  const p = new CodexProvider();
+  const ask = (size: number) => p.stream({ model: "gpt-test", system: "be brief", messages: [{ role: "user", content: [{ type: "text", text: "x".repeat(size) }] }], tools: [], signal: new AbortController().signal, sessionKey: "s1" }, () => {});
+  try {
+    await ask(10);
+    expect(log).toEqual(["handshake", "ws small"]);
+    log.length = 0;
+    // Over the limit: the socket is closed on it, this request goes over HTTP.
+    expect((await ask(LIMIT * 2)).blocks).toMatchObject([{ type: "text", text: "ok" }]);
+    expect(log).toEqual(["ws big", "http"]);
+    log.length = 0;
+    // The refused size is not uploaded again: the new socket it opened is left open.
+    await ask(LIMIT * 2);
+    expect(log).toEqual(["handshake", "http"]);
+    log.length = 0;
+    // The session's key still has its socket: a small request uses it.
+    await ask(10);
+    expect(log).toEqual(["ws small"]);
+    expect(httpKeys.every((k) => typeof k === "string" && k.length > 0)).toBe(true);
+  } finally {
+    srv.stop(true);
+    for (const [k, v] of [["CODEX_HOME", env.home], ["KEEL_CODEX_BASE_URL", env.base], ["KEEL_PROVIDER_ENV_FILE", env.broker]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
+  }
+});

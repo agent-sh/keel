@@ -27,6 +27,16 @@ const OPEN_MS = 15_000;
 // The handshake was refused: this session goes over HTTP from now on.
 export class WsUnavailable extends Error {}
 
+// This request is over the server's message limit: it goes over HTTP once, the
+// session's key keeps its socket. Close code 1009 ("message too big") before any
+// text of the answer is what Codex reads as an oversized request (openai/codex
+// #60840); its advertised limit, the x-codex-websocket-max-message-bytes header
+// (#60841), is not readable from Bun's WebSocket, so the size the server refused
+// is kept instead.
+export class WsTooLarge extends Error {}
+const TOO_BIG = 1009;
+const LIMIT_KEPT = 10 * 60_000; // a refused size is held this long: the server's limit may change
+
 const OUTPUT = (it: any) => it?.type === "reasoning" || it?.type === "function_call" || it?.type === "custom_tool_call" || (it?.type === "message" && it?.role === "assistant");
 
 type Chan = {
@@ -35,6 +45,7 @@ type Chan = {
   used: number;
   busy: boolean;
   closed: boolean;
+  code?: number;
   // The outward ledger's rows of this socket (src/safety/egress.ts).
   rows: SocketRows;
   last?: { rest: string; input: any[]; id: string };
@@ -58,6 +69,8 @@ export class ResponsesSockets {
   private off = new Set<string>();
   // Counted for the measurement in the decision log: whole vs continued requests.
   readonly stats = { whole: 0, continued: 0, fallback: 0 };
+  // The smallest message the server closed a socket over, and when it did.
+  private refusedSize?: { bytes: number; at: number };
 
   constructor(private label: string, private url: () => string) {
     setInterval(() => {
@@ -71,6 +84,9 @@ export class ResponsesSockets {
   closeIdle() {
     for (const [k, list] of this.chans) for (const c of [...list]) if (!c.busy) this.drop(k, c);
   }
+
+  // A request that goes over HTTP for its size: counted, and the key is not off.
+  oversized() { this.stats.fallback++; }
 
   usable(key: string) { return !this.off.has(key); }
 
@@ -117,7 +133,7 @@ export class ResponsesSockets {
       const t = setTimeout(() => { try { ws.close(); } catch {} c.rows.failed("the socket did not open in time"); reject(new WsUnavailable("the socket did not open")); }, OPEN_MS);
       ws.onopen = () => { clearTimeout(t); c.rows.opened(); const list = this.chans.get(key); list ? list.push(c) : this.chans.set(key, [c]); resolve(c); };
       ws.onerror = () => { clearTimeout(t); c.closed = true; c.rows.failed("the handshake was refused"); reject(new WsUnavailable("the handshake was refused")); };
-      ws.onclose = () => { c.closed = true; clearTimeout(t); c.onClose?.(); this.drop(key, c); };
+      ws.onclose = (e) => { c.closed = true; c.code = e?.code; clearTimeout(t); c.onClose?.(); this.drop(key, c); };
       ws.onmessage = (e) => {
         let m: any;
         try { m = JSON.parse(String(e.data)); } catch { return; }
@@ -148,8 +164,12 @@ export class ResponsesSockets {
           const msg = cont ? { type: "response.create", ...whole, previous_response_id: cont.id, input: cont.input } : { type: "response.create", ...whole };
           cont ? self.stats.continued++ : self.stats.whole++;
           const text = JSON.stringify(msg);
+          const bytes = Buffer.byteLength(text);
+          // A size the server already refused is not uploaded again; the socket stays for the next request.
+          if (self.refusedSize && Date.now() - self.refusedSize.at < LIMIT_KEPT && bytes >= self.refusedSize.bytes) throw new WsTooLarge(`${self.label}: the request is over the socket's message limit`);
           c.ws.send(text);
-          c.rows.sent(Buffer.byteLength(text));
+          c.rows.sent(bytes);
+          let received = 0;
           let retry = false;
           try {
             for (;;) {
@@ -158,10 +178,15 @@ export class ResponsesSockets {
               if (!queue.length && gone) {
                 const stalled = guard.stalled();
                 if (stalled) throw stalled;
+                if (c.code === TOO_BIG && !received) {
+                  if (!self.refusedSize || bytes < self.refusedSize.bytes || Date.now() - self.refusedSize.at >= LIMIT_KEPT) self.refusedSize = { bytes, at: Date.now() };
+                  throw new WsTooLarge(`${self.label}: the request is over the socket's message limit`);
+                }
                 if (req.signal.aborted) throw new ProviderError("cancelled", "cancelled");
                 throw new ProviderError("network", `${self.label}: the socket closed during the answer`);
               }
               const m = queue.shift();
+              received++;
               onMessage?.(m);
               if (m.type === "error" || m.type === "response.failed") {
                 const code = m.error?.code ?? m.response?.error?.code ?? m.code ?? "";

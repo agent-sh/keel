@@ -16,7 +16,7 @@ import { getJson, fetchFailure, ProviderError, scrub } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { responsesWire } from "./wires/responses.ts";
 import { fromChatgptUsage, type WindowReading } from "./limits.ts";
-import { ResponsesSockets, WsUnavailable } from "./responses-ws.ts";
+import { ResponsesSockets, WsTooLarge, WsUnavailable } from "./responses-ws.ts";
 import { homeDir } from "../core/paths";
 
 const REFRESH_MARGIN = 5 * 60_000;
@@ -236,8 +236,9 @@ export class CodexProvider implements Provider {
         delete res.served;
         return res;
       } catch (e) {
-        if (!(e instanceof WsUnavailable)) throw e;
-        this.sockets.refused(key);
+        if (e instanceof WsTooLarge) this.sockets.oversized();
+        else if (e instanceof WsUnavailable) this.sockets.refused(key);
+        else throw e;
       }
     }
     const res = await runEvents(responsesWire("codex"), req, ctx, onDelta, httpEvents({
