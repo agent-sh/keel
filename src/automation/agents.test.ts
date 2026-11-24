@@ -1433,6 +1433,29 @@ test("an agent closed by a restart or a deleted session leaves no reading of its
   expect(reading(b.id)).toBe(0);
 });
 
+// The tick reads whole only the agents with something to do: a deleted session, a time limit passed, a long park.
+test("the tick's query names only the agents that are due", async () => {
+  const p = parentOf("due agents");
+  const a = await p.start();
+  const due = (now = Date.now()) => agents.dueAgents(store.db, now, 60_000).map((r) => r.id);
+  expect(due()).not.toContain(a.id);
+  // A limit in its definition, not yet passed, then passed.
+  store.db.query("UPDATE agents SET def = ? WHERE id = ?").run(JSON.stringify({ name: "x", timeoutMins: 10 }), a.id);
+  expect(due()).not.toContain(a.id);
+  expect(due(Date.now() + 11 * 60_000)).toContain(a.id);
+  store.db.query("UPDATE agents SET def = NULL WHERE id = ?").run(a.id);
+  expect(due(Date.now() + 11 * 60_000)).not.toContain(a.id);
+  // A park on a command, background, past the long-park time.
+  store.db.query("UPDATE agents SET status = 'waiting', background = 1, parked = ? WHERE id = ?").run(Date.now() - 30_000, a.id);
+  expect(due()).not.toContain(a.id);
+  expect(due(Date.now() + 40_000)).toContain(a.id);
+  store.db.query("UPDATE agents SET background = 0 WHERE id = ?").run(a.id);
+  expect(due(Date.now() + 40_000)).not.toContain(a.id);
+  // Its session is gone.
+  store.db.query("DELETE FROM sessions WHERE id = ?").run(a.session_id);
+  expect(due()).toContain(a.id);
+});
+
 test("a wait's JSON is read before a note the harness put after it", async () => {
   const { jsonHead } = await import("./agents.ts");
   expect(JSON.parse(jsonHead('{"status":{}}\n\n<memory source="tacit">x</memory>'))).toEqual({ status: {} });

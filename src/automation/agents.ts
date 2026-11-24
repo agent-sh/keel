@@ -1,5 +1,6 @@
 import { crossingIn, routeOf, RouteRefused, sayCrossing } from "../safety/content-routes.ts";
 import { allowedOnly, allows, providerOf } from "../safety/route-rule.ts";
+import type { Database } from "bun:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { bareBy } from "../core/bare-index.ts";
 import { git as gitRun } from "../core/git.ts";
@@ -2884,16 +2885,24 @@ function sendAllOwed(rows: Owed[], boot = false) {
 }
 
 // Time limits from definitions, agents whose sessions are gone, and parks on a command that last.
+// One query names the agents with something to do (most passes find none); only those are read whole.
+export function dueAgents(db: Database, now: number, longMs = longPark.ms): Row[] {
+  return db.query<Row, [number, number, number]>(`SELECT a.* FROM agents a WHERE a.status IN ('running', 'waiting') AND (
+    NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = a.session_id)
+    OR (COALESCE(json_extract(a.def, '$.timeoutMins'), 0) <> 0 AND ? - a.created > json_extract(a.def, '$.timeoutMins') * 60000)
+    OR (a.status = 'waiting' AND a.background = 1 AND ? - COALESCE(a.parked, a.created) >= ?))`).all(now, now, longMs);
+}
 export function tick() {
-  const liveRows = D().store.db.query<Row, []>("SELECT * FROM agents WHERE status IN ('running', 'waiting')").all().map(toRec);
+  const now = Date.now();
   const kept: AgentRecord[] = [];
-  for (const a of liveRows) {
+  for (const row of dueAgents(D().store.db, now)) {
+    const a = toRec(row);
     if (!D().store.session(a.session_id)) { update(a.id, { status: "stopped", ended: Date.now(), result: "Its session was deleted." }); leftovers.forget(D().store, a.id); continue; }
     const def = defOf(a.id);
     if (def?.timeoutMins && Date.now() - a.created > def.timeoutMins * 60_000) { stop(a.id, "time_limit"); continue; }
     kept.push(a);
   }
-  wakeLongParks(kept, Date.now());
+  wakeLongParks(kept, now);
 }
 
 // A restored parent gets the reports its agents finished while it was archived
