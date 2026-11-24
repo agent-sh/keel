@@ -4,9 +4,9 @@
 //
 // A place is the session's own when Keel can show where it came from: the
 // session's folder, the worktree Keel made for it, the scratch folder Keel made
-// for it, or a folder named as its own (a scratch folder) in words Keel stored
-// from someone who may give it one: the task its parent session gave it, the
-// messages that parent sent it since, and the owner's own messages. Text the
+// for it, a worktree its own call added (made-places.ts), or a folder named as its own (a scratch folder) in
+// words Keel stored from someone who may give it one: the task its parent session gave it, the messages that
+// parent sent it since, and the owner's own messages. Text the
 // agent wrote, read or fetched (a brief it opened, a tool's output) never adds
 // a place.
 import { tmpdir } from "node:os";
@@ -16,7 +16,7 @@ import { gitCall, located, type Look } from "./autonomy.ts";
 import type { RiskRule } from "./risk-words.ts";
 import { isReadOnly, type Simple } from "./shell.ts";
 
-export type PlaceFrom = "folder" | "worktree" | "scratch" | "parent" | "owner" | "writes";
+export type PlaceFrom = "folder" | "worktree" | "scratch" | "parent" | "owner" | "writes" | "made";
 // `glob`: the path is a pattern (an agent's write scope may name one, write-scope.ts).
 export type OwnPlace = { path: string; from: PlaceFrom; glob?: true };
 
@@ -28,6 +28,7 @@ const SAID: Record<PlaceFrom, string> = {
   parent: "named as this session's own in the task or a message its parent session gave it",
   owner: "named as this session's own in the owner's message",
   writes: "given to this agent to write by its parent session (its spawn's writes, or a yes to its question)",
+  made: "a git worktree this session added itself (its own `git worktree add` ran and ended well)",
 };
 
 // The words that name a folder as the reader's own, right before the path: "Scratch dir PATH", "scratch folder:
@@ -120,7 +121,9 @@ function globHolds(g: string, p: string): boolean {
 export function ownFacts(places: OwnPlace[]): string {
   if (!places.length) return "";
   const lines = places.map((x) => `- ${x.path}: ${SAID[x.from]}`);
-  return `Folders that are this session's own, from Keel's records (nothing the agent wrote, read or fetched adds to this list):\n${lines.join("\n")}`;
+  // (A worktree its own call added is read from a call Keel ran and ended well, and the folder on disk, not from what the agent says of it.)
+  const said = places.some((x) => x.from === "made") ? "nothing the agent wrote, read or fetched adds to this list but a worktree its own call made" : "nothing the agent wrote, read or fetched adds to this list";
+  return `Folders that are this session's own, from Keel's records (${said}):\n${lines.join("\n")}`;
 }
 
 // One reason the rules flagged a part of a command, with the part it stands for (null: the line as a whole).
@@ -188,6 +191,8 @@ export function settleOwn(a: { parts: Simple[]; risks: PartRisk[]; cwd: string; 
     // lost when it is 0, and is not what is lost when it is more (the judge reads it then).
     const whole = !(g.sub === "checkout" || g.sub === "restore") || g.args.some((x) => x === "." || x === ":/" || x === "./" || /^(-f|--force|--discard-changes)$/.test(x));
     if (tracked + untracked > 0 && !whole) return null;
+    // A worktree the session added itself holds its own work: what it discards is the judge's to weigh, with the counts.
+    if (tracked + untracked > 0 && place.from === "made") return null;
     if (tracked + untracked > 0) {
       const what = [tracked ? `${tracked} uncommitted tracked change${tracked === 1 ? "" : "s"}` : "", untracked ? `${untracked} untracked file${untracked === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ");
       return {

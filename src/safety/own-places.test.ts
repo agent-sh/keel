@@ -105,3 +105,16 @@ test("precision is the share of refusals the owner left standing", () => {
   expect(p.classes.find((c) => c.key === "judge:destroys:own")).toMatchObject({ refused: 4, taken_back: 1, precision: null });
   expect(p.classes[0]!.key).toBe("judge:destroys:own");
 });
+
+test("a worktree the session added is settled when nothing is lost there, and judged when something is", () => {
+  const made: OwnPlace[] = [{ path: "/h/.cache/lane/wt-a", from: "made" }];
+  const run = (command: string, f: RepoFacts) => {
+    const parts = splitCommand(command)!;
+    return settleOwn({ parts, risks: [{ at: 0, rule: "destroys", why: "x" }], cwd: "/h/repo", home: H, places: made, look: () => f });
+  };
+  expect(run("git worktree remove --force /h/.cache/lane/wt-a", facts(0, 0, "/h/.cache/lane/wt-a"))).toMatchObject({ allow: expect.stringContaining("added itself") });
+  // Its own uncommitted work: the judge weighs it with the counts, Keel's rules do not refuse it for the session.
+  expect(run("git worktree remove --force /h/.cache/lane/wt-a", facts(3, 1, "/h/.cache/lane/wt-a"))).toBeNull();
+  // A worktree that is not its own still refuses a discard that loses work.
+  expect(settle("git worktree remove --force /h/.cache/lane/base", (d) => facts(3, 0, d))).toMatchObject({ lost: 3 });
+});

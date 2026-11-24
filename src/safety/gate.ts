@@ -13,6 +13,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
+import { endedWell, worktreesAdded } from "./made-places.ts";
 import { fitsAsPlace, namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
 import { lookRepo, readRepo, repoContext } from "./repofacts.ts";
 import { accountNames } from "./account-settings.ts";
@@ -238,6 +239,10 @@ const interruptedApproval = "The earlier approval cannot be used under Auto. Che
 const changedReview = { deny: "Refused: authorization or the action changed while permission was pending. Check the current permissions before proposing it again." };
 const secretReview = { deny: "Refused: Auto cannot review an action that contains a secret or requires secret substitution. Use Ask to approve the action yourself." };
 
+// Whether a folder is a linked git worktree: its .git is a file that points into a repository's worktrees folder.
+export async function linkedWorktree(dir: string): Promise<boolean> {
+  try { return /^gitdir:\s*\S*\/worktrees\/[^/\s]+\s*$/m.test(await Bun.file(join(dir, ".git")).slice(0, 1024).text()); } catch { return false; }
+}
 // Whether a folder is part of a git checkout or holds one: a `.git` in it or above it, or one in the folders below it
 // (three levels, at most 2,000 entries looked at; more than that counts as holding one). Off the loop.
 // `top`: where the look upward stops (a test's own folder); by default the root.
@@ -724,8 +729,43 @@ export class Gate {
     this.placesKept.set(session.id, { at: Date.now(), list });
     return list;
   }
+  // The worktrees the session added itself: its own `git worktree add` calls that ran and ended without a failure
+  // (made-places.ts), still there as linked worktrees, by their real path. Kept apart from places(): they tell the
+  // judge and the rules' facts whose work a folder holds, and widen nothing the session may write.
+  private madeKept = new Map<string, { at: number; list: OwnPlace[] }>();
+  private async madeWorktrees(session: Session): Promise<OwnPlace[]> {
+    const have = this.madeKept.get(session.id);
+    if (have && Date.now() - have.at < 30_000) return have.list;
+    const list: OwnPlace[] = [];
+    try {
+      let since = 0;
+      try { since = this.store.db.query<{ synced_ms: number }, [string]>("SELECT synced_ms FROM import_links WHERE session_id = ?").get(session.id)?.synced_ms ?? 0; } catch {} // nothing was imported here
+      const calls = await this.readSql("SELECT e.seq AS seq, json_extract(j.value, '$.id') AS id, COALESCE(json_extract(j.value, '$.input.command'), json_extract(j.value, '$.input.cmd')) AS cmd FROM events e, json_each(e.data, '$.blocks') j WHERE e.session_id = ? AND e.kind = 'assistant' AND e.ts > ? AND e.data LIKE '%worktree%add%' AND json_extract(j.value, '$.type') = 'tool_use' AND cmd LIKE '%worktree%add%' ORDER BY e.seq DESC LIMIT 100", [session.id, since]) as { seq: number; id: string; cmd: unknown }[];
+      const asked = calls.filter((c) => typeof c.id === "string" && typeof c.cmd === "string");
+      if (asked.length) {
+        const results = await this.readSql(`SELECT json_extract(j.value, '$.tool_use_id') AS id, substr(json_extract(j.value, '$.content'), 1, 4000) AS out, json_extract(j.value, '$.is_error') AS err FROM events e, json_each(e.data, '$.results') j WHERE e.session_id = ? AND e.kind = 'tool_result' AND e.seq > ? AND json_extract(j.value, '$.tool_use_id') IN (${asked.map(() => "?").join(",")})`, [session.id, Math.min(...asked.map((c) => c.seq)), ...asked.map((c) => c.id)]) as { id: string; out: unknown; err: unknown }[];
+        const ended = new Set(results.filter((r) => endedWell(typeof r.out === "string" ? r.out : "", r.err === 1 || r.err === true)).map((r) => r.id));
+        const home = realOf(homeDir());
+        const keel = ownFolders();
+        for (const c of asked) {
+          if (!ended.has(c.id)) continue;
+          for (const p of worktreesAdded(c.cmd as string, session.workspace, homeDir())) {
+            const real = realOf(p);
+            // (Through a link, or in a folder no scratch can be: not a place. One of Keel's own folders never is.)
+            if (real !== resolve(p) || !fitsAsPlace(real, home) || list.some((x) => x.path === real)) continue;
+            if (keel.some((k) => contains(k, real) || contains(real, k))) continue;
+            if (!await linkedWorktree(real)) continue;
+            list.push({ path: real, from: "made" });
+          }
+        }
+      }
+    } catch { /* no record is read: none is made as far as Keel knows */ }
+    if (this.madeKept.size > 512) this.madeKept.clear();
+    this.madeKept.set(session.id, { at: Date.now(), list });
+    return list;
+  }
   // The places are read again at the next call (the parent widened the agent's scope).
-  forgetPlaces(sessionId: string) { this.placesKept.delete(sessionId); }
+  forgetPlaces(sessionId: string) { this.placesKept.delete(sessionId); this.madeKept.delete(sessionId); }
   placesFor(session: Session): OwnPlace[] { return this.placesNow(session); }
   // Why a parent cannot give an agent whose folder is `agentFolder` a path to write: it is in the owner's checkout or
   // its git directory (and not in the agent's own folder, made inside it), or the parent has a scope of its own that
@@ -1639,7 +1679,10 @@ export class Gate {
     // parent's task or the owner named as its own is its scratch to the rules, so the call is decided again with it.
     if (mode === "auto" && !session.machine && "ask" in dNow && !dNow.ask.ownerOnly) {
       facts.own = await this.places(session);
-      if (facts.own.some((x) => x.from === "parent" || x.from === "owner")) {
+      // (Not in what the rules read as scratch below: a worktree it added is its own work, not a folder it was given.)
+      const rules = facts.own;
+      facts.own = [...rules, ...(await this.madeWorktrees(session)).filter((m) => !rules.some((x) => x.path === m.path))];
+      if (rules.some((x) => x.from === "parent" || x.from === "owner")) {
         asked = new Map();
         dNow = this.evaluate(session, name, judged, target?.source, l ? { ...facts, looked: l.view(asked) } : facts);
         for (let pass = 0; l && asked.size && !l.over() && pass < 3; pass++) {
