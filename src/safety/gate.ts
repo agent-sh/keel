@@ -226,7 +226,7 @@ type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: 
 type CallFacts = { real?: (program: string) => boolean; looked?: Looked; settles?: boolean; own?: OwnPlace[]; provenance?: string };
 const FROM_PARENT = "Message from the session that started you:\n";
 // A shell line is read for the places it sends to only when it holds one of the programs that send.
-const SENDS = /\b(curl|wget|https?|xhs?|aria2c|lynx|w3m|links|elinks|nc|ncat|netcat|telnet|socat|ssh|scp|sftp|rsync|ftp|lftp|mosh|rclone|mail|mailx|mutt|neomutt|sendmail|msmtp|swaks|mailsend|s-nail|mpack|ssmtp|git)\b/;
+const SENDS = /\b(curl|wget|https?|xhs?|aria2c|lynx|w3m|links|elinks|nc|ncat|netcat|telnet|socat|ssh|scp|sftp|rsync|ftp|lftp|mosh|rclone|mail|mailx|mutt|neomutt|sendmail|msmtp|swaks|mailsend|s-nail|mpack|ssmtp|git|gh|openssl|xargs|parallel|aria2c|python[0-9.]*|nodejs|node|deno|bun|ruby|perl|php)\b|\/dev\/(?:tcp|udp)\//;
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
 type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
 type AutoShell = { path: string; identity: string; interpreter: string };

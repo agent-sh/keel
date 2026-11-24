@@ -48,7 +48,8 @@ export type Class = "owner" | "outside" | "listed" | "inside";
 // `unread`: not a sighting of this target: the session read outside content too long to read whole.
 // `model`: the model's own words or call (a target it spells after the book went unbounded may come from what was not kept).
 // `page`: (a `listed` one) a page's own link, not a search result: the web's index vouches for a host, a page only for the addresses it wrote.
-export type Origin = { cls: Class; where: string; seq: number; ts: number; call?: string; unread?: true; model?: true; page?: true };
+// `unspelled`: no sighting at all: the call sends to a place its words do not give (an address on the fetcher's input, in a file).
+export type Origin = { cls: Class; where: string; seq: number; ts: number; call?: string; unread?: true; model?: true; page?: true; unspelled?: true };
 
 // A text is read whole, in chunks of CHUNK (cut at white space, with a line's worth of overlap), up to MAX_TEXT; what
 // lies past that is not read, and the book says so (`unbounded`). MAX_KEYS bounds a session's book: the oldest
@@ -285,10 +286,18 @@ export function wholeTargets(word: string, remote = false): Target[] {
 // to go to it); `send`, anything else.
 // `plain`: for a fetch, the address carries nothing of the session (no query, no secret, no text the session read,
 // addresses.ts `dataIn`), so a host a search listed or a page linked may be read at it. `word`: the address as the call wrote it.
-export type Reach = { target: Target; how: "fetch" | "send"; plain?: boolean; word?: string };
+// `forced`: the call sends to a place its words do not give, and is held whenever the session read outside content, whatever
+// the place is (an address handed to a fetcher on its input or in a file); the text says why. A reach with no `forced` whose
+// target is `unspelled` (a program's own code, a socket, a clone) is held only where any unseen target is: when the session read
+// outside content it could not keep whole.
+export type Reach = { target: Target; how: "fetch" | "send"; plain?: boolean; word?: string; forced?: string };
+
+// The target of a send whose place is not in the call's words: it is no sighting of any book, so the book that could not keep
+// what it read is what holds it (`held`). `text`: what the call is, so that an owner's answer covers this call and not every one.
+export const unspelledTarget = (text: string): Target => ({ kind: "host", key: `host:(not spelled out) ${text.replace(/\s+/g, " ").slice(0, 160)}`, shown: "an address the command does not spell out" });
 
 const FETCHERS = new Set(["curl", "wget", "http", "https", "xh", "xhs", "aria2c", "lynx", "w3m", "links", "elinks"]);
-const SENDERS = new Set(["nc", "ncat", "netcat", "telnet", "socat", "ssh", "scp", "sftp", "rsync", "ftp", "lftp", "mosh", "rclone"]);
+const SENDERS = new Set(["nc", "ncat", "netcat", "telnet", "ssh", "scp", "sftp", "rsync", "ftp", "lftp", "mosh", "rclone"]);
 const MAILERS = new Set(["mail", "mailx", "mutt", "neomutt", "sendmail", "msmtp", "swaks", "mailsend", "s-nail", "mpack", "ssmtp"]);
 // Options that take the next word as a file to write (so a name like `out.sh` is not an address), by program. Nothing else is
 // skipped: a word of any other option that reads as an address is a place the call sends to, whatever the option is for (`-O`
@@ -298,6 +307,7 @@ const FILE_OPTION: Record<string, RegExp> = {
   wget: /^(?:-[A-Za-z]*[Oo]|--output-document|--output-file)$/,
 };
 const SEND_VALUED = /^-[pPilJoFSDEcWwOLRBbse]$/;
+const LOOPBACK_WORD = /^(?:localhost|127(?:\.\d{1,3}){3}|\[?::1\]?|0\.0\.0\.0)$/i;
 
 export type ShellFacts = {
   // The URL a named remote has in a directory (read when a push names one).
@@ -311,21 +321,94 @@ export function shellReaches(command: string, f: ShellFacts): Reach[] {
   return parts ? reachesOf(resolveVariables(parts), f, 0) : [];
 }
 
-function reachesOf(parts: Simple[], f: ShellFacts, depth: number): Reach[] {
+// Programs that run the code they are given as a word (-c, -e), and the words of such code that open a connection.
+const CODE_FLAG = /^(?:-[a-zA-Z]*[ceErp]|--eval|--print)$/;
+const RUNS_CODE = /^(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php)$/;
+const NET_CODE = /\b(?:urllib|urlopen|requests\.|httpx|http\.client|httplib|socket|aiohttp|websockets?|ftplib|smtplib|telnetlib|pycurl|fetch\s*\(|XMLHttpRequest|https?\.(?:request|get)|node:https?|node:net|net\.(?:connect|Socket|createConnection)|createConnection|Net::HTTP|open-uri|URI\.open|LWP|HTTP::Tiny|IO::Socket|curl_init|fsockopen|file_get_contents|Deno\.connect|Bun\.connect|WebSocket)/i;
+// The options that name a file of addresses for a fetcher to read.
+const FILE_FED: Record<string, RegExp> = {
+  wget: /^(?:-[A-Za-z]*i|--input-file(?:=.*)?)$/,
+  curl: /^(?:-[A-Za-z]*K|--config(?:=.*)?)$/,
+  aria2c: /^(?:-i|--input-file(?:=.*)?)$/,
+};
+// socat's address types that open a connection, and git's options that take a value (the repository is the first word that is none).
+const SOCAT_NET = /^(?:TCP[46]?(?:-CONNECT)?|UDP[46]?(?:-(?:CONNECT|SENDTO|DATAGRAM))?|UDPLITE[46]?(?:-(?:CONNECT|SENDTO|DATAGRAM))?|SCTP[46]?(?:-CONNECT)?|IP[46]?(?:-(?:SENDTO|DATAGRAM))?|SSL|OPENSSL(?:-CONNECT|-DTLS-CLIENT)?|SOCKS4A?|SOCKS5-CONNECT|PROXY|VSOCK-CONNECT):/i;
+// What socat runs: the program or the shell line an EXEC or SYSTEM address names.
+const SOCAT_RUNS = /^(?:EXEC|SYSTEM):/i;
+const GIT_FETCH_VALUED = /^(?:-b|-o|-c|-j|--branch|--depth|--origin|--reference|--reference-if-able|--separate-git-dir|--config|--template|--jobs|--filter|--upload-pack|--shallow-since|--shallow-exclude|--server-option|--bundle-uri|--refmap|--negotiation-tip|--deepen)$/;
+// (-u names the upload program of a clone and of ls-remote's older spelling; for fetch and pull it is --update-head-ok and takes nothing.)
+const GIT_CLONE_VALUED = /^-u$/;
+// What a call to an address it cannot read is held on: a spelled place may not carry a `$`, a substitution or a glob.
+const spelledPlace = (w: string) => !/[$`*{}\\]/.test(w);
+
+function reachesOf(parts: Simple[], f: ShellFacts, depth: number, fed = false): Reach[] {
   const out: Reach[] = [];
   const add = (ts: Target[], how: Reach["how"], word?: string) => { for (const target of ts) out.push({ target, how, ...(how === "fetch" && word !== undefined ? { word } : {}) }); };
+  // A send whose place the words do not give: held as any unseen target is.
+  const unread = (text: string) => out.push({ target: unspelledTarget(text), how: "send" });
   let dir = f.cwd;
+  // Remotes the line itself names (`git remote add o URL && git fetch o`): the address is the one it was given.
+  const lineRemotes = new Map<string, string>();
   for (const [at, p] of parts.entries()) {
+    // A socket the shell opens: /dev/tcp/HOST/PORT, in any command of the line.
+    if (!p.unknown && p.text.includes("/dev/")) {
+      for (const m of p.text.matchAll(/\/dev\/(?:tcp|udp)\/([^/\s"'`;|&)]+)\/[0-9$]/g)) {
+        const ts = spelledPlace(m[1]!) ? wholeTargets(m[1]!) : [];
+        if (ts.length) add(ts, "send"); else if (!LOOPBACK_WORD.test(m[1]!)) unread(p.text);
+      }
+    }
     if (p.heredoc || !p.words.length || p.unknown) continue;
-    const words = unwrap(p.words).words;
+    const run = unwrap(p.words);
+    const words = run.words;
     const prog = baseName(words[0]);
     const args = words.slice(1);
     if (prog === "cd") { if (args[0] && !/[$`*?~]/.test(args[0])) dir = resolve(dir, args[0]); continue; }
     if ((prog === "bash" || prog === "sh" || prog === "zsh" || prog === "dash") && depth < 2) {
       const k = args.indexOf("-c");
       const inner = k >= 0 && args[k + 1] ? splitCommand(args[k + 1]!) : null;
-      if (inner) out.push(...reachesOf(resolveVariables(inner), { ...f, cwd: dir }, depth + 1));
+      if (inner) out.push(...reachesOf(resolveVariables(inner), { ...f, cwd: dir }, depth + 1, run.fed === "xargs"));
+    } else if (RUNS_CODE.test(prog)) {
+      // Code given to an interpreter (a -c or -e word, or the here-document after it) that opens a connection: it sends to
+      // what the code computes. The addresses it spells are read as sends; the place is unread beside them.
+      const code = [...args.flatMap((a, k) => (CODE_FLAG.test(a) && args[k + 1] !== undefined ? [args[k + 1]!] : [])), ...(parts[at + 1]?.heredoc && parts[at + 1]!.doc !== undefined ? [parts[at + 1]!.doc!] : [])].join("\n");
+      if (code && NET_CODE.test(code)) {
+        for (const t of extractTargets(code)) if (t.kind === "host" || t.kind === "remote") out.push({ target: t, how: "send" });
+        unread(p.text);
+      }
+    } else if (prog === "openssl" && args[0] === "s_client") {
+      const k = args.findIndex((a) => /^-(?:connect|host|proxy)$/.test(a));
+      const to = k >= 0 ? args[k + 1] : undefined;
+      const ts = to !== undefined && spelledPlace(to) ? wholeTargets(to) : [];
+      if (ts.length) add(ts, "send"); else unread(p.text);
+    } else if (prog === "socat") {
+      for (const a of args) {
+        if (SOCAT_RUNS.test(a) && depth < 2) {
+          // The line it runs is read as a command (EXEC:'curl ADDR'); one that reaches nothing it can read is a send to an unread place.
+          const inner = splitCommand(a.slice(a.indexOf(":") + 1).replace(/^(['"])(.*)\1$/s, "$2"));
+          const found = inner ? reachesOf(resolveVariables(inner), { ...f, cwd: dir }, depth + 1) : [];
+          if (found.length) out.push(...found); else unread(p.text);
+          continue;
+        }
+        if (!SOCAT_NET.test(a)) continue;
+        // The place is the first name after the type (`TCP:host:port`, `SOCKS4A:proxy:host:port`).
+        const host = a.slice(a.indexOf(":") + 1).split(/[:,]/)[0]!;
+        const ts = host && spelledPlace(host) ? wholeTargets(host) : [];
+        if (ts.length) add(ts, "send"); else if (!LOOPBACK_WORD.test(host)) unread(p.text);
+      }
+    } else if (prog === "gh" && args[0] === "api") {
+      // An address or a host `gh api` is given: a request with a body, a header or a method of its own is a send.
+      const body = args.some((a) => /^(?:-[fFXH]|--(?:field|raw-field|input|method|header)(?:=.*)?|-[fFXH].+)$/.test(a));
+      const how: Reach["how"] = body ? "send" : "fetch";
+      const k = args.findIndex((a) => a === "--hostname" || a.startsWith("--hostname="));
+      const host = k < 0 ? undefined : args[k]!.startsWith("--hostname=") ? args[k]!.slice(11) : args[k + 1];
+      if (host !== undefined) { const ts = spelledPlace(host) ? wholeTargets(host) : []; if (ts.length) add(ts, how, host); else unread(p.text); }
+      for (const a of args) if (/^https?:\/\//i.test(a)) { const ts = spelledPlace(a) ? wholeTargets(a, true) : []; if (ts.length) add(ts, how, a); else unread(p.text); }
     } else if (FETCHERS.has(prog)) {
+      // An address a fetcher is not given in its words: on its input (xargs), or in a file it reads (wget -i). The place is
+      // whatever the text there says, and the rules cannot read it: held whenever the session read outside content.
+      const lists = args.some((a) => FILE_FED[prog]?.test(a));
+      if (lists || ((run.fed === "xargs" || fed) && !args.some((a) => wholeTargets(a).length > 0)))
+        out.push({ target: unspelledTarget(p.text), how: "send", forced: lists ? `${prog} reads its addresses from a file` : `${prog} is given its addresses on its input` });
       // A read is a bare read of one address (bare-fetch.ts: a short list of options that change nothing about the request, one
       // address, nothing the shell expands); everything else a fetch program can do is a send, so an option or a program
       // not known to read only is never taken for a page fetch.
@@ -358,7 +441,31 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number): Reach[] {
       }
       if (args[i] === "push") {
         const here = at;
-        add(pushTargets(args.slice(i + 1), (name) => f.remoteUrl?.(name, here)), "send");
+        add(pushTargets(args.slice(i + 1), (name) => lineRemotes.get(name) ?? f.remoteUrl?.(name, here)), "send");
+      }
+      if (args[i] === "remote" && /^(add|set-url)$/.test(args[i + 1] ?? "")) {
+        const named = args.slice(i + 2).filter((a) => !a.startsWith("-"));
+        if (named.length >= 2 && !lineRemotes.has(named[0]!)) lineRemotes.set(named[0]!, named[1]!);
+      }
+      // A repository read from an address (or from a remote that has one): read as a fetch of it, as curl's is.
+      if (args[i] === "clone" || args[i] === "fetch" || args[i] === "pull" || args[i] === "ls-remote") {
+        const rest = args.slice(i + 1);
+        let from: string | undefined;
+        for (let k = 0; k < rest.length; k++) {
+          const a = rest[k]!;
+          if (a === "--") { from = rest[k + 1]; break; }
+          if (a.startsWith("-")) { if (GIT_FETCH_VALUED.test(a) || (args[i] === "clone" && GIT_CLONE_VALUED.test(a))) k++; continue; }
+          from = a;
+          break;
+        }
+        if (from !== undefined) {
+          const here = at;
+          const url = /^(ext|fd)::/.test(from) ? undefined : args[i] === "clone" || /^[a-z][a-z0-9+.-]*:\/\//i.test(from) || from.includes("@") ? from : lineRemotes.get(from) ?? f.remoteUrl?.(from, here);
+          // (ext:: and fd:: addresses run a program: where it reaches is not in the address.)
+          if (/^(ext|fd)::/.test(from)) { for (const t of extractTargets(from)) if (t.kind === "host" || t.kind === "remote") out.push({ target: t, how: "send" }); unread(p.text); }
+          else if (url !== undefined && !spelledPlace(url)) unread(p.text);
+          else if (url !== undefined) add(wholeTargets(url, true), "fetch", url);
+        }
       }
     }
   }
@@ -702,6 +809,13 @@ export function held(
   // (A remote carries its host: the card names the remote, once.)
   const remotes = new Set(reaches.filter((r) => r.target.kind === "remote").map((r) => hostOfRemote(r.target.key)));
   for (const r of reaches) {
+    // A place the call's words do not give (an address on the fetcher's input, or in a file): held, whatever it is.
+    if (r.forced) {
+      if (cleared(r.target.key) || seen.has(r.target.key)) continue;
+      seen.add(r.target.key);
+      out.push({ target: r.target, how: r.how, origin: { cls: "outside", where: r.forced, seq: 0, ts: Date.now(), unspelled: true } });
+      continue;
+    }
     if (r.target.kind === "host" && remotes.has(r.target.shown)) continue;
     // The most specific sighting decides: a remote's own, else its host's.
     const keys = r.target.kind === "remote" ? [r.target.key, `host:${hostOfRemote(r.target.key)}`] : [r.target.key];
@@ -713,7 +827,7 @@ export function held(
     if (!o || !k || o.cls === "owner" || o.cls === "inside") continue;
     // A page fetch to an address a search listed or a page linked goes on, as long as it carries nothing of the session
     // (`plain`) or asks for nothing the listing did not give.
-    if (!near && o.cls === "listed" && r.how === "fetch" && (o.unread || (r.plain && (!o.page || covers(k, r.target.pathq, true))) || (!o.page && covers(k, r.target.pathq)))) continue;
+    if (!near && o.cls === "listed" && r.how === "fetch" && (o.unread || (r.plain && (!o.page || covers(k, r.target.pathq, true))) || (!o.page && r.plain !== false && covers(k, r.target.pathq)))) continue;
     if (cleared(k) || cleared(r.target.key)) continue;
     if (workspace(r.target)) continue;
     if (seen.has(k)) continue;
@@ -737,6 +851,7 @@ export function ago(ms: number): string {
 const NOUN: Record<TargetKind, string> = { host: "address", email: "email address", remote: "git remote", branch: "branch name" };
 // The sentence for one held target: what it is and where it first appeared.
 export function hitText(h: Hit, now: number): string {
+  if (h.origin.unspelled) return `${h.target.shown}: ${h.origin.where}, so the rules cannot read where it goes, and the session read outside content`;
   if (h.origin.unread) return `${h.target.shown}: this ${NOUN[h.target.kind]} is not one the session has seen, and it read outside content it could not keep whole (${h.origin.where}, ${ago(now - h.origin.ts)})`;
   const noun = NOUN[h.target.kind];
   // The session's own sighting, when an earlier one of the tree holds it: the age that matters is this session's.

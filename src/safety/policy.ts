@@ -382,13 +382,8 @@ export function writesOf(p: Simple, run?: Run): string[] {
   // An editor run from a command works from a script: the files it is given are what it writes.
   else if (/^(ed|ex|vi|vim|nvim)$/.test(name)) out.push(...rest.filter((a, k) => !a.startsWith("-") && !a.startsWith("+") && !/^(-c|--cmd|-S|-u|-i|-w|-W|-T|-t)$/.test(rest[k - 1] ?? "")));
   else if (name === "sed") { if (rest.some((a) => /^(?:-[a-zA-Z]*i|--in-place)/.test(a))) out.push(...args); }
-  else if (name === "curl" || name === "wget") {
-    // The file a download is written to: -o FILE, also at the end of a cluster (-sLo FILE), and --output=FILE.
-    rest.forEach((a, k) => {
-      if (/^(--output|--output-document|-[a-zA-Z]*[oO])$/.test(a) && rest[k + 1] !== undefined && !(name === "curl" && /O$/.test(a))) out.push(rest[k + 1]!);
-      else if (/^--(output|output-document)=/.test(a)) out.push(a.slice(a.indexOf("=") + 1));
-    });
-  } else if (name === "sort") out.push(...outputsOf(p.words.slice(i)).map((o) => o.to));
+  // The files a download is written to (curl -o FILE, wget -O FILE, also attached, in a cluster or as --output=FILE) and the others it writes.
+  else if (name === "curl" || name === "wget" || name === "sort") out.push(...outputsOf(p.words.slice(i)).map((o) => o.to));
   else if (name === "git") {
     // The files its output options name (log, diff, show, format-patch ... --output=FILE, format-patch -o DIR), as a redirect's.
     out.push(...outputsOf(p.words.slice(i)).map((o) => o.to));

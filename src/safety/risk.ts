@@ -188,7 +188,7 @@ function swept(find: string[], verb: string, dir: string | null, c: Ctx, at: num
 
 // A move of, or an overwrite onto, what is outside the session's folder, in a session nothing confines to it
 // (confined, the write fails by itself). Temporary and cache folders hold nothing that is missed.
-const OVERWRITES = new Set(["mv", "cp", "install", "ln", "tee", "dd", "sed", "perl", "sort", "sponge", "git"]);
+const OVERWRITES = new Set(["mv", "cp", "install", "ln", "tee", "dd", "sed", "perl", "sort", "sponge", "git", "curl", "wget"]);
 function overwrites(x: Part, c: Ctx): Risk[] {
   const { p, args, dir, s } = x;
   const { w } = c;
@@ -224,8 +224,8 @@ function overwrites(x: Part, c: Ctx): Risk[] {
     onto(named.at(-1)!.a, x.made(named.at(-1)!.k), "moves a file onto", named.slice(0, -1).map((f) => f.a));
   } else if ((p === "cp" || p === "install") && named.length >= 2) onto(named.at(-1)!.a, x.made(named.at(-1)!.k), "copies a file onto", named.slice(0, -1).map((f) => f.a));
   else if (p === "sponge") { for (const { a, k } of named) onto(a, x.made(k), "overwrites"); }
-  else if (p === "sort" || p === "git") {
-    // The file its output option names (sort -o, git log --output=): the word whole, or after an `=`.
+  else if (p === "sort" || p === "git" || p === "curl" || p === "wget") {
+    // The file its output option names (sort -o, git log --output=, curl -o, wget -O): the word whole, or after an `=`.
     const words = [p, ...args];
     for (const o of outputsOf(words)) onto(o.to, words[o.at] === o.to ? x.made(o.at - 1) : undefined, "overwrites");
   }
@@ -979,7 +979,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     const sub = (text: string, at: string | null, into: Risk[]) => script(text, at, into, cx.w, firm[i] === true);
     out.push(...loaded(run.set.length || /^(export|declare|typeset|readonly)$/.test(x.p) ? [...run.set, ...args.filter((a) => ASSIGN.test(a))] : run.set), ...overwrites(x, cx));
     // On another machine: a write to a file that runs later there, or lets someone in.
-    const outs = x.p === "git" || x.p === "sort" ? outputsOf([x.p, ...x.args]).map((o) => o.to) : [];
+    const outs = x.p === "git" || x.p === "sort" || x.p === "curl" || x.p === "wget" ? outputsOf([x.p, ...x.args]).map((o) => o.to) : [];
     if (w.away && (s.redirects || x.p === "tee" || outs.length)) {
       const to = [...(s.redirects ? redirected(s).map((r) => r.to) : []), ...(x.p === "tee" ? x.plain : []), ...outs].find((t) => AWAY_LATER.test(t));
       if (to) out.push({ rule: "remote", why: `writes ${to}, which runs later or lets someone in` });
