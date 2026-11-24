@@ -34,3 +34,20 @@ test("a refused settings restoration fails the test, a working one is quiet", as
   await restore(refusing, before);
   expect(writes).toEqual([]);
 });
+
+// The page fixture fails a test whose page the browser reported an observer loop on ("ResizeObserver loop
+// completed with undelivered notifications"). This page makes one on purpose, so the test is expected to fail,
+// and passes only while the fixture does fail it.
+test("a page that resizes what its observer watches, inside the call, fails its test", async ({ page }) => {
+  test.fail();
+  await page.goto("/");
+  await page.evaluate(() => new Promise<void>((done) => {
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;top:0;left:0;height:10px;width:50px";
+    document.body.append(box);
+    let w = 50;
+    const ro = new ResizeObserver(() => { w += 1; box.style.width = `${w}px`; });
+    ro.observe(box);
+    setTimeout(() => { ro.disconnect(); box.remove(); done(); }, 500);
+  }));
+});
