@@ -9,22 +9,20 @@ import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate, sessionLeft, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { CHECK_NOTE, GROUPS, GROUP_NAMES, SECTION_NAMES, type HealthReport, type Level, type Row } from "../../../src/admin/health-rows.ts";
-import { Card } from "./Settings.tsx";
+import { LEVEL_WORD } from "../../../src/core/state-words.ts";
+import { Empty, Group, Item, List, Notice, Page, Status, type Tone } from "./settings/kit.tsx";
 
-const MARK: Record<Level, { icon: typeof CircleCheck; tone: string; word: string }> = {
-  broken: { icon: CircleAlert, tone: "text-danger", word: "Broken" },
-  warning: { icon: TriangleAlert, tone: "text-warn", word: "Warning" },
-  ok: { icon: CircleCheck, tone: "text-ok", word: "Well" },
+const MARK: Record<Level, { icon: typeof CircleCheck; tone: string; chip: Tone }> = {
+  broken: { icon: CircleAlert, tone: "text-danger", chip: "broken" },
+  warning: { icon: TriangleAlert, tone: "text-warn", chip: "warn" },
+  ok: { icon: CircleCheck, tone: "text-ok", chip: "ok" },
 };
 
 function Tally({ level, n }: { level: Level; n: number }) {
-  const m = MARK[level];
-  const Icon = m.icon;
   return (
-    <span className={cn("inline-flex items-center gap-1.5 text-ui tabular-nums", n ? m.tone : "text-faint")} data-testid="health-count" data-level={level}>
-      <Icon className="size-4" aria-hidden />
-      <b className="font-semibold">{n}</b> {m.word.toLowerCase()}
-    </span>
+    <Status tone={n ? MARK[level].chip : "quiet"} testid="health-count" data-level={level}>
+      <b className="font-semibold tabular-nums">{n}</b> {LEVEL_WORD[level].toLowerCase()}
+    </Status>
   );
 }
 
@@ -32,22 +30,21 @@ function HealthRow({ r }: { r: Row }) {
   const m = MARK[r.level];
   const Icon = m.icon;
   return (
-    <div className="grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-x-3 gap-y-2 border-b border-line py-3 last:border-0 sm:grid-cols-[1rem_minmax(0,1fr)_auto]" data-testid="health-row" data-level={r.level} data-group={r.group} data-row={r.id}>
-      <Icon className={cn("mt-0.5 size-4 shrink-0", m.tone)} aria-label={m.word} />
-      <div className="min-w-0">
-        <div className={cn("text-base", r.level === "ok" ? "text-muted" : "font-medium")} data-testid="health-title">{r.title}</div>
-        {r.detail && <div className="mt-0.5 break-words text-ui text-muted">{r.detail}</div>}
-        {r.fix && r.level !== "ok" && <div className="mt-1 text-ui" data-testid="health-fix"><span className="text-faint">Fix: </span>{r.fix}</div>}
-        {r.path && r.level !== "ok" && <div className="mt-1 break-all font-mono text-caption text-faint" title={r.path}>{r.path}</div>}
-        {r.how && <div className="mt-0.5 text-caption text-faint">Checked: {r.how}.</div>}
-      </div>
-      {r.link && r.level !== "ok" && (
-        <button type="button" className="k-btn k-btn-lg col-start-2 justify-self-start sm:col-start-3 sm:row-start-1" data-testid="health-open" onClick={() => navigate({ name: "settings", section: r.link!.section })}>
+    <Item testid="health-row" data-level={r.level} data-group={r.group} data-row={r.id} wrap
+      lead={<Icon className={cn("size-4 shrink-0", m.tone)} aria-label={LEVEL_WORD[r.level]} />}
+      name={<span className={r.level === "ok" ? "font-normal text-muted" : undefined} data-testid="health-title">{r.title}</span>}
+      sub={(r.detail || (r.level !== "ok" && (r.fix || r.path)) || r.how) && <>
+        {r.detail && <div className="break-words text-muted">{r.detail}</div>}
+        {r.fix && r.level !== "ok" && <div className="mt-1 text-fg" data-testid="health-fix"><span className="text-faint">Fix: </span>{r.fix}</div>}
+        {r.path && r.level !== "ok" && <div className="mt-1 break-all font-mono text-faint" title={r.path}>{r.path}</div>}
+        {r.how && <div className="mt-0.5">Checked: {r.how}.</div>}
+      </>}
+      actions={r.link && r.level !== "ok" && (
+        <button type="button" className="k-btn" data-testid="health-open" onClick={() => navigate({ name: "settings", section: r.link!.section })}>
           {SECTION_NAMES[r.link.section] ?? r.link.section}
           <ArrowUpRight className="size-3.5" aria-hidden />
         </button>
-      )}
-    </div>
+      )} />
   );
 }
 
@@ -68,46 +65,37 @@ export function HealthPanel() {
       .finally(() => setBusy(false));
   }, [cwd]);
   useEffect(run, [run]);
+  const again = (word: string) => (
+    <button type="button" disabled={busy} className="k-btn k-btn-lg" data-testid="health-again" onClick={run}>
+      <RotateCw className={cn("size-3.5", busy && "animate-spin")} aria-hidden />
+      {busy ? "Checking" : word}
+    </button>
+  );
   if (!report) {
     return failed === null
-      ? <div className="text-ui text-faint" data-testid="health-wait">Checking.</div>
-      : (
-        <div className="flex flex-col gap-3" data-testid="health-failed">
-          <div className="text-base text-danger">The health check did not answer: {failed}</div>
-          <button type="button" disabled={busy} className="k-btn k-btn-lg self-start" data-testid="health-again" onClick={run}>
-            <RotateCw className={cn("size-3.5", busy && "animate-spin")} aria-hidden />
-            {busy ? "Checking" : "Try again"}
-          </button>
-        </div>
-      );
+      ? <Empty testid="health-wait">Checking.</Empty>
+      : <Page testid="health-failed"><Notice tone="broken" title={`The health check did not answer: ${failed}`}><div className="mt-3">{again("Try again")}</div></Notice></Page>;
   }
   const c = report.counts;
   return (
-    <div className="flex flex-col gap-5" data-testid="health-panel" data-state={busy ? "checking" : "done"}>
-      <Card>
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 py-4">
+    <Page testid="health-panel" data-state={busy ? "checking" : "done"} intro={<span data-testid="health-note">{CHECK_NOTE}</span>}>
+      <Group bare title="This installation" hint={`Checked in ${report.took_ms < 1000 ? `${report.took_ms} ms` : `${(report.took_ms / 1000).toFixed(1)} s`}.`} actions={again("Check again")}>
+        <div className="flex flex-wrap gap-2">
           <Tally level="broken" n={c.broken} />
           <Tally level="warning" n={c.warning} />
           <Tally level="ok" n={c.ok} />
-          <span className="text-caption text-faint">Checked in {report.took_ms < 1000 ? `${report.took_ms} ms` : `${(report.took_ms / 1000).toFixed(1)} s`}.</span>
-          <button type="button" disabled={busy} className="k-btn k-btn-lg ml-auto" data-testid="health-again" onClick={run}>
-            <RotateCw className={cn("size-3.5", busy && "animate-spin")} aria-hidden />
-            {busy ? "Checking" : "Check again"}
-          </button>
         </div>
-      </Card>
-      {failed !== null && <div className="text-ui text-danger" data-testid="health-failed">The last check did not answer: {failed}. These rows are from the one before.</div>}
-      <div className="text-caption text-faint" data-testid="health-note">{CHECK_NOTE}</div>
+      </Group>
+      {failed !== null && <Notice tone="broken" testid="health-failed">The last check did not answer: {failed}. These rows are from the one before.</Notice>}
       {GROUPS.map((g) => {
         const rows = report.rows.filter((r) => r.group === g);
         if (!rows.length) return null;
         return (
-          <section key={g} className="flex flex-col gap-2" data-testid="health-group" data-group={g}>
-            <h3 className="k-label">{GROUP_NAMES[g]}</h3>
-            <Card>{rows.map((r) => <HealthRow key={r.id} r={r} />)}</Card>
-          </section>
+          <Group key={g} testid="health-group" data-group={g} title={GROUP_NAMES[g]} count={rows.length}>
+            <List label={GROUP_NAMES[g]}>{rows.map((r) => <HealthRow key={r.id} r={r} />)}</List>
+          </Group>
         );
       })}
-    </div>
+    </Page>
   );
 }

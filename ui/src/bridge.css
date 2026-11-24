@@ -1480,6 +1480,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-lead { grid-area: lead; display: grid; place-items: center; align-self: start; height: 1.25rem; color: var(--faint); }
 .k-set-main { grid-area: main; min-width: 0; }
 .k-set-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); font-weight: 500; line-height: 1.45; color: var(--fg); }
+.k-set-name[data-wrap] { white-space: normal; overflow-wrap: anywhere; }
 .k-set-name[data-mono] { font-family: var(--font-mono); font-size: var(--text-caption); }
 .k-set-sub { margin-top: 0.125rem; font-size: var(--text-caption); line-height: 1.45; color: var(--faint); overflow-wrap: anywhere; }
 /* A list of many short rows (figures, names): a tighter row. A line cut to one (clip) keeps its whole words in its title. */

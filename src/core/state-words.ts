@@ -166,6 +166,11 @@ export const CUT_BY_RESTART = `${STATE_WORD.stop} by a restart`;
 export const lastTold = (label: string, text?: string) => `It last told: ${label}${text ? `, ${text}` : ""}`;
 // Sessions that came to the list while the owner's hand was on it: they wait at its end.
 export const JUST_ARRIVED = "Just arrived";
+
+// A check's level, where Keel checks its own installation (Settings > Health, `keel doctor`) and
+// wherever a settings page says a part is well, needs a look or does not work: one word each.
+export type Level = "ok" | "warning" | "broken";
+export const LEVEL_WORD: Record<Level, string> = { ok: "Well", warning: "Warning", broken: "Broken" };
 // A session whose only work is a command it left running. It is working, and is counted with every
 // session that works: "in background" is a detail of how it works, never a count of its own.
 export const inBackground = (st: Stated | undefined) => st?.watch === "work" && st.why === "command";

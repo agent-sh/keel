@@ -79,9 +79,10 @@ export function List({ children, testid, label, dense }: { children: ReactNode; 
 
 // `name` is the item's own words; `sub` its second line; `meta` its figures (each a span);
 // `status` a <Status>; `actions` its buttons. `open` marks the item whose detail is shown.
-// `clip` keeps the second line to one line, its whole words in its title.
-export function Item({ lead, name, mono, title, sub, clip, meta, status, actions, open, onOpen, children, testid, className, ...data }: {
-  lead?: ReactNode; name: ReactNode; mono?: boolean; title?: string; sub?: ReactNode; clip?: boolean; meta?: ReactNode; status?: ReactNode; actions?: ReactNode;
+// `clip` keeps the second line to one line, its whole words in its title; `wrap` lets the name wrap
+// (a sentence, not a name a reader tells apart by its end).
+export function Item({ lead, name, mono, wrap, title, sub, clip, meta, status, actions, open, onOpen, children, testid, className, ...data }: {
+  lead?: ReactNode; name: ReactNode; mono?: boolean; wrap?: boolean; title?: string; sub?: ReactNode; clip?: boolean; meta?: ReactNode; status?: ReactNode; actions?: ReactNode;
   open?: boolean; onOpen?: () => void; children?: ReactNode; testid?: string; className?: string;
 } & Data) {
   return (
@@ -91,7 +92,7 @@ export function Item({ lead, name, mono, title, sub, clip, meta, status, actions
         <div className="k-set-main">
           {onOpen
             ? <button type="button" className="k-set-name k-link max-w-full text-left hover:underline" data-mono={mono || undefined} title={title} aria-expanded={!!open} onClick={onOpen}>{name}</button>
-            : <span className="k-set-name" data-mono={mono || undefined} title={title}>{name}</span>}
+            : <span className="k-set-name" data-mono={mono || undefined} data-wrap={wrap || undefined} title={title}>{name}</span>}
           {sub && <div className="k-set-sub" data-clip={clip || undefined} title={clip && typeof sub === "string" ? sub : undefined}>{sub}</div>}
         </div>
         <div className="k-set-meta">{meta}</div>
