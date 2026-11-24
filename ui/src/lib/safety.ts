@@ -120,6 +120,11 @@ export const safety = {
   // does not show whole only with it (src/safety/card.ts), from any client.
   answer: (sessionId: string, approvalId: string, body: { choice: string; reason?: string; rules?: Suggest[]; seen?: "whole" }) =>
     api(`/api/sessions/${sessionId}/approvals/${approvalId}`, { method: "POST", body: JSON.stringify({ ...body, via: "page" }) }),
+  // "Mine" on a card of a write beyond the owner's accounts: the namespace it names joins his list (Settings > Permissions >
+  // Your accounts), then the card is allowed once.
+  addNamespace: (namespace: string) => api("/api/accounts/namespaces", { method: "POST", body: JSON.stringify({ namespace }) }),
+  // The same press on an MCP tool's card: the tool is marked as a read of its server, then the card is allowed once.
+  markRead: (server: string, tool: string) => api(`/api/mcp/servers/${encodeURIComponent(server)}/reads`, { method: "POST", body: JSON.stringify({ tool }) }),
   // Several cards allowed once with one answer: the daemon refuses the whole
   // list if it names one that is answered alone, and says how each went.
   // (The one caller is "allow all", which covers only requests whose text

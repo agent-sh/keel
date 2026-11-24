@@ -314,6 +314,17 @@ export const mcpRoutes: RouteModule = (deps) => {
         try { m.setReads(req.params.name, b.tools); } catch (e) { return bad((e as Error).message, 409); }
         return servers();
       },
+      // One tool more (the press on a card that offers it).
+      POST: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const guard = needs(req);
+        if (guard) return guard;
+        const b = await body(req);
+        if (typeof b.tool !== "string" || !b.tool) return bad("tool is a tool name");
+        try { m.addRead(req.params.name, b.tool); } catch (e) { return bad((e as Error).message, 409); }
+        return servers();
+      },
     },
     // The owner accepts the tool definitions a server lists now (the change set the owner was shown: `digest`).
     "/api/mcp/servers/:name/accept": {

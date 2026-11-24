@@ -23,6 +23,31 @@ test("a server's readOnlyHint is not a read unless the owner marked the tool", (
   expect(tool("list").readOnly).toBe(true);
 });
 
+test("a write on a server that holds an account is held by the server's class when the call is judged, not by its config alone", async () => {
+  const m = new McpManager({ capture() {} } as any, mkdtempSync(join(tmpdir(), "keel-mcp-")), "/");
+  let signed = false;
+  (m as any).oauth = { signedIn: () => signed };
+  const add = (name: string, config: any) => { const e = { name, config }; (m as any).entries.set(name, e); return e; };
+  const held = async (e: any, tool: string, annotations?: any) => !!(await (m as any).catalogTool(e, { name: tool, annotations }).judge?.({ q: "x" }))?.account;
+  const keyed = add("search", { command: "x", env: { SEARCH_API_KEY: "k" }, read_tools: ["lookup"] });
+  const plain = add("plain", { command: "x" });
+  const remote = add("remote", { url: "https://mcp.example/x" });
+  const no = add("owner-no", { command: "x", env: { GITHUB_TOKEN: "k" }, class: { account: false } });
+  // A credential in its config: its writes are held; a tool the owner marked as a read, or whose accepted definition says it only reads, is not.
+  expect(await held(keyed, "post")).toBe(true);
+  expect(await held(keyed, "lookup")).toBe(false);
+  expect(await held(keyed, "search", { readOnlyHint: true })).toBe(false);
+  expect(await held(keyed, "search", { readOnlyHint: false, destructiveHint: true })).toBe(true);
+  // No credential: nothing held. The owner's own answer wins over the config.
+  expect(await held(plain, "post")).toBe(false);
+  expect(await held(no, "post")).toBe(false);
+  // A sign-in made after the tools were listed holds it from the next call on.
+  const tool = (m as any).catalogTool(remote, { name: "post" });
+  expect(!!(await tool.judge?.({}))?.account).toBe(false);
+  signed = true;
+  expect((await tool.judge?.({}))?.account).toEqual({ server: "remote", name: "remote", tool: "post", input: {} });
+});
+
 test("mcp_call of a name not known yet is refused, not judged a read", async () => {
   installMcpTools({ configured: () => [] } as any);
   registerCatalog({ name: "slow", tools: async () => [], pending: () => ["slow"] });

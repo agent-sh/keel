@@ -22,6 +22,7 @@ test("a push beyond the owner's namespaces is his to allow, in every mode", asyn
   git("-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "--allow-empty", "-m", "x");
   git("remote", "add", "mine", "http://127.0.0.1:1/me/repo.git");
   git("remote", "add", "theirs", "http://127.0.0.1:1/them/lib.git");
+  git("remote", "add", "third", "http://127.0.0.1:1/third/x.git");
 
   // The owner names his namespaces: typed, and learned from his config and confirmed.
   await page.goto("/settings/safety");
@@ -68,13 +69,29 @@ test("a push beyond the owner's namespaces is his to allow, in every mode", asyn
   await expect.poll(turns, { timeout: 30_000 }).toBe(2);
   expect((await approvals()).map((a) => a.state)).toEqual(["denied"]);
 
+  // A first push to a place of his own that he has not named: the card offers Mine in one press. It allows this once and
+  // names the owner in Your accounts, so the next push there asks nothing (an agent's too).
+  await request.post(`${base}/messages`, { data: { text: calls([bash("git push third main")]) } });
+  const mine = page.getByTestId("approval");
+  await expect(mine).toHaveCount(1, { timeout: 30_000 });
+  await expect(mine.getByTestId("allow-mine")).toContainText("127.0.0.1/third");
+  await shoot(page, "account-writes-04-mine");
+  await mine.getByTestId("allow-mine").click();
+  await expect.poll(turns, { timeout: 30_000 }).toBe(3);
+  expect(((await (await request.get("/api/settings")).json()).settings.accounts.namespaces as string[])).toContain("127.0.0.1/third");
+  expect((await approvals()).map((a) => a.state)).toEqual(["denied", "allowed"]);
+  await request.post(`${base}/messages`, { data: { text: calls([bash("git push third main")]) } });
+  await expect.poll(turns, { timeout: 30_000 }).toBe(4);
+  expect(await approvals()).toHaveLength(2);
+
   // An agent is refused, with the way on: report what it wanted to do.
   await request.post(`${base}/messages`, { data: { text: calls([{ name: "spawn_agent", input: { message: `Pusher\n${calls([bash("git push theirs main")])}`, isolation: "none" } }, { name: "wait_agent", input: {} }]) } });
-  await expect.poll(turns, { timeout: 60_000 }).toBe(3);
+  await expect.poll(turns, { timeout: 60_000 }).toBe(5);
   const agent = ((await (await request.get(`${base}/agents`)).json()).agents as { session_id: string }[])[0]!;
   const events = JSON.stringify((await (await request.get(`/api/sessions/${agent.session_id}`)).json()).events);
   expect(events).toContain("Report to your parent");
   expect(events).toContain("127.0.0.1/them/lib");
-  expect(await approvals()).toHaveLength(1); // (the agent's refusal opened no card)
+  expect(events).toContain("Your accounts");
+  expect(await approvals()).toHaveLength(2); // (the agent's refusal opened no card)
   await shoot(page, "account-writes-03-agent");
 });

@@ -149,6 +149,8 @@ export type Approval = {
   // `sub`: the folder as a path under the session's own, when it is one.
   at?: { cwd?: string; sub?: string; shell?: string; away?: true };
   rule?: string;        // the class of the rule that asked, in the policy's few words (its `Ask.rule`)
+  mine?: string;        // a write beyond the owner's accounts: the namespace "Mine" adds to his list (accounts.ts)
+  read_tool?: { server: string; tool: string }; // an MCP write that holds an account: the tool the card can mark as a read
   risk: "high" | "low";
   why?: string;         // why only "once" is offered
   notice?: string;      // why the owner is asked (the reviewer could not judge it)
@@ -1730,7 +1732,7 @@ export class Gate {
     }
     const repo = high && cls.kind === "shell" ? repoContext(cls.command, cwd, homedir(), session, places) : undefined;
     // (The writes with the owner's accounts the command makes, and whose namespaces they are in.)
-    const accounts = high && cls.kind === "shell" && !session.machine ? accountContext(cls.command, cwd, this.checking.get(callKey(session.id, call.id))?.looked, accountNames()) : "";
+    const accounts = high && cls.kind === "shell" ? accountContext(cls.command, cwd, this.checking.get(callKey(session.id, call.id))?.looked, accountNames()) : "";
     const facts = repo === undefined ? undefined : accounts ? `${repo}\n${accounts}` : repo;
     const own = places.length ? ownFacts(places) : undefined;
     const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined, own, settled });
@@ -1815,7 +1817,7 @@ export class Gate {
   }
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
-    ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true }, once = false): Promise<{ deny: string } | void> {
+    ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true; mine?: string; readTool?: { server: string; tool: string } }, once = false): Promise<{ deny: string } | void> {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
@@ -1837,6 +1839,7 @@ export class Gate {
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
       input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls), ...(ask.rule ? { rule: ask.rule } : {}),
+      ...(ask.mine ? { mine: ask.mine } : {}), ...(ask.readTool ? { read_tool: ask.readTool } : {}),
     };
     return this.wait(a, session, call, name, cls);
   }

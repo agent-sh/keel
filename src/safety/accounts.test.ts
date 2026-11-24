@@ -1,7 +1,7 @@
 // Writes with the owner's accounts beyond his namespaces: the matching alone, then the table of commands through the
 // policy in every mode.
 import { expect, test } from "bun:test";
-import { foreign, ghBase, owned, parseNamespace, parseNamespaces, repoOf, writesOf, namedOwners, type Manifest, type Remotes } from "./accounts.ts";
+import { foreign, ghBase, say, namespaceOf, owned, parseNamespace, parseNamespaces, repoOf, writesOf, namedOwners, type Manifest, type Remotes } from "./accounts.ts";
 import type { Looked } from "./looked.ts";
 import { classify, decide, type CallClass, type Mode } from "./policy.ts";
 
@@ -19,8 +19,8 @@ test("a namespace is read from the owner's words", () => {
 test("a repository address is read in every form git takes", () => {
   const me = { host: "github.com", path: ["me", "repo"] };
   for (const url of ["https://github.com/me/repo.git", "https://github.com/me/repo", "https://user:tok@github.com/Me/Repo.git/", "ssh://git@github.com/me/repo.git", "ssh://git@github.com:22/me/repo", "git@github.com:me/repo.git", "github.com:me/repo", "git://github.com/me/repo.git", "git+https://github.com/me/repo.git"])
-    expect([url, repoOf(url)]).toEqual([url, me]);
-  expect(repoOf("git@gitlab.com:g/sub/proj.git")).toEqual({ host: "gitlab.com", path: ["g", "sub", "proj"] });
+    expect([url, repoOf(url)]).toEqual([url, /^(ssh|git@|github\.com:)/.test(url) ? { ...me, ssh: true } : me]);
+  expect(repoOf("git@gitlab.com:g/sub/proj.git")).toEqual({ host: "gitlab.com", path: ["g", "sub", "proj"], ssh: true });
   // A folder on this machine is no account.
   for (const dir of ["/srv/git/repo.git", "../repo", "./x", "file:///srv/x.git", "repo.git", "."]) expect([dir, repoOf(dir)]).toEqual([dir, null]);
 });
@@ -40,6 +40,23 @@ test("a namespace holds what is under it, and nothing beside it", () => {
   expect(owned(list, pkg("npm", "solo2"))).toBe(false);
   expect(owned(list, pkg("pypi", "tool"))).toBe(true);
   expect(owned(list, pkg("crates", "tool"))).toBe(false);
+});
+
+test("the namespace a card's Mine adds holds the account it names, and parses back as one", () => {
+  const forge = (host: string, ...path: string[]) => ({ kind: "forge" as const, host, path });
+  const pkg = (registry: "npm" | "pypi" | "crates", name: string) => ({ kind: "package" as const, registry, name });
+  for (const [a, said] of [
+    [forge("github.com", "them", "lib"), "them"], [forge("github.com", "my.org", "lib"), "github.com/my.org"], [forge("gitlab.com", "g", "sub", "p"), "gitlab.com/g"],
+    [forge("ghcr.io", "them", "img"), "ghcr.io/them"], [pkg("npm", "@them/tool"), "npm:@them"], [pkg("npm", "solo"), "npm:solo"], [pkg("pypi", "tool"), "pypi:tool"], [pkg("crates", "kb"), "crates:kb"],
+  ] as const) {
+    expect([say(a), namespaceOf(a)]).toEqual([say(a), said]);
+    expect(owned([parseNamespace(namespaceOf(a))!], a)).toBe(true);
+  }
+});
+
+test("an ssh name is looked up as a name and nothing else", async () => {
+  const { hostnameOf } = await import("./looked.ts");
+  for (const bad of ["-oProxyCommand=x", "a b", "", "x;y", "$(x)"]) expect([bad, await hostnameOf(bad)]).toEqual([bad, null]);
 });
 
 const remotes = (fetch: Record<string, string>, more: Partial<Remotes> = {}): Remotes => ({ fetch, push: Object.fromEntries(Object.entries(fetch).map(([k, v]) => [k, [v]])), resolved: {}, ...more });
@@ -69,7 +86,11 @@ const disk: Record<string, Remotes> = {
   "/w/ssh": remotes({ origin: "git@github.com:them/lib.git" }),
   "/w/local": remotes({ origin: "/srv/git/repo.git" }),
   "/w/two": remotes({ origin: mine, backup: "ssh://git@gitlab.com/them/backup.git" }, { pushDefault: "backup" }),
+  // (Remotes by the ssh names of the owner's config: github-me stands for github.com, work for another host.)
+  "/w/aliasme": remotes({ origin: "git@github-me:me/repo.git" }),
+  "/w/aliaswork": remotes({ origin: "git@work:acme/repo.git" }),
 };
+const HOSTS: Record<string, string> = { "github-me": "github.com", work: "git.corp.example" };
 const packages: Record<string, Manifest> = {
   "/w/own": { npm: "@me/tool", pypi: "metool", crates: "me-crate" },
   "/w/clone": { npm: "@them/tool", pypi: "theirtool", crates: "their-crate" },
@@ -77,7 +98,7 @@ const packages: Record<string, Manifest> = {
 };
 const looked = (): Looked => ({
   kept: () => ({ n: 0 }), exists: () => "dir", targets: () => null, read: () => null,
-  remotes: (d) => disk[d] ?? null, manifest: (d) => packages[d] ?? null,
+  remotes: (d) => disk[d] ?? null, manifest: (d) => packages[d] ?? null, hostname: (h) => HOSTS[h] ?? null,
 });
 const names = ["me", "ghcr.io/me", "npm:@me", "pypi:metool", "crates:me-crate", "npm:solo"];
 const facts = (mode: Mode, agent = false, list = names) => ({ mode, workspace: ws, sandboxed: false, rules: [], tool: "t", home: "/home/u", looked: looked(), accounts: { names: parseNamespaces(list), ...(agent ? { agent: true as const } : {}) } });
@@ -110,7 +131,44 @@ const TABLE: [string, string, string | null][] = [
   ["GIT_TERMINAL_PROMPT=0 git push upstream", "/w/fork", "github.com/them/lib"],
   ["git commit -m x && git push", "/w/clone", "github.com/them/lib"],
   ["bash -c 'git push upstream'", "/w/fork", "github.com/them/lib"],
+  // ssh names of the owner's config stand for the host they say
+  ["git push", "/w/aliasme", null],
+  ["git push origin main", "/w/aliasme", null],
+  ["git push git@github-me:me/repo.git", "/w/own", null],
+  ["git push git@github-me:them/lib.git", "/w/own", "github.com/them/lib"],
+  ["git push", "/w/aliaswork", "git.corp.example/acme/repo"],
+  // a line that changes where a remote points, then pushes: where it lands is not known
+  ["git config remote.origin.url https://github.com/them/lib.git && git push", "/w/own", ""],
+  ["git remote set-url origin https://github.com/them/lib.git && git push origin", "/w/own", "github.com/them/lib"],
+  ["git remote set-url origin https://github.com/them/lib.git && git push", "/w/own", "github.com/them/lib"],
+  ["git remote set-url origin https://github.com/me/repo.git && git push", "/w/clone", null],
+  ["git remote add loc /srv/git/x.git && git push loc HEAD:main", "/w/clone", null],
+  ["git remote add loc $X && git push loc HEAD:main", "/w/clone", ""],
+  ["git remote add loc $PWD/x.git; git push loc HEAD:main", "/w/clone", null],
+  ["git push $PWD/x.git HEAD:main", "/w/clone", null],
+  ["git remote rename origin x && git push x", "/w/clone", ""],
+  ["git remote add up https://github.com/them/lib.git && gh pr create --fill", "/w/own", ""],
+  ["git -c remote.origin.pushurl=https://github.com/them/lib.git push", "/w/own", ""],
+  ["git -c url.https://github.com/them/.insteadOf=https://github.com/me/ push", "/w/own", ""],
+  ["GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=https://github.com/them/lib.git git push", "/w/own", ""],
+  ["export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=https://github.com/them/lib.git; git push", "/w/own", ""],
+  ["git remote add evil https://github.com/them/lib.git && git push evil", "/w/own", "github.com/them/lib"],
+  ["gh repo set-default them/lib && gh pr create --fill", "/w/own", ""],
+  // other ways to name the folder or the line
+  ["git --git-dir=/w/clone/.git push", "/w/own", "github.com/them/lib"],
+  ["git --git-dir /w/own/.git push", "/w/clone", null],
+  ["bash -lc 'git -C /w/clone push'", "/w/own", "github.com/them/lib"],
+  ["bash -ic \"git push\"", "/w/clone", "github.com/them/lib"],
+  ["eval 'git push'", "/w/clone", "github.com/them/lib"],
+  ["eval git push", "/w/clone", "github.com/them/lib"],
+  ["sudo -u x bash -lc 'git push'", "/w/clone", "github.com/them/lib"],
   // gh
+  ["export GH_REPO=them/lib; gh pr create --fill", "/w/own", "github.com/them/lib"],
+  ["export GH_REPO=them/lib && cd /w/own && gh issue comment 3 -b x", "/w/own", "github.com/them/lib"],
+  ["export GH_REPO=me/repo; gh pr create --fill", "/w/clone", null],
+  ["export GH_REPO=them/lib; unset GH_REPO; gh pr create --fill", "/w/own", null],
+  ["GH_REPO=them/lib; gh pr create --fill", "/w/own", null],
+  ["GH_REPO=them/lib; export GH_REPO; gh pr create --fill", "/w/own", "github.com/them/lib"],
   ["gh pr create -R them/lib --title x", "/w/own", "github.com/them/lib"],
   ["gh pr create --repo me/repo --title x", "/w/own", null],
   ["gh pr create --fill", "/w/fork", "github.com/them/lib"],
@@ -140,6 +198,20 @@ const TABLE: [string, string, string | null][] = [
   ["uv publish", "/w/clone", "pypi:theirtool"],
   ["docker push ghcr.io/them/img:1", "/w/own", "ghcr.io/them/img"],
   ["docker push ghcr.io/me/img:1", "/w/own", null],
+  ["docker buildx build --push -t ghcr.io/them/img:1 .", "/w/own", "ghcr.io/them/img"],
+  ["docker build -t ghcr.io/them/img --push .", "/w/own", "ghcr.io/them/img"],
+  ["docker buildx build --push -t ghcr.io/me/img .", "/w/own", null],
+  ["docker buildx build -t ghcr.io/them/img .", "/w/own", null],
+  ["docker buildx build --push .", "/w/own", ""],
+  ["docker compose push", "/w/own", ""],
+  ["docker image push ghcr.io/them/img", "/w/own", "ghcr.io/them/img"],
+  ["docker manifest push ghcr.io/them/img:1", "/w/own", "ghcr.io/them/img"],
+  ["podman push ghcr.io/them/img", "/w/own", "ghcr.io/them/img"],
+  ["skopeo copy docker://ghcr.io/me/img docker://ghcr.io/them/img", "/w/own", "ghcr.io/them/img"],
+  ["uvx twine upload dist/*", "/w/clone", "pypi:theirtool"],
+  ["uvx --from twine twine upload dist/*", "/w/clone", "pypi:theirtool"],
+  ["pipx run twine upload dist/*", "/w/clone", "pypi:theirtool"],
+  ["python3 -m twine upload dist/*", "/w/clone", "pypi:theirtool"],
   // reads and ordinary commands stay as they were
   ["git pull", "/w/clone", null],
   ["git fetch upstream", "/w/fork", null],
@@ -171,6 +243,9 @@ test("a table of commands: a write beyond the owner's namespaces asks him in eve
         expect([command, ask.account]).toEqual([command, theirs]);
         expect(ask.why).toContain(theirs);
         expect(ask.ownerOnly).toBe(true);
+        // The card's "Mine" names a namespace that is a namespace, when the rules know whose it is.
+        const mine = (d as { ask: { mine?: string } }).ask.mine;
+        expect([command, mine === undefined ? theirs === "" : parseNamespace(mine) !== null]).toEqual([command, true]);
       }
     }
     // An agent is refused, told to report what it wanted to do.
@@ -179,6 +254,7 @@ test("a table of commands: a write beyond the owner's namespaces asks him in eve
     else {
       expect([command, how(a)]).toEqual([command, "deny"]);
       expect((a as { deny: string }).deny).toContain("Report to your parent");
+      expect((a as { deny: string }).deny).toContain("Your accounts");
     }
     rows.push(`${theirs === null ? "ordinary" : "owner   "}  ${cwd}  ${command}`);
   }
@@ -201,9 +277,14 @@ test("what the rules cannot place asks: a folder they cannot follow, an answer t
   expect(how(decide({ kind: "shell", command: "cd $X && git push", cwd: "/w/own" }, f))).toBe("account");
   expect(how(decide({ kind: "shell", command: "git push $REMOTE main", cwd: "/w/own" }, f))).toBe("account");
   expect(how(decide({ kind: "shell", command: "git push origin", cwd: "/w/own" }, { ...f, looked: { ...looked(), remotes: () => "late" } }))).toBe("account");
-  // No facts of the disk (a session on another machine): only the addresses a command spells out are read.
+  // No facts of the disk (a session on another machine): a push by a remote's name or by default is not placed, so it asks;
+  // the addresses a command spells out are read as before, and a folder with nothing to publish still asks nothing of a reader.
   const bare = { ...f, looked: undefined };
-  expect(how(decide({ kind: "shell", command: "git push origin", cwd: "/w/clone" }, bare))).not.toBe("account");
+  expect(how(decide({ kind: "shell", command: "git push origin", cwd: "/w/clone" }, bare))).toBe("account");
+  expect(how(decide({ kind: "shell", command: "git push", cwd: "/w/clone" }, { ...bare, mode: "full-auto" }))).toBe("account");
+  expect(how(decide({ kind: "shell", command: "gh pr create --fill", cwd: "/w/clone" }, { ...bare, mode: "full-auto" }))).toBe("account");
+  expect(how(decide({ kind: "shell", command: "git push https://github.com/me/repo.git", cwd: "/w/clone" }, bare))).not.toBe("account");
+  expect(how(decide({ kind: "shell", command: "git status", cwd: "/w/clone" }, bare))).not.toBe("account");
   expect(how(decide({ kind: "shell", command: "git push git@github.com:them/lib.git", cwd: "/w/clone" }, bare))).toBe("account");
   // No list at all: the rule is not on (a tool that never supplies it).
   expect(how(decide({ kind: "shell", command: "git push git@github.com:them/lib.git", cwd: "/w/clone" }, { ...f, accounts: undefined }))).not.toBe("account");

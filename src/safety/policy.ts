@@ -2,7 +2,7 @@
 // standing answers that apply. Pure: the gate supplies the facts.
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { accountFacts, foreign, namedOwners, ownsOwner, say, whyForeign, writesOf as writesToAccounts, type Namespace, type Write } from "./accounts.ts";
+import { accountFacts, foreign, namedOwners, namespaceOf, ownsOwner, say, whyForeign, writesOf as writesToAccounts, type Namespace, type Write } from "./accounts.ts";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { shellCredentialReads, type DiskLook } from "./credential-reads.ts";
 import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.ts";
@@ -101,7 +101,7 @@ export type CallClass =
   // makes the gate more careful: a destructive one is high risk, an open-world one says so on its card.
   // `account`: the tool writes with an account its MCP server holds (the server's name), src/safety/accounts.ts.
   // `input`: what the call was given, which the owners it names are read from.
-  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints; account?: { server: string; input?: unknown } }
+  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints; account?: { server: string; name?: string; tool?: string; input?: unknown } }
   // A message, answer or model command into another session. `resource` names
   // the tool and the target (keel__session_message:claude:abc); `owner` says why
   // only the owner may allow it.
@@ -125,7 +125,7 @@ export type CallClass =
 // facts can settle of one part, own-places.ts).
 // `account`: a write with the owner's account beyond his namespaces (the namespace, or "" when it is not known): the owner's
 // alone in every mode, Full auto included, where it opens a card and does not go to the judge.
-export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; notice?: string; settles?: true; risks?: PartRisk[] };
+export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; mine?: string; readTool?: { server: string; tool: string }; notice?: string; settles?: true; risks?: PartRisk[] };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
@@ -661,7 +661,7 @@ export function decide(c: CallClass, f: Facts): Decision {
       const named = owners.length ? ` for ${owners.join(", ")}, not among your namespaces` : `, and nothing in the call names whose it is`;
       const why = `${f.tool} writes with the account the MCP server ${c.account.server} holds${named} (your namespaces: ${yours})`;
       if (f.accounts.agent) return { deny: `Refused: ${why}. ${AGENT_SAYS}` };
-      return { ask: { risk: "high", why, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: owners.join(", ") || c.account.server } };
+      return { ask: { risk: "high", why, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: owners.join(", ") || c.account.server, ...(c.account.name && c.account.tool ? { readTool: { server: c.account.name, tool: c.account.tool } } : {}) } };
     }
   }
   if (f.mode === "full-auto") return { allow: true };
@@ -718,23 +718,71 @@ const never = (why: string, f: Facts): Decision =>
     ? { deny: `Refused: the command ${why}, which never runs without the owner. Do not try another form of it; say what you wanted it for and go on with the rest.` }
     : onlyOwner(`the command ${why}`, why);
 
+// Why a line's writes by a remote's name, or by default, cannot be placed: the line itself changes where remotes point
+// (git config remote.*.url, -c url.*.insteadOf, GIT_CONFIG_*, GIT_DIR, git remote set-url, gh repo set-default).
+const REBOUND = /^(remote\.[^=\s]*\.(url|pushurl|gh-resolved)|url\..*\.(push)?insteadof)(=|$)/i;
+const REBOUND_ENV = /^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/;
+function reboundBy(parts: Simple[]): string | undefined {
+  for (const part of parts) {
+    if (part.heredoc) continue;
+    const w = part.words;
+    for (let i = 0; i < w.length; i++) {
+      const x = w[i]!;
+      if (REBOUND.test(x)) return "the same line sets where a remote points";
+      if (REBOUND_ENV.test(x)) return "the same line sets git's configuration or its folder through the environment";
+      if (x === "remote" && /^(rename|remove|rm|set-head)$/.test(w[i + 1] ?? "") && w.slice(0, i).some((y) => baseName(y) === "git")) return "the same line changes a remote";
+      if (x === "set-default" && w[i - 1] === "repo" && baseName(w[i - 2]) === "gh") return "the same line changes the repository gh acts on";
+    }
+  }
+  return undefined;
+}
+
+// What a line has set so far for the commands after it: the variables it gave a value, and the ones it exported.
+type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string> };
+
 // Every write with an account the parts of a line make, found through what wraps them and in the folder each runs in.
-// A script a shell is given with -c is read as a line of its own.
-export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: Pick<Facts, "looked" | "home">, depth = 0): Write[] {
+// A script a shell is given with -c (or eval) is read as a line of its own. Exports before a command count for it.
+export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: Pick<Facts, "looked" | "home">, depth = 0, from?: Scope): Write[] {
   const out: Write[] = [];
+  const scope: Scope = { vars: new Map(from?.vars), exported: new Set(from?.exported), rebinds: from?.rebinds ?? reboundBy(parts), added: new Map(from?.added) };
   parts.forEach((part, i) => {
     if (part.heredoc) return;
     const run = pre.runs[i]!;
-    const env = { dir: pre.dirs[i] ?? null, set: [...run.set, ...part.words.filter((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w))],
-      ...(f.looked?.remotes ? { remotes: (d: string) => f.looked!.remotes!(d) } : {}), ...(f.looked?.manifest ? { manifest: (d: string) => f.looked!.manifest!(d) } : {}) };
+    const kept = [...scope.exported].filter((k) => scope.vars.has(k)).map((k) => `${k}=${scope.vars.get(k)}`);
+    const env = { dir: pre.dirs[i] ?? null, set: [...kept, ...run.set], ...(scope.rebinds ? { rebinds: scope.rebinds } : {}), ...(scope.added.size ? { added: scope.added } : {}),
+      ...(f.looked?.remotes ? { remotes: (d: string) => f.looked!.remotes!(d) } : {}), ...(f.looked?.manifest ? { manifest: (d: string) => f.looked!.manifest!(d) } : {}),
+      ...(f.looked?.hostname ? { hostname: (h: string) => f.looked!.hostname!(h) } : {}) };
     out.push(...writesToAccounts(run.words, env));
-    // sh -c 'git push ...'
     const first = baseName(run.words[0]);
-    const c = run.words.indexOf("-c");
-    if (depth < 2 && /^(sh|bash|zsh|dash|ksh)$/.test(first) && c > 0 && run.words[c + 1] !== undefined) {
-      const inner = splitCommand(run.words[c + 1]!);
-      if (inner) out.push(...accountWrites(inner, laid(inner, pre.dirs[i] ?? null, f.home ?? homedir()), f, depth + 1));
+    // sh -c 'git push ...', bash -lc "...", eval '...'
+    let script: string | undefined;
+    if (/^(sh|bash|zsh|dash|ksh)$/.test(first)) { const c = run.words.findIndex((x, k) => k > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x)); if (c > 0) script = run.words[c + 1]; }
+    else if (first === "eval") script = run.words.slice(1).join(" ");
+    if (script !== undefined) {
+      const inner = depth < 2 ? splitCommand(script) : null;
+      if (inner) out.push(...accountWrites(inner, laid(inner, pre.dirs[i] ?? null, f.home ?? homedir()), f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added }));
+      else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: "the script it runs is nested deeper than the rules read, or not one they can read" });
     }
+    // What this part gives the parts after it.
+    const w0 = baseName(run.words[0]);
+    // git remote add NAME URL, git remote set-url [--push] NAME URL: the commands after it push where it says.
+    if (w0 === "git") {
+      const k = run.words.findIndex((x, n) => x === "remote" && /^(add|set-url)$/.test(run.words[n + 1] ?? ""));
+      if (k > 0) {
+        const rest: string[] = [];
+        for (let n = k + 2; n < run.words.length; n++) { const x = run.words[n]!; if (x === "-t" || x === "-m") n++; else if (!x.startsWith("-")) rest.push(x); }
+        if (rest.length >= 2) scope.added.set(rest[0]!, rest[1]!);
+      }
+    }
+    if (!run.words.length) for (const a of run.set) scope.vars.set(a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1));
+    else if (w0 === "export" || ((w0 === "declare" || w0 === "typeset") && run.words.some((x) => /^-[a-zA-Z]*x/.test(x)))) {
+      for (const x of run.words.slice(1)) {
+        const m = /^([A-Za-z_][A-Za-z0-9_]*)(?:=([\s\S]*))?$/.exec(x);
+        if (!m) continue;
+        if (m[2] !== undefined) scope.vars.set(m[1]!, m[2]);
+        scope.exported.add(m[1]!);
+      }
+    } else if (w0 === "unset") for (const x of run.words.slice(1)) { scope.vars.delete(x); scope.exported.delete(x); }
   });
   return out;
 }
@@ -746,12 +794,12 @@ export function accountContext(command: string, cwd: string, looked: Looked | un
   return accountFacts(accountWrites(parts, laid(parts, cwd, home), { looked, home }), names);
 }
 
-const AGENT_SAYS = "That write is the owner's to make, in every mode: an agent is never allowed it. Do not try another form of it. Report to your parent what you wanted to do (the command, and the repository or package) and go on with the rest.";
+const AGENT_SAYS = "That write is the owner's to make, in every mode: an agent is never allowed it unless the place is one of his namespaces (Settings > Permissions > Your accounts, where he names them). Do not try another form of it. Report to your parent what you wanted to do (the command, and the repository or package) and go on with the rest.";
 // What a write with an account beyond the owner's namespaces asks: the owner's card in every mode; an agent is refused.
 function accountDecision(hit: { write: Write; account: ReturnType<typeof foreign> extends infer T ? (T extends { account: infer A } ? A : never) : never }, f: Facts, what = "the command"): Decision {
   const why = whyForeign(hit as Parameters<typeof whyForeign>[0], f.accounts!.names);
   if (f.accounts!.agent) return { deny: `Refused: ${what} ${why}. ${AGENT_SAYS}` };
-  return { ask: { risk: "high", why: `${what} ${why}`, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: hit.account ? say(hit.account) : "" } };
+  return { ask: { risk: "high", why: `${what} ${why}`, rule: "writes beyond your accounts", suggest: [], ownerOnly: true, account: hit.account ? say(hit.account) : "", ...(hit.account ? { mine: namespaceOf(hit.account) } : {}) } };
 }
 
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {

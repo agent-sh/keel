@@ -33,6 +33,8 @@ export type Looked = {
   // null: nothing there. "late": no answer in time.
   remotes?(dir: string): Answer<Remotes>;
   manifest?(dir: string): Answer<Manifest>;
+  // The host an ssh name of the owner's config stands for (`ssh -G`); null: it names itself or is not a name.
+  hostname?(host: string): Answer<string>;
   // The line asked more than is looked up for one command (QUESTIONS): the rest were not asked, and read as not answered.
   over?(): boolean;
 };
@@ -155,6 +157,29 @@ export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
   return r;
 }
 
+// What `ssh -G NAME` says the host is: it prints the configuration ssh would use and makes no connection. The answers are
+// kept a minute, since the owner's config changes seldom and a card waits on it.
+const hosts = new Map<string, { at: number; host: string | null }>();
+export async function hostnameOf(name: string): Promise<string | null | "late"> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/.test(name)) return null;
+  const had = hosts.get(name);
+  if (had && Date.now() - had.at < 60_000) return had.host;
+  try {
+    const proc = Bun.spawn(["ssh", "-G", name], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 1_500, killSignal: "SIGKILL" });
+    const read = async () => { const dec = new TextDecoder(); let all = ""; for await (const chunk of chunks(proc.stdout as ReadableStream<Uint8Array>)) { all += dec.decode(chunk, { stream: true }); if (all.length > 65_536) break; } return all; };
+    const out = await within(1_800, read(), null as string | null);
+    if (out === null) { proc.kill("SIGKILL"); return "late"; }
+    const code = await proc.exited;
+    const host = code === 0 ? /^hostname (\S+)$/m.exec(out)?.[1]?.toLowerCase() ?? null : null;
+    const same = host === null || host === name.toLowerCase() ? null : host;
+    hosts.set(name, { at: Date.now(), host: same });
+    if (hosts.size > 200) hosts.delete(hosts.keys().next().value!);
+    return same;
+  } catch {
+    return null; // (no ssh here: the name stays as it was written)
+  }
+}
+
 // The package a folder holds: the names in package.json, pyproject.toml (or setup.cfg) and Cargo.toml, each read
 // from the file's first 256 KB.
 export async function manifestIn(dir: string): Promise<Manifest | null | "late"> {
@@ -190,6 +215,7 @@ export function looking(workspace: string) {
       read: (file) => get<string | null>(`read\0${file}`, null, () => textOf(file)),
       remotes: (dir) => get<Answer<Remotes>>(`remotes\0${dir}`, "late", () => remotesIn(dir)),
       manifest: (dir) => get<Answer<Manifest>>(`manifest\0${dir}`, "late", () => manifestIn(dir)),
+      hostname: (host) => get<Answer<string>>(`ssh\0${host}`, "late", () => hostnameOf(host)),
       over: () => over,
     };
   };

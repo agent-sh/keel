@@ -13,7 +13,8 @@
 export type Namespace = { kind: "forge"; host: string; path: string[] } | { kind: "package"; registry: Registry; name: string };
 export type Registry = "npm" | "pypi" | "crates";
 // What a command writes to: a repository (`path` is owner, group... and repository), or a package.
-export type Account = { kind: "forge"; host: string; path: string[] } | { kind: "package"; registry: Registry; name: string };
+// `ssh`: the host was spelled in an ssh address, so it may be a name of the owner's ssh config (resolved by `Env.hostname`).
+export type Account = { kind: "forge"; host: string; path: string[]; ssh?: true } | { kind: "package"; registry: Registry; name: string };
 // One write found in a command. `account` is null when the rules cannot tell where it lands (`why` says).
 export type Write = { does: string; account: Account | null; why?: string };
 
@@ -44,6 +45,14 @@ export function say(a: Namespace | Account): string {
   return a.kind === "forge" ? `${a.host}/${a.path.join("/")}` : `${a.registry}:${a.name}`;
 }
 
+// The namespace an account is under, as the owner would name it (what "Mine" on a card adds): the owner of a repository, the
+// scope of a package, a package's own name.
+export function namespaceOf(a: Account): string {
+  if (a.kind === "package") return a.registry === "npm" && a.name.startsWith("@") ? `npm:${a.name.split("/")[0]}` : `${a.registry}:${a.name}`;
+  const owner = a.path[0]!;
+  return a.host === "github.com" && /^[\w-]+$/.test(owner) ? owner : `${a.host}/${owner}`;
+}
+
 // Whether an account is under one of the owner's namespaces.
 export function owned(list: readonly Namespace[], a: Account): boolean {
   return list.some((n) => {
@@ -55,13 +64,14 @@ export function owned(list: readonly Namespace[], a: Account): boolean {
 // ---- where a repository address points ----
 
 // The host and path of a git or forge address, or null for a folder on this machine (not an account).
-export function repoOf(url: string): { host: string; path: string[] } | null {
+export function repoOf(url: string): { host: string; path: string[]; ssh?: true } | null {
   const u = url.trim().replace(/^git\+/, "");
   if (!u) return null;
-  let host: string, rest: string;
+  let host: string, rest: string, ssh = false;
   const scheme = /^([a-z][a-z0-9+.-]*):\/\/([^/]*)(\/.*)?$/i.exec(u);
   if (scheme) {
     if (/^file$/i.test(scheme[1]!)) return null;
+    ssh = /^(ssh|git\+ssh|ssh\+git)$/i.test(scheme[1]!);
     host = scheme[2]!.replace(/^.*@/, "").replace(/:\d*$/, "");
     rest = scheme[3] ?? "";
   } else {
@@ -70,12 +80,13 @@ export function repoOf(url: string): { host: string; path: string[] } | null {
     if (!scp || /^[a-z]$/i.test(scp[1]!)) return null; // (a drive letter is a folder)
     host = scp[1]!;
     rest = `/${scp[2]!.replace(/^\/+/, "")}`;
+    ssh = true;
   }
   host = lower(host);
   const path = rest.split(/[?#]/)[0]!.split("/").filter(Boolean).map(lower);
   if (!host || !path.length) return null;
   if (path.length) path[path.length - 1] = path[path.length - 1]!.replace(/\.git$/, "");
-  return { host, path };
+  return { host, path, ...(ssh ? { ssh: true as const } : {}) };
 }
 
 // `[HOST/]OWNER/REPO`, as gh's -R and GH_REPO say it.
@@ -101,7 +112,18 @@ export type Remotes = {
 export type Manifest = { npm?: string; pypi?: string; crates?: string; private?: true };
 export type Answer<T> = T | null | "late";
 // `remotes(dir)`, `manifest(dir)`: the answers the disk gave (null: nothing there; "late": it did not answer).
-export type Env = { dir: string | null; remotes?: (dir: string) => Answer<Remotes>; manifest?: (dir: string) => Answer<Manifest>; set?: string[] };
+// `hostname(host)`: the host an ssh name of the owner's config stands for (`ssh -G`), null when it names itself.
+// `added`: the remotes the same line gave an address before this command (`git remote add NAME URL`, `set-url`).
+// `set`: what the line sets for the command (`NAME=value`, the last of a name wins). `rebinds`: why the same line moves
+// where a remote points (a write by a remote's name or by default then lands where the rules cannot tell).
+export type Env = { dir: string | null; remotes?: (dir: string) => Answer<Remotes>; manifest?: (dir: string) => Answer<Manifest>; hostname?: (host: string) => Answer<string>; set?: string[]; rebinds?: string; added?: ReadonlyMap<string, string> };
+
+// What a line sets for a name: the last assignment of it.
+export const setOf = (set: readonly string[] | undefined, name: string): string | undefined => {
+  let v: string | undefined;
+  for (const s of set ?? []) if (s.startsWith(`${name}=`)) v = s.slice(name.length + 1);
+  return v;
+};
 
 const lateWhy = (what: string) => `the rules could not read ${what}`;
 
@@ -125,8 +147,10 @@ export function ghBase(r: Remotes, host = "github.com"): { host: string; path: s
   return first ? repoOf(r.fetch[first]!) : null;
 }
 
-const shown = (a: { host: string; path: string[] }): Account => ({ kind: "forge", host: a.host, path: a.path });
+const shown = (a: { host: string; path: string[]; ssh?: true }): Account => ({ kind: "forge", host: a.host, path: a.path, ...(a.ssh ? { ssh: true as const } : {}) });
 const dynamic = (w: string) => /[$`*?{}]|^~/.test(w);
+// A folder spelled from the working folder or the home (`$PWD/x.git`, `~/x.git`): an expansion, but no account.
+const localExpansion = (w: string) => /^(\$\{?(PWD|HOME|TMPDIR)\}?|\$\(pwd\)|~)(\/[\w.@+\/-]*)?$/.test(w);
 
 // ---- the commands ----
 
@@ -145,7 +169,9 @@ function gitPush(args: string[], env: Env): Write[] {
     pos.push(a);
   }
   const target = repo ?? pos[0];
-  if (target !== undefined && dynamic(target)) return [{ does, account: null, why: `the remote ${target.slice(0, 80)} is spelled with an expansion` }];
+  // (A folder spelled from the working folder or the home, `$PWD/x.git`, is no account.)
+  if (target !== undefined && dynamic(target) && !localExpansion(target)) return [{ does, account: null, why: `the remote ${target.slice(0, 80)} is spelled with an expansion` }];
+  if (target !== undefined && dynamic(target)) return [];
   // An address the command spells out.
   if (target !== undefined) {
     const spelled = repoOf(target);
@@ -158,15 +184,24 @@ function gitPush(args: string[], env: Env): Write[] {
 }
 
 const nowhere = (does: string): Write[] => [{ does, account: null, why: "the folder it runs in is not known to the rules (a cd they cannot follow)" }];
+// A command whose repository is read from a disk the rules have no view of (a session on another machine).
+const blind = (does: string): Write[] => [{ does, account: null, why: "the repository it runs in is on a disk the rules do not read" }];
+const rebound = (does: string, env: Env): Write[] => [{ does, account: null, why: env.rebinds! }];
 
 function viaRemote(does: string, name: string | null, env: Env): Write[] {
-  if (!env.remotes) return [];
+  if (env.rebinds) return rebound(does, env);
+  // A remote this line gave an address: that is where it goes, whatever the disk holds.
+  const given = name !== null ? env.added?.get(name) : undefined;
+  if (given !== undefined && dynamic(given) && !localExpansion(given)) return [{ does, account: null, why: `the address given to the remote ${name} is spelled with an expansion` }];
+  if (given !== undefined) { const a = repoOf(given); return a ? [{ does, account: shown(a) }] : []; }
+  if (!env.remotes) return blind(does);
   if (env.dir === null) return nowhere(does);
   const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("where the remote points") }];
   if (r === null) return [];
   const remote = name ?? pushRemote(r);
-  const urls = r.push[remote] ?? (r.fetch[remote] ? [r.fetch[remote]!] : []);
+  const added = env.added?.get(remote);
+  const urls = added !== undefined ? [added] : r.push[remote] ?? (r.fetch[remote] ? [r.fetch[remote]!] : []);
   if (!urls.length) return [];
   return urls.flatMap((u) => { const a = repoOf(u); return a ? [{ does, account: shown(a) }] : []; });
 }
@@ -188,8 +223,8 @@ const GH_WRITES: Record<string, string[]> = {
 const GH_VALUED = /^(-R|--repo|-t|--title|-b|--body|-F|--body-file|-B|--base|-H|--head|-a|--assignee|-l|--label|-m|--milestone|-p|--project|-r|--reviewer|--target|--notes-file|-n|--notes|--discussion-category|--notes-start-tag|-e|--env|--org|--body-env|-f|--field|--raw-field|-X|--method|-q|--jq|-t|--template|--hostname|-H|--header|--input|--cache|-d|--delete-branch|--subject|--match-head-commit|--add-reviewer|--add-label|--remove-label|--add-assignee|--add-project|--add-milestone|--remote-url)$/;
 
 function ghTarget(args: string[], env: Env, set: string[]): { account?: Account | null; why?: string; none?: true } {
-  const host = lower(set.find((s) => s.startsWith("GH_HOST="))?.slice(8) ?? "github.com");
-  let repo: string | undefined = set.find((s) => s.startsWith("GH_REPO="))?.slice(8);
+  const host = lower(setOf(set, "GH_HOST") ?? "github.com");
+  let repo: string | undefined = setOf(set, "GH_REPO");
   const operands: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -234,19 +269,21 @@ function gh(words: string[], env: Env, set: string[]): Write[] {
   const t = ghTarget(args, env, set);
   if ("account" in t) return t.account ? [{ does, account: t.account }] : [{ does, account: null, why: t.why }];
   // No repository named: the one gh acts on in the folder.
-  if (!env.remotes) return [];
+  if (env.rebinds) return rebound(does, env);
+  if (env.added?.size) return [{ does, account: null, why: "the same line changes a remote" }];
+  if (!env.remotes) return blind(does);
   if (env.dir === null) return nowhere(does);
   const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("the repository gh acts on") }];
   if (r === null) return [];
-  const base = ghBase(r, lower(set.find((s) => s.startsWith("GH_HOST="))?.slice(8) ?? "github.com"));
+  const base = ghBase(r, lower(setOf(set, "GH_HOST") ?? "github.com"));
   return base ? [{ does, account: shown(base) }] : [];
 }
 
 // gh api: a request that is not a read, to a repository, an organization or a mutation.
 function ghApi(args: string[], env: Env, set: string[]): Write[] {
   const does = "gh api";
-  let method = "", fields = false, path: string | undefined, host = lower(set.find((s) => s.startsWith("GH_HOST="))?.slice(8) ?? "github.com");
+  let method = "", fields = false, path: string | undefined, host = lower(setOf(set, "GH_HOST") ?? "github.com");
   const text: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -283,7 +320,9 @@ function glab(words: string[], env: Env): Write[] {
     const s = slugOf(repo.includes("/") && !repo.split("/")[0]!.includes(".") ? `gitlab.com/${repo}` : repo, "gitlab.com");
     return s ? [{ does, account: shown(s) }] : [{ does, account: null, why: `the project ${repo.slice(0, 80)} is not in a form the rules read` }];
   }
-  if (!env.remotes) return [];
+  if (env.rebinds) return rebound(does, env);
+  if (env.added?.size) return [{ does, account: null, why: "the same line changes a remote" }];
+  if (!env.remotes) return blind(does);
   if (env.dir === null) return nowhere(does);
   const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("the project glab acts on") }];
@@ -298,7 +337,7 @@ function publish(words: string[], env: Env): Write[] {
   const args = words.slice(1);
   const operands = (from: string) => { const k = args.indexOf(from); return args.slice(k + 1).filter((a, j, all) => !a.startsWith("-") && !/^(--tag|--otp|--access|--registry|--tolerate-republish)$/.test(all[j - 1] ?? "")); };
   const here = (registry: Registry, does: string, pick: (m: Manifest) => string | undefined): Write[] => {
-    if (!env.manifest) return [];
+    if (!env.manifest) return blind(does);
     if (env.dir === null) return nowhere(does);
     const m = env.manifest(env.dir);
     if (m === "late") return [{ does, account: null, why: lateWhy("the package's manifest") }];
@@ -330,22 +369,70 @@ function publish(words: string[], env: Env): Write[] {
     if (args.some((a) => /^--manifest-path/.test(a))) return [{ does: `cargo ${verb}`, account: null, why: "it names a manifest of its own" }];
     return here("crates", `cargo ${verb}`, (m) => m.crates);
   }
-  if (prog === "twine" || prog === "uv" || /^python/.test(prog) || prog === "poetry" || prog === "flit" || prog === "hatch" || prog === "maturin") {
-    const t = prog === "twine" ? verb === "upload" : prog === "uv" ? verb === "publish" : prog === "poetry" || prog === "hatch" || prog === "flit" || prog === "maturin" ? verb === "publish" : args.some((a, i) => a === "twine" && /^upload$/.test(args[i + 1] ?? ""));
+  // A program another one starts: uvx twine upload, pipx run twine upload, uv tool run twine upload.
+  const launcher = prog === "uvx" || (prog === "pipx" && verb === "run") || (prog === "uv" && verb === "tool" && args[args.indexOf("tool") + 1] === "run");
+  if (launcher) {
+    const after = prog === "uvx" ? 1 : words.indexOf(prog === "pipx" ? "run" : "run") + 1;
+    let k = after;
+    while (k < words.length && words[k]!.startsWith("-")) k += /^(--from|--with|--with-requirements|--python|-p|--index|--index-url|--extra-index-url|--spec|--pip-args)$/.test(words[k]!) ? 2 : 1;
+    if (words[k] !== undefined) return publish(words.slice(k), env);
+    return [];
+  }
+  if (prog === "twine" || prog === "uv" || /^python/.test(prog) || prog === "poetry" || prog === "flit" || prog === "hatch" || prog === "maturin" || prog === "pdm" || prog === "rye") {
+    const t = prog === "twine" ? verb === "upload" : prog === "uv" || prog === "poetry" || prog === "hatch" || prog === "flit" || prog === "maturin" || prog === "pdm" || prog === "rye" ? verb === "publish" : args.some((a, i) => a === "twine" && /^upload$/.test(args[i + 1] ?? ""));
     if (!t) return [];
-    return here("pypi", `${prog === "uv" || prog === "twine" ? prog : prog} ${prog === "twine" ? "upload" : "publish"}`, (m) => m.pypi);
+    return here("pypi", `${prog} ${prog === "twine" ? "upload" : "publish"}`, (m) => m.pypi);
   }
-  if (prog === "docker" || prog === "podman" || prog === "buildah") {
-    if (verb !== "push") return [];
-    const ref = operands("push")[0];
-    if (!ref) return [];
-    if (dynamic(ref)) return [{ does: `${prog} push`, account: null, why: "the image name is spelled with an expansion" }];
-    const parts = ref.replace(/:[^/:]*$/, "").replace(/@.*$/, "").split("/").map(lower);
-    const hosted = parts.length > 1 && (parts[0]!.includes(".") || parts[0]!.includes(":") || parts[0] === "localhost");
-    if (hosted && /^(localhost|127\.|\[::1\])/.test(parts[0]!)) return [];
-    if (hosted) return [{ does: `${prog} push`, account: { kind: "forge", host: parts[0]!.replace(/:\d+$/, ""), path: parts.slice(1) } }];
-    return [{ does: `${prog} push`, account: { kind: "forge", host: "docker.io", path: parts.length > 1 ? parts : ["library", ...parts] } }];
+  if (prog === "docker" || prog === "podman" || prog === "nerdctl" || prog === "buildah" || prog === "skopeo") return images(prog, args);
+  return [];
+}
+
+// An image reference, as a registry's account: the registry and the path (the owner's, under the registry).
+function imageWrite(does: string, ref: string): Write[] {
+  const r = ref.replace(/^docker:\/\//, "");
+  if (!r || /^(oci-archive|oci|containers-storage|dir|docker-daemon|docker-archive):/.test(r)) return []; // (a place on this machine)
+  if (dynamic(r)) return [{ does, account: null, why: "the image name is spelled with an expansion" }];
+  const parts = r.replace(/@.*$/, "").replace(/:[^/:]*$/, "").split("/").map(lower);
+  const hosted = parts.length > 1 && (parts[0]!.includes(".") || parts[0]!.includes(":") || parts[0] === "localhost");
+  if (hosted && /^(localhost|127\.|\[::1\])/.test(parts[0]!)) return [];
+  if (hosted) return [{ does, account: { kind: "forge", host: parts[0]!.replace(/:\d+$/, ""), path: parts.slice(1) } }];
+  return [{ does, account: { kind: "forge", host: "docker.io", path: parts.length > 1 ? parts : ["library", ...parts] } }];
+}
+
+// docker, podman and the like: a push, a build that pushes, a copy to a registry.
+function images(prog: string, args: string[]): Write[] {
+  const does = `${prog} push`;
+  // The words that name the subcommand: the options before it and their values are not.
+  const words: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--") { words.push(...args.slice(i + 1)); break; }
+    if (a.startsWith("-")) { if (!a.includes("=") && /^(-H|--host|-c|--context|--config|-l|--log-level|--root|--runroot|--storage-driver|--registries-conf|--policy)$/.test(a)) i++; continue; }
+    words.push(a);
   }
+  const tagsOf = () => { const t: string[] = []; args.forEach((a, i) => { if (a === "-t" || a === "--tag") t.push(args[i + 1] ?? ""); else if (/^--tag=/.test(a)) t.push(a.slice(6)); else if (/^-t.+/.test(a) && !a.startsWith("--")) t.push(a.slice(2)); }); return t.filter(Boolean); };
+  const first = words[0] ?? "";
+  if (prog === "skopeo") {
+    if (first !== "copy" && first !== "sync") return [];
+    const dest = words[words.length - 1];
+    return first === "copy" && dest ? imageWrite("skopeo copy", dest) : [];
+  }
+  const pushed = first === "push" || ((first === "image" || first === "manifest") && words[1] === "push");
+  if (pushed) {
+    const ops = words.slice(first === "push" ? 1 : 2);
+    // (buildah and manifest push take where it goes last; docker's push takes the name.)
+    const ref = prog === "buildah" || first === "manifest" ? ops[ops.length - 1] : ops[0];
+    return ref ? imageWrite(does, ref) : [];
+  }
+  if (first === "compose" && words.includes("push")) return [{ does: `${prog} compose push`, account: null, why: "the images are named in the compose file" }];
+  const build = first === "build" || ((first === "buildx" || first === "builder") && (words[1] === "build" || words[1] === "bake"));
+  if (build) {
+    const toRegistry = args.includes("--push") || args.some((a, i) => /^(-o|--output)(=|$)/.test(a) && /type=registry|push=true/.test(a.includes("=") && a.length > 8 ? a : args[i + 1] ?? ""));
+    if (!toRegistry) return [];
+    const tags = words[1] === "bake" ? [] : tagsOf();
+    return tags.length ? tags.flatMap((t) => imageWrite(`${prog} build --push`, t)) : [{ does: `${prog} build --push`, account: null, why: "the images it pushes are not named on the command line" }];
+  }
+  if (first === "buildx" && words[1] === "imagetools" && words[2] === "create") { const tags = tagsOf(); return tags.length ? tags.flatMap((t) => imageWrite(`${prog} buildx imagetools create`, t)) : []; }
   return [];
 }
 
@@ -355,25 +442,40 @@ export function writesOf(words: string[], env: Env): Write[] {
   if (!first) return [];
   const set = [...(env.set ?? [])];
   try {
-    if (first === "git") return gitWrites(words, env);
-    if (first === "gh") return gh(words, env, set);
-    if (first === "glab") return glab(words, env);
-    return publish(words, env);
+    const found = first === "git" ? gitWrites(words, { ...env, set }) : first === "gh" ? gh(words, env, set) : first === "glab" ? glab(words, env) : publish(words, env);
+    return env.hostname ? found.map((w) => resolveHost(w, env)) : found;
   } catch {
     return [{ does: first, account: null, why: "the rules could not read the command" }];
   }
 }
 
+// A repository spelled with an ssh name of the owner's config (`git@github-me:owner/repo`) is on the host the name stands for.
+function resolveHost(w: Write, env: Env): Write {
+  const a = w.account;
+  if (!a || a.kind !== "forge" || !a.ssh) return w;
+  const h = env.hostname!(a.host);
+  if (h === "late") return { does: w.does, account: null, why: lateWhy(`which host the ssh name ${a.host} stands for`) };
+  return h && h !== a.host ? { ...w, account: { ...a, host: lower(h) } } : w;
+}
+
 // git [-C dir] push ...: the folder of a -C is the one asked about.
 function gitWrites(words: string[], env: Env): Write[] {
   let i = 1, dir = env.dir;
+  const gitDir = (p: string | undefined) => {
+    if (p === undefined || dynamic(p) || !/(^|\/)\.git\/?$/.test(p)) { dir = null; return; }
+    const base = p.replace(/\/?\.git\/?$/, "");
+    dir = base.startsWith("/") ? base : p.startsWith("/") ? "/" : base === "" ? env.dir : env.dir === null ? null : `${env.dir}/${base}`;
+  };
   while (i < words.length && words[i]!.startsWith("-")) {
     const o = words[i]!;
     if (o === "-C") { const p = words[++i]; dir = p === undefined || dynamic(p) || dir === null ? null : p.startsWith("/") ? p : `${dir}/${p}`; }
-    else if (o === "-c" || o === "--git-dir" || o === "--work-tree" || o === "--namespace") i++;
+    else if (o === "--git-dir") gitDir(words[++i]);
+    else if (o.startsWith("--git-dir=")) gitDir(o.slice(10));
+    else if (o === "-c" || o === "--work-tree" || o === "--namespace" || o === "--exec-path") i++;
     i++;
   }
   if (words[i] !== "push") return [];
+  if (env.rebinds) return rebound("git push", env);
   return gitPush(words.slice(i + 1), { ...env, dir });
 }
 

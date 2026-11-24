@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { remotesIn } from "./looked.ts";
+import { hostnameOf, remotesIn } from "./looked.ts";
 import { parseNamespace, repoOf, say } from "./accounts.ts";
 
 export type Candidate = { namespace: string; why: string; count?: number };
@@ -61,7 +61,10 @@ export async function learnNamespaces(folders: string[], home = homedir(), env: 
       const top = new Set<string>();
       for (const url of Object.values(r.fetch)) {
         const a = repoOf(url);
-        if (a && a.path.length >= 2) top.add(`${a.host}/${a.path[0]}`);
+        if (!a || a.path.length < 2) continue;
+        // (An ssh name of his config stands for the host it says.)
+        const host = a.ssh ? ((await hostnameOf(a.host)) ?? a.host) : a.host;
+        top.add(`${host === "late" ? a.host : host}/${a.path[0]}`);
       }
       // (A folder inside a repository already counted through another folder of it counts once per owner.)
       const key = [...top].sort().join(" ");

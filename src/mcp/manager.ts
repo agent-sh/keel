@@ -28,7 +28,6 @@ import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { hintsOf, hintWords } from "./hints.ts";
-import { holdsAccount } from "./holds-account.ts";
 import { ASKED, LOG_KEPT, logLine, severe, type LogLine } from "./logs.ts";
 import { conceal } from "../core/conceal.ts";
 import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
@@ -812,7 +811,10 @@ export class McpManager {
     // A tool the owner marked as a read is a read whatever its server says; any other call carries what raises its care.
     const careful = !readOnly && (hints?.destructive || hints?.openWorld) ? { ...(hints.destructive ? { destructive: true as const } : {}), ...(hints.openWorld ? { openWorld: true as const } : {}) } : undefined;
     // A tool that writes, on a server that holds the owner's account: his to allow in every mode (src/safety/accounts.ts).
-    const account = !readOnly && !e.bundled && holdsAccount(e.config);
+    // Whether the server holds one is read when the call is judged (a sign-in made since counts), by the server's class
+    // (src/mcp/class.ts: the owner's word, else the credential its config sends). A tool whose accepted definition says
+    // it only reads (readOnlyHint, taken here for this and nothing else) is not held.
+    const account = !readOnly && !e.bundled && t.annotations?.readOnlyHint !== true;
     return {
       server,
       name: t.name,
@@ -827,7 +829,7 @@ export class McpManager {
       readOnly,
       ...(hints ? { hints } : {}),
       judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input)
-        : careful || account ? async (input: any) => ({ kind: "other" as const, ...(careful ? { hints: careful } : {}), ...(account ? { account: { server, input } } : {}) }) : undefined,
+        : careful || account ? async (input: any) => ({ kind: "other" as const, ...(careful ? { hints: careful } : {}), ...(account && this.classOf(e.name)?.account.yes ? { account: { server, name: e.name, tool: t.name, input } } : {}) }) : undefined,
       run: (input: any, ctx: ToolContext) => this.call(e.name, t.name, input, ctx),
     };
   }
@@ -1895,6 +1897,13 @@ export class McpManager {
     if (!c.read_tools!.length) delete c.read_tools;
     this.save({ ...this.cfg.servers, [name]: c });
     e.config = c;
+  }
+
+  // One more tool the owner marks as a read (a card's one press), the rest as they are.
+  addRead(name: string, tool: string) {
+    const e = this.entries.get(name);
+    if (!e) throw new Error(`no server ${name}`);
+    this.setReads(name, [...(e.config.read_tools ?? []), tool]);
   }
 
   remove(name: string) {

@@ -1055,7 +1055,14 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
     else toList();
   }, [denying]);
   const pressed = usePress(() => !unread.current && armed("live"), (ok) => ok);
+  const minePress = usePress(() => !unread.current && armed("live"), (ok) => ok);
   const nudge = useNudge();
+  // The press that adds what the card names to the owner's own (a namespace, or an MCP tool as a read) and allows it once.
+  const alsoOnce = async (also: () => Promise<unknown>) => {
+    setErr("");
+    try { await also(); } catch (e) { setErr(failed(e, { at: "approval mine" })); return; }
+    await answer({ choice: "once" });
+  };
   // Why a press on one of its answers does nothing now.
   const unreadLines = unseen?.out ?? 0;
   const notYet = unreadLines > 0 ? `Not yet: ${count(unreadLines)} not seen yet` : ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
@@ -1392,6 +1399,28 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
             {/* (Drawn anew with each arrival of the keyboard, so it fills for that arrival's settle time.) */}
             {armingNow && <span key={hold.at + hold.key} className="k-arm" aria-hidden="true" data-testid="allow-arming" style={{ "--k-arm": `${armFor}ms` } as CSSProperties} />}
           </button>
+          {(a.mine || a.read_tool) && (
+            <button
+              type="button"
+              disabled={busy}
+              aria-disabled={!live || mustOpen || undefined}
+              data-testid={a.mine ? "allow-mine" : "allow-read"}
+              data-stop={shut ? undefined : "card"}
+              title={a.mine ? `Allow this once and add ${a.mine} to Your accounts (Settings > Permissions), so writes there stop asking.` : `Allow this once and mark ${a.read_tool!.tool} as a read of ${a.read_tool!.server}, so it stops asking.`}
+              onPointerDown={() => minePress.onPointerDown()}
+              onMouseDown={minePress.onMouseDown}
+              onClick={(e) => {
+                const key = e.detail === 0;
+                const why = refusalOf(key ? false : minePress.said(e), key ? e.currentTarget : null);
+                if (why) nudge.refuse(why, e.currentTarget);
+                else if (a.mine) alsoOnce(() => safety.addNamespace(a.mine!)).catch(reportError);
+                else alsoOnce(() => safety.markRead(a.read_tool!.server, a.read_tool!.tool)).catch(reportError);
+              }}
+              className="h-8 shrink-0 whitespace-nowrap rounded-lg border border-line px-3 text-ui font-medium text-fg outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised disabled:opacity-50 aria-disabled:cursor-default aria-disabled:opacity-50"
+            >
+              {a.mine ? <>Mine<span className="ml-1 font-normal text-muted">{a.mine}</span></> : "Mark as read"}
+            </button>
+          )}
           {nudge.line}
           {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} digits={touch ? null : digits.always} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={(stood, key) => refusalOf(stood, key, "grant")} unread={mustOpen} onGrant={(rules, session) => { if (!unread.current) answer({ choice: session ? "session" : "always", rules }); }} />}
           <button
