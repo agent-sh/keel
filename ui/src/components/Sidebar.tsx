@@ -1236,29 +1236,34 @@ function Index({ current }: { current: string | null }) {
 }
 
 // The foot names Inbox, Loops and Errors in words where the words and their counts fit, and is glyphs
-// where they do not. What they need is measured with the words shown (the counts change it), and kept
-// while the glyphs show, so a width is decided by one number and the foot does not flip at its edge.
+// where they do not. What they need is measured with the words shown, each time (the counts, the fonts as
+// they load and the rail's width change it), within one frame: the words' width, not the state the foot
+// is in, decides, so the foot does not flip at its edge.
 function useFootFit(open: boolean) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || !open) return;
-    let need = 0;
-    const measure = () => {
+    const fit = () => {
       el.removeAttribute("data-tight");
       const cs = getComputedStyle(el);
       const kids = [...el.children].filter((k): k is HTMLElement => k instanceof HTMLElement && k.getClientRects().length > 0);
-      need = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + (parseFloat(cs.columnGap) || 0) * Math.max(0, kids.length - 1);
+      let need = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + (parseFloat(cs.columnGap) || 0) * Math.max(0, kids.length - 1);
       for (const k of kids) need += Math.max(k.getBoundingClientRect().width, k.scrollWidth);
+      // The room in fractions of a pixel (clientWidth rounds), and the words as laid out: a glyph past the
+      // foot's end or a word its button clips is tight too, whatever the sum said.
+      const room = el.getBoundingClientRect().width - parseFloat(cs.borderLeftWidth) - parseFloat(cs.borderRightWidth);
+      const end = el.getBoundingClientRect().right - parseFloat(cs.borderRightWidth) - parseFloat(cs.paddingRight);
+      const spills = kids.some((k) => k.getBoundingClientRect().right > end + 0.5 || k.scrollWidth > k.clientWidth + 0.5);
+      el.toggleAttribute("data-tight", room < need + 0.5 || spills);
     };
-    const fit = () => el.toggleAttribute("data-tight", el.clientWidth + 0.5 < need);
-    measure(); fit();
+    fit();
     const ro = new ResizeObserver(fit);
     ro.observe(el);
-    // A count that comes or grows needs room: measured again with the words shown, before the frame is drawn.
-    const mo = new MutationObserver(() => { measure(); fit(); });
+    const mo = new MutationObserver(fit);
     mo.observe(el, { subtree: true, childList: true, characterData: true });
-    return () => { ro.disconnect(); mo.disconnect(); el.removeAttribute("data-tight"); };
+    document.fonts?.addEventListener("loadingdone", fit);
+    return () => { ro.disconnect(); mo.disconnect(); document.fonts?.removeEventListener("loadingdone", fit); el.removeAttribute("data-tight"); };
   }, [open]);
   return ref;
 }
