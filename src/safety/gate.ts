@@ -33,7 +33,7 @@ import { artifactsDir, atCwd, contains, realOf, homeDir } from "../core/paths.ts
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
-import { AddressBook, addressOf, dataIn, groupOf, sendShown, wholeOf, type WebUse } from "./addresses.ts";
+import { AddressBook, addressOf, dataIn, groupOf, sendShown, textCarries, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
@@ -415,6 +415,7 @@ export class Gate {
     const name = target?.name ?? call.tool.name;
     const dir = cwdOf(call) ?? call.ctx.cwd;
     let reaches: Reach[] = [];
+    let texts: string[] = [];
     if (raw.kind === "read" && raw.fetches?.length) reaches = fetchReaches(raw.fetches, (a) => !carrying?.has(a));
     else if (raw.kind === "send") reaches = fetchReaches(raw.to).map((r) => ({ ...r, how: "send" as const }));
     else if (raw.kind === "shell") {
@@ -430,6 +431,7 @@ export class Gate {
         // its input, and any other call of the server, is a send.
         if (shape && "fetch" in shape && shape.fetch) {
           const { url: _url, ...rest } = input as Record<string, unknown>;
+          texts = shape.texts ?? [];
           // (The address names its host, and a forge's repository too: both are read as the fetch it is.)
           reaches = [...inputTargets({ url: shape.fetch }).filter((t) => t.kind !== "email").map((t) => ({ target: t, how: "fetch" as const, word: shape.fetch })), ...inputTargets(rest).map((t) => ({ target: t, how: "send" as const }))];
         } else reaches = inputTargets(input).map((t) => ({ target: t, how: "send" as const }));
@@ -439,11 +441,19 @@ export class Gate {
     const cwd = session.machine ? null : (raw.kind === "shell" ? raw.cwd ?? dir : dir);
     // A fetch the call wrote itself (a curl line, an MCP tool's address) is read for what it carries before the books are asked.
     const words = reaches.filter((r) => r.how === "fetch" && r.word !== undefined && r.plain === undefined).map((r) => r.word!);
-    if (!words.length) return this.provenance.hits(session, reaches, cwd);
+    if (!words.length && !texts.length) return this.provenance.hits(session, reaches, cwd);
     return (async () => {
+      // What the model asked the server to look for copies the session: the call is a send.
+      if (texts.length && await this.copiesSession(session, texts)) reaches = reaches.map((r) => ({ ...r, how: "send" as const }));
       const data = await this.unseenData(session, words.map(asAddress).filter((a): a is string => !!a));
       return this.provenance.hits(session, reaches.map((r) => r.how === "fetch" && r.word !== undefined && r.plain === undefined ? { ...r, plain: !!asAddress(r.word) && !data.has(asAddress(r.word)!) } : r), cwd);
     })();
+  }
+
+  // Whether a text the model wrote into a call copies the session's text or a secret (addresses.ts `textCarries`).
+  private async copiesSession(session: Session, texts: string[]): Promise<boolean> {
+    const web = await this.seen(session);
+    return texts.some((t) => web.copies(t));
   }
 
   // The addresses among `addresses` that the session has not seen and that carry data of the session (src/safety/addresses.ts
@@ -473,7 +483,7 @@ export class Gate {
   // What a session has seen of the web: whether it has seen an address (in its own events or a parent session's: the
   // owner's words reach an agent through its parent) and what an unseen one carries. Each book reads only the
   // events after the last it read.
-  private async seen(session: Session): Promise<{ has(address: string): boolean; carries(address: string, earlier?: number): string | null }> {
+  private async seen(session: Session): Promise<{ has(address: string): boolean; carries(address: string, earlier?: number): string | null; copies(text: string): boolean }> {
     const chain: string[] = [session.id];
     for (let up = session, n = 0; up.parent_id && n < 32; n++) { chain.push(up.parent_id); up = this.store.session(up.parent_id) ?? up; }
     const books: AddressBook[] = [];
@@ -495,6 +505,7 @@ export class Gate {
     const secret = (text: string) => placeholdersIn(text).length > 0 || detect(text).length > 0 || vault.holdsValue(text);
     return {
       has: (address) => books.some((b) => b.has(address)),
+      copies: (text) => textCarries(text, (f) => books.some((b) => b.inResults(f)), secret),
       // `earlier`: the unseen addresses on its registered domain that the call being judged fetches before it.
       carries: (address, earlier = 0) => timed(() => "reading an unseen address for the data it carries", () =>
         dataIn(address, (f) => books.some((b) => b.inResults(f)), secret, earlier + books.reduce((n, b) => n + b.unseenOn(address), 0), (host, path) => { const owner = books.some((b) => b.ownsHost(host)); return books.reduce((n, b) => Math.max(n, b.listed(host, path, owner)), 0); })),

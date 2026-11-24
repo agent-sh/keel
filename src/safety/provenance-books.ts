@@ -94,6 +94,7 @@ export class Provenance {
       workspace,
       (key, pathq, exact) => books.some((b) => b.covers(key, pathq, exact)),
       () => this.unread(books),
+      (host) => { for (const b of books) { const x = b.sibling(host); if (x) return x; } return undefined; },
     );
     // What is held before the repository is asked; it is asked (off the loop) only for those.
     const maybe = asked(() => false);

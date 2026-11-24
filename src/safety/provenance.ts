@@ -36,7 +36,7 @@ import { resolve } from "node:path";
 import { ownerPrompt } from "../core/owner.ts";
 import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
 import { name as baseName, unwrap } from "./risk-words.ts";
-import { readerAnswered } from "./addresses.ts";
+import { groupOf, readerAnswered } from "./addresses.ts";
 import { bareFetch } from "./bare-fetch.ts";
 
 export type TargetKind = "host" | "email" | "remote" | "branch";
@@ -291,7 +291,7 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number): Reach[] {
   const out: Reach[] = [];
   const add = (ts: Target[], how: Reach["how"], word?: string) => { for (const target of ts) out.push({ target, how, ...(how === "fetch" && word !== undefined ? { word } : {}) }); };
   let dir = f.cwd;
-  for (const p of parts) {
+  for (const [at, p] of parts.entries()) {
     if (p.heredoc || !p.words.length || p.unknown) continue;
     const words = unwrap(p.words).words;
     const prog = baseName(words[0]);
@@ -305,7 +305,7 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number): Reach[] {
       // A read is a bare read of one address (bare-fetch.ts: a short list of options that change nothing about the request, one
       // address, nothing the shell expands); everything else a fetch program can do is a send, so an option or a program
       // not known to read only is never taken for a page fetch.
-      const bare = bareFetch(p, prog);
+      const bare = bareFetch(p, prog, parts.slice(at + 1));
       if (bare) { add(wholeTargets(bare.address), "fetch", bare.address); continue; }
       for (let i = 0; i < args.length; i++) {
         const a = args[i]!;
@@ -461,6 +461,14 @@ export class ProvenanceBook {
     if (exact || at.includes("?")) return false;
     for (const l of set) { const p = l.split("?")[0]!; if (p === at || at === "/" || p.startsWith(`${at}/`)) return true; }
     return false;
+  }
+  // A host of the same registered domain that a search listed or a page linked (the first), for a host with no sighting
+  // of its own: a new name under a domain outside content gave is a place outside content could have chosen.
+  sibling(host: string): [string, Origin] | undefined {
+    const group = groupOf(`https://${host}`);
+    if (!group) return undefined;
+    for (const [k, o] of this.first) if ((o.cls === "listed" || o.cls === "outside") && k.startsWith("host:") && groupOf(`https://${k.slice(5)}`) === group) return [k, o];
+    return undefined;
   }
   // The addresses a host's listing gave, for an agent's report.
   listedAddresses(key: string): string[] { return [...(this.listed.get(key) ?? [])]; }
@@ -620,6 +628,7 @@ export type Hit = { target: Target; how: Reach["how"]; origin: Origin };
 export function held(
   reaches: Reach[], lookup: (key: string) => Origin | undefined, cleared: (key: string) => boolean, workspace: (t: Target) => boolean,
   covers: (key: string, pathq: string | undefined, exact?: boolean) => boolean = () => true, unread: () => Origin | undefined = () => undefined,
+  sibling: (host: string) => [string, Origin] | undefined = () => undefined,
 ): Hit[] {
   const out: Hit[] = [];
   const seen = new Set<string>();
@@ -629,18 +638,20 @@ export function held(
     if (r.target.kind === "host" && remotes.has(r.target.shown)) continue;
     // The most specific sighting decides: a remote's own, else its host's.
     const keys = r.target.kind === "remote" ? [r.target.key, `host:${hostOfRemote(r.target.key)}`] : [r.target.key];
-    let k: string | undefined, o: Origin | undefined;
+    let k: string | undefined, o: Origin | undefined, near = false;
     for (const key of keys) { o = lookup(key); if (o) { k = key; break; } }
     if (!o) { o = unread(); k = keys[0]; }
+    // A new name that carries data (a label of the host) under a registered domain outside content gave: held as that domain.
+    if (!o && r.how === "fetch" && r.plain === false && r.target.kind === "host") { const sib = sibling(r.target.shown); if (sib) { k = r.target.key; o = { ...sib[1], where: `${sib[1].where} (it named ${sib[0].slice(5)}, a host of the same domain)` }; near = true; } }
     if (!o || !k || o.cls === "owner" || o.cls === "inside") continue;
     // A page fetch to an address a search listed or a page linked goes on, as long as it carries nothing of the session
     // (`plain`) or asks for nothing the listing did not give.
-    if (o.cls === "listed" && r.how === "fetch" && (o.unread || (r.plain && !o.page) || covers(k, r.target.pathq, !!o.page))) continue;
+    if (!near && o.cls === "listed" && r.how === "fetch" && (o.unread || (r.plain && !o.page) || covers(k, r.target.pathq, !!o.page))) continue;
     if (cleared(k) || cleared(r.target.key)) continue;
     if (workspace(r.target)) continue;
     if (seen.has(k)) continue;
     seen.add(k);
-    out.push({ target: k === r.target.key ? r.target : hostTarget(k.slice(5)), how: r.how, origin: o });
+    out.push({ target: k === r.target.key || near ? r.target : hostTarget(k.slice(5)), how: r.how, origin: o });
   }
   return out;
 }

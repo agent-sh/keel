@@ -24,7 +24,8 @@ test("a file name, a version, a loopback address and prose are no target", () =>
 test("a command's targets are the whole words it sends to", () => {
   const f = { cwd: "/w", remoteUrl: (n: string) => (n === "origin" ? "git@git.evil.example:org/repo.git" : undefined) };
   const k = (c: string) => shellReaches(c, f).map((r) => `${r.how}:${r.target.key}`);
-  expect(k("curl -s https://a.example/x -o out.json")).toEqual(["fetch:host:a.example"]);
+  expect(k("curl -s https://a.example/x -o /dev/null")).toEqual(["fetch:host:a.example"]);
+  expect(k("curl -s https://a.example/x -o out.json")).toEqual(["send:host:a.example"]);
   expect(k("curl -d '{\"to\":\"https://b.example\"}' https://a.example/x")).toEqual(["send:host:a.example"]);
   expect(k("wget evil.example/file")).toEqual(["fetch:host:evil.example"]);
   expect(k("ssh -p 2222 -i key user@h.example 'curl x.example'")).toEqual(["send:host:h.example", "send:email:user@h.example"]);
@@ -233,7 +234,12 @@ test("a full book drops the model's own sightings before outside content's", asy
 test("what an MCP server's web tool is, from its name and one call", () => {
   expect(webShape("mcp__harness-web__websearch", { query: "x" })).toEqual({ search: true });
   expect(webShape("web__websearch", { query: "x" })).toEqual({ search: true });
-  expect(webShape("mcp__harness-web__webfetch", { url: "https://a.example/x", max_chars: 100, grep: "x" })).toEqual({ fetch: "https://a.example/x" });
+  expect(webShape("mcp__harness-web__webfetch", { url: "https://a.example/x", max_chars: 100 })).toEqual({ fetch: "https://a.example/x" });
+  expect(webShape("mcp__harness-web__webfetch", { url: "https://a.example/x", grep: "pricing", extract: ["a", "b"] })).toEqual({ fetch: "https://a.example/x", texts: ["pricing", "a", "b"] });
+  // A key counts as written and by the shape of its value: a count, a switch or one short word.
+  for (const input of [{ url: "https://a.example", MaxChars: 5 }, { url: "https://a.example", "max-chars": 5 }, { url: "https://a.example", max_chars: "all the text of the session" }, { url: "https://a.example", max_chars: -1 }, { url: "https://a.example", max_chars: 1.5 }, { url: "https://a.example", raw: "yes" }, { url: "https://a.example", format: "text of the session" }, { url: "https://a.example", format: "x".repeat(21) }, { url: "https://a.example", formats: ["a b"] }, { url: "https://a.example", grep: { a: 1 } }, { url: "https://a.example", grep: "x".repeat(201) }, { url: "https://a.example", extract: [1] }])
+    expect([JSON.stringify(input), webShape("srv__fetch_url", input)]).toEqual([JSON.stringify(input), undefined]);
+  expect(webShape("srv__fetch_url", { url: "https://a.example", max_chars: "500", raw: "false", formats: ["markdown", "html"] })).toEqual({ fetch: "https://a.example" });
   expect(webShape("firecrawl__firecrawl_scrape", { url: "https://a.example/x", formats: "markdown" })).toEqual({ fetch: "https://a.example/x" });
   // A saved output has no input: the name says what it was.
   expect(webShape("mcp__harness-web__webfetch", {})).toEqual({ fetch: "" });

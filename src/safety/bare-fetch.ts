@@ -8,8 +8,12 @@ import { name as baseName, unwrap } from "./risk-words.ts";
 
 // A word that is one address as written: no expansion, no glob, no quote left, no blank, no user name and password.
 const ADDRESS = /^(?:https?:\/\/)?[A-Za-z0-9](?:[A-Za-z0-9.-]*)(?::\d{1,5})?(?:[/?#][^\s$`()\[\]{}\\"'<>|;*!~^@]*)?$/i;
-const SAFE_WORD = /^[A-Za-z0-9_.\/+=,:%-]+$/;
 const NUMBER = /^\d{1,5}(?:\.\d{1,3})?$/;
+// What a timeout or a retry count may be: the largest a read has a reason for.
+const CAP: Record<string, number> = { "-m": 600, "--max-time": 600, "--connect-timeout": 600, "--retry": 10, "-T": 600, "--timeout": 600, "-t": 10, "--tries": 10 };
+const within = (opt: string, v: string): boolean => NUMBER.test(v) && Number(v) <= (CAP[opt] ?? 600);
+// The only places a read may write its page: the shell's standard output (`-`) and the bin.
+const SINKS = new Set(["-", "/dev/null"]);
 
 // curl: -s -S -L -I -f and any bundle of those letters, -o FILE, -m SECONDS and the long forms of the same.
 const CURL_LETTERS = /^-[sSLIf]+$/;
@@ -21,9 +25,34 @@ const WGET_LONG = new Set(["-q", "-nv", "-S", "--quiet", "--no-verbose", "--serv
 const WGET_FILE = new Set(["-O", "--output-document"]);
 const WGET_NUMBER = new Set(["-T", "--timeout", "-t", "--tries"]);
 
-// Words of the one command `p` (a part of a parsed line) when it is a bare read, else undefined.
-export function bareFetch(p: Simple, prog: string): { address: string } | undefined {
-  if (p.unknown || p.heredoc || p.nested || p.flow || p.splits || p.dyn?.length || p.inputs?.length) return undefined;
+// What a page may be piped into: filters that only print part of their input. Nothing that runs it (a shell, an
+// interpreter), writes it (`tee`, `sort -o`, `sed w`) or hands it on.
+const SED_SCRIPT = /^\d*(?:,(?:\d+|\$))?p$/;
+function filter(q: Simple): boolean {
+  if (q.unknown || q.redirects || q.heredoc || q.nested || q.flow || q.splits || q.dyn?.length || q.inputs?.length) return false;
+  const run = unwrap(q.words);
+  if (run.set.length || run.fed || run.deep || !run.words.length) return false;
+  const prog = baseName(run.words[0]!);
+  const args = run.words.slice(1);
+  if (prog === "sed") return args.length === 2 && args[0] === "-n" && SED_SCRIPT.test(args[1]!);
+  return prog === "head" || prog === "tail" || prog === "grep" || prog === "wc" || prog === "jq";
+}
+
+// Whether what the part `p` prints goes only to the shell's output or through filters: not a file, not a shell.
+function printed(p: Simple, rest: Simple[]): boolean {
+  let cur = p;
+  for (const q of rest) {
+    if (cur.sep !== "|" && cur.sep !== "|&") return true;
+    if (!filter(q)) return false;
+    cur = q;
+  }
+  return cur.sep !== "|" && cur.sep !== "|&";
+}
+
+// Words of the one command `p` (a part of a parsed line, `rest` the parts after it) when it is a bare read, else undefined.
+export function bareFetch(p: Simple, prog: string, rest: Simple[] = []): { address: string } | undefined {
+  if (!printed(p, rest)) return undefined;
+  if (p.unknown || p.redirects || p.heredoc || p.nested || p.flow || p.splits || p.dyn?.length || p.inputs?.length) return undefined;
   const run = unwrap(p.words);
   if (run.set.length || run.fed || run.deep) return undefined;
   const words = run.words;
@@ -35,21 +64,21 @@ export function bareFetch(p: Simple, prog: string): { address: string } | undefi
     if (a.startsWith("-") && a !== "-") {
       if (prog === "curl") {
         if (CURL_LETTERS.test(a) || CURL_LONG.has(a)) continue;
-        if (CURL_FILE.has(a)) { const v = args[++i]; if (v === undefined || !SAFE_WORD.test(v) || v.startsWith("-")) return undefined; continue; }
-        if (CURL_NUMBER.has(a)) { const v = args[++i]; if (v === undefined || !NUMBER.test(v)) return undefined; continue; }
+        if (CURL_FILE.has(a)) { const v = args[++i]; if (v === undefined || !SINKS.has(v)) return undefined; continue; }
+        if (CURL_NUMBER.has(a)) { const v = args[++i]; if (v === undefined || !within(a, v)) return undefined; continue; }
         return undefined;
       }
       if (WGET_LONG.has(a)) continue;
       const out = /^-(?:[qS]*)O(.*)$/.exec(a);
       if (out && !a.startsWith("--")) {
         if (out[1] === "-") continue;
-        if (out[1]) { if (!SAFE_WORD.test(out[1]) || out[1].startsWith("-")) return undefined; continue; }
+        if (out[1]) { if (!SINKS.has(out[1])) return undefined; continue; }
         const v = args[++i];
-        if (v === undefined || (v !== "-" && (!SAFE_WORD.test(v) || v.startsWith("-")))) return undefined;
+        if (v === undefined || !SINKS.has(v)) return undefined;
         continue;
       }
-      if (WGET_FILE.has(a)) { const v = args[++i]; if (v === undefined || (v !== "-" && !SAFE_WORD.test(v))) return undefined; continue; }
-      if (WGET_NUMBER.has(a)) { const v = args[++i]; if (v === undefined || !NUMBER.test(v)) return undefined; continue; }
+      if (WGET_FILE.has(a)) { const v = args[++i]; if (v === undefined || !SINKS.has(v)) return undefined; continue; }
+      if (WGET_NUMBER.has(a)) { const v = args[++i]; if (v === undefined || !within(a, v)) return undefined; continue; }
       return undefined;
     }
     if (address !== undefined || !ADDRESS.test(a) || a.length > 2048) return undefined;

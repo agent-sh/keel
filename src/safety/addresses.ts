@@ -91,6 +91,11 @@ const windowIn = (f: string, inSession: (folded: string) => boolean): boolean =>
   return false;
 };
 
+// Whether a text the model wrote into a call (a pattern to look for in a page) copies text of the session: a secret, or a
+// run of the session's own text as long as a window, or a token shaped like encoded data (a key, an id).
+export const textCarries = (text: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean): boolean =>
+  secret(text) || secret(decoded(text)) || windowIn(fold(decoded(text)), inSession) || text.split(/[^A-Za-z0-9]+/).some((t) => encodedShape(t, SHAPE_MIN_LABEL) !== null);
+
 // Text read from a token as a form of encoding: hex, base64, base64url or base32 that holds
 // readable UTF-8 (no control characters). Nothing else is read as text.
 const utf8 = new TextDecoder("utf-8", { fatal: true });
