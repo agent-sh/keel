@@ -567,6 +567,24 @@ const rawStart = (s: Simple) => s.words.slice(countAssign(s)).map((w) => w.raw).
 const nthOf = (cmds: Simple[], i: number) => cmds.slice(0, i).filter((c) => rawStart(c) === rawStart(cmds[i]!)).length;
 const countAssign = (s: Simple) => { let k = 0; while (k < s.words.length && ASSIGN.test(s.words[k]!.raw)) k++; return k; };
 
+const SETUP = new Set(["cd", "export", "echo", "printf", "true", ":"]);
+// The program that sets a command's exit status, with its words (assignments left out), when that is
+// known: the last simple command of the line, at the top level, not behind an `&&` that could carry another status, not in the background, with no
+// control words or open quotes in the line.
+export function lastCommand(command: string): string[] | undefined {
+  const all = simples(tokens(command));
+  const last = all.at(-1);
+  if (!last || last.cut || last.groupRedir || last.path.length || last.group || (last.sep !== "" && last.sep !== ";")) return undefined;
+  if (all.some((s) => s.cut || (s.words.length && STOPS.has(s.words[0]!.raw)))) return undefined;
+  // Behind `&&` the status may be an earlier command's: only setup that says what failed in its own output.
+  for (let i = all.length - 2; i >= 0 && all[i]!.sep === "&&"; i--) {
+    const w = all[i]!.words.slice(countAssign(all[i]!))[0]?.raw;
+    if (w !== undefined && !SETUP.has(w)) return undefined;
+  }
+  const words = last.words.slice(countAssign(last)).map((w) => w.text);
+  return words.length ? words : undefined;
+}
+
 // The first check `command` runs, or nothing.
 export function matchCommand(command: string, named: Pick<Named, "checks" | "wait" | "env">, where: Where): Match | undefined {
   return matchAll(command, named, where)[0];

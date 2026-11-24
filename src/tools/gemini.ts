@@ -9,6 +9,7 @@ import { notFound } from "./missing.ts";
 import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, lineRange, mtime, mtimeOf, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
+import { noMatch } from "./no-match.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
@@ -56,7 +57,7 @@ const run_shell_command: Tool = {
     const lines = [`Command: ${input.command}`, `Directory: ${r.job.cwd}`, `Output: ${out}`, `Exit Code: ${r.exitCode ?? "(none)"}`];
     if (r.signal) lines.push(`Signal: ${r.signal}`);
     if (r.cwdNote) lines.push(r.cwdNote);
-    return { content: lines.join("\n"), is_error: r.exitCode !== 0 || !!r.signal };
+    return { content: lines.join("\n"), is_error: (r.exitCode !== 0 && !noMatch(String(input.command ?? ""), r.exitCode)) || !!r.signal };
   },
 };
 

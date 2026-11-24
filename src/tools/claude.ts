@@ -5,6 +5,7 @@ import { heldWrite } from "../core/store-files.ts";
 import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, mtime, mtimeOf, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
+import { noMatch } from "./no-match.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
@@ -13,8 +14,6 @@ import { fetched, fetchFor, webSearch } from "./web.ts";
 const INLINE_OK = 30_000;
 const INLINE_FAIL = 10_000;
 const PREVIEW = 2_000;
-// Exit 1 means "nothing found" or "differs" for these, not a failure.
-const BENIGN_1 = /^\s*(grep|rg|egrep|fgrep|find|diff|test|\[|git\s+(diff|grep))\b/;
 
 const obj = (properties: Record<string, unknown>, required: string[]) =>
   ({ type: "object", properties, required, additionalProperties: false });
@@ -68,7 +67,7 @@ const Bash: Tool = {
       return ok(`${head} Output is being written to: ${r.job.log}${cwd}${sofar}`);
     }
     const out = r.output.trimEnd();
-    const failed = r.signal ? true : r.exitCode !== 0 && !(r.exitCode === 1 && BENIGN_1.test(command));
+    const failed = r.signal ? true : r.exitCode !== 0 && !noMatch(command, r.exitCode);
     const note = r.cwdNote ? `\n${r.cwdNote}` : "";
     if (failed) {
       const why = r.job.stopReason ? `Command ${r.job.stopReason}` : r.signal ? `Killed by ${r.signal}` : `Exit code ${r.exitCode}`;
@@ -77,7 +76,8 @@ const Bash: Tool = {
     if (out.length > INLINE_OK) {
       return ok(`Output too large (${(out.length / 1024).toFixed(1)}KB). Full output saved to: ${r.job.log}\n\nPreview (first ${PREVIEW / 1000}KB):\n${out.slice(0, PREVIEW)}\n...${note}`);
     }
-    return ok((out || "(no output)") + note);
+    // (Exit 1 of a search or a compare is no match: not a failure, and the status stays in the result.)
+    return ok((out || "(no output)") + (r.exitCode === 1 ? "\nExit code 1 (no match)" : "") + note);
   },
 };
 
