@@ -1,7 +1,16 @@
 // The pure rules of what memory adds to a turn and how its use is counted.
-import { expect, test } from "bun:test";
-import { asksMemory, factOf, handlesOf, usedBy } from "./memory-meter.ts";
+import { afterAll, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { Store } from "../core/store.ts";
+import { allHooks } from "../engine/hooks.ts";
+import { asksMemory, factOf, handlesOf, memoryMeter, recallFell, FELL_DAY_MS, FELL_RECENT_MS } from "./memory-meter.ts";
+import { usedBy } from "./memory-meter.ts";
 import { fitMemory, memoryBlock, shownLines } from "./tacit.ts";
+
+// The meter registers a turn hook for its store: process-wide, so taken off after this file.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 test("a block adds the lines the context lacks, whole, within its cap; what does not fit is owed, never dropped", () => {
   const block = "# store: facts matching this request\n- alpha-rule: Keep the first thing\n- beta-rule: Keep the second thing\n- gamma-rule: Keep the third thing\nOpen one with its name.";
@@ -104,4 +113,44 @@ test("three common words in a row say nothing; a tool call that touches what a f
   // Two common words with a slash between them are no path.
   expect(handlesOf("Version 1.2 is out, e.g. today. Use it and/or wait, his/her call.")).toEqual([]);
   expect(handlesOf("It lives under src/core and in docs/api.")).toEqual(["src/core", "docs/api"]);
+});
+
+test("a path's recall fell when its share of answers with facts in the last two hours is half of its day's or less", () => {
+  const w = (answered: number, hits: number) => ({ answered, hits });
+  // 40 of 160 in the day, none of 43 now: fell. The same share, or a little lower, did not.
+  expect(recallFell("store_prompt", w(43, 0), w(160, 40))).toMatchObject({ path: "store_prompt" });
+  expect(recallFell("store_prompt", w(40, 5), w(160, 40))).toMatchObject({ path: "store_prompt" });
+  expect(recallFell("store_prompt", w(40, 6), w(160, 40))).toBeNull();
+  expect(recallFell("store_prompt", w(40, 10), w(160, 40))).toBeNull();
+  // Too few answers to say: either window, or a day with too few hits to fall from.
+  expect(recallFell("store_prompt", w(19, 0), w(160, 40))).toBeNull();
+  expect(recallFell("store_prompt", w(43, 0), w(19, 19))).toBeNull();
+  expect(recallFell("store_tool", w(43, 0), w(60_000, 9))).toBeNull();
+});
+
+test("the meter reads each path against its own day, now and not at the range the panel shows", () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "memory-fell-"));
+  const store = new Store(dir);
+  try {
+    const meter = memoryMeter(store);
+    const now = Date.now();
+    const put = (path: string, outcome: string, at: number, n: number) => {
+      for (let i = 0; i < n; i++) store.db.query("INSERT INTO telemetry_memory (session_id, ts, path, outcome) VALUES ('s', ?, ?, ?)").run(at, path, outcome);
+    };
+    const day = now - FELL_RECENT_MS - 3_600_000, recent = now - 60_000;
+    // The prompt path: a quarter of its day's answers gave facts, none of the last two hours' did (not asked ones do not count).
+    put("store_prompt", "added", day, 40); put("store_prompt", "empty", day, 120); put("store_prompt", "skipped", day, 500);
+    put("store_prompt", "empty", recent, 43); put("store_prompt", "skipped", recent, 60);
+    // The start path held its share; the tool path answers too rarely to fall.
+    put("store_start", "added", day, 30); put("store_start", "empty", day, 10); put("store_start", "added", recent, 25); put("store_start", "empty", recent, 8);
+    put("store_tool", "added", day, 2); put("store_tool", "empty", day, 3000); put("store_tool", "empty", recent, 900);
+    // What is older than the day does not count.
+    put("store_start", "empty", now - FELL_RECENT_MS - FELL_DAY_MS - 60_000, 1000);
+    const fell = meter.fell(now);
+    expect(fell.map((f) => f.path)).toEqual(["store_prompt"]);
+    expect(fell[0]).toMatchObject({ recent: { answered: 43, hits: 0 }, day: { answered: 160, hits: 40 } });
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

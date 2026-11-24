@@ -29,7 +29,9 @@ type Row = {
 };
 // `store`: how the memory store answers right now (the kinds of call that are out, or often late).
 type Kinds = { ask: boolean; tool: boolean };
-type Report = { total: Row; paths: (Row & { path: string })[]; store?: { out: Kinds; degraded: Kinds } };
+// `fell`: paths whose recall in the last two hours is half of their day's or less (answered asks, and those with facts).
+type Fell = { path: string; recent: { answered: number; hits: number }; day: { answered: number; hits: number } };
+type Report = { total: Row; paths: (Row & { path: string })[]; store?: { out: Kinds; degraded: Kinds }; fell?: Fell[] };
 export type MemoryTab = "usage" | "given" | "search" | "unused";
 
 // A path's name: "Memory store, with a prompt", and on a phone "With a prompt".
@@ -100,6 +102,9 @@ function UsageTable({ since }: { since: number }) {
       />
       <p className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="memory-notes">
         Named in reply is an estimate: a recall counts when the reply or a tool call of its turn spells the name of one of its facts, or three of its words in a row. It reads low: a fact can shape a reply without being named, and standing rules rarely are. A fact the context already holds is not added again; one its block has no room for follows with the next step.
+        {r.fell?.map((f) => (
+          <span key={f.path} className="text-warn" data-testid="memory-fell"> Recall fell for {(PATH[f.path] ?? f.path).replace(/^./, (c) => c.toLowerCase())}: facts came with {f.recent.hits} of its last {f.recent.answered} answers in two hours, against {f.day.hits} of {f.day.answered} in the day before.</span>
+        ))}
         {out > 0 && <span className="text-danger" data-testid="memory-out"> The store did not answer {plural(out, "time")} ({r.total.timeouts} timed out, {r.total.failures} failed): those turns went on without it.</span>}
         {down && <span className="text-danger" data-testid="memory-down"> Right now it is not answering {down} in time.</span>}
         {slow && !down && <span className="text-warn" data-testid="memory-slow"> Right now it answers {slow} slowly: a quarter or more of its last 20 answers came later than a turn waits.</span>}

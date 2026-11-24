@@ -71,7 +71,11 @@ export const integrationRoutes: RouteModule = (deps) => {
         // late), and the kinds of tool call it has long had nothing for, asked only now and then
         // (`quiet`; `passed`: calls of theirs not asked since the daemon started).
         const { out, degraded, quiet, tools } = tacit.stats();
-        return Response.json({ ...(await memoryMeter(store).reportOn(readsOf(store), { since, until, session })), store: { out, degraded, quiet, passed: tools.quiet_skipped } }, { headers: { "cache-control": "no-store" } });
+        // `fell`: the paths whose recall in the last two hours is half of their day's or less
+        // (memory-meter.ts recallFell), always against now, whatever range the panel shows.
+        const meter = memoryMeter(store), reads = readsOf(store);
+        const [report, fell] = await Promise.all([meter.reportOn(reads, { since, until, session }), session ? [] : meter.fellOn(reads)]);
+        return Response.json({ ...report, fell, store: { out, degraded, quiet, passed: tools.quiet_skipped } }, { headers: { "cache-control": "no-store" } });
       },
     },
     "/api/momentum": { GET: async () => json(await momentumReport()) },

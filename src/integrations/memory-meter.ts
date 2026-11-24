@@ -139,6 +139,26 @@ type Open = { row: number; facts: Fact[]; ts: number; given: number[] };
 export type GivenBy = { hook: string; call?: string; ref?: string };
 export type MemoryFilter = { since?: number; until?: number; session?: string };
 
+// Whether a path's recall fell: the share of its answered asks that gave
+// facts (added, or all held already) in the last RECENT_MS, against the same
+// share over the DAY_MS before that. It fell when the recent share is half
+// of the day's or less. A path asked or answered rarely cannot be said to
+// fall: both windows need FELL_MIN_ASKS answered asks, and the day FELL_MIN_HITS
+// of them with facts (ten hits is the least where a halving is more than a
+// couple of misses in a row). A change of the store or of the store's hook
+// reads here the hour it lands, whatever its cause (the first one this was
+// written for: the store stopped answering the prompts of agents).
+export const FELL_RECENT_MS = 2 * 3_600_000;
+export const FELL_DAY_MS = 24 * 3_600_000;
+export const FELL_MIN_ASKS = 20;
+export const FELL_MIN_HITS = 10;
+export type Window = { answered: number; hits: number };
+export type Fell = { path: MemoryPath; recent: Window; day: Window };
+export function recallFell(path: MemoryPath, recent: Window, day: Window): Fell | null {
+  if (recent.answered < FELL_MIN_ASKS || day.answered < FELL_MIN_ASKS || day.hits < FELL_MIN_HITS) return null;
+  return recent.hits / recent.answered <= day.hits / day.answered / 2 ? { path, recent, day } : null;
+}
+
 export class MemoryMeter {
   // Recalls of each session's running turn, until it ends.
   private open = new Map<string, Open[]>();
@@ -305,6 +325,30 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
       since_ms: f.since ?? null, until_ms: f.until ?? Date.now(), estimate: true, total,
       paths: MEMORY_PATHS.flatMap((path) => paths.filter((p) => p.path === path)),
     };
+  }
+  // The recall of each path against its own day (recallFell), at `now`. Two windows, one scan of the day.
+  private fellSql(now: number) {
+    const hit = "outcome IN ('added', 'repeat')", answered = "outcome IN ('added', 'repeat', 'empty')";
+    const recentFrom = now - FELL_RECENT_MS;
+    const sql = `SELECT path, ts >= ? AS recent, COALESCE(SUM(${answered}), 0) AS answered, COALESCE(SUM(${hit}), 0) AS hits
+      FROM telemetry_memory WHERE ts >= ? AND ts < ? AND path IN ('store_start', 'store_prompt', 'store_tool') GROUP BY path, recent`;
+    return { sql, args: [recentFrom, recentFrom - FELL_DAY_MS, now] };
+  }
+  private fellOf(rows: { path: MemoryPath; recent: number; answered: number; hits: number }[]): Fell[] {
+    const none = (): Window => ({ answered: 0, hits: 0 });
+    return MEMORY_PATHS.flatMap((path) => {
+      const at = (recent: number) => rows.find((r) => r.path === path && r.recent === recent) ?? none();
+      const fell = recallFell(path, at(1), at(0));
+      return fell ? [fell] : [];
+    });
+  }
+  fell(now = Date.now()): Fell[] {
+    const q = this.fellSql(now);
+    return this.fellOf(this.store.db.query<any, any[]>(q.sql).all(...q.args));
+  }
+  async fellOn(reads: Reads, now = Date.now()): Promise<Fell[]> {
+    const q = this.fellSql(now);
+    return this.fellOf(await reads.sql<any>(q.sql, q.args));
   }
   report(f: MemoryFilter = {}) {
     const q = this.reportSql(f);

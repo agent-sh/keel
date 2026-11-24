@@ -149,3 +149,23 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   expect(mine).toBeTruthy();
   await request.patch(`/api/errors/${mine!.id}`, { data: { resolved: true } });
 });
+
+// A path whose recall halved against its own day says so under the table. The numbers are the
+// daemon's (a window's answers cannot be back-dated in a running daemon), so the report is read
+// as it is and given a `fell` entry, as the daemon gives one.
+test("memory usage: a path whose recall fell against its day says so", async ({ page }) => {
+  await page.route("**/api/telemetry/memory?*", async (route) => {
+    const r = await (await route.fetch()).json();
+    const prompt = r.paths.find((p: any) => p.path === "store_prompt") ?? r.total;
+    r.paths = r.paths.length ? r.paths : [{ ...prompt, path: "store_prompt" }];
+    r.fell = [{ path: "store_prompt", recent: { answered: 43, hits: 0 }, day: { answered: 160, hits: 40 } }];
+    await route.fulfill({ json: r });
+  });
+  await page.goto("/settings/usage");
+  await page.getByTestId("usage-panel").getByRole("radio", { name: "Memory" }).click();
+  const fell = page.getByTestId("memory-fell");
+  await expect(fell).toHaveCount(1);
+  await expect(fell).toContainText("Recall fell for memory store, with a prompt: facts came with 0 of its last 43 answers in two hours, against 40 of 160 in the day before.");
+  await fell.scrollIntoViewIfNeeded();
+  await shoot(page, "memory-usage-05-recall-fell");
+});
