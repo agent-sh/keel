@@ -597,7 +597,7 @@ export const automationRoutes: RouteModule = (deps) => {
         if (!String(b.message ?? "").trim()) return bad("message cannot be empty");
         // `client_id`: the page's name for this send; the same one again sends nothing.
         const key = typeof b.client_id === "string" && b.client_id.trim() ? `page:${b.client_id.trim().slice(0, 80)}` : undefined;
-        const r = await agents.send(a.id, String(b.message), !!b.interrupt, key);
+        const r = await agents.send(a.id, String(b.message), !!b.interrupt, key, undefined, undefined, undefined, true);
         return json({ agent: r.agent, waits: r.waits, ...(r.held ? { held: true } : {}), ...(r.duplicate ? { replayed: true } : {}), ...(r.start ? { start: r.start } : {}) });
       }),
     },

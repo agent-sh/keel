@@ -861,7 +861,9 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     if (act && !f.byOwner()) return { deny: unstartedWhy(act) };
   }
   const worst = f.mode === "read-only" ? null : parts ? neverAllowed(parts, cwd, home) : neverAllowedText(command, home);
-  const shellRules = f.rules.filter((r) => r.kind === "shell");
+  // A standing rule is the owner's word for commands that change things: a mode that writes nothing runs none of it (a stored
+  // `rm *` does not let `rm -rf build` run in Read only, nor `pnpm dlx *` any package).
+  const shellRules = writesNothing(f.mode) ? [] : f.rules.filter((r) => r.kind === "shell");
   // A standing rule of the owner's that names this command and does not cover it: the card says so.
   // `why`: the reason, as "deletes ..." or, for another machine, "on HOST, deletes ...".
   const uncovered = (d: Decision, why: string): Decision => {

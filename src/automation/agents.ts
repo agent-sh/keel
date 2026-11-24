@@ -2597,7 +2597,8 @@ export type MessageSent = { agent: AgentRecord; waits: boolean; held?: boolean; 
 // message either way). Refused before anything is sent when it cannot be one.
 // `harness`: the message is Keel's own (a rebase task of the landing queue), sent as it is: it says
 // who it is from, and it releases no hold.
-export async function send(id: string, message: string, interrupt = false, key?: string, from?: string, budgetIn?: unknown, harness?: string): Promise<MessageSent> {
+// `ownerSays`: only the owner's own routes give it (the agent's card, a review's fix prompt).
+export async function send(id: string, message: string, interrupt = false, key?: string, from?: string, budgetIn?: unknown, harness?: string, ownerSays = false): Promise<MessageSent> {
   const budget = parseBudget(budgetIn);
   // Another message is making this finished agent ready (its slot held, its
   // worktree made again): this one waits for that, then steers the agent it
@@ -2605,7 +2606,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
   const ahead = restarting.get(id);
   if (ahead) {
     await ahead;
-    return send(id, message, interrupt, key, from, budget, harness);
+    return send(id, message, interrupt, key, from, budget, harness, ownerSays);
   }
   let a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
@@ -2623,7 +2624,8 @@ export async function send(id: string, message: string, interrupt = false, key?:
     : peer ? `Message from agent "${attr(peer.title)}" (${peer.id}), another agent of your session's tree:\n${message}`
     : `Message from the session that started you:\n${message}`;
   // A message of its parent's or a peer's carries the owner's word when the sender's turn does (src/engine/turn.ts, byOwner).
-  const owned = !harness && byOwner(peer ? peer.session_id : a.parent_id);
+  // `ownerSays`: the owner's own message, typed on the agent's card or sent with a review's fix: it is theirs whatever the parent's turn is.
+  const owned = !harness && (ownerSays || byOwner(peer ? peer.session_id : a.parent_id));
   const meta = harness ? { kind: harness, agent_id: id } : { kind: "steer", agent_id: id, ...(peer ? { from_agent: peer.id } : {}), ...(owned ? { owned: true as const } : {}) };
   const opts = { key, fp: key ? Bun.hash(message).toString(36) : undefined, releases: peer || harness ? [] : OWN_HOLDS };
   const sent = (r: Sent): MessageSent => ({ agent: get(id)!, waits: !!r.queued, ...(r.held ? { held: true, held_by: engine.heldBy(a!.session_id) ?? null } : {}), ...(r.duplicate ? { duplicate: true } : {}) });
@@ -2668,7 +2670,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
     if (ending) {
       free();
       await ending;
-      return send(id, message, interrupt, key, from, budget, harness);
+      return send(id, message, interrupt, key, from, budget, harness, ownerSays);
     }
     a = get(id); // placement may have yielded while this agent finished
     if (!a) throw new Error(`no agent ${id}`);

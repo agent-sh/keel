@@ -135,6 +135,10 @@ test("an agent's task and its parent's messages carry the owner's word only when
     await agents.send(unowned.id, "and this");
     const steers = store.events(unowned.session_id).filter((e) => e.kind === "user" && e.data.kind === "steer").map((e) => e.data.owned);
     expect(steers).toEqual([undefined, true]);
+    // The owner's own message (the agent's card, a review's fix) is theirs while the parent's turn is nobody's.
+    owners.delete(parent.id);
+    await agents.send(unowned.id, "from the card", false, undefined, undefined, undefined, undefined, true);
+    expect(store.events(unowned.session_id).filter((e) => e.kind === "user" && e.data.kind === "steer").map((e) => e.data.owned)).toEqual([undefined, true, true]);
     end(unowned, "end_turn");
     end(owned, "end_turn");
     await settled();

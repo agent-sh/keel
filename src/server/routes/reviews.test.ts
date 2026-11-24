@@ -59,7 +59,8 @@ test("Fix on a finding starts after a Stop, behind what the owner must place fir
     expect(engine.isHeld(s.id)).toBe(false);
     expect(store.queue(s.id)).toEqual([]);
     const prompts = store.events(s.id, end.seq).filter((e) => e.kind === "user");
-    expect(prompts.map((e) => e.data)).toMatchObject([{ kind: "review_fix", review_id: "r1", origin: "queued" }]);
+    expect(prompts.map((e) => e.data)).toMatchObject([{ kind: "review_fix", review_id: "r1", origin: "queued", owned: true }]);
+    // (owned: the owner's own action, so the turn it starts holds their word; src/safety/unstarted.ts)
     expect(String(prompts[0]!.data.text)).toContain("finding 1");
 
     // Stopped with a prompt queued on a branch no longer shown: the fix is

@@ -199,9 +199,9 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         const next = save({ ...r, findings: r.findings.map((f) => (picked.has(f.id) ? { ...f, state, ...(sentTo ? { sent_to: sentTo } : {}) } : f)) });
         if (b.action === "fix") {
           try {
-            if (agent) await agents.send(agent.id, fixPrompt(r, chosen));
+            if (agent) await agents.send(agent.id, fixPrompt(r, chosen), false, undefined, undefined, undefined, undefined, true);
             else {
-              engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id } });
+              engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id, owned: true } });
               // Fix is the owner's own action: after a Stop it releases the held
               // queue, as a prompt they type does. A prompt queued on another
               // branch still waits for them to say where it goes.

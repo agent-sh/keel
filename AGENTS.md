@@ -368,6 +368,16 @@ under `~/.cache/keel-work/bun/research/`.
   the call too, with what was not read. The text is scanned in slices with the loop free between. A hit holds the call
   in every mode, full auto included (as the provenance rule does): the owner's card quotes it and allows once, an agent
   is refused with the same words.
+- A turn nobody started (a loop run, a wake, a monitor's batch, a watch, an agent's report to an idle
+  parent, a goal's later turn) merges, approves, turns on auto-merge, force-pushes and deletes a remote
+  branch or tag nothing, in every mode (`src/safety/unstarted.ts`; the owner's message to the session lifts
+  it: `Engine.byOwner`). A turn started on the owner's word is a prompt they sent, or a message from their
+  agent's card or a review's fix; an agent's task and its parent's or a peer's messages carry that word only
+  when the sender's turn held it. This is a guard against an unattended turn doing those acts by their usual
+  commands (gh, glab, git, a request to a forge's merge or approve route from any program, a gh alias or a git
+  alias made to run them), not a sandbox: a program that reaches the forge by a route it does not know, or a
+  script on disk, is beyond it. `--force-with-lease` and the delete of a branch are refused there by design,
+  an agent's own branch included. A stored shell rule covers nothing in Read only and Plan.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files
