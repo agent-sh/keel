@@ -2,7 +2,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { Message, StoredEvent } from "../core/types.ts";
-import { cutOf, noDearer, RESTART_CUT, stalledContinuations, toMessages, unanswered, withPending } from "./turn.ts";
+import { cutOf, followUpMark, noDearer, RESTART_CUT, stalledContinuations, toMessages, unanswered, withPending } from "./turn.ts";
 import { checkpointAt, keptMessages } from "./compact.ts";
 import { allHooks } from "./hooks.ts";
 
@@ -1345,4 +1345,14 @@ test("instruction files: a cut inside or after an imported file names the line o
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a restart between a stored follow-up and its first step keeps the follow-up's mark", () => {
+  const prompt = ev("fu1", null, "user", { text: "Go on with the second part.", origin: "owner", follow_up: "carry" });
+  const start = ev("fu2", "fu1", "turn_start", {});
+  const cut = ev("fu2b", "fu2", "turn_end", { reason: "restart" });
+  const restart = ev("fu3", "fu2b", "user", { text: "[harness] The daemon restarted.", origin: "restart" });
+  expect(followUpMark([prompt, start])).toEqual({ way: "carry", focus: "Go on with the second part." });
+  expect(followUpMark([prompt, start, cut, restart, ev("fu3b", "fu3", "turn_start", {})])).toEqual({ way: "carry", focus: "Go on with the second part." });
+  expect(followUpMark([prompt, start, ev("fu4", "fu3", "assistant", { blocks: [] })])).toBeUndefined();
 });

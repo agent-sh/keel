@@ -158,4 +158,18 @@ describe("the pieces of the price", () => {
     expect(t).toContain("Head abc1234. All checks pass.");
     expect(capsuleText({ title: "x", report: "  ", tasks: 0 })).toContain("(It wrote no report.)");
   });
+
+  test("a capsule's story carries no framing of the capsule before it: six follow-ups hold one intro", () => {
+    let story: string | undefined;
+    let text = "";
+    for (let i = 1; i <= 6; i++) {
+      text = capsuleText({ title: "Fix the gate", report: `Report ${i}.`, tasks: i - 1, before: story });
+      story = storyOf(`## Statements\n- none\n\n## Story\n${text}`);
+    }
+    expect(text.match(/You are agent/g)).toHaveLength(1);
+    expect(text.match(/Your reports of the work so far/g)).toHaveLength(1);
+    expect(text.match(/What your context held before/g)).toHaveLength(1);
+    for (let i = 1; i <= 6; i++) expect(text).toContain(`Report ${i}.`);
+    expect(text.length).toBeLessThan(1_500);
+  });
 });

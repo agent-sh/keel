@@ -110,7 +110,10 @@ export function followUpMark(line: readonly StoredEvent[]): { way: "carry" | "su
   for (let i = line.length - 1; i >= 0; i--) {
     const e = line[i]!;
     if (e.kind === "turn_start" || e.kind === "note") continue;
+    // A turn a restart cut, and the message that continues it, are not the opener.
+    if (e.kind === "turn_end" && e.data.reason === "restart") continue;
     if (e.kind !== "user") return undefined;
+    if (e.data.origin === "restart") continue;
     const w = e.data.follow_up;
     if (isWay(w) && w !== "capsule") return { way: w, focus: String(e.data.text ?? "").slice(0, 4_000) };
   }

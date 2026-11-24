@@ -175,9 +175,21 @@ export function capsuleText(o: { title: string; report: string; tasks: number; b
 // The story part of a checkpoint's summary: its text after the "## Story"
 // heading settle() writes (src/engine/compact.ts), else the whole text. The
 // statements before it are carried by the next checkpoint on their own.
+// A capsule's own text is a summary too (a follow-up that started fresh twice):
+// its framing is left out, its intro and the two headings capsuleText writes,
+// so the next capsule does not carry one more intro for each follow-up.
 export function storyOf(summary: string): string {
   const at = summary.search(/^## Story$/m);
-  return (at < 0 ? summary : summary.slice(at).replace(/^## Story\n?/, "")).trim();
+  const text = (at < 0 ? summary : summary.slice(at).replace(/^## Story\n?/, "")).trim();
+  return unframe(text);
+}
+
+const CAPSULE_INTRO = /^You are agent "[^\n]*", taking up new work after you reported[^\n]*\n+/;
+const CAPSULE_HEADS = /^(What your context held before that work, from its last summary \(as it was written then\):|Your reports of the work so far \(your final messages, as the session that started you got them; the newest first\):)\n/gm;
+
+function unframe(text: string): string {
+  if (!CAPSULE_INTRO.test(text)) return text;
+  return text.replace(CAPSULE_INTRO, "").replace(CAPSULE_HEADS, "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 // The steps of the task the agent finished and what each added to its
