@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS check_runs (
   log TEXT,
   from_run INTEGER,
   inputs TEXT,
-  top TEXT
+  top TEXT,
+  note TEXT
 );
 CREATE TABLE IF NOT EXISTS check_pending (call_id TEXT PRIMARY KEY, data TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS check_anyway (session_id TEXT NOT NULL, key TEXT NOT NULL, tree TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (session_id, key, tree)) WITHOUT ROWID;
@@ -77,7 +78,7 @@ export function bindLedger(s: Store) {
   store = s;
   s.migrate(SCHEMA);
   // (A table of an earlier build of this module.)
-  for (const c of ["inputs", "top"]) if (!s.columnExists("check_runs", c)) s.migrate(`ALTER TABLE check_runs ADD COLUMN ${c} TEXT`);
+  for (const c of ["inputs", "top", "note"]) if (!s.columnExists("check_runs", c)) s.migrate(`ALTER TABLE check_runs ADD COLUMN ${c} TEXT`);
   // What a restart left owed is kept a week; a mark to run anyway, a day.
   s.db.query("DELETE FROM check_pending WHERE created < ?").run(Date.now() - 7 * 86400_000);
   s.db.query("DELETE FROM check_anyway WHERE created < ?").run(Date.now() - 86400_000);
@@ -277,13 +278,14 @@ export async function baseOf(repo: Repo): Promise<{ name: string; history: { com
 
 const COLS = "id, name, command, dir, tree, head, session_id, by, result, exit, pass, fail, started, ended, log, from_run, inputs, top";
 let writes = 0;
-export function record(r: Omit<Run, "id" | "inputs" | "top"> & { repo: string; call_id?: string | null; inputs?: string | null; top?: string | null }): Run | undefined {
+// `note`: why a run is not a result (the first line of what the copy lacked): it is "stopped", said on the timeline.
+export function record(r: Omit<Run, "id" | "inputs" | "top"> & { repo: string; call_id?: string | null; inputs?: string | null; top?: string | null; note?: string | null }): Run | undefined {
   const d = db();
   if (!d) return undefined;
   const row = d.query<{ id: number }, any[]>(
-    `INSERT INTO check_runs (key, name, command, dir, repo, tree, head, session_id, call_id, by, result, exit, pass, fail, started, ended, log, from_run, inputs, top)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-  ).get(keyOf(r.dir, r.command), r.name, r.command, r.dir, r.repo, r.tree, r.head, r.session_id, r.call_id ?? null, r.by, r.result, r.exit, r.pass, r.fail, r.started, r.ended, r.log, r.from_run, r.inputs ?? null, r.top ?? null);
+    `INSERT INTO check_runs (key, name, command, dir, repo, tree, head, session_id, call_id, by, result, exit, pass, fail, started, ended, log, from_run, inputs, top, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  ).get(keyOf(r.dir, r.command), r.name, r.command, r.dir, r.repo, r.tree, r.head, r.session_id, r.call_id ?? null, r.by, r.result, r.exit, r.pass, r.fail, r.started, r.ended, r.log, r.from_run, r.inputs ?? null, r.top ?? null, r.note ?? null);
   // The bound, checked every hundred writes: the oldest rows past it go.
   if (++writes % 100 === 0) d.query("DELETE FROM check_runs WHERE id <= (SELECT MAX(id) FROM check_runs) - ?").run(keep);
   return row ? ({ id: row.id, ...r, inputs: r.inputs ?? null, top: r.top ?? null } as Run) : undefined;

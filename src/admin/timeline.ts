@@ -505,7 +505,7 @@ export class Timeline {
     if (!this.table("check_runs")) return [];
     // (A row's id is "c:<id>", compared as the other rows' ids are: as text.)
     return this.store.db.query<CheckIn, [string, number, number, string, number]>(
-      `SELECT id, ended AS ts, name, result, pass, fail, tree, started, by, call_id FROM check_runs INDEXED BY check_runs_session
+      `SELECT id, ended AS ts, name, result, pass, fail, tree, started, by, call_id, note FROM check_runs INDEXED BY check_runs_session
        WHERE session_id = ? AND ended >= ? AND (ended, 'c:' || id) < (?, ?) ORDER BY ended DESC, 'c:' || id DESC LIMIT ?`).all(sessionId, since, at.ts, at.id, n).map(checkRow);
   }
 

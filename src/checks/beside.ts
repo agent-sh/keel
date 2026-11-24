@@ -28,10 +28,11 @@ export const WINDOW_MS = 30_000;
 // the failure it was told last (a fingerprint), cleared by a green run. `carry`:
 // the test files of the last red run, run again with the next selection until
 // they pass (a later step's change may not touch them). `owed`: a red not told
-// yet, kept while the agent waits on a wait of its own (see toWhom).
+// yet, kept while the agent waits on a wait of its own (see toWhom). `said`: the setup failures said last
+// (what the copy lacked, never the agent's red: a fingerprint of them), cleared by a run with none.
 export type Owed = { text: string; key: string; cls: string; message: string };
-export type Lane = { first: number | null; ended: boolean; over: boolean; running: boolean; tree: string | null; told: string | null; carry: string[]; owed: Owed | null };
-export const fresh = (): Lane => ({ first: null, ended: false, over: false, running: false, tree: null, told: null, carry: [], owed: null });
+export type Lane = { first: number | null; ended: boolean; over: boolean; running: boolean; tree: string | null; told: string | null; carry: string[]; owed: Owed | null; said: string | null };
+export const fresh = (): Lane => ({ first: null, ended: false, over: false, running: false, tree: null, told: null, carry: [], owed: null, said: null });
 
 // A step changed files (or may have: a shell call).
 export const changed = (l: Lane, now: number): Lane => ({ ...l, first: l.first ?? now, over: false });
@@ -43,8 +44,9 @@ export function dueAt(l: Lane, windowMs = WINDOW_MS): number | null {
   return l.ended ? l.first : l.first + windowMs;
 }
 export const started = (l: Lane): Lane => ({ ...l, first: null, ended: false, running: true });
-// A run ended (or found nothing to do): the tree it checked, and the failure it told (undefined: as it was).
-export const finished = (l: Lane, tree: string | null, told?: string | null): Lane => ({ ...l, running: false, tree: tree ?? l.tree, ...(told !== undefined ? { told } : {}) });
+// A run ended (or found nothing to do): the tree it checked, the failure it told and the setup failures it said
+// (undefined: as they were).
+export const finished = (l: Lane, tree: string | null, told?: string | null, said?: string | null): Lane => ({ ...l, running: false, tree: tree ?? l.tree, ...(told !== undefined ? { told } : {}), ...(said !== undefined ? { said } : {}) });
 // The copy of the files can go: the agent's turn ended, and no run goes or waits (the next change makes it again).
 export const sweepable = (l: Lane) => l.over && !l.running && l.first === null;
 
@@ -294,6 +296,13 @@ export function hostLoadOf(text: string): HostLoad {
   const n = Number(cores?.trim());
   return Number.isFinite(load1) && Number.isInteger(n) && n > 0 ? { load1, cores: n } : undefined;
 }
+
+// A setup failure of a check (the copy lacks what the check reads), said once on the agent's timeline.
+export type Setup = { name: string; line: string };
+export const setupWords = (line: string) => `could not check: ${line}`;
+// What a set of setup failures is known by, so the same one is said once.
+export const setupKey = (all: readonly Setup[]): string | null =>
+  all.length ? all.map((x) => `${x.name}\0${x.line}`).sort().join("\n") : null;
 
 // A folder of Keel's own for a session's copy of the files: never a path the session names.
 export const scratchName = (sessionId: string) => createHash("sha256").update(sessionId).digest("hex").slice(0, 16);

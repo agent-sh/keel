@@ -395,14 +395,14 @@ export const CLASS: Record<string, string> = FAIL_WORD;
 // A run of one of the repository's checks (src/checks): its name, how it
 // ended, its counts and the tree it ran on. The name is the repository's word
 // for it, never the command as the model wrote it.
-export type CheckIn = { id: number; ts: number; name: string; result: string; pass: number | null; fail: number | null; tree: string; started: number; by: string; call_id: string | null };
+export type CheckIn = { id: number; ts: number; name: string; result: string; pass: number | null; fail: number | null; tree: string; started: number; by: string; call_id: string | null; note?: string | null };
 const CHECK_SAID: Record<string, string> = { pass: "passed", fail: "failed", stopped: "was stopped", unknown: "ended, its status not known", answered: "answered from the ledger: it passed on these files before" };
 export function checkRow(c: CheckIn): TimelineRow {
   const counts = [c.pass !== null ? `${c.pass} pass` : "", c.fail !== null ? `${c.fail} fail` : ""].filter(Boolean).join(", ");
   const name = c.name.replace(/[^\w.:-]/g, "").slice(0, 40) || "?";
   return clean({
     id: `c:${c.id}`, ts: c.ts, kind: "check" as const, sub: c.result, tone: (c.result === "fail" ? "failed" : "plain") as Tone,
-    text: `Check ${name} ${CHECK_SAID[c.result] ?? c.result}${counts && c.result !== "answered" ? ` (${counts})` : ""}${c.by === "owner" ? ", run by the owner" : c.by === "beside" ? ", run by Keel beside the agent" : ""}, ${c.tree ? `on tree ${c.tree.slice(0, 9)}` : "with no tree kept (its files were too large to read)"}`,
+    text: c.note ? `Check ${name} run by Keel beside the agent: could not check: ${c.note.replace(/\s+/g, " ").slice(0, 200)}, on tree ${c.tree.slice(0, 9)}` : `Check ${name} ${CHECK_SAID[c.result] ?? c.result}${counts && c.result !== "answered" ? ` (${counts})` : ""}${c.by === "owner" ? ", run by the owner" : c.by === "beside" ? ", run by Keel beside the agent" : ""}, ${c.tree ? `on tree ${c.tree.slice(0, 9)}` : "with no tree kept (its files were too large to read)"}`,
     ms: c.result === "answered" ? undefined : Math.max(0, c.ts - c.started), ...refs({ call_id: c.call_id ?? undefined }),
   });
 }

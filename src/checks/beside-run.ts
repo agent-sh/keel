@@ -11,7 +11,7 @@
 // is a row of the ledger on that tree; a red one reaches a working agent as
 // one harness input at its next step, and the session that started a finished
 // one in its failures notice (toWhom in beside.ts).
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { settings } from "../admin/settings.ts";
@@ -25,9 +25,11 @@ import type { ToolCall } from "../engine/hooks.ts";
 import { pool } from "../tools/heavy.ts";
 import { toolEnv } from "../tools/jobs.ts";
 import { howToRun, limitFor, LOCKS, quote } from "./before.ts";
-import { runCommand, type Ran } from "./before-run.ts";
+import { INSTALL_MS, mainTop, packagesFor, readsIn, runCommand, type Ran } from "./before-run.ts";
+import * as cache from "./package-cache.ts";
+import { setupLineOf } from "../landing/pairs.ts";
 import { timed } from "../admin/stall.ts";
-import { BESIDE_DIR, besideOf, changed, commandOf, dueAt, failureOf, finished, fresh, hostLoadOf, limitOf, noticeText, parentWords, perFile, PICK_MAX, placeOf, refsIn, scratchName, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Lane, type Red, type Refs } from "./beside.ts";
+import { BESIDE_DIR, besideOf, changed, commandOf, dueAt, failureOf, finished, fresh, hostLoadOf, limitOf, noticeText, parentWords, perFile, PICK_MAX, placeOf, refsIn, scratchName, setupKey, started, sweepable, testFilesOf, testsFor, toTell, toWhom, turnEnded, WINDOW_MS, type AgentState, type Lane, type Red, type Refs, type Setup } from "./beside.ts";
 import { countsOf } from "./counts.ts";
 import { baseFor } from "./runs.ts";
 import { baseOf, inputsOf, keyOf, namedFor, objectsOf, ofSession, onTree, record, repoOf, treeOf, type Repo } from "./ledger.ts";
@@ -159,11 +161,11 @@ function go(id: string) {
   const l = lanes.get(id);
   if (!l || l.running) return;
   lanes.set(id, started(l));
-  let tree: string | null = null, told: string | null | undefined;
-  void run(id).then((r) => { tree = r.tree; told = r.told; }, (e) => d?.capture(e, { at: "checks beside", session: id })).finally(() => {
+  let tree: string | null = null, told: string | null | undefined, said: string | null | undefined;
+  void run(id).then((r) => { tree = r.tree; told = r.told; said = r.said; }, (e) => d?.capture(e, { at: "checks beside", session: id })).finally(() => {
     const now = lanes.get(id);
     if (!now) return;
-    lanes.set(id, finished(now, tree, told));
+    lanes.set(id, finished(now, tree, told, said));
     if (sweepable(lanes.get(id)!)) sweep(id);
     schedule(id);
   });
@@ -190,7 +192,12 @@ async function settleOwed(id: string) {
 }
 
 // One run of a lane: the tree it checked (null: none was read) and the failure told (undefined: as it was).
-async function run(id: string): Promise<{ tree: string | null; told?: string | null }> {
+type Done = { tree: string | null; told?: string | null; said?: string | null };
+async function run(id: string): Promise<Done> {
+  const held: string[] = [];
+  try { return await runIn(id, held); } finally { for (const k of held) cache.release(k); }
+}
+async function runIn(id: string, held: string[]): Promise<Done> {
   const s = d!.store.session(id);
   if (!s || s.archived) return { tree: null };
   // The owner stopped it, or the tree above it: nothing runs for it.
@@ -212,6 +219,10 @@ async function run(id: string): Promise<{ tree: string | null; told?: string | n
   // Nothing of the agent's own: the files are the base's, which are not its to fix.
   if (!change.length) { stats.skipped++; return { tree }; }
   await readRefs(scratch, copy, checks);
+  // The base's installed packages for the copy when the agent has none of its own (it unlinked them), as a
+  // fails-before run has them (packagesFor): linked from the repository's checkout or the cache, else installed once.
+  const pk = await provide(id, repo, scratch, tool, checks, held);
+  const setups: (Setup & { check: Check; command: string; t0: number; log: string | null })[] = [];
   const reds: Red[] = [];
   const ran: string[] = [];
   const carry: string[] = [];
@@ -236,7 +247,10 @@ async function run(id: string): Promise<{ tree: string | null; told?: string | n
     // Longer than a result beside the work is worth: the agent's own run is the check.
     if (limitMs === null) { stats.skipped++; continue; }
     const t0 = Date.now();
-    const r = await runCheck(id, s, check, command, scratch, tool, limitMs, repo);
+    // The packages it reads could not be had: not run, and not the agent's red.
+    const lacks = pk.failed.get(check.dir);
+    if (lacks) { ran.push(check.name); setups.push({ name: check.name, line: lacks, check, command, t0, log: null }); continue; }
+    const r = await runCheck(id, s, check, command, scratch, tool, limitMs, repo, pk.shown);
     if (!r) continue;
     ran.push(!tests.length ? check.name : of > tests.length ? `${check.name} (the ${tests.length} most direct of the ${of} test files the change touches)` : `${check.name} (${tests.length} test file${tests.length === 1 ? "" : "s"})`);
     if (r.where) where = r.where;
@@ -246,6 +260,10 @@ async function run(id: string): Promise<{ tree: string | null; told?: string | n
     if (tests.length) { const f = perFile(r.ran.timedOut ? Math.max(r.ran.ms, limitMs) : r.ran.ms, tests.length); if (f) rates.set(rate, f); }
     const counts = countsOf(r.ran.out);
     const result = r.ran.timedOut || r.ran.signal ? "stopped" : r.ran.code === 0 ? "pass" : "fail";
+    // What the copy lacks (a package, a type file, a program) is the setup's, said once on the agent's timeline
+    // (below): not a result of the check, not a red of the agent's, and never told to its parent.
+    const missing = result === "fail" ? setupLineOf(r.ran.out, r.ran.code) : undefined;
+    if (missing) { setups.push({ name: check.name, line: missing, check, command, t0, log: r.log }); continue; }
     const row = record({ name: check.name, command, dir: check.dir, repo: repo.scope, tree, head: look.head, session_id: id, call_id: null, by: "beside", result, exit: r.ran.timedOut ? null : r.ran.code, pass: counts?.pass ?? null, fail: counts?.fail ?? null, started: t0, ended: Date.now(), log: r.log, from_run: null, inputs, top: repo.top });
     if (result !== "fail") continue;
     if (tests.length) carry.push(...failedFiles(r.ran.out, tests));
@@ -256,13 +274,18 @@ async function run(id: string): Promise<{ tree: string | null; told?: string | n
   lanes.set(id, { ...lanes.get(id)!, carry });
   // Every check that ran passed: nothing is said, and a failure found again later is told again.
   if (!ran.length) return { tree };
+  // A setup failure is said once, until a run has none.
+  const said = setupKey(setups);
+  if (said !== null && said !== (lanes.get(id) ?? lane).said) {
+    for (const x of setups) record({ name: x.name, command: x.command, dir: x.check.dir, repo: repo.scope, tree, head: look.head, session_id: id, call_id: null, by: "beside", result: "stopped", exit: null, pass: null, fail: null, started: x.t0, ended: Date.now(), log: x.log, from_run: null, inputs: null, top: repo.top, note: x.line });
+  }
   const t = toTell(lanes.get(id) ?? lane, reds);
-  if (!reds.length) return { tree, told: null };
-  if (!t.tell) return { tree, told: t.told };
+  if (!reds.length) return { tree, told: null, said };
+  if (!t.tell) return { tree, told: t.told, said };
   const text = noticeText(reds, { tree, at: localTime(at).slice(0, 5), ran, where });
   lanes.set(id, { ...lanes.get(id)!, owed: { text, key: `beside:${tree}`, ...parentWords(reds, tree) } });
   await settleOwed(id);
-  return { tree, told: t.told };
+  return { tree, told: t.told, said };
 }
 
 // The test files whose tests failed, from a runner that names each file before its tests (bun: `path:`),
@@ -298,7 +321,7 @@ async function readRefs(scratch: string, copy: Copy, checks: readonly Check[]) {
 // One check on the copy: on this machine through the heavy pool (behind every other command), or on the
 // owner's host when this machine has no room and one is set. Undefined: it could not run (said nowhere:
 // the agent's own run of the check says what it says).
-async function runCheck(id: string, s: Session, check: Check, command: string, scratch: string, tool: string, limitMs: number, repo: Repo): Promise<{ ran: Ran; log: string; where?: string } | undefined> {
+async function runCheck(id: string, s: Session, check: Check, command: string, scratch: string, tool: string, limitMs: number, repo: Repo, shown: readonly string[] = []): Promise<{ ran: Ran; log: string; where?: string } | undefined> {
   const cwd = check.dir === "." ? scratch : join(scratch, check.dir);
   if (!existsSync(cwd)) return undefined;
   const cfg = setting();
@@ -311,7 +334,7 @@ async function runCheck(id: string, s: Session, check: Check, command: string, s
   else {
     // In the agent's own sandbox, as its own commands run: never with more reach than they have. The places the
     // copy's links to installed packages point at are shown to it (a link into a folder it cannot see breaks).
-    const confined = d!.confine(id, scratch, tool, linkTargets(repo, [check]));
+    const confined = d!.confine(id, scratch, tool, [...linkTargets(repo, [check]), ...shown]);
     if ("refused" in howToRun(d!.perm(id), confined)) return undefined;
     const slot = await pool.take({ session: id, who: "beside", command });
     if (slot === "aborted") return undefined;
@@ -326,6 +349,36 @@ async function runCheck(id: string, s: Session, check: Check, command: string, s
   const log = join(logs, `${scratchName(id)}-${check.name.replace(/[^\w.-]/g, "_")}-${Date.now()}.log`);
   await Bun.write(log, `$ ${command}\n${ran.out}`);
   return { ran, log, ...(place === "host" ? { where: cfg.host! } : {}) };
+}
+
+// --- the base's packages for the copy
+
+// The checks' folders each get the base's installed packages when the copy has none (the agent's own, linked by
+// copyTree, are used first), the way a fails-before run has them (packagesFor in src/checks/before-run.ts), in the
+// agent's sandbox. `shown`: the folders out of the copy the run reads them from. `failed`: by check folder, why
+// they are not there when an install failed (the check is not run: that is the setup's, not the agent's red).
+// Cache entries it holds are in `held`, released when the run ends.
+async function provide(id: string, repo: Repo, scratch: string, tool: string, checks: readonly Check[], held: string[]): Promise<{ shown: string[]; failed: Map<string, string> }> {
+  const out = { shown: [] as string[], failed: new Map<string, string>() };
+  const confined = d!.confine(id, scratch, tool);
+  const readable = confined ? (p: string) => readsIn(confined.wrap, p, scratch) : undefined;
+  const env: Record<string, string> = { ...toolEnv(id), CI: "1" };
+  for (const dir of new Set(checks.map((c) => c.dir))) {
+    if (dir === "*") continue;
+    const got = await packagesFor({ scratch, checkDir: dir, sources: [repo.top, mainTop(repo)], path: env.PATH ?? process.env.PATH ?? "", common: repo.common, again: false, readable, how: `beside:${confined?.sandbox ?? "unconfined"}` }, async (cwd, command) => {
+      const slot = await pool.take({ session: id, who: "beside", command });
+      if (slot === "aborted") return { exit: null, why: "it was stopped" };
+      mkdirSync(tool, { recursive: true });
+      try {
+        const r = await runCommand({ cwd, tool, env, command, limitMs: INSTALL_MS, wrap: confined?.wrap, unit: `keel-beside-${process.pid}-${Date.now() % 1_000_000}-${stats.runs}`, session: id, mark: "beside" });
+        return "error" in r ? { exit: null, why: r.error } : { exit: r.timedOut ? null : r.code, why: r.timedOut ? "it ran past its limit and was stopped" : "" };
+      } finally { slot?.release(); }
+    });
+    if (got.held) held.push(got.held);
+    for (const p of got.shown ?? []) if (!out.shown.includes(p)) out.shown.push(p);
+    if (got.failed) out.failed.set(dir, `the base's packages could not be installed here: ${got.why ?? ""}`.slice(0, 200));
+  }
+  return out;
 }
 
 // --- the copy of the files
@@ -366,7 +419,9 @@ async function copyTree(repo: Repo, tree: string, head: string | null, scratch: 
       if (head) await ownGit(scratch, ["update-ref", "--no-deref", "HEAD", head]);
       for (const l of links) {
         const from = realTarget(repo, l), to = join(scratch, l);
-        if (!from) continue;
+        // The agent has none of its own: a link an earlier run made to the base's packages goes, so each run decides again.
+        if (!from) { try { if (lstatSync(to).isSymbolicLink()) rmSync(to, { force: true }); } catch {} continue; } // none there
+
         let now: string | undefined;
         try { now = readlinkSync(to); } catch {} // none yet
         if (now === from) continue;

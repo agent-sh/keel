@@ -499,3 +499,12 @@ test("a cause split by who had it: each part counts only its own refs", () => {
   expect([kept!.count, kept!.owed, kept!.wake, kept!.refs.map((r) => r.id)]).toEqual([1, 0, false, ["self"]]);
   expect(fg.split(g, () => false).taken).toBeNull();
 });
+
+test("a check that failed beside an agent names the agent, also when the agent's own report goes in the same notice", () => {
+  const groups = new Map<string, FailureGroup>();
+  put(groups, { kind: "check", cls: "unit", message: "unit (a failed) failed after it ended (tree 79ff35511)", ref: { id: "a1", label: "Lane 1", report: "a1:1" }, tell: "ride" });
+  const r = render([...groups.values()], 1000, new Set(["a1"]))!;
+  const lines = entries(r.text!);
+  expect(lines[0]).toBe("- Checks Keel ran beside 1 agent failed after it ended (unit)");
+  expect(lines[1]).toContain('a1 "Lane 1"');
+});

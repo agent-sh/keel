@@ -307,7 +307,7 @@ function openLayers(tool: string) {
 }
 
 // The main checkout of a repository (its worktree commands go one after another there).
-const mainTop = (repo: Repo) => (repo.common.endsWith("/.git") ? dirname(repo.common) : repo.top);
+export const mainTop = (repo: Repo) => (repo.common.endsWith("/.git") ? dirname(repo.common) : repo.top);
 
 // How long the base's own install may take: a cold `npm ci` of a large project takes minutes, one from a warm
 // cache seconds. Its scope ends it in any case.

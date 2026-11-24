@@ -282,9 +282,10 @@ export type Known = (id: string) => { gone?: boolean; where?: string } | undefin
 
 // The agents an entry tells of, the one that failed last first. `skip`: agents
 // whose own report is in the same input (see render).
-// (A message's ref is who it was for: named also when that agent's report goes along.)
+// (A message's ref is who it was for, and a check's is the agent it ran beside after it ended: named also when that
+// agent's report goes along. The report is sent when the agent ends, before the run's result, so it holds neither.)
 const tellable = (g: FailureGroup, skip: Set<string>) =>
-  g.refs.filter((r) => r.owed > 0 && isAgent(r) && (g.kind === "message" || !skip.has(r.id))).reverse().sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  g.refs.filter((r) => r.owed > 0 && isAgent(r) && (g.kind === "message" || g.kind === "check" || !skip.has(r.id))).reverse().sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
 const othersOf = (g: FailureGroup) => g.refs.find((r) => r.id === OTHERS && r.owed > 0);
 
 // What `b` says that `a`, the line of the agent that failed last, does not: a

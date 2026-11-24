@@ -176,3 +176,59 @@ test("a run Keel made beside an agent is never what says a check is red on the b
   expect(await baseFor(mine, r)).toContain("red on");
   expect(keyOf(".", "sh t.sh ./lib.test.sh")).toBeTruthy();
 });
+
+// An agent's worktree of a repository whose main checkout holds the installed packages (the agent's has none: its
+// folder is unlinked, as agents do), the check reading a file the packages hold.
+function worktreeRepo(testText: string) {
+  const main = mkdtempSync(join(dir, "main-"));
+  const g = (cwd: string, ...args: string[]) => Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd });
+  g(main, "init", "-q", "-b", "main");
+  mkdirSync(join(main, ".keel"));
+  writeFileSync(join(main, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "sh t.sh", args: true, tests: ["**/*.test.sh"], beside: true, inputs: ["node_modules"] } } }));
+  writeFileSync(join(main, "t.sh"), 'f=0; for t in "$@"; do sh "$t" || f=1; done; exit $f\n');
+  writeFileSync(join(main, "package.json"), JSON.stringify({ devDependencies: { pkg: "1.0.0" } }));
+  writeFileSync(join(main, "bun.lock"), `lock ${main}\n`);
+  writeFileSync(join(main, ".gitignore"), "node_modules\n");
+  writeFileSync(join(main, "lib.sh"), "x=1\n");
+  writeFileSync(join(main, "lib.test.sh"), testText);
+  g(main, "add", "-A");
+  g(main, "commit", "-qm", "first");
+  mkdirSync(join(main, "node_modules", "pkg"), { recursive: true });
+  writeFileSync(join(main, "node_modules", "pkg", "ok"), "yes\n");
+  const wt = join(dir, `wt-${scratchName(main)}`);
+  g(main, "worktree", "add", "-q", "-b", "agent", wt);
+  const parent = store.createSession({ model: "m:x", workspace: main, title: "parent" });
+  const made = store.createSession({ model: "m:x", workspace: wt, title: "agent" });
+  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent.id, made.id);
+  const session = store.session(made.id)!;
+  gate.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
+  state.set(session.id, "working");
+  return { session, write: (f: string, text: string) => writeFileSync(join(wt, f), text), has: existsSync(join(wt, "node_modules")) };
+}
+
+test("a worktree with no installed packages is checked with the base's, and a check that needs them passes", async () => {
+  const { session, write, has } = worktreeRepo('[ "$(cat node_modules/pkg/ok)" = yes ] || { echo "error: no packages"; exit 1; }\n');
+  expect(has).toBe(false);
+  toAgent.length = toParent.length = 0;
+  write("lib.sh", "x=2\n");
+  step(session);
+  await idle(session.id);
+  expect(ofSession(session.id).filter((r) => r.by === "beside").map((r) => r.result)).toEqual(["pass"]);
+  expect(toAgent).toHaveLength(0);
+});
+
+test("a check that could not start for want of a package is the setup's: said once on the agent's timeline, never its red", async () => {
+  const { session, write } = worktreeRepo("echo \"error: Cannot find module 'gone-package' from '/s/lib.ts'\"; exit 1\n");
+  toAgent.length = toParent.length = 0;
+  for (const x of ["2", "3"]) { write("lib.sh", `x=${x}\n`); step(session); await idle(session.id); }
+  state.set(session.id, "ended");
+  write("lib.sh", "x=4\n");
+  step(session, true);
+  await idle(session.id);
+  expect(toAgent).toHaveLength(0);
+  expect(toParent).toHaveLength(0);
+  const rows = ofSession(session.id).filter((r) => r.by === "beside");
+  expect(rows.map((r) => r.result)).toEqual(["stopped"]);
+  const note = store.db.query<{ note: string }, [number]>("SELECT note FROM check_runs WHERE id = ?").get(rows[0]!.id)!.note;
+  expect(note).toContain("Cannot find module 'gone-package'");
+});
