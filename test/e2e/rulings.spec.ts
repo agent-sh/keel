@@ -87,8 +87,8 @@ test("an answer kept as a ruling answers the same question from later agents of 
     const { rows } = await (await request.get(`/api/sessions/${second.session_id}/timeline`)).json();
     expect((rows as { text: string }[]).some((r) => r.text.startsWith(`Answered a question from standing ruling ${kept!.slice(-8)}`))).toBe(true);
 
-    // Near-misses in the same repository are other questions: a negation, another target, another time. Each gets the card.
-    const near = ["Which test runner should this repository not use?", "Which test runner for the Python package?", "Which test runner did the old repo use?"];
+    // Near-misses in the same repository are other questions: a negation, another target, another time, a repeat. Each gets the card.
+    const near = ["Which test runner should this repository not use?", "Which test runner for the Python package?", "Which test runner did the old repo use?", "Which test runner should this repository use again?"];
     for (const [i, question] of near.entries()) {
       await send(lead, spawn(`Runner near ${i}`, question));
       const a = await agentOf(request, lead, `Runner near ${i}`);
