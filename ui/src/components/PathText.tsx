@@ -28,7 +28,7 @@ export function PathText({ path, className, testid }: { path: string; className?
     return () => ro.disconnect();
   }, [path]);
   return (
-    <span ref={ref} title={path} data-testid={testid} className={cn("min-w-0 flex-1 overflow-hidden whitespace-nowrap", className)}>
+    <span ref={ref} title={path} data-testid={testid} className={cn("block min-w-0 flex-1 overflow-hidden whitespace-nowrap", className)}>
       {shown}
     </span>
   );
