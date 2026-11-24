@@ -372,6 +372,7 @@ test.describe("a crowded toolbar", () => {
       await page.reload();
       await expect(more).toBeVisible();
       const large = await reachable(page, station);
+      await shoot(page, "workbench-toolbar-390-large-head");
       expect(large.inMenu).toContain("permission-menu");
       await station.getByTestId("composer").fill("/permissions");
       await page.keyboard.press("Enter");

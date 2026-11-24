@@ -952,6 +952,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-head-more:hover, .k-head-more[data-popup-open] { background: var(--hover); color: var(--fg); }
 .k-head-more svg { width: 0.75rem; height: 0.75rem; opacity: 0.7; transition: transform var(--dur-quick) var(--ease-out); }
 .k-head-more[data-popup-open] svg { transform: rotate(180deg); }
+/* A phone at large text: the head's four controls are most of the row, so More is its count and the dot alone (its name and tip say the rest). */
+@container (max-width: 20rem) { .k-head-more svg { display: none; } .k-head-more { padding: 0 0.25rem; } .k-session-header > [data-flex] { padding-left: 0; } }
 /* Its list: a name on the left, the control itself on the right. */
 .k-stow { width: min(20rem, calc(100vw - 1rem)); padding: 0.25rem; border-radius: var(--radius-xl); border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); outline: none; transform-origin: var(--transform-origin); transition: scale var(--dur-quick), opacity var(--dur-quick); }
 .k-stow[data-starting-style], .k-stow[data-ending-style] { scale: 0.97; opacity: 0; }
