@@ -136,6 +136,15 @@
 .k-switch:is([data-checked], [aria-checked="true"]) .k-switch-thumb { transform: translateX(1.125rem); background: var(--switch-thumb-on); }
 .k-switch:is(:disabled, [data-disabled]) { opacity: 0.5; }
 .k-switch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* A switch is a finger's target on a phone (its box grows to the floor), but its track stays the pill it is: the box
+   is the target, drawn clear, and the track is drawn in it at the switch's own size. */
+@media (pointer: coarse) and (max-width: 767px) {
+  .k-switch, .k-switch:is([data-checked], [aria-checked="true"]) { background: transparent; }
+  .k-switch { padding-inline: 0.25rem 0.0625rem; }
+  .k-switch::before { content: ""; position: absolute; left: 0.0625rem; top: 50%; width: 2.625rem; height: var(--spacing-ctl-sm); translate: 0 -50%; border-radius: var(--spacing-ctl-sm); background: var(--line-strong); transition: background-color var(--dur-quick) var(--ease-out); }
+  .k-switch:is([data-checked], [aria-checked="true"])::before { background: var(--fg); }
+  .k-switch-thumb { position: relative; }
+}
 
 /* Plugins installed as one unit. What it brings: a kind, then its names. */
 .k-parts { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 0.5rem 1rem; align-items: baseline; }

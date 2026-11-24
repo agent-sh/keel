@@ -73,9 +73,9 @@ export default function AlertSettings() {
         <table className="-mx-5 mb-2 w-[calc(100%+2.5rem)] text-ui" data-testid="alert-groups">
           <thead>
             <tr className="border-t border-line text-left text-caption text-faint">
-              <th className="px-5 py-2 font-medium">Alert</th>
+              <th className="px-5 py-2 font-medium max-md:pr-2">Alert</th>
               {channels.map((c) => (
-                <th key={c.id} className="px-3 py-2 text-center font-medium" title={c.label}>
+                <th key={c.id} className="px-3 py-2 text-center font-medium max-md:px-1" title={c.label}>
                   {CHANNEL_NAME[c.id] ?? c.id}
                   {!c.available && <span className="block text-micro font-normal">not set up</span>}
                 </th>
@@ -85,14 +85,14 @@ export default function AlertSettings() {
           <tbody>
             {GROUPS.map((g) => (
               <tr key={g.id} className="border-t border-line/60" data-testid={`route-group-${g.id}`}>
-                <td className="px-5 py-2.5">
+                <td className="px-5 py-2.5 max-md:pr-2">
                   <div>{g.label}</div>
                   <div className="text-caption text-muted">{g.hint}</div>
                 </td>
                 {channels.map((c) => {
                   const n = g.kinds.filter((k) => settings.routes[k]?.includes(c.id)).length;
                   return (
-                    <td key={c.id} className="px-3 py-2.5 text-center">
+                    <td key={c.id} className="px-3 py-2.5 text-center max-md:px-1">
                       <Tick
                         testid={`route-group-${g.id}-${c.id}`}
                         on={n === g.kinds.length}
@@ -112,9 +112,9 @@ export default function AlertSettings() {
           <table className="mb-2 w-full text-ui" data-testid="alert-kinds">
             <thead>
               <tr className="border-t border-line text-left text-caption text-faint">
-                <th className="px-5 py-2 font-medium">Alert</th>
+                <th className="px-5 py-2 font-medium max-md:pr-2">Alert</th>
                 {channels.map((c) => (
-                  <th key={c.id} className="px-3 py-2 text-center font-medium" title={c.label}>
+                  <th key={c.id} className="px-3 py-2 text-center font-medium max-md:px-1" title={c.label}>
                     {CHANNEL_NAME[c.id] ?? c.id}
                     {!c.available && <span className="block text-micro font-normal">not set up</span>}
                   </th>
@@ -124,9 +124,9 @@ export default function AlertSettings() {
             <tbody>
               {KINDS.map((k) => (
                 <tr key={k} className="border-t border-line/60">
-                  <td className="px-5 py-2.5">{ALERT_LABEL[k]}</td>
+                  <td className="px-5 py-2.5 max-md:pr-2">{ALERT_LABEL[k]}</td>
                   {channels.map((c) => (
-                    <td key={c.id} className="px-3 py-2.5 text-center">
+                    <td key={c.id} className="px-3 py-2.5 text-center max-md:px-1">
                       <Tick
                         testid={`route-${k}-${c.id}`}
                         on={settings.routes[k]?.includes(c.id) ?? false}

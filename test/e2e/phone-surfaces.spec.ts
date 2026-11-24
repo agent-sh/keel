@@ -719,5 +719,24 @@ for (const size of SIZES) {
         await drop(request, coord);
       }
     });
+    test("Settings > Alerts: the sound switch is a pill a finger can press, and the routes leave their first column room to read", async ({ page }) => {
+      await page.goto("/settings/alerts");
+      const sw = page.getByTestId("alert-sound");
+      await expect(sw).toBeVisible();
+      const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+      // The switch is a target of 2.75 rem each way, and the track drawn in it is a pill, not a disc.
+      const box = (await sw.boundingBox())!;
+      expect(Math.min(box.width, box.height), "the switch is a finger's target").toBeGreaterThanOrEqual(2.75 * rem - 1);
+      const track = await sw.evaluate((el) => { const b = getComputedStyle(el, "::before"); return { w: parseFloat(b.width), h: parseFloat(b.height) }; });
+      expect(track.w, "the track is wider than it is tall").toBeGreaterThan(track.h * 1.5);
+      // The first column of the routes is a line's width, not a strip a word wide.
+      const label = (await page.getByTestId("alert-groups").locator("tbody td").first().boundingBox())!;
+      expect(label.width, "the alert's words have room").toBeGreaterThanOrEqual(8.5 * rem);
+      expect(await phoneProblems(page.getByTestId("settings-scroll")), "alerts section").toEqual([]);
+      await page.getByTestId("alert-fine-toggle").tap();
+      await expect(page.getByTestId("alert-kinds")).toBeVisible();
+      expect(await phoneProblems(page.getByTestId("settings-scroll")), "alerts section, each kind").toEqual([]);
+      await shoot(page, `phone-surfaces-20-alerts-${size.width}`);
+    });
   });
 }
