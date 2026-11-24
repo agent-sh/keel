@@ -8,6 +8,8 @@
 // resume, close, list, prompt, cancel, set_mode, set_config_option;
 // session/update (usage_update and available_commands_update among them),
 // session/request_permission and elicitation/create toward the client).
+// A client that advertises `subagents` sees the agents of a session it holds
+// as child sessions (src/acp/subagents.ts says what is sent for one).
 import { INPUT_LABEL, inputKind } from "../core/inputs.ts";
 import { contextTokens } from "../engine/compact.ts";
 import { questions } from "../../ui/src/lib/tools.ts";
@@ -17,6 +19,7 @@ import { cardForm, cardLines, type CardForm } from "../safety/card.ts";
 import type { Approval } from "../safety/gate.ts";
 import { spelled } from "../safety/chars.ts";
 import { RESTARTED, retryNotice, streamStep } from "./stream.ts";
+import { childInput, isLive, spawnTask, subagentUpdate, taskLine, type AgentSeen } from "./subagents.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -200,6 +203,12 @@ export type DaemonApi = {
   // process went. Resolves to what closes it.
   hold?(holder: string): Promise<() => void>;
   frames(on: (f: Json) => void): Promise<() => void>;
+  // The frames socket hears only the sessions named here (as a page names the
+  // ones it shows), from the cursor given: the events stored after it, then
+  // every frame of the session. A null cursor: from now. Without these the
+  // socket hears every session.
+  watch?(cursors: Record<string, number | null>): void;
+  unwatch?(ids: string[]): void;
 };
 
 // One session/prompt call. It is settled once, by the end of the turn that took
@@ -211,10 +220,19 @@ type Prompt = { resolve: (r: Json) => void; reject: (e: Error) => void; after: n
 // `seq`: the last event seen, where a prompt counts from when the daemon's answer names no event.
 type Live = { prompts: Prompt[]; error?: string; seq: number; delivered: Map<string, number>; ends: { seq: number; reason: string; error?: string }[] };
 // A reply as the editor shows it while it streams: `shown` of its text and its
-// thought, `streamed` of the attempt that streams now (src/acp/stream.ts streamStep).
+// thought, `streamed` of the attempt that streams now (src/acp/subagents.ts streamStep).
 type Text = { shown: string; streamed: string; thoughtShown: string; thoughtStreamed: string };
+// An agent of a session this editor holds, as a child session: its parent's
+// session, the record as last told, the label and state last sent, the
+// approvals of its own that wait on the owner.
+type Child = { parent: string; agent: AgentSeen; description?: string; sent?: string; asks: Set<string> };
+// The spawn tools whose call names an agent's task.
+const SPAWN_TOOLS = new Set(["Agent", "Task", "spawn_agent", "keel__spawn_on_machine"]);
 
 const LIST_PAGE = 200;
+
+// The newest event a session read answered: where its frames go on from.
+const lastSeq = (r: Json): number => (typeof r?.seq === "number" ? r.seq : ((r?.events ?? []) as Json[]).reduce((n, e) => (typeof e?.seq === "number" && e.seq > n ? e.seq : n), 0));
 
 // One editor connection.
 export class AcpBridge {
@@ -227,8 +245,22 @@ export class AcpBridge {
   private stopFrames?: () => void;
   private models: Json[] | null = null;
   private defaultModel = "";
+  // Sessions this editor opened (new, load, resume, a prompt) and has not
+  // closed: their frames come to it (the socket hears no other session's), and
+  // with `subagents` their agents are its child sessions, while it holds them.
+  private holds = new Map<string, Promise<void>>();
+  private children = new Map<string, Child>(); // child session id -> its agent
+  private agentSessions = new Map<string, string>(); // agent id -> the child session it was announced as
   private texts = new Map<string, Text>();
+  private spawnTasks = new Map<string, string>(); // a spawn call's id -> its task line
   private retried = new Map<string, string>(); // session -> the retry status last told of its reply
+  private titles = new Map<string, string>(); // session -> the title last told
+
+  private get subagents() { return !!this.caps?.subagents; }
+  // Whether the editor is shown what a session does now: a prompt of its own is
+  // open there, or (with subagents) it holds the session, or the session is an
+  // agent of one it holds.
+  private streams(id: string) { return this.live.has(id) || (this.subagents && (this.holds.has(id) || this.children.has(id))); }
 
   constructor(private daemon: DaemonApi, private out: Send, private log: (m: string) => void = () => {}) {}
 
@@ -303,6 +335,110 @@ export class AcpBridge {
     if (!list.length) this.served.delete(sessionId);
     // After the answer, so the editor knows the session first.
     if (failed.length) queueMicrotask(() => this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not connect ${failed.length === 1 ? "an MCP server" : "MCP servers"} the editor passed (${failed.join("; ")}).\n\n` } }));
+  }
+
+  // The session's frames come to this editor from `cursor` on (null: from now;
+  // undefined: from where the session stands, read now). Once a session.
+  private hold(id: string, cursor?: number | null): Promise<void> {
+    let h = this.holds.get(id);
+    if (!h) {
+      h = (async () => {
+        if (!this.daemon.watch) return;
+        const from = cursor !== undefined ? cursor : await this.daemon.get(`/api/sessions/${id}?events=0`).then((r) => (typeof r?.seq === "number" ? r.seq : null), () => null);
+        this.daemon.watch({ [id]: from });
+      })();
+      this.holds.set(id, h);
+    }
+    return h;
+  }
+
+  // The editor closed the session: its frames and its agents' stop coming.
+  private unhold(id: string) {
+    if (!this.holds.delete(id)) return;
+    const gone = this.descendants(id);
+    for (const c of gone) {
+      const child = this.children.get(c)!;
+      this.children.delete(c);
+      if (this.agentSessions.get(child.agent.id) === c) this.agentSessions.delete(child.agent.id);
+    }
+    for (const x of [id, ...gone]) { this.texts.delete(x); this.retried.delete(x); }
+    this.daemon.unwatch?.([id, ...gone]);
+  }
+
+  // The child sessions under a session, at any depth.
+  private descendants(id: string): string[] {
+    const out: string[] = [];
+    const under = new Set([id]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const [cid, c] of this.children) if (under.has(c.parent) && !under.has(cid)) { under.add(cid); out.push(cid); grew = true; }
+    }
+    return out;
+  }
+
+  // The agents under a session this editor holds, each after the one that
+  // started it, announced as they are now (after a load's answer: what came
+  // before it is history), their frames from now on.
+  private async announceTree(root: string) {
+    if (!this.subagents) return;
+    const r = await this.daemon.get(`/api/sessions/${root}/agents`).catch(() => null);
+    // A load or resume asks again: each child's label and state are sent again, current.
+    for (const id of this.descendants(root)) this.children.get(id)!.sent = undefined;
+    for (const row of (r?.tree ?? []) as AgentSeen[]) {
+      if (!this.holds.has(root)) return; // closed meanwhile
+      this.onAgent(row, null);
+    }
+  }
+
+  // An agent's record as the daemon tells it. One under a session this editor
+  // holds is announced on its parent before anything of its own is sent, and
+  // its session's frames come from its task on (`cursor` undefined) or from now.
+  private onAgent(a: AgentSeen, cursor?: number | null) {
+    if (!this.subagents || !a?.session_id || !a.parent_id) return;
+    let c = this.children.get(a.session_id);
+    if (!c) {
+      if (!this.holds.has(a.parent_id) && !this.children.has(a.parent_id)) return;
+      // A fresh context of the same agent (its context was lost: src/automation/successor.ts)
+      // is a new child session; the one it took over from ends there.
+      const was = this.agentSessions.get(a.id);
+      if (was && was !== a.session_id) this.lostContext(was);
+      c = { parent: a.parent_id, agent: a, asks: new Set(), description: a.call_id ? this.spawnTasks.get(a.call_id) : undefined };
+      this.children.set(a.session_id, c);
+      this.agentSessions.set(a.id, a.session_id);
+      this.announce(c);
+      this.daemon.watch?.({ [a.session_id]: cursor === undefined ? Math.max(0, a.first_seq ?? 0) : cursor });
+      return;
+    }
+    c.agent = a;
+    this.announce(c);
+  }
+
+  private lostContext(old: string) {
+    const c = this.children.get(old);
+    if (!c) return;
+    this.notify(c.parent, { sessionUpdate: "subagent_update", sessionId: old, capabilities: {}, state: { state: "idle", stopReason: "error", error: { code: -32603, message: "This context of the agent was lost. A fresh context of it goes on as another child session." } } });
+    c.sent = "lost";
+    this.daemon.unwatch?.([old]);
+  }
+
+  // The parent's update for a child, sent when what it says changed.
+  private announce(c: Child) {
+    if (c.sent === "lost") return;
+    const u = subagentUpdate(c.agent, { description: c.description, asking: c.asks.size > 0 });
+    const key = JSON.stringify(u);
+    if (key === c.sent) return;
+    c.sent = key;
+    this.notify(c.parent, u);
+  }
+
+  // A spawn call's task line, for the child it starts.
+  private noteSpawns(e: StoredEvent) {
+    if (e.kind !== "assistant") return;
+    for (const b of e.data?.blocks ?? []) {
+      if (b.type !== "tool_use" || !SPAWN_TOOLS.has(b.name)) continue;
+      const line = spawnTask(b.input);
+      if (line) this.spawnTasks.set(b.id, line);
+    }
   }
 
   private text(id: string): Text {
@@ -461,6 +597,9 @@ export class AcpBridge {
   }
 
   private async dispatch(method: string, p: Json): Promise<Json> {
+    // A child session is watched, not driven: the editor may cancel its work and nothing else.
+    const child = typeof p?.sessionId === "string" ? this.children.get(p.sessionId) : undefined;
+    if (child && method !== "session/cancel") throw Object.assign(new Error(`${p.sessionId} is a child session (an agent of ${child.parent}): ${method} is not permitted for it`), { code: -32602 });
     switch (method) {
       case "initialize":
         this.caps = p.clientCapabilities ?? {};
@@ -482,6 +621,7 @@ export class AcpBridge {
         const cwd = typeof p.cwd === "string" ? p.cwd : undefined;
         const { session } = await this.daemon.send("POST", "/api/sessions", { workspace: cwd });
         await this.ensureFrames();
+        await this.hold(session.id, 0);
         const perm = await this.daemon.get(`/api/sessions/${session.id}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
         const setup = await this.sessionSetup(session, perm.perm?.mode ?? "ask", true);
         await this.mcpServers(session.id, p.mcpServers, true);
@@ -492,11 +632,12 @@ export class AcpBridge {
         const r = await this.daemon.get(`/api/sessions/${p.sessionId}`).catch(() => null);
         if (!r?.session) throw Object.assign(new Error(`no session ${p.sessionId}`), { code: -32002 });
         await this.ensureFrames();
+        await this.hold(p.sessionId, lastSeq(r));
         const perm = await this.daemon.get(`/api/sessions/${p.sessionId}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
         const setup = await this.sessionSetup(r.session, perm.perm?.mode ?? "ask", true);
         await this.mcpServers(p.sessionId, p.mcpServers);
         this.replay(p.sessionId, lineage(r.events ?? [], r.session.head ?? null), !!r.running);
-        setTimeout(() => void this.commands(p.sessionId), 0); // after the answer
+        setTimeout(() => { void this.commands(p.sessionId); void this.announceTree(p.sessionId); }, 0); // after the answer
         return setup;
       }
       case "session/resume": {
@@ -504,9 +645,11 @@ export class AcpBridge {
         const r = await this.daemon.get(`/api/sessions/${p.sessionId}`).catch(() => null);
         if (!r?.session) throw Object.assign(new Error(`no session ${p.sessionId}`), { code: -32002 });
         await this.ensureFrames();
+        await this.hold(p.sessionId, lastSeq(r));
+        for (const e of r.events ?? []) this.noteSpawns(e);
         const perm = await this.daemon.get(`/api/sessions/${p.sessionId}/permissions`).catch(() => ({ perm: { mode: "ask" } }));
         await this.mcpServers(p.sessionId, p.mcpServers);
-        setTimeout(() => void this.commands(p.sessionId), 0); // after the answer
+        setTimeout(() => { void this.commands(p.sessionId); void this.announceTree(p.sessionId); }, 0); // after the answer
         return this.sessionSetup(r.session, perm.perm?.mode ?? "ask", true);
       }
       case "session/close": {
@@ -514,6 +657,7 @@ export class AcpBridge {
         const id = String(p.sessionId);
         if (this.live.has(id)) await this.stop(id).catch(() => {});
         await this.mcpServers(id, []);
+        this.unhold(id);
         return {};
       }
       case "session/list": {
@@ -529,7 +673,8 @@ export class AcpBridge {
           from = Number(m[1]);
         }
         const { sessions } = await this.daemon.get("/api/sessions?agents=all");
-        const rows = (sessions as Json[]).filter((s) => !p.cwd || s.workspace === p.cwd);
+        // (A client that takes child sessions learns of them from their parents, not from the list.)
+        const rows = (sessions as Json[]).filter((s) => (!p.cwd || s.workspace === p.cwd) && !(this.subagents && s.parent_id));
         const page = rows.slice(from, from + LIST_PAGE);
         const more = from + LIST_PAGE < rows.length;
         return {
@@ -542,6 +687,7 @@ export class AcpBridge {
         const { text, images } = await promptOf(p.prompt, this.daemon.upload?.bind(this.daemon));
         if (!text.trim() && !images.length) throw Object.assign(new Error("the prompt is empty"), { code: -32602 });
         await this.ensureFrames();
+        await this.hold(id);
         // Each call is its own entry: a second prompt while the first runs joins
         // the running turn or waits behind it, as the daemon decides, and neither
         // call takes the other's answer.
@@ -563,6 +709,12 @@ export class AcpBridge {
         return await done;
       }
       case "session/cancel": {
+        // A child's: its agent is stopped, as the owner's Stop on its card stops it (its own agents
+        // with it). It shows as idle and cancelled once it has stopped. One that offers no cancel is left alone.
+        if (child) {
+          if (isLive(child.agent)) await this.daemon.send("POST", `/api/sessions/${child.parent}/agents/${child.agent.id}/stop`, {}).catch((e) => this.log(`stop of agent ${child.agent.id}: ${(e as Error).message}`));
+          return undefined;
+        }
         await this.stop(String(p.sessionId));
         return undefined; // a notification
       }
@@ -610,6 +762,16 @@ export class AcpBridge {
 
   private event(sessionId: string, e: StoredEvent, replay?: { results: Map<string, Json>; running: boolean }) {
     if (e.kind === "user") {
+      const child = replay ? undefined : this.children.get(sessionId);
+      if (child) {
+        // Its task names it, when its parent's call did not.
+        if (!child.description && e.data?.kind === "task") {
+          child.description = taskLine(e.data.text);
+          this.announce(child);
+        }
+        for (const u of childInput(e, sessionId, child.parent, (agent) => this.agentSessions.get(agent))) this.notify(sessionId, u);
+        return;
+      }
       if (!replay) {
         // The editor sent it. A queued prompt is now stored: the turn end after it is its end.
         const l = this.live.get(sessionId);
@@ -626,6 +788,7 @@ export class AcpBridge {
       } else for (const content of userContent(e.data)) this.notify(sessionId, { sessionUpdate: "user_message_chunk", content });
     } else if (e.kind === "assistant") {
       const texts = (e.data.blocks ?? []).filter((b: Json) => b.type === "text" && b.text).map((b: Json) => b.text as string);
+      this.noteSpawns(e);
       if (replay) for (const text of texts) this.notify(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
       else {
         // The streamed deltas carried part (or all) of this reply: send what the editor does not show yet.
@@ -674,25 +837,36 @@ export class AcpBridge {
   }
 
   private onFrame(f: Json) {
-    if (f.t === "delta" && this.live.has(f.session_id)) {
+    if (f.t === "delta" && this.streams(f.session_id)) {
       this.delta(f.session_id, f.kind, String(f.text ?? ""));
-    } else if (f.t === "status" && f.status?.kind === "retry" && this.live.has(f.session_id)) {
+    } else if (f.t === "status" && f.status?.kind === "retry" && this.streams(f.session_id)) {
       this.retry(f.session_id, f.status);
-    } else if (f.t === "event" && this.live.has(f.event.session_id)) {
-      const l = this.live.get(f.event.session_id)!;
-      if (typeof f.event.seq === "number" && f.event.seq > l.seq) l.seq = f.event.seq;
+    } else if (f.t === "event" && this.streams(f.event.session_id)) {
+      const l = this.live.get(f.event.session_id);
+      if (l && typeof f.event.seq === "number" && f.event.seq > l.seq) l.seq = f.event.seq;
       this.event(f.event.session_id, f.event);
+    } else if (f.t === "feature" && f.name === "automation" && f.data?.kind === "agent") {
+      this.onAgent(f.data.data);
     } else if (f.t === "queue" && this.live.has(f.session_id)) {
       void this.queueChanged(f.session_id, f.queue ?? []);
     } else if (f.t === "feature" && f.name === "mcp-session" && f.data?.what === "failed" && this.served.has(f.session_id)) {
       // A server the editor passed that did not connect, or went away later: said by name, as a refusal is.
       this.notify(f.session_id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel could not connect the MCP server ${f.data.name} the editor passed: ${f.data.error ?? "it failed"}.\n\n` } });
-    } else if (f.t === "session" && this.live.has(f.session.id) && f.session.title) {
+    } else if (f.t === "session" && this.live.has(f.session.id) && f.session.title && this.titles.get(f.session.id) !== f.session.title) {
+      // (A row can come twice: by the session's own topic and by the list's.)
+      this.titles.set(f.session.id, f.session.title);
       this.notify(f.session.id, { sessionUpdate: "session_info_update", title: f.session.title });
-    } else if (f.t === "feature" && f.name === "approval" && f.data?.state === "pending" && this.live.has(f.data.session_id) && !this.asked.has(f.data.id)) {
+    } else if (f.t === "feature" && f.name === "approval" && f.data?.state === "pending" && this.streams(f.data.session_id) && !this.asked.has(f.data.id)) {
       this.asked.add(f.data.id);
+      // A child's call waits on the owner: it shows as needing action until the card is answered.
+      const c = this.children.get(f.data.session_id);
+      if (c) { c.asks.add(f.data.id); this.announce(c); }
       void this.ask(f.data);
-    } else if (f.t === "feature" && f.name === "approval" && f.data?.state !== "pending" && this.asking.has(f.data?.id)) {
+    } else if (f.t === "feature" && f.name === "approval" && f.data?.state !== "pending" && f.data?.id) {
+      // A child's card answered (here, in the workbench, or settled): it works again, or has stopped.
+      const c = this.children.get(f.data.session_id);
+      if (c?.asks.delete(f.data.id)) this.announce(c);
+      if (!this.asking.has(f.data.id)) return;
       // Answered in the workbench: the editor's request is withdrawn.
       const requestId = this.asking.get(f.data.id)!;
       this.asking.delete(f.data.id);

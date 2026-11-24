@@ -1,45 +1,8 @@
 import { expect, test } from "./isolate.ts";
-import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { Editor } from "./acp-editor.ts";
 import { ask, HAIKU, openPanel, SCRIPTED, scriptBash, shoot } from "./shots.ts";
-
-// An editor's end of ACP: `keel acp` on stdio, JSON-RPC one message a line.
-class Editor {
-  private proc: ChildProcess;
-  private buf = "";
-  private id = 100;
-  private waiting = new Map<number, (m: any) => void>();
-  updates: any[] = [];
-  onRequest: (m: any) => any = () => ({});
-  constructor(url: string) {
-    this.proc = spawn("bun", [join(import.meta.dirname, "../../src/main.ts"), "acp", "--url", url], { stdio: ["pipe", "pipe", "inherit"] });
-    this.proc.stdout!.on("data", (d) => {
-      this.buf += d.toString();
-      let i: number;
-      while ((i = this.buf.indexOf("\n")) >= 0) {
-        const m = JSON.parse(this.buf.slice(0, i));
-        this.buf = this.buf.slice(i + 1);
-        if (m.method === "session/update") this.updates.push(m.params);
-        else if (m.method && m.id !== undefined) this.write({ jsonrpc: "2.0", id: m.id, result: this.onRequest(m) });
-        else if (m.id !== undefined) this.waiting.get(m.id)?.(m);
-      }
-    });
-  }
-  private write(m: unknown) { this.proc.stdin!.write(JSON.stringify(m) + "\n"); }
-  call(method: string, params: unknown): Promise<any> {
-    const id = this.id++;
-    return new Promise((resolve, reject) => {
-      this.waiting.set(id, (m) => (m.error ? reject(new Error(m.error.message)) : resolve(m.result)));
-      this.write({ jsonrpc: "2.0", id, method, params });
-    });
-  }
-  notify(method: string, params: unknown) { this.write({ jsonrpc: "2.0", method, params }); }
-  kinds(sessionId: string) { return this.updates.filter((u) => u.sessionId === sessionId).map((u) => u.update.sessionUpdate); }
-  close() { this.proc.stdin!.end(); }
-  // Gone without a word, as a crashed editor is.
-  kill() { this.proc.kill("SIGKILL"); }
-}
 
 // Feature: an editor drives Keel over the Agent Client Protocol. It makes a
 // session, picks the model

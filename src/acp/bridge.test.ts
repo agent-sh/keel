@@ -354,6 +354,70 @@ test("the editor's servers are held by a socket of its own, and at its end the d
   expect(log.slice(4)).toEqual(["PUT mcp 0 not held", "hold closed", "frames closed"]);
 });
 
+// An editor that takes child sessions holds a session: its agents are announced on it, their work goes
+// under their own ids, a child's card is asked with its id, and a cancel of a child stops its agent.
+test("a held session's agents are child sessions of a client that takes them, and of no other", async () => {
+  const s = { id: "p", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  const rec = { id: "a1", parent_id: "p", session_id: "c1", title: "Tests", status: "running", first_seq: 0, call_id: "spawn1" };
+  const run = async (caps: any) => {
+    const f = fixture([s], {});
+    const watched: any[] = [];
+    Object.assign(f.d, { watch: (c: any) => watched.push(c), unwatch: (ids: string[]) => watched.push({ unwatch: ids }) });
+    f.d.post = (_m, path) => (path === "/api/sessions" ? { session: s } : undefined);
+    await call(f.bridge, f.out, "initialize", { protocolVersion: 1, clientCapabilities: caps });
+    await call(f.bridge, f.out, "session/new", { cwd: "/w", mcpServers: [] });
+    // The parent's call that starts it, then its record and its task.
+    f.frame({ t: "event", event: { session_id: "p", kind: "assistant", data: { blocks: [{ type: "tool_use", id: "spawn1", name: "Agent", input: { description: "Tests", prompt: "Run the unit tests\nand say what failed" } }] } } });
+    f.frame({ t: "feature", name: "automation", data: { kind: "agent", data: rec } });
+    f.frame({ t: "event", event: { session_id: "c1", kind: "user", data: { kind: "task", agent_id: "a1", text: "Run the unit tests\nand say what failed" } } });
+    f.frame({ t: "delta", session_id: "c1", index: 0, kind: "text", text: "Running." });
+    f.frame({ t: "event", event: { session_id: "c1", kind: "assistant", data: { blocks: [{ type: "text", text: "Running." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "bun test" } }] } } });
+    f.frame({ t: "feature", name: "approval", data: { id: "ap1", session_id: "c1", call_id: "t1", tool: "Bash", kind: "shell", state: "pending", summary: "bun test", input: { command: "bun test" }, risk: "low", suggest: [] } });
+    await Bun.sleep(5);
+    return { f, watched };
+  };
+
+  const { f, watched } = await run({ subagents: {} });
+  const told = () => f.updates("p").findLast((u: any) => u.sessionUpdate === "subagent_update");
+  const all = f.out.filter((m) => m.method === "session/update").map((m) => [m.params.sessionId, m.params.update]);
+  const firstChild = all.findIndex(([sid]) => sid === "c1");
+  // Announced on the parent before anything of its own, with its task line and its cancel.
+  expect(all.findIndex(([sid, u]) => sid === "p" && u.sessionUpdate === "subagent_update")).toBeLessThan(firstChild);
+  expect(f.updates("p").find((u: any) => u.sessionUpdate === "subagent_update")).toEqual({ sessionUpdate: "subagent_update", sessionId: "c1", title: "Tests", description: "Run the unit tests", capabilities: { cancel: {} }, state: { state: "running" } });
+  // Its frames from its task on.
+  expect(watched).toEqual([{ p: 0 }, { c1: 0 }]);
+  expect(f.updates("c1").map((u: any) => u.sessionUpdate)).toEqual(["session_message", "agent_message_chunk", "tool_call"]);
+  expect(f.updates("c1")[0]).toMatchObject({ senderSessionId: "p", recipientSessionId: "c1" });
+  // Its card is asked as its own, and it needs action until the card is answered.
+  const ask = f.out.find((m) => m.method === "session/request_permission")!;
+  expect(ask.params.sessionId).toBe("c1");
+  expect(told().state).toEqual({ state: "requires_action" });
+  await f.bridge.handle({ jsonrpc: "2.0", id: ask.id, result: { outcome: { outcome: "selected", optionId: "once" } } });
+  await Bun.sleep(5);
+  expect(f.d.sent.at(-1)).toMatchObject({ method: "POST", path: "/api/sessions/c1/approvals/ap1", body: { choice: "once", via: "acp" } });
+  f.frame({ t: "feature", name: "approval", data: { id: "ap1", session_id: "c1", call_id: "t1", state: "allowed" } });
+  expect(told().state).toEqual({ state: "running" });
+  // A child is watched, not driven.
+  expect((await call(f.bridge, f.out, "session/prompt", { sessionId: "c1", prompt: [{ type: "text", text: "x" }] })).error.code).toBe(-32602);
+  // A cancel of the child stops its agent (as the owner's Stop on its card), not the parent's turn.
+  await f.bridge.handle({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: "c1" } });
+  expect(f.d.sent.at(-1)).toEqual({ method: "POST", path: "/api/sessions/p/agents/a1/stop", body: {} });
+  expect(f.calls).not.toContain("POST /api/sessions/c1/interrupt");
+  f.frame({ t: "feature", name: "automation", data: { kind: "agent", data: { ...rec, status: "stopped", stopped_by: "owner" } } });
+  expect(told()).toMatchObject({ capabilities: {}, state: { state: "idle", stopReason: "cancelled" } });
+  // A child stopped already offers no cancel: a second one is left alone.
+  const sent = f.d.sent.length;
+  await f.bridge.handle({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: "c1" } });
+  expect(f.d.sent.length).toBe(sent);
+  // Closing the parent lets go of both.
+  await call(f.bridge, f.out, "session/close", { sessionId: "p" });
+  expect(watched.at(-1)).toEqual({ unwatch: ["p", "c1"] });
+
+  // A client that did not say it takes them sees nothing of the agent.
+  const plain = (await run({})).f;
+  expect(plain.out.some((m) => m.params?.update?.sessionUpdate === "subagent_update" || m.params?.sessionId === "c1")).toBe(false);
+});
+
 test("a reply sent again after a failed request is not repeated, and the retry is told", async () => {
   const s = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
   for (const notices of [false, true]) {

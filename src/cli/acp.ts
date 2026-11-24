@@ -7,6 +7,7 @@ import { authHeaders, findDaemon } from "./client.ts";
 import { chunks } from "../core/proc.ts";
 
 export function daemonApi(base: string): DaemonApi {
+  let socket: WebSocket | undefined;
   const call = async (method: string, path: string, body?: unknown) => {
     const r = await fetch(base + path, { method, headers: { "content-type": "application/json", ...authHeaders() }, body: body === undefined ? undefined : JSON.stringify(body) });
     const b = (await r.json().catch(() => ({}))) as any;
@@ -36,13 +37,23 @@ export function daemonApi(base: string): DaemonApi {
       new Promise((resolve, reject) => {
         const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws", { headers: authHeaders() } as any);
         ws.onopen = () => {
-          ws.send(JSON.stringify({ op: "resume", cursors: {} })); // events from now on
+          // Only the sessions the bridge names (watch), as a page hears the ones it shows; from now on.
+          ws.send(JSON.stringify({ op: "resume", cursors: {}, only: true }));
+          socket = ws;
           resolve(() => ws.close());
         };
         ws.onerror = () => reject(new Error(`cannot reach the Keel daemon at ${base}`));
         ws.onmessage = (m) => { try { on(JSON.parse(String(m.data))); } catch {} };
         ws.onclose = () => process.exit(0); // the daemon went away: the editor sees the agent end
       }),
+    // A cursor: the session's events stored after it come first, then its frames (no gap, no
+    // repeat: the daemon replays and subscribes in one go). Null: its frames from now.
+    watch: (cursors) => {
+      const from = Object.fromEntries(Object.entries(cursors).filter(([, c]) => c !== null)) as Record<string, number>;
+      const now = Object.keys(cursors).filter((id) => cursors[id] === null);
+      socket?.send(JSON.stringify({ op: "sub", cursors: from, watch: now }));
+    },
+    unwatch: (ids) => socket?.send(JSON.stringify({ op: "unsub", watch: ids })),
   };
 }
 
