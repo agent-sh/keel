@@ -28,7 +28,6 @@ test("homeDir reads HOME as it is now, not as the process started", () => {
 });
 
 test("the preload gives every test a scratch home", () => {
-  expect(process.env.KEEL_TEST_HOME).toBeTruthy();
-  expect(homeDir()).toBe(process.env.KEEL_TEST_HOME!);
+  expect(homeDir()).toBe(process.env.HOME!);
   expect(homeDir().startsWith(tmpdir())).toBe(true);
 });

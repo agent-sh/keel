@@ -9,6 +9,7 @@ import { realOf } from "../core/paths.ts";
 import { Store } from "../core/store.ts";
 import { asShellCommand } from "../tools/codemode.ts";
 import { toolFacts } from "../tools/registry.ts";
+import { ownEnv } from "../../test/env.ts";
 import { Gate } from "./gate.ts";
 import { EVENTS_MAX, marksOf, programCommand, sentence, type MarkArgs } from "./marks.ts";
 import { classify, decide } from "./policy.ts";
@@ -30,6 +31,10 @@ function scratch() {
 }
 const sh = (id: string, command: string, more: Record<string, unknown> = {}): Use => ({ id, name: "Bash", input: { command, ...more } });
 const file = (id: string, file_path: string): Use => ({ id, name: "Write", input: { file_path, content: "x" } });
+
+// The owner's home is a folder of its own, apart from the temp folder the workspaces are in: a workspace's
+// grandparent is no ancestor of the home, whatever the temp folder is on this machine.
+ownEnv({ HOME: "/srv/owner-home-fixture" });
 
 test("a stored call is marked by what the policy says of it and where it writes; a read is not", () => {
   const { ws, table, marks, reply } = scratch();

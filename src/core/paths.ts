@@ -18,11 +18,10 @@ export function ownersFolder(what: string, variable: string) {
 // (a scratch daemon is started with a scratch HOME, and a test preload sets one),
 // else the account's. os.homedir() is not used anywhere else in src/ (a test in
 // src/conventions.test.ts holds to it): it reads $HOME once, when the process
-// starts, so a HOME set later in the process is not seen by it. Under `bun test`
-// a run that skipped the preload (no KEEL_TEST_HOME) stops here rather than read
-// the owner's own home.
+// starts, so a HOME set later in the process is not seen by it. (A child process
+// started by Bun.spawn with no env of its own gets the environment the process
+// started with, not one changed since: pass env when HOME must reach it.)
 export function homeDir(): string {
-  if (process.env.NODE_ENV === "test" && !process.env.KEEL_TEST_HOME) ownersFolder("home folder", "KEEL_TEST_HOME");
   const h = process.env.HOME;
   return h && isAbsolute(h) ? h : homedir();
 }

@@ -26,9 +26,8 @@ writeFileSync(noStore, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 const home = made("home");
 const scratch: Record<string, string> = {
   // The home folder (src/core/paths.ts homeDir): what reads ~/.claude, ~/.codex, ~/.config
-  // and the like finds nothing of the owner's. KEEL_TEST_HOME says the preload ran.
+  // and the like finds nothing of the owner's.
   HOME: home,
-  KEEL_TEST_HOME: home,
   TACIT_BIN: noStore,
   KEEL_CONFIG_DIR: made("config"),
   KEEL_STATE_DIR: made("state"),
