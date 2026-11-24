@@ -97,8 +97,8 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     return { ...base, session_id: root.id, agent_id: a?.id ?? s.id, agent_type: a?.type ?? "general-purpose", agent_session_id: s.id };
   };
   const agentType = (s: Session) => agentOf(s.id)?.type ?? "general-purpose";
-  const fire = (event: HookEvent, s: Session, payload: () => Record<string, unknown>, match?: string[], srcs?: ReturnType<Hooks["sources"]>) =>
-    hooks.run(event, s, () => ({ ...who(s), ...payload() }), match, srcs);
+  const fire = (event: HookEvent, s: Session, payload: () => Record<string, unknown>, match?: string[], srcs?: ReturnType<Hooks["sources"]>, opts?: Parameters<Hooks["run"]>[5]) =>
+    hooks.run(event, s, () => ({ ...who(s), ...payload() }), match, srcs, opts);
   // An event whose hooks are only told: nothing waits on them.
   const tell = (event: HookEvent, s: Session, payload: () => Record<string, unknown>, match?: string[]) =>
     void (async () => fire(event, s, payload, match))().catch((e) => errors.capture("server", e, { at: `hook ${event}`, session: s.id }));
@@ -312,6 +312,32 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       const names = namesOf(target?.name ?? call.tool.name, input, call.tool.name);
       const why = disallowedWhy(s.id, names, (rule) => ifHolds(rule, names, input, call.ctx.cwd));
       return why ? { deny: why } : undefined;
+    },
+  });
+  // A server's question to the owner (MCP elicitation): Elicitation before its card opens, ElicitationResult once it is
+  // answered. A hook answers by `hookSpecificOutput.action` (and `content`), or declines with exit code 2. What is
+  // logged is the server and the names of the fields, never a value the owner or a hook typed.
+  registerHooks({
+    async elicitation(sessionId, ask, signal) {
+      const s = store.session(sessionId);
+      if (!s) return;
+      const r = await fire("Elicitation", s, () => ({
+        mcp_server_name: ask.server, message: ask.message, mode: ask.mode,
+        ...(ask.url ? { url: ask.url } : {}), ...(ask.id ? { elicitation_id: ask.id } : {}), ...(ask.schema !== undefined ? { requested_schema: ask.schema } : {}),
+      }), [ask.server], undefined, { signal });
+      const answer = r.block ? { action: "decline" as const } : r.elicit;
+      if (answer) sayAt({ session: s.id }, hookLine({ event: "Elicitation", did: `${{ accept: "answered", decline: "declined", cancel: "cancelled" }[answer.action]} a request of ${ask.server}`, reason: r.block ?? `answered ${answer.action}${answer.content ? ` with the fields ${Object.keys(answer.content).join(", ")}` : ""}`, title: s.title }));
+      return answer;
+    },
+    async elicitationResult(sessionId, ask, now, signal) {
+      const s = store.session(sessionId);
+      if (!s) return;
+      const r = await fire("ElicitationResult", s, () => ({
+        mcp_server_name: ask.server, mode: ask.mode, action: now.action, fields: ask.fields, ...(ask.id ? { elicitation_id: ask.id } : {}),
+      }), [ask.server], undefined, { signal, ...(now.content && !ask.sensitive ? { ownerOnly: { content: now.content } } : {}) });
+      const answer = r.block ? { action: "decline" as const } : r.elicit;
+      if (answer) sayAt({ session: s.id }, hookLine({ event: "ElicitationResult", did: `changed an answer to ${ask.server}`, reason: r.block ?? `changed ${now.action} to ${answer.action}${answer.content ? ` with the fields ${Object.keys(answer.content).join(", ")}` : ""}`, title: s.title }));
+      return answer;
     },
   });
   skillRun.hooks = (sid, skill, raw) => hooks.addSkill(sid, skill, raw);

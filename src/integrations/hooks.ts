@@ -43,7 +43,7 @@ import { isOutside } from "../core/outside.ts";
 export const EVENTS = [
   "SessionStart", "Stop", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "UserPromptExpansion", "PreToolUse", "StopFailure",
   "SubagentStop", "SessionEnd", "PermissionRequest", "PreCompact", "SubagentStart", "PostCompact", "Notification", "PermissionDenied",
-  "PostToolBatch", "Interrupt", "PreModelRequest", "PostModelRequest",
+  "PostToolBatch", "Interrupt", "PreModelRequest", "PostModelRequest", "Elicitation", "ElicitationResult",
 ] as const;
 export type HookEvent = (typeof EVENTS)[number];
 
@@ -64,8 +64,6 @@ export const NOT_FIRED: Record<string, string> = {
   WorktreeRemove: "Keel removes the worktrees it made itself",
   PreModelSwitch: "no hook point on a model switch yet",
   PostModelSwitch: "no hook point on a model switch yet",
-  Elicitation: "Keel's MCP client answers no elicitation request",
-  ElicitationResult: "Keel's MCP client answers no elicitation request",
 };
 
 // What an event's hooks can answer. `context`: text for the model; `text`: plain
@@ -83,6 +81,8 @@ const CAN: Record<HookEvent, Can> = {
   PostToolBatch: { context: true, text: true, block: true },
   PermissionRequest: { block: true },
   Stop: { goOn: true },
+  // Block: decline the request, or the answer. Their own answer is `hookSpecificOutput.action` and `content`.
+  Elicitation: { block: true }, ElicitationResult: { block: true },
   // Told only: nothing they answer changes what Keel does.
   SubagentStop: {}, StopFailure: {}, SessionEnd: {}, PermissionDenied: {}, PreCompact: {}, PostCompact: {}, Notification: {}, Interrupt: {}, PreModelRequest: {}, PostModelRequest: {},
 };
@@ -410,7 +410,8 @@ export function namesOf(tool: string, input: any, via?: string): string[] {
 // session back to work with these words. `ran`: how many hooks ran.
 // `failed`: each hook of the event that failed, in the words its Errors row has ("Hook timed out (PreToolUse, 5 s): hook.sh pre").
 // `title`: the name a SessionStart or UserPromptSubmit hook gave the session (hookSpecificOutput.sessionTitle).
-export type HookResult = { title?: string; block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string; ran: number; failed?: string[] };
+// `elicit`: what an Elicitation or ElicitationResult hook answered (hookSpecificOutput.action, with content).
+export type HookResult = { elicit?: { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> }; title?: string; block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string; ran: number; failed?: string[] };
 
 // A matcher against the values an event is matched on (a tool's names, a
 // start's source, a compaction's trigger). As Claude Code reads it: nothing,
@@ -784,7 +785,10 @@ export class Hooks {
   // Every active handler of an event that matches, run at the same time.
   // `payload` is made only when a handler runs. `match`: the values the
   // event's matcher is tested on (none: the event takes no matcher).
-  async run(event: HookEvent, s: Session, payload: Record<string, unknown> | (() => Record<string, unknown>), match?: string[], srcs?: Source[]): Promise<HookResult> {
+  // `opts.ownerOnly`: data only the owner's own hooks file gets (what the owner typed into a server's form): a hook
+  // of a repository, a plugin or a skill, an http hook there included, never sees it. `opts.signal`: ends the hooks
+  // that run with the turn that asked.
+  async run(event: HookEvent, s: Session, payload: Record<string, unknown> | (() => Record<string, unknown>), match?: string[], srcs?: Source[], opts?: { ownerOnly?: Record<string, unknown>; signal?: AbortSignal }): Promise<HookResult> {
     const res: HookResult = { context: [], ran: 0 };
     // A session another harness runs is only shown here: none of it goes to a hook (src/core/outside.ts).
     if (isOutside(s)) return res;
@@ -792,8 +796,8 @@ export class Hooks {
     if (!srcs && !this.namesFor(s, event)) return res;
     srcs ??= this.sources(s.workspace, true, s.id);
     // Each matching handler with the file it is in.
-    const found: { h: Handler; path: string }[] = [];
-    for (const src of srcs) if (src.active) for (const g of src.groups[event] ?? []) if (matches(g.matcher, match)) for (const h of g.hooks) found.push({ h, path: src.path });
+    const found: { h: Handler; path: string; scope: Source["scope"] }[] = [];
+    for (const src of srcs) if (src.active) for (const g of src.groups[event] ?? []) if (matches(g.matcher, match)) for (const h of g.hooks) found.push({ h, path: src.path, scope: src.scope });
     if (!found.length) return res;
     const data = { session_id: s.id, transcript_path: null, cwd: s.workspace, hook_event_name: event, model: s.model, ...(typeof payload === "function" ? payload() : payload) } as Record<string, any>;
     const kept = found.filter(({ h }) => h.if === undefined || (TOOL_EVENTS.has(event) && ifHolds(h.if, match, data.tool_input, s.workspace)));
@@ -801,19 +805,26 @@ export class Hooks {
     res.ran = kept.length;
     const can = CAN[event];
     const input = JSON.stringify(data);
+    // What each handler is sent: the owner's own file also gets what is the owner's alone.
+    const ownerData = opts?.ownerOnly ? { ...data, ...opts.ownerOnly } : data;
+    const ownerInput = opts?.ownerOnly ? JSON.stringify(ownerData) : input;
+    const scopeOf = new Map(found.map((x) => [x.h, x.scope] as const));
+    const inputOf = (h: Handler) => (scopeOf.get(h) === "owner" ? ownerInput : input);
     const [normal, most] = TIMEOUTS[event] ?? [600, 3600];
     const limit = (h: Handler) => Math.min(h.timeout ?? normal, most);
     // A background hook is started and not waited for (onFailure has no effect on it, as documented).
     const bg = (h: Handler) => h.type === "command" && !!(h.async || h.asyncRewake);
     // `async` does not hold to its `timeout` (as in Claude Code), but to the event's longest limit, so one that never
     // ends is stopped; `asyncRewake` holds to its own.
-    for (const { h } of kept) if (h.type === "command" && bg(h)) void this.background(h, event, s, input, h.asyncRewake ? limit(h) : most);
+    for (const { h } of kept) if (h.type === "command" && bg(h)) void this.background(h, event, s, inputOf(h), h.asyncRewake ? limit(h) : most);
     const fg = kept.filter(({ h }) => !bg(h));
     const handlers = fg.map((x) => x.h);
     const outs = await Promise.all(handlers.map((h) => {
       const ms = limit(h) * 1000;
-      return h.type === "http" ? runHttp(h, input, ms) : h.type === "mcp_tool" ? runMcp(h, data, ms) : runHook(h, input, s.workspace, ms);
+      return h.type === "http" ? runHttp(h, inputOf(h), ms, opts?.signal) : h.type === "mcp_tool" ? runMcp(h, scopeOf.get(h) === "owner" ? ownerData : data, ms) : runHook(h, inputOf(h), s.workspace, ms, undefined, opts?.signal);
     }));
+    // The turn that asked has ended: what its hooks answered is of no use to it, and none of it is acted on.
+    if (opts?.signal?.aborted) return { context: [], ran: res.ran };
     let stop: string | undefined;
     // What each PreToolUse hook answered about the call's input and its allow, in file order.
     const said: { input?: Record<string, unknown>; allow?: string }[] = [];
@@ -886,6 +897,17 @@ export class Hooks {
       if ((event === "SessionStart" || event === "UserPromptSubmit") && typeof hso.sessionTitle === "string") {
         const t = hookTitle(hso.sessionTitle);
         if (t) res.title ??= t;
+      }
+      if ((event === "Elicitation" || event === "ElicitationResult") && (hso.action === "accept" || hso.action === "decline" || hso.action === "cancel")) {
+        // Only the owner's own file may answer for him; every other source (a repository, a plugin, a skill) may only refuse.
+        if (hso.action === "accept" && scopeOf.get(h) !== "owner") this.tell(fg[i]!.path, `${event}: ${hookName(h).slice(0, 80)} answered accept, which only the hooks file you wrote yourself may do: the card opened`);
+        else {
+          const content = hso.content && typeof hso.content === "object" && !Array.isArray(hso.content) ? hso.content : undefined;
+          const now: NonNullable<HookResult["elicit"]> = { action: hso.action, ...(hso.action === "accept" && content ? { content } : {}) };
+          // Between hooks the answer that asks least of the owner wins: decline, then cancel, then accept.
+          const rank = { decline: 0, cancel: 1, accept: 2 };
+          if (!res.elicit || rank[now.action] < rank[res.elicit.action]) res.elicit = now;
+        }
       }
       if (can.context) {
         if (typeof hso.additionalContext === "string" && hso.additionalContext.trim()) res.context.push(hookSaid(hso.additionalContext.trim()));
@@ -1010,7 +1032,7 @@ type Out = { code: number | null; stdout: string; stderr: string };
 // in its environment, and ${user_config.KEY} in its args (src/plugins/settings.ts).
 const PLUGIN_ENV = new WeakMap<object, { env: Record<string, string>; plugin: string }>();
 
-async function runHook(h: Extract<Handler, { type: "command" }>, input: string, folder: string, ms: number, started?: (pid: number) => void): Promise<Out> {
+async function runHook(h: Extract<Handler, { type: "command" }>, input: string, folder: string, ms: number, started?: (pid: number) => void, signal?: AbortSignal): Promise<Out> {
   const root = projectRoot(folder);
   // A session whose folder is gone, or is on another machine, still runs its hooks (one that denies must still deny): in the home folder.
   const cwd = existsSync(folder) ? folder : homeDir();
@@ -1029,6 +1051,9 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
   started?.(p.pid);
   let timedOut = false;
   const t = Number.isFinite(ms) ? setTimeout(() => { timedOut = true; try { process.kill(-p.pid, "SIGKILL"); } catch {} }, ms) : undefined;
+  // The turn that asked ended: the hook ends with it.
+  const stop = () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} };
+  if (signal?.aborted) stop(); else signal?.addEventListener("abort", stop, { once: true });
   // Read to the end, kept to a bound: a hook that prints without end fills no memory.
   const read = async (s: ReadableStream<Uint8Array> | number | undefined) => {
     let out = "";
@@ -1037,6 +1062,7 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
   };
   const [stdout, stderr, code] = await Promise.all([read(p.stdout), read(p.stderr), p.exited]);
   clearTimeout(t);
+  signal?.removeEventListener("abort", stop);
   return { code: timedOut ? null : code, stdout, stderr };
 }
 
@@ -1045,13 +1071,13 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
 // command's stdout. Any other answer, status or failure is a failed hook
 // (text that is not JSON never reaches the model). A header takes the value
 // of an environment variable only when the hook lists it in allowedEnvVars.
-async function runHttp(h: Extract<Handler, { type: "http" }>, input: string, ms: number): Promise<Out> {
+async function runHttp(h: Extract<Handler, { type: "http" }>, input: string, ms: number, signal?: AbortSignal): Promise<Out> {
   const allowed = new Set(h.allowedEnvVars ?? []);
   const fill = (v: string) => v.replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, a, b) => (allowed.has(a ?? b) ? process.env[a ?? b] ?? "" : ""));
   const headers: Record<string, string> = { "content-type": "application/json" };
   for (const [k, v] of Object.entries(h.headers ?? {})) headers[k] = fill(v);
   try {
-    const r = await fetch(h.url, { method: "POST", headers, body: input, signal: AbortSignal.timeout(ms), redirect: "error" });
+    const r = await fetch(h.url, { method: "POST", headers, body: input, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms), redirect: "error" });
     if (!r.ok) { await r.body?.cancel().catch(() => {}); return { code: 1, stdout: "", stderr: `the hook's server answered ${r.status}` }; }
     // The answer is read to a bound and no further (leaving the loop cancels the stream).
     let size = 0;

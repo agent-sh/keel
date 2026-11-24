@@ -964,8 +964,10 @@ These fire, most used first:
 | `Interrupt` | You stop a running turn, outside a subagent | none | none | Told only. 1 s, 3 s at most |
 | `PreModelRequest` | Before every request to a model, a retry too | none | `model`, `purpose` | Told only |
 | `PostModelRequest` | That request ended | none | `model`, `purpose`, `status`, `error`, `token_usage` | Told only |
+| `Elicitation` | An MCP server asks you a question (a form, or a page to open), before its card opens | the server's name | `mcp_server_name`, `message`, `mode` (`form`, `url`), `requested_schema`, `url`, `elicitation_id` | Answer it with `hookSpecificOutput.action` (`accept` with `content` that fits the form, `decline`, `cancel`) and no card opens. Exit code 2 declines. Only the hooks file you wrote yourself may accept for you: a repository's, a plugin's or a skill's hook may only decline or cancel. An `accept` that does not fit the form leaves the card, and a page is never accepted for you |
+| `ElicitationResult` | The question was answered, by you or by a hook | the server's name | `mcp_server_name`, `mode`, `action`, `fields` (the names asked for), `elicitation_id`, and `content` (what you typed) to your own hooks file only, and never for a form that asks for a secret | Turn an accept into a `decline` or a `cancel` (by the same fields). A hook never turns your decline or cancel into an accept, and changes no content. Exit code 2 declines |
 
-The last three are Codex's. A hook that is told only runs beside the session:
+The last three before the two elicitation events are Codex's. A hook that is told only runs beside the session:
 nothing waits for it, and nothing it answers changes what Keel does.
 
 These never fire. A file that names one loads, and its list in Settings says
@@ -984,7 +986,6 @@ why the event never runs:
 | `FileChanged` | Keel watches no files for a session |
 | `WorktreeCreate`, `WorktreeRemove` | Keel makes and removes its agents' worktrees itself |
 | `PreModelSwitch`, `PostModelSwitch` | No hook point on a model switch yet |
-| `Elicitation`, `ElicitationResult` | Keel's MCP client answers no elicitation request |
 
 Also not done: `SessionStart` with `resume` or `fork` (a session lives in the
 daemon and a fork copies its history, so neither is a new start),

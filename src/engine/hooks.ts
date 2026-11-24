@@ -13,6 +13,13 @@ import type { Crossing } from "../safety/route-rule.ts";
 // `ruled`: what the gate's rules decided of the call, stored with its result (src/safety/trial.ts).
 export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true; failed?: string[] }; ruled?: Ruled };
 
+// A server's question to the owner (MCP elicitation), as the owner's Elicitation hooks see it before its card opens,
+// and the answer a hook may give in the owner's place (or, for ElicitationResult, in place of the owner's).
+// `fields`: the names of the fields asked for, never values. `url`: where a URL-mode request sends the owner.
+// `sensitive`: a field looks like a secret, so what the owner typed goes to no hook.
+export type ElicitAsk = { server: string; mode: "form" | "url"; message: string; fields: string[]; schema?: unknown; url?: string; id?: string; sensitive?: boolean };
+export type ElicitAnswer = { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> };
+
 // What a hook says reaches the model as the hook's words and nothing else: at
 // most HOOK_SAID characters, with no tag in it (every `<` that could open or
 // close one is written `&lt;`, so it closes no frame it is put in and opens
@@ -195,6 +202,13 @@ export type TurnHooks = {
   // (an MCP server asked while the call ran), and that question closed.
   // `askId`: one per question (a call's server can ask more than one).
   ownerAsked?: (sessionId: string, callId: string, text: string, askId: string) => void;
+  // Before that question's card opens: the owner's Elicitation hooks may answer it, and then no card opens.
+  // After it was answered (the owner's, or a hook's): the owner's ElicitationResult hooks may change the
+  // answer, only to ask less of the owner (decline or cancel in place of an accept). The first hook of the list that
+  // answers wins.
+  // `signal`: the turn's; its hooks end with it.
+  elicitation?: (sessionId: string, ask: ElicitAsk, signal?: AbortSignal) => Promise<ElicitAnswer | void>;
+  elicitationResult?: (sessionId: string, ask: ElicitAsk, answer: ElicitAnswer, signal?: AbortSignal) => Promise<ElicitAnswer | void>;
   ownerAnswered?: (sessionId: string, callId: string, answered: boolean, askId: string) => void;
   // Queued input that named a sender left a session's queue unread: its
   // session was deleted or archived, or the owner removed the row. Whoever

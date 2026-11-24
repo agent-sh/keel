@@ -52,6 +52,11 @@ case "$1" in
     if has w-exit2; then echo "exit two" >&2; exit 2; fi
     if has w-deny; then echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"policy says no"}}}'; fi
     if has w-allow; then echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'; fi ;;
+  Elicitation)
+    if has w-decline; then echo '{"hookSpecificOutput":{"hookEventName":"Elicitation","action":"decline"}}'; fi
+    if has w-accept; then echo '{"hookSpecificOutput":{"hookEventName":"Elicitation","action":"accept","content":{"color":"blue"}}}'; fi
+    if has w-exit2; then echo "no" >&2; exit 2; fi ;;
+  ElicitationResult) if has w-change; then echo '{"hookSpecificOutput":{"hookEventName":"ElicitationResult","action":"decline"}}'; fi ;;
   # Told only: an answer changes nothing.
   SessionEnd|Notification|PostCompact|PreCompact|SubagentStop|StopFailure|Interrupt|PermissionDenied|PreModelRequest|PostModelRequest) echo '{"decision":"block","reason":"ignored"}' ;;
 esac
@@ -158,6 +163,33 @@ test("a hook names the session as a rename does: no model title replaces it, a l
   expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(hookTitle("x".repeat(78) + "\u{1F600}\u{1F600}\u{1F600}"))).toBe(false);
   expect(hookTitle("\u2800\u3164 \u2800")).toBe("");
   expect(hookTitle("Fix\u3164 it")).toBe("Fix it");
+});
+
+test("Elicitation, ElicitationResult: a hook answers a server's question or changes the answer, matched on the server's name", async () => {
+  clear();
+  const s = session();
+  const hook = mine.find((x) => x.elicitation)!;
+  const asked = (message: string) => ({ server: "w-srv", mode: "form" as const, message, fields: ["color"], schema: { type: "object", properties: { color: { type: "string" } } } });
+  // A hook that exits clean with no answer leaves the card.
+  expect(await hook.elicitation!(s.id, asked("pick one"))).toBeUndefined();
+  expect((await given("Elicitation"))[0]).toMatchObject({ hook_event_name: "Elicitation", mcp_server_name: "w-srv", mode: "form", message: "pick one", requested_schema: { type: "object" } });
+  // One that answers does, and a refusal (exit code 2) is a decline.
+  expect(await hook.elicitation!(s.id, asked("w-decline"))).toEqual({ action: "decline" });
+  expect(await hook.elicitation!(s.id, asked("w-accept"))).toEqual({ action: "accept", content: { color: "blue" } });
+  expect(await hook.elicitation!(s.id, asked("w-exit2"))).toEqual({ action: "decline" });
+  // The result hook is told the answer and may change it.
+  expect(await hook.elicitationResult!(s.id, asked("keep"), { action: "accept", content: { color: "red" } })).toBeUndefined();
+  expect(await hook.elicitationResult!(s.id, asked("x"), { action: "accept", content: { color: "w-change" } })).toEqual({ action: "decline" });
+  const told = await given("ElicitationResult", 2);
+  // (The files are in no order.)
+  expect(told.find((x) => x.content?.color === "red")).toMatchObject({ hook_event_name: "ElicitationResult", mcp_server_name: "w-srv", action: "accept" });
+  expect(Object.keys(NOT_FIRED)).not.toContain("Elicitation");
+  // What the owner typed into a form that asks for a secret goes to no hook, only the names of its fields.
+  clear();
+  await hook.elicitationResult!(s.id, { ...asked("secret form"), fields: ["password"], sensitive: true }, { action: "accept", content: { password: "hunter2-w-seen" } });
+  const secret = (await given("ElicitationResult"))[0]!;
+  expect(secret).toMatchObject({ action: "accept", fields: ["password"] });
+  expect(JSON.stringify(secret)).not.toContain("hunter2");
 });
 
 test("a matcher is exact alternatives or a regular expression, and `if` narrows a tool's hook", () => {

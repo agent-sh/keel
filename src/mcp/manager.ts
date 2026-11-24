@@ -16,11 +16,11 @@ import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { networkFailure, RETRY, retryDelay } from "./retry.ts";
 import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputHandler, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
-import { formOf, linkOf, linksRequired, plain, URL_REQUIRED, type ElicitResult } from "./elicit.ts";
+import { formOf, linkOf, linksRequired, plain, URL_REQUIRED, type ElicitResult, type Link } from "./elicit.ts";
 import { cardText, samplingOf, stopReason, type SampleRequest } from "./sampling.ts";
 import { withoutHidden } from "../core/hidden-chars.ts";
-import { allHooks } from "../engine/hooks.ts";
-import { askFor, DECLINED } from "../tools/interact.ts";
+import { allHooks, type ElicitAnswer, type ElicitAsk } from "../engine/hooks.ts";
+import { askFor, DECLINED, type Answers } from "../tools/interact.ts";
 import type { Asked } from "../core/types.ts";
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles, sourced } from "./sources.ts";
@@ -1669,9 +1669,53 @@ export class McpManager {
   // not take is asked again with what was wrong; a declined card is the
   // protocol's decline; a stopped turn (or a stopping daemon) is its cancel.
   private questions = 0;
+  // The owner's Elicitation hooks answer first (no card opens when one does), and ElicitationResult hooks may change the
+  // answer before the server gets it. A hook's accept is taken only when its content fits the form, and for a URL
+  // request never (an accept says the owner went to the page, which only the owner does).
+  private async hookAnswer(ctx: ToolContext, ask: (h: ReturnType<typeof allHooks>[number]) => Promise<ElicitAnswer | void> | undefined): Promise<ElicitAnswer | undefined> {
+    for (const h of allHooks()) {
+      try {
+        const r = await ask(h);
+        if (r) return r;
+      } catch (e) { this.errors.capture("server", e, { hook: "elicitation", session: ctx.sessionId }); }
+    }
+    return undefined;
+  }
+  private fits(a: ElicitAnswer, form: ReturnType<typeof formOf> | undefined, call: CallAsks): ElicitResult | undefined {
+    if (a.action === "decline") { call.declined++; return { action: "decline" }; }
+    if (a.action === "cancel") return { action: "cancel" };
+    if (!form || !a.content) return undefined;
+    const answers: Answers = {};
+    for (const [k, v] of Object.entries(a.content)) {
+      const one = (x: unknown) => typeof x === "string" || typeof x === "number" || typeof x === "boolean";
+      if (!one(v) && !(Array.isArray(v) && v.every(one))) return undefined;
+      answers[k] = { picked: [], other: Array.isArray(v) ? v.map(String).join(",") : String(v) };
+    }
+    const r = form.content(answers);
+    return "content" in r ? { action: "accept", content: r.content } : undefined;
+  }
+  private async hooked(server: string, ask: ElicitAsk, ctx: ToolContext, call: CallAsks, form: ReturnType<typeof formOf> | undefined, card: () => Promise<ElicitResult>): Promise<ElicitResult> {
+    const strict = (a: ElicitAnswer | undefined) => (a && (form || a.action !== "accept") ? this.fits(a, form, call) : undefined);
+    const before = ctx.signal.aborted ? undefined : strict(await this.hookAnswer(ctx, (h) => h.elicitation?.(ctx.sessionId, ask, ctx.signal)));
+    const given = before ?? await card();
+    if (ctx.signal.aborted) return given;
+    // A hook may only ask less of the owner: it turns an accept into a decline or a cancel, never anything into an
+    // accept (a decline or a cancel is the owner's, or a hook's refusal, and stays), and it changes no content.
+    if (given.action !== "accept") return given;
+    const changed = strict(await this.hookAnswer(ctx, (h) => h.elicitationResult?.(ctx.sessionId, ask, given as ElicitAnswer, ctx.signal)));
+    if (ctx.signal.aborted) return given;
+    return changed && changed.action !== "accept" ? changed : given;
+  }
+
   private async elicit(server: string, params: unknown, ctx: ToolContext, card: string, call: CallAsks, unasked: (why: string) => Promise<ElicitResult>): Promise<ElicitResult> {
     const form = formOf(params);
     if (form.unanswerable) return unasked(`${server} asked the owner a form that cannot be answered: ${form.unanswerable}.`);
+    const schema = (params as any)?.requestedSchema;
+    const fields = schema && typeof schema === "object" && schema.properties && typeof schema.properties === "object" ? Object.keys(schema.properties).map((k) => plain(k, 60)) : [];
+    return this.hooked(server, { server, mode: "form", message: form.message, fields, schema, sensitive: form.sensitive }, ctx, call, form, () => this.elicitCard(server, form, ctx, card, call));
+  }
+
+  private async elicitCard(server: string, form: ReturnType<typeof formOf>, ctx: ToolContext, card: string, call: CallAsks): Promise<ElicitResult> {
     // One id per question, so the card knows a new question from the last one on the same call.
     const id = `${Date.now().toString(36)}-${++this.questions}`;
     if (call.readOnly && !this.asked.has(card)) {
@@ -1712,6 +1756,10 @@ export class McpManager {
   private async elicitLink(server: string, params: unknown, ctx: ToolContext, card: string, call: CallAsks): Promise<ElicitResult> {
     const link = linkOf(params);
     if ("refuse" in link) throw new RpcError(-32602, `keel did not show the page: ${link.refuse}`);
+    return this.hooked(server, { server, mode: "url", message: link.message, fields: [], url: link.url, ...(link.id ? { id: link.id } : {}) }, ctx, call, undefined, () => this.elicitLinkCard(server, link, ctx, card, call));
+  }
+
+  private async elicitLinkCard(server: string, link: Link, ctx: ToolContext, card: string, call: CallAsks): Promise<ElicitResult> {
     const watch = link.id ? call.client?.watchLink(link.id) : undefined;
     try {
       const a = await this.onCard(server, watch ? { ...ctx, signal: AbortSignal.any([ctx.signal, watch.signal]) } : ctx, card, call, `${server} asks you to open a page at ${link.host}`, {
