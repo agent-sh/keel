@@ -26,7 +26,7 @@ import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validat
 import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles, sourced } from "./sources.ts";
 import { ClientRefused, OAuthStore, type Forgotten } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
-import { Links } from "./links.ts";
+import { Links, placeKept, touchKept } from "./links.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { appUriOf, visibleTo } from "./apps.ts";
@@ -600,10 +600,12 @@ export class McpManager {
       // A project's entry also keeps its call time limit and its headers helper
       // (the owner approved the entry whole, the helper with it: Claude Code runs a
       // project's helper once its folder is trusted). An editor gives neither.
+      // How the server lives, as its owner wrote it: kept running, not shared with another session.
+      const life = { ...(c.keep_running === true ? { keep_running: true } : {}), ...(c.share === false ? { share: false as const } : {}) };
       const project = opts.project ? { ...(c.tool_timeout_secs ? { tool_timeout_secs: c.tool_timeout_secs } : {}), ...(c.tool_max_secs ? { tool_max_secs: c.tool_max_secs } : {}) } : {};
       const config: McpServerConfig = c.command
-        ? { command: String(c.command), ...(c.args ? { args: c.args.map(String) } : {}), ...(c.env ? { env: c.env } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}), ...project }
-        : { ...(c.url ? { url: String(c.url) } : {}), ...(c.headers ? { headers: c.headers } : {}), ...(c.transport ? { transport: c.transport } : {}), ...project,
+        ? { command: String(c.command), ...(c.args ? { args: c.args.map(String) } : {}), ...(c.env ? { env: c.env } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}), ...life, ...project }
+        : { ...(c.url ? { url: String(c.url) } : {}), ...(c.headers ? { headers: c.headers } : {}), ...(c.transport ? { transport: c.transport } : {}), ...life, ...project,
           ...(opts.project && c.headers_helper ? { headers_helper: String(c.headers_helper), ...(opts.cwd ? { cwd: opts.cwd } : {}) } : {}) };
       const had = mine().find((e) => e.given === s.name && !keep.has(e.name) && same(e.config, config));
       if (had) { keep.add(had.name); had.holder = opts.holder; out.push({ name: s.name, label: had.label }); continue; }
@@ -620,7 +622,7 @@ export class McpManager {
       const held = config.command ? this.sessionSandbox?.(session, [config.command, ...(config.args ?? [])]) : undefined;
       if (held && "refuse" in held) { out.push({ name: s.name, error: held.refuse }); continue; }
       const key = `${label}@${session}`;
-      const spec = config.command ? this.specOf(config, held) : undefined;
+      const spec = config.command ? this.specOf(config, held, session) : undefined;
       const e = this.addEntry(key, config, undefined, { session, label, given: s.name, holder: opts.holder, ...(spec ? { spec } : {}), ...(opts.project ? { project: opts.project } : {}) });
       keep.add(key);
       out.push({ name: s.name, label });
@@ -633,9 +635,10 @@ export class McpManager {
 
   // What a session's own command is, for its kept tool list: the config (its environment's values too) and the argv
   // that runs it in the session's sandbox, under Keel's key so that no value of it can be read from the digest.
-  private specOf(config: McpServerConfig, held: { argv: string[]; as: string } | { refuse: string } | undefined): string {
+  // A server marked `share: false` is the session's alone: the session is part of what it is.
+  private specOf(config: McpServerConfig, held: { argv: string[]; as: string } | { refuse: string } | undefined, session: string): string {
     const argv = held && "argv" in held && held.as !== "off" ? held.argv : null;
-    return `~${createHmac("sha256", this.bindKey).update(canon({ config, argv })).digest("hex").slice(0, 40)}`;
+    return `~${createHmac("sha256", this.bindKey).update(canon({ config, argv, own: config.share === false ? session : null })).digest("hex").slice(0, 40)}`;
   }
 
   // The MCP servers of an installed plugin: the whole list each time (none
@@ -712,7 +715,7 @@ export class McpManager {
       if (e.session !== session || !e.config.command) continue;
       const now = this.sessionSandbox?.(session, [e.config.command, ...(e.config.args ?? [])]);
       // Its kept list is under what it runs as now.
-      if (e.spec) e.spec = this.specOf(e.config, now);
+      if (e.spec) e.spec = this.specOf(e.config, now, session);
       if (e.sandbox === undefined) continue;
       if (now && "as" in now && now.as === e.sandbox) continue;
       // The attempt under way, if any, is ended and is not this entry's any more.
@@ -943,6 +946,8 @@ export class McpManager {
     if (e.state === "disabled" || !this.sleeps(e)) return;
     const k = this.kept[this.keptAs(e)];
     if (!k || k.key !== keptKey(e.config) || !this.accepted(e, k.tools, k.instructions)) return;
+    // (A session's list that is used is the newest again.)
+    if (e.session && touchKept(this.kept, this.keptAs(e))) this.writeKept(this.keptAs(e));
     e.tools = k.tools;
     e.instr = k.instructions;
     e.caps = k.caps;
@@ -965,12 +970,8 @@ export class McpManager {
     const next: Kept = { key, tools: e.tools, instructions: e.instr ?? null, caps, ...((prompts ?? (was?.key === key ? was.prompts : undefined)) ? { prompts: prompts ?? was!.prompts } : {}) };
     if (was && canon(was) === canon(next)) return;
     // (A session's lists are the newest ones: the oldest go past SESSION_KEPT.)
-    if (e.session) {
-      delete this.kept[at];
-      const old = Object.keys(this.kept).filter((n) => n.startsWith("~"));
-      for (const n of old.slice(0, Math.max(0, old.length + 1 - SESSION_KEPT))) delete this.kept[n];
-    }
-    this.kept[at] = next;
+    if (e.session) placeKept(this.kept, at, next, SESSION_KEPT);
+    else this.kept[at] = next;
     this.writeKept(at);
   }
 
@@ -1128,7 +1129,7 @@ export class McpManager {
         const outside = (q: InputRequest) => this.inputOutside(t.kind === "stdio" && t.cwd ? t.cwd : this.workspace, q);
         // A session's own server is one connection for every session given the same one.
         const open = (tt: Transport, era: "modern" | "legacy" | undefined, within?: number) => e.session
-          ? this.links.open(tt, (sig) => McpClient.connect(tt, timeout, era, sig, within, outside), abort.signal)
+          ? this.links.open(tt, (sig) => McpClient.connect(tt, timeout, era, sig, within, outside), abort.signal, e.config.share === false ? e.session : undefined)
           : McpClient.connect(tt, timeout, era, abort.signal, within, outside);
         let client: McpClient;
         try {
@@ -1387,7 +1388,8 @@ export class McpManager {
     const stopped: string[] = [];
     for (const e of [...this.entries.values()]) {
       const c = e.client;
-      if (!c || e.state !== "ready" || e.cold || !this.sleeps(e) || e.closing || (e.inflight ?? 0) > 0 || c.inflight > 0 || e.subscribed.size > 0) continue;
+      // (One that has listed no tool has nothing a call or a search could start it from.)
+      if (!c || e.state !== "ready" || e.cold || !e.tools.length || !this.sleeps(e) || e.closing || (e.inflight ?? 0) > 0 || c.inflight > 0 || e.subscribed.size > 0) continue;
       // A listing the owner has not accepted stays held with its process, where it is read from the server itself.
       if (!this.accepted(e, e.tools, e.instr ?? null)) continue;
       // (Its browser is the owner's to close: a server that opens one stops only when the owner chose to close it when idle.)
@@ -1470,12 +1472,17 @@ export class McpManager {
     const taskSupport = tools?.find((t) => t.name === tool)?.execution?.taskSupport;
     // (Again after the owner finished a step a server asked for in its browser: see firstSteps.)
     while (!r) try {
-      r = await client.callTool(tool, input, signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, {
-        session: ctx.sessionId,
-        // (By the name the session knows the server by: the card and the notes show it.)
-        ask: (q) => this.input(shown, q, ctx, card, call),
-        dropped: (method, why) => call.notes.add(`${shown} ${method === "roots/list" ? "asked for the session's folder" : "asked the owner a question"} while this call ran and got no answer: ${why}. If the result depends on it, run the call again when no other call is using ${shown}.`),
-      }, e?.config.tool_max_secs ? e.config.tool_max_secs * 1000 : undefined, taskSupport);
+      // On a connection sessions share, whose server has asked a question of its own, the calls of one session at a time
+      // are in flight (src/mcp/links.ts): its question could be answered for no other.
+      const done = await client.gate?.(ctx.sessionId, signal);
+      try {
+        r = await client.callTool(tool, input, signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, {
+          session: ctx.sessionId,
+          // (By the name the session knows the server by: the card and the notes show it.)
+          ask: (q) => this.input(shown, q, ctx, card, call),
+          dropped: (method, why) => call.notes.add(`${shown} ${method === "roots/list" ? "asked for the session's folder" : "asked the owner a question"} while this call ran and got no answer: ${why}. If the result depends on it, run the call again when no other call is using ${shown}.`),
+        }, e?.config.tool_max_secs ? e.config.tool_max_secs * 1000 : undefined, taskSupport);
+      } finally { done?.(); }
     } catch (err) {
       const steps = err instanceof RpcError && err.code === URL_REQUIRED && !call.ended && !ctx.signal.aborted ? linksRequired(err.data) : [];
       if (steps.length) {

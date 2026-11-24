@@ -43,6 +43,11 @@ export type McpServerConfig = {
   // a command server is started by its first call, from the tool list kept of its last run, and ended after
   // `mcp_idle.stop_min` minutes with no call (src/mcp/manager.ts). For one that holds state in memory between calls.
   keep_running?: boolean;
+  // `false`: a server a session owns (its editor's, its project's .mcp.json, an agent file's) is not shared with the
+  // other sessions given the same one: it runs for this session alone. By default sessions given an identical server
+  // (command, arguments, environment, folder, sandbox; or address and headers) use one connection. Also read from an
+  // editor's entry and an agent file's or project's.
+  share?: boolean;
   // The owner's answers of what kind of server it is (src/mcp/class.ts); one not given is read from the config.
   class?: Partial<Record<"outside" | "sends" | "account", boolean>>;
 };
@@ -154,6 +159,7 @@ function normalize(c: any): McpServerConfig {
   if (c.channel === true) out.channel = true;
   if (c.close_idle_browser === true) out.close_idle_browser = true;
   if (c.keep_running === true) out.keep_running = true;
+  if (c.share === false) out.share = false;
   if (c.class && typeof c.class === "object") {
     const k = Object.fromEntries(["outside", "sends", "account"].filter((x) => typeof c.class[x] === "boolean").map((x) => [x, c.class[x]]));
     if (Object.keys(k).length) out.class = k;

@@ -117,6 +117,9 @@ export function runnable(raw: any, env: Record<string, string | undefined> = pro
   const safe = (s: string) => expand(s, {});
   return {
     ...c,
+    // (What the file says of how its server lives: kept running, or not shared with another session.)
+    ...(raw?.keep_running === true ? { keep_running: true } : {}),
+    ...(raw?.share === false ? { share: false } : {}),
     ...(c.command ? { command: all(c.command) } : {}),
     ...(c.args ? { args: c.args.map(all) } : {}),
     ...(c.env ? { env: Object.fromEntries(Object.entries(c.env).map(([k, v]) => [k, all(String(v))])) } : {}),

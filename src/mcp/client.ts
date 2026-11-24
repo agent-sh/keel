@@ -423,6 +423,7 @@ export class McpClient {
     // (The extensions a client declares are no methods a server may ask of it.)
     const head = method.split("/")[0]!;
     if (head === "extensions" || !Object.hasOwn(offered(this.t, this.era), head)) return refuse(-32601, `keel does not support ${method}`);
+    this.asks = true;
     if (origin !== undefined) asker = this.pending.get(origin)?.input ? this.pending.get(origin) : undefined;
     else {
       const calls = [...this.pending.values()].filter((p) => p.input); // oldest first
@@ -503,6 +504,12 @@ export class McpClient {
     this.close();
     this.closeHook?.(why);
   }
+  // Whether the server ever made a request of its own on this connection (the calls of one connection then take turns by
+  // session when sessions share it: src/mcp/links.ts).
+  private asks = false;
+  get hasAsked() { return this.asks; }
+  // Set by a shared connection's view: a call's place among the sessions' calls on it.
+  declare gate?: (session: string, signal: AbortSignal) => Promise<() => void>;
   // Whether a request of the server's own comes with nothing that names the
   // call it is for (stdio, and the older transport's one stream): a question
   // of a call that is over would then go to the next call.

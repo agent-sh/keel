@@ -227,9 +227,14 @@ export const mcpRoutes: RouteModule = (deps) => {
         const record = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, String(x)])) : undefined);
         const list = b.servers.map((x: any) => ({
           name: String(x?.name ?? ""),
-          config: (x?.command
-            ? { command: String(x.command), args: Array.isArray(x.args) ? x.args.map(String) : undefined, env: record(x.env) }
-            : { url: typeof x?.url === "string" ? x.url : undefined, headers: record(x?.headers), ...(x?.transport === "sse" ? { transport: "sse" as const } : {}) }) as McpServerConfig,
+          config: {
+            ...(x?.command
+              ? { command: String(x.command), args: Array.isArray(x.args) ? x.args.map(String) : undefined, env: record(x.env) }
+              : { url: typeof x?.url === "string" ? x.url : undefined, headers: record(x?.headers), ...(x?.transport === "sse" ? { transport: "sse" as const } : {}) }),
+            // How its server lives: kept running, or not shared with another session (the owner's own settings of the same names).
+            ...(x?.keep_running === true ? { keep_running: true } : {}),
+            ...(x?.share === false ? { share: false } : {}),
+          } as McpServerConfig,
         }));
         // A command runs a program as the owner: from a remote device that takes the passkey.
         if (list.some((x: { config: McpServerConfig }) => x.config.command)) { const guard = needs(req); if (guard) return guard; }

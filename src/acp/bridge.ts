@@ -340,18 +340,20 @@ export class AcpBridge {
     // a command entry is stdio only with no type or "stdio" (the spec's own), never by guessing from a type it does not know.
     const servers: Json[] = [];
     const refused: string[] = [];
+    // (An entry's `_meta.keel` may say how its server lives: `share: false` for no other session's use of it, `keep_running: true`.)
+    const lives = (m: Json) => ({ ...(m?._meta?.keel?.share === false ? { share: false } : {}), ...(m?._meta?.keel?.keep_running === true ? { keep_running: true } : {}) });
     for (const m of list as Json[]) {
       const name = typeof m?.name === "string" ? m.name : "";
       const type = m?.type;
       if (type === "http" || type === "sse") {
-        if (typeof m.url === "string" && m.url) servers.push({ name, url: m.url, headers: pairs(m.headers), ...(type === "sse" ? { transport: "sse" } : {}) });
+        if (typeof m.url === "string" && m.url) servers.push({ name, url: m.url, headers: pairs(m.headers), ...(type === "sse" ? { transport: "sse" } : {}), ...lives(m) });
         else refused.push(`${name}: no url for its ${type} transport`);
       } else if (type !== undefined && type !== "stdio") {
         refused.push(`${name}: the transport type ${JSON.stringify(String(type)).slice(0, 40)} is not supported (stdio, http and sse are)`);
       } else if (type === undefined && m?.url && !m?.command) {
-        servers.push({ name, url: m.url, headers: pairs(m.headers) });
+        servers.push({ name, url: m.url, headers: pairs(m.headers), ...lives(m) });
       } else if (typeof m?.command === "string" && m.command) {
-        servers.push({ name, command: m.command, args: m.args, env: pairs(m.env) });
+        servers.push({ name, command: m.command, args: m.args, env: pairs(m.env), ...lives(m) });
       } else refused.push(`${name}: no command to start`);
     }
     // Known as served before the daemon is asked: one that fails at once is told while the answer is on its way.

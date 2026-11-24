@@ -120,3 +120,32 @@ test.skipIf(!proc)("the next daemon starts none of them until a call, one start 
   m.dispose();
   await until(() => running() === 0);
 });
+
+test.skipIf(!proc)("a server marked share: false is its session's alone, and one marked keep_running is not ended for idleness", async () => {
+  const m = new McpManager(sink, join(dir, "state-c"), "/");
+  managers.push(m);
+  m.start();
+  const cwd = folder("own");
+  const own = { name: "notes", config: { command: "bun", args: [FIXTURE, marker], share: false } as any };
+  const kept = { name: "notes", config: { command: "bun", args: [FIXTURE, marker], keep_running: true } as any };
+  m.setSessionServers("a1", [own], { cwd });
+  m.setSessionServers("a2", [own], { cwd });
+  await until(() => ["a1", "a2"].every((s) => m.list(s).some((x) => x.session && x.state === "ready")));
+  expect([running(), m.sharedStats().holders]).toEqual([2, [1, 1]]);
+  expect([await call(m, "a1", "x"), await call(m, "a2", "y")]).toEqual(["echo: x", "echo: y"]);
+  // Dropping one leaves the other's process.
+  m.releaseSession("a1");
+  await until(() => running() === 1);
+  expect(await call(m, "a2", "z")).toBe("echo: z");
+  m.releaseSession("a2");
+  await until(() => running() === 0);
+
+  // keep_running: the idle stop leaves it, where a server without it ends.
+  m.setSessionServers("k1", [kept], { cwd });
+  m.setSessionServers("k2", [{ name: "notes", config: { command: "bun", args: [FIXTURE, marker, "plain"] } as any }], { cwd });
+  await until(() => ["k1", "k2"].every((s) => m.list(s).some((x) => x.session && x.state === "ready")));
+  expect(running()).toBe(2);
+  expect(m.stopIdle(Date.now() + 3 * 3_600_000, 30)).toEqual(["notes@k2"]);
+  await until(() => running() === 1);
+  expect(await call(m, "k1", "still")).toBe("echo: still");
+}, 20_000);

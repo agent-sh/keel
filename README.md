@@ -1241,6 +1241,26 @@ Parts Keel has no equivalent of (output styles, LSP servers, monitors, themes,
 `bin/`, MCP bundles, npm and archive sources) are named at install as not
 taken, with why.
 
+## MCP servers a session owns
+
+A session can own MCP servers: its editor passes them, its project's `.mcp.json` names them, or an agent file defines
+them. They are offered to that session alone.
+
+- **One process for identical servers.** Sessions given the same server share one connection: the same command,
+  arguments, environment, folder and sandbox (or, for a remote one, address and headers). Another value in any of
+  them is another process. The process ends when the last session that holds it lets go. Calls of two sessions run
+  together on it; once the server has asked a question of its own (a form, a model request, the session's folders),
+  they take turns by session, because such a request names no call and could be answered for no other.
+- **A server that keeps state for its session** (a logged-in browser, a REPL, a memory server) sets `share: false` in
+  its entry: it then runs for that session alone. An editor gives it as `_meta.keel.share` on the entry; a project's
+  `.mcp.json` or an agent file as `share` in the entry.
+- **Started by its first call.** A command server whose tool list Keel kept from an earlier run starts when a call
+  or a search needs it, and is ended after `mcp_idle.stop_min` minutes with no call. A server with a subscription or a
+  call in flight is not ended. `keep_running: true` (an editor's `_meta.keel.keep_running`) starts it with the session and
+  never ends it for idleness. The lists are kept for the 200 servers a session started most recently.
+- A session that lets go of a server (its list changed, its sandbox changed) ends its own calls on it; the other
+  holders' calls go on.
+
 ## MCP Apps
 
 Keel hosts MCP Apps (the `io.modelcontextprotocol/ui` extension, version
