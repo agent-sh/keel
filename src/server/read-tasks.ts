@@ -15,6 +15,7 @@ import { claudeMcpChoices } from "../mcp/claude-choices.ts";
 import type { SettleAsk } from "../engine/compact.ts";
 import { readHours, type HoursAsk } from "../admin/hours-read.ts";
 import { checkDrivers, driversOf, type DriversAsk } from "../admin/cost-drivers.ts";
+import { readYield } from "../admin/review-yield.ts";
 import { boardChecks, boardFacts, boardPictures } from "../board/facts.ts";
 import { parseDiff } from "../board/tree.ts";
 import { earlierCandidates, earlierOutcomes } from "../automation/earlier-facts.ts";
@@ -60,6 +61,8 @@ export const tasks = {
   // Why a range cost what it did, from the cost drivers' rollup; and that rollup held against the ledger (no repair: the thread reads only).
   "usage.drivers": (db: Database, a: DriversAsk) => driversOf(db, a),
   "usage.driversCheck": (db: Database, _a: Record<string, never>) => checkDrivers(db, false),
+  // How often a builder's done was contradicted, and what a reviewer's refusals confirmed per dollar, by model (src/admin/review-yield.ts).
+  "usage.yield": (db: Database, a: { since: number; until?: number }) => readYield(db, a),
   // The work board of a session's tree (src/board/board.ts): its agents and what is known of their branches,
   // and the check runs on their heads' trees.
   "board.facts": (db: Database, a: { root: string }) => boardFacts(db, a),

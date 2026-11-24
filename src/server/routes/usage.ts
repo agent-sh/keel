@@ -258,6 +258,19 @@ export const usageRoutes: RouteModule = ({ store, errors, providers }) => {
       }, { headers: { "cache-control": "no-store" } });
     },
   },
+  // GET /api/usage/yield?since_ms=&until_ms=: for each builder model and agent type, how often an agent's
+  // done was contradicted (a refusal, a red check on its head, a landing that had to fix it), and for each
+  // reviewer model its refusals a later fix confirmed, what its reviews cost, and its rounds a lane. Counts of
+  // records only (src/admin/review-yield.ts). Read on the read thread.
+  "/api/usage/yield": {
+    GET: async (req: Request) => {
+      const q = new URL(req.url).searchParams;
+      const num = (k: string) => (q.has(k) ? Number(q.get(k)) : undefined);
+      const since = num("since_ms") ?? Date.now() - 7 * 86_400_000, until = num("until_ms");
+      if ([since, until].some((v) => v !== undefined && !Number.isFinite(v))) return Response.json({ error: "a bound is not a number" }, { status: 400 });
+      return Response.json(await readsOf(store).run("usage.yield", { since, ...(until !== undefined ? { until } : {}) }), { headers: { "cache-control": "no-store" } });
+    },
+  },
   "/api/usage": {
     GET: async (req: Request) => {
       const q = new URL(req.url).searchParams;

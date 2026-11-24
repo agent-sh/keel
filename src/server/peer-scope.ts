@@ -87,7 +87,7 @@ const TOP_READS = [
   /^\/api\/sessions$/,
   /^\/api\/sessions\/[^/]+(\/(events|timeline|hours|agents|agents\/[^/]+\/report))?$/,
   /^\/api\/(errors|resources|daemon|automation|automation\/now|telemetry)$/,
-  /^\/api\/usage(\/(drivers|rollup))?$/,
+  /^\/api\/usage(\/(drivers|yield|rollup))?$/,
   /^\/api\/telemetry\/(compactions|compare|examples|memory|prompt|slowest|tokens|turns|vocabulary)$/,
 ];
 export function sessionMay(method: string, path: string, session: string, lists = false): boolean {
