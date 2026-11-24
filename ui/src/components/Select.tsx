@@ -54,7 +54,7 @@ export function Select({ value, onChange, children, className, disabled, ...rest
                 <Fragment key={o.value}>
                   {head && <div className="px-2.5 pb-1 pt-2 k-label">{head}</div>}
                   <Base.Item value={o.value} disabled={o.disabled} data-value={o.value} className={cn(itemClass, "justify-between")}>
-                    <Base.ItemText className="min-w-0 truncate">{o.label}</Base.ItemText>
+                    <Base.ItemText className="min-w-0 truncate max-md:whitespace-normal max-md:break-words">{o.label}</Base.ItemText>
                     <Base.ItemIndicator className="flex-none"><Check className="size-3.5 text-muted" /></Base.ItemIndicator>
                   </Base.Item>
                 </Fragment>

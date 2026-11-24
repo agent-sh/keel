@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
 import { calls, colors, create, folder, pending } from "./answering.ts";
@@ -270,6 +271,57 @@ for (const size of SIZES) {
       await expect(table).toBeVisible();
       await inside(page, table);
       await noSideScroll(page);
+    });
+
+    test("the start box's branch chip and its list fit the page and are pressed by a finger", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `phone-base-${Date.now()}-${size.width}`);
+      const repo = join(root, "repo");
+      mkdirSync(repo, { recursive: true });
+      const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repo, encoding: "utf8" }).trim();
+      git("init", "-q", "-b", "main");
+      writeFileSync(join(repo, "notes.md"), "main\n");
+      git("add", "-A");
+      git("commit", "-qm", "init");
+      const long = "feature/a-branch-whose-name-is-much-too-long-for-one-line-on-a-phone-screen";
+      for (const name of ["dev", long]) { git("checkout", "-q", "-b", name, "main"); writeFileSync(join(repo, `${name.length}.md`), name); git("add", "-A"); git("commit", "-qm", name); }
+      git("checkout", "-q", "main");
+      git("update-ref", "refs/remotes/origin/main", "main");
+      git("update-ref", "refs/remotes/origin/release-candidate-with-a-long-name", "dev");
+      git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+      const other = join(root, "long-checkout");
+      git("worktree", "add", "-q", other, long);
+      const guest = await (await request.post("/api/sessions", { data: { workspace: other, model: STAND_IN, title: "A session whose title is long enough to push the row past the edge" } })).json();
+      try {
+        await page.addInitScript((ws) => {
+          localStorage.setItem("keel.newWorkspace", JSON.stringify(ws));
+          localStorage.setItem("keel.startInWorktree", "0");
+        }, repo);
+        await page.goto("/");
+        await page.getByTestId("start-in-worktree").tap();
+        const chip = page.getByTestId("worktree-base");
+        await expect(chip).toContainText("from");
+        await inside(page, chip);
+        await noSideScroll(page);
+        expect(await small(chip), "the chip is a finger's target").toEqual([]);
+        await shoot(page, `phone-surfaces-08-base-chip-${size.width}`);
+        const trigger = page.getByTestId("worktree-base-select");
+        await trigger.tap();
+        const list = page.getByRole("listbox");
+        await expect(list.getByRole("option").first()).toBeVisible();
+        // The list stands inside the page, each row a finger's target, no row's words cut off.
+        await inside(page, list);
+        await noSideScroll(page);
+        expect(await small(list), "every row of the list is a finger's target").toEqual([]);
+        const cut = await list.getByRole("option").evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth + 1 || [...e.querySelectorAll<HTMLElement>("*")].some((c) => c.scrollWidth > c.clientWidth + 1 && getComputedStyle(c).overflow !== "visible")).map((e) => e.textContent?.slice(0, 40)));
+        expect(cut, "rows cut off").toEqual([]);
+        await shoot(page, `phone-surfaces-09-base-list-${size.width}`);
+        await list.locator('[role="option"][data-value="dev"]').tap();
+        await expect(trigger).toHaveAttribute("data-value", "dev");
+        await inside(page, chip);
+      } finally {
+        await drop(request, guest.session?.id ?? guest.id);
+      }
     });
   });
 }
