@@ -7,8 +7,15 @@ export type Item = {
   context: number; vision?: boolean; pdf?: boolean; plan: boolean; hidden?: "model" | "provider" | "both"; key: string; hay: string;
   // What a screen reader says: the name and where it goes.
   aria: string;
+  // The ACP agent a route belongs to (`agent` or `agent/choice` under the ACP provider).
+  agent?: string;
 };
-export type Group = { value: string; label: string; provider?: string; plan?: boolean; total: number; items: Item[] };
+// `sub`: one agent of the ACP provider, folded to its own row under a header that opens it (`folded`, absent while searching); `total` is
+// the models the agent offers besides itself.
+export type Group = { value: string; label: string; provider?: string; plan?: boolean; total: number; items: Item[]; sub?: boolean; folded?: boolean };
+
+// The provider whose models are the agents an ACP runner drives and each agent's own choices.
+export const ACP_PROVIDER = "acp";
 
 // A provider group shows this many models until it is opened or searched.
 export const CAP = 6;
@@ -33,6 +40,7 @@ export function buildItems(models: ListedModel[], labels: Record<string, string>
       hidden: m.hidden ? (m.hidden_by ?? "model") : undefined,
       key: m.id, hay: `${m.name} ${m.model} ${providerLabel} ${m.provider} ${m.id}`.toLowerCase(),
       aria: `${m.name}, ${providerLabel}`,
+      ...(m.provider === ACP_PROVIDER ? { agent: m.model.split("/")[0] } : {}),
     };
   };
   const all = models.map(item);
@@ -68,6 +76,17 @@ export function buildGroups(o: {
     for (const p of o.order) {
       const list = by.get(p);
       if (!list) continue;
+      if (p === ACP_PROVIDER) {
+        // One header an agent: the agent's own row, and its models once the header is opened (or searched).
+        const by = new Map<string, Item[]>();
+        for (const i of list) (by.get(i.agent!) ?? by.set(i.agent!, []).get(i.agent!)!).push(i);
+        for (const [agent, items] of by) {
+          const value = `agent:${agent}`, head = items.find((i) => i.model === agent), choices = items.filter((i) => i !== head).length;
+          const folded = fold && choices > 0 && !o.expanded.has(value);
+          out.push({ value, label: head?.label ?? agent, provider: p, plan: items.some((i) => i.plan), total: choices, sub: true, ...(fold && choices > 0 ? { folded } : {}), items: folded ? items.filter((i) => i === head) : items });
+        }
+        continue;
+      }
       const folded = fold && !o.expanded.has(p) && list.length > CAP + 2;
       out.push({ value: p, label: o.labelOf(p), provider: p, plan: list.some((i) => i.plan), total: list.length, items: folded ? list.slice(0, CAP) : list });
     }

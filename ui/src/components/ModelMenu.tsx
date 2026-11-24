@@ -1,5 +1,5 @@
 import { Combobox } from "@base-ui/react/combobox";
-import { Check, ChevronLeft, ChevronRight, EyeOff, Image, ImageOff, RefreshCw, Star } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Image, ImageOff, RefreshCw, Star } from "lucide-react";
 import { TriggerLabel, triggerClass } from "./ModelPicker.tsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { composing } from "../lib/keys.ts";
@@ -112,6 +112,22 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   // Favorites and hidden models are this daemon's own choices: a peer's
   // listing offers no pin or hide (they would land here, not there).
   const own = !machine;
+  // The row's columns, the same on every row: the check, the name (takes the rest), then what the mode has:
+  // the cache cost and Compact first and the effort (a session), favorites and hide (own), the image mark, the window.
+  const compactCol = !!session && !!facts?.can_compact && !!facts.cached_tokens;
+  const cols = useMemo(() => {
+    let n = 3;
+    const tracks = ["1rem", "minmax(0,1fr)"], at = { cost: 0, compact: 0, effort: 0, actions: 0, vision: 0, window: 0 };
+    if (session) {
+      at.cost = n++; tracks.push("5.5rem");
+      if (compactCol) { at.compact = n++; tracks.push("5.5rem"); }
+      at.effort = n++; tracks.push("var(--eff)");
+    }
+    if (own) { at.actions = n++; tracks.push("var(--act)"); } else at.actions = n;
+    at.vision = n++; tracks.push("1rem");
+    at.window = n++; tracks.push("2.5rem");
+    return { ...at, template: tracks.join(" ") };
+  }, [session, compactCol, own]);
   const togglePin = (i: Item) => own && actions.choose(pinned.includes(i.value) ? { unpin: [i.value] } : { pin: [i.value] }).catch(reportError);
   // Hide asks nothing of the daemon for the default: its row has no Hide either.
   const hide = (i: Item) => {
@@ -182,7 +198,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
             className={cn(
               "@container/picker flex max-h-[min(33rem,var(--available-height))] flex-col overflow-hidden rounded-lg border border-line bg-raised shadow-3",
               // A session's rows carry its effort and Compact first besides: wider, so the name keeps the row's middle.
-              session ? "w-[min(36rem,calc(100vw-1.5rem))]" : "w-[min(30rem,calc(100vw-1.5rem))]",
+              session ? (compactCol ? "w-[min(44rem,calc(100vw-1.5rem))]" : "w-[min(38rem,calc(100vw-1.5rem))]") : "w-[min(30rem,calc(100vw-1.5rem))]",
               SHEET.popup,
               "origin-[var(--transform-origin)] transition-[scale,opacity]",
               "data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0",
@@ -257,14 +273,29 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                   <Combobox.GroupLabel className="group/head sticky top-0 z-10 flex min-h-7 items-center gap-1.5 bg-raised px-2 text-micro font-medium text-faint">
                     {group.value === "favorites" && <Star className="size-3 shrink-0 fill-current text-brass" />}
                     <span className={cn("truncate", NARROW.wrap)} data-testid="model-group-label">{group.label}</span>
-                    {group.provider && <span className="font-normal tabular-nums">{group.total}</span>}
+                    {group.provider && !group.sub && <span className="font-normal tabular-nums">{group.total}</span>}
+                    {group.sub && group.total > 0 && (
+                      group.folded !== undefined ? (
+                        <button
+                          type="button"
+                          aria-expanded={!group.folded}
+                          aria-label={`${group.folded ? "Show" : "Hide"} the ${group.total} models of ${group.label}`}
+                          data-testid="agent-toggle"
+                          onPointerDown={(e) => e.preventDefault()}
+                          onClick={(e) => { e.stopPropagation(); setExpanded((s) => { const n = new Set(s); if (n.has(group.value)) n.delete(group.value); else n.add(group.value); return n; }); }}
+                          className="-my-0.5 inline-flex items-center gap-0.5 rounded-xs px-1 py-0.5 font-normal tabular-nums hover:bg-hover hover:text-fg"
+                        >
+                          {group.folded ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}{group.total} models
+                        </button>
+                      ) : <span className="font-normal tabular-nums">{group.total} models</span>
+                    )}
                     {group.plan && <span className="rounded-xs bg-sunken px-1 font-normal text-muted">plan</span>}
-                    {group.provider && problems?.[group.provider] && (
+                    {group.provider && !group.sub && problems?.[group.provider] && (
                       <span className={cn("font-normal", problems[group.provider]!.kind === "billing" ? "text-warn" : "text-danger")} title={problems[group.provider]!.message} data-testid="group-problem">
                         {problems[group.provider]!.kind === "billing" ? "billing" : "key refused"}
                       </span>
                     )}
-                    {own && group.provider && group.provider !== selected?.provider && !def.startsWith(`${group.provider}:`) && (
+                    {own && group.provider && !group.sub && group.provider !== selected?.provider && !def.startsWith(`${group.provider}:`) && (
                       <button
                         type="button"
                         title={`Hide ${group.label} from the picker (search still finds its models)`}
@@ -288,8 +319,10 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         data-held={held && !held.gone && held.id === item.value ? "" : undefined}
                         data-model={item.value}
                         data-provider={item.provider}
+                        style={{ gridTemplateColumns: cols.template }}
                         className={cn(
-                          "group/row relative grid min-h-8 cursor-default grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1 text-ui select-none outline-none",
+                          // Fixed columns: each fact sits at the same place on every row, whatever the row has or lacks.
+                          "group/row relative grid min-h-8 cursor-default items-center gap-x-1.5 rounded-md px-2 py-1 text-ui select-none outline-none [--act:3rem] [--eff:6.5rem] pointer-coarse:[--act:5.8rem] pointer-coarse:[--eff:9.3rem]",
                           NARROW.row,
                           held ? "data-held:bg-hover" : "data-highlighted:bg-hover",
                           item.hidden && "text-muted",
@@ -299,55 +332,66 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                           <Check className="size-3.5" />
                         </Combobox.ItemIndicator>
                         <span className={cn("col-start-2 flex min-w-0 items-center gap-1.5", NARROW.apart)}>
-                          <span className={cn("min-w-0 text-balance [overflow-wrap:anywhere]", item.hidden && "max-w-[55%]", NARROW.name)} data-testid="model-name">{item.label}</span>
-                          {session && !item.hidden && <CacheCost loss={lossOf(item)} />}
+                          <span className={cn("min-w-0 truncate", NARROW.name, item.hidden && "max-w-[55%]")} title={item.label} data-testid="model-name">{item.label}</span>
                           {item.value === def && <span data-testid="model-default" className="shrink-0 rounded-xs bg-accent-soft px-1 text-micro font-medium text-accent-ink">default</span>}
                           {!group.provider && !item.hidden && <span className={cn("min-w-16 shrink-[8] truncate text-micro text-faint", NARROW.wrap)} title={item.providerLabel} data-testid="model-provider">{item.providerLabel}</span>}
                           {item.hidden && <span className={cn("min-w-0 truncate text-micro text-faint", NARROW.wrap)} title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
                         </span>
-                        <span className={cn("col-start-3 flex items-center gap-1 text-micro tabular-nums text-faint", NARROW.tail)}>
+                        {session && !item.hidden && <CacheCost loss={lossOf(item)} column={cols.cost} />}
+                        <span className={cn("contents", NARROW.tail)}>
                           <span className={cn("contents", NARROW.actions)}>
                             {session && !item.hidden && canCompact(item) && (
-                              <TextAction quiet testid="compact-first" label="Compact first" title={`Summarize the conversation on the current model from its warm cache, then switch (Shift+Enter)`} onPress={() => choose(item, true)} />
+                              <TextAction quiet column={cols.compact} testid="compact-first" label="Compact first" title={`Summarize the conversation on the current model from its warm cache, then switch (Shift+Enter)`} onPress={() => choose(item, true)} />
                             )}
                             {session && !item.hidden && effortOf(item) && (
                               <EffortChip
+                                column={cols.effort}
                                 value={effortOf(item)!}
                                 changed={efforts[item.value] !== undefined}
                                 onStep={(by) => step(item, by)}
                               />
                             )}
-                            {own && !item.hidden && <RowAction
-                              label={pinned.includes(item.value) ? "Remove from favorites" : "Add to favorites"}
-                              on={pinned.includes(item.value)}
-                              testid="pin-model"
-                              onPress={() => togglePin(item)}
-                            >
-                              <Star className={cn("size-3", pinned.includes(item.value) && "fill-current text-brass")} />
-                            </RowAction>}
-                            {own && !item.hidden && item.value !== def && (
-                              <RowAction label="Hide" on={false} testid="hide-model" onPress={() => hide(item)}>
-                                <EyeOff className="size-3" />
-                              </RowAction>
+                            {own && !item.hidden && (
+                              <span className="flex items-center justify-end picker-narrow:contents" style={{ gridColumn: cols.actions }}>
+                                <RowAction
+                                  label={pinned.includes(item.value) ? "Remove from favorites" : "Add to favorites"}
+                                  on={pinned.includes(item.value)}
+                                  testid="pin-model"
+                                  onPress={() => togglePin(item)}
+                                >
+                                  <Star className={cn("size-3", pinned.includes(item.value) && "fill-current text-brass")} />
+                                </RowAction>
+                                {item.value !== def && (
+                                  <RowAction label="Hide" on={false} testid="hide-model" onPress={() => hide(item)}>
+                                    <EyeOff className="size-3" />
+                                  </RowAction>
+                                )}
+                              </span>
                             )}
-                            {own && item.hidden === "model" && <TextAction testid="show-model" label="Show" onPress={() => show(item)} />}
-                            {own && (item.hidden === "provider" || item.hidden === "both") && (
-                              <TextAction testid="show-provider" label="Show provider" title={item.hidden === "both" ? `Show ${item.providerLabel} again; this model stays hidden` : `Show ${item.providerLabel} again`} onPress={() => showProvider(item, false)} />
+                            {own && !!item.hidden && (
+                              <span className="flex items-center justify-end gap-1 picker-narrow:contents" style={{ gridColumn: `${cols.actions} / -1` }}>
+                                {item.hidden === "model" && <TextAction testid="show-model" label="Show" onPress={() => show(item)} />}
+                                {(item.hidden === "provider" || item.hidden === "both") && (
+                                  <TextAction testid="show-provider" label="Show provider" title={item.hidden === "both" ? `Show ${item.providerLabel} again; this model stays hidden` : `Show ${item.providerLabel} again`} onPress={() => showProvider(item, false)} />
+                                )}
+                                {item.hidden === "both" && <TextAction testid="show-both" label="Show both" title={`Show ${item.providerLabel} and this model`} onPress={() => showProvider(item, true)} />}
+                              </span>
                             )}
-                            {own && item.hidden === "both" && <TextAction testid="show-both" label="Show both" title={`Show ${item.providerLabel} and this model`} onPress={() => showProvider(item, true)} />}
                           </span>
                           {!item.hidden && (
                             <span className={cn("contents", NARROW.facts)}>
-                              {item.vision === true && <Image className="ml-0.5 size-3 shrink-0" aria-label="Reads images" />}
-                              {item.vision === false && <ImageOff className="ml-0.5 size-3 shrink-0" aria-label="Does not read images" />}
-                              <span className={cn("w-8 text-right", NARROW.window)} title="Context window">{item.context ? fmtTokens(item.context) : ""}</span>
+                              <span className="flex items-center justify-center empty:hidden" style={{ gridColumn: cols.vision }}>
+                                {item.vision === true && <Image className="size-3 shrink-0" aria-label="Reads images" />}
+                                {item.vision === false && <ImageOff className="size-3 shrink-0" aria-label="Does not read images" />}
+                              </span>
+                              <span className={cn("text-right text-micro tabular-nums text-faint", NARROW.window)} style={{ gridColumn: cols.window }} title="Context window">{item.context ? fmtTokens(item.context) : ""}</span>
                             </span>
                           )}
                         </span>
                       </Combobox.Item>
                     )}
                   </Combobox.Collection>
-                  {group.provider && group.items.length < group.total && (
+                  {group.provider && !group.sub && group.items.length < group.total && (
                     <button
                       type="button"
                       data-testid="show-all"
@@ -401,8 +445,8 @@ const NARROW = {
   row: "picker-narrow:flex picker-narrow:flex-wrap picker-narrow:gap-x-1.5 picker-narrow:gap-y-0.5 picker-narrow:py-1.5 picker-narrow:pl-8",
   mark: "picker-narrow:absolute picker-narrow:left-2 picker-narrow:top-2",
   apart: "picker-narrow:contents",
-  tail: "picker-narrow:min-h-7 picker-narrow:flex-[1_0_auto]",
-  name: "picker-narrow:max-w-none picker-narrow:basis-full",
+  tail: "picker-narrow:flex picker-narrow:min-h-7 picker-narrow:flex-[1_0_auto] picker-narrow:items-center picker-narrow:gap-1",
+  name: "picker-narrow:max-w-none picker-narrow:basis-full picker-narrow:overflow-visible picker-narrow:whitespace-normal picker-narrow:[overflow-wrap:anywhere]",
   wrap: "picker-narrow:min-w-0 picker-narrow:shrink picker-narrow:whitespace-normal picker-narrow:[overflow-wrap:anywhere]",
   facts: "picker-narrow:order-first picker-narrow:flex picker-narrow:items-center picker-narrow:gap-1",
   window: "picker-narrow:w-auto",
@@ -440,7 +484,7 @@ function RowAction({ label, on, testid, onPress, children }: { label: string; on
 // highlighted row, and always under a finger); the word is the row's like
 // its name, so a press on it picks the row. Changed in this opening: in the
 // accent, as what Enter sends.
-function EffortChip({ value, changed, onStep }: { value: string; changed: boolean; onStep: (by: -1 | 1) => void }) {
+function EffortChip({ value, changed, onStep, column }: { value: string; changed: boolean; onStep: (by: -1 | 1) => void; column: number }) {
   const hit = (f: () => void) => ({
     onPointerDown: (e: React.PointerEvent) => { e.preventDefault(); e.stopPropagation(); },
     onClick: (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); f(); },
@@ -448,11 +492,11 @@ function EffortChip({ value, changed, onStep }: { value: string; changed: boolea
   // Kept in the layout while hidden: the word stays where it is when the row is highlighted.
   const arrow = "invisible grid size-ctl-sm place-items-center rounded-xs hover:bg-line hover:text-fg group-hover/row:visible group-data-highlighted/row:visible pointer-coarse:visible pointer-coarse:size-[2.9rem]";
   return (
-    <span className="inline-flex shrink-0 items-center" data-testid="row-effort" data-effort={value} data-changed={changed ? "" : undefined}>
+    <span className="inline-flex shrink-0 items-center justify-self-end" style={{ gridColumn: column }} data-testid="row-effort" data-effort={value} data-changed={changed ? "" : undefined}>
       <span role="button" tabIndex={-1} aria-label="Less effort" title="Less effort (Left)" className={arrow} {...hit(() => onStep(-1))}><ChevronLeft className="size-3" /></span>
       <span
         title={`Effort ${value}: Left and Right change it, Enter applies it with the model`}
-        className={cn("rounded-xs px-1 py-0.5 text-micro", changed ? "bg-accent-soft font-medium text-accent-ink" : "text-muted")}
+        className={cn("flex w-14 justify-center rounded-xs px-1 py-0.5 text-micro", changed ? "bg-accent-soft font-medium text-accent-ink" : "text-muted")}
       >
         {value}
       </span>
@@ -464,12 +508,12 @@ function EffortChip({ value, changed, onStep }: { value: string; changed: boolea
 // What a switch to the row adds: the warm prefix read again without the
 // cache, priced from the catalog (the new model's write rate against the
 // current one's read rate). Tokens alone when the row's model has no price.
-function CacheCost({ loss }: { loss?: { tokens: number; cost?: number; cached?: number; extra?: number } }) {
+function CacheCost({ loss, column }: { loss?: { tokens: number; cost?: number; cached?: number; extra?: number }; column: number }) {
   if (!loss) return null;
   const priced = loss.extra !== undefined;
   const title = `A switch re-reads about ${fmtTokens(loss.tokens)} cached tokens without the prompt cache${loss.cost !== undefined ? `: about ${fmtCost(loss.cost)}${loss.cached !== undefined ? `, against ${fmtCost(loss.cached)} from the cache` : ""}` : "; this model states no price"}`;
   return (
-    <span data-testid="row-cache-cost" title={title} className={cn("shrink-0 whitespace-nowrap text-micro tabular-nums", priced ? "text-faint" : "text-warn")}>
+    <span data-testid="row-cache-cost" title={title} style={{ gridColumn: column }} className={cn("shrink-0 justify-self-end whitespace-nowrap text-micro tabular-nums", priced ? "text-faint" : "text-warn")}>
       {priced ? `+${fmtCost(loss.extra)}` : `${fmtTokens(loss.tokens)} uncached`}
     </span>
   );
@@ -477,12 +521,13 @@ function CacheCost({ loss }: { loss?: { tokens: number; cost?: number; cached?: 
 
 // A worded action inside an option, for the choices an icon cannot tell apart.
 // `quiet`: shown on the highlighted row only (and always under a finger), as the icons are.
-function TextAction({ label, title, testid, onPress, quiet }: { label: string; title?: string; testid: string; onPress: () => void; quiet?: boolean }) {
+function TextAction({ label, title, testid, onPress, quiet, column }: { label: string; title?: string; testid: string; onPress: () => void; quiet?: boolean; column?: number }) {
   return (
     <span
       role="button"
       tabIndex={-1}
       title={title ?? label}
+      style={column ? { gridColumn: column } : undefined}
       data-testid={testid}
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}

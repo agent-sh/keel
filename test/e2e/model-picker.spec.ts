@@ -215,19 +215,22 @@ async function withLab(request: APIRequestContext, run: () => Promise<void>) {
     server.close();
   }
 }
-// Every name in the list is shown whole: nothing is cut off at its end.
+// A name that fits its row is shown whole; one that does not is cut to a line, whole in its tooltip.
 const whole = (names: Locator) => names.evaluateAll((els) => els.every((el) => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight));
+const cutWithTitle = (names: Locator) => names.evaluateAll((els) => els.every((el) => !el.getAttribute("title") || el.getAttribute("title") === el.textContent) && els.some((el) => el.scrollWidth > el.clientWidth));
 
 // Long names stay apart in the chooser at its full width: a name too long for
-// its row goes on to a second line instead of losing its end.
-test("model picker: long names are shown whole", async ({ page, request }) => {
+// its row is cut to one line, and its whole name is the row's tooltip.
+test("model picker: long names are cut to a line and named in a tooltip", async ({ page, request }) => {
   await withLab(request, async () => {
     await page.goto("/");
     const popup = page.getByTestId("model-popup");
     await page.getByTestId("model-picker").click();
     await page.getByPlaceholder("Search models").fill("preview-quantized");
     await expect(popup.getByTestId("model-option")).toHaveCount(2 * LAB_MODELS.length);
-    expect(await whole(popup.getByTestId("model-name"))).toBe(true);
+    expect(await cutWithTitle(popup.getByTestId("model-name"))).toBe(true);
+    await expect(popup.getByTestId("model-name").first()).toHaveAttribute("title", `${LAB_MODELS[0]}`);
+    expect(await popup.getByTestId("model-name").evaluateAll((els) => els.every((el) => el.getBoundingClientRect().height < 1.5 * parseFloat(getComputedStyle(el).lineHeight)))).toBe(true);
     await expect(popup.getByTestId("model-group-label")).toHaveText(["Laboratory inference cluster east", "Laboratory inference cluster west"]);
     expect(await whole(popup.getByTestId("model-group-label"))).toBe(true);
     await expect(popup.getByTestId("model-option").first()).toContainText(`${LAB_MODELS[0]}`);
@@ -243,8 +246,7 @@ test("model picker: long names are shown whole", async ({ page, request }) => {
     const label = recent.getByTestId("model-provider");
     await expect(label).toHaveAttribute("title", "Laboratory inference cluster east");
     expect(await label.evaluate((el) => el.scrollWidth > el.clientWidth && el.getBoundingClientRect().height < 2 * parseFloat(getComputedStyle(el).lineHeight))).toBe(true);
-    expect(await whole(recent.getByTestId("model-name"))).toBe(true);
-    expect(await recent.getByTestId("model-name").evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)))).toBeLessThanOrEqual(2);
+    expect(await recent.getByTestId("model-name").evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)))).toBe(1);
     await shoot(page, "picker-08-long-provider-label");
     await page.evaluate(() => localStorage.removeItem("keel.recentModels"));
   });
@@ -455,6 +457,94 @@ test("model picker: the effort on each row, one Enter sets both", async ({ page,
     await shoot(page, "picker-11-row-effort-phone");
     await page.setViewportSize({ width: 1920, height: 1040 });
   } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
+// Feature: the rows of the chooser are columns. The cache cost, the effort, the window and the image mark
+// stand at the same place on every row, whatever a row has or lacks; a name too long for its row is cut
+// with its whole name in the tooltip; and an ACP agent's models are folded under one header an agent.
+test("model picker: columns line up, long names are cut, agents' models fold", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const listed = (await (await request.get("/api/models")).json()).models as any[];
+  const base = listed.find((m) => m.id === STAND_IN);
+  test.skip(!base, "needs the scripted stand-in: the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const LONG = "opengateway/z-ai/glm-5.4-extended-context-instruct-preview-quantized";
+  const acp = (model: string, name: string, extra: object = {}) => ({ ...base, id: `acp:${model}`, provider: "acp", model, name, billing: "subscription", price: undefined, context: model.length % 3 ? 1_000_000 : 200_000, ...extra });
+  const agents = [
+    acp("opencode", "OpenCode"), ...Array.from({ length: 12 }, (_, i) => acp(`opencode/${LONG}-${i}`, `OpenCode: ${LONG}-${i}`)),
+    acp("codex", "Codex"), ...["a", "b", "c"].map((x) => acp(`codex/gpt-${x}`, `Codex: gpt-${x}`)),
+  ];
+  await page.route(/\/api\/models(\?.*)?$/, async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    await route.fulfill({ response: res, json: { ...body, models: [...body.models, ...agents] } });
+  });
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Columns", text: "Say hello.", settings: { effort: "high" } } })).json();
+  try {
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings.last_end, { timeout: 30_000 }).toBeTruthy();
+    await page.goto(`/s/${session.id}`);
+    const popup = page.getByTestId("model-popup");
+    await page.getByTestId("composer").click();
+    await page.keyboard.press("Alt+m");
+    await expect(popup).toBeVisible();
+    await expect(popup.getByTestId("effort-keys")).toBeVisible();
+
+    // One header an agent, folded to the agent's own row.
+    const open = popup.locator('[data-group="agent:opencode"]');
+    await expect(open).toBeVisible();
+    await expect(open.getByTestId("model-option")).toHaveCount(1);
+    await expect(open.getByTestId("agent-toggle")).toHaveText("12 models");
+    await expect(popup.locator('[data-group="agent:codex"] [data-testid="model-option"]')).toHaveCount(1);
+    await expect(popup.locator('[data-testid="model-option"][data-provider="acp"]')).toHaveCount(2);
+    await shoot(page, "picker-12-agents-folded");
+    await open.getByTestId("agent-toggle").click();
+    await expect(open.getByTestId("model-option")).toHaveCount(13);
+    await expect(popup.locator('[data-group="agent:codex"] [data-testid="model-option"]')).toHaveCount(1);
+    await open.getByTestId("model-option").nth(1).scrollIntoViewIfNeeded();
+
+    // A long name is one line, cut, with the whole name in its tooltip.
+    const long = open.getByTestId("model-name").nth(1);
+    await expect(long).toHaveAttribute("title", `OpenCode: ${LONG}-0`);
+    expect(await long.evaluate((el) => el.scrollWidth > el.clientWidth && el.getBoundingClientRect().height < 1.5 * parseFloat(getComputedStyle(el).lineHeight))).toBe(true);
+
+    // Each column is at the same x on every row that has it, to the pixel.
+    const xs = async (id: string, edge: "left" | "right") => {
+      const els = popup.getByTestId(id);
+      const n = await els.count();
+      const out: number[] = [];
+      for (let i = 0; i < n; i++) { const b = (await els.nth(i).boundingBox())!; out.push(Math.round((edge === "left" ? b.x : b.x + b.width) * 100) / 100); }
+      return out;
+    };
+    const efforts = await xs("row-effort", "left");
+    const costs = await xs("row-cache-cost", "right");
+    const names = await xs("model-name", "left");
+    expect(efforts.length).toBeGreaterThan(10);
+    expect(costs.length).toBeGreaterThan(3);
+    expect(new Set(efforts).size).toBe(1);
+    expect(new Set(costs).size).toBe(1);
+    // The window is the same: it is the column's right edge.
+    const windows = await popup.locator('[title="Context window"]').evaluateAll((els) => els.map((el) => Math.round((el.getBoundingClientRect().right) * 100) / 100));
+    expect(windows.length).toBeGreaterThan(10);
+    expect(new Set(windows).size).toBe(1);
+    // A row's name never reaches its columns.
+    const rows = await popup.getByTestId("model-option").evaluateAll((els) => els.map((el) => {
+      const name = el.querySelector('[data-testid="model-name"]')!.getBoundingClientRect().right;
+      const next = [...el.querySelectorAll('[data-testid="row-cache-cost"],[data-testid="row-effort"]')].map((c) => c.getBoundingClientRect().left);
+      return next.every((x) => name <= x + 0.5);
+    }));
+    expect(rows.every(Boolean)).toBe(true);
+    expect(new Set(names).size).toBeGreaterThan(0);
+    // The name keeps the room the columns leave: the stand-ins' names are whole.
+    expect(await whole(popup.locator('[data-group="scripted"] [data-testid="model-name"]'))).toBe(true);
+    await shoot(page, "picker-13-columns");
+
+    // Search unfolds the agents: the matching models, no header to open.
+    await page.getByPlaceholder("Search models").fill("glm-5.4");
+    await expect(popup.locator('[data-group="agent:opencode"] [data-testid="model-option"]')).toHaveCount(12);
+    await expect(popup.getByTestId("agent-toggle")).toHaveCount(0);
+  } finally {
+    await page.unroute(/\/api\/models(\?.*)?$/);
     await request.delete(`/api/sessions/${session.id}`);
   }
 });
