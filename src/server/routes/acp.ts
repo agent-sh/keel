@@ -6,7 +6,8 @@ import { agentFolders, checkFolder, confineAgent, readFolders, writeFolders } fr
 import { allHooks, registerHooks, type TurnHooks } from "../../engine/hooks.ts";
 import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { AcpProvider, readCustom, writeCustom } from "../../acp/agents.ts";
-import { AcpRunner, agentOf, isAcpModel, type Judge } from "../../acp/external.ts";
+import { AcpRunner, agentOf, isAcpModel, type ChildHost, type Judge } from "../../acp/external.ts";
+import * as agents from "../../automation/agents.ts";
 import type { Terminals } from "../../acp/external.ts";
 import type { Tool } from "../../tools/types.ts";
 import { gate, presence } from "./permissions.ts";
@@ -42,7 +43,27 @@ export const acpRoutes: RouteModule = (deps) => {
   // What an agent offers (its models, else its modes) is asked of it once per program, as a new session's agent would run.
   provider.agents.argvOf = (a, cwd) => confineAgent(a, permOf(), cwd, false).argv;
   provider.agents.onLearned = () => void deps.providers.refresh("acp").catch((e) => deps.errors.capture("provider", e, { at: "acp listing" }));
-  const runner = (g.__keelAcp = new AcpRunner(deps.store, provider.agents, judge, (e, ctx) => deps.errors.capture("provider", e, ctx), (s, a, give) => confineAgent(a, permOf(s.id), s.workspace, true, give), terminals));
+  // The children an agent announces are agent rows under the session (src/automation/agents.ts, agents another program runs).
+  const kids: ChildHost = {
+    io: (sid) => deps.engine.passive(sid),
+    find: (parent, child, conv) => {
+      const a = agents.externalOf(parent, child, conv);
+      const s = a && deps.store.session(a.session_id);
+      return a && s && a.call_id ? { id: a.id, session: s, callId: a.call_id } : undefined;
+    },
+    create: (parent, o) => {
+      const r = agents.createExternal(parent, { title: o.title, model: parent.model, agent: o.agent, child: o.child, conv: o.conv, callId: o.callId, status: o.reading.status, cancel: o.cancel, state: o.reading.state });
+      return { id: r.agent.id, session: r.session, callId: o.callId };
+    },
+    patch: (id, p) => void agents.patchExternal(id, p),
+    disconnect: (id) => agents.disconnectExternal(id),
+    isChild: (sid) => !!agents.externalAgentOf(sid),
+    limit: (parent) => agents.limitOf(parent),
+  };
+  const runner = (g.__keelAcp = new AcpRunner(deps.store, provider.agents, judge, (e, ctx) => deps.errors.capture("provider", e, ctx), (s, a, give) => confineAgent(a, permOf(s.id), s.workspace, true, give), terminals, kids));
+  deps.engine.inputRefusals.set("acp-child", (id) => { const by = agents.externalAgentOf(id); return by ? `${by} runs this agent: it reads no message from here` : undefined; });
+  // The owner's Stop on a child's row is the agent's cancel of that child.
+  agents.outside.stop = (a, by) => (a.external ? g.__keelAcp?.cancelChild(a.id, by) : undefined);
   // Registered once per hook list (a hot reload may make a new one); it calls the runner of now.
   g.__keelAcpHook ??= { external: (s) => (g.__keelAcp?.claims(s) ? (io) => g.__keelAcp!.turn(s, io) : undefined) };
   if (!allHooks().includes(g.__keelAcpHook)) registerHooks(g.__keelAcpHook);

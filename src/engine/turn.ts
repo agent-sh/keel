@@ -594,6 +594,20 @@ export class Engine {
   // Who asked a running turn to stop (a word of src/core/stoppers.ts), kept on its turn_end. A turn
   // ends as interrupted only through interrupt(), so every such end has one.
   private stoppedBy = new Map<string, string>();
+  // Sessions another program runs and Keel only records (the children an ACP agent announces): no input reaches them
+  // through `send` or `message`, which refuse with the module's words. A module adds its check by its name.
+  readonly inputRefusals = new Map<string, (id: string) => string | undefined>();
+  inputRefused(id: string): string | undefined {
+    for (const refuse of this.inputRefusals.values()) {
+      const why = refuse(id);
+      if (why) return why;
+    }
+    return undefined;
+  }
+  private refuseInput(id: string) {
+    const why = this.inputRefused(id);
+    if (why) throw Object.assign(new Error(why), { status: 409 });
+  }
   // Sessions whose running turn is being stopped so that the owner's own message is the next one
   // (a prompt they edited, a queued prompt they sent now): until that turn has started, nothing
   // else starts one there (the queue's next row, a wake, a report).
@@ -998,6 +1012,17 @@ export class Engine {
     return e;
   }
 
+  // The writes into a session whose work another program runs and Keel only records (the children an ACP agent
+  // announces): its events and its streamed text, with no turn of Keel's behind them (so no working mark either:
+  // a daemon that goes down closes the marked sessions' turns and goes on with them).
+  passive(id: string): { append(kind: StoredEvent["kind"], data: unknown): StoredEvent; delta(kind: "text" | "thinking", index: number, text: string): void; status(s: TurnStatus): void } {
+    return {
+      append: (kind, data) => { this.deltas.end(id); return this.append(id, kind, data); },
+      delta: (kind, index, text) => this.deltas.push(id, { kind, index, text }),
+      status: (s) => this.status(id, s),
+    };
+  }
+
   emitSession(id: string) {
     const s = this.store.session(id);
     if (s) this.bus.emit({ t: "session", session: s });
@@ -1192,6 +1217,7 @@ export class Engine {
   // The same key again stores nothing: the claim is one write with the prompt
   // or the queued row, so a sender that asks twice is delivered once.
   send(id: string, text: string, opts: { mode?: "send" | "steer" | "queue"; images?: any[]; meta?: Record<string, unknown>; key?: string } = {}): Sent {
+    this.refuseInput(id);
     if (opts.key) {
       const { key, ...rest } = opts;
       return this.store.atomic(id, () => (this.claim(id, key) ? this.send(id, text, rest) : { duplicate: true }));
@@ -1273,6 +1299,7 @@ export class Engine {
   // release, which are the stops it made itself; any other hold stays.
   // `key`, `fp`: as for claim.
   message(id: string, text: string, meta: Record<string, unknown>, opts: { key?: string; fp?: string; releases?: readonly string[] } = {}): Sent {
+    this.refuseInput(id);
     return this.store.atomic(id, () => {
       if (opts.key && !this.claim(id, opts.key, opts.fp)) return { duplicate: true };
       const wait = (steer: boolean) => {
@@ -2692,6 +2719,8 @@ export class Engine {
         append: (kind, data) => { this.deltas.end(id); return this.append(id, kind, data); },
         delta: (kind, index, text) => this.deltas.push(id, { kind, index, text }),
         status: (s) => this.status(id, s),
+        // (Read when a stop reaches the agent: the stop's word is set before the turn's signal aborts.)
+        stopper: () => this.stoppedBy.get(id),
         runTool: (which, input, callId) => {
           const tool = typeof which === "string" ? sharedTool(which) : which;
           const name = typeof which === "string" ? which : which.name;

@@ -231,6 +231,8 @@ export type ExternalIO = {
   append(kind: StoredEvent["kind"], data: unknown): StoredEvent;
   delta(kind: "text" | "thinking", index: number, text: string): void;
   status(s: TurnStatus): void;
+  // Who stopped the turn (a word of src/core/stoppers.ts), once its signal has aborted: a stop the agent is told of.
+  stopper?(): string | undefined;
   // A tool of Keel's run for the agent, as a call of this session's model
   // would run: the owner's hooks, the permission gate, then the tool. A shared
   // tool by its name, or one the runner makes (a terminal's command). The

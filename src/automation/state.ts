@@ -350,7 +350,10 @@ function sharedLens(d: From, counts?: Map<string, number>): Lens {
 export function sessionState(s: Session, o: { counts?: Map<string, number>; from?: From; lens?: Lens; after?: After; events?: StoredEvent[] } = {}): SessionState {
   const l = o.lens ?? sharedLens(o.from ?? from(), o.counts);
   const running = l.d.engine.isRunning(s.id);
-  const row = running && s.phase !== "working" ? { ...s, phase: "working" as const } : s;
+  // (An agent another program runs works while the agent says so: no turn of Keel's runs in its session.)
+  const kid = !running && s.phase !== "working" ? (l.self ??= selfOf(l)).get(s.id) : undefined;
+  const outside = kid?.type === "acp" && kid.status === "running";
+  const row = (running || outside) && s.phase !== "working" ? { ...s, phase: "working" as const } : s;
   const facts = factsOf(s, l);
   const st = stateOf(row, o.events, facts);
   // A running step that has made no progress past its limit is marked: the one answer to "is anything stuck".

@@ -11,9 +11,15 @@
 // an MCP server of its session, and runs its commands in terminals of Keel's
 // (src/acp/terminals.ts), both judged and run as the session's own would be.
 //
+// It advertises `clientCapabilities.subagents`: each child the agent announces (`subagent_update`) is an agent row
+// under the session, with a session of its own for its transcript, its permission requests judged as the session's
+// own are, and a Stop that cancels it (src/acp/children.ts; the row is made by `ChildHost`, src/automation/agents.ts).
+// An agent that announces none changes nothing.
+//
 // Spec: agentclientprotocol.com/protocol/v1 (initialize, session/new, load,
 // resume, prompt, cancel, close; session/update, session/request_permission,
-// fs/read_text_file, fs/write_text_file, terminal/* toward the client).
+// fs/read_text_file, fs/write_text_file, terminal/* toward the client;
+// docs/protocol/v1/subagents.mdx).
 import { heldFile, heldWrite } from "../core/store-files.ts";
 import type { AgentConfinement, Give } from "./confine.ts";
 import { readFile, writeFile } from "node:fs/promises";
@@ -31,6 +37,10 @@ import { catalogTools } from "../tools/catalog.ts";
 import { clearServed, SERVED_NAME, ServedTools, type ServedTool } from "./served.ts";
 import { AcpTerminals } from "./terminals.ts";
 import { fitted, noted, unrename } from "../providers/wires/schema-fit.ts";
+import { messageText, MESSAGE_MAX, patchChild, readState, turnReason, type ChildState, type Reading } from "./children.ts";
+import { ownerStop } from "../core/stoppers.ts";
+import type { AgentStatus, ExternalInfo, StopBy } from "../automation/agents.ts";
+import type { TurnStatus } from "../core/types.ts";
 
 // Terminals for the agent, when the gate runs: `answered` is told each command the agent asked about and was allowed.
 export type Terminals = { answered(sessionId: string, command: string): void };
@@ -40,6 +50,22 @@ export const ACP_PREFIX = "acp:";
 export const isAcpModel = (model: string) => model.startsWith(ACP_PREFIX);
 // The agent of an `acp:` model, and the model (or mode) of it the session chose (choices.ts).
 export const agentOf = (model: string) => splitModel(model.slice(ACP_PREFIX.length)).agent;
+
+// What makes and moves the agent rows of the children an agent announces, and writes into their sessions
+// (src/server/routes/acp.ts wires it to src/automation/agents.ts and the engine).
+export type Passive = { append(kind: StoredEvent["kind"], data: unknown): StoredEvent; delta(kind: "text" | "thinking", index: number, text: string): void; status(s: TurnStatus): void };
+export type ChildPatch = { title?: string; status?: AgentStatus; end_reason?: string | null; result?: string; stopped_by?: StopBy | null; external?: Partial<ExternalInfo> };
+export type ChildHost = {
+  io(sessionId: string): Passive;
+  // The row of a child announced earlier under this session (the agent's conversation resumed): its id and session.
+  find(parent: string, child: string, conv: string): { id: string; session: Session; callId: string } | undefined;
+  create(parent: Session, o: { title: string; agent: string; child: string; conv: string; callId: string; reading: Reading; cancel: boolean }): { id: string; session: Session; callId: string };
+  patch(id: string, p: ChildPatch): void;
+  disconnect(id: string): void;
+  isChild(sessionId: string): boolean;
+  // How many agents the session's tree may run at once (src/core/agent-tree.ts).
+  limit(parent: string): number;
+};
 
 // What judges a request of the agent: the gate's answer for a call of this class.
 export type Judge = (s: Session, call: { id: string; name: string; cls: CallClass; input: Json; signal: AbortSignal }) => Promise<{ deny: string } | void>;
@@ -151,12 +177,24 @@ export const optionFor = (options: Json[], allow: boolean): string | undefined =
   (options.find((o) => o.kind === (allow ? "allow_once" : "reject_once")) ?? options.find((o) => (allow ? ALLOW : REJECT).includes(o.kind)))?.optionId;
 
 // `choices`: what the agent's session offers now (its setup result, then its updates).
-type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; caps: Json; choices: AgentChoices; missed?: string; turn?: TurnState;
+type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; sid: string; caps: Json; choices: AgentChoices; missed?: string; turn?: TurnState;
+  // The children the agent announced on this connection, by their ids in its conversation; and the session messages
+  // it sent in chunks that are not whole yet.
+  children: Map<string, Child>;
+  chunks: Map<string, { to: string; from?: string; text: string }>;
+  capped?: boolean;  // the owner was told that announced children past the limit are not shown
   served?: ServedTools; offered: Set<string>; terms: AcpTerminals; commands?: SlashCommand[];
   // The offered tools whose parameters were renamed to fit (by the name the agent calls), with the server's names.
   renamed?: Map<string, Record<string, string>>;
   plans?: Map<string, Json[]>;  // the agent's plans by id ("" is the legacy checklist), each as the steps it shows
   closed: AbortController };  // aborted when the agent's connection ends
+// How many finished children one connection may show for each one that may be at work (see `room`), and how many
+// messages it may send in pieces at once (they are put together and shown when the next update comes).
+const TOTAL_PER_LIVE = 16;
+const CHUNKS_MAX = 64;
+// A child the agent announced: its row (`agent`) and session, the transcript's state, and what it was last said to be.
+type Child = { id: string; agent: string; session: string; outer: string; state: ChildState; turn: TurnState; abort: AbortController;
+  sig: string; tasks: number; stopBy?: StopBy; ran?: number; over?: boolean; plans?: Map<string, Json[]> };
 type TurnState = {
   io: ExternalIO;
   session: Session;
@@ -166,6 +204,7 @@ type TurnState = {
   done: Set<string>;          // calls whose result is stored
   cost?: number;              // the agent's cumulative cost when the turn began
   lastCost?: number;
+  last?: string;              // the newest reply text stored
 };
 
 const STEP = /^\s*(?:[-*+]|\d+[.)])\s+(?:\[([ xX])\]\s+)?(.+?)\s*$/;
@@ -204,14 +243,15 @@ export class AcpRunner {
   // and the program that reaches it). `shell`: terminals for the agent; with none it gets no terminal.
   constructor(private store: Store, private agents: AcpAgents, private judge: Judge, private capture: (e: unknown, ctx: Json) => void,
     private confine: (s: Session, agent: AcpAgent, give: Give) => AgentConfinement = (_s, a) => ({ argv: [a.run!.command, ...a.run!.args], confined: false, note: `${a.name} runs unconfined.`, writable: [] }),
-    private shell?: Terminals) {
+    private shell?: Terminals, private kids?: ChildHost) {
     // (No agent of an earlier daemon runs now: the folders it served tools in go.)
     try { clearServed(store.stateDir); } catch (e) { capture(e, { at: "acp served tools" }); }
     store.migrate("CREATE TABLE IF NOT EXISTS acp_links (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, acp_session TEXT NOT NULL, ts INTEGER NOT NULL)");
   }
 
+  // (A child the agent announced is shown from its session: the agent runs it, not a turn of Keel's.)
   claims(s: Session) {
-    return isAcpModel(s.model);
+    return isAcpModel(s.model) && !this.kids?.isChild(s.id);
   }
 
   // The agent a session talks to; started (and its conversation opened or found again) once.
@@ -231,7 +271,7 @@ export class AcpRunner {
     const agent = this.agents.get(id);
     if (!agent?.run) throw Object.assign(new Error(`the ACP agent ${id} is not installed here`), { expected: true });
     // Keel's tools, served on a socket of the session's own: a server that cannot listen leaves the agent without them, said once.
-    const live = { agent, acpSession: "", caps: {}, choices: {}, offered: new Set<string>(), terms: new AcpTerminals(this.store.stateDir), closed: new AbortController() } as Live;
+    const live = { agent, acpSession: "", sid: s.id, caps: {}, choices: {}, offered: new Set<string>(), terms: new AcpTerminals(this.store.stateDir), closed: new AbortController(), children: new Map(), chunks: new Map() } as Live;
     const served = new ServedTools(this.store.stateDir, s.id, {
       list: () => this.offer(s, live),
       call: (name, args, callId) => live.turn
@@ -255,7 +295,7 @@ export class AcpRunner {
       const init = await conn.request("initialize", {
         protocolVersion: 1,
         // (Boolean config options are shown: session-config-options.)
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell, session: { configOptions: { boolean: {} } }, plan: {} },
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell, session: { configOptions: { boolean: {} } }, plan: {}, ...(this.kids ? { subagents: {} } : {}) },
         clientInfo: { name: "keel", title: "Keel", version: "0.1.0" },
       });
       live.caps = init?.agentCapabilities ?? {};
@@ -308,6 +348,13 @@ export class AcpRunner {
   }
 
   private closeLive(live: Live) {
+    // The agent is gone: its children's work is not known any more, and what waited on the owner for them is let go.
+    for (const c of live.children.values()) {
+      c.abort.abort();
+      try { this.kidCut(c, "The connection to the agent ended while this ran."); } catch (e) { this.capture(e, { agent: live.agent.id, at: "acp child" }); }
+      try { this.kids?.disconnect(c.agent); } catch (e) { this.capture(e, { agent: live.agent.id, at: "acp child" }); }
+    }
+    live.children.clear();
     live.closed.abort();
     live.served?.close();
     live.served = undefined;
@@ -363,6 +410,9 @@ export class AcpRunner {
     // (The owner's Stop also stops what its terminals still run.)
     const cancel = () => {
       live.conn.notify("session/cancel", { sessionId: live.acpSession });
+      // The children it announced are stopped with it: by the owner when the owner stopped the turn, else with an agent above them.
+      const by: StopBy = ownerStop(io.stopper?.()) ? "owner" : "ancestor";
+      for (const c of live.children.values()) this.stopChild(live, c, by);
       void live.terms.stopRunning().catch((e) => this.capture(e, { session: s.id, at: "acp terminals" }));
     };
     io.signal.addEventListener("abort", cancel, { once: true });
@@ -373,6 +423,7 @@ export class AcpRunner {
       const r = await Promise.race([answer, stopped]);
       if (r?.forced) { live.conn.close(); this.live.delete(s.id); }
       this.flush(t);
+      this.kidsOutlive(live);
       // Calls the agent never finished end with the turn.
       for (const [cid, tc] of t.calls) if (!t.done.has(cid)) this.finish(t, { ...tc, status: "failed", content: [{ type: "content", content: { type: "text", text: r?.stopReason === "cancelled" ? "Interrupted by the user while this tool ran." : "The agent ended its turn without finishing this call." } }] });
       const usage = emptyUsage();
@@ -398,6 +449,7 @@ export class AcpRunner {
       blocks.push({ type: "tool_use", id: tc.toolCallId, name, input, origin: "acp" });
       t.stored.add(tc.toolCallId);
     }
+    if (t.text.trim()) t.last = t.text;
     t.text = t.thinking = "";
     if (blocks.length) t.io.append("assistant", { blocks, model: t.session.model, usage: emptyUsage(), stop: calls.length ? "tool_use" : "end_turn" });
   }
@@ -418,11 +470,22 @@ export class AcpRunner {
       this.agents.learnCommands(live.agent, live.commands);
       return;
     }
+    // What the agent says of its children: their announcements, the messages between sessions, and their own work.
+    if (u?.sessionUpdate !== "session_message_chunk") this.endChunks(live);
+    if (u?.sessionUpdate === "subagent_update") return this.announce(live, String(p.sessionId), u);
+    if (u?.sessionUpdate === "session_message" || u?.sessionUpdate === "session_message_chunk") return this.said(live, String(p.sessionId), u);
+    const kid = u && p.sessionId !== live.acpSession ? live.children.get(p.sessionId) : undefined;
+    if (kid) return this.kidUpdate(kid, u);
     if (!u || p.sessionId !== live.acpSession) return; // a load's replay, or another conversation
     // The agent changed a choice itself, in a turn or between them: what is current follows it.
     if (u.sessionUpdate === "config_option_update" && Array.isArray(u.configOptions)) live.choices = withOptions(live.choices, u.configOptions);
     if (u.sessionUpdate === "current_mode_update" && live.choices.modes?.via === "mode" && typeof u.currentModeId === "string") live.choices.modes = { ...live.choices.modes, current: u.currentModeId };
     if (!t) return;
+    this.apply(t, u, (live.plans ??= new Map()));
+  }
+
+  // One update of a session's work as keel events (the turn's own, or a child's).
+  private apply(t: TurnState, u: Json, plans: Map<string, Json[]>, child = false) {
     switch (u.sessionUpdate) {
       case "agent_message_chunk":
         if (u.content?.type === "text") { t.text += u.content.text; t.io.delta("text", 1, u.content.text); t.io.status({ kind: "idle" }); }
@@ -451,7 +514,7 @@ export class AcpRunner {
       case "plan_update":
       case "plan_removed": {
         // Shown as the plan the dock and the transcript already read.
-        const plan = applyPlan((live.plans ??= new Map()), u);
+        const plan = applyPlan(plans, u);
         if (!plan) break;
         this.flush(t);
         const id = `acp-plan-${crypto.randomUUID()}`;
@@ -460,7 +523,8 @@ export class AcpRunner {
         break;
       }
       case "usage_update":
-        if (u.cost && typeof u.cost.amount === "number" && (!u.cost.currency || u.cost.currency === "USD")) {
+        // (A session's cost holds its descendants': a child's own is never added to its parent's.)
+        if (!child && u.cost && typeof u.cost.amount === "number" && (!u.cost.currency || u.cost.currency === "USD")) {
           if (t.cost === undefined) t.cost = t.lastCost ?? 0;
           t.lastCost = u.cost.amount;
         }
@@ -472,6 +536,235 @@ export class AcpRunner {
     }
   }
 
+  // --- the agent's children (docs/protocol/v1/subagents.mdx) ---
+
+  // `outer` announced the child `u.sessionId`: the first update makes its row, its session and its card in the
+  // parent's transcript; later ones patch it (a field left out keeps its value, null clears it).
+  private announce(live: Live, outer: string, u: Json) {
+    const kids = this.kids;
+    if (!kids) return;
+    const holder = outer === live.acpSession ? live.sid : live.children.get(outer)?.session;
+    const id = typeof u.sessionId === "string" ? u.sessionId : "";
+    // (A child has one parent, and is never its own parent's parent: nothing moves or loops.)
+    if (!holder || !id || id === outer || id === live.acpSession) return;
+    let c = live.children.get(id);
+    if (c && c.outer !== outer) return;
+    try {
+      const state = patchChild(c?.state, u);
+      const reading = readState(state.state);
+      if (!c) {
+        const parent = this.store.session(holder);
+        if (!parent) return;
+        // (A child id means one child only inside the conversation it was announced in: a new conversation of the same agent starts its own.)
+        const known = kids.find(holder, id, live.acpSession);
+        if (!this.room(live, holder, reading)) return;
+        const made = known ?? kids.create(parent, { title: state.title ?? "", agent: live.agent.name, child: id, conv: live.acpSession, callId: `acp-child-${crypto.randomUUID()}`, reading, cancel: state.cancel });
+        const session = this.store.session(made.session.id) ?? made.session;
+        const turn: TurnState = { io: this.kidIO(live, made.session.id, () => c!.abort.signal), session, text: "", thinking: "", calls: new Map(), stored: new Set(), done: new Set() };
+        c = { id, agent: made.id, session: made.session.id, outer, state, turn, abort: new AbortController(), sig: "", tasks: 0 };
+        live.children.set(id, c);
+        // Its card in the parent's transcript: the call that, in a Keel session, would have started it.
+        if (!known) {
+          const at = outer === live.acpSession ? live.turn : live.children.get(outer)?.turn;
+          if (at) this.flush(at);
+          const callId = made.callId;
+          const io = kids.io(holder);
+          io.append("assistant", { blocks: [{ type: "tool_use", id: callId, name: "Agent", input: { description: state.title ?? "Agent", prompt: state.description ?? state.title ?? "" }, origin: "acp" }], model: parent.model, usage: emptyUsage(), stop: "tool_use" });
+          io.append("tool_result", { results: [{ type: "tool_result", tool_use_id: callId, content: `${live.agent.name} runs this agent. Its work is in its own session.` }] });
+        }
+      } else {
+        c.state = state;
+        if (Object.prototype.hasOwnProperty.call(u, "state")) c.over = false; // the agent said what it is now
+      }
+      this.kidState(c, reading);
+    } catch (e) {
+      this.capture(e, { session: live.sid, agent: live.agent.id, at: "acp child" });
+    }
+  }
+
+  // The row follows what the agent said of the child. Its transcript ends the work it had open when the child goes idle.
+  private kidState(c: Child, reading: Reading) {
+    const kids = this.kids!;
+    const state = c.state;
+    // The row was ended by Keel's own reading (its agent ended the prompt, or the connection): until the agent says its state again, only its label moves.
+    if (c.over) {
+      if (state.title) kids.patch(c.agent, { title: state.title });
+      return;
+    }
+    if (reading.status === "running") c.ran ??= Date.now();
+    else this.kidEnd(c, reading);
+    const sig = JSON.stringify([state.title, state.state, state.cancel, reading.status, reading.end_reason]);
+    if (sig === c.sig) return;
+    c.sig = sig;
+    const ended = reading.status !== "running" && reading.status !== "waiting";
+    // (The folders the agent says the child works in are not taken for its session's: the gate judges what the child asks
+    // against the parent's folder, so an agent cannot widen what a card or a mode allows by announcing a wider one.)
+    kids.patch(c.agent, {
+      ...(state.title ? { title: state.title } : {}),
+      status: reading.status,
+      end_reason: reading.end_reason ?? null,
+      ...(ended ? { result: reading.failure ?? c.turn.last ?? "", stopped_by: reading.status === "stopped" ? (c.stopBy ?? "unknown") : null } : {}),
+      external: { cancel: state.cancel, state: reading.state, gone: undefined },
+    });
+  }
+
+  // Whether the announced child may be shown. One connection's children are counted against the agent limit of the
+  // session's tree (src/core/agent-tree.ts: the whole tree runs at most that many at once, and the agent runs these
+  // itself, but each is a row, a session and a stream of events here): the live ones are at most the limit, and all
+  // of them, the finished included, at most TOTAL_PER_LIVE times it, since a finished row is still a session in the
+  // owner's list. The rest are not shown, and the session is told once.
+  private room(live: Live, holder: string, reading: Reading): boolean {
+    const limit = Math.max(1, this.kids!.limit(live.sid));
+    let running = 0;
+    for (const c of live.children.values()) { const st = readState(c.state.state).status; if (!c.over && (st === "running" || st === "waiting")) running++; }
+    const isLive = reading.status === "running" || reading.status === "waiting";
+    if ((isLive && running >= limit) || live.children.size >= limit * TOTAL_PER_LIVE) {
+      if (!live.capped) {
+        live.capped = true;
+        this.kids!.io(holder).append("note", { kind: "acp", text: `${live.agent.name} announced more agents than Keel shows (at most ${limit} at work, ${limit * TOTAL_PER_LIVE} in all, the agent limit of this session): the others are not shown.` });
+      }
+      return false;
+    }
+    return true;
+  }
+
+  // The child's work is cut off by something that is not its own end: its words are stored and the calls it had open are told so.
+  private kidCut(c: Child, why: string) {
+    const t = c.turn;
+    this.flush(t);
+    for (const [cid, tc] of t.calls) if (!t.done.has(cid)) this.finish(t, { ...tc, status: "failed", content: [{ type: "content", content: { type: "text", text: why } }] });
+    t.io.status({ kind: "idle" });
+    c.ran = undefined;
+  }
+
+  // The parent's prompt ended: a child still shown as at work was never said to be done. Its row ends as incomplete
+  // (its agent may still say more of it: its next state moves the row again).
+  private kidsOutlive(live: Live) {
+    for (const c of live.children.values()) {
+      if (c.over) continue;
+      const reading = readState(c.state.state);
+      if (reading.status !== "running" && reading.status !== "waiting") continue;
+      try {
+        this.kidCut(c, "The agent ended the turn that started this work without saying how it ended.");
+        c.over = true;
+        c.sig = "";
+        c.abort.abort(); // what it waits on the owner for is let go
+        c.abort = new AbortController();
+        this.kids!.patch(c.agent, { status: "incomplete", end_reason: "parent_ended", result: c.turn.last ?? "", stopped_by: null, external: { state: "unknown" } });
+      } catch (e) { this.capture(e, { session: live.sid, agent: live.agent.id, at: "acp child" }); }
+    }
+  }
+
+  // The work the child had open is over (it went idle, or its connection did): its words are stored, and the calls
+  // the agent never finished are told so (a cancelled one as stopped). A state nobody confirmed leaves them as they were.
+  private kidEnd(c: Child, reading: Reading) {
+    if (reading.state !== "idle") return;
+    const t = c.turn;
+    this.flush(t);
+    for (const [cid, tc] of t.calls) if (!t.done.has(cid)) this.finish(t, { ...tc, status: "failed", content: [{ type: "content", content: { type: "text", text: reading.status === "stopped" ? "Interrupted by the user while this tool ran." : "The agent ended its work without finishing this call." } }] });
+    t.io.status({ kind: "idle" });
+    // Its work ended: the turn's end in its transcript, so the session reads as done, stopped or failed (and says how long it ran).
+    if (c.ran) t.io.append("turn_end", { reason: turnReason(reading), usage: emptyUsage(), ms: Date.now() - c.ran, ...(reading.status === "stopped" && c.stopBy ? { stopped_by: c.stopBy } : {}) });
+    c.ran = undefined;
+  }
+
+  // The child's own work, as the keel events of its session.
+  private kidUpdate(c: Child, u: Json) {
+    c.turn.session = this.store.session(c.session) ?? c.turn.session;
+    this.apply(c.turn, u, (c.plans ??= new Map()), true);
+  }
+
+  // A session message: what its recipient's transcript shows of it. A parent's words to a child are the child's task
+  // (then its steers); another session's are a message from another session; a child's to its parent is a note there.
+  private said(live: Live, outer: string, u: Json) {
+    const kids = this.kids;
+    if (!kids) return;
+    const to = typeof u.recipientSessionId === "string" ? u.recipientSessionId : outer;
+    const from = typeof u.senderSessionId === "string" ? u.senderSessionId : undefined;
+    if (u.sessionUpdate === "session_message_chunk") {
+      const id = String(u.messageId ?? "");
+      const k = `${to}\0${id}`;
+      const had = live.chunks.get(k) ?? (live.chunks.size < CHUNKS_MAX ? { to, from, text: "" } : undefined);
+      if (!had) return;
+      if (had.text.length < MESSAGE_MAX) had.text = (had.text + messageText(u.content)).slice(0, MESSAGE_MAX);
+      live.chunks.set(k, had);
+      return;
+    }
+    this.deliverSaid(live, to, from, messageText(u.content));
+  }
+
+  private endChunks(live: Live) {
+    if (!live.chunks.size) return;
+    const all = [...live.chunks.values()];
+    live.chunks.clear();
+    for (const m of all) this.deliverSaid(live, m.to, m.from, m.text);
+  }
+
+  private deliverSaid(live: Live, to: string, from: string | undefined, text: string) {
+    const kids = this.kids;
+    if (!kids || !text.trim()) return;
+    try {
+      const c = live.children.get(to);
+      const sender = from ? live.children.get(from) : undefined;
+      if (c) {
+        // (Its parent's words: the task the first time, a steer after. Any other sender, or none known, is another session's.)
+        const parent = from !== undefined && from === c.outer;
+        const data = parent
+          ? c.tasks++ === 0 ? { text, kind: "task", agent_id: c.agent } : { text, kind: "steer", agent_id: c.agent }
+          : { text, kind: "peer", ...(sender ? { from_agent: sender.agent } : {}) };
+        kids.io(c.session).append("user", data);
+        return;
+      }
+      // To the parent, from a child it announced: a line in its transcript.
+      const holder = to === live.acpSession ? live.sid : undefined;
+      const from_ = sender;
+      if (holder && from_) {
+        if (live.turn) this.flush(live.turn);
+        kids.io(holder).append("note", { kind: "acp", text: `Message from agent "${this.store.session(from_.session)?.title ?? "Agent"}": ${text}` });
+      }
+    } catch (e) {
+      this.capture(e, { session: live.sid, agent: live.agent.id, at: "acp child message" });
+    }
+  }
+
+  // What a child's turn needs of its io: its session's writes, and no tool of Keel's (the agent runs its own).
+  private kidIO(live: Live, session: string, signal: () => AbortSignal): ExternalIO {
+    const io = this.kids!.io(session);
+    return {
+      get signal() { return signal(); },
+      events: () => this.store.events(session),
+      append: (kind, data) => io.append(kind, data),
+      delta: (kind, index, text) => io.delta(kind, index, text),
+      status: (st) => io.status(st),
+      runTool: async (_tool, _input, id) => ({ type: "tool_result", tool_use_id: id, is_error: true, content: `A child of ${live.agent.name} runs its tools itself: Keel runs none for it.` }),
+    };
+  }
+
+  // The owner's Stop on a child's row: the agent is asked to cancel that child's work, if it offered to. Its answer is
+  // its state: the row ends when the agent says it is idle and cancelled. What the child waits on the owner for is let go.
+  // `row`: the agent row's id (a child's id means one child only inside its agent's conversation).
+  cancelChild(row: string, by: StopBy): string | void {
+    for (const live of this.live.values()) {
+      for (const c of live.children.values()) {
+        if (c.agent !== row) continue;
+        if (!c.state.cancel) return `${live.agent.name} did not offer to cancel it: stop the session to end its work`;
+        this.stopChild(live, c, by);
+        return;
+      }
+    }
+    return "its agent is not running now";
+  }
+
+  // The agent is asked to cancel the child (where it offered to), and what the child waits on the owner for is let go.
+  private stopChild(live: Live, c: Child, by: StopBy) {
+    const st = readState(c.state.state).status;
+    if (!c.state.cancel || c.over || (st !== "running" && st !== "waiting")) return;
+    c.stopBy = by;
+    live.conn.notify("session/cancel", { sessionId: c.id });
+    c.abort.abort();
+    c.abort = new AbortController();
+  }
+
   // The agent's requests: permission and files, all judged by keel's gate.
   private async request(live: Live, method: string, p: Json): Promise<Json> {
     // A terminal's output, end and release are asked for also between turns: they judge nothing.
@@ -481,10 +774,13 @@ export class AcpRunner {
       if (method === "terminal/release") return live.terms.release(p);
       if (method === "terminal/wait_for_exit") return live.terms.waitForExit(p, live.turn?.io.signal ?? live.closed.signal);
     }
-    const t = live.turn;
+    // A child's request is judged in the child's session, as its own parent's would be, and stays its own.
+    const kid = p?.sessionId !== live.acpSession ? live.children.get(p?.sessionId) : undefined;
+    if (kid) kid.turn.session = this.store.session(kid.session) ?? kid.turn.session;
+    const t = kid ? kid.turn : live.turn;
     const s = t?.session;
-    if (!t || !s || p.sessionId !== live.acpSession) throw Object.assign(new Error("no turn is running in this session"), { code: -32002 });
-    const signal = t.io.signal;
+    if (!t || !s || (!kid && p.sessionId !== live.acpSession)) throw Object.assign(new Error("no turn is running in this session"), { code: -32002 });
+    const signal = kid ? kid.abort.signal : t.io.signal;
     switch (method) {
       case "session/request_permission": {
         const prev = t.calls.get(p.toolCall?.toolCallId) ?? {};
@@ -544,6 +840,7 @@ export class AcpRunner {
       }
       case "terminal/create":
         if (!this.shell) break;
+        if (kid) throw Object.assign(new Error("Keel runs no terminal for a child agent"), { code: -32601 });
         return live.terms.create(s, p, (tool, input, id) => t.io.runTool(tool, input, id));
     }
     throw Object.assign(new Error(`method not found: ${method}`), { code: -32601 });

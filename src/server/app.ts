@@ -607,6 +607,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           if (s.archived) return bad("the session is archived", 409);
+          const refused = engine.inputRefused(s.id);
+          if (refused) return bad(refused, 409);
           const body = (await req.json()) as any;
           const text = String(body.text ?? "").trim();
           // An image or a file may go without a caption; an edit needs words.

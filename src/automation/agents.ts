@@ -105,6 +105,8 @@ export const END_TEXT: Record<string, string> = {
   max_tokens: "its reply hit the output limit",
   max_steps: "it ran out of its step budget",
   budget: "it ran out of its budget",
+  parent_ended: "its agent ended the turn that started it without saying how it ended",
+  disconnected: "the connection to the agent that runs it ended, so what it did next is not known",
 };
 export type AgentRecord = {
   id: string;
@@ -138,7 +140,12 @@ export type AgentRecord = {
   reviews?: string[]; // the branches it reviews (its spawn named them, or its task did): the work board's reviewer of them
   api?: ApiGrant | null; // its parent granted its commands the daemon's read-only lists at its start ("read"), or the owner took it back ("revoked") (src/automation/api-grant.ts)
   api_off?: string; // why a grant it holds does not take effect: an agent above it lost its own
+  external?: ExternalInfo; // an agent another program runs (an ACP agent's announced child): Keel shows it and sends it nothing
 };
+// What Keel knows of an agent an external ACP agent announced (src/acp/children.ts): the agent that runs it, its
+// session id there (`conv`: in which of the parent's conversations: a child id means one only inside it), whether that agent let Keel cancel it, and its state as the agent reported it (the record's
+// status is the reading of it). `gone`: the connection to the agent ended while it worked: its state is unknown.
+export type ExternalInfo = { agent: string; child: string; conv?: string; cancel: boolean; state?: string; gone?: true };
 // Where a follow-up to the finished agent started: in its context, from a
 // summary, or fresh from a capsule of its work; why; and the context its first
 // step reads against the one it had.
@@ -171,6 +178,7 @@ export type AgentDef = {
   ownServers?: string[];  // servers its file defines itself (inline): run for it once the owner approved each (src/mcp/project.ts)
   notTaken?: string[];    // what its definition asks for that Keel does not run, each with why: told to its parent at the start
   budget?: Budget; // the budget its agents get unless the call gives one (frontmatter: budget_steps, budget_minutes, budget_usd)
+  external?: ExternalInfo; // run by another program, not by Keel's engine (see AgentRecord)
 };
 
 // A value that is not a whole number of at least 1 would mean no limit (NaN) or no agents (0).
@@ -258,7 +266,9 @@ const wts = () => {
 type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews" | "api" | "api_off"> & { api: string | null; lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null; reviews?: string | null };
 const toRec = (r: Row): AgentRecord => {
   const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, api, ...rest } = r;
-  void def; void schema_tries; void restarts; void park_told; void task; void parked;
+  let external: ExternalInfo | undefined;
+  if (def?.includes('"external"')) try { external = (JSON.parse(def) as AgentDef).external; } catch {}
+  void schema_tries; void restarts; void park_told; void task; void parked;
   // A waiting agent whose wake came while every slot was taken: it goes on when one frees.
   const inLine = !!lineAt(r.parent_id)?.has(`wake:${r.id}`);
   let start: AgentStart | undefined;
@@ -267,7 +277,7 @@ const toRec = (r: Row): AgentRecord => {
   try { lost = lostJson ? JSON.parse(lostJson) : undefined; } catch {}
   let reviews: string[] | undefined;
   try { reviews = reviewsRaw ? (JSON.parse(reviewsRaw) as { branch: string }[]).map((x) => x.branch) : undefined; } catch {}
-  return { ...rest, ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...apiOf(r.session_id, api) };
+  return { ...rest, ...(external ? { external } : {}), ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...apiOf(r.session_id, api) };
 };
 // Its grant of the daemon's lists, and why it does not take effect when one above it lost its own.
 function apiOf(sessionId: string, api: string | null): Pick<AgentRecord, "api" | "api_off"> {
@@ -1343,6 +1353,69 @@ export function adopt(parentId: string, childId: string, o: { title: string; typ
   return rec;
 }
 
+// --- agents another program runs --------------------------------------------
+// An ACP agent Keel drives announces children of its own (src/acp/children.ts). Each is a row here, with a session
+// of its own that holds its transcript, so the owner sees its messages and tool calls, answers its permission
+// requests on the session's card and stops it from its row. Keel's engine runs nothing in it: the agent that
+// announced it reports its state, and only that moves the row. Its result goes to its own panel, never to its
+// parent's conversation (silent), and it holds no slot.
+// What stops one: the ACP runner's cancel of that child (set by the route that owns the runner); it says why when
+// the agent let nothing cancel it.
+export const outside: { stop?: (a: AgentRecord, by: StopBy) => string | void } = {};
+
+// The agent that runs a session another program runs (an announced child's), else nothing: a read of one indexed row.
+export const externalAgentOf = (sessionId: string): string | undefined =>
+  D().store.db.query<{ a: string | null }, [string]>("SELECT json_extract(def, '$.external.agent') AS a FROM agents WHERE session_id = ?").get(sessionId)?.a ?? undefined;
+
+export function externalOf(parentId: string, child: string, conv: string): AgentRecord | undefined {
+  const r = D().store.db.query<Row, [string, string, string]>("SELECT * FROM agents WHERE parent_id = ? AND json_extract(def, '$.external.child') = ? AND json_extract(def, '$.external.conv') = ?").get(parentId, child, conv);
+  return r ? toRec(r) : undefined;
+}
+
+// A child its parent's agent announced: the row, its session (follows its parent's permissions, so a request of
+// the agent is judged as the parent's own would be) and the call id its card in the parent's transcript carries.
+export function createExternal(parent: Session, o: { title: string; model: string; agent: string; child: string; conv: string; callId: string; status: AgentStatus; cancel: boolean; state?: string }): { agent: AgentRecord; session: Session } {
+  const { store, bus } = D();
+  const title = (o.title || "Agent").slice(0, 80);
+  const session = store.createSession({ model: o.model, workspace: parent.workspace, title }); // (the folder the agent says the child works in is not taken: the gate judges against the parent's)
+  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent.id, session.id);
+  const g = perm.gate;
+  if (g) { const p = g.perm(parent.id); g.setPerm(session.id, { mode: p.mode, sandbox: p.sandbox, network: p.network }, { follows: true }); }
+  bus.emit({ t: "session", session: store.session(session.id)! });
+  const id = Bun.randomUUIDv7().slice(-12);
+  const def: AgentDef = { name: "acp", description: `a child of ${o.agent}`, readOnly: true, source: "acp", silent: true, external: { agent: o.agent, child: o.child, conv: o.conv, cancel: o.cancel, ...(o.state ? { state: o.state } : {}) } };
+  store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, call_id, task_at) VALUES (?, ?, ?, ?, 'acp', ?, 0, ?, ?, ?, ?, ?)")
+    .run(id, parent.id, session.id, title, o.model, o.status, Date.now(), JSON.stringify(def), o.callId, Date.now());
+  activity.record("agent", "started", parent.id, `${o.agent} started "${title}"`, { agent_id: id, child_session: session.id });
+  const rec = get(id)!;
+  emit("agent", brief(rec));
+  return { agent: rec, session: store.session(session.id)! };
+}
+
+// What the agent reported of a child since: its label, its state read as a status, what it can be told to do.
+// A status that ends it sets its end; one that goes on again clears it.
+export function patchExternal(id: string, p: { title?: string; status?: AgentStatus; end_reason?: string | null; result?: string; stopped_by?: StopBy | null; external?: Partial<ExternalInfo> }): AgentRecord | undefined {
+  const a = get(id);
+  if (!a?.external) return a;
+  const { store, bus } = D();
+  if (p.external) store.db.query("UPDATE agents SET def = ? WHERE id = ?").run(JSON.stringify({ ...defOf(id)!, external: { ...a.external, ...p.external } }), id);
+  const was = a.status;
+  const now = p.status ?? was;
+  const live = now === "running" || now === "waiting";
+  if (p.title && p.title !== a.title) bus.emit({ t: "session", session: store.updateSession(a.session_id, { title: p.title.slice(0, 80) }) });
+  const rec = update(id, {
+    ...(p.title ? { title: p.title.slice(0, 80) } : {}),
+    ...(p.status ? { status: p.status } : {}),
+    ...(p.end_reason !== undefined ? { end_reason: p.end_reason } : {}),
+    ...(p.result !== undefined ? { result: p.result } : {}),
+    ...(p.stopped_by !== undefined ? { stopped_by: p.stopped_by } : {}),
+    ...(p.status ? { ended: live ? null : a.ended ?? Date.now() } : {}),
+    ...(p.status && was !== "running" && now === "running" ? { task_at: Date.now() } : {}),
+  });
+  if (rec && !live && (was === "running" || was === "waiting")) activity.record("agent", "ended", a.parent_id, `Agent "${rec.title}" ${rec.status}`, { agent_id: id, child_session: a.session_id });
+  return rec;
+}
+
 // The final message of every round since the task: the newest first (a late
 // correction is what the parent reads first), the earlier ones after it. Words
 // said before a tool call are not a report: a round that ended without a final
@@ -2395,6 +2468,13 @@ const worktreeNote = (a: AgentRecord): Promise<string> => leftovers.ownWorktree(
 export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined {
   const a = get(id);
   if (!a) return undefined;
+  // Another program runs it: its own agent is asked to cancel it, and its state is what moves the row.
+  if (a.external) {
+    if (isEnded(a)) return a;
+    const why = a.external.gone ? "the connection to its agent ended" : outside.stop?.(a, by);
+    if (why) activity.record("agent", "stop_refused", a.parent_id, `Agent "${a.title}" was not stopped: ${why}`, { agent_id: a.id });
+    return get(id);
+  }
   const { engine } = D();
   if (isEnded(a) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
   // Its turn ended and its report is being written: it has finished, and the stop goes to its own agents only.
@@ -2479,6 +2559,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
   }
   let a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
+  if (a.external) throw new Error(`agent ${id} is run by ${a.external.agent}, not by Keel: it reads no message from here`);
   if (budget) await checkUsd(budget, a.model);
   const { engine, store } = D();
   const child = store.session(a.session_id);
@@ -2837,6 +2918,13 @@ function endedTurn(sessionId: string): string | undefined {
   return undefined;
 }
 
+// The connection to the agent that runs a child ended: it is shown as ended and disconnected, never as finished or failed.
+export function disconnectExternal(id: string) {
+  const a = get(id);
+  if (!a?.external || isEnded(a)) return;
+  patchExternal(id, { status: "incomplete", end_reason: "disconnected", external: { gone: true, state: "unknown" } });
+}
+
 export function recover() {
   for (const a of list()) {
     if (a.handback && a.status !== "running" && a.status !== "waiting") {
@@ -2846,6 +2934,8 @@ export function recover() {
       continue;
     }
     if (a.status !== "running" && a.status !== "waiting") continue;
+    // The agent that ran it went down with the daemon: what it was doing is not known, and nothing here goes on with it.
+    if (a.external) { disconnectExternal(a.id); continue; }
     const parent = D().store.session(a.parent_id);
     if (!parent || parent.archived) { update(a.id, { status: "stopped", ended: Date.now(), result: collectResult(a) }); leftovers.forget(D().store, a.id); continue; }
     // Made and never started: it goes back in line, at the time it was asked for.

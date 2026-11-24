@@ -126,9 +126,19 @@ type ComposerProps = {
   // What waits on the owner's answer (requests of the session and of its
   // agents): shown last, nearest the box, and kept in view.
   asks?: ReactNode;
+  // The session takes no message from here (another program runs it): the box gives way to this line, the cards stay.
+  closed?: string;
 };
 
 export function Composer(props: ComposerProps) {
+  if (props.closed) {
+    return (
+      <Tray asks={props.asks}>
+        {props.above}
+        <p className="rounded-lg border border-line bg-raised px-3 py-2 text-caption text-muted" data-testid="composer-closed">{props.closed}</p>
+      </Tray>
+    );
+  }
   return <SessionComposer key={draftKey(props.session?.id)} {...props} />;
 }
 

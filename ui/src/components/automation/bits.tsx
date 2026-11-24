@@ -49,13 +49,15 @@ export async function stopAgentAsking(a: AgentRecord, title: string) {
   const below = descendants(Object.values(autoState().agents), a.session_id).filter(isLive).length;
   const ok = await confirmAction({
     title: `Stop "${title}"?`,
-    body: `It has worked for ${span(ran)}. Its turn ends now and what it has so far is reported to the session that started it.${below ? (below === 1 ? " The agent below it stops too, and waits for you to resume it." : ` The ${below} agents below it stop too, and wait for you to resume them.`) : ""}${a.worktree ? " Its worktree keeps the files it changed; work it did not save there is not recovered." : ""}`,
+    body: a.external ? `${a.external.agent} runs it and has worked on it for ${span(ran)}. Keel asks that agent to cancel it; the agent says when it has stopped.` : `It has worked for ${span(ran)}. Its turn ends now and what it has so far is reported to the session that started it.${below ? (below === 1 ? " The agent below it stops too, and waits for you to resume it." : ` The ${below} agents below it stop too, and wait for you to resume them.`) : ""}${a.worktree ? " Its worktree keeps the files it changed; work it did not save there is not recovered." : ""}`,
     action: "Stop agent", danger: true,
   });
   if (ok) await auto.stopAgent(a);
 }
 // The Stop control of an agent, named with the agent it stops.
 export function StopAgent({ a, title, testid }: { a: AgentRecord; title: string; testid: string }) {
+  // An agent another program runs is cancelled only when that program offered it: else there is nothing to press.
+  if (a.external && !a.external.cancel) return null;
   return <IconButton title={`Stop agent: ${title}`} danger onClick={() => stopAgentAsking(a, title).catch(reportError)} testid={testid}><StopIcon /></IconButton>;
 }
 

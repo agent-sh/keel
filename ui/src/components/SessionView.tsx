@@ -6,7 +6,7 @@ import { WaitingElsewhere } from "./AnswerQueue.tsx";
 import { Boundary } from "./Boundary.tsx";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
 import { sequenceAt } from "../lib/asks.ts";
-import { stopHere } from "../lib/automation.ts";
+import { stopHere, useAuto } from "../lib/automation.ts";
 import { Composer } from "./Composer.tsx";
 import { SelectionBar } from "./SelectionBar.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
@@ -137,6 +137,8 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
   const session = useMemo(() => ({ id }), [id]);
   // A coordinator's Stop ends its turn; its agents go on (the turn's end line offers to stop them too).
   const agents = useAgentCount(parentId ? undefined : id);
+  // An agent another program runs (an ACP agent's child) reads no message from here.
+  const outside = useAuto((x) => Object.values(x.agents).find((a) => a.session_id === id)?.external?.agent);
   const does = useMemo(() => ({
     // The picker's row sets the effort with the model; on the model in use that is an effort change alone.
     model: (m: string, p?: ModelPick) => {
@@ -183,6 +185,7 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
       autoFocus={focus && matchMedia("(min-width: 768px)").matches && sequenceAt() !== id}
       above={above}
       asks={asks}
+      closed={outside ? `${outside} runs this agent. Keel shows its work and asks you for what it needs; it reads no message from here.` : undefined}
     />
   );
 });
