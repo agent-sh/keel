@@ -113,7 +113,9 @@ test("a successor is not started on a route out of credit: it starts on the next
   try {
     await api(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
     // The worker waits for the spec before it declines: by then the parent's route is out of credit.
-    const gate = { name: "Bash", input: { command: `while [ ! -f ${go} ]; do sleep 0.2; done; echo go` } };
+    // The worker is a GPT model: its shell tool is exec_command, which waits up to 30 s for the command. A call to
+    // a tool it does not have fails at once, and the worker declined before the route was marked (a race).
+    const gate = { name: "exec_command", input: { yield_time_ms: 30_000, cmd: `while [ ! -f ${go} ]; do sleep 0.2; done; echo go` } };
     await api(`/api/sessions/${session.id}/messages`, { text: calls([{ name: "Agent", input: { description: "Wait for the go", prompt: `Wait for the go\n${calls([gate])}\nscript:then-refuse`, model: WORKER, run_in_background: true } }]) });
     const agent = async () => (await api(`/api/sessions/${session.id}/agents`)).agents[0];
     await expect.poll(async () => (await agent())?.status, { timeout: 30_000 }).toBe("running");
@@ -128,6 +130,8 @@ test("a successor is not started on a route out of credit: it starts on the next
     const marked = await routeMark();
     expect(marked.open).toBe(false);
     expect(marked.until).toBeGreaterThan(Date.now());
+    // The worker has not declined yet: the mark came first.
+    expect((await agent()).status).toBe("running");
     writeFileSync(go, "go\n");
 
     await expect.poll(async () => (await agent())?.status, { timeout: 120_000 }).toBe("incomplete");
