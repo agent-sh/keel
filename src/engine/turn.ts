@@ -878,9 +878,16 @@ export class Engine {
   // a report or an agent): read back from the end to the last turn's end.
   byOwner(id: string): boolean {
     const line = this.lineage(id);
+    // A turn a restart cut and the continued one are one turn: past the restart message the
+    // end of the cut turn does not end the search, whoever started that turn counts.
+    let continued = false;
     for (let i = line.length - 1; i >= 0; i--) {
       const e = line[i]!;
-      if (e.kind === "turn_end") return false;
+      if (e.kind === "turn_end") {
+        if (continued && e.data.reason === "restart") { continued = false; continue; }
+        return false;
+      }
+      if (e.kind === "user" && e.data.origin === "restart") continued = true;
       if (e.kind === "user" && ownerPrompt(e.data)) return true;
     }
     return false;
@@ -1132,8 +1139,8 @@ export class Engine {
     }
     const mode = opts.mode ?? "send";
     // A queue request must not start a held session, even if nothing else is queued.
-    if (this.running.has(id) || (mode === "queue" && (this.held.has(id) || this.store.queue(id).length))) {
-      const q = this.store.enqueue(id, text, mode !== "queue", opts.images, opts.meta);
+    if (this.running.has(id) || (mode === "queue" && (this.held.has(id) || this.store.queue(id).length)) || this.inputHeld(id, opts.meta)) {
+      const q = this.store.enqueue(id, text, mode !== "queue" && this.running.has(id), opts.images, opts.meta);
       this.emitQueue(id);
       return { queued: q, steer: q.steer };
     }
@@ -1151,6 +1158,21 @@ export class Engine {
     this.start(id);
     this.emitQueue(id);
     return { event: ev };
+  }
+
+  // Whether a hook keeps this input (another session's message) from starting a turn now: it waits in the queue.
+  private inputHeld(id: string, meta: Record<string, unknown> | undefined): boolean {
+    if (meta?.kind !== "peer") return false;
+    const s = this.store.session(id);
+    if (!s) return false;
+    return allHooks().some((h) => { try { return !!h.holdsInput?.(s, meta); } catch (e) { this.errors.capture("server", e, { hook: "holdsInput", session: id }); return false; } });
+  }
+
+  // What a hook kept back is let go (a raised cap): the queue's next prompt starts if nothing else holds it.
+  queueReleased(id: string) {
+    if (this.running.has(id) || !this.store.queue(id).length) return;
+    this.next(id);
+    this.emitQueue(id);
   }
 
   // True the first time a session is given an input under this key. `fp`: a
@@ -1405,6 +1427,8 @@ export class Engine {
     if (this.sending.size && this.store.queue(id).some((x) => this.sending.has(x.id))) return;
     const q = this.store.queue(id)[0];
     if (!q) return;
+    // Another session's message that a hook keeps back (a reached cap): it waits where it is.
+    if (q.meta?.kind === "peer" && this.inputHeld(id, q.meta)) return;
     // Written on another branch: it waits for the owner to say where it goes.
     if (this.offBranch(q)) { this.hold(id); this.emitQueue(id); return; }
     // Its turn starts where a restart cut one that was not continued: the model is told of the cut first.

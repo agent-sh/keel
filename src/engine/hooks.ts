@@ -146,6 +146,11 @@ export type TurnHooks = {
   // carries once (a cap that is reached while the owner's own message runs the turn). `byOwner`: the
   // turn was started or steered by the owner's own words (asked only when it matters).
   budget?: (s: Session, byOwner: () => boolean) => string | { text: string; cap?: boolean; note?: boolean } | undefined;
+  // An input from another session (kind "peer") that must wait for a reason the hook keeps (a reached
+  // dollar cap): stored in the session's queue, and not started while this says so. Asked when the
+  // input comes to an idle session and again when the queue would start it; the owner's own words
+  // are never asked.
+  holdsInput?: (s: Session, meta: Record<string, unknown>) => boolean;
   // A turn is starting in the session, whatever started it (a prompt, a queued
   // one, a report, a continuation after a restart).
   turnStart?: (s: Session) => void;

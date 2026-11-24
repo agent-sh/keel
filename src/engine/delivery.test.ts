@@ -730,3 +730,54 @@ test("an owed queue of an archived session starts when the session is restored",
   await Bun.sleep(20);
   expect(c.requests).toEqual([]);
 });
+
+// A hook can keep another session's message from starting a turn (a reached dollar cap): it waits in
+// the stored queue, in the order it came, and goes when the hook lets go and the queue is released.
+test("another session's message waits in the queue while a hook holds it, and goes in order when released", async () => {
+  const { store, engine, requests, session } = rig(scratch("peer-hold"));
+  const s = session();
+  let capped = true;
+  registerHooks({ holdsInput: (x) => x.id === s.id && capped });
+  const peer = (n: number) => engine.send(s.id, `peer ${n}`, { mode: "queue", meta: { kind: "peer", message_id: `m${n}` } });
+  expect(peer(1)).toMatchObject({ queued: { text: "peer 1" } });
+  expect(peer(2)).toMatchObject({ queued: { text: "peer 2" } });
+  // The owner's own words still run, and the queue behind them is still held.
+  engine.send(s.id, "owner words");
+  await engine.idle(s.id);
+  expect(requests.map((r) => r.join("|"))).toEqual(["owner words"]);
+  expect(store.queue(s.id).map((q) => q.text)).toEqual(["peer 1", "peer 2"]);
+  engine.queueReleased(s.id);
+  expect(store.queue(s.id)).toHaveLength(2);
+  capped = false;
+  engine.queueReleased(s.id);
+  await engine.idle(s.id);
+  await engine.idle(s.id);
+  expect(store.queue(s.id)).toEqual([]);
+  expect(requests.at(-1)!.filter((t) => t.startsWith("peer"))).toEqual(["peer 1", "peer 2"]);
+});
+
+// The turn a restart cut and the turn that continues it are one turn, and so is whose it was.
+test("a continued turn counts as the owner's when the owner started the cut one", () => {
+  const { store, engine, session } = rig(scratch("by-owner"));
+  const cut = (first: Record<string, unknown>) => {
+    const s = session();
+    store.append(s.id, "user", first);
+    store.append(s.id, "turn_start", {});
+    store.append(s.id, "turn_end", { reason: "restart" });
+    store.append(s.id, "user", { text: "[harness] The daemon restarted during your previous turn.", origin: "restart" });
+    return s.id;
+  };
+  const owners = cut({ text: "go" });
+  expect(engine.byOwner(owners)).toBe(true);
+  // Cut again and continued again: still the owner's.
+  store.append(owners, "turn_start", {});
+  store.append(owners, "turn_end", { reason: "restart" });
+  store.append(owners, "user", { text: "[harness] The daemon restarted again.", origin: "restart" });
+  expect(engine.byOwner(owners)).toBe(true);
+  // A loop's turn that was cut is not made the owner's by the restart.
+  expect(engine.byOwner(cut({ text: "run", kind: "loop" }))).toBe(false);
+  // A turn that ended is over: the owner's words before it are not this turn's.
+  store.append(owners, "turn_start", {});
+  store.append(owners, "turn_end", { reason: "end_turn" });
+  expect(engine.byOwner(owners)).toBe(false);
+});

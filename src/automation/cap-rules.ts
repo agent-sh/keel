@@ -96,4 +96,4 @@ export const capOwnerNote = (usd: number, spent: number) =>
 // What the owner is told once when a reached cap holds the inputs that are not theirs.
 export const HELD_CLS = "held";
 export const capHeldMessage = (usd: number, spent: number) =>
-  `The dollar cap (${dollars(usd)}) is reached with ${dollars(spent)} spent: loops, timer wakes, agent reports and goal checks for this session wait until the cap is raised. Your own messages still run.`;
+  `The dollar cap (${dollars(usd)}) is reached with ${dollars(spent)} spent: loops, timer wakes, agent reports, goal checks and messages from other sessions for this session wait until the cap is raised. Your own messages still run.`;

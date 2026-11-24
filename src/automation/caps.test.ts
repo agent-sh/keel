@@ -230,14 +230,17 @@ test("a reached cap holds loops, wakes and reports of its session, told once, an
     expect(g).toHaveLength(1);
     expect(g[0]!.count).toBe(1);
     expect(g[0]!.sample).toContain("wait until the cap is raised");
+    expect(g[0]!.sample).toContain("messages from other sessions");
     // An agent's own inputs are not held: its next step is its report.
     expect(caps.held(a)).toBe(false);
     // Raised: what waited goes, together, in one input.
     store.mergeSettings(root, { cap_usd: 10 });
     await caps.changed(root, true);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("loop run one");
-    expect(sent[0]).toContain("a report");
+    // In the order they came, the second loop run included.
+    const at = ["loop run one", "a report", "loop run two"].map((w) => sent[0]!.indexOf(w));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect(at).toEqual([...at].sort((x, y) => x - y));
     expect(core.hasPending(root)).toBe(false);
   } finally { running = true; }
 });

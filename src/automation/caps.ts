@@ -225,7 +225,7 @@ export function refusal(root: string): string | undefined {
 }
 
 // A top session whose reached cap holds what is not the owner's own words: a loop run, a timer wake, an
-// agent's report, a goal's check wait for a raise (one closing step each, and a "Cap reached" alert each
+// agent's report, a goal's check, a message from another session wait for a raise (one closing step each, and a "Cap reached" alert each
 // time, was what letting them run cost). Said once for the cap, to the owner. Only a session at the top of
 // its tree holds: an agent's own inputs go on, and its next step is its report.
 export function held(sessionId: string): boolean {
@@ -295,7 +295,7 @@ export async function refresh(now = Date.now()): Promise<CapRow[]> {
   rows.clear();
   for (const r of list) rows.set(r.id, r);
   // A top session whose cap has room again (raised, or cleared) goes on with what waited for it.
-  for (const r of list) if (r.kind === "session" && r.level !== "spent" && hasPending(r.id)) flush(r.id);
+  for (const r of list) if (r.kind === "session" && r.level !== "spent") released(r.id);
   const print = printOf(list);
   if (print !== printed) {
     printed = print;
@@ -313,12 +313,19 @@ export function pulse(now = Date.now()) {
   refresh(now).catch((e) => capture(e, { at: "caps" })).finally(() => { busy = false; });
 }
 
+// What waited for a top session's cap goes: the inputs the automation holds, and the messages of other
+// sessions that wait in the session's queue.
+function released(id: string) {
+  if (hasPending(id)) flush(id);
+  D().engine.queueReleased?.(id);
+}
+
 // A cap set, changed or cleared now: the set of capped top sessions and the pages' figures follow at once.
 export function changed(id: string, capped: boolean) {
   (tops ??= new Set()).add(id);
   if (!capped) { tops.delete(id); sums.delete(id); }
   lastAt = 0;
-  return refresh().then((r) => { if (!capped && hasPending(id)) flush(id); return r; }).catch((e) => capture(e, { at: "caps" }));
+  return refresh().then((r) => { if (!capped) released(id); return r; }).catch((e) => capture(e, { at: "caps" }));
 }
 
 // The cap one press raises: its own size more, and past what is spent.
