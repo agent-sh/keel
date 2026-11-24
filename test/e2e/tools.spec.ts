@@ -5,7 +5,7 @@ import { ask, HAIKU, shoot } from "./shots.ts";
 
 // Feature: the Claude tool profile in the UI. A plan checklist, a file
 // written and edited (shown as a diff), a background command with its job in
-// the dock and its end reported to the model, and a question the turn waits
+// the dock and its end waking the idle session, and a question the turn waits
 // on until the owner answers it in the transcript. (A real model makes the
 // calls from words; the stand-in makes the same calls from its script, and
 // its last reply quotes the answer it was given. What each call shows is the
@@ -58,8 +58,17 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   await expect(page.locator('[data-tool="Write"]')).toContainText("alpha");
   await shoot(page, "tools-02-write-open");
 
-  // The job's end reaches the model with the next request: it has ended by then (it takes four seconds).
-  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs[0]?.running, { timeout: 30_000 }).toBe(false);
+  // The job's end wakes the idle session with a turn of its own (0b3664139: it used to ride the next
+  // request as a note). The turn's input is a collapsed "Harness note" (cd8b95cf1 drew it so; the old
+  // "note" line is no longer stored for an end that started a turn), and the turn ends with its own footer.
+  // Wait for that turn before asking: a question sent while the job still runs would race the wake.
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+  const woke = page.getByTestId("harness-notice");
+  await expect(woke).toHaveCount(1);
+  await woke.locator(".k-heard-line").click();
+  await expect(woke).toContainText("background command");
+  await expect(woke).toContainText("exited with code 0");
+  expect((await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs[0]?.running).toBe(false);
   await page.getByTestId("composer").fill(ask(
     "Use AskUserQuestion once: ask which color to use, header \"Color\", options Teal and Amber. " +
     "After my answer, say the background job's status and my color in one sentence.",
@@ -73,9 +82,8 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   await shoot(page, "tools-04-question-picked");
   await q.getByTestId("question-submit").click();
   await expect(page.locator('[data-testid="question"][data-state="answered"]')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 120_000 });
+  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 120_000 });
   await expect(page.getByTestId("assistant-text").last()).toContainText(/amber/i);
-  await expect(page.getByTestId("note").first()).toContainText("job");
   await shoot(page, "tools-05-answered");
 
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
