@@ -66,8 +66,12 @@ function useBackground(sessionId: string) {
   const parts = [...tally.parts.map((p) => p.text), n(waits.length, "wait"), n(on, "loop")].filter(Boolean);
   return { agents, waits, loops, live: out.length + waits.length + on, counts: parts.join(", "), tally };
 }
-// How much runs in the background now: the header says it when the button itself is folded away.
-export const useBackgroundLive = (sessionId: string) => useBackground(sessionId).live;
+// How much runs in the background now, and what it is in words ("1 agent, 2 waits"): the header says it
+// when the button itself is folded away.
+export function useBackgroundLive(sessionId: string) {
+  const { live, counts } = useBackground(sessionId);
+  return { live, words: counts };
+}
 
 // The session's background work: agents, waits and monitors, loops.
 export function BackgroundButton({ sessionId }: { sessionId: string }) {

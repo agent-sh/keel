@@ -151,7 +151,7 @@ function useFit(tools: Tool[], reserve: number) {
 // control opened from elsewhere (a command, a shortcut) opens the menu with it, and the row measures
 // what they would take back.
 type Act = { id: string; label: string; icon: ReactNode; run: () => void; danger?: boolean; disabled?: boolean; gap?: boolean };
-function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool[]; live: boolean; list: { current: HTMLElement | null }; changed: () => void; acts: Act[]; button: RefObject<HTMLButtonElement | null> }) {
+function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool[]; live: string; list: { current: HTMLElement | null }; changed: () => void; acts: Act[]; button: RefObject<HTMLButtonElement | null> }) {
   const [open, setOpen] = useState(false);
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const [n, setN] = useState(tools.length);
@@ -189,9 +189,9 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
     // Modal, as a menu is: the page under it takes no press while it is open, and a key that closes it is
     // the owner's double press, not a Stop (lib/looks.ts, lib/overlay.ts).
     <Popover.Root open={open} onOpenChange={setOpen} modal>
-      <Popover.Trigger ref={button} data-more="" aria-label="Session actions" title={live ? "Session actions. Background work runs: its list is here" : "Session actions"} data-testid="session-menu" className={cn(iconButton, "relative")}>
+      <Popover.Trigger ref={button} data-more="" aria-label={live ? `Session actions, ${live}` : "Session actions"} title={live ? `Session actions. ${live}: its list is here` : "Session actions"} data-testid="session-menu" className={cn(iconButton, "relative")}>
         <Ellipsis className="size-4" />
-        {live && <span className="k-menu-live" data-testid="more-live" />}
+        {live && <span className="k-menu-live" data-testid="more-live" role="img" aria-label={live} title={live} />}
       </Popover.Trigger>
       <Popover.Portal keepMounted>
         <Popover.Positioner data-stow="" sideOffset={6} align="end" className="z-50 outline-none">
@@ -284,7 +284,9 @@ export function SessionHeader({ session }: { session: Session }) {
   ];
   const { head, list, out, later } = useFit(tools, editing ? TITLE_ROOM : 0);
   const folded = tools.filter((t) => out.includes(t.id));
-  const live = useBackgroundLive(session.id) > 0 && out.includes("background");
+  const bg = useBackgroundLive(session.id);
+  // What the dot at the menu counts, in words (a title is not shown on touch: the name has it).
+  const live = bg.live > 0 && out.includes("background") ? `${bg.words} in the background` : "";
   // Its subagents' sessions go with it: the dialog says how many before anything is removed.
   // (The list leaves out the ones at rest and counts them under the session it carries.)
   const remove = async () => {
