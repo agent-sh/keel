@@ -1449,7 +1449,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* (In the components layer, as the utility it replaces was: a width or a wrap a part's own classes give still applies.) */
 @layer components { .k-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
 @media (pointer: coarse) and (max-width: 767px) {
-  .k-truncate, .k-set-sub[data-clip], .k-settings-body :is(.k-path, .k-editor-bar > span:first-child) { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+  .k-truncate, .k-settings-body :is(.k-path, .k-editor-bar > span:first-child) { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 }
 /* A line a panel cut short with an ellipsis, written whole on a phone (the same as in a Settings section). */
 @media (pointer: coarse) and (max-width: 767px) {
@@ -1537,6 +1537,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* A list of many short rows (figures, names): a tighter row. A line cut to one (clip) keeps its whole words in its title. */
 .k-set-list[data-dense] > .k-set-item { min-height: 2.25rem; padding-block: 0.3125rem; }
 .k-set-sub[data-clip] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+/* (After the rule it undoes, which the sheet's order would otherwise let win: a phone writes the line whole.) */
+@media (pointer: coarse) and (max-width: 767px) { .k-set-sub[data-clip] { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; } }
 .k-set-meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.25rem 1rem; font-size: var(--text-caption); font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
 .k-set-item > .k-set-status { grid-area: status; }
 .k-set-act { grid-area: act; display: flex; align-items: center; justify-content: flex-end; gap: 0.375rem; }

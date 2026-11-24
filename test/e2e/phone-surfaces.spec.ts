@@ -116,7 +116,7 @@ for (const size of SIZES) {
       const report = {
         record: true, since_ms: now - 30 * 864e5, days: 30, presses: 9, first_ms: now - 864e5, rows: 9, row_cap: 50_000, kept_days: 90,
         views: [{ view: "session", presses: 9, controls: names.map((control, i) => ({ control, presses: 5 - i * 2 + 1, last_ms: now - i * 6e4, surfaces: "phone" })) }],
-        never: names.map((control) => ({ control, views: "session,project", seen_since_ms: now - 864e5 })),
+        never: names.map((control) => ({ control, views: "session,project,settings/acp,settings/telemetry,settings/safety,settings/models", seen_since_ms: now - 864e5 })),
       };
       await page.route("**/api/presses?*", (route) => route.fulfill({ json: report }));
       await page.goto("/settings/telemetry");
@@ -126,6 +126,9 @@ for (const size of SIZES) {
       // Every name is there whole: not cut at the column's edge, so two controls are never one name.
       const cut = await panel.locator("li span.font-mono").evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth || getComputedStyle(e).textOverflow === "ellipsis").map((e) => e.textContent));
       expect(cut, "names cut off").toEqual([]);
+      // The line under a name (the views it was drawn in) is whole too: a long list of views wraps, it is not cut.
+      const subs = await panel.locator(".k-set-sub[data-clip]").evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth + 1 || getComputedStyle(e).textOverflow === "ellipsis").map((e) => e.textContent));
+      expect(subs, "second lines cut").toEqual([]);
       for (const row of await panel.getByTestId("press-never-row").all()) {
         const name = (await row.locator("span.font-mono").first().boundingBox())!, seen = (await row.getByText(/^seen since/).boundingBox())!;
         expect(name.y + name.height, "the date is under the name").toBeLessThanOrEqual(seen.y + 1);
