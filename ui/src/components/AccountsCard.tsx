@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { composing } from "../lib/keys.ts";
 import { api, failed, reportError } from "../lib/store.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 
@@ -29,7 +30,7 @@ export function AccountsCard() {
           <div className="flex items-center gap-2">
             <input
               data-testid="accounts-input" value={typed} placeholder="github.com/you" spellCheck={false}
-              onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(typed).catch(reportError); }}
+              onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) add(typed).catch(reportError); }}
               className="k-field w-56"
             />
             <button type="button" data-testid="accounts-add" className="k-btn k-btn-lg" disabled={!typed.trim()} onClick={() => add(typed).catch(reportError)}>Add</button>

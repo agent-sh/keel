@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import { toolsFor, webUse } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
-import { patchSettings } from "../admin/settings.ts";
+import { patchSettings, settings } from "../admin/settings.ts";
 import { Gate } from "./gate.ts";
 import type { Mode } from "./policy.ts";
 
@@ -17,8 +17,11 @@ import type { Mode } from "./policy.ts";
 const tmp = () => process.env.TMPDIR ?? tmpdir();
 // (The forge owners here are the owner's namespaces: what is held below is held by where a target came from, not by
 // whose account it writes to, which src/safety/accounts.test.ts covers.)
+const before = settings().accounts?.namespaces ?? [];
 const named = patchSettings({ accounts: { namespaces: ["git.evil.example/org", "github.com/acme", "github.com/up", "github.com/evil"] } });
 if (!named.ok) throw new Error(`namespaces: ${named.error}`);
+// (A file leaves nothing process-wide behind.)
+afterAll(() => { patchSettings({ accounts: { namespaces: before } }); });
 const claude = toolsFor("claude");
 const fetchTool = claude.find((t) => t.name === "WebFetch")!;
 const bash = claude.find((t) => t.name === "Bash")!;
