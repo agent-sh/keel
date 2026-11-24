@@ -167,6 +167,15 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
   );
 }
 
+// The panels at hand for this session, as the Panels chooser heads its list with them (a phone's session menu lists them
+// while a question holds the head: the Panels button is not there then).
+export function useHandPanels(session: Session): Panel[] {
+  usePrefs();
+  useSyncExternalStore(panels.subscribe, panels.version);
+  const open = useUI((s) => s.panel);
+  return atHand(visible(session), open);
+}
+
 // The Panels chooser, with all of them: it never leaves the header.
 export function PanelsButton({ session }: { session: Session }) {
   useSyncExternalStore(panels.subscribe, panels.version);

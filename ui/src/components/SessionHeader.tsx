@@ -16,7 +16,7 @@ import { archive, isPinned } from "../lib/sessops.ts";
 import { auto } from "../lib/automation.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
-import { openPanel, PanelsButton } from "./SidePanel.tsx";
+import { openPanel, PanelsButton, useHandPanels } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
 import { putAwayCount } from "../../../src/core/state-words.ts";
 import { REST_AT } from "../../../src/automation/cap-rules.ts";
@@ -154,7 +154,7 @@ function useFit(tools: Tool[], reserve: number) {
 // same controls, over the session's actions. The tools stay mounted while it is closed, so a folded
 // control opened from elsewhere (a command, a shortcut) opens the menu with it, and the row measures
 // what they would take back.
-type Act = { id: string; label: string; icon: ReactNode; run: () => void; danger?: boolean; disabled?: boolean; gap?: boolean; command?: string };
+type Act = { id: string; head?: string; label: string; icon: ReactNode; run: () => void; danger?: boolean; disabled?: boolean; gap?: boolean; command?: string };
 function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool[]; live: string; list: { current: HTMLElement | null }; changed: () => void; acts: Act[]; button: RefObject<HTMLButtonElement | null> }) {
   const [open, setOpen] = useState(false);
   const [el, setEl] = useState<HTMLDivElement | null>(null);
@@ -218,6 +218,7 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
               {acts.map((a) => (
                 <Fragment key={a.id}>
                   {a.gap && <div role="separator" className="k-stow-rule" />}
+                  {a.head && <div role="presentation" className="k-label k-stow-head" data-testid="menu-panels">{a.head}</div>}
                   <button type="button" role="menuitem" data-testid={a.id} disabled={a.disabled} data-danger={a.danger || undefined}
                     className="k-stow-cmd" title={a.command && commandKeys(a.command) ? `${a.label} (${commandKeys(a.command)})` : undefined} onClick={() => { close(); a.run(); }}>
                     {a.icon}{a.label}
@@ -327,6 +328,7 @@ export function SessionHeader({ session }: { session: Session }) {
   // A session another harness runs takes no setting of Keel's (it is read-only here): what it cost is all its row has.
   const tools = session.outside ? every.filter((t) => t.id === "usage") : every;
   const { head, list, out, later } = useFit(tools, editing ? TITLE_ROOM : 0);
+  const hand = useHandPanels(session);
   const folded = tools.filter((t) => out.includes(t.id));
   const bg = useBackgroundLive(session.id);
   // What the dot at the menu counts, in words (a title is not shown on touch: the name has it).
@@ -350,11 +352,11 @@ export function SessionHeader({ session }: { session: Session }) {
       { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, command: "station.pin", run: () => runCommand("station.pin") },
       { id: "menu-close", label: "Close the session here", icon: <X />, command: "station.close", run: () => runCommand("station.close") },
     ] : []),
-    // A phone's head holds no tools, and while a question waits not even the Panels button: the work board and
+    // A phone's head holds no tools, and while a question waits not even the Panels button: the panels at hand and
     // Stop are here, so they stay a tap away (bridge.css, data-question).
     ...(phone() ? [
-      { id: "menu-board", label: "Work board", icon: <LayoutList />, run: () => savePref("panel", "board") },
       ...(session.phase === "working" ? [{ id: "menu-stop", label: "Stop the turn", icon: <Square />, run: () => void actions.interrupt(session.id).catch(reportError) }] : []),
+      ...hand.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "Panels", gap: true } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })),
     ] : []),
     { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) },
     { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },

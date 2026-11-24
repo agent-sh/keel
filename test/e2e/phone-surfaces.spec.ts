@@ -610,10 +610,24 @@ for (const size of SIZES) {
         // What the tools row held is a tap away: the work board, Stop, and Archive.
         await menu.tap();
         const more = page.getByTestId("header-more");
-        await expect(more.getByTestId("menu-board")).toBeVisible();
         await expect(more.getByTestId("menu-stop")).toBeVisible();
+        await shoot(page, `phone-surfaces-22-question-menu-open-${size.width}`);
+        // The panels the Panels button holds are in the menu as a group of their own: the five at hand, the work board among them.
+        const panelRows = more.locator('[data-testid^="menu-panel-"]');
+        await expect(more.getByTestId("menu-panels")).toBeVisible();
+        await expect(panelRows).toHaveCount(5);
+        await expect(more.getByTestId("menu-panel-board")).toBeVisible();
+        // The list stays inside the screen and scrolls: its last action is reached by a swipe, not cut off.
+        const box = (await more.boundingBox())!;
+        expect(box.y, "the menu starts inside the page").toBeGreaterThanOrEqual(0);
+        expect(box.y + box.height, "the menu ends inside the page").toBeLessThanOrEqual(size.height);
+        expect(await more.evaluate((el) => getComputedStyle(el).overflowY)).toBe("auto");
+        await more.getByTestId("menu-delete").scrollIntoViewIfNeeded();
+        await expect(more.getByTestId("menu-delete")).toBeInViewport({ ratio: 1 });
+        await more.getByTestId("menu-archive").scrollIntoViewIfNeeded();
         await expect(more.getByTestId("menu-archive")).toBeVisible();
-        await more.getByTestId("menu-board").tap();
+        await more.getByTestId("menu-panel-board").scrollIntoViewIfNeeded();
+        await more.getByTestId("menu-panel-board").tap();
         await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "board");
       } finally {
         await drop(request, id);

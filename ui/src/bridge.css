@@ -994,6 +994,11 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-stow-cmd { display: flex; align-items: center; gap: 0.625rem; width: 100%; height: var(--spacing-ctl-lg); padding: 0 0.625rem; border-radius: var(--radius-md); text-align: left; font-size: var(--text-ui); color: var(--fg); outline: none; }
 .k-stow-cmd:hover, .k-stow-cmd:focus-visible { background: var(--hover); }
 .k-stow-cmd:disabled { opacity: 0.5; }
+.k-stow-head { padding: 0.375rem 0.625rem 0.125rem; }
+/* A list taller than the screen scrolls inside it, and its foot fades while more is below (styles.css, k-foot). */
+@supports (animation-timeline: scroll()) {
+  .k-stow::after { content: ""; display: block; position: sticky; bottom: 0; height: var(--k-foot); margin-top: calc(-1 * var(--k-foot)); background: linear-gradient(to bottom, transparent, var(--raised)); pointer-events: none; animation: k-foot linear both; animation-timeline: scroll(self block); }
+}
 .k-stow-rule { height: 1px; margin: 0.25rem 0.25rem; background: var(--line); }
 .k-stow-cmd[data-danger], .k-stow-cmd[data-danger] svg { color: var(--danger); }
 @media (hover: none) { .k-stow-cmd { height: var(--spacing-tap); } }
