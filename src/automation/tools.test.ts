@@ -9,7 +9,7 @@ import { Store } from "../core/store.ts";
 import { setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import * as waits from "./waits.ts";
-import { automationTools } from "./tools.ts";
+import { automationTools, bindWait } from "./tools.ts";
 
 const store = new Store(mkdtempSync(join(tmpdir(), "keel-auto-")));
 // The fleet's column, before the first read of a session (a read prepared before it would not see it).
@@ -143,6 +143,8 @@ test("an http wait on a loopback port a process of the session listens on is set
   const dir = mkdtempSync(join(tmpdir(), "keel-job-"));
   const port = 48777;
   const job = startJob({ sessionId: s.id, command: `exec bun -e 'Bun.serve({ port: ${port}, hostname: "127.0.0.1", fetch: () => new Response("ok") }); setInterval(() => {}, 1000)' # ${port + 1}`, cwd: dir, logDir: join(dir, "jobs"), background: true });
+  const was = { ...bindWait };
+  Object.assign(bindWait, { wait: 300 });
   try {
     const refused = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port + 1}/health` }, ctx);
     expect(refused.is_error).toBe(true);
@@ -156,6 +158,35 @@ test("an http wait on a loopback port a process of the session listens on is set
     expect(ok.is_error).toBeFalsy();
     expect(text(ok)).toContain("Scheduled http wait");
   } finally {
+    Object.assign(bindWait, was);
+    await stopJob(job);
+    for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
+  }
+});
+
+// A dev server started seconds ago has not bound its port when the wait is asked for.
+test("an http wait waits for a server the session just started to bind its port, and is refused at once when none was started", async () => {
+  const { startJob, stopJob } = await import("../tools/jobs.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-job-"));
+  const port = 48781;
+  const was = { ...bindWait };
+  Object.assign(bindWait, { wait: 8000, every: 50 });
+  const job = startJob({ sessionId: s.id, command: `sleep 1; exec bun -e 'Bun.serve({ port: ${port}, hostname: "127.0.0.1", fetch: () => new Response("ok") }); setInterval(() => {}, 1000)'`, cwd: dir, logDir: join(dir, "jobs"), background: true });
+  try {
+    const ok = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port}/health` }, ctx);
+    expect(ok.is_error).toBeFalsy();
+    expect(text(ok)).toContain("Scheduled http wait");
+    // A port the new command never binds is refused when the time is up.
+    Object.assign(bindWait, { wait: 300 });
+    const refused = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port + 1}/health` }, ctx);
+    expect(text(refused)).toContain(`no process of this session listens on ${port + 1} yet`);
+    // A command that started long ago is not waited for.
+    Object.assign(bindWait, { wait: 8000, young: -1 });
+    const t = Date.now();
+    expect((await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port + 2}/health` }, ctx)).is_error).toBe(true);
+    expect(Date.now() - t).toBeLessThan(1000);
+  } finally {
+    Object.assign(bindWait, was);
     await stopJob(job);
     for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
   }

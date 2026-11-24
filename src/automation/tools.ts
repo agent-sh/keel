@@ -430,8 +430,24 @@ const ownPorts = (sessionId: string) => {
   return [...portsOf(pids).values()].flat().map((p) => p.port).filter((p) => !isOwnPort(p));
 };
 
+// A server the session started a moment ago has not bound its port yet (a dev server takes seconds to
+// start), and the wait asked for next would be refused as naming a port nothing listens on. When a command of
+// the session that is still running started within `young` ms, the port is looked at for up to `wait` ms
+// before it is refused; with no such command it is refused at once. (A test sets them shorter.)
+export const bindWait = { wait: 10_000, young: 30_000, every: 250 };
+async function bound(u: URL, sessionId: string): Promise<boolean> {
+  const recent = () => ownJobs(sessionId).some((j) => Date.now() - j.started <= bindWait.young);
+  const until = Date.now() + bindWait.wait;
+  if (!waits.localProbe(u, [Number(u.port || (u.protocol === "https:" ? 443 : 80))])) return false; // not a loopback address: no process of the session can bind it
+  while (recent() && Date.now() < until) {
+    await Bun.sleep(bindWait.every);
+    if (waits.localProbe(u, ownPorts(sessionId))) return true;
+  }
+  return false;
+}
+
 // `monitorName`: the family's name for the monitor tool (what a refusal names as the other way).
-const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard(() => {
+const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard(async () => {
   if (input.kind === "webhook" || input.spec?.kind === "webhook") return fail("A webhook wait is the owner's to create.");
   // A session whose commands run on another machine: their files are there, not on this disk.
   const elsewhere = !!D().store.session(ctx.sessionId)?.machine;
@@ -452,7 +468,7 @@ const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard
   // loopback port one of the session's own processes listens on: a server it started is its own.
   if (spec.kind === "http") {
     const u = new URL(spec.url);
-    if (privateHost(u.hostname) && !waits.localProbe(u, ownPorts(ctx.sessionId))) {
+    if (privateHost(u.hostname) && !waits.localProbe(u, ownPorts(ctx.sessionId)) && !(await bound(u, ctx.sessionId))) {
       const probe = `until curl -fsS -o /dev/null ${spec.url}; do ${"sle" + "ep"} 1; done; echo up`;
       const loop = /^(localhost|.*\.localhost)\.?$/i.test(u.hostname) || /^(127\.|\[?::1\]?$)/.test(u.hostname);
       return fail(loop && u.port
