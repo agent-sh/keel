@@ -80,13 +80,14 @@ export function peerAuthority(p: PeerFacts): Authority | Promise<Authority> {
 // message, a stop are the owner's, for its own session too. A top-level session's command (one whose session
 // has no parent in the daemon's table: never anything the command says of itself) may also read what the
 // daemon's lists show of every session: the list, a session's events, timeline and hours, the agents, the
-// errors, telemetry, resources and the daemon's state. Never a secret, the vault, the access token, the
+// errors, telemetry, usage, resources and the daemon's state. Never a secret, the vault, the access token, the
 // settings or the socket. An agent's command keeps its own session only, unless its parent granted it the
 // same lists at its start (src/automation/api-grant.ts: a chain of grants that starts at a top-level session).
 const TOP_READS = [
   /^\/api\/sessions$/,
   /^\/api\/sessions\/[^/]+(\/(events|timeline|hours|agents|agents\/[^/]+\/report))?$/,
   /^\/api\/(errors|resources|daemon|automation|automation\/now|telemetry)$/,
+  /^\/api\/usage(\/(drivers|rollup))?$/,
   /^\/api\/telemetry\/(compactions|compare|examples|memory|prompt|slowest|tokens|turns|vocabulary)$/,
 ];
 export function sessionMay(method: string, path: string, session: string, lists = false): boolean {

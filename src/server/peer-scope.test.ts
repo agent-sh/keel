@@ -56,14 +56,14 @@ test("a session's command reads its own session and nothing else, and changes no
 test("a top-level session's command reads the daemon's lists too, never a secret and never a write", () => {
   const top = (m: string, p: string) => sessionMay(m, p, "s-a", true);
   for (const p of ["/api/sessions", "/api/sessions/s-b", "/api/sessions/s-b/events", "/api/sessions/s-b/timeline", "/api/sessions/s-b/hours", "/api/sessions/s-b/agents",
-    "/api/sessions/s-b/agents/a1/report", "/api/errors", "/api/telemetry", "/api/telemetry/tokens", "/api/resources", "/api/daemon", "/api/health", "/api/automation", "/api/automation/now"])
+    "/api/sessions/s-b/agents/a1/report", "/api/errors", "/api/telemetry", "/api/telemetry/tokens", "/api/usage", "/api/usage/drivers", "/api/resources", "/api/daemon", "/api/health", "/api/automation", "/api/automation/now"])
     expect({ p, ok: top("GET", p) }).toEqual({ p, ok: true });
   for (const [m, p] of [["GET", "/api/sessions/s-b/secrets"], ["GET", "/api/sessions/s-a/secrets"], ["GET", "/api/secrets"], ["GET", "/api/remote-access"], ["GET", "/api/settings"],
-    ["GET", "/ws"], ["GET", "/api/sessions/s-b/permissions"], ["GET", "/api/sessions/s-b/queue"], ["GET", "/api/telemetry/x"], ["GET", "/api/sessions/s-b%2Fsecrets"],
+    ["GET", "/ws"], ["GET", "/api/sessions/s-b/permissions"], ["GET", "/api/sessions/s-b/queue"], ["GET", "/api/telemetry/x"], ["POST", "/api/usage/rollup"], ["GET", "/api/sessions/s-b%2Fsecrets"],
     ["POST", "/api/sessions"], ["PUT", "/api/sessions/s-b/permissions"], ["POST", "/api/sessions/s-b/interrupt"], ["POST", "/api/errors/read-all"], ["DELETE", "/api/sessions/s-b"]])
     expect({ m, p, ok: top(m!, p!) }).toEqual({ m, p, ok: false });
   // An agent's command (not top-level) keeps its own session only.
-  for (const p of ["/api/sessions", "/api/sessions/s-b", "/api/errors", "/api/daemon", "/api/automation"]) expect({ p, ok: sessionMay("GET", p, "s-a", false) }).toEqual({ p, ok: false });
+  for (const p of ["/api/sessions", "/api/sessions/s-b", "/api/errors", "/api/daemon", "/api/automation", "/api/usage"]) expect({ p, ok: sessionMay("GET", p, "s-a", false) }).toEqual({ p, ok: false });
 });
 
 test("the door: a session by its standing, a socket of no maker refused, the token never deciding for one", () => {
