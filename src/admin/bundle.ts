@@ -210,7 +210,7 @@ function failingSection(f: Span): string[] {
   if (f.error) out.push("", fence(clip(f.error, 3000)));
   if (a.shape) {
     const sh = a.shape;
-    out.push("", `Request shape: ${sh.purpose}; system ${sh.system_chars} chars; ${sh.messages} messages (${Object.entries(sh.roles).map(([k, v]) => `${k} ${v}`).join(", ")}); blocks ${Object.entries(sh.blocks).map(([k, v]) => `${k} ${v}`).join(", ")}; ${sh.message_bytes} bytes of messages; ${sh.tools} tools; effort ${sh.effort ?? "default"}; max tokens ${sh.max_tokens ?? "default"}${sh.last_message ? `; last message ${sh.last_message.role} [${sh.last_message.blocks.join(", ")}]` : ""}.`);
+    out.push("", `Request shape: ${sh.purpose}; system ${sh.system_chars} chars; ${sh.messages} messages; blocks ${Object.entries(sh.blocks ?? {}).map(([k, v]) => `${k} ${v}`).join(", ")}; ${sh.message_bytes} bytes of messages; ${sh.tools} tools; effort ${sh.effort ?? "default"}; max tokens ${sh.max_tokens ?? "default"}.`);
   }
   if (a.wire) {
     const w = a.wire;

@@ -46,6 +46,14 @@ CREATE INDEX IF NOT EXISTS activity_session ON activity(session_id, ts DESC);`);
   g.__keelActivitySweep = setInterval(() => { try { prune(); } catch (e) { capture(e, { at: "activity sweep" }); } }, 3600_000);
 }
 
+// The row a keep-awake hold leaves, or none: a hold under a minute that only kept the machine for the
+// turns running is every turn's own, and says nothing the turn's row does not (one row a turn in the list).
+export function holdRow(ms: number, reason: string, turnsOnly: boolean): string | undefined {
+  const mins = Math.round(ms / 60_000);
+  if (mins < 1 && turnsOnly) return undefined;
+  return `Kept the machine awake for ${mins < 1 ? "under a minute" : `${mins} min`} (${reason || "working"})`;
+}
+
 // The turn that just ended in a session, while what its end sets off is
 // written (a loop run's outcome, the alert that it finished): by then no turn
 // runs there, or the next one already does.

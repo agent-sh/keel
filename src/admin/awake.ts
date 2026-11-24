@@ -35,6 +35,10 @@ function onBattery(): boolean {
   } catch { return false; }
 }
 
+// The reason a hold has while turns run: what a hold of a moment's turn says of itself.
+const turnsRunning = (n: number) => `${n} turn${n > 1 ? "s" : ""} running`;
+export const forTurns = (reason: string) => /^\d+ turns? running$/.test(reason);
+
 const which = (bin: string) => (process.env.PATH ?? "").split(":").some((d) => d && existsSync(`${d}/${bin}`));
 
 // Other modules add reasons to stay awake (a loop whose next run is near) and
@@ -91,7 +95,7 @@ export class Awake {
   private want(): string | undefined {
     if (this.untilMs && this.untilMs > Date.now()) return `held until ${zonedStamp(this.untilMs)}`;
     if (settings().keep_awake.mode === "never") return undefined;
-    if (this.working.size) return `${this.working.size} turn${this.working.size > 1 ? "s" : ""} running`;
+    if (this.working.size) return turnsRunning(this.working.size);
     if (this.draining) return "finishing turns before a restart";
     for (const r of awakeReasons) {
       const why = r();

@@ -170,42 +170,37 @@ export function spawnContext(store: Store, sessionId: string, callId: string): s
 
 // What a request carries, by count and size, never its text. Bytes are UTF-8
 // bytes of the JSON, as they go on the wire, not UTF-16 units of the string.
+// One row of a span is written for every request, so only what a reader asks for is kept: the
+// roles (the two alternate: the count of messages says them) and the last message's blocks are not,
+// and a setting the request did not set is left out.
 export function requestShape(req: Pick<ProviderRequest, "system" | "messages" | "tools" | "effort" | "maxTokens" | "purpose" | "speed">) {
-  const roles: Record<string, number> = {};
   const blocks: Record<string, number> = {};
   let bytes = 0;
   for (const m of req.messages) {
-    roles[m.role] = (roles[m.role] ?? 0) + 1;
     const content = Array.isArray(m.content) ? m.content : [{ type: "text" }];
     for (const b of content as any[]) blocks[b.type] = (blocks[b.type] ?? 0) + 1;
     bytes += messageFacts(m).contentBytes;
   }
-  const last = req.messages.at(-1);
   return {
     purpose: req.purpose ?? "turn",
     system_chars: req.system.length,
     messages: req.messages.length,
-    roles,
     blocks,
     message_bytes: bytes,
-    last_message: last ? { role: last.role, blocks: Array.isArray(last.content) ? (last.content as any[]).map((b) => b.type) : ["text"] } : null,
     tools: req.tools.length,
-    effort: req.effort ?? null,
-    max_tokens: req.maxTokens ?? null,
-    speed: req.speed ?? null,
+    ...(req.effort ? { effort: req.effort } : {}),
+    ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),
+    ...(req.speed ? { speed: req.speed } : {}),
   };
 }
 
-// What came back, by kind: the stop reason, the usage, the blocks and tool calls.
+// What came back: the stop reason, the usage and the tool calls (the blocks' counts are the text and the calls).
 export function resultShape(res: ProviderResult) {
-  const blocks: Record<string, number> = {};
-  for (const b of res.blocks) blocks[b.type] = (blocks[b.type] ?? 0) + 1;
   return {
     response_model: res.model,
     stop: res.stop,
     ...(res.stop_details ? { stop_details: res.stop_details } : {}),
     usage: res.usage,
-    blocks,
     tool_calls: res.blocks.filter((b: any) => b.type === "tool_use").map((b: any) => b.name),
     ...(res.served ? { served: res.served } : {}),
   };

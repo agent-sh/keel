@@ -6,7 +6,7 @@ import { gunzipSync } from "node:zlib";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { KEEP_REQUEST_BYTES, OWED_AT_START, SPAN_DAYS, TURN_FAILURE_SQL, packRequest, parseTraceparent, requestShape, type Span, spawnContext, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
+import { KEEP_REQUEST_BYTES, OWED_AT_START, SPAN_DAYS, TURN_FAILURE_SQL, packRequest, parseTraceparent, requestShape, resultShape, type Span, spawnContext, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
 
 // A tracer over a store of its own, with the hooks it registered. Closing takes
 // the hooks away with the store: a turn of a later test file would call them.
@@ -193,6 +193,22 @@ test("a shape's message size is UTF-8 bytes", () => {
   const ascii = requestShape(req("hello E")).message_bytes;
   expect(ascii).toBe(JSON.stringify(req("hello E").messages[0].content).length);
   expect(requestShape(said).message_bytes).toBe(ascii + 3);
+});
+
+test("a request's span keeps its counts and sizes, not what they derive from or what is unset", () => {
+  const r = {
+    model: "m", system: "sys", tools: [{}, {}], maxTokens: 2000,
+    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }, { role: "assistant", content: [{ type: "tool_use", id: "c", name: "Bash", input: {} }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "c", content: "ok" }] }],
+  } as any;
+  const shape = requestShape(r) as Record<string, unknown>;
+  expect(shape).toMatchObject({ purpose: "turn", system_chars: 3, messages: 3, tools: 2, max_tokens: 2000, blocks: { text: 1, tool_use: 1, tool_result: 1 } });
+  expect(Object.keys(shape)).not.toContain("roles");
+  expect(Object.keys(shape)).not.toContain("last_message");
+  expect(Object.keys(shape)).not.toContain("effort"); // not set
+  expect(JSON.stringify(shape).length).toBeLessThan(190);
+  const res = resultShape({ model: "m", stop: "tool_use", usage: { input: 1, output: 2, cache_read: 0, cache_write: 0 }, blocks: [{ type: "text", text: "x" }, { type: "tool_use", id: "c", name: "Bash", input: {} }] } as any);
+  expect(res).toMatchObject({ stop: "tool_use", tool_calls: ["Bash"] });
+  expect(Object.keys(res)).not.toContain("blocks");
 });
 
 test("the cutoff for keeping a request counts UTF-8 bytes", () => {

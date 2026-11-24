@@ -8,7 +8,7 @@ import * as scopes from "./scopes.ts";
 import { parseSince } from "../admin/timeline.ts";
 import { sessionRef } from "../admin/session-ref.ts";
 import { readsOf } from "../server/reads.ts";
-import { awakeHolds, awakeReasons, recheckAwake } from "../admin/awake.ts";
+import { awakeHolds, awakeReasons, forTurns, recheckAwake } from "../admin/awake.ts";
 import type { Judged } from "../safety/gate.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { stopKind } from "../core/stops.ts";
@@ -337,8 +337,8 @@ function init(deps: Deps) {
   // so a sleeping machine does not miss it; each hold is an activity row.
   awakeReasons.splice(0, awakeReasons.length, loopsDue);
   awakeHolds.ended = (_since, ms, reason) => {
-    const mins = Math.round(ms / 60_000);
-    activity.record("awake", "hold", null, `Kept the machine awake for ${mins < 1 ? "under a minute" : `${mins} min`} (${reason || "working"})`, { ms });
+    const text = activity.holdRow(ms, reason, forTurns(reason));
+    if (text) activity.record("awake", "hold", null, text, { ms });
   };
 
   if (!g.__keelAutomationRecovered && !runMode.client) {

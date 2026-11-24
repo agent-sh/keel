@@ -2,7 +2,7 @@
 // count of working sessions changes what is shown, never the lock.
 import { expect, test } from "bun:test";
 import { Bus } from "../core/bus.ts";
-import { Awake } from "./awake.ts";
+import { Awake, forTurns } from "./awake.ts";
 
 test("one inhibitor is held while any session works, whatever their count", async () => {
   const bus = new Bus();
@@ -30,6 +30,9 @@ test("one inhibitor is held while any session works, whatever their count", asyn
   // What is shown follows the count.
   phase("s0", "idle");
   expect(awake.state().reason).toBe("11 turns running");
+  // The reason a hold of turns gives is told apart from any other (the activity list leaves a short one out).
+  expect(forTurns(awake.state().reason!)).toBe(true);
+  expect(forTurns("loop due within 15 minutes")).toBe(false);
   expect(reasons.at(-1)).toBe("11 turns running");
   expect(locks).toHaveLength(1);
   // The last turn ends: the lock is given back. The next turn takes a new one.

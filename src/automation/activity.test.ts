@@ -58,3 +58,9 @@ test("the held list pages without a row twice or a row lost, and counts a sessio
   // One session alone is not held: every turn of it, a page at a time.
   expect(activity.list({ session_id: "busy", limit: 500 }).items).toHaveLength(400);
 });
+
+test("a hold under a minute that only kept the machine for turns leaves no row; any other hold does", () => {
+  expect(activity.holdRow(92, "1 turn running", true)).toBeUndefined();
+  expect(activity.holdRow(92, "loop due within 15 minutes", false)).toBe("Kept the machine awake for under a minute (loop due within 15 minutes)");
+  expect(activity.holdRow(95_000, "2 turns running", true)).toBe("Kept the machine awake for 2 min (2 turns running)");
+});
