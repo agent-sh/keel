@@ -135,7 +135,9 @@ try {
   const t = performance.now();
   res = await Bun.build({
     entrypoints: [join(root, "src/main.ts")],
-    compile: target ? { outfile: out, target } : { outfile: out },
+    // The binary reads nothing from the folder it starts in: a .env there could set KEEL_* or a provider's base URL,
+    // and a bunfig.toml preload would run its code in the daemon.
+    compile: { outfile: out, ...(target ? { target } : {}), autoloadDotenv: false, autoloadBunfig: false, autoloadTsconfig: false, autoloadPackageJson: false },
     minify: true,
     splitting: true,
     sourcemap: "none",
