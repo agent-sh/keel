@@ -5,7 +5,7 @@
 // read on the read thread. `sandbox`: whether commands are confined by
 // default, since with the sandbox off a command's own connections are not seen.
 import { noteDetached, noteOutward, outwardLabel, setEgressSink, tagFor, tagged, tapFetch } from "../../safety/egress.ts";
-import { dayStart, endpointOf } from "../../safety/egress-count.ts";
+import { dayStart, endpointOf, pushFailure } from "../../safety/egress-count.ts";
 import { onGitPush } from "../../core/git.ts";
 import { EGRESS_SCHEMA } from "../../safety/egress-report.ts";
 import { onProxyConn } from "../../safety/net-proxy.ts";
@@ -35,10 +35,11 @@ export const egressRoutes: RouteModule = ({ store }) => {
     noteDetached({ tool: t?.tool ?? "sandboxed command", via: "sandbox proxy", session: t?.session ?? null, call: t?.call ?? null, turn: t?.turn ?? null, host: c.host, port: c.port, bytes: c.bytes, outcome: c.outcome, why: c.why ?? null, at: c.at });
   });
   // The daemon's own git pushes (a landing, a tool that pushes): git connects by itself, so the bytes are not counted.
+  // A failed one is kept as its class: git's own words name the remote's path, and can hold a token.
   onGitPush(({ to, ok, err }) => {
     const end = endpointOf(to);
     if (!end) return;
-    noteOutward({ tool: outwardLabel()?.tool ?? "git push", via: "git push", host: end.host, port: end.port, bytes: null, outcome: ok ? "sent" : "failed", ...(ok ? {} : { why: err.trim().split("\n").pop() ?? "the push failed" }) });
+    noteOutward({ tool: outwardLabel()?.tool ?? "git push", via: "git push", host: end.host, port: end.port, bytes: null, outcome: ok ? "sent" : "failed", ...(ok ? {} : { why: pushFailure(err) }) });
   });
   registerHooks({
     // Every shell call's commands carry its tag: the sandbox's relay puts it before each connection.

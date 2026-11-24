@@ -1,8 +1,10 @@
 // How long the daemon keeps what only grows: spilled tool output (long
-// results, command logs, fetched pages, under <state>/spill) and the usage
-// records (one row per model call and per tool call). Nothing is removed
-// until the owner has set a retention: both are "never" (0) by default, and
-// the page proposes values to accept. What is past a retention is counted
+// results, command logs, fetched pages, under <state>/spill), the usage
+// records (one row per model call and per tool call) and the outward ledger
+// (one row per transfer that left, src/safety/egress.ts). Spilled output and
+// usage records are removed only once the owner has set a retention: both are
+// "never" (0) by default, and the page proposes values to accept. The outward
+// ledger is kept 30 days by default (EGRESS_DAYS says why). What is past a retention is counted
 // first (`due`), shown in Settings, and removed by the owner's click or by
 // the daily cleanup, which names its time a day ahead.
 //
@@ -35,27 +37,35 @@ const DAY = 86_400_000;
 // 0 is never, and never is the default: a removed key is the default again,
 // so never is a value of its own.
 const daysOrNever = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+// The outward ledger's default. It grows by a row per transfer, with a model
+// request and a tool's fetch in most steps (about 4 MB a day at 30,000 rows):
+// unbounded by default it would be the one table that only grows. Its reports
+// read today, and a host is marked new when no row of it is older: 30 days
+// holds a month of "seen before", which is what that mark and the per-session
+// rows of an older session need, at about 120 MB at that rate.
+export const EGRESS_DAYS = 30;
 registerSettings(
   "retention",
-  { spill_days: 0, usage_days: 0 },
-  (v) => (!daysOrNever(v.spill_days) ? "spill_days is a whole number of days, 0 for never" : !daysOrNever(v.usage_days) ? "usage_days is a whole number of days, 0 for never" : undefined),
+  { spill_days: 0, usage_days: 0, egress_days: EGRESS_DAYS },
+  (v) => (!daysOrNever(v.spill_days) ? "spill_days is a whole number of days, 0 for never" : !daysOrNever(v.usage_days) ? "usage_days is a whole number of days, 0 for never" : !daysOrNever(v.egress_days) ? "egress_days is a whole number of days, 0 for never" : undefined),
 );
 
 // What the page proposes while nothing is set. Spilled output: 30 days after
 // its session was last used, the age the page already offers for deleting
 // archived sessions; its command can be run again. Usage records: a year, so
 // a month can be set beside the same month a year before.
-export const PROPOSED = { spill_days: 30, usage_days: 365 } as const;
+export const PROPOSED = { spill_days: 30, usage_days: 365, egress_days: EGRESS_DAYS } as const;
 
 // A retention in days as it is acted on: a whole number of at least 1, else 0 (never).
 export const daysOf = (v: unknown): number => (Number.isInteger(v) && (v as number) >= 1 ? (v as number) : 0);
-const KEYS = ["spill_days", "usage_days"] as const;
-export type Days = { spill_days: number; usage_days: number };
+const KEYS = ["spill_days", "usage_days", "egress_days"] as const;
+export type Days = { spill_days: number; usage_days: number; egress_days: number };
 // The owner's retention as it is acted on, and which settings hold a value
 // that is neither a retention nor never (0, or the key left out).
 export function retentionOf(raw: Record<string, unknown> = settings().retention): Days & { invalid: { name: string; value: unknown }[] } {
   const invalid = KEYS.filter((k) => raw[k] !== undefined && raw[k] !== null && raw[k] !== 0 && !daysOf(raw[k])).map((k) => ({ name: `retention.${k}`, value: raw[k] }));
-  return { spill_days: daysOf(raw.spill_days), usage_days: daysOf(raw.usage_days), invalid };
+  // (The ledger's key left out is its default; spilled output's and usage's left out are never.)
+  return { spill_days: daysOf(raw.spill_days), usage_days: daysOf(raw.usage_days), egress_days: raw.egress_days === undefined ? EGRESS_DAYS : daysOf(raw.egress_days), invalid };
 }
 
 const TABLES = ["telemetry_calls", "telemetry_tools"] as const;
@@ -69,11 +79,13 @@ export type Due = {
   // `session_ids`: the sessions whose files were counted; a removal names them.
   spill: { before_ms: number | null; files: number; bytes: number; sessions: number; session_ids: string[]; busy_sessions: number; pinned_sessions: number };
   usage: { before_ms: number | null; calls: number; tools: number };
+  // Rows of the outward ledger made before `before_ms`.
+  egress: { before_ms: number | null; rows: number };
   // When the daily cleanup next removes what is past the settings.
   next_ms: number;
 };
-export type Removed = { spill_files: number; spill_bytes: number; usage_calls: number; usage_tools: number };
-type Cut = { spill_before_ms?: number | null; usage_before_ms?: number | null; sessions?: string[] };
+export type Removed = { spill_files: number; spill_bytes: number; usage_calls: number; usage_tools: number; egress_rows: number };
+type Cut = { spill_before_ms?: number | null; usage_before_ms?: number | null; egress_before_ms?: number | null; sessions?: string[] };
 
 // The first instant of the running month, as the spend limits count it.
 const monthStart = (now: number) => { const d = new Date(now); return new Date(d.getFullYear(), d.getMonth(), 1).getTime(); };
@@ -101,7 +113,7 @@ export class Retention {
       this.reported.add(said);
       this.errors.capture("server", new Error(`settings.json: ${bad.name} is ${JSON.stringify(bad.value)}, which is not a whole number of days of at least 1 (0 is never). It is read as never: nothing is removed for it until it is set.`), { at: "retention settings", setting: bad.name });
     }
-    return { spill_days: r.spill_days, usage_days: r.usage_days };
+    return { spill_days: r.spill_days, usage_days: r.usage_days, egress_days: r.egress_days };
   }
 
   // The day's notice. The values it was last given for are kept in the state
@@ -111,9 +123,10 @@ export class Retention {
   private noticed(at = Date.now()): Days {
     const cur = this.now();
     const r = this.store.db.query<{ value: string }, []>("SELECT value FROM admin_meta WHERE key = 'retention_noticed'").get();
-    let was: Days = { spill_days: 0, usage_days: 0 };
-    try { if (r) was = retentionOf(JSON.parse(r.value)); } catch {} // not ours: as if none
-    if (was.spill_days !== cur.spill_days || was.usage_days !== cur.usage_days) {
+    // (A notice from before the ledger had a retention names none of it: never, as it was then.)
+    let was: Days = { spill_days: 0, usage_days: 0, egress_days: 0 };
+    try { if (r) { const v = JSON.parse(r.value); was = retentionOf({ egress_days: 0, ...v }); } } catch {} // not ours: as if none
+    if (KEYS.some((k) => was[k] !== cur[k])) {
       this.setNext(at + DAY);
       this.store.db.run("INSERT INTO admin_meta (key, value) VALUES ('retention_noticed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify(cur)]);
     }
@@ -180,9 +193,10 @@ export class Retention {
 
   // What is past the settings now, or past `as` (what the page proposes).
   async due(now = Date.now(), as?: Days): Promise<Due> {
-    const s = as ? { spill_days: daysOf(as.spill_days), usage_days: daysOf(as.usage_days) } : this.now();
+    const s = as ? { spill_days: daysOf(as.spill_days), usage_days: daysOf(as.usage_days), egress_days: daysOf(as.egress_days) } : this.now();
     const spillCut = s.spill_days ? now - s.spill_days * DAY : null;
     const usageCut = s.usage_days ? Math.min(now - s.usage_days * DAY, monthStart(now)) : null;
+    const egressCut = s.egress_days ? now - s.egress_days * DAY : null;
     const spill = spillCut === null ? undefined : await this.spillBefore(spillCut);
     const count = (t: string) => (usageCut === null || !this.has(t) ? 0 : this.store.db.query<{ n: number }, [number]>(`SELECT COUNT(*) AS n FROM ${t} WHERE ts < ?`).get(usageCut)!.n);
     return {
@@ -191,6 +205,7 @@ export class Retention {
         sessions: spill?.sessions.size ?? 0, session_ids: [...(spill?.sessions ?? [])], busy_sessions: spill?.busy ?? 0, pinned_sessions: spill?.pinned ?? 0,
       },
       usage: { before_ms: usageCut, calls: count(TABLES[0]), tools: count(TABLES[1]) },
+      egress: { before_ms: egressCut, rows: egressCut === null || !this.has("egress") ? 0 : this.store.db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM egress WHERE ts < ?").get(egressCut)!.n },
       next_ms: this.next(),
     };
   }
@@ -208,7 +223,8 @@ export class Retention {
     const within = (asked: number | null | undefined, latest: number | null) => (typeof asked === "number" && latest !== null ? Math.min(asked, latest) : null);
     const spillCut = within(cut.spill_before_ms, s.spill_days ? now - s.spill_days * DAY : null);
     const usageCut = within(cut.usage_before_ms, s.usage_days ? Math.min(now - s.usage_days * DAY, monthStart(now)) : null);
-    const done: Removed = { spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0 };
+    const egressCut = within(cut.egress_before_ms, s.egress_days ? now - s.egress_days * DAY : null);
+    const done: Removed = { spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0, egress_rows: 0 };
     if (spillCut !== null) {
       const found = await this.spillBefore(spillCut, cut.sessions ? new Set(cut.sessions) : undefined);
       const dirs = new Set<string>();
@@ -248,6 +264,16 @@ export class Retention {
         }
       }
     }
+    if (egressCut !== null && this.has("egress")) {
+      // By its time index, a step at a time (the ledger has no rollup: a step is quick).
+      const del = this.store.db.query<{ id: number }, [number]>(`DELETE FROM egress WHERE id IN (SELECT id FROM egress WHERE ts < ? ORDER BY ts LIMIT ${STEP * 10}) RETURNING id`);
+      for (;;) {
+        const n = del.all(egressCut).length;
+        done.egress_rows += n;
+        if (n < STEP * 10) break;
+        await new Promise((r) => setImmediate(r));
+      }
+    }
     return done;
   }
 
@@ -256,8 +282,8 @@ export class Retention {
     const s = this.noticed(now); // a retention not seen for a day yet: its day starts here
     if (now < this.next()) return;
     this.setNext(now + DAY);
-    if (!s.spill_days && !s.usage_days) return;
-    return this.remove({ spill_before_ms: s.spill_days ? now - s.spill_days * DAY : null, usage_before_ms: s.usage_days ? now - s.usage_days * DAY : null }, now);
+    if (!s.spill_days && !s.usage_days && !s.egress_days) return;
+    return this.remove({ spill_before_ms: s.spill_days ? now - s.spill_days * DAY : null, usage_before_ms: s.usage_days ? now - s.usage_days * DAY : null, egress_before_ms: s.egress_days ? now - s.egress_days * DAY : null }, now);
   }
 
   // Which of these paths of a session's spill folder the retention removed.

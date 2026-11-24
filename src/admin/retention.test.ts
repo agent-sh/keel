@@ -11,6 +11,7 @@ import { ensureRollup } from "../server/routes/usage.ts";
 import { readFile } from "../tools/files.ts";
 import { removedNote } from "../tools/spill.ts";
 import { PROPOSED, Retention, retentionOf } from "./retention.ts";
+import { EGRESS_SCHEMA } from "../safety/egress-report.ts";
 import { loadSettings, patchSettings, settings } from "./settings.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { Telemetry } from "./telemetry.ts";
@@ -67,10 +68,11 @@ test("nothing goes until a retention is set; then what a listing named, by its s
     const ret = new Retention(store, { isRunning: (id: string) => id === working } as any, { capture: (_s: string, e: unknown) => (captured.push(e), {} as any) });
 
     // Never by default: nothing is listed, nothing goes at any time, whatever is asked.
-    expect(settings().retention).toEqual({ spill_days: 0, usage_days: 0 });
+    // (The outward ledger alone has a retention by default; this store has no ledger.)
+    expect(settings().retention).toEqual({ spill_days: 0, usage_days: 0, egress_days: 30 });
     expect(await ret.due(now)).toMatchObject({ spill: { before_ms: null, files: 0, session_ids: [] }, usage: { before_ms: null, calls: 0, tools: 0 } });
-    expect(await ret.tick(now + 400 * DAY)).toBeUndefined();
-    expect(await ret.remove({ spill_before_ms: now, usage_before_ms: now, sessions: [idle, later] }, now)).toEqual({ spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0 });
+    expect(await ret.tick(now + 400 * DAY)).toEqual({ spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0, egress_rows: 0 });
+    expect(await ret.remove({ spill_before_ms: now, usage_before_ms: now, sessions: [idle, later] }, now)).toEqual({ spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0, egress_rows: 0 });
     expect([...gone, ...stays, laterFile].every((p) => existsSync(p))).toBe(true);
     // What the page proposes would list this, and still removes nothing.
     const would = await ret.due(now, PROPOSED);
@@ -89,7 +91,7 @@ test("nothing goes until a retention is set; then what a listing named, by its s
     // Remove now, for a listing that named only one of the sessions: the other keeps its file.
     const removed = await ret.remove({ spill_before_ms: now, usage_before_ms: now, sessions: [idle] }, now);
     // The counts are the rows and files that went, though each deleted call also changed the rollup.
-    expect(removed).toEqual({ spill_files: 3, spill_bytes: 5000, usage_calls: 450, usage_tools: 7 });
+    expect(removed).toEqual({ spill_files: 3, spill_bytes: 5000, usage_calls: 450, usage_tools: 7, egress_rows: 0 });
     expect(rollup()).toBe(50);
     expect([...gone.map((p) => existsSync(p)), ...stays.map((p) => existsSync(p)), existsSync(laterFile)]).toEqual([false, false, false, true, true, true, true, true, true, true]);
     expect(captured).toEqual([]);
@@ -175,9 +177,10 @@ test("a retention edited into settings.json by hand: a value that is not days re
       const w = world(label, { spill_days: val, usage_days: val });
       expect(retentionOf()).toMatchObject({ spill_days: 0, usage_days: 0, invalid: [{ name: "retention.spill_days", value: val }, { name: "retention.usage_days", value: val }] });
       expect(await w.ret.tick(now)).toBeUndefined();
-      expect(await w.ret.tick(now + 40 * DAY)).toBeUndefined();
+      // (The ledger's default still runs its cleanup; nothing of these goes.)
+      expect(await w.ret.tick(now + 40 * DAY)).toEqual({ spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0, egress_rows: 0 });
       expect(await w.ret.due(now)).toMatchObject({ spill: { before_ms: null, files: 0, session_ids: [] }, usage: { before_ms: null, calls: 0, tools: 0 } });
-      expect(await w.ret.remove({ spill_before_ms: now, usage_before_ms: now, sessions: w.ids }, now)).toEqual({ spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0 });
+      expect(await w.ret.remove({ spill_before_ms: now, usage_before_ms: now, sessions: w.ids }, now)).toEqual({ spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0, egress_rows: 0 });
       expect([w.files.map((f) => existsSync(f)), w.rows()]).toEqual([[true, true, true], [500, 500]]);
       expect(w.errs).toEqual([
         `settings.json: retention.spill_days is ${named}, which is not a whole number of days of at least 1 (0 is never). It is read as never: nothing is removed for it until it is set.`,
@@ -221,7 +224,7 @@ test("a retention edited into settings.json by hand: a value that is not days re
     // A day later: what the page lists then (the same file, and the records a day older), and nothing of a session used since.
     const then = await again.due(now + DAY);
     expect(then.usage.calls).toBeGreaterThanOrEqual(due.usage.calls);
-    expect(await again.tick(now + DAY)).toEqual({ spill_files: 1, spill_bytes: 1000, usage_calls: then.usage.calls, usage_tools: then.usage.tools });
+    expect(await again.tick(now + DAY)).toEqual({ spill_files: 1, spill_bytes: 1000, usage_calls: then.usage.calls, usage_tools: then.usage.tools, egress_rows: 0 });
     expect(w.files.map((f) => existsSync(f))).toEqual([true, true, false]);
     // Edited again while it was down (shorter): a day's notice once more.
     again.stop();
@@ -235,6 +238,47 @@ test("a retention edited into settings.json by hand: a value that is not days re
     expect((await third.due()).spill).toMatchObject({ files: 2, sessions: 2 });
     third.stop();
     w.store.db.close();
+  } finally {
+    loadSettings(join(root, "none"), () => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the outward ledger is kept 30 days by default, and its rows past that go in the daily cleanup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-retention-egress-"));
+  try {
+    const store = new Store(join(root, "s"));
+    loadSettings(store.stateDir, () => {});
+    store.migrate(EGRESS_SCHEMA);
+    setSystemTime(new Date(2026, 5, 20, 12));
+    const now = Date.now();
+    const row = store.db.query("INSERT INTO egress (ts, session_id, tool, host, port, bytes_out, outcome) VALUES (?, 's', 'model', 'api.example.com', 443, 100, 'sent')");
+    for (let i = 0; i < 2500; i++) row.run(now - 40 * DAY - i);   // past 30 days: more than a step of the removal
+    for (let i = 0; i < 10; i++) row.run(now - 10 * DAY - i);
+    const n = () => store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM egress").get()!.n;
+    // A start after an upgrade: the notice it last gave named no ledger, so its day of notice starts now.
+    store.db.run("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    store.db.run("INSERT INTO admin_meta (key, value) VALUES ('retention_noticed', ?), ('retention_next_ms', ?)", [JSON.stringify({ spill_days: 0, usage_days: 0 }), String(now - DAY)]);
+    const ret = new Retention(store, { isRunning: () => false } as any, { capture: () => ({}) as any });
+    expect(retentionOf()).toMatchObject({ egress_days: 30, invalid: [] });
+    const due = await ret.due(now);
+    expect(due.egress).toEqual({ before_ms: now - 30 * DAY, rows: 2500 });
+    expect(due.next_ms).toBe(now + DAY);
+    expect(await ret.tick(now)).toBeUndefined();
+    expect(n()).toBe(2510);
+    // A day later the cleanup removes them, and nothing younger.
+    expect(await ret.tick(now + DAY)).toEqual({ spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0, egress_rows: 2500 });
+    expect(n()).toBe(10);
+    // Never (0) keeps every row; a removal posted for everything removes none.
+    expect(patchSettings({ retention: { egress_days: 0 } }).ok).toBe(true);
+    expect((await ret.due(now + DAY)).egress).toEqual({ before_ms: null, rows: 0 });
+    expect(await ret.remove({ egress_before_ms: now + DAY }, now + DAY)).toMatchObject({ egress_rows: 0 });
+    // A shorter one removes up to the instant asked, never past what it allows.
+    expect(patchSettings({ retention: { egress_days: 5 } }).ok).toBe(true);
+    expect(await ret.remove({ egress_before_ms: now + DAY }, now)).toMatchObject({ egress_rows: 10 });
+    expect(n()).toBe(0);
+    ret.stop();
+    store.db.close();
   } finally {
     loadSettings(join(root, "none"), () => {});
     rmSync(root, { recursive: true, force: true });

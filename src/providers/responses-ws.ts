@@ -17,6 +17,7 @@ import type { SseEvent } from "./sse.ts";
 import { idleGuard, ProviderError, scrub, streamIdleMs } from "./http.ts";
 import type { ProviderRequest } from "./types.ts";
 import { isPolicyCode } from "./wires/responses.ts";
+import { socketRows, type SocketRows } from "../safety/egress.ts";
 
 const MAX_AGE = 55 * 60_000;     // under the server's 60 minute limit
 const IDLE_CLOSE = 10 * 60_000;  // a socket nobody used for this long is closed
@@ -33,6 +34,8 @@ type Chan = {
   used: number;
   busy: boolean;
   closed: boolean;
+  // The outward ledger's rows of this socket (src/safety/egress.ts).
+  rows: SocketRows;
   last?: { rest: string; input: any[]; id: string };
   listener?: (m: any) => void;
   onClose?: () => void;
@@ -99,12 +102,13 @@ export class ResponsesSockets {
   private open(key: string, headers: Record<string, string>): Promise<Chan> {
     return new Promise((resolve, reject) => {
       // Bun's WebSocket takes request headers (the sign-in and the beta header).
-      const ws = new WebSocket(this.url(), { headers } as any);
+      const url = this.url();
+      const ws = new WebSocket(url, { headers } as any);
       // Busy from the start: it belongs to the request that opened it.
-      const c: Chan = { ws, opened: Date.now(), used: Date.now(), busy: true, closed: false };
-      const t = setTimeout(() => { try { ws.close(); } catch {} reject(new WsUnavailable("the socket did not open")); }, OPEN_MS);
-      ws.onopen = () => { clearTimeout(t); const list = this.chans.get(key); list ? list.push(c) : this.chans.set(key, [c]); resolve(c); };
-      ws.onerror = () => { clearTimeout(t); c.closed = true; reject(new WsUnavailable("the handshake was refused")); };
+      const c: Chan = { ws, opened: Date.now(), used: Date.now(), busy: true, closed: false, rows: socketRows(url, headers) };
+      const t = setTimeout(() => { try { ws.close(); } catch {} c.rows.failed("the socket did not open in time"); reject(new WsUnavailable("the socket did not open")); }, OPEN_MS);
+      ws.onopen = () => { clearTimeout(t); c.rows.opened(); const list = this.chans.get(key); list ? list.push(c) : this.chans.set(key, [c]); resolve(c); };
+      ws.onerror = () => { clearTimeout(t); c.closed = true; c.rows.failed("the handshake was refused"); reject(new WsUnavailable("the handshake was refused")); };
       ws.onclose = () => { c.closed = true; clearTimeout(t); c.onClose?.(); this.drop(key, c); };
       ws.onmessage = (e) => {
         let m: any;
@@ -135,7 +139,9 @@ export class ResponsesSockets {
           guard.signal.addEventListener("abort", onAbort, { once: true });
           const msg = cont ? { type: "response.create", ...whole, previous_response_id: cont.id, input: cont.input } : { type: "response.create", ...whole };
           cont ? self.stats.continued++ : self.stats.whole++;
-          c.ws.send(JSON.stringify(msg));
+          const text = JSON.stringify(msg);
+          c.ws.send(text);
+          c.rows.sent(Buffer.byteLength(text));
           let retry = false;
           try {
             for (;;) {

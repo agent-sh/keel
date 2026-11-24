@@ -22,7 +22,7 @@
 // (src/core/side.ts): a step's transfers cost no commit of their own.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { errorScope } from "../core/errors.ts";
-import { endpointOf, hostText, loopbackHost, requestBytes } from "./egress-count.ts";
+import { endpointOf, frameBytes, handshakeBytes, hostText, loopbackHost, plainWhy, requestBytes } from "./egress-count.ts";
 
 export type Outcome = "sent" | "refused" | "failed";
 export type Outward = {
@@ -43,7 +43,8 @@ let sink: ((o: Outward) => void) | undefined;
 // The daemon's writer of rows (src/server/routes/egress.ts). Without one (a command line, a unit test) nothing is kept.
 export const setEgressSink = (f: typeof sink) => void (sink = f);
 
-// One transfer. What it does not say is read from the scope it runs in.
+// One transfer. What it does not say is read from the scope it runs in. Its
+// reason keeps no address (plainWhy): the host and port are columns of their own.
 export function noteOutward(o: Partial<Omit<Outward, "host">> & { host: string }) {
   if (!sink) return;
   const l = scope.getStore(), e = errorScope.getStore();
@@ -56,7 +57,7 @@ export function noteOutward(o: Partial<Omit<Outward, "host">> & { host: string }
     sink({
       at: o.at ?? Date.now(), session, turn, call: o.call ?? l?.call ?? null,
       tool: o.tool ?? l?.tool ?? "daemon", via: o.via ?? l?.via ?? null, host, port: o.port ?? null,
-      bytes: o.bytes ?? null, outcome: o.outcome ?? "sent", status: o.status ?? null, why: o.why ? o.why.slice(0, 200) : null,
+      bytes: o.bytes ?? null, outcome: o.outcome ?? "sent", status: o.status ?? null, why: o.why ? plainWhy(o.why).slice(0, 200) || null : null,
     });
   } catch {} // a ledger row never fails what made the transfer
 }
@@ -65,17 +66,59 @@ export function noteOutward(o: Partial<Omit<Outward, "host">> & { host: string }
 // runs in the scope its listener was set up in).
 export const noteDetached = (o: Parameters<typeof noteOutward>[0]) => scope.exit(() => errorScope.exit(() => noteOutward(o)));
 
+// ---- a WebSocket the daemon opens ----
+
+// The rows of one socket: its opening (when it opened or could not) and each
+// message sent on it. The opening is told in the scope the socket was opened
+// in, whatever runs its handlers; a message is told in the scope that sends it
+// (another request may use the socket later). A socket to this machine's own
+// loopback with no tool or session to name is plumbing, as a fetch is.
+export type SocketRows = { opened: () => void; failed: (why: string) => void; sent: (n: number) => void };
+const NO_ROWS: SocketRows = { opened: () => {}, failed: () => {}, sent: () => {} };
+export function socketRows(url: string, headers?: Parameters<typeof handshakeBytes>[1], label: Label = {}): SocketRows {
+  const end = endpointOf(url);
+  if (!end) return NO_ROWS;
+  const l = { ...scope.getStore(), ...label }, e = errorScope.getStore();
+  if (loopbackHost(end.host) && !l.tool && !l.session && !e?.session) return NO_ROWS;
+  const there = AsyncLocalStorage.snapshot();
+  const bytes = handshakeBytes(url, headers);
+  let told = false;
+  const once = (o: Partial<Outward>) => { if (told) return; told = true; there(() => outward(label, () => noteOutward({ host: end.host, port: end.port, bytes, ...o }))); };
+  return {
+    opened: () => once({ outcome: "sent", status: 101 }),
+    failed: (why) => once({ outcome: "failed", why }),
+    sent: (n) => outward(label, () => noteOutward({ host: end.host, port: end.port, bytes: frameBytes(n) })),
+  };
+}
+
 // ---- the tags a sandbox's relay puts before a connection ----
 
 type Tagged = { session: string; call: string; tool: string; turn: string | null };
 const tags = new Map<string, Tagged>();
+const tagOf = new Map<string, string>(); // a call's tag, by its session and call
 const TAGS_MAX = 4096;
-// The tag of a call's sandboxed command (one per call; a background job keeps its call's tag).
+// The tag of a call's sandboxed command: a random word made at the call's first
+// command and kept for the call's life (its later commands and a background
+// job of it carry the same one). It names nothing: a command that reads its
+// own environment learns no id it could put on another call's connection, and
+// one call's tag cannot be worked out from another's.
 export function tagFor(t: Tagged): string {
-  const tag = Bun.hash(`${t.session}\0${t.call}`).toString(36);
-  tags.delete(tag);
+  const key = `${t.session}\0${t.call}`;
+  let tag = tagOf.get(key);
+  if (tag && tags.has(tag)) tags.delete(tag);
+  else {
+    const b = crypto.getRandomValues(new Uint8Array(15));
+    tag = [...b].map((x) => x.toString(36).padStart(2, "0")).join("").slice(0, 24);
+  }
   tags.set(tag, t);
-  if (tags.size > TAGS_MAX) tags.delete(tags.keys().next().value!);
+  tagOf.delete(key);
+  tagOf.set(key, tag);
+  // (The oldest call goes first when the map is full.)
+  if (tags.size > TAGS_MAX) {
+    const [old, was] = tags.entries().next().value!;
+    tags.delete(old);
+    tagOf.delete(`${was.session}\0${was.call}`);
+  }
   return tag;
 }
 export const tagged = (tag: string | undefined): Tagged | undefined => (tag ? tags.get(tag) : undefined);

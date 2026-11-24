@@ -17,6 +17,7 @@ import { endNoticeOwed, findJob, jobHasProcesses, jobLive, jobPidsOf, jobsOf, ru
 import { CARRY_MAX, carryText, HELD_ON_FILE, jobLine, opensForWrite, othersText, spentAtTurnEnd, stalled, waitingProc, WRITER_GRACE_MS, writerGone, writesPath, type ProcLook, type ThreadLook } from "./wait-carry.ts";
 import type { Session } from "../core/types.ts";
 import { shownTo } from "../safety/sandbox-view.ts";
+import { socketRows } from "../safety/egress.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -982,17 +983,20 @@ function startSocket(w: WaitRecord) {
     settle(w.id, "ended", `${why}${tail}`);
   };
   let ws: WebSocket;
+  // The ledger's row of the opening (a monitor sends nothing after it): for the wait's session, whoever starts it.
+  const rows = socketRows(s.url, undefined, { tool: "monitor", via: "websocket", session: w.session_id });
   try {
     ws = new WebSocket(s.url, s.protocols);
   } catch (e) {
+    rows.failed((e as Error).message);
     queueMicrotask(() => end(`The socket could not be opened: ${(e as Error).message}`));
     return;
   }
   st.ws = ws;
   ws.binaryType = "arraybuffer";
   let opened = false;
-  const opening = setTimeout(() => { if (!opened) { end("The socket did not open within 20 seconds."); try { ws.close(); } catch {} } }, 20_000);
-  ws.onopen = () => { opened = true; clearTimeout(opening); };
+  const opening = setTimeout(() => { if (!opened) { rows.failed("the socket did not open within 20 seconds"); end("The socket did not open within 20 seconds."); try { ws.close(); } catch {} } }, 20_000);
+  ws.onopen = () => { opened = true; clearTimeout(opening); rows.opened(); };
   ws.onmessage = (ev) => {
     const size = typeof ev.data === "string" ? Buffer.byteLength(ev.data) : (ev.data as ArrayBuffer).byteLength;
     if (size > 1 << 20) {
@@ -1002,8 +1006,8 @@ function startSocket(w: WaitRecord) {
     }
     onLine(typeof ev.data === "string" ? ev.data.replace(/\r?\n|\r/g, " ") : `[binary frame, ${size} bytes]`);
   };
-  ws.onerror = () => { if (!opened) end("The socket could not be opened."); };
-  ws.onclose = (ev) => { clearTimeout(opening); end(opened ? `The socket was closed by the other side (code ${ev.code}${ev.reason ? `, ${ev.reason}` : ""}).` : `The socket could not be opened (code ${ev.code}).`); };
+  ws.onerror = () => { if (!opened) { rows.failed("the socket could not be opened"); end("The socket could not be opened."); } };
+  ws.onclose = (ev) => { clearTimeout(opening); if (!opened) rows.failed(`the socket closed before it opened (code ${ev.code})`); end(opened ? `The socket was closed by the other side (code ${ev.code}${ev.reason ? `, ${ev.reason}` : ""}).` : `The socket could not be opened (code ${ev.code}).`); };
 }
 
 // Reads `gh pr view --json state,statusCheckRollup`. A check run is done when

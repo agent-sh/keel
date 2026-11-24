@@ -45,15 +45,16 @@ export function loopbackHost(host: string): boolean {
 }
 
 const utf8 = new TextEncoder();
+const len = (text: string) => Buffer.byteLength(text, "utf8");
 // The bytes a body is sent as, when that is known before it is sent: text, bytes, a file or a form of
 // fields. Null for a stream and a multipart form (their length is decided as they are sent).
 export function bodyBytes(body: unknown): number | null {
   if (body === undefined || body === null) return 0;
-  if (typeof body === "string") return utf8.encode(body).length;
+  if (typeof body === "string") return len(body);
   if (body instanceof ArrayBuffer) return body.byteLength;
   if (ArrayBuffer.isView(body)) return body.byteLength;
   if (typeof Blob !== "undefined" && body instanceof Blob) return body.size;
-  if (body instanceof URLSearchParams) return utf8.encode(body.toString()).length;
+  if (body instanceof URLSearchParams) return len(body.toString());
   return null;
 }
 
@@ -79,10 +80,22 @@ export function requestBytes(r: { method?: string; url: string; headers?: Header
   if (body === null) return null;
   let path = "/", host = "";
   try { const u = new URL(r.url); path = `${u.pathname}${u.search}` || "/"; host = u.host; } catch { path = r.url; }
-  let n = utf8.encode(`${(r.method ?? "GET").toUpperCase()} ${path} HTTP/1.1\r\nHost: ${host}\r\n`).length;
-  for (const [k, v] of headerPairs(r.headers)) if (k.toLowerCase() !== "host") n += utf8.encode(`${k}: ${v}\r\n`).length;
+  let n = len(`${(r.method ?? "GET").toUpperCase()} ${path} HTTP/1.1\r\nHost: ${host}\r\n`);
+  for (const [k, v] of headerPairs(r.headers)) if (k.toLowerCase() !== "host") n += len(`${k}: ${v}\r\n`);
   return n + 2 + body;
 }
+
+// What a WebSocket's opening request carries out: a GET with the headers the
+// caller gave and the four the client adds to ask for the upgrade.
+export function handshakeBytes(url: string, headers?: HeaderList): number {
+  const http = url.replace(/^ws(s?):/i, "http$1:");
+  const upgrade: [string, string][] = [["Connection", "Upgrade"], ["Upgrade", "websocket"], ["Sec-WebSocket-Version", "13"], ["Sec-WebSocket-Key", "x".repeat(24)]];
+  return requestBytes({ method: "GET", url: http, headers: [...headerPairs(headers), ...upgrade] })!;
+}
+
+// What one client message of `n` bytes is on the wire: its payload, the frame's
+// two bytes, the longer length a long payload needs, and the client's mask.
+export const frameBytes = (n: number) => n + 2 + (n >= 65_536 ? 8 : n >= 126 ? 2 : 0) + 4;
 
 // The tag a sandbox's relay puts before a connection it passes to the proxy
 // (the call the connection belongs to), and what follows it. `need`: the head
@@ -98,6 +111,36 @@ export function takeTag(head: Uint8Array): { tag?: string; rest: Uint8Array } | 
   if (end < 0) return head.length > 256 ? { rest: head } : "need";
   const raw = new TextDecoder().decode(head.subarray(word.length, end)).replace(/\r$/, "");
   return { ...(/^[0-9a-z]{1,40}$/.test(raw) ? { tag: raw } : {}), rest: head.subarray(end + 1) };
+}
+
+// A row's reason as the ledger keeps it: what failed, never where it pointed.
+// An error's words often hold the address it was for (a fetch's, git's
+// "unable to access 'https://host/path.git?token=...'"), and the host is a
+// column of its own: an address is cut to its scheme and host (no user, no
+// path, no query), the short ssh form to its host, a path after a host name
+// and a query left anywhere are dropped.
+export function plainWhy(text: string): string {
+  return text
+    .replace(/\b([A-Za-z][A-Za-z0-9+.-]*):\/\/[^\s'"<>]*/g, (whole: string, scheme: string) => {
+      const end = endpointOf(whole);
+      return end ? `${scheme.toLowerCase()}://${end.host.includes(":") ? `[${end.host}]` : end.host}` : `${scheme.toLowerCase()}://`;
+    })
+    .replace(/(?<![\w.@-])[^\s@'"/:]+@([A-Za-z0-9.-]+):(?!\/\/)[^\s'"]*/g, "$1")
+    .replace(/(?<![\w/.-])((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d{1,5})?)\/[^\s'"]*/g, "$1")
+    .replace(/\?[^\s'"]*=[^\s'"]*/g, "")
+    .trim();
+}
+
+// What became of a failed git push, as a fixed class (git's own words name the
+// remote's path and can hold a token): the remote refused it, could not be
+// reached, or did not take the sign-in.
+export type PushFailure = "the push was refused" | "the remote was unreachable" | "the sign-in was refused" | "the push failed";
+export function pushFailure(stderr: string): PushFailure {
+  const t = stderr.toLowerCase();
+  if (/authentication failed|permission denied|could not read username|could not read password|invalid username|returned error: (401|403)|\b(401|403)\b|publickey|access denied|not authorized|unauthorized/.test(t)) return "the sign-in was refused";
+  if (/\[rejected\]|\[remote rejected\]|non-fast-forward|fetch first|hook declined|protected branch|failed to push some refs|denied to/.test(t)) return "the push was refused";
+  if (/could not resolve|connection refused|connection timed out|timed out|network is unreachable|no route to host|could not connect|failed to connect|unable to access|could not read from remote|connection reset|ssl|tls|does not appear to be a git repository|repository not found/.test(t)) return "the remote was unreachable";
+  return "the push failed";
 }
 
 // The start of the local day a moment is in.

@@ -181,7 +181,11 @@ under `~/.cache/keel-work/bun/research/`.
   host, port and bytes sent. A fetch of the daemon is recorded by the tap; code
   that sends another way (a helper program, a spawned git, the sandbox's proxy)
   calls `noteOutward`, and new code that sends runs inside an `outward` label
-  that names what sends. The rows wait with the side writes; the day's report
+  that names what sends; a WebSocket's rows come from `socketRows` (its opening,
+  each message sent). A row's reason keeps no address (`plainWhy`: no path,
+  user or query), and a failed push is a class, never git's words. An export to
+  a page on this machine is no row. The rows wait with the side writes and are
+  kept `retention.egress_days` (30 by default); the day's report
   (Settings > Network) runs on the read thread.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.

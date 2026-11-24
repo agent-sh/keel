@@ -7,6 +7,7 @@ import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
 import { noteOutward } from "../../safety/egress.ts";
+import { loopbackHost } from "../../safety/egress-count.ts";
 import { exportTo, KeelFileTooLarge, parseKeelJsonl, redact, redactDeep, rowsOf, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
 import { KEEL_FILE_MAX } from "../../core/keel-file.ts";
 import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine, WENT_ON } from "../../integrations/import/service.ts";
@@ -379,9 +380,10 @@ export const importRoutes: RouteModule = (deps) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
         // A session's whole text leaves the daemon for whoever asked: a row of the outward ledger, by their address.
+        // An export to a page on this machine leaves nothing: it is no row.
         const sent = (text: string) => {
-          const to = srv?.requestIP?.(req);
-          noteOutward({ tool: "export", via: format, session: s.id, host: to?.address ?? "the page", bytes: Buffer.byteLength(text) });
+          const to = srv?.requestIP?.(req)?.address;
+          if (to && !loopbackHost(to)) noteOutward({ tool: "export", via: format, session: s.id, host: to, bytes: Buffer.byteLength(text) });
           return text;
         };
         const u = new URL(req.url).searchParams;

@@ -10,7 +10,7 @@
 // POST  /api/storage/cleanup               { older_than_days, sessions? } | { leftovers: true }
 // GET   /api/storage/retention             { settings, due, proposed? }: spilled output and usage records past the owner's
 //                                          retention; while none is set, what the proposed one would list
-// POST  /api/storage/retention             { spill_before_ms?, usage_before_ms?, sessions? } from a listing -> { removed, due }
+// POST  /api/storage/retention             { spill_before_ms?, usage_before_ms?, egress_before_ms?, sessions? } from a listing -> { removed, due }
 // POST  /api/storage/retention/removed     { session_id, paths } -> { removed }: which of them the retention removed
 // GET   /api/backups                       { backups, settings, owed }
 // POST  /api/backups                       a backup now -> { backup }
@@ -222,12 +222,12 @@ export const adminRoutes: RouteModule = (deps) => {
       POST: async (req: Request) => {
         const b = (await body(req)) ?? {};
         const ms = (v: unknown) => v === undefined || v === null || (typeof v === "number" && Number.isFinite(v));
-        if (typeof b !== "object" || !ms(b.spill_before_ms) || !ms(b.usage_before_ms) || (b.sessions !== undefined && (!Array.isArray(b.sessions) || b.sessions.some((x: unknown) => typeof x !== "string")))) {
-          return json({ error: "the body is { spill_before_ms?, usage_before_ms?, sessions? } from the listing" }, 400);
+        if (typeof b !== "object" || !ms(b.spill_before_ms) || !ms(b.usage_before_ms) || !ms(b.egress_before_ms) || (b.sessions !== undefined && (!Array.isArray(b.sessions) || b.sessions.some((x: unknown) => typeof x !== "string")))) {
+          return json({ error: "the body is { spill_before_ms?, usage_before_ms?, egress_before_ms?, sessions? } from the listing" }, 400);
         }
         // Spilled output goes only from the sessions the listing named.
         if (typeof b.spill_before_ms === "number" && b.sessions === undefined) return json({ error: "sessions is the list of session ids the listing named (due.spill.session_ids)" }, 400);
-        const removed = await retention.remove({ spill_before_ms: b.spill_before_ms, usage_before_ms: b.usage_before_ms, sessions: b.sessions });
+        const removed = await retention.remove({ spill_before_ms: b.spill_before_ms, usage_before_ms: b.usage_before_ms, egress_before_ms: b.egress_before_ms, sessions: b.sessions });
         storage.stale();
         return json({ removed, due: await retention.due() });
       },

@@ -23,7 +23,7 @@ type Report = {
 };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
 type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; kind?: "full" | "delta"; base?: string; base_missing?: true; checked?: "whole" | "pages"; failed?: string; newest_whole?: true };
-type Due = { spill: { before_ms: number | null; files: number; bytes: number; sessions: number; session_ids: string[]; busy_sessions: number; pinned_sessions: number }; usage: { before_ms: number | null; calls: number; tools: number }; next_ms: number };
+type Due = { spill: { before_ms: number | null; files: number; bytes: number; sessions: number; session_ids: string[]; busy_sessions: number; pinned_sessions: number }; usage: { before_ms: number | null; calls: number; tools: number }; egress: { before_ms: number | null; rows: number }; next_ms: number };
 type Proposed = { spill_days: number; usage_days: number; due: Due };
 type Candidate = { id: string; title: string; updated_ms: number; bytes: number; family_updated_ms: number; subagents: { id: string; title: string }[] };
 
@@ -121,8 +121,8 @@ export function StoragePanel() {
   const [kept, setKept] = useState<string | null>(null);
   const [proposed, setProposed] = useState<Proposed | null>(null);
   // The retention as the daemon acts on it, and the values in settings.json it does not take for one.
-  const [acted, setActed] = useState<{ spill_days: number; usage_days: number; invalid: { name: string; value: unknown }[] } | null>(null);
-  const loadDue = useCallback(() => api<{ settings: { spill_days: number; usage_days: number }; invalid?: { name: string; value: unknown }[]; due: Due; proposed?: Proposed }>("/api/storage/retention").then((x) => (setDue(x.due), setProposed(x.proposed ?? null), setActed({ ...x.settings, invalid: x.invalid ?? [] }))).catch(reportError), []);
+  const [acted, setActed] = useState<{ spill_days: number; usage_days: number; egress_days: number; invalid: { name: string; value: unknown }[] } | null>(null);
+  const loadDue = useCallback(() => api<{ settings: { spill_days: number; usage_days: number; egress_days: number }; invalid?: { name: string; value: unknown }[]; due: Due; proposed?: Proposed }>("/api/storage/retention").then((x) => (setDue(x.due), setProposed(x.proposed ?? null), setActed({ ...x.settings, invalid: x.invalid ?? [] }))).catch(reportError), []);
   useEffect(() => { loadDue(); }, [loadDue]);
 
   const load = useCallback((refresh = false) => {
@@ -169,12 +169,13 @@ export function StoragePanel() {
     const parts = [
       due.spill.files ? `${count(due.spill.files, "file")} of spilled output (${fmtBytes(due.spill.bytes)}) of ${count(due.spill.sessions, "session")} last used before ${when(due.spill.before_ms!)}` : "",
       records ? `${count(records, "usage record")} from before ${when(due.usage.before_ms!)}` : "",
+      due.egress.rows ? `${count(due.egress.rows, "outward ledger row")} from before ${when(due.egress.before_ms!)}` : "",
     ].filter(Boolean);
     const ok = await confirmAction({ title: "Remove what is past these times?", body: `${parts.join(", and ")}. A session that reads a removed output again is told the retention removed it and to run its command again. This cannot be undone.`, action: "Remove", danger: true });
     if (!ok) return;
-    const x = await api<{ removed: { spill_files: number; spill_bytes: number; usage_calls: number; usage_tools: number }; due: Due }>("/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms, sessions: due.spill.session_ids }) });
+    const x = await api<{ removed: { spill_files: number; spill_bytes: number; usage_calls: number; usage_tools: number; egress_rows: number }; due: Due }>("/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms, egress_before_ms: due.egress.before_ms, sessions: due.spill.session_ids }) });
     setDue(x.due);
-    setKept(`Removed ${count(x.removed.spill_files, "file")} (${fmtBytes(x.removed.spill_bytes)}) and ${count(x.removed.usage_calls + x.removed.usage_tools, "usage record")}.`);
+    setKept(`Removed ${count(x.removed.spill_files, "file")} (${fmtBytes(x.removed.spill_bytes)}), ${count(x.removed.usage_calls + x.removed.usage_tools, "usage record")} and ${count(x.removed.egress_rows, "outward ledger row")}.`);
     load(true);
   };
   const spared = due ? [due.spill.busy_sessions ? count(due.spill.busy_sessions, "working session") : "", due.spill.pinned_sessions ? count(due.spill.pinned_sessions, "pinned session") : ""].filter(Boolean).join(" and ") : "";
@@ -269,6 +270,9 @@ export function StoragePanel() {
           <SettingRow label="Keep usage records" hint="One record per model call and tool call: cost by day, latency, cache. The running month is always kept, and each session keeps its own totals. Empty is never.">
             <DaysField label="Keep usage records for days" testid="retention-usage" value={(acted ? acted.usage_days : settings.retention.usage_days) || null} onSave={(v) => patch({ retention: { usage_days: v ?? 0 } }).then(loadDue)} />
           </SettingRow>
+          <SettingRow label="Keep the outward ledger" hint="One row per transfer that left this machine (Settings, Network). Kept 30 days unless you change it: a host is marked new when no row of it is older. Empty is never.">
+            <DaysField label="Keep the outward ledger for days" testid="retention-egress" value={(acted ? acted.egress_days : settings.retention.egress_days) || null} onSave={(v) => patch({ retention: { egress_days: v ?? 0 } }).then(loadDue)} />
+          </SettingRow>
           {/* A value written into the file by hand that is not a number of days: read as never, and said. */}
           {!!acted?.invalid.length && (
             <div className="py-4 text-ui text-warn" data-testid="retention-invalid">
@@ -279,7 +283,7 @@ export function StoragePanel() {
           {proposed && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-4">
               <div className="min-w-[min(100%,16rem)] flex-1 text-ui text-muted" data-testid="retention-proposed">
-                Nothing is removed until you set these. Suggested: spilled output {proposed.spill_days} days after its session was last used, usage records {proposed.usage_days} days.
+                No spilled output or usage record is removed until you set these. Suggested: spilled output {proposed.spill_days} days after its session was last used, usage records {proposed.usage_days} days.
                 {" "}{proposed.due.spill.files + proposed.due.usage.calls + proposed.due.usage.tools === 0 ? "Nothing would be past them now." : `Past them now: ${count(proposed.due.spill.files, "file")} of spilled output (${fmtBytes(proposed.due.spill.bytes)}) in ${count(proposed.due.spill.sessions, "session")}, ${count(proposed.due.usage.calls + proposed.due.usage.tools, "usage record")}.`}
                 {" "}The first cleanup runs a day after you accept.
               </div>
@@ -289,12 +293,12 @@ export function StoragePanel() {
           {due && !proposed && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-4">
               <div className="min-w-[min(100%,16rem)] flex-1 text-ui text-muted" data-testid="retention-due">
-                {due.spill.files + records === 0 ? "Nothing is past these now." : `Past these now: ${count(due.spill.files, "file")} of spilled output (${fmtBytes(due.spill.bytes)}) in ${count(due.spill.sessions, "session")}, ${count(records, "usage record")}.`}
+                {due.spill.files + records + due.egress.rows === 0 ? "Nothing is past these now." : `Past these now: ${count(due.spill.files, "file")} of spilled output (${fmtBytes(due.spill.bytes)}) in ${count(due.spill.sessions, "session")}, ${count(records, "usage record")}, ${count(due.egress.rows, "outward ledger row")}.`}
                 {spared && ` ${spared} left alone.`}
                 {" "}The daily cleanup next runs {when(due.next_ms)}.
                 {kept && <span className="text-faint" data-testid="retention-done"> {kept}</span>}
               </div>
-              <button type="button" className={btn} data-testid="retention-remove" disabled={due.spill.files + records === 0} onClick={() => removeDue().catch(reportError)}>Remove now</button>
+              <button type="button" className={btn} data-testid="retention-remove" disabled={due.spill.files + records + due.egress.rows === 0} onClick={() => removeDue().catch(reportError)}>Remove now</button>
             </div>
           )}
         </Card>

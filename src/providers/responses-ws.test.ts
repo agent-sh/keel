@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { continuation, ResponsesSockets } from "./responses-ws.ts";
+import { outward, setEgressSink } from "../safety/egress.ts";
+import { frameBytes, handshakeBytes } from "../safety/egress-count.ts";
 
 // A request continues the previous response only when nothing but its input
 // grew: the previous answer's own items are skipped, the new ones are sent.
@@ -67,4 +69,23 @@ test("requests of one key that overlap each get a socket and all finish", async 
     expect(b.opened()).toBe(3);
     expect(socks.stats).toEqual({ whole: 4, continued: 1, fallback: 0 });
   } finally { b.stop(); }
+});
+
+// Codex's requests over the socket are rows of the outward ledger, as its
+// requests over HTTP are: the socket's opening once, and each request with the
+// bytes its message is on the wire.
+test("a socket's opening and each request on it are rows of the outward ledger", async () => {
+  const b = backend(5);
+  const socks = new ResponsesSockets("test", () => b.url);
+  const got: any[] = [];
+  setEgressSink((o) => got.push(o));
+  try {
+    const u = (text: string) => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
+    await outward({ tool: "model", via: "codex", session: "s1" }, () => ask(socks, "k", { model: "m", input: [u("a")] }));
+    await outward({ tool: "model", via: "codex", session: "s1" }, () => ask(socks, "k", { model: "m", input: [u("b")] }));
+    const port = Number(new URL(b.url).port);
+    expect(got.map((r) => [r.session, r.tool, r.host, r.port, r.status])).toEqual([["s1", "model", "127.0.0.1", port, 101], ["s1", "model", "127.0.0.1", port, null], ["s1", "model", "127.0.0.1", port, null]]);
+    expect(got[0].bytes).toBe(handshakeBytes(b.url, {}));
+    expect(got[2].bytes).toBe(frameBytes(Buffer.byteLength(JSON.stringify({ type: "response.create", model: "m", input: [u("b")] }))));
+  } finally { setEgressSink(undefined); b.stop(); }
 });

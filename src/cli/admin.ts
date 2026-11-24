@@ -190,7 +190,7 @@ const leftoversCmd = wrap("keel leftovers [--url URL] [--json]\n  Commands of se
   return 0;
 });
 
-const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--retention] [--url URL]\n  Lists archived sessions archived at least DAYS ago; --yes deletes them. --leftovers removes what deleted sessions left behind.\n  --retention lists the spilled output and usage records past the retention set in Settings, Storage; with --yes it removes them now.",
+const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--retention] [--url URL]\n  Lists archived sessions archived at least DAYS ago; --yes deletes them. --leftovers removes what deleted sessions left behind.\n  --retention lists the spilled output, usage records and outward ledger rows past the retention set in Settings, Storage; with --yes it removes them now.",
   { "older-than": { type: "string" }, yes: { type: "boolean" }, leftovers: { type: "boolean" }, retention: { type: "boolean" } },
   async (v) => {
     const url = urlOf(v.url);
@@ -200,11 +200,12 @@ const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--re
       const left = [due.spill.busy_sessions ? `${due.spill.busy_sessions} working` : "", due.spill.pinned_sessions ? `${due.spill.pinned_sessions} pinned` : ""].filter(Boolean).join(" and ");
       console.log(`spilled output (${never(s.spill_days)} after its session was last used): ${due.spill.files} files, ${mb(due.spill.bytes)}, of ${due.spill.sessions} sessions are past it${left ? `; ${left} sessions are left alone` : ""}`);
       console.log(`usage records (${never(s.usage_days)}; the running month always): ${due.usage.calls} model calls and ${due.usage.tools} tool calls are past it`);
-      if (proposed) console.log(`nothing is removed until a retention is set in Settings, Storage. With ${proposed.spill_days} and ${proposed.usage_days} days, ${proposed.due.spill.files} files (${mb(proposed.due.spill.bytes)}) and ${proposed.due.usage.calls + proposed.due.usage.tools} usage records would be past it now.`);
-      const any = due.spill.files + due.usage.calls + due.usage.tools > 0;
+      console.log(`outward ledger (${never(s.egress_days)}): ${due.egress.rows} rows are past it`);
+      if (proposed) console.log(`no spilled output or usage record is removed until a retention is set in Settings, Storage. With ${proposed.spill_days} and ${proposed.usage_days} days, ${proposed.due.spill.files} files (${mb(proposed.due.spill.bytes)}) and ${proposed.due.usage.calls + proposed.due.usage.tools} usage records would be past it now.`);
+      const any = due.spill.files + due.usage.calls + due.usage.tools + due.egress.rows > 0;
       if (!v.yes || !any) return (console.log(any ? `the daily cleanup removes them at ${time(due.next_ms)}; run again with --yes to remove them now` : "nothing to remove"), 0);
-      const r = await call(url, "/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms, sessions: due.spill.session_ids }) });
-      console.log(`removed ${r.removed.spill_files} files (${mb(r.removed.spill_bytes)}), ${r.removed.usage_calls} model calls and ${r.removed.usage_tools} tool calls`);
+      const r = await call(url, "/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms, egress_before_ms: due.egress.before_ms, sessions: due.spill.session_ids }) });
+      console.log(`removed ${r.removed.spill_files} files (${mb(r.removed.spill_bytes)}), ${r.removed.usage_calls} model calls, ${r.removed.usage_tools} tool calls and ${r.removed.egress_rows} outward ledger rows`);
       return 0;
     }
     if (v.leftovers) {
