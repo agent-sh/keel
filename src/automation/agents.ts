@@ -33,6 +33,7 @@ import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
 import { carriedPlugins, preloadSkill } from "../tools/skills.ts";
 import { catalogSources } from "../tools/catalog.ts";
+import { speedOffer } from "../providers/registry.ts";
 import { enabledUnits } from "../plugins/registry.ts";
 import { fillContent } from "../plugins/options.ts";
 import { valuesOf } from "../plugins/settings.ts";
@@ -801,7 +802,8 @@ export type SpawnInput = {
   budget?: unknown; // steps, minutes or dollars for its task (parseBudget); over its definition's
   branch?: string; // Keel's own: an existing branch its worktree has out (it takes over a gone agent's work); never from a tool's input
   writes?: unknown; // the folders, files or globs it may write (src/automation/write-asks.ts); a reviewer gets its own folders
-  effort?: string; // over its definition's (a skill's with context: fork); not in any tool's schema
+  effort?: string; // over its definition's (a skill's with context: fork), and the spawn tools' own; else its parent's
+  speed?: string; // a speed offer of its model (the id or the label); else its parent's, when its model lists it
   disallowed?: string[]; // added to its definition's (a skill's disallowed-tools with context: fork); not in any tool's schema
   reviews?: unknown; // the branch (or branches) it reviews, for the work board (src/board/rules.ts reviewsInput)
   api?: unknown; // "read": its commands may read the daemon's read-only lists, as its parent's do (src/automation/api-grant.ts)
@@ -949,8 +951,19 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const { info } = await D().providers.resolve(model);
   if (signal?.aborted) throw new Error("cancelled");
   await checkUsd(mergeBudget(def.budget, parseBudget(input.budget)), model, info);
-  const wantEffort = input.effort ?? def.effort;
+  // Effort and speed: the spawn's, else the definition's effort, else the parent's own (as Codex gives them to its agents).
+  // What the parent has and the child's model does not list is left off and said; a speed the spawn names
+  // that the model does not list is refused, with the ones it lists.
+  const parentNow = store.session(parent.id) ?? parent;
+  const inheritedEffort = !input.effort && !def.effort && typeof parentNow.settings.effort === "string" ? parentNow.settings.effort : undefined;
+  const wantEffort = input.effort ?? def.effort ?? inheritedEffort;
   const effort = wantEffort && info.efforts?.includes(wantEffort) ? wantEffort : undefined;
+  const askedSpeed = typeof input.speed === "string" && input.speed.trim() && input.speed.trim().toLowerCase() !== "standard" ? input.speed.trim() : undefined;
+  if (input.speed !== undefined && typeof input.speed !== "string") throw new Error("speed is the id of one of the model's speeds, or standard");
+  const askedOffer = askedSpeed ? speedOffer(info, askedSpeed) : undefined;
+  if (askedSpeed && !askedOffer) throw new Error(`speed ${askedSpeed}: ${info.name} ${info.speeds?.length ? `lists: ${info.speeds.map((o) => o.id).join(", ")} (or standard)` : "lists no speed (it runs at standard)"}`);
+  const inheritedSpeed = input.speed === undefined && typeof parentNow.settings.speed === "string" ? parentNow.settings.speed : undefined;
+  const speed = askedOffer ? askedOffer.id : inheritedSpeed ? speedOffer(info, inheritedSpeed)?.id : undefined;
   const title = agentTitle(input);
   const id = Bun.randomUUIDv7().slice(-12);
   const mode = modeOfChild(parentId, def);
@@ -962,7 +975,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const iso = placed ? null : await isolate(parent, def, input, title, id, mode);
   // Where it may write, when its spawn says or its task is to review: an agent on another machine has none here.
   const scope = placed || (mode && writesNothing(mode)) ? { json: null, left: [] } : await writeAsks.forSpawn(parent, input.writes, { type: def.name, cwd: iso?.cwd ?? parent.workspace });
-  const settings = { ...(effort ? { effort } : {}), ...(def.maxTurns ? { max_steps: def.maxTurns } : {}) };
+  const settings = { ...(effort ? { effort } : {}), ...(speed ? { speed } : {}), ...(def.maxTurns ? { max_steps: def.maxTurns } : {}) };
   const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title, settings: Object.keys(settings).length ? settings : undefined });
   store.db.query("UPDATE sessions SET parent_id = ?, machine = ? WHERE id = ?").run(parentId, placed?.machine ?? null, child.id);
   if (iso) wts().adopt(child.id, iso.wt);
@@ -1025,7 +1038,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   }
   const have = catalogSources(child.id).map((x) => x.name.split("@")[0]!);
   for (const name of def.mcpServers ?? []) if (!have.includes(name)) left.push(`the MCP server ${name}: Keel has no server of that name`);
-  if (wantEffort && !effort && (input.effort || def.format !== "codex")) left.push(`the effort ${wantEffort}: ${model} does not list it`);
+  if (wantEffort && !effort && (input.effort || inheritedEffort || def.format !== "codex")) left.push(`${inheritedEffort ? "your effort" : "the effort"} ${wantEffort}: ${model} does not list it`);
+  if (inheritedSpeed && !speed) left.push(`your speed ${inheritedSpeed}: ${model} does not list it`);
   if (left.length) leftOut.set(id, left);
   if (scope.json && scope.why) scopeOut.set(id, writeAsks.spawnLine(store.session(child.id) ?? child, scope.json, scope.why));
   const reviews = await reviewsAt(parentId, parent.workspace, input).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });

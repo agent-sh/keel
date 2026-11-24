@@ -85,7 +85,8 @@ let nextPlan: any;
 const bus = new Bus();
 // (The providers whose outage is open: src/providers/outage.ts.)
 const outageOpen = new Set<string>();
-setDeps({ store, bus, errors: { capture() {} }, engine, providers: { models: async () => [], resolve: async () => ({ info: {} }), current: () => [], outages: { active: (id: string) => outageOpen.has(id) } } } as any);
+const baseDeps = { store, bus, errors: { capture() {} }, engine, providers: { models: async () => [], resolve: async () => ({ info: {} }), current: () => [], outages: { active: (id: string) => outageOpen.has(id) } } } as any;
+setDeps(baseDeps);
 store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT"); // the fleet adds it in the daemon
 agents.migrate();
 waits.migrate();
@@ -1704,5 +1705,47 @@ test("an agent started in a turn a skill narrowed keeps the skill's disallowed-t
     await settled();
   } finally {
     dropChoice(parent.id);
+  }
+});
+
+// RSH-S54: an agent takes its parent's effort and speed when its spawn names none, and a spawn may name either.
+// What the child's model does not list is left off and said; a speed it does not list is refused with the ones it does.
+test("an agent inherits its parent's effort and speed, a spawn may set either, and what a model lacks is said", async () => {
+  const fast = { id: "fast", label: "Fast", body: { service_tier: "priority" } };
+  const infos: Record<string, any> = {
+    "m:x": { id: "m:x", provider: "m", model: "x", name: "x", efforts: ["low", "high"], speeds: [fast] },
+    "m:y": { id: "m:y", provider: "m", model: "y", name: "y", efforts: [], speeds: [] },
+  };
+  setDeps({ ...baseDeps, providers: { ...baseDeps.providers, models: async () => Object.values(infos), resolve: async (id: string) => ({ info: infos[id] }) } });
+  try {
+    const p = store.createSession({ model: "m:x", workspace: dir, title: "inherits", settings: { effort: "low", speed: "fast" } });
+    store.append(p.id, "assistant", { blocks: [] });
+    const own = (o: Partial<agents.SpawnInput> = {}) => agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true, ...o });
+    const settingsOf = (a: agents.AgentRecord) => store.session(a.session_id)!.settings;
+    // Omitted: the parent's.
+    const a = await own();
+    expect(settingsOf(a)).toMatchObject({ effort: "low", speed: "fast" });
+    // The spawn's own wins.
+    const b = await own({ effort: "high", speed: "Fast" });
+    expect(settingsOf(b)).toMatchObject({ effort: "high", speed: "fast" });
+    // A grandchild inherits from its parent.
+    const g = await agents.spawn(a.session_id, { prompt: "deeper", isolation: "none", background: true });
+    expect(settingsOf(g)).toMatchObject({ effort: "low", speed: "fast" });
+    // A speed the child's model does not list is refused, with the ones it lists.
+    await expect(own({ speed: "turbo" })).rejects.toThrow(/speed turbo.*x lists: fast/);
+    await expect(own({ model: "m:y", speed: "fast" })).rejects.toThrow(/y lists no speed/);
+    // A model that lists neither gets neither, and the spawn says so.
+    const c = await own({ model: "m:y" });
+    expect(settingsOf(c)?.effort).toBeUndefined();
+    expect(settingsOf(c)?.speed).toBeUndefined();
+    const said = agents.notCarried(c.id);
+    expect(said).toContain("your effort low");
+    expect(said).toContain("your speed fast");
+    // Kept in the session: a daemon restart reads the same settings back.
+    expect(store.session(a.session_id)!.settings).toMatchObject({ effort: "low", speed: "fast" });
+    for (const x of [a, b, c, g]) end(x, "end_turn");
+    await settled();
+  } finally {
+    setDeps(baseDeps);
   }
 });

@@ -58,6 +58,11 @@ const MACHINE_PROPS = {
 const REVIEWS_PROP = {
   reviews: { type: "string", description: "For a review agent: the branch it reviews (several: separated by spaces). The work board shows its review on that branch: approved or refused only from its keel__verdict call (it is told to make one) or an output_schema answer with land per commit; a LAND line of its report alone shows as its words only. Without it, an agent counts as a branch's reviewer when its task names the branch or its head, or when it calls keel__verdict on a commit of the branch." },
 };
+// An agent runs at its parent's effort and speed unless the spawn says otherwise.
+const PACE_PROP = {
+  effort: { type: "string", description: "Reasoning effort for the agent, one the agent's model lists. Omit to use your own." },
+  speed: { type: "string", description: "A speed the agent's model lists (its id), or standard. Omit to use your own when the model lists it; a speed it does not list is refused." },
+};
 // A budget for the agent's task: when one limit is reached it gets one step with no tool run to
 // write its report, and ends incomplete (ended="budget"); a message continues it.
 const BUDGET_PROP = {
@@ -124,6 +129,7 @@ const Agent: Tool = {
       ...WRITES_PROP,
       ...REVIEWS_PROP,
       ...API_PROP,
+      ...PACE_PROP,
       ...BUDGET_PROP,
       ...MACHINE_PROPS,
     },
@@ -132,7 +138,7 @@ const Agent: Tool = {
   target: (input) => onMachine(input, input.prompt),
   run: (input, ctx) => guard(async () => {
     const fork = String(input.subagent_type ?? "").toLowerCase() === "fork";
-    const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews, api: input.api }, ctx.signal);
+    const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews, api: input.api, effort: typeof input.effort === "string" ? input.effort : undefined, speed: input.speed }, ctx.signal);
     const a = input.run_in_background ? await spawn() : await blocks(ctx, spawn);
     if (input.run_in_background && agents.queuedForSlot(a)) return ok(agents.queuedLine(a) + agents.spawnNotes(a.id));
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.${agents.spawnNotes(a.id)}`);
@@ -259,6 +265,7 @@ const spawn_agent: Tool = {
       ...WRITES_PROP,
       ...REVIEWS_PROP,
       ...API_PROP,
+      ...PACE_PROP,
       ...BUDGET_PROP,
       ...MACHINE_PROPS,
     },
@@ -266,7 +273,7 @@ const spawn_agent: Tool = {
   },
   target: (input) => onMachine(input, input.message ?? input.prompt),
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, task_name: typeof input.task_name === "string" ? input.task_name : undefined, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews, api: input.api }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, task_name: typeof input.task_name === "string" ? input.task_name : undefined, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews, api: input.api, effort: typeof input.effort === "string" ? input.effort : undefined, speed: input.speed }, ctx.signal);
     const left = agents.notCarried(a.id).trim();
     return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}), ...(agents.scopeNote(a.id) ? { write_scope: agents.scopeNote(a.id) } : {}) }));
   }),
