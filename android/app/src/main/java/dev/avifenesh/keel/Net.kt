@@ -141,7 +141,8 @@ object Keys {
     fun approvalSignature(): Signature = Signature.getInstance("SHA256withECDSA").apply { initSign(ks().getKey(APR, null) as PrivateKey) }
 }
 
-class ApiError(val code: Int, msg: String) : Exception(msg)
+/** `body`: what the daemon answered, for a refusal that carries more than its words (a landing card as it is now). */
+class ApiError(val code: Int, msg: String, val body: String = "") : Exception(msg)
 
 /** Keep cancellation attached until the body is read. */
 internal suspend fun <T> Call.awaitBody(read: (Response) -> T): T = suspendCancellableCoroutine { k ->
@@ -193,7 +194,7 @@ object Api {
             val t = resp.body.string()
             if (!resp.isSuccessful) {
                 val m = errorOf(t)
-                throw ApiError(resp.code, m.ifBlank { if (resp.code == 401) "Not authorized (HTTP 401)" else "HTTP ${resp.code}" })
+                throw ApiError(resp.code, m.ifBlank { if (resp.code == 401) "Not authorized (HTTP 401)" else "HTTP ${resp.code}" }, t)
             }
             if (t.isBlank()) JSONObject() else JSONObject(t)
         }

@@ -22,6 +22,10 @@ import { awayNow, awaySeen } from "./overview.ts";
 import { helperNow } from "./helper.ts";
 import { searchSessions } from "./search.ts";
 import { ownerSeen } from "../../admin/away.ts";
+import { landings } from "../../integrations/mobile/landings.ts";
+import { report as agentReport, rootSession, send as sendToAgent } from "../../automation/agents.ts";
+import { workBoard } from "./board.ts";
+import { landing } from "./landing.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -174,6 +178,8 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
 
   return {
     ...mobileApi({ ...deps, mobile, gate: () => gate, changed, checkpoints: () => checkpoints, fleetMachines: () => fleetMachines?.() ?? Promise.resolve([]), startFleetSession: (b) => (startFleetSession ? startFleetSession(b) : Promise.resolve(Response.json({ error: "this daemon has no machines to start a session on" }, { status: 409 }))),
+      landings: landings({ store, board: workBoard, landing: () => landing, rootOf: rootSession, report: agentReport,
+        sendBack: (id, text, key) => sendToAgent(id, text, false, key, undefined, undefined, "owner_back") }),
       live: nowLive, helper: () => helperNow?.() ?? null, away: () => awayNow?.() ?? null, awaySeen: () => awaySeen?.(), ownerSeen: (ms) => void ownerSeen(ms),
       search: (r) => (searchSessions ? searchSessions(r) : Promise.resolve(Response.json({ error: "the search is not loaded" }, { status: 409 }))) }),
 

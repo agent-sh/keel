@@ -23,6 +23,8 @@
   "search (GET /v1/search?q=<words>) is the page's search across sessions: titles first, then what was said and done, one hit a session at most. A hit's `snippet` holds the words found between \u0001 and \u0002; `kind` says where (title, user, assistant, tool_use, tool_result, summary). `limits` says in words what the query limited the search to (state:failed, since:yesterday).",
   "helper (GET /v1/helper, PATCH /v1/helper with `on`) is the owner's helper: whether it is on, its conversation (`chat_id`, a chat of the list marked `helper`), how many records its memory holds, and what it was told lately, newest first (helper_event: `chat_id` is the session it is about, null for mail). Turning it on makes its conversation the first time. memory (GET /v1/helper/memory[?q=<words>]) is its memory's records (memory_record), found by key, alias, topic or words with `q`; DELETE /v1/helper/memory/<key> forgets one. A daemon that runs no helper answers 409.",
   "What waits on the owner is in the order of the next-look queue (src/core/wait-rank.ts): the costliest wait first, then the one asked first. A pending card says when its alert was first raised (`asked`, seconds) and what its wait costs: `wait` holds the facts it began with (`at` and `until` in seconds; `key`, what the wait costs a minute in dollars, is the order's key and never changes while the card waits), `wait_line` what it costs as it stands when the card is sent (the agents that wait then, the cache's life then), in words. The app orders the cards that wait by `wait.key`, then `asked` (a card without one, its `ts`), then `id`. A push of an ask whose wait costs something also carries the words as they stand in `cost` and the key in `wk` (the app does not read them yet).",
+  "landings (GET /v1/landings) lists the branches that wait to land, ready first, each one land_card of the work board's facts: its agent finished, the base lacks its head, and the landing queue does not hold that head. `checks` are the named checks on its head (`state` known with passed, failed and not_run; unknown with why; none: the repository names none); `review` is the latest review of the branch (`verdict` as the board reads it, `current`: of its head as it is now); `proof` is the proof line of the agent's report, from the check ledger; `areas` its size by top folder; `queue` its latest queue entry of this head. `missing` says what of the evidence is not there; `ready` is true when nothing is. `fp` is the print of what the card shows.",
+  "POST /v1/landings/:key/land with { fp } puts the branch in the landing queue (landed: the entry as queued). It carries the approval signature (x-hm-ts, x-hm-asig) over signing.land's message: land, the key, the fp and the time, each on a line. POST /v1/landings/:key/back with { fp, text } gives the branch back to its agent with the owner's words as its next input (sent_back). Either is refused with 409 (landing_refused) when the card read again prints otherwise than `fp` (`card`: the card as it is now) or no longer waits to land (`card` null).",
   "error_changed is a frame of the stream: one kind of failure changed (it happened again, was read, healed or resolved), as its error_row; `gone`: it left the open list (resolved, or let go before the store took it). The app keeps its Errors list and count from these frames.",
   "A push of kind failed, outage or another failure says `open: errors` when it has no session to open: its notification opens the Errors view. A live push says `f`, the open errors not read yet (only beside work or a wait), and `to`, where a tap on the lasting notification leads: needs (something waits on the owner), errors, or sessions."
  ],
@@ -79,6 +81,14 @@
     "answers": null,
     "answers_text": "",
     "message": "approve2\napr_9\nsession\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1795195000"
+   }
+  ],
+  "land": [
+   {
+    "key": "s-root.ag1",
+    "fp": "1k2j3h4g5f",
+    "ts": "1795195000",
+    "message": "land\ns-root.ag1\n1k2j3h4g5f\n1795195000"
    }
   ]
  },
@@ -501,6 +511,62 @@
    "type": "string",
    "row": "object",
    "gone": "boolean"
+  },
+  "landings": {
+   "cards": "array"
+  },
+  "land_card": {
+   "key": "string",
+   "chat_id": "string",
+   "title": "string",
+   "agent_chat": "string",
+   "agent_title": "string",
+   "agent_state": "string",
+   "branch": "string",
+   "base": "string|null",
+   "head": "string",
+   "ahead": "number|null",
+   "behind": "number|null",
+   "checks.state": "string",
+   "checks.passed": "array?",
+   "checks.failed": "array?",
+   "checks.not_run": "array?",
+   "checks.why": "string?",
+   "review": "object|null",
+   "review.verdict": "string?",
+   "review.by": "string?",
+   "review.title": "string?",
+   "review.line": "string?",
+   "review.current": "boolean|null?",
+   "proof": "string",
+   "areas": "array",
+   "queue": "object|null",
+   "queue.state": "string?",
+   "queue.why": "string|null?",
+   "ready": "boolean",
+   "missing": "array",
+   "fp": "string"
+  },
+  "land_area": {
+   "area": "string",
+   "files": "number",
+   "added": "number",
+   "removed": "number"
+  },
+  "landed": {
+   "entry.id": "string",
+   "entry.state": "string",
+   "warnings": "array",
+   "card": "object"
+  },
+  "sent_back": {
+   "sent.waits": "boolean",
+   "sent.held": "boolean",
+   "card": "object"
+  },
+  "landing_refused": {
+   "error": "string",
+   "card": "object|null"
   }
  },
  "examples": {
@@ -3012,6 +3078,523 @@
      "title": "Billing check",
      "sessions": 2
     }
+   }
+  ],
+  "land_card": [
+   {
+    "key": "s-root.ag1",
+    "chat_id": "s-root",
+    "title": "Mobile round",
+    "agent_id": "ag1",
+    "agent_chat": "s-ag1",
+    "agent_title": "Fix the retry delay",
+    "agent_state": "completed",
+    "branch": "keel/fix-retry",
+    "base": "main",
+    "head": "3f2a9c1d0b7e4a5f8c6d2e1b0a9f8e7d6c5b4a39",
+    "ahead": 2,
+    "behind": 1,
+    "checks": {
+     "state": "known",
+     "passed": [
+      "typecheck",
+      "unit"
+     ],
+     "failed": [],
+     "not_run": []
+    },
+    "review": {
+     "verdict": "approved",
+     "by": "rv1",
+     "title": "Review the retry fix",
+     "line": "The retry is bounded and the test fails before the change.",
+     "current": true,
+     "panel": false
+    },
+    "proof": "(Checks after its last edit (4 min ago): typecheck passed 3 min ago, unit passed 2 min ago. No edit after the last green run.)",
+    "areas": [
+     {
+      "area": "src/",
+      "files": 3,
+      "added": 84,
+      "removed": 12
+     },
+     {
+      "area": "android/",
+      "files": 1,
+      "added": 20,
+      "removed": 2
+     }
+    ],
+    "queue": null,
+    "ready": true,
+    "missing": [],
+    "fp": "1k2j3h4g5f"
+   },
+   {
+    "key": "s-root.ag2",
+    "chat_id": "s-root",
+    "title": "Mobile round",
+    "agent_id": "ag2",
+    "agent_chat": "s-ag2",
+    "agent_title": "Rename the queue states",
+    "agent_state": "stopped",
+    "branch": "keel/rename-states",
+    "base": null,
+    "head": "9e8d7c6b5a493827160f1e2d3c4b5a6978695a4b",
+    "ahead": null,
+    "behind": null,
+    "checks": {
+     "state": "unknown",
+     "why": "its worktree was removed"
+    },
+    "review": null,
+    "proof": "",
+    "areas": [],
+    "queue": {
+     "state": "left",
+     "why": "unit failed on the rebased tree"
+    },
+    "ready": false,
+    "missing": [
+     "the checks are not known (its worktree was removed)",
+     "no review"
+    ],
+    "fp": "9z8y7x6w5v"
+   },
+   {
+    "key": "s-root.ag3",
+    "chat_id": "s-root",
+    "title": "Mobile round",
+    "agent_id": "ag3",
+    "agent_chat": "s-ag3",
+    "agent_title": "Bound the cache",
+    "agent_state": "failed",
+    "branch": "keel/bound-cache",
+    "base": "main",
+    "head": "3f2a9c1d0b7e4a5f8c6d2e1b0a9f8e7d6c5b4a39",
+    "ahead": 2,
+    "behind": 1,
+    "checks": {
+     "state": "known",
+     "passed": [
+      "typecheck"
+     ],
+     "failed": [
+      "unit"
+     ],
+     "not_run": [
+      "e2e"
+     ]
+    },
+    "review": {
+     "verdict": "stale",
+     "by": "rv2",
+     "title": "Review the cache bound",
+     "line": "LAND: yes",
+     "current": false,
+     "panel": false
+    },
+    "proof": "(Checks after its last edit (4 min ago): typecheck passed 3 min ago, unit passed 2 min ago. No edit after the last green run.)",
+    "areas": [
+     {
+      "area": "src/",
+      "files": 3,
+      "added": 84,
+      "removed": 12
+     },
+     {
+      "area": "android/",
+      "files": 1,
+      "added": 20,
+      "removed": 2
+     }
+    ],
+    "queue": {
+     "state": "left",
+     "why": null
+    },
+    "ready": false,
+    "missing": [
+     "failed: unit",
+     "not run on its head: e2e",
+     "the review is of an older head"
+    ],
+    "fp": "5t4r3e2w1q"
+   },
+   {
+    "key": "s-root.ag4",
+    "chat_id": "s-root",
+    "title": "Mobile round",
+    "agent_id": "ag4",
+    "agent_chat": "s-ag4",
+    "agent_title": "Fix the retry delay",
+    "agent_state": "completed",
+    "branch": "keel/fix-retry",
+    "base": "main",
+    "head": "3f2a9c1d0b7e4a5f8c6d2e1b0a9f8e7d6c5b4a39",
+    "ahead": 2,
+    "behind": 1,
+    "checks": {
+     "state": "none"
+    },
+    "review": {
+     "verdict": "approved",
+     "by": "rv1",
+     "title": "Review the retry fix",
+     "line": "The retry is bounded and the test fails before the change.",
+     "current": null,
+     "panel": false
+    },
+    "proof": "(Checks after its last edit (4 min ago): typecheck passed 3 min ago, unit passed 2 min ago. No edit after the last green run.)",
+    "areas": [
+     {
+      "area": "src/",
+      "files": 3,
+      "added": 84,
+      "removed": 12
+     },
+     {
+      "area": "android/",
+      "files": 1,
+      "added": 20,
+      "removed": 2
+     }
+    ],
+    "queue": null,
+    "ready": true,
+    "missing": [],
+    "fp": "0p9o8i7u6y"
+   }
+  ],
+  "land_area": [
+   {
+    "area": "src/",
+    "files": 3,
+    "added": 84,
+    "removed": 12
+   },
+   {
+    "area": "android/",
+    "files": 1,
+    "added": 20,
+    "removed": 2
+   }
+  ],
+  "landings": [
+   {
+    "cards": [
+     {
+      "key": "s-root.ag1",
+      "chat_id": "s-root",
+      "title": "Mobile round",
+      "agent_id": "ag1",
+      "agent_chat": "s-ag1",
+      "agent_title": "Fix the retry delay",
+      "agent_state": "completed",
+      "branch": "keel/fix-retry",
+      "base": "main",
+      "head": "3f2a9c1d0b7e4a5f8c6d2e1b0a9f8e7d6c5b4a39",
+      "ahead": 2,
+      "behind": 1,
+      "checks": {
+       "state": "known",
+       "passed": [
+        "typecheck",
+        "unit"
+       ],
+       "failed": [],
+       "not_run": []
+      },
+      "review": {
+       "verdict": "approved",
+       "by": "rv1",
+       "title": "Review the retry fix",
+       "line": "The retry is bounded and the test fails before the change.",
+       "current": true,
+       "panel": false
+      },
+      "proof": "(Checks after its last edit (4 min ago): typecheck passed 3 min ago, unit passed 2 min ago. No edit after the last green run.)",
+      "areas": [
+       {
+        "area": "src/",
+        "files": 3,
+        "added": 84,
+        "removed": 12
+       },
+       {
+        "area": "android/",
+        "files": 1,
+        "added": 20,
+        "removed": 2
+       }
+      ],
+      "queue": null,
+      "ready": true,
+      "missing": [],
+      "fp": "1k2j3h4g5f"
+     },
+     {
+      "key": "s-root.ag2",
+      "chat_id": "s-root",
+      "title": "Mobile round",
+      "agent_id": "ag2",
+      "agent_chat": "s-ag2",
+      "agent_title": "Rename the queue states",
+      "agent_state": "stopped",
+      "branch": "keel/rename-states",
+      "base": null,
+      "head": "9e8d7c6b5a493827160f1e2d3c4b5a6978695a4b",
+      "ahead": null,
+      "behind": null,
+      "checks": {
+       "state": "unknown",
+       "why": "its worktree was removed"
+      },
+      "review": null,
+      "proof": "",
+      "areas": [],
+      "queue": {
+       "state": "left",
+       "why": "unit failed on the rebased tree"
+      },
+      "ready": false,
+      "missing": [
+       "the checks are not known (its worktree was removed)",
+       "no review"
+      ],
+      "fp": "9z8y7x6w5v"
+     }
+    ]
+   },
+   {
+    "cards": []
+   }
+  ],
+  "landed": [
+   {
+    "entry": {
+     "id": "lq-1",
+     "state": "queued",
+     "why": null
+    },
+    "warnings": [
+     "It touches src/a.ts, as keel/other ahead of it does."
+    ],
+    "card": {
+     "key": "s-root.ag1",
+     "chat_id": "s-root",
+     "title": "Mobile round",
+     "agent_id": "ag1",
+     "agent_chat": "s-ag1",
+     "agent_title": "Fix the retry delay",
+     "agent_state": "completed",
+     "branch": "keel/fix-retry",
+     "base": "main",
+     "head": "3f2a9c1d0b7e4a5f8c6d2e1b0a9f8e7d6c5b4a39",
+     "ahead": 2,
+     "behind": 1,
+     "checks": {
+      "state": "known",
+      "passed": [
+       "typecheck",
+       "unit"
+      ],
+      "failed": [],
+      "not_run": []
+     },
+     "review": {
+      "verdict": "approved",
+      "by": "rv1",
+      "title": "Review the retry fix",
+      "line": "The retry is bounded and the test fails before the change.",
+      "current": true,
+      "panel": false
+     },
+     "proof": "(Checks after its last edit (4 min ago): typecheck passed 3 min ago, unit passed 2 min ago. No edit after the last green run.)",
+     "areas": [
+      {
+       "area": "src/",
+       "files": 3,
+       "added": 84,
+       "removed": 12
+      },
+      {
+       "area": "android/",
+       "files": 1,
+       "added": 20,
+       "removed": 2
+      }
+     ],
+     "queue": null,
+     "ready": true,
+     "missing": [],
+     "fp": "1k2j3h4g5f"
+    }
+   }
+  ],
+  "sent_back": [
+   {
+    "sent": {
+     "waits": false,
+     "held": false
+    },
+    "card": {
+     "key": "s-root.ag1",
+     "chat_id": "s-root",
+     "title": "Mobile round",
+     "agent_id": "ag1",
+     "agent_chat": "s-ag1",
+     "agent_title": "Fix the retry delay",
+     "agent_state": "completed",
+     "branch": "keel/fix-retry",
+     "base": "main",
+     "head": "3f2a9c1d0b7e4a5f8c6d2e1b0a9f8e7d6c5b4a39",
+     "ahead": 2,
+     "behind": 1,
+     "checks": {
+      "state": "known",
+      "passed": [
+       "typecheck",
+       "unit"
+      ],
+      "failed": [],
+      "not_run": []
+     },
+     "review": {
+      "verdict": "approved",
+      "by": "rv1",
+      "title": "Review the retry fix",
+      "line": "The retry is bounded and the test fails before the change.",
+      "current": true,
+      "panel": false
+     },
+     "proof": "(Checks after its last edit (4 min ago): typecheck passed 3 min ago, unit passed 2 min ago. No edit after the last green run.)",
+     "areas": [
+      {
+       "area": "src/",
+       "files": 3,
+       "added": 84,
+       "removed": 12
+      },
+      {
+       "area": "android/",
+       "files": 1,
+       "added": 20,
+       "removed": 2
+      }
+     ],
+     "queue": null,
+     "ready": true,
+     "missing": [],
+     "fp": "1k2j3h4g5f"
+    }
+   },
+   {
+    "sent": {
+     "waits": true,
+     "held": true
+    },
+    "card": {
+     "key": "s-root.ag2",
+     "chat_id": "s-root",
+     "title": "Mobile round",
+     "agent_id": "ag2",
+     "agent_chat": "s-ag2",
+     "agent_title": "Rename the queue states",
+     "agent_state": "stopped",
+     "branch": "keel/rename-states",
+     "base": null,
+     "head": "9e8d7c6b5a493827160f1e2d3c4b5a6978695a4b",
+     "ahead": null,
+     "behind": null,
+     "checks": {
+      "state": "unknown",
+      "why": "its worktree was removed"
+     },
+     "review": null,
+     "proof": "",
+     "areas": [],
+     "queue": {
+      "state": "left",
+      "why": "unit failed on the rebased tree"
+     },
+     "ready": false,
+     "missing": [
+      "the checks are not known (its worktree was removed)",
+      "no review"
+     ],
+     "fp": "9z8y7x6w5v"
+    }
+   }
+  ],
+  "landing_refused": [
+   {
+    "error": "Its facts changed since it was shown. Read the card again before deciding.",
+    "card": {
+     "key": "s-root.ag3",
+     "chat_id": "s-root",
+     "title": "Mobile round",
+     "agent_id": "ag3",
+     "agent_chat": "s-ag3",
+     "agent_title": "Bound the cache",
+     "agent_state": "failed",
+     "branch": "keel/bound-cache",
+     "base": "main",
+     "head": "3f2a9c1d0b7e4a5f8c6d2e1b0a9f8e7d6c5b4a39",
+     "ahead": 2,
+     "behind": 1,
+     "checks": {
+      "state": "known",
+      "passed": [
+       "typecheck"
+      ],
+      "failed": [
+       "unit"
+      ],
+      "not_run": [
+       "e2e"
+      ]
+     },
+     "review": {
+      "verdict": "stale",
+      "by": "rv2",
+      "title": "Review the cache bound",
+      "line": "LAND: yes",
+      "current": false,
+      "panel": false
+     },
+     "proof": "(Checks after its last edit (4 min ago): typecheck passed 3 min ago, unit passed 2 min ago. No edit after the last green run.)",
+     "areas": [
+      {
+       "area": "src/",
+       "files": 3,
+       "added": 84,
+       "removed": 12
+      },
+      {
+       "area": "android/",
+       "files": 1,
+       "added": 20,
+       "removed": 2
+      }
+     ],
+     "queue": {
+      "state": "left",
+      "why": null
+     },
+     "ready": false,
+     "missing": [
+      "failed: unit",
+      "not run on its head: e2e",
+      "the review is of an older head"
+     ],
+     "fp": "5t4r3e2w1q"
+    }
+   },
+   {
+    "error": "This branch no longer waits to land: it landed, its agent works on it again, or the queue has it.",
+    "card": null
    }
   ],
   "error_changed": [

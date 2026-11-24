@@ -43,6 +43,9 @@ import { digestBrief, digestTotals, hms, type Digest } from "../../admin/away.ts
 import { dur } from "../../admin/timeline-rows.ts";
 import { newestMark } from "../../admin/marks.ts";
 import { liveData, type LiveStatus } from "./live.ts";
+import { BACK_MAX, landMessage, type landings } from "./landings.ts";
+
+type Landings = ReturnType<typeof landings>;
 import { zoneLabel } from "../../core/clock.ts";
 import type { Helper } from "../../helper/helper.ts";
 import { paramKey } from "../../helper/memory.ts";
@@ -87,6 +90,8 @@ export type MobileCtx = Deps & {
   live?: () => LiveStatus;
   // The owner's helper (src/helper/), on a daemon that runs one.
   helper?: () => Helper | null;
+  // Branches that wait to land, as cards the owner decides from (src/integrations/mobile/landings.ts).
+  landings?: Landings;
 };
 
 // How many of what the helper was told the phone is sent, the newest first: a screen of them.
@@ -1161,6 +1166,33 @@ export function mobileApi(ctx: MobileCtx) {
     },
     // What broke on the daemon, as the page's Errors panel lists it: the open kinds of failure.
     "/v1/errors": { GET: signed(() => json(errorList())) },
+    // Branches that wait to land, ready first: each a card of the work board's facts.
+    "/v1/landings": {
+      GET: signed(async () => (ctx.landings ? json({ cards: await ctx.landings.list() }) : err("this daemon runs no work board", 409))),
+    },
+    // Land it (the approval key signs the card's key and print) or send it back with the owner's words:
+    // either only while the card's facts are the ones shown.
+    "/v1/landings/:key/:action": {
+      POST: signed(withBody(async (req, dev, b) => {
+        const L = ctx.landings;
+        if (!L) return err("this daemon runs no work board", 409);
+        const key = decodeURIComponent(req.params.key!), action = req.params.action;
+        const fp = typeof b.fp === "string" ? b.fp : "";
+        if (!fp) return err("fp is the print of the card as it was shown", 400);
+        let r: any;
+        if (action === "land") {
+          if (!(await approvalSigned(req, dev, landMessage(key, fp, req.headers.get("x-hm-ts") ?? ""), "approval"))) return err("biometric signature required", 403);
+          r = await L.land(key, fp);
+        } else if (action === "back") {
+          const text = typeof b.text === "string" ? b.text.trim() : "";
+          if (!text) return err("text is what the agent is told", 400);
+          if (text.length > BACK_MAX) return err(`the words can be at most ${BACK_MAX} characters`, 400);
+          r = await L.back(key, fp, text).catch((e: Error) => ({ status: 409, error: e.message, card: null }));
+        } else return err("the action is land or back", 400);
+        if ("status" in r) return json({ error: r.error, card: r.card }, r.status);
+        return json(r);
+      })),
+    },
     // Every open one the phone was shown, read at once (`ids`), as the page's Mark all read: one that
     // happened again after it was shown came back unread and is read with the rest only if listed.
     "/v1/errors/read-all": {

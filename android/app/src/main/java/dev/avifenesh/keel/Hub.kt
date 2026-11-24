@@ -87,7 +87,7 @@ object Hub {
 
     fun reset() {
         live?.cancel(); live = null; saver?.cancel(); dirty = false
-        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L; away.value = null
+        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L; away.value = null; landings.value = null
         note.value = ""; conn.value = Conn.OFF
     }
 
@@ -205,6 +205,28 @@ object Hub {
     /** Every open one shown, read at once (the page's Mark all read): the list as the daemon has it after. */
     suspend fun readAllErrors(ids: List<String>) {
         errors.value = ErrorList.of(Api.post("/v1/errors/read-all", JSONObject().put("ids", org.json.JSONArray(ids))))
+    }
+    /** Branches that wait to land, ready first (the work board's facts, one card each). */
+    val landings = MutableStateFlow<List<LandCard>?>(null)
+    suspend fun readLandings(): List<LandCard> = LandCard.list(Api.get("/v1/landings")).also { landings.value = it }
+    fun readLandingsSoon() { scope.launch { runCatching { readLandings() } } }
+    /** Land it, signed (`headers`): the entry the queue made, or the refusal with the card as it is now. */
+    suspend fun land(card: LandCard, headers: Map<String, String>): LandOutcome =
+        decide(card) { Api.post("/v1/landings/${Uri.encode(card.key)}/land", JSONObject().put("fp", card.fp), headers) }
+    /** Give it back to its agent with the owner's words. */
+    suspend fun sendBack(card: LandCard, text: String): LandOutcome =
+        decide(card) { Api.post("/v1/landings/${Uri.encode(card.key)}/back", JSONObject().put("fp", card.fp).put("text", text)) }
+    // A refusal over the card's facts (409) carries the card as it is now: it is an outcome, not a failure.
+    private suspend fun decide(card: LandCard, ask: suspend () -> JSONObject): LandOutcome {
+        val o = try { LandOutcome.of(ask()) } catch (e: ApiError) {
+            if (e.code != 409) throw e
+            LandOutcome.refused(runCatching { JSONObject(e.body) }.getOrElse { JSONObject().put("error", e.message) })
+        }
+        return o.also { settle(card, it) }
+    }
+    // A decided card leaves the list; a refused one is shown as it is now (or leaves, when it is gone).
+    private fun settle(card: LandCard, o: LandOutcome) {
+        landings.value = landings.value?.let { l -> if (o.ok || o.card == null) l.filter { it.key != card.key } else l.map { if (it.key == card.key) o.card else it } }
     }
     suspend fun search(q: String): SearchResult = SearchResult.of(Api.get("/v1/search?q=${Wire.enc(q)}"))
     suspend fun startOffer(): Start = Start.of(Api.get("/v1/start"))

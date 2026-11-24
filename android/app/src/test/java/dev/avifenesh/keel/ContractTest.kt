@@ -35,6 +35,11 @@ class ContractTest {
             assertEquals(a.getString("answers_text"), text)
             assertEquals(a.getString("message"), Wire.approvalMessage(a.getString("id"), a.getString("choice"), a.getString("ts"), text))
         }
+        val lands = signing.getJSONArray("land")
+        for (i in 0 until lands.length()) {
+            val l = lands.getJSONObject(i)
+            assertEquals(l.getString("message"), Wire.landMessage(l.getString("key"), l.getString("fp"), l.getString("ts")))
+        }
     }
 
     @Test fun theAppMakesTheDigestsTheDaemonMakes() {
@@ -130,6 +135,12 @@ class ContractTest {
         "error_marked" to { o -> ErrorList.row(o).toString() },
         // A frame changes the list the phone holds: one read before it, as the app reads it when level.
         "error_changed" to { o -> level().also { it.errors.value = ErrorList.of(examples("errors").first()); it.frame(o) }.errors.value.toString() },
+        "landings" to { o -> LandCard.list(o).toString() },
+        "land_card" to { o -> LandCard.of(o).toString() },
+        "land_area" to { o -> LandCard.of(JSONObject().put("areas", JSONArray().put(o))).areas.toString() },
+        "landed" to { o -> LandOutcome.of(o).toString() },
+        "sent_back" to { o -> LandOutcome.of(o).toString() },
+        "landing_refused" to { o -> LandOutcome.refused(o).toString() },
         "away" to { o -> Away.of(o).toString() },
         "away_session" to { o -> Away.of(JSONObject().put("away", JSONObject().put("sessions", JSONArray().put(o))))!!.sessions.toString() },
         "start_model" to { o -> Start.of(JSONObject().put("models", JSONArray().put(o))).models.toString() },

@@ -73,6 +73,43 @@ object Approvals {
     }
 }
 
+object Landings {
+    /**
+     * Lands a branch from its card: the approval key signs the card's key and the print of what it showed, after a
+     * biometric or device-credential check (as an approval is). done(outcome, null): the daemon answered (queued, or
+     * refused with the card as it is now); done(null, ""): the owner cancelled; done(null, text): what went wrong.
+     */
+    fun run(act: FragmentActivity, card: LandCard, done: (LandOutcome?, String?) -> Unit) {
+        val ts = (System.currentTimeMillis() / 1000).toString()
+        val payload = Wire.landMessage(card.key, card.fp, ts).toByteArray()
+        fun submit(sig: String) {
+            Hub.scope.launch {
+                val r = runCatching { Hub.land(card, mapOf("X-HM-Ts" to ts, "X-HM-ASig" to sig)) }
+                withContext(Dispatchers.Main) { done(r.getOrNull(), r.exceptionOrNull()?.let { it.message ?: "Not sent" }) }
+            }
+        }
+        val sig = try { Keys.approvalSignature() } catch (e: Exception) { return done(null, "The approval key is not available: ${e.message}") }
+        if (Prefs.noLock) {
+            val s = runCatching { sig.update(payload); Base64.encodeToString(sig.sign(), Base64.NO_WRAP) }.getOrNull()
+            return if (s == null) done(null, "Signing failed") else submit(s)
+        }
+        val prompt = BiometricPrompt(act, ContextCompat.getMainExecutor(act), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                val s = result.cryptoObject?.signature ?: return done(null, "No signature")
+                val out = try { s.update(payload); Base64.encodeToString(s.sign(), Base64.NO_WRAP) } catch (e: Exception) { return done(null, e.message ?: "Signing failed") }
+                submit(out)
+            }
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                val cancelled = errorCode == BiometricPrompt.ERROR_USER_CANCELED || errorCode == BiometricPrompt.ERROR_CANCELED || errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON
+                done(null, if (cancelled) "" else errString.toString())
+            }
+        })
+        val info = BiometricPrompt.PromptInfo.Builder().setTitle("Land ${card.branch}").setDescription("Onto ${card.base.ifBlank { "the base" }} at ${card.short}, through the landing queue")
+            .setAllowedAuthenticators(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)
+        prompt.authenticate(info.build(), BiometricPrompt.CryptoObject(sig))
+    }
+}
+
 /**
  * Allow from a notification. A collapsed notification shows the start of its line, so the request
  * is drawn whole here first, over the lock screen, with its session's name: the fingerprint is asked

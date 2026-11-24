@@ -21,6 +21,9 @@ object Wire {
     fun approvalMessage(aid: String, choice: String, ts: String, answer: String): String =
         "approve2\n$aid\n$choice\n${sha256Hex(answer.trim().toByteArray())}\n$ts"
 
+    /** What the approval key signs to land a branch: the card's key and the print of what it showed, at a time. */
+    fun landMessage(key: String, fp: String, ts: String): String = "land\n$key\n$fp\n$ts"
+
     /** The answer text the daemon hashes for answers by question id: JSON.stringify of the sorted [id, value] pairs. */
     fun answersText(answers: Map<String, Any>): String = answers.keys.sorted().joinToString(",", "[", "]") { k ->
         val v = answers[k]
@@ -1064,3 +1067,82 @@ fun newestTs(held: List<Msg>): Double = held.maxOfOrNull { it.ts } ?: 0.0
  */
 fun sendArrived(held: List<Msg>, text: String, after: Double): Boolean = held.any { it.mine && it.content == text && it.ts > after }
 
+/** What a branch changes in one top folder: files and lines. */
+data class LandArea(val area: String, val files: Int, val added: Int, val removed: Int) {
+    companion object {
+        fun of(o: JSONObject) = LandArea(o.str("area"), o.optInt("files"), o.optInt("added"), o.optInt("removed"))
+    }
+}
+
+/**
+ * A branch that waits to land, as the work board's facts (GET /v1/landings): its agent's branch and head, the named
+ * checks on that head (`checksState` known, unknown with `checksWhy`, none), the latest review (`verdict` empty when
+ * none), the proof line of the agent's report, its size by area, its latest queue entry of this head, what of the
+ * evidence is `missing`, and `fp`, the print a decision names.
+ */
+data class LandCard(
+    val key: String, val chatId: String, val title: String, val agentChat: String, val agentTitle: String, val agentState: String,
+    val branch: String, val base: String, val head: String, val ahead: Int?, val behind: Int?,
+    val checksState: String, val passed: List<String>, val failed: List<String>, val notRun: List<String>, val checksWhy: String,
+    val verdict: String, val reviewer: String, val reviewTitle: String, val reviewLine: String, val reviewCurrent: Boolean?,
+    val proof: String, val areas: List<LandArea>, val queueState: String, val queueWhy: String,
+    val ready: Boolean, val missing: List<String>, val fp: String,
+) {
+    val short get() = head.take(9)
+    /** "2 ahead · 1 behind main": where the head stands against the base, when git said. */
+    val against get() = listOfNotNull(ahead?.let { "$it ahead" }, behind?.takeIf { it > 0 }?.let { "$it behind ${base.ifBlank { "the base" }}" }).joinToString(" · ")
+    /** "typecheck, unit passed · e2e failed": the checks in a line. */
+    val checksLine get() = when (checksState) {
+        "none" -> "The repository names no checks"
+        "unknown" -> "Checks not known: $checksWhy"
+        else -> listOfNotNull(
+            passed.takeIf { it.isNotEmpty() }?.let { "${it.joinToString(", ")} passed" },
+            failed.takeIf { it.isNotEmpty() }?.let { "${it.joinToString(", ")} failed" },
+            notRun.takeIf { it.isNotEmpty() }?.let { "${it.joinToString(", ")} not run" },
+        ).joinToString(" · ").ifBlank { "No check decided on its head" }
+    }
+    /** "Approved by Review the retry fix", "Of an older head by Review the cache", "No review". */
+    val reviewLineShort get() = when {
+        verdict.isBlank() -> "No review"
+        verdict == "approved" && reviewCurrent == false -> "Approved an older head"
+        else -> VERDICTS[verdict].orEmpty().ifBlank { verdict.replaceFirstChar { it.uppercase() } } + (if (reviewTitle.isNotBlank()) " by $reviewTitle" else "")
+    }
+    /** "src/ 3 files +84 −12 · android/ 1 file +20 −2". */
+    val size get() = areas.joinToString(" · ") { "${it.area} ${it.files} file${if (it.files == 1) "" else "s"} +${it.added} −${it.removed}" }
+    companion object {
+        private val VERDICTS = mapOf("approved" to "Approved", "refused" to "Refused", "disputed" to "Reviewers disagree", "words" to "Words only, no verdict",
+            "unclear" to "No clear verdict", "pending" to "Review running", "stale" to "Of an older head")
+        private fun strs(a: JSONArray?) = a?.let { x -> (0 until x.length()).map { x.optString(it) } }.orEmpty()
+        fun of(o: JSONObject): LandCard {
+            val c = o.optJSONObject("checks") ?: JSONObject()
+            val r = o.optJSONObject("review")
+            val q = o.optJSONObject("queue")
+            return LandCard(
+                o.str("key"), o.str("chat_id"), o.str("title"), o.str("agent_chat"), o.str("agent_title"), o.str("agent_state"),
+                o.str("branch"), o.str("base"), o.str("head"), if (o.isNull("ahead")) null else o.optInt("ahead"), if (o.isNull("behind")) null else o.optInt("behind"),
+                c.str("state"), strs(c.optJSONArray("passed")), strs(c.optJSONArray("failed")), strs(c.optJSONArray("not_run")), c.str("why"),
+                r?.str("verdict").orEmpty(), r?.str("by").orEmpty(), r?.str("title").orEmpty(), r?.str("line").orEmpty(),
+                r?.let { if (it.isNull("current")) null else it.optBoolean("current") },
+                o.str("proof"), o.optJSONArray("areas")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty().map(LandArea::of),
+                q?.str("state").orEmpty(), q?.str("why").orEmpty(),
+                o.optBoolean("ready"), strs(o.optJSONArray("missing")), o.str("fp"),
+            )
+        }
+        fun list(o: JSONObject): List<LandCard> = o.optJSONArray("cards")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty().map(::of)
+    }
+}
+
+/**
+ * How a decision on a landing card ended: `ok` (queued: `entry`, its state; sent back: `waits`, `held`), or refused with
+ * the daemon's words and the card as it is now (`card` null: it no longer waits to land).
+ */
+data class LandOutcome(val ok: Boolean, val error: String, val card: LandCard?, val entry: String = "", val state: String = "", val warnings: List<String> = emptyList(), val waits: Boolean = false, val held: Boolean = false) {
+    companion object {
+        fun of(o: JSONObject): LandOutcome {
+            val e = o.optJSONObject("entry"); val s = o.optJSONObject("sent")
+            return LandOutcome(true, "", o.optJSONObject("card")?.let(LandCard::of), e?.str("id").orEmpty(), e?.str("state").orEmpty(),
+                o.optJSONArray("warnings")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty(), s?.optBoolean("waits") ?: false, s?.optBoolean("held") ?: false)
+        }
+        fun refused(o: JSONObject) = LandOutcome(false, o.str("error"), o.optJSONObject("card")?.let(LandCard::of))
+    }
+}

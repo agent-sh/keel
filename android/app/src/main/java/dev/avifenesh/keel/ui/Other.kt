@@ -57,17 +57,25 @@ fun NeedsScreen(act: MainActivity) {
     val cards by Hub.cards.collectAsState()
     val chats by Hub.chats.collectAsState()
     val open = nextLook(cards.values.filter { it.pending })
+    // Branches that wait to land: read as the tab shows, and again when an agent of a tree ends (a frame of its row).
+    val lands by Hub.landings.collectAsState()
+    val toLand = lands.orEmpty()
+    LaunchedEffect(Unit) { Hub.readLandingsSoon() }
     Column(Modifier.fillMaxSize()) {
         Head("Needs you", sub = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StateMark(if (open.isEmpty()) State.DONE else State.NEEDS, 8.dp); Spacer(Modifier.width(6.dp))
-                Txt(if (open.isEmpty()) "Nothing waits" else "${open.size} waiting", T.meta, k.muted)
+                StateMark(if (open.isEmpty() && toLand.isEmpty()) State.DONE else State.NEEDS, 8.dp); Spacer(Modifier.width(6.dp))
+                Txt(listOfNotNull(if (open.isNotEmpty()) "${open.size} waiting" else null, if (toLand.isNotEmpty()) "${toLand.size} to land" else null).joinToString(" · ").ifBlank { "Nothing waits" }, T.meta, k.muted)
             }
         })
-        if (open.isEmpty()) { Empty("Nothing waits for you", "Approvals and questions from every session land here, and on the lock screen when push is on."); return }
+        if (open.isEmpty() && toLand.isEmpty()) { Empty("Nothing waits for you", "Approvals, questions and branches ready to land from every session come here, and approvals reach the lock screen when push is on."); return }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = S.md), verticalArrangement = Arrangement.spacedBy(S.md)) {
             items(open, key = { it.id }) { c ->
                 CardView(act, c, title = chats[c.chatId]?.title ?: "A session", onOpen = { Ui.open(c.chatId) })
+            }
+            if (toLand.isNotEmpty()) {
+                item(key = "h-land") { SectionLabel("To land", toLand.size, k.muted, Modifier.padding(top = if (open.isEmpty()) 0.dp else S.sm)) }
+                items(toLand, key = { "land-${it.key}" }) { c -> LandingCardView(act, c) }
             }
             item { Spacer(Modifier.height(S.xl)) }
         }

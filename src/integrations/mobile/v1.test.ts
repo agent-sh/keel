@@ -21,6 +21,8 @@ import { MobileStore } from "./store.ts";
 import { bucketOf, heldOf, mobileApi } from "./v1.ts";
 import { pushData, testMessage } from "./push.ts";
 import { liveData, liveStatus } from "./live.ts";
+import { landMessage } from "./landings.ts";
+import { landCard } from "../../board/card.ts";
 import { alertPush } from "../../server/routes/mobile.ts";
 import { Gate, type Approval } from "../../safety/gate.ts";
 import { planRoutes, plansWaiting } from "../../server/routes/plan.ts";
@@ -101,7 +103,23 @@ const helperOn = async () => {
 let fleetStart: (b: any) => Response = () => Response.json({ error: "no fleet in this test" }, { status: 409 });
 // The daemon's errors, as the Errors panel reads them.
 const tracker = new ErrorTracker(store, bus);
-const routes: any = mobileApi({ store, bus, engine, providers, errors: tracker, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts,
+// Branches that wait to land, as the board would give them (src/integrations/mobile/landings.test.ts tests the reading).
+const H = "3f2a9c1d0b7e4a5f8c6d2e1b0a9f8e7d6c5b4a39";
+const landRow = (o: any = {}) => ({ id: "ag1", session_id: "s-ag1", parent_id: "s-root", depth: 1, title: "Fix the retry delay", type: "general-purpose", model: "m", state: "completed", created: 1, ended: 2, machine: null,
+  branch: "keel/fix-retry", repo: dir, base: "main", head: H, ahead: 2, behind: 1, worktree: "here", checks: { state: "known", passed: ["typecheck", "unit"], failed: [], notRun: [] },
+  review: { by: "rv1", title: "Review the retry fix", how: "named", state: "completed", verdict: "approved", source: "verdict", line: "Bounded.", tip: H, of: H, current: true, at: 1 },
+  reviews: [], landed: { state: "no", missing: 2 }, queue: null, live: null, ...o });
+let landNow = landCard({ root: "s-root", title: "Mobile round", row: landRow() as any, report: "Done.\n(Checks after its last edit (4 min ago): unit passed 2 min ago.)", numstat: "84\t12\tsrc/a.ts\n20\t2\tandroid/b.kt" });
+// One whose checks are not known and that left the queue, with no review: every field of a card is sent.
+const landLeft = landCard({ root: "s-root", title: "Mobile round", row: landRow({ id: "ag2", session_id: "s-ag2", state: "stopped", base: null, ahead: null, behind: null, checks: { state: "unknown", why: "its worktree was removed" }, review: null,
+  queue: { id: "lq-0", state: "left", why: "unit failed on the rebased tree", landed: null, tip: H, current: true, updated: 1 } }) as any, report: null, numstat: "" });
+const landAsked: string[] = [];
+const landingsStub = {
+  list: async () => [landNow, landLeft],
+  land: async (key: string, fp: string) => (landAsked.push(`land ${key} ${fp}`), fp === landNow.fp ? { entry: { id: "lq-1", state: "queued", why: null }, warnings: [], card: landNow } : { status: 409, error: "Its facts changed since it was shown. Read the card again before deciding.", card: landNow }),
+  back: async (key: string, fp: string, text: string) => (landAsked.push(`back ${key} ${fp} ${text}`), fp === landNow.fp ? { sent: { waits: true, held: false }, card: landNow } : { status: 409, error: "gone", card: null }),
+};
+const routes: any = mobileApi({ store, bus, engine, providers, errors: tracker, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts, landings: landingsStub,
   fleetMachines: async () => fleetRows, startFleetSession: async (b: any) => fleetStart(b),
   away: () => awayDigest, awaySeen: () => { awayDigest = null; }, ownerSeen: (ms: number) => void seenAt.push(ms),
   search: (r: Request) => searchGet()(r), helper: () => helper, live: () => liveStatus([{ title: "Review", running: true, since: 1795195000500, needs: 0 }]) } as any);
@@ -595,6 +613,33 @@ describe("errors", () => {
     expect((await call("GET", "/v1/errors")).body.errors.some((e: any) => e.id === stall.id)).toBe(false);
     expect((await call("POST", `/v1/errors/${stall.id}/forget`)).status).toBe(400);
     expect((await call("POST", "/v1/errors/no-such-error/read")).status).toBe(404);
+  });
+});
+
+describe("landings", () => {
+  test("a landing from the phone needs the approval key over the card's key and print; sent back, the words go whole", async () => {
+    const path = `/v1/landings/${encodeURIComponent(landNow.key)}`;
+    const list = (await call("GET", "/v1/landings")).body;
+    expect(list.cards.map((c: any) => [c.key, c.ready, c.fp])).toEqual([[landNow.key, true, landNow.fp], [landLeft.key, false, landLeft.fp]]);
+    landAsked.length = 0;
+    // The request key alone lands nothing.
+    expect((await call("POST", `${path}/land`, { fp: landNow.fp })).status).toBe(403);
+    // Signed over another print than the one sent: refused before the queue is asked.
+    const ts = String(Math.floor(Date.now() / 1000));
+    const other = sign("sha256", Buffer.from(landMessage(landNow.key, "another", ts)), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+    expect((await call("POST", `${path}/land`, { fp: landNow.fp }, { "x-hm-asig": other })).status).toBe(403);
+    expect(landAsked).toEqual([]);
+    const asig = sign("sha256", Buffer.from(landMessage(landNow.key, landNow.fp, ts)), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+    const landed = await call("POST", `${path}/land`, { fp: landNow.fp }, { "x-hm-asig": asig });
+    expect([landed.status, landed.body.entry.id, landAsked]).toEqual([200, "lq-1", [`land ${landNow.key} ${landNow.fp}`]]);
+    // Sent back: words are needed, kept within a bound, and a print that changed is told with the card as it is.
+    expect((await call("POST", `${path}/back`, { fp: landNow.fp, text: "  " })).status).toBe(400);
+    expect((await call("POST", `${path}/back`, { fp: landNow.fp, text: "x".repeat(4001) })).status).toBe(400);
+    expect((await call("POST", `${path}/back`, { fp: landNow.fp, text: "Split the rename out." })).body.sent).toEqual({ waits: true, held: false });
+    expect(landAsked.at(-1)).toBe(`back ${landNow.key} ${landNow.fp} Split the rename out.`);
+    expect(await call("POST", `${path}/back`, { fp: "old", text: "again" })).toMatchObject({ status: 409, body: { error: "gone", card: null } });
+    expect((await call("POST", `${path}/merge`, { fp: landNow.fp })).status).toBe(400);
+    expect((await call("POST", `${path}/land`, {})).status).toBe(400);
   });
 });
 
@@ -1184,6 +1229,7 @@ describe("the wire contract", () => {
     search: [["hits", "search_hit"]],
     away: [["away.sessions", "away_session"]],
     errors: [["errors", "error_row"]], error_marked: [["row", "error_row"]], error_changed: [["row", "error_row"]],
+    landings: [["cards", "land_card"]], land_card: [["areas", "land_area"]], landed: [["card", "land_card"]], sent_back: [["card", "land_card"]], landing_refused: [["card", "land_card"]],
   };
   // What a value breaks of its shape's fields, the shapes inside it included; `seen` collects the fields it has.
   function broken(shape: string, v: any, seen = new Set<string>(), out: string[] = []) {
@@ -1205,6 +1251,12 @@ describe("the wire contract", () => {
     const asig = sign("sha256", Buffer.from(approvalMessage(aid, body.choice, ts, true, text)), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
     return call("POST", `/v1/approvals/${aid}`, body, body.choice === "deny" ? {} : { "x-hm-asig": asig, "x-hm-asig-v": "2" });
   };
+  // A landing as the app asks it: the approval key signs the card's key, its print and the time.
+  const landOn = (key: string, fp: string) => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const asig = sign("sha256", Buffer.from(landMessage(key, fp, ts)), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+    return call("POST", `/v1/landings/${encodeURIComponent(key)}/land`, { fp }, { "x-hm-asig": asig });
+  };
   const QUESTIONS = { questions: [{ id: "build", question: "Build type?", options: [{ label: "Debug" }, { label: "Release" }] }, { id: "checks", question: "Which checks?", multiSelect: true, options: [{ label: "Unit" }, { label: "Integration" }] }] };
   const asks = (sid: string, callId: string) => {
     const e = store.append(sid, "assistant", { blocks: [{ type: "tool_use", id: callId, name: "AskUserQuestion", input: QUESTIONS }] });
@@ -1222,6 +1274,7 @@ describe("the wire contract", () => {
       expect(a.answers ? answersText(a.answers) : "").toBe(a.answers_text);
       expect(approvalMessage(a.id, a.choice, a.ts, true, a.answers_text)).toBe(a.message);
     }
+    for (const l of wire.signing.land) expect(landMessage(l.key, l.fp, l.ts)).toBe(l.message);
   });
 
   test("the examples are of their shapes", () => {
@@ -1313,6 +1366,11 @@ describe("the wire contract", () => {
     take("errors", (await call("GET", "/v1/errors")).body);
     take("error_marked", (await call("POST", `/v1/errors/${both.id}/read`)).body);
     take("errors", (await call("POST", "/v1/errors/read-all", { ids: [both.id] })).body);
+    // Branches that wait to land: listed, landed on the print shown, sent back, refused on another print.
+    take("landings", (await call("GET", "/v1/landings")).body);
+    take("landed", (await landOn(landNow.key, landNow.fp)).body);
+    take("sent_back", (await call("POST", `/v1/landings/${encodeURIComponent(landNow.key)}/back`, { fp: landNow.fp, text: "Split it." })).body);
+    take("landing_refused", (await landOn(landNow.key, "old-print")).body);
     (providers as any).models = listing;
     fleetRows = [];
     take("error", (await call("POST", `/v1/chats/${s.id}/messages`, { text: "" })).body);
