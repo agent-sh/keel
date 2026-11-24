@@ -1465,6 +1465,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* A group's box is as wide as its column: what is inside lays out by the box's width. */
 .k-set-group > .k-set-box { container: set-box / inline-size; }
 .k-set-box[data-pad] { padding: 1rem 1.25rem; }
+/* A table of a figures page (UsagePanel.tsx) in a padded box runs to its edges and keeps the box's inset. */
+.k-set-box[data-pad] > .k-scroll-x { margin-inline: -1.25rem; }
+.k-set-box[data-pad] > .k-scroll-x :is(th, td):first-child { padding-left: 1.25rem; }
+.k-set-box[data-pad] > .k-scroll-x :is(th, td):last-child { padding-right: 1.25rem; }
+.k-set-box .k-scroll-x { --k-scroll-bg: var(--raised); }
 /* A list or a table runs to the box's edges; its rows keep the box's inset. */
 .k-set-box > .k-set-list, .k-set-box > .k-set-table-wrap { margin: 0 -1.25rem; }
 

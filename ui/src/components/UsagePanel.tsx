@@ -5,6 +5,7 @@
 // (prices from the listings; an unknown price stays unknown), timings, cache
 // and error rates from the local telemetry.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Group } from "./settings/kit.tsx";
 import { composing } from "../lib/keys.ts";
 import { api, reportError, useStore, useModels } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
@@ -133,26 +134,29 @@ export const fmtUsd = (v: number) => (v === 0 ? "$0" : v < 0.01 ? `$${v.toFixed(
 
 // A boxed card, or with `plain` a section of the page itself: a hairline, a
 // heading and what it holds, with no box around it.
+// A part of a figures page, on the Settings kit: boxed, a group (its head over its box); `plain`, the
+// same head standing on the page under a hairline (the overview's answer reads as one page).
 export function Panel({ title, hint, children, testid, aside, plain, className }: { title: string; hint?: string; children: ReactNode; testid?: string; aside?: ReactNode; plain?: boolean; className?: string }) {
+  if (!plain) return <Group title={title} hint={hint} actions={aside} pad testid={testid} className={className}>{children}</Group>;
   return (
-    <section className={cn(plain ? "min-w-0 border-t border-line px-4 pt-4" : "rounded-lg border border-line bg-raised p-4 shadow-1", className)} data-testid={testid}>
-      <div className={cn("mb-3 flex items-baseline gap-x-2 gap-y-1", plain ? "flex-wrap" : "gap-y-1.5 max-md:flex-wrap")}>
-        <h3 className="shrink-0 text-base font-medium">{title}</h3>
-        {/* A boxed card keeps its hint to a line; a section of the page lets it wrap whole. */}
-        {hint && <span className={cn("min-w-0 text-caption text-faint", !plain && "truncate")}>{hint}</span>}
-        {aside && <div className="ml-auto max-w-full shrink-0 self-center">{aside}</div>}
+    <section className={cn("k-set-group min-w-0 border-t border-line px-4 pt-4", className)} data-testid={testid}>
+      <div className="k-set-head">
+        {/* (Its line beside the name, as before: two panels side by side keep their tables on one line.) */}
+        <div className="k-set-title flex-wrap"><h3>{title}</h3>{hint && <span className="k-set-count">{hint}</span>}</div>
+        {aside && <div className="k-set-actions">{aside}</div>}
       </div>
       {children}
     </section>
   );
 }
 
-// `wide`: columns (by index) a phone leaves out, so the ones that matter (the money) stay in view with no sideways scroll.
+// `wide`: columns (by index) a narrow table leaves out (a phone, a half of the page at 1366), so the ones
+// that matter (the money) stay in view with no sideways scroll.
 export function Table({ head, rows, align, onRow, expanded, wide }: { head: string[]; rows: ReactNode[][]; align?: ("l" | "r")[]; onRow?: (i: number) => void; expanded?: (i: number) => ReactNode; wide?: number[] }) {
-  const phone = (i: number) => (wide?.includes(i) ? "max-sm:hidden" : "");
+  const phone = (i: number) => (wide?.includes(i) ? "@max-[30rem]/table:hidden" : "");
   return (
     // (A phone gives the columns the room: the gap between two is half of a desk's, the edges the same.)
-    <div className="k-scroll-x -mx-4 max-sm:px-2">
+    <div className="k-scroll-x @container/table -mx-4 max-sm:px-2">
       <table className="w-full text-ui">
         <thead>
           <tr className="border-b border-line text-caption text-faint">
@@ -293,7 +297,7 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
   // A share of the spend as a short bar and its figure, the same in both lists.
   const Share = ({ usd }: { usd: number | undefined }) => (usd === undefined || !(spent > 0) ? <span className="text-faint">none</span> : (
     <span className="inline-flex items-center justify-end gap-2">
-      <span className="h-1.5 w-14 overflow-hidden rounded-full bg-sunken max-sm:hidden" aria-hidden><span className="block h-full rounded-full bg-series-1" style={{ width: `${Math.min(100, (100 * usd) / spent)}%` }} /></span>
+      <span className="h-1.5 w-14 overflow-hidden rounded-full bg-sunken @max-[30rem]/table:hidden" aria-hidden><span className="block h-full rounded-full bg-series-1" style={{ width: `${Math.min(100, (100 * usd) / spent)}%` }} /></span>
       <span className="w-9 text-right">{Math.round((100 * usd) / spent)}%</span>
     </span>
   ));
