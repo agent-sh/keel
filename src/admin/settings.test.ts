@@ -1,10 +1,13 @@
 // A settings file that cannot be read keeps its bytes: saving is refused until
 // it is reset (moved aside), so one edit never erases the owner's other sections.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadSettings, patchSettings, registerSettings, resetSettings, settings } from "./settings.ts";
+
+// The settings are process-wide: the files after this one get the scratch state folder's again.
+afterAll(() => { loadSettings(process.env.KEEL_STATE_DIR!, () => {}); });
 
 registerSettings("t_archive", { days: 30 }, () => undefined);
 registerSettings("t_display", { width: 80 }, () => undefined);

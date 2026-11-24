@@ -10,6 +10,7 @@ import { allHooks, cacheBreaks } from "../engine/hooks.ts";
 import { changedBlocks } from "../engine/prompt-store.ts";
 import { PromptStore } from "../engine/prompt-store.ts";
 import { breakCause, prefixDiff, prefixOf, Telemetry } from "./telemetry.ts";
+import { loadSettings } from "./settings.ts";
 
 // These tests write a database of their own to disk (tens of thousands of
 // rows); under a disk stall of a shared machine a write waits seconds, and the
@@ -18,7 +19,9 @@ setDefaultTimeout(20_000);
 
 // Turn hooks are process-wide: the files after this one run without the ones its tests register.
 const hooksAtStart = allHooks().length;
-afterAll(() => { allHooks().length = hooksAtStart; });
+// The settings are process-wide too: a test that loads a folder of its own and removes it leaves the files after
+// this one a settings file no save can write. The scratch state folder is loaded again.
+afterAll(() => { allHooks().length = hooksAtStart; loadSettings(process.env.KEEL_STATE_DIR!, () => {}); });
 
 const withStore = async (f: (store: Store) => void | Promise<void>) => {
   const root = mkdtempSync(join(tmpdir(), "keel-telemetry-"));
@@ -275,7 +278,7 @@ test("the running spend total equals the summed ledger after random requests", (
 // a limit that equal costs add up to exactly, the two differ in the last
 // digit. The request refused is the one the ledger's own sum refuses.
 test("a budget is refused at the request the ledger's sum says, also when costs add up to it exactly", () => withStore(async (store) => {
-  const { loadSettings, patchSettings } = await import("./settings.ts");
+  const { patchSettings } = await import("./settings.ts");
   const { spendOf } = await import("./telemetry-report.ts");
   loadSettings(store.stateDir, () => {});
   const s = store.createSession({ model: "p:main", workspace: "/" });

@@ -19,6 +19,9 @@ export function registerSettings(name: string, defaults: Record<string, unknown>
   sections.set(name, { defaults, check });
 }
 
+// The file the settings are read from and saved to now (a test preload looks it up).
+export const settingsFile = () => file;
+
 export function loadSettings(stateDir: string, onError: (e: unknown) => void) {
   file = join(stateDir, "settings.json");
   unreadable = undefined;

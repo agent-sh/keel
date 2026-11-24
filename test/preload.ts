@@ -6,9 +6,9 @@
 // reach on the machine, point into one fresh folder, removed when the last
 // test is done. A test that needs its own sets it over these.
 import { afterAll, afterEach, beforeEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { allHooks } from "../src/engine/hooks.ts";
 import { vault } from "../src/safety/secrets.ts";
 
@@ -71,6 +71,7 @@ const start: Record<string, string | undefined> = { ...scratch, ...Object.fromEn
 // (its afterAll ran in between; what the new file registered while loading
 // was not there then).
 await import("../src/tools/skills.ts");
+const settingsModule = await import("../src/admin/settings.ts");
 // What the automation modules run on a timer against the parts a file set (the
 // looks at agents parked on a command) stops when the next file starts, whether
 // or not that file sets parts of its own (src/automation/core.ts partsGone).
@@ -89,6 +90,10 @@ let tiedAfterLast: object | null = null; // the vault's tie when the file's last
 // at a folder of its own and leaves it there gives that folder, removed by
 // then, to every later file.
 let envAfterLast: Record<string, string | undefined> | null = null; // the settings when the file's last test so far ended
+// The settings (src/admin/settings.ts) are the process's too: the file they save to is the last
+// one loaded. A file that loads a folder of its own and removes it leaves a file no later save
+// can write (ENOENT in every later file that changes a setting).
+let settingsAfterLast = ""; // the settings file when the file's last test so far ended
 // The file a changed value was first seen at the end of: a file after it that
 // sets its own and then puts back what it found hands the value on, and is not
 // the one that left it.
@@ -102,7 +107,11 @@ function leftBehind() {
   // new file that set one while loading has its own value by now).
   const moved = envAfterLast ? Object.keys(start).filter((k) => process.env[k] !== start[k] && process.env[k] === envAfterLast![k]) : [];
   envAfterLast = null;
-  if (!left.length && !tied && !moved.length) return;
+  const { loadSettings, settingsFile } = settingsModule;
+  const gone = settingsAfterLast !== "" && settingsFile() === settingsAfterLast && !existsSync(dirname(settingsAfterLast)) ? settingsAfterLast : "";
+  settingsAfterLast = "";
+  if (gone) loadSettings(process.env.KEEL_STATE_DIR!, () => {});
+  if (!left.length && !tied && !moved.length && !gone) return;
   const by = new Map<string, string[]>();
   for (const k of moved) {
     const value = `${k}=${process.env[k] ?? "(unset)"}`, from = cameFrom.get(value) ?? file;
@@ -114,6 +123,7 @@ function leftBehind() {
   if (tied) { vault.ledger = null; vault.parentOf = () => null; }
   const said: string[] = [];
   if (left.length) said.push(`${file} ended with ${left.length} turn hook${left.length > 1 ? "s" : ""} of its own still registered (${left.map((h) => Object.keys(h).join("+")).join("; ")}). Hooks are process-wide: take them off in the test that adds them, or in afterAll.`);
+  if (gone) said.push(`${file} ended with the settings tied to ${gone}, a folder it removed. The settings are process-wide: load the scratch state folder again (loadSettings(process.env.KEEL_STATE_DIR!, () => {})) in afterAll.`);
   if (tied) said.push(`${file} ended with the secrets vault still tied to its store. The vault is process-wide: set vault.ledger to null and vault.parentOf to () => null before the store closes.`);
   for (const [from, values] of by) said.push(`${from} ended with settings of the environment changed: ${values.join(", ")}. The environment is process-wide: put back what a test changed, in the test or in afterAll (test/env.ts does both).`);
   throw new Error(said.join("\n"));
@@ -136,6 +146,7 @@ beforeEach(() => {
 afterEach(() => {
   afterLast = [...allHooks()];
   tiedAfterLast = vault.ledger;
+  settingsAfterLast = settingsModule.settingsFile();
   envAfterLast = Object.fromEntries(Object.keys(start).map((k) => [k, process.env[k]]));
   for (const [k, v] of Object.entries(envAfterLast)) if (v !== start[k] && !cameFrom.has(`${k}=${v ?? "(unset)"}`)) cameFrom.set(`${k}=${v ?? "(unset)"}`, file);
 });
@@ -143,6 +154,9 @@ afterEach(() => {
 afterAll(() => {
   // (A sandbox's cache layers hold folders the kernel made with no permissions: opened up first.)
   Bun.spawnSync(["chmod", "-R", "u+rwX", join(dir, "state")], { stdout: "ignore", stderr: "ignore" });
-  rmSync(dir, { recursive: true, force: true });
-  leftBehind();
+  try {
+    leftBehind();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

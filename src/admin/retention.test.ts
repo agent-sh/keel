@@ -18,7 +18,9 @@ import { Telemetry } from "./telemetry.ts";
 
 // Turn hooks are process-wide: the files after this one run without the ones its tests register.
 const hooksAtStart = allHooks().length;
-afterAll(() => { allHooks().length = hooksAtStart; });
+// The settings are process-wide too: a test that loads a folder of its own and removes it leaves the files after
+// this one a settings file no save can write. The scratch state folder is loaded again.
+afterAll(() => { allHooks().length = hooksAtStart; loadSettings(process.env.KEEL_STATE_DIR!, () => {}); });
 
 const DAY = 86_400_000;
 afterEach(() => setSystemTime());
