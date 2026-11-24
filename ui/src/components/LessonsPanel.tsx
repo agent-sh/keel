@@ -60,8 +60,8 @@ function Proposal({ l, busy, act }: { l: Lesson; busy: boolean; act: (f: () => P
   useEffect(() => setText(l.text), [l.text]);
   return (
     <div className="space-y-3 border-b border-line py-4 last:border-0" data-testid="lesson-proposal" data-lesson={l.id}>
-      <div className="flex min-w-0 items-baseline gap-2">
-        <span className="shrink-0 text-ui font-medium">{l.repo_name}</span>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="min-w-0 text-ui font-medium [overflow-wrap:anywhere]">{l.repo_name}</span>
         <span className={cn(tag, "bg-sunken text-muted")}>{sourceWords(l)}</span>
       </div>
       <Evidence l={l} />
@@ -154,7 +154,7 @@ export function LessonsPanel() {
   const open = of("proposed"), drafting = of("drafting"), live = of("trial", "accepted", "undecided", "kept"), waiting = of("waiting"), quiet = of("quiet"), gone = of("dropped");
   return (
     <div className="flex flex-col gap-4" data-testid="lessons">
-      <div className="flex items-start gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
         <p className="min-w-0 flex-1 text-ui text-muted">
           A failure that repeats the same way across agent trees of one repository becomes a proposed note for its agents, with the sessions and counts it was read from.
           An accepted note is told to the repository's agents at their start, never put in a system prompt, and a trial gives it to half of the new agent trees to show whether that failure falls.

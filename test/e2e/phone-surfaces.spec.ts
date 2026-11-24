@@ -144,5 +144,28 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    test("Settings > Lessons reads from the page's edge: its note over its controls, a long repository name inside the card", async ({ page, request }) => {
+      const now = Date.now();
+      const name = "a-repository-whose-folder-has-a-very-long-name-for-a-phone";
+      const lesson = {
+        id: "l-1", repo: `/work/${name}`, repo_name: name, key: "tool:Bash:x", source: "tool", label: "Bash", words: null, state: "proposed",
+        text: "Before you run a command here, check it cannot fail like this: ls: cannot access './missing-input-3.txt'", drafted_by: STAND_IN, why_none: null,
+        evidence: { key: "tool:Bash:x", source: "tool", label: "Bash", repo: `/work/${name}`, repo_name: name, failures: 3, sessions: 3, trees: 3, first_ts: now - 6e4, last_ts: now, examples: ["ls: cannot access './missing-input-3.txt': No such file or directory (exit code 2)"], evidence: [], repo_trees: 3, trees_a_day: 72, rate: 1, per_arm: 64, trial_days: 2 },
+        created: now, updated: now, accepted: null, ended: null, exp_id: null, outcome: null, given: 0, chars: 0,
+      };
+      await page.route("**/api/lessons", (route) => route.fulfill({ json: { lessons: [lesson], mine: { ts: now, found: 1, ms: 2 }, metric: "trees that failed with the lesson's class", days: 14 } }));
+      await page.goto("/settings/lessons");
+      const card = page.getByTestId("lesson-proposal");
+      await expect(card).toBeVisible();
+      // The note is a column of the page's width, not a strip beside the button.
+      const note = page.getByTestId("lessons").locator("p").first();
+      expect((await note.boundingBox())!.width).toBeGreaterThan(size.width * 0.7);
+      // Nothing of the card stands outside it.
+      const out = await card.evaluate((el) => { const c = el.getBoundingClientRect(); return [...el.querySelectorAll<HTMLElement>("*")].filter((e) => !e.closest("pre, code, [data-testid=lesson-evidence]") && e.getBoundingClientRect().width && e.getBoundingClientRect().right > c.right + 0.5).map((e) => e.textContent?.slice(0, 30)); });
+      expect(out, "parts of the card past its edge").toEqual([]);
+      await noSideScroll(page);
+      expect(await small(card), "every control of the card is a finger's target").toEqual([]);
+      await shoot(page, `phone-surfaces-04-lessons-${size.width}`);
+    });
   });
 }
