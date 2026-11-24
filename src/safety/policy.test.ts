@@ -265,3 +265,15 @@ test("a tool rule for a server's tools covers its tools and no other server's", 
   const d = decide({ kind: "other" }, facts("ask", { tool: "srv__*" }));
   expect("ask" in d && d.ask.suggest).toEqual([]);
 });
+
+test("$PWD is the shell's folder only while nothing in the line can have set it", () => {
+  const at = (command: string) => {
+    const d = decide({ kind: "shell", command, cwd: "/w" } as any, { mode: "full-auto", workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] } as any);
+    return "ask" in d ? `ask-${d.ask.risk}` : "allow" in d ? "allow" : "deny";
+  };
+  // As cd ui: inside the workspace.
+  expect(at("cd $PWD/ui && rm -rf dist")).toBe("allow");
+  // Set earlier in the line: the folder is not known, and a removal there is asked about as one outside.
+  for (const c of ["PWD=/etc; cd $PWD/ui && rm -rf dist", "export PWD=/etc && cd $PWD/ui && rm -rf dist", "declare PWD=/etc; cd $PWD/ui; rm -rf dist",
+    "read PWD <<< /etc; cd $PWD/ui; rm -rf dist", "eval 'PWD=/etc'; cd $PWD/ui && rm -rf dist", "unset PWD; cd $PWD/ui && rm -rf dist"]) expect([c, at(c)]).toEqual([c, "ask-high"]);
+});

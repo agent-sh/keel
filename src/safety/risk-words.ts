@@ -177,15 +177,18 @@ export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: s
   if (parts.some((s, i) => s.words.length === 1 && /^(cd|pushd|popd)$/.test(s.words[0]!) && !!parts[i + 1]?.flow && /^\{/.test(parts[i + 1]!.text))) return new Array<string | null>(parts.length).fill(null);
   let top: string | null = cwd;
   let inner: string | null | undefined; // undefined: nested parts run where the line is
+  // (Only while nothing in the line can have set PWD: an assignment, export, declare, read, unset or eval of it,
+  // or any eval, and $PWD is no longer the folder the shell is in.)
+  const pwdOwn = !parts.some((s) => s.words[0] === "eval" || s.words.some((w) => !/^\$\{?PWD\b/.test(w) && /\bPWD\b/.test(w)) || /\bPWD\s*=/.test(s.text));
   const to = (from: string | null, w: string[], s?: Simple): string | null | undefined => {
     if (w[0] !== "cd" && w[0] !== "pushd" && w[0] !== "popd") return undefined;
     let arg = w.slice(1).find((a) => !a.startsWith("-") || a === "-");
     // The folder the shell is in: $PWD and $(pwd) change nothing, and what follows them is relative to it.
-    const here = arg === undefined ? null : /^(?:\$PWD|\$\{PWD\}|\$\(pwd\)|`pwd`)(\/[^$`*?[\]{}]*)?$/.exec(arg);
+    const here = arg === undefined || !pwdOwn ? null : /^(?:\$PWD|\$\{PWD\}|\$\(pwd\)|`pwd`)(\/[^$`*?[\]{}]*)?$/.exec(arg);
     if (here) arg = "." + (here[1] ?? "");
     // $(pwd)/x: the one expansion the word has is the command pwd alone.
     const made = s && arg !== undefined && /^\$\(\.\.\.\)(\/[^$`*?[\]{}]*)?$/.test(arg) ? s.how?.[s.dyn?.indexOf(w.indexOf(arg) + (s.words.length - w.length)) ?? -1] : undefined;
-    if (made && !made.vars.length && !made.rest && made.subs.length === 1 && made.subs[0]!.length === 1 && made.subs[0]![0]!.words.join(" ") === "pwd") arg = "." + arg!.slice(6);
+    if (pwdOwn && made && !made.vars.length && !made.rest && made.subs.length === 1 && made.subs[0]!.length === 1 && made.subs[0]![0]!.words.join(" ") === "pwd") arg = "." + arg!.slice(6);
     if (w[0] === "popd" || arg === "-" || (arg !== undefined && (/[$`*?[\]{}]/.test(arg) || (arg.startsWith("~") && arg !== "~" && !arg.startsWith("~/"))))) return null;
     const path = arg === undefined || arg === "~" ? home : arg.startsWith("~/") ? home + arg.slice(1) : arg;
     const next = isAbsolute(path) ? resolve(path) : from === null ? null : resolve(from, path);
