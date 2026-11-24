@@ -151,6 +151,16 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(card(approver.id).getByTestId("board-work")).toHaveCount(0);
   await page.mouse.move(0, 0);
   await shoot(page, "work-board-01-desktop");
+  // An agent with no branch and no changes (the reviewer of beta) is one line: its state, name and how long, and
+  // the branch it reviews. Agents with a branch keep their cards.
+  const line = card(refuser.id);
+  await expect(line).toHaveAttribute("data-compact", "");
+  await expect(line.getByTestId("board-state")).toHaveText("done");
+  await expect(line.getByTestId("board-lasted")).toHaveText(/^\d+(s|m|h)/);
+  await expect(line).toContainText(`reviews ${beta.branch.replace(/^keel\//, "")}`);
+  expect((await line.boundingBox())!.height).toBeLessThan(40);
+  await expect(card(beta.id)).not.toHaveAttribute("data-compact", "");
+  await expect(card(gamma.id)).not.toHaveAttribute("data-compact", "");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(card(beta.id)).toBeVisible();
   await shoot(page, "work-board-02-phone");

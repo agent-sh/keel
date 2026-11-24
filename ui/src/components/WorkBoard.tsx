@@ -157,7 +157,30 @@ function Changed({ c, where, testid }: { c: Change; where: string; testid: strin
   );
 }
 
+// How long an agent worked: from its start to its end, or to now while it works.
+export function lasted(from: number, to: number): string {
+  const s = Math.max(0, Math.round((to - from) / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+// An agent with no branch and no changes of its own (a reader, a reviewer, one that only asked) has nothing
+// to land, check or review: one line, not a card of facts that are all empty.
+const compact = (r: BoardRow) => !r.branch && !r.work;
+
+function Line({ r, indent, w }: { r: BoardRow; indent: number; w: Watch }) {
+  return (
+    <li className="flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-compact="" data-agent={r.id} data-state={r.state} data-indent={indent} data-watch={w}>
+      <StateMark w={w} />
+      <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-caption font-medium text-fg hover:text-accent" title={r.title} data-testid="board-title">{r.title}</button>
+      {r.reviews.length > 0 && <span className="min-w-0 max-w-[40%] shrink truncate font-mono text-micro text-muted" title={`reviews ${r.reviews.map(short).join(", ")}`}>reviews {r.reviews.map(short).join(", ")}</span>}
+      <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
+      <span className="shrink-0 text-micro text-faint tabular-nums" data-testid="board-lasted" title={r.ended ? `Worked ${lasted(r.created, r.ended)}; ended ${ago(r.ended)}` : "Working since it started"}>{lasted(r.created, r.ended ?? Date.now())}</span>
+    </li>
+  );
+}
+
 function Card({ r, below, indent, w }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch }) {
+  if (compact(r)) return <Line r={r} indent={indent} w={w} />;
   const reviewing = r.reviews.length > 0;
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent} data-watch={w}>
