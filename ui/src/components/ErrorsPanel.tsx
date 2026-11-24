@@ -175,7 +175,8 @@ function Row({ e }: { e: ErrorRecord }) {
         <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
         {/* The message leads; where it came from is a quiet word after it, not a red tag on every row (the drawer is all failures). */}
         {/* On a phone the message has the line to itself; its source, count and time go under it. */}
-        <span className={cn("min-w-0 flex-1 truncate max-sm:basis-[calc(100%-1.375rem)]", unread ? "font-medium text-fg" : "text-muted")}>{e.message}</span>
+        {/* (On a phone it is read whole, wrapped: its line is all the row has to say what broke.) */}
+        <span className={cn("min-w-0 flex-1 truncate max-md:whitespace-normal max-md:break-words max-sm:basis-[calc(100%-1.375rem)]", unread ? "font-medium text-fg" : "text-muted")} data-testid="error-message">{e.message}</span>
         <span className="shrink-0 text-micro text-faint max-sm:ml-[1.375rem]" data-testid="error-source">{e.source}</span>
         {state === "recovered" && <span className="shrink-0 text-micro text-ok" title={`Every time, a retry of the request passed. Last healed ${when(e.recovered_ts!)}`} data-testid="error-recovered">{ERROR_STATE.recovered}</span>}
         {n > 1 && (
@@ -311,10 +312,11 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
             "transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0",
           )}
         >
-          <div className="k-surface-head">
+          {/* On a phone the note has a line of its own under the title, read whole. */}
+          <div className="k-surface-head k-errors-head">
             <Bug className="k-surface-icon" />
             <Dialog.Title className="k-surface-title">Errors</Dialog.Title>
-            <span className="k-surface-note">from the daemon, the page, providers and tools</span>
+            <span className="k-surface-note" data-testid="errors-note">from the daemon, the page, providers and tools</span>
             <Dialog.Close className="k-surface-close" aria-label="Close">
               <X />
             </Dialog.Close>
@@ -323,6 +325,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
           {/* One band: which errors, then what to do with the open ones at its right end. */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line px-3 py-2 whitespace-nowrap">
             <Seg
+              wrap
               kind="tabs"
               panel={panel}
               label="Which errors"
@@ -330,7 +333,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               onChange={setTab}
               options={([["open", ERROR_STATE.open, openList.length], ["recovered", ERROR_STATE.recovered, recovered.length], ["resolved", ERROR_STATE.resolved, resolved.length]] as const).map(([id, label, n]) => ({ value: id, label: <>{label}<span className="text-micro tabular-nums text-faint">{n}</span></> }))}
             />
-            <div className={cn("ml-auto items-center gap-1", tab === "open" && openList.length > 0 ? "flex" : "hidden")}>
+            <div className={cn("ml-auto items-center gap-1 max-md:flex-wrap", tab === "open" && openList.length > 0 ? "flex" : "hidden")}>
             {tab === "open" && (
               <label className="flex h-ctl-md items-center gap-1.5 px-1.5 text-caption text-muted">
                 <input type="checkbox" checked={unreadOnly} onChange={(ev) => setUnreadOnly(ev.currentTarget.checked)} className="accent-[var(--accent)]" data-testid="errors-unread-only" />

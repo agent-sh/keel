@@ -860,6 +860,45 @@ test.describe("on a phone's home, a failed agent", () => {
   });
 });
 
+// What broke is one tap from a session on a phone: while errors wait unread, the dock has their button.
+// The panel reads each message whole, and its note under its title. (It was two taps away, through the
+// list, each message cut to one line.)
+test.describe("on a phone, the errors", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("are one tap from a session and read whole", async ({ browser, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const message = `Daemon unresponsive for 3.5 s ${tag}: 1.8 s waiting for the disk in a write of the session store, 1.2 s on a processor`;
+    const { id: error } = await (await request.post("/api/errors", { data: { message, source: "browser", stack: "at a test" } })).json();
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Errors ${tag}` } })).json();
+    try {
+      for (const [width, height] of [[390, 844], [412, 915]] as const) for (const scale of [1, 1.5]) {
+        const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width, height }, hasTouch: true, isMobile: true });
+        await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+        const page = await ctx.newPage();
+        try {
+          await page.goto(`/s/${session.id}`);
+          const button = page.getByTestId("dock-errors");
+          await expect(button).toHaveAccessibleName(/^Errors\./);
+          await button.tap();
+          const panel = page.getByTestId("errors-panel");
+          await expect(panel).toBeVisible();
+          const row = panel.getByTestId("error-message").filter({ hasText: tag });
+          await expect(row).toBeVisible();
+          const whole = (el: Element) => el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1;
+          expect(await row.evaluate(whole)).toBe(true);
+          expect(await panel.getByTestId("errors-note").evaluate(whole)).toBe(true);
+          await shoot(page, `phone-18-errors-${width}-${scale}`);
+        } finally { await ctx.close(); }
+      }
+    } finally {
+      await request.delete(`/api/sessions/${session.id}`);
+      await request.patch(`/api/errors/${error}`, { data: { resolved: true } });
+    }
+  });
+});
+
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
 // another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
 // box is taken as it shows, cut by what clips it). A target is what a press acts on: a

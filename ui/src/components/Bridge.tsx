@@ -15,7 +15,7 @@
 // another pane, and a session dropped on a pane's middle lands in it. The helm can be focused to the full
 // width. On a phone the sessions are pages you swipe between, with a dock of
 // their marks along the bottom.
-import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, PinOff, Plus, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bug, ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, PinOff, Plus, X } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
@@ -35,7 +35,7 @@ import { focusBox } from "../lib/utils.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
 import { useSafety } from "../lib/safety.ts";
 import { askBrief } from "../../../src/core/watch.ts";
-import { OFFLINE, STATE_WORD, asOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
+import { COUNTERS, OFFLINE, STATE_WORD, asOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { soloWindow } from "../lib/shell.ts";
@@ -508,6 +508,8 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
   const fresh = useUI((s) => s.route.name === "new");
   // The things that wait on the owner, in every session: the number the tab's title and the home headline show.
   const need = useNeedCount();
+  // Errors not yet read: one tap opens them here, as the list's foot does at a desk (two taps away on a phone).
+  const errors = useStore((x) => x.errors.filter((e) => !e.resolved_ts && !e.read_ts).length);
   // Each mark carries the session's short code, the one the folded rail gives it.
   const sessions = useStore((x) => x.sessions);
   const codes = useMemo(() => callsigns(Object.values(sessions).filter((s) => !s.archived && !s.settings.helper)), [sessions]);
@@ -557,6 +559,11 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
         <button type="button" className="k-dock-need" data-testid="dock-need" aria-label={countWord("need", need)} title={countWord("need", need)} onClick={goNextWaiting}>
           <span className="k-dock-need-n" aria-hidden="true"><span className="k-dock-need-mark" />{need}</span>
           <span className="sr-only" aria-live="polite">{countWord("need", need)}</span>
+        </button>
+      )}
+      {errors > 0 && (
+        <button type="button" className="k-dock-btn k-dock-errors" data-testid="dock-errors" aria-label={`Errors. ${COUNTERS.errors(errors)}`} title={`Errors. ${COUNTERS.errors(errors)}`} onClick={() => setUI({ errors: true })}>
+          <Bug /><span className="k-dock-out" aria-hidden="true">{errors}</span>
         </button>
       )}
       <button type="button" className="k-dock-btn" aria-label="New session" aria-current={fresh ? "page" : undefined} onClick={() => navigate({ name: "new" })}><Plus /></button>
