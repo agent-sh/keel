@@ -4,9 +4,9 @@
 // the model can Read it where it reads that type and the context does not
 // carry base64. The folder is `files/` inside the spill folder: the storage
 // retention removes it with the rest, and the page serves it from there.
-import { mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, sep } from "node:path";
 
 // The extension of each type, one place (a type is read without its
 // parameters).
@@ -116,25 +116,57 @@ export const BASE64_TEXT_MIN = 4096;
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const DATA_URI = /^data:([\w.+-]+\/[\w.+-]+)?(?:;[\w.=+-]+)*;base64,/i;
 
-// The blob a text part is, or undefined when it is words. A `data:` address
-// gives its type; wrapped lines (MIME base64) are one value. Base64 of text
-// stays text: the model reads it as it is, and a file of it would only hide it.
+// The blob a text part is, or undefined when it is words. Text that only looks
+// like base64 stays text: a hash dump, a list of tokens, a key. Three shapes are
+// taken, each with something besides the alphabet to tell it by:
+//   - a `data:` address (it says it is base64, and its type);
+//   - lines of one MIME or PEM width (76 or 64, the last shorter), never all hex;
+//   - one line whose bytes start like a format a tool result carries (a PDF, an
+//     image, audio, an archive).
+// Base64 of text stays text too: the model reads it as it is.
 export function base64Blob(text: string): { bytes: Buffer; mime?: string } | undefined {
   if (text.length < BASE64_TEXT_MIN) return undefined;
   const t = text.trim();
   const uri = DATA_URI.exec(t);
   const raw = uri ? t.slice(uri[0].length) : t;
-  // Wrapped lines are the same length (the last may be shorter); a space is never in base64, and prose without
-  // punctuation has the same letters.
+  // A space is never in base64, and prose without punctuation has the same letters.
   if (/[ \t]/.test(raw)) return undefined;
   const lines = raw.split(/\r?\n/);
-  if (lines.length > 1 && lines.slice(0, -1).some((l) => l.length !== lines[0]!.length || l.length < lines.at(-1)!.length)) return undefined;
+  const wrapped = lines.length > 1;
+  if (wrapped) {
+    const width = lines[0]!.length;
+    if (!uri && width !== 76 && width !== 64) return undefined;
+    if (lines.slice(0, -1).some((l) => l.length !== width) || lines.at(-1)!.length > width || lines.at(-1)!.length === 0) return undefined;
+  }
   const body = lines.join("");
   if (body.length < BASE64_TEXT_MIN || body.length % 4 !== 0 || !B64.test(body)) return undefined;
+  if (!uri && /^[0-9a-fA-F]+$/.test(body)) return undefined;
   const bytes = Buffer.from(body, "base64");
+  if (!uri && !wrapped && !sniffType(bytes)) return undefined;
   try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); return undefined; } catch {}
   return { bytes, mime: uri?.[1] };
 }
+
+// The file a saved name is, or undefined: one plain file name in the session's
+// own `files/` folder, a regular file that is not a link, whose real path is
+// inside that folder. A session's own commands can plant a link, a directory or
+// a pipe there; none is served.
+export function savedFilePath(spillRoot: string, id: string, name: string): string | undefined {
+  if (!/^[\w.-]+$/.test(name) || name.startsWith(".") || !/^[\w-]+$/.test(id)) return undefined;
+  try {
+    const folder = join(spillRoot, id, "files");
+    if (!lstatSync(folder).isDirectory()) return undefined; // lstat: a link to a folder is not the folder
+    const path = join(folder, name);
+    if (!lstatSync(path).isFile()) return undefined;
+    const real = realpathSync(path);
+    return real.startsWith(realpathSync(folder) + sep) ? real : undefined;
+  } catch { return undefined; }
+}
+
+// A server's words about where a thing came from, safe to put in a line the
+// model reads: control characters (a newline that would start a line of its own)
+// shown as escapes.
+export const plain = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 // What a name may be made of: letters, digits, dots, dashes, underscores.
 const part = (s: string) => s.replace(/[^\w.-]/g, "_").replace(/^\.+/, "").slice(0, 40);

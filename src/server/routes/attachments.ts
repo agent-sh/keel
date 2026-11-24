@@ -1,9 +1,9 @@
 // Files the owner attaches to a prompt: stored once by content, sent per model
 // (src/engine/attachments.ts). Not tied to a session, so a new session's first
 // prompt can carry them too.
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ATTACHMENT_MAX, attachmentPath, saveAttachmentStream, servedType, setAttachmentsRoot, TOO_LARGE } from "../../engine/attachments.ts";
+import { savedFilePath } from "../../tools/blob.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -16,9 +16,8 @@ export const attachmentRoutes: RouteModule = ({ store }) => {
     "/api/sessions/:id/saved/:name": {
       GET: (req: any) => {
         const { id, name } = req.params as { id: string; name: string };
-        if (!/^[\w.-]+$/.test(name) || name.startsWith(".") || !/^[\w-]+$/.test(id)) return json({ error: "no such file" }, 404);
-        const path = join(store.stateDir, "spill", id, "files", name);
-        if (!existsSync(path)) return json({ error: "no such file" }, 404);
+        const path = savedFilePath(join(store.stateDir, "spill"), id, name);
+        if (!path) return json({ error: "no such file" }, 404);
         const type = servedType(path, name);
         return new Response(Bun.file(path).slice(), {
           headers: {

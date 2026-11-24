@@ -1,6 +1,6 @@
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { spill } from "../tools/spill.ts";
-import { base64Blob, blobType, saveBlob, sizeWords, type SavedFile } from "../tools/blob.ts";
+import { base64Blob, blobType, plain, saveBlob, sizeWords, type SavedFile } from "../tools/blob.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import type { McpCallResult } from "./client.ts";
 import { schemaProblems } from "./schema.ts";
@@ -35,7 +35,7 @@ export async function toOutput(r: McpCallResult, ctx: ToolContext, label: string
   // No folder to keep it in, or one that cannot be written: the words say that instead of a path.
   const keep = async (what: string, data: Buffer, declared: string | undefined, from?: string): Promise<{ words: string; file?: SavedFile }> => {
     const mime = blobType(declared, data);
-    const head = `${what}, ${mime}, ${sizeWords(data.byteLength)}`;
+    const head = `${plain(what)}, ${plain(mime)}, ${sizeWords(data.byteLength)}`;
     if (!ctx.spillDir) return { words: `${head}, not saved` };
     try {
       const file = await saveBlob(ctx.spillDir, label, data, mime, from);
@@ -57,13 +57,13 @@ export async function toOutput(r: McpCallResult, ctx: ToolContext, label: string
     } else if (c.type === "resource") {
       const { uri, mimeType, text, blob } = c.resource;
       if (text !== undefined) texts.push(text);
-      else if (blob === undefined) texts.push(`[resource ${uri}${mimeType ? `, ${mimeType}` : ""}]`);
+      else if (blob === undefined) texts.push(`[resource ${plain(uri)}${mimeType ? `, ${plain(mimeType)}` : ""}]`);
       else {
         const name = (() => { try { return decodeURIComponent(new URL(uri).pathname.split("/").pop() ?? ""); } catch { return ""; } })();
         texts.push(`[${(await keep(`resource ${uri}`, Buffer.from(blob, "base64"), mimeType, name || undefined)).words}]`);
       }
     }
-    else if (c.type === "resource_link") texts.push(`[link ${c.uri}${c.name ? ` (${c.name})` : ""}]`);
+    else if (c.type === "resource_link") texts.push(`[link ${plain(c.uri)}${c.name ? ` (${plain(c.name)})` : ""}]`);
     else if (c.type === "audio") texts.push(`[${(await keep("audio", Buffer.from(c.data, "base64"), c.mimeType)).words}]`);
   }
   let wrong: string | undefined;

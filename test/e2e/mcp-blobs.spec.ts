@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { SCRIPTED, shoot } from "./shots.ts";
 
 const FIXTURE = `${import.meta.dirname}/fixtures/blobs-mcp.ts`;
@@ -81,6 +81,14 @@ test("mcp blobs: a PDF, an image and audio come as files the model can read", as
     // A name outside the session's own folder is not served.
     expect((await request.get(`/api/sessions/${session.id}/saved/..%2F..%2Fx`)).status()).toBe(404);
     expect((await request.get(`/api/sessions/${session.id}/saved/nothing.pdf`)).status()).toBe(404);
+    // A link, a directory or a pipe planted in the folder by the session's own commands is not served.
+    const folder = dirname(pdf);
+    const secret = join(dirname(folder), "secret.txt");
+    writeFileSync(secret, "not for the page");
+    symlinkSync(secret, join(folder, "link.txt"));
+    mkdirSync(join(folder, "sub"));
+    spawnSync("mkfifo", [join(folder, "pipe")]);
+    for (const n of ["link.txt", "sub", "pipe"]) expect((await request.get(`/api/sessions/${session.id}/saved/${n}`)).status()).toBe(404);
 
     // The model opens the PDF from the path the result named: both pages.
     await page.getByTestId("composer").fill(calls([{ name: "Read", input: { file_path: pdf } }]));
