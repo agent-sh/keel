@@ -263,6 +263,12 @@ export class AcpProvider implements Provider {
     return `${this.id}:${agent}${up ? `/${up}` : ""}`;
   }
 
+  // An agent's choices arrive when it was asked, one agent after the other: the first of an agent are its baseline.
+  batchOf(model: string): string | undefined {
+    const { agent, choice } = splitModel(model);
+    return choice === undefined ? undefined : agent;
+  }
+
   // Each installed agent, and each model (else mode) it stated it offers
   // (choices.ts); one whose choices are not known yet is asked in the background.
   async list(): Promise<ListedModel[]> {

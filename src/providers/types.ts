@@ -227,6 +227,10 @@ export interface Provider {
   // and the upstream its choice names, the scripted stand-in of each family).
   // Absent: the provider is one account. An account problem is kept by it.
   accountOf?(model: string): string | undefined;
+  // The part of its listing a model comes from, when it learns its models part by part (an ACP agent's
+  // choices arrive once the agent was asked): the first models of a part are known, not news
+  // (src/providers/first-seen.ts). Absent: every model is listed with the rest.
+  batchOf?(model: string): string | undefined;
   available(): boolean;
   // Looks again for a credential last found missing (at least `olderThanMs`
   // ago), so available() can change without a restart.

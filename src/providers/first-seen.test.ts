@@ -74,3 +74,23 @@ test("a listing for another identity, one that appears or one that goes, starts 
   // The identity the listings keep is not a change.
   expect(news(read([["a"], ["a"], ["a", "b"]], "acct"))).toEqual(["b"]);
 });
+
+test("the first models of a part the provider learns late are its baseline, not news", () => {
+  // An agent's models are `agent/choice`; the agent itself is listed from the start.
+  const batchOf = (m: string) => (m.includes("/") ? m.slice(0, m.indexOf("/")) : undefined);
+  const note = (prev: Seen | undefined, models: string[], at: number) => noteListing(prev, models, at, undefined, batchOf);
+  // Two baseline listings with the agents only, then one agent's choices arrive, then the other's.
+  let seen = note(note(undefined, ["a", "b"], 1000).seen, ["a", "b"], 2000).seen;
+  const first = note(seen, ["a", "b", "a/x", "a/y"], 3000);
+  expect(first.added).toEqual([]);
+  expect(freshModels(first.seen, 4000)).toEqual([]);
+  const second = note(first.seen, ["a", "b", "a/x", "a/y", "b/z"], 5000);
+  expect(second.added).toEqual([]);
+  expect(freshModels(second.seen, 6000)).toEqual([]);
+  // A choice an agent that was read before adds later is new, and so is an agent the listing never had.
+  const later = note(second.seen, ["a", "b", "a/x", "a/y", "a/w", "b/z", "c"], 7000);
+  expect(later.added).toEqual(["a/w", "c"]);
+  expect(freshModels(later.seen, 8000).map((m) => m.model).sort()).toEqual(["a/w", "c"]);
+  // Without the part's name, the same listings make every late model news.
+  expect(news(noteListing(noteListing(noteListing(undefined, ["a"], 1000).seen, ["a"], 2000).seen, ["a", "a/x"], 3000).seen)).toEqual(["a/x"]);
+});

@@ -39,6 +39,9 @@
 //   script:list-model <id>           the provider lists one more model, <id>, from the next listing on
 //                                    (an id ending in -plain lists no price)
 //   script:unlist-model <id>         it lists it no more
+//   script:list-models <prefix> <n>  it lists n more models, <prefix>.1 to <prefix>.n, of every window and price
+//                                    (every tenth lists no price), for the page a listing of hundreds fills
+//   script:unlist-models <prefix>    it lists none of that batch
 // <kind>: dns (EAI_AGAIN), gateway (a broker's 502 naming a DNS failure), refused, tls.
 // Kept in the state folder, so an outage survives a restart and starts once per prompt.
 //
@@ -227,7 +230,12 @@ export class ScriptedProvider implements Provider {
       // Says it reads no images: the composer holds a new screenshot for it.
       { model: "stand-in-text", name: "Scripted text only", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, images: false },
       ...FAMILY_STAND_INS.map(({ model, name, family }) => ({ model, name, family, context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" as const } })),
-      ...this.listed.map((model) => ({ model, name: `Scripted ${model}`, context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price: model.endsWith("-plain") ? undefined : price, billing: { kind: "per_token" as const } })),
+      ...this.listed.map((model) => {
+        // A model of a batch (`script:list-models`) ends in its number: its window and price follow it.
+        const n = Number(model.match(/\.(\d+)(?:-plain)?$/)?.[1]);
+        const batch = Number.isFinite(n) && n > 0;
+        return { model, name: `Scripted ${model}`, context: batch ? 16_000 * (1 + (n % 16)) : WINDOW, output: OUTPUT, efforts: ["low", "high"], price: model.endsWith("-plain") ? undefined : batch ? { ...price, input: (1 + (n % 7)) / 10, output: (1 + (n % 9)) / 2 } : price, billing: { kind: "per_token" as const } };
+      }),
     ];
   }
 
@@ -244,6 +252,15 @@ export class ScriptedProvider implements Provider {
     if (/^script:outage-end\b/.test(lastText) && this.outage.until) { this.outage.until = 0; this.saveOutage(); }
     for (const [, verb, model] of lastText.matchAll(/\bscript:(list|unlist)-model[ \t]+([\w.-]+)/g)) {
       this.listed = verb === "list" ? [...new Set([...this.listed, model!])] : this.listed.filter((m) => m !== model);
+      try { if (this.stateDir) writeFileSync(join(this.stateDir, this.listedFile), JSON.stringify(this.listed)); } catch {}
+    }
+    for (const [, prefix, n] of lastText.matchAll(/\bscript:list-models[ \t]+([\w.-]+)[ \t]+(\d+)/g)) {
+      const more = Array.from({ length: Math.min(Number(n), 5000) }, (_, i) => `${prefix}.${i + 1}${(i + 1) % 10 === 0 ? "-plain" : ""}`);
+      this.listed = [...new Set([...this.listed, ...more])];
+      try { if (this.stateDir) writeFileSync(join(this.stateDir, this.listedFile), JSON.stringify(this.listed)); } catch {}
+    }
+    for (const [, prefix] of lastText.matchAll(/\bscript:unlist-models[ \t]+([\w.-]+)/g)) {
+      this.listed = this.listed.filter((m) => !m.startsWith(`${prefix}.`));
       try { if (this.stateDir) writeFileSync(join(this.stateDir, this.listedFile), JSON.stringify(this.listed)); } catch {}
     }
     const gone = this.down("requests");

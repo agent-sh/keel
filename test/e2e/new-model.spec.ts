@@ -117,3 +117,81 @@ test("new model: the card appears, a trial starts on press and stops on press", 
     await models();
   }
 });
+
+// Feature: a listing that brings hundreds of models is one summary and a list, not a card each. The summary
+// says what to do once and shows the best three to try; the rest is a folded list by provider, one line a
+// model, drawn only as far as it shows. The home's line leads to the summary. Dismissing puts them all away.
+test("new models: a listing of hundreds is one summary and a folded list", async ({ page, request }) => {
+  const FLOOD = 700, batch = `flood${Math.random().toString(36).slice(2, 6)}`;
+  const models = async () => (await (await request.get("/api/models?refresh=1")).json()).models.map((m: any) => m.id) as string[];
+  test.skip(!(await models()).includes(STAND_IN), "needs KEEL_SCRIPTED_PROVIDER=1: the scripted provider lists the models");
+  for (const e of (await (await request.get("/api/experiments")).json()).experiments) {
+    if (e.state === "running" && e.mode === "live") await request.post(`/api/experiments/${e.id}/stop`);
+  }
+  const say = async (text: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: `new models ${batch}`, text } })).json();
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings.last_end, { timeout: 30_000 }).toBeTruthy();
+  };
+  const news = async () => (await (await request.get("/api/models/new")).json()).models.filter((m: any) => m.id.startsWith(`scripted:${batch}.`)) as any[];
+  try {
+    await say(`script:list-models ${batch} ${FLOOD}`);
+    expect((await models()).filter((id) => id.startsWith(`scripted:${batch}.`))).toHaveLength(FLOOD);
+    expect(await news()).toHaveLength(FLOOD);
+
+    for (const [w, h, name] of [[1920, 1040, "wide"], [390, 844, "narrow"]] as const) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.goto("/");
+      const line = page.getByTestId("new-model-news");
+      await expect(line).toContainText(`${FLOOD} new models`);
+      await line.click();
+
+      // One summary: the count, what a trial does said once, the best three as cards. Not a card each.
+      const summary = page.getByTestId("new-models-summary");
+      await expect(summary).toBeVisible();
+      await expect(page.getByTestId("new-models-count")).toHaveText(`${FLOOD} new models`);
+      await expect(page.getByTestId("new-models-note")).toContainText("Nothing starts until you press");
+      await expect(page.getByTestId("new-models-best").getByTestId("new-model")).toHaveCount(3);
+      await expect(page.getByTestId("new-model")).toHaveCount(3);
+      await expect(page.getByText("Half of the new session trees would use it")).toHaveCount(0);
+      // The page is the summary's height, not seven hundred cards'.
+      const heightOf = async () => (await page.getByTestId("new-models").boundingBox())!.height;
+      expect(await heightOf()).toBeLessThan(name === "wide" ? 1300 : 2400);
+      await shoot(page, `new-models-flood-${name}-01-summary`);
+
+      // The list is folded: providers, then one line a model, and only the rows in view are in the page.
+      await page.getByTestId("new-models-toggle").click();
+      const group = page.locator('[data-testid="new-models-group"][data-provider="scripted"]');
+      await expect(group).toBeVisible();
+      await expect(group.getByTestId("new-models-row")).toHaveCount(0);
+      await group.getByTestId("new-models-group-toggle").click();
+      await expect(group.getByTestId("new-models-row").first()).toBeVisible();
+      expect(await group.getByTestId("new-models-row").count()).toBeLessThan(60);
+      expect(await heightOf()).toBeLessThan(name === "wide" ? 2200 : 3200);
+      // A row is one line: name, window, price, each at the same place on every row.
+      const rows = group.getByTestId("new-models-row");
+      const boxes = await Promise.all([0, 1, 2, 3].map(async (i) => (await rows.nth(i).locator("span").nth(1).boundingBox())!.x));
+      expect(new Set(boxes.map((x) => Math.round(x))).size).toBe(1);
+      expect((await rows.first().boundingBox())!.height).toBeLessThan(40);
+      // Scrolling the list brings other rows, still few.
+      const firstBefore = await rows.first().getAttribute("data-model");
+      await group.getByTestId("new-models-scroll").evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      await expect.poll(async () => rows.last().getAttribute("data-model")).not.toBe(firstBefore);
+      await expect(rows.last()).toBeVisible();
+      expect(await rows.count()).toBeLessThan(60);
+      // A press on a row opens its card, to try it.
+      const last = (await rows.last().getAttribute("data-model"))!;
+      await rows.last().click();
+      await expect(group.getByTestId("new-models-picked").locator(`[data-model="${last}"]`)).toBeVisible();
+      await expect(group.getByTestId("new-models-picked").getByTestId("new-model-trial")).toBeVisible();
+      await shoot(page, `new-models-flood-${name}-02-list`);
+    }
+
+    // Dismissing puts every one away.
+    await page.getByTestId("new-models-dismiss-all").click();
+    await expect.poll(async () => (await news()).length).toBe(0);
+    await expect(page.getByTestId("new-models-summary")).toHaveCount(0);
+  } finally {
+    await say(`script:unlist-models ${batch}`);
+    await models();
+  }
+});

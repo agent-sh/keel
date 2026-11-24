@@ -326,6 +326,20 @@ export class Providers {
     return true;
   }
 
+  // Puts away the new models of a provider that `keep` does not name (those on a running trial): how many.
+  dismissNewOf(provider: string, keep: (id: string) => boolean = () => false): number {
+    const seen = this.firstSeen.get(provider);
+    if (!seen) return 0;
+    let next = seen, n = 0;
+    for (const f of freshModels(seen, Date.now())) {
+      if (keep(`${provider}:${f.model}`)) continue;
+      next = dismiss(next, f.model);
+      n++;
+    }
+    if (n) { this.firstSeen.set(provider, next); this.saveFirstSeen(); }
+    return n;
+  }
+
   private persist() {
     const out: Record<string, { fetched?: number; error?: string; models: ListedModel[]; identity?: string }> = {};
     for (const [id, l] of this.listings) if (l.models.length || l.error) out[id] = { fetched: l.fetched, error: l.error, models: l.models, identity: l.identity };
@@ -416,7 +430,7 @@ export class Providers {
       this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
       // An empty answer says nothing about which models exist.
       if (models.length) {
-        const noted = noteListing(this.firstSeen.get(p.id), models.map((m) => m.model), Date.now(), identity);
+        const noted = noteListing(this.firstSeen.get(p.id), models.map((m) => m.model), Date.now(), identity, p.batchOf?.bind(p));
         if (noted.seen !== this.firstSeen.get(p.id)) { this.firstSeen.set(p.id, noted.seen); this.saveFirstSeen(); }
       }
       this.cleared(p.id, "listing");

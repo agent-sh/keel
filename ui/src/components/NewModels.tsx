@@ -5,10 +5,10 @@
 // A trial is an experiment (src/admin/experiments.ts): half of the new session trees try the model in
 // the role the owner picks, the other half run as before. It starts on the press and ends on a press or
 // by its own rule, and the card shows what it measured, per arm, with intervals.
-import { Sparkles } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { every } from "../lib/clock.ts";
-import { api, reportError } from "../lib/store.ts";
+import { api, reportError, useStore } from "../lib/store.ts";
 import { fmtMetric } from "../lib/metric.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, fmtTokens } from "../lib/utils.ts";
@@ -64,18 +64,158 @@ export function NewModelNews() {
   );
 }
 
-// Settings > Models: a card for each new model.
+// More new models than this are one summary and a list; fewer are a card each.
+export const CARDS_UP_TO = 3;
+const SUMMARY_BEST = 3;
+// A row of the list is this tall (rem); only the rows in view are drawn.
+const ROW_REM = 2;
+
+// The models worth a trial first: those that take every role, then the larger window, then the cheaper
+// output price, then by name. The listing's own facts only; nothing here names a model.
+export function rankNew(models: Listed[]): Listed[] {
+  const refusals = (m: Listed) => Object.keys(m.refused ?? {}).length;
+  return [...models].sort((a, b) =>
+    refusals(a) - refusals(b) || b.context - a.context || (a.price?.output ?? Infinity) - (b.price?.output ?? Infinity) || a.name.localeCompare(b.name));
+}
+
+// Settings > Models: a card for each new model while there are a few; a summary and a list when a listing
+// brings many. A model on trial (or whose trial ended) keeps its card in both.
 export function NewModelCards() {
   const { page, load } = useNewModels(false, 5_000);
+  const labels = useStore((s) => s.providerLabels);
+  const reload = () => void load();
+  const parts = useMemo(() => {
+    const models = page?.models ?? [];
+    const tried = models.filter((m) => m.trial || m.unlisted);
+    const rest = models.filter((m) => !m.trial && !m.unlisted);
+    return { tried, rest };
+  }, [page]);
   if (!page?.models.length) return null;
+  const { tried, rest } = parts;
+  const many = rest.length > CARDS_UP_TO;
   return (
     <div className="flex flex-col gap-3" data-testid="new-models">
-      {page.models.map((m) => <NewModelCard key={m.id} m={m} roles={page.roles} metrics={page.metrics} reload={() => void load()} />)}
+      {(many ? tried : page.models).map((m) => <NewModelCard key={m.id} m={m} roles={page.roles} metrics={page.metrics} reload={reload} />)}
+      {many && <NewModelSummary models={rest} roles={page.roles} metrics={page.metrics} labels={labels} reload={reload} />}
     </div>
   );
 }
 
-function NewModelCard({ m, roles, metrics, reload }: { m: Listed; roles: Role[]; metrics: Page["metrics"]; reload: () => void }) {
+const priceShort = (m: Listed) => (m.price ? `$${m.price.input} / $${m.price.output}` : m.billing === "subscription" ? "plan" : "no price");
+
+function NewModelSummary({ models, roles, metrics, labels, reload }: { models: Listed[]; roles: Role[]; metrics: Page["metrics"]; labels: Record<string, string>; reload: () => void }) {
+  const best = useMemo(() => rankNew(models).slice(0, SUMMARY_BEST), [models]);
+  const [all, setAll] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const noPrice = models.some((m) => m.refused?.builder);
+  const dismiss = (body: unknown) => {
+    setBusy(true);
+    return api("/api/models/new/dismiss", { method: "POST", body: JSON.stringify(body) }).then(reload, reportError).finally(() => setBusy(false));
+  };
+  return (
+    <section data-testid="new-models-summary" className="rounded-lg border border-line bg-raised p-4 shadow-1">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="rounded-xs bg-accent-soft px-1.5 text-micro font-medium uppercase tracking-wide text-accent-ink">New</span>
+        <h3 className="text-base font-medium" data-testid="new-models-count">{models.length} new models</h3>
+        <span className="text-caption text-faint">Try one as a reader, a small model or a builder.</span>
+      </div>
+      <p className="mt-1 text-caption text-muted" data-testid="new-models-note">
+        A trial puts half of the new session trees on the model in the role you pick: {ROLE_LABEL.reader.toLowerCase()} ({ROLE_DOES.reader}), {ROLE_LABEL.small.toLowerCase()} ({ROLE_DOES.small}), builder ({ROLE_DOES.builder}).
+        Nothing starts until you press.{noPrice ? " A model that lists no price takes no builder trial: the dollars an agent on it spends could not be counted." : ""}
+      </p>
+      <h4 className="k-label mt-3">The best {best.length} to try first</h4>
+      <div className="mt-1.5 flex flex-col gap-2" data-testid="new-models-best">
+        {best.map((m) => <NewModelCard key={m.id} m={m} roles={roles} metrics={metrics} reload={reload} lean />)}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <button type="button" className="k-btn" aria-expanded={all} data-testid="new-models-toggle" onClick={() => setAll((v) => !v)}>
+          {all ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />} All {models.length} new models
+        </button>
+        <button type="button" className="k-btn" data-quiet disabled={busy} data-testid="new-models-dismiss-all" onClick={() => void Promise.all([...new Set(models.map((m) => m.provider))].map((provider) => dismiss({ provider })))}>Dismiss all</button>
+      </div>
+      {all && <NewModelList models={models} roles={roles} metrics={metrics} labels={labels} reload={reload} dismiss={dismiss} busy={busy} />}
+    </section>
+  );
+}
+
+// The rest, by provider: each provider one folded line with its count; opened, one line a model.
+function NewModelList({ models, roles, metrics, labels, reload, dismiss, busy }: { models: Listed[]; roles: Role[]; metrics: Page["metrics"]; labels: Record<string, string>; reload: () => void; dismiss: (b: unknown) => Promise<unknown>; busy: boolean }) {
+  const groups = useMemo(() => {
+    const by = new Map<string, Listed[]>();
+    for (const m of models) (by.get(m.provider) ?? by.set(m.provider, []).get(m.provider)!).push(m);
+    return [...by.entries()].map(([provider, list]) => [provider, rankNew(list)] as const).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+  }, [models]);
+  const [open, setOpen] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const card = picked ? models.find((m) => m.id === picked) : undefined;
+  return (
+    <div className="mt-3 flex flex-col divide-y divide-line/60 rounded-md border border-line" data-testid="new-models-list">
+      {groups.map(([provider, list]) => (
+        <div key={provider} data-testid="new-models-group" data-provider={provider}>
+          <div className="flex items-center gap-2 px-2 py-1">
+            <button type="button" aria-expanded={open === provider} data-testid="new-models-group-toggle" onClick={() => setOpen(open === provider ? null : provider)}
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm py-1 text-left text-ui hover:text-fg">
+              {open === provider ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
+              <span className="min-w-0 truncate font-medium">{labels[provider] ?? provider}</span>
+              <span className="text-caption tabular-nums text-faint">{list.length}</span>
+            </button>
+            <button type="button" className="k-btn" data-quiet disabled={busy} data-testid="new-models-dismiss-group" onClick={() => void dismiss({ provider })}>Dismiss</button>
+          </div>
+          {open === provider && (
+            <div className="border-t border-line/60 px-2 pb-2">
+              {card && card.provider === provider && (
+                <div className="mt-2" data-testid="new-models-picked"><NewModelCard m={card} roles={roles} metrics={metrics} reload={reload} lean /></div>
+              )}
+              <VirtualRows items={list} rem={ROW_REM} viewRem={20} key={provider}>
+                {(m) => (
+                  <button type="button" data-testid="new-models-row" data-model={m.id} aria-pressed={picked === m.id} onClick={() => setPicked(picked === m.id ? null : m.id)}
+                    className={cn("grid h-8 w-full grid-cols-[minmax(0,1fr)_4rem_8rem] items-center gap-2 rounded-sm px-2 text-left text-ui hover:bg-hover max-md:grid-cols-[minmax(0,1fr)_3rem_4.5rem]", picked === m.id && "bg-hover")}>
+                    <span className="min-w-0 truncate" title={m.name}>{m.name}</span>
+                    <span className="text-right text-caption tabular-nums text-muted">{m.context ? fmtTokens(m.context) : "?"}</span>
+                    <span className="truncate text-right text-caption tabular-nums text-muted">{priceShort(m)}</span>
+                  </button>
+                )}
+              </VirtualRows>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// A long list drawn as far as it shows: the rows in view and a few beside them, between two spacers
+// that stand for the rest. Every row is `rem` tall.
+function VirtualRows<T extends { id: string }>({ items, rem, viewRem, children }: { items: T[]; rem: number; viewRem: number; children: (item: T) => React.ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState(0);
+  const [px, setPx] = useState({ row: 32, view: 320 });
+  // The rows' size in px at the text size now: a box of known rem lengths, measured.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const measure = () => {
+      const probe = el.querySelector<HTMLElement>("[data-probe]");
+      const row = probe ? probe.offsetHeight / 2 : px.row;
+      setPx({ row: row || 32, view: el.clientHeight || 320 });
+    };
+    measure();
+    addEventListener("resize", measure);
+    return () => removeEventListener("resize", measure);
+  }, []);
+  const start = Math.max(0, Math.floor(top / px.row) - 4);
+  const end = Math.min(items.length, Math.ceil((top + px.view) / px.row) + 4);
+  return (
+    <div ref={box} className="relative mt-2 overflow-y-auto overscroll-contain" style={{ height: `${Math.min(viewRem, items.length * rem)}rem` }} onScroll={(e) => setTop(e.currentTarget.scrollTop)} data-testid="new-models-scroll">
+      <div data-probe style={{ height: `${rem * 2}rem`, position: "absolute", visibility: "hidden", pointerEvents: "none" }} aria-hidden />
+      <div style={{ height: `${start * rem}rem` }} />
+      {items.slice(start, end).map((m) => <div key={m.id}>{children(m)}</div>)}
+      <div style={{ height: `${(items.length - end) * rem}rem` }} />
+    </div>
+  );
+}
+
+function NewModelCard({ m, roles, metrics, reload, lean }: { m: Listed; roles: Role[]; metrics: Page["metrics"]; reload: () => void; lean?: boolean }) {
   const no = m.refused ?? {};
   const [chosen, setRole] = useState<Role>(roles.find((r) => !no[r]) ?? roles[0] ?? "reader");
   const role = no[chosen] ? roles.find((r) => !no[r]) ?? chosen : chosen;
@@ -109,8 +249,8 @@ function NewModelCard({ m, roles, metrics, reload }: { m: Listed; roles: Role[];
           <button type="button" className="k-btn" data-quiet disabled={busy} data-testid="new-model-dismiss" onClick={() => void post("/api/models/new/dismiss", { model: m.id })}>Dismiss</button>
         </div>
       )}
-      {Object.values(no).map((why) => <p key={why} className="mt-2 text-caption text-faint" data-testid="new-model-role-off">{why}.</p>)}
-      {!t && <p className="mt-2 text-caption text-faint">Half of the new session trees would use it to {ROLE_DOES[role]}. Nothing starts until you press.</p>}
+      {!lean && Object.values(no).map((why) => <p key={why} className="mt-2 text-caption text-faint" data-testid="new-model-role-off">{why}.</p>)}
+      {!t && !lean && <p className="mt-2 text-caption text-faint">Half of the new session trees would use it to {ROLE_DOES[role]}. Nothing starts until you press.</p>}
       {refused && <p role="alert" className="mt-2 text-caption text-danger" data-testid="new-model-refused">{refused}</p>}
 
       {t && (

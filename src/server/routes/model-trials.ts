@@ -7,6 +7,7 @@
 // POST /api/models/new/trial      { model, role }  makes the trial of the model in that role and starts it: half of the
 //                                 new session trees try it (409 while another live experiment runs)
 // POST /api/models/new/dismiss    { model }        puts the model away: it is news no more (409 while its trial runs)
+//                                 { provider }     puts away every new model of the provider (but those on a running trial)
 // A trial is stopped like any experiment: POST /api/experiments/:id/stop.
 import { METRICS, type Experiment, type Metric } from "../../admin/experiments.ts";
 import { TRIAL_KIND, trialExperiment, trialIn } from "../../admin/model-trials.ts";
@@ -103,7 +104,9 @@ export const modelTrialRoutes: RouteModule = ({ providers, errors }) => {
     "/api/models/new/dismiss": {
       POST: async (req: Request) => run(async () => {
         const b = await body(req);
-        if (typeof b.model !== "string") throw fail("model is the id of a listed model", 400);
+        // A whole provider's news at once (a listing of hundreds): the models on a running trial stay.
+        if (typeof b.provider === "string") return { ok: true, dismissed: providers.dismissNewOf(b.provider, (id) => trialOfModel(id)?.state === "running") };
+        if (typeof b.model !== "string") throw fail("model is the id of a listed model, or provider names a provider", 400);
         if (trialOfModel(b.model)?.state === "running") throw fail("its trial is running: stop it first", 409);
         if (!providers.dismissNew(b.model)) throw fail("no listed model has that id", 404);
         return { ok: true };
