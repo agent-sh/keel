@@ -44,6 +44,7 @@ export { Boundary };
 // is stopped by its Stop button, the same one as in every pane.
 export function SessionView({ id, header, missingHeader, panel = true, focus = true, back }: { id: string; header?: ReactNode; missingHeader?: ReactNode; panel?: boolean; focus?: boolean; back?: () => void }) {
   const session = useStore((s) => s.sessions[id]);
+  const said = useAppSays() ?? "Keel is not reachable";
   // A link to a session that is gone (deleted, another daemon's) says so instead of loading forever.
   const [missing, setMissing] = useState<string | null>(null);
   // A load that failed for want of the daemon (a cold open offline) is tried
@@ -96,7 +97,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
       <div className="flex flex-1 flex-col">
         <div className="flex h-12 items-center px-2 md:px-4"><SidebarButton /></div>
         <div className="m-auto text-ui text-faint" data-testid={unreached === id ? "session-unreached" : undefined}>
-          {unreached === id ? "Keel is not reachable. The session opens when the connection is back." : "Opening the session"}
+          {unreached === id ? `${said}. The session opens when the connection is back.` : "Opening the session"}
         </div>
       </div>
     );

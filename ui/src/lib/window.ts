@@ -90,9 +90,9 @@ export function wordsOf(row: Row): string {
 export function heldWords(row: Row): string {
   const d = row.e.data ?? {};
   if (row.kind === "user") {
-    let n = 0;
+    // (A drawn image copies no words, its alt text is not in a selection: a held one copies none either.)
     const kept = ((d.images ?? []) as { type: string; name?: string }[])
-      .map((b) => (b.type === "image" ? `Attached image ${++n}` : b.type === "attachment" ? b.name ?? "" : ""))
+      .map((b) => (b.type === "attachment" ? b.name ?? "" : ""))
       .filter(Boolean);
     return [String(d.text ?? ""), ...kept].filter(Boolean).join("\n");
   }

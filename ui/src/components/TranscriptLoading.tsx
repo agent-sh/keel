@@ -2,7 +2,10 @@
 // the shape of what is coming (a prompt, a reply, a tool row), instead of an
 // empty pane that reads as an empty session. It appears after a moment, so a
 // load that is quick shows nothing in between.
+import { useAppSays } from "./Stale.tsx";
+
 export function TranscriptLoading({ unreached = false }: { unreached?: boolean }) {
+  const said = useAppSays() ?? "Keel is not reachable";
   const line = "h-3 rounded-sm bg-sunken animate-pulse-dot";
   return (
     <div className="min-h-0 flex-1 overflow-hidden" role="status" aria-busy={!unreached} data-testid="transcript-loading">
@@ -13,7 +16,7 @@ export function TranscriptLoading({ unreached = false }: { unreached?: boolean }
               {[0, 1, 2].map((i) => <span key={i} className="size-1.5 rounded-full bg-brass animate-pulse-dot" style={{ animationDelay: `${i * 160}ms` }} />)}
             </span>
           )}
-          <span>{unreached ? "Keel is not reachable. The conversation opens when the connection is back." : "Loading the conversation"}</span>
+          <span>{unreached ? `${said}. The conversation opens when the connection is back.` : "Loading the conversation"}</span>
         </p>
         {!unreached && (
           <div className="flex flex-col gap-4" aria-hidden>

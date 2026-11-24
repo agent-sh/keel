@@ -15,6 +15,7 @@ import { askRestart, turnsOf } from "../lib/restart.ts";
 import { countName, STATE_WORD } from "../../../src/core/state-words.ts";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
+import { useAppSays } from "./Stale.tsx";
 
 type Stall = { ts_ms: number; ms: number; what: string; kind: string; error_id?: string };
 type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; waiting?: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null; stalls?: Stall[]; earlier_starts?: { start: Restart; stalls: Stall[]; down_ms?: number }[] };
@@ -138,6 +139,7 @@ export function DaemonPanel() {
   const [report, setReport] = useState<string | null>(null);
   const [settings, patch] = useSettings();
   const connected = useStore((s) => s.connected);
+  const appSays = useAppSays();
   const sessions = useStore((s) => s.sessions);
 
   useEffect(() => {
@@ -167,7 +169,7 @@ export function DaemonPanel() {
         <SettingRow label="Daemon" hint={<span className="font-mono text-caption">{st.state_dir}</span>}>
           <span className="flex items-center gap-2 text-ui text-muted" data-testid="daemon-status">
             <Dot tone={!connected ? "danger" : draining ? "warn" : "ok"} />
-            {!connected ? "Reconnecting" : draining ? (draining.restart ? "Restarting" : "Stopping") : `pid ${st.pid}, up ${dur(Date.now() - st.started_ms)}`}
+            {!connected ? (appSays ?? "Reconnecting") : draining ? (draining.restart ? "Restarting" : "Stopping") : `pid ${st.pid}, up ${dur(Date.now() - st.started_ms)}`}
           </span>
         </SettingRow>
         {/* The turns that work, apart from those that only wait on the owner: a restart waits for the first, not the second. */}

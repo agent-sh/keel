@@ -670,7 +670,8 @@ test("held rows copy as the drawn ones do", async ({ page }) => {
     });
     expect(held).toMatch(/^col a\tcol b\tcol c$/m);
     expect(held).toMatch(/^\d+\tx\ty$/m);
-    expect(held).toMatch(/Marker Zorblax\d*[05]x\nAttached image 1$/m);
+    expect(held).toMatch(/Marker Zorblax\d*[05]x$/m);
+    expect(held).not.toContain("Attached image");
     expect(held).toMatch(/^Ran rg -n "token \d+" src \| head -20$/m);
     expect(held).not.toContain("**");
   } finally {

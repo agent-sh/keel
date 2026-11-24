@@ -53,6 +53,6 @@ test("a held row says what its drawn row copies: a prompt's attachments, a run o
   ev("assistant", { blocks: [{ type: "text", text: "Done." }] });
   ev("turn_end", { reason: "end_turn", ms: 1 });
   const rows = buildRows(undefined, lineage(list, list.at(-1)!.id), nextSiblings(undefined, list).map, false, () => false).blocks.flat();
-  expect(heldWords(rows.find((r) => r.kind === "user")!)).toBe("Look at these\nAttached image 1\nnotes.txt\nAttached image 2");
+  expect(heldWords(rows.find((r) => r.kind === "user")!)).toBe("Look at these\nnotes.txt");
   expect(heldWords(rows.find((r) => r.kind === "work")!)).toBe("First I search.\nRan rg -n token src");
 });

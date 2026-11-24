@@ -41,6 +41,7 @@ import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
 import { attemptWords, CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
 import { agentLive, hhmm } from "../../../src/core/watch.ts";
 import { probeWords } from "../../../src/engine/trail.ts";
+import { appSaysNow } from "./Stale.tsx";
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
   return (
@@ -1426,7 +1427,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     const err = e as { status?: number; body?: { error?: unknown } };
     if (err.status === 404 && err.body?.error === "no such session") return dropSession(sessionId);
     // An unreachable daemon is a state the page already shows, not an error of its own.
-    setUnread((u) => ({ ...u, [which]: e instanceof TypeError ? "Keel is not reachable." : failed(e, { at: "transcript part", session_id: sessionId }) }));
+    setUnread((u) => ({ ...u, [which]: e instanceof TypeError ? `${appSaysNow() ?? "Keel is not reachable"}.` : failed(e, { at: "transcript part", session_id: sessionId }) }));
   };
   const older = (auto = false): Promise<unknown> | undefined => {
     if (!more || busy.current.older || !events || (auto && unreadNow.current.older)) return;
