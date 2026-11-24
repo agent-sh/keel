@@ -17,6 +17,7 @@ import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopo
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { openPanel, PanelsButton } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
+import { REST_AT } from "../../../src/automation/cap-rules.ts";
 import { CapControl } from "./CapControl.tsx";
 import { useCap } from "../lib/caps.ts";
 import { iconButton } from "./ui.tsx";
@@ -250,8 +251,9 @@ export function SessionHeader({ session }: { session: Session }) {
   const tokenWords = `${fmtTokens(input_)} in (${cached}% cached), ${fmtTokens(u.output)} out`;
   const usageId = useId();
   const folder = session.workspace.split("/").pop();
-  // A cap that is set rests in the row, below the permission mode (a safety state) and above the worktree; the button that sets one is in the menu.
-  const capped = !!useCap(session.id, !!session.settings.cap_usd || !!session.parent_id);
+  // A cap that is set rests in the row, below the permission mode (a safety state) and above the worktree, once half of it
+  // is spent; far from it the chip is quiet, in the menu with the button that sets one.
+  const capped = (useCap(session.id, !!session.settings.cap_usd || !!session.parent_id)?.pct ?? 0) >= REST_AT;
 
   // In the row's order; the rank says which stays longest when the row is short. `rest`: it has a place in
   // the row (the rest are in the menu, in this order).

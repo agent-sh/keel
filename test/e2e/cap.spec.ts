@@ -97,14 +97,36 @@ test("a dollar cap: set in the header, told at 80 percent, stops new work at 100
 
 // Feature: a cap that is set rests in the bar, below the permission mode: at the tightest width the mode stays
 // at rest whatever the cap's chip does, and the chip never stands where the mode is not.
-test("a set cap rests below the permission mode in the bar", async ({ page, request }) => {
+test("a set cap rests below the permission mode in the bar once half of it is spent, and is quiet in the menu before", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
-  const model = models.find((m) => m.id === "scripted:stand-in")?.id;
-  test.skip(!model, "needs the scripted provider: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
+  const model = models.find((m) => m.id === "scripted:stand-in-strict")?.id;
+  test.skip(!model, "needs the scripted provider: the stand-in takes a tool every step (its spend is priced)");
   const { session } = await (await request.post("/api/sessions", { data: { model, title: "Capped bar" } })).json();
   try {
-    await request.put(`/api/sessions/${session.id}/cap`, { data: { usd: 5 } });
     const header = page.getByTestId("station").and(page.locator(`[data-station="${session.id}"]`)).getByTestId("session-header");
+    const cap = async () => (await (await request.get(`/api/sessions/${session.id}/cap`)).json()).cap as { spent: number; pct: number } | null;
+    // The cap counts what is spent after it is set.
+    await request.put(`/api/sessions/${session.id}/cap`, { data: { usd: 5000 } });
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo spent" } }, { name: "Bash", input: { command: "echo spent again" } }])}` } });
+    await expect.poll(async () => { const d = await (await request.get(`/api/sessions/${session.id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 60_000 }).toBe(true);
+    // Far from the cap: the chip is quiet, in the session's menu, and the mode is still at rest.
+    const spent = (await cap())!.spent;
+    test.skip(!(spent > 0), "needs a priced turn: the stand-in's spend is not counted here");
+    for (const width of [1050, 1366, 1920]) {
+      await page.setViewportSize({ width, height: 1040 });
+      await page.goto(`/s/${session.id}`);
+      await expect(header.getByTestId("permission-menu")).toBeVisible();
+      await page.mouse.move(width / 2, 900);
+      await expect(header.getByTestId("cap-chip"), `at ${width} a cap far from its limit is not in the bar`).toHaveCount(0);
+      await header.getByTestId("session-menu").click();
+      await expect(page.getByTestId("header-more").getByTestId("cap-chip")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await shoot(page, `cap-03-quiet-${width}`);
+    }
+    // Past half of it, a chip that has room rests beside the mode, after it.
+    // (A cap is whole cents, so it is set from what was spent, to the cent, until the spend is past half of it.)
+    await expect.poll(async () => { await request.put(`/api/sessions/${session.id}/cap`, { data: { usd: Math.max(0.01, Math.round((await cap())!.spent * 125) / 100) } }); return (await cap())!.pct; }).toBeGreaterThan(0.5);
     for (const width of [1050, 1366, 1920]) {
       await page.setViewportSize({ width, height: 1040 });
       await page.goto(`/s/${session.id}`);

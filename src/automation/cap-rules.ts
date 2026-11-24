@@ -13,6 +13,8 @@ export const BURN_WINDOW_MS = 10 * 60_000;
 export const MIN_WINDOW_MS = 60_000;
 export const HOUR_MS = 3_600_000;
 export const WARN_AT = 0.8;
+// A cap rests in the session's bar from this share of it spent; far from it, the cap is in the menu.
+export const REST_AT = 0.5;
 
 export type CapLevel = "ok" | "warn" | "spent";
 // What the ledger says: the cap's dollars, its tree's spend since the cap began and in the last
