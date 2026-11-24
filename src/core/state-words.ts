@@ -47,6 +47,8 @@ export const asOf = (hhmm: string) => `as of ${hhmm}`;
 // How many messages of the owner's wait in a session's queue, and the mark of what came since they looked.
 export const queuedWord = (n: number) => `${n} ${QUEUED.toLowerCase()}`;
 export const NEW = "New";
+// Who a row that needs the owner waits on, where its time would be.
+export const WAITS_ON_YOU = "you";
 export const NEW_SINCE = "New since you looked";
 // In a conversation, on the rule above the first line the owner has not read: since when.
 export const newSinceAt = (hhmm: string) => `${NEW} since ${hhmm}`;

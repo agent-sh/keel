@@ -31,7 +31,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, WAITS_ON_YOU, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
@@ -222,6 +222,10 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
   const pinned = !!s.settings.pinned_ms && !restore;
   // It, or an agent of it, needs the owner while its pane shows another session for now (a look lies over it).
   const under = useUnderLook(s.id);
+  // Who a row that calls the owner waits on, in the time's place on a row of one line: the owner, or the
+  // failure's class (what to see to). The time is the word's tooltip. A row of two lines says it on its
+  // second line and keeps the time; a list too narrow for the time says it on the reason's line.
+  const on = !narrow && lines === "one" && !offline && !gone ? (w === "need" ? WAITS_ON_YOU : w === "fail" ? failWord(st.cls) : "") : "";
   // A menu of the row is the hand on the list: the list is held while one is open.
   const keep = useContext(HandCtx).keep;
   const over = placing || !!menu;
@@ -303,7 +307,7 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
             : lines === "two" && <RestLine s={s} />}
           {/* A state that is not current because the page does not hear the daemon says since when. (A machine out of reach: above.) */}
           {!left && !offline && !!st.as_of && <span className="shrink-0 whitespace-nowrap text-micro text-muted" data-testid="row-asof">{asOf(clock(st.as_of))}</span>}
-          {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
+          {!offline && w === "fail" && failWord(st.cls) && !on && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
           {!offline && SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{briefText(st, now)}</span>}
           {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
           {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
@@ -322,6 +326,13 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
           ? <span className="k-row-time" data-testid="row-gone" data-offline title="It left the list while your hand was on it, and goes when your hand has left">{left}</span>
           : offline
           ? <span className="k-row-time group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-offline title={`Its machine does not answer: this is the last it told, ${when(toldAt)}`}>{OFFLINE}</span>
+          : on
+          // (A reader hears the state before the word: the line's own state word gives way to it.)
+          ? <>
+              {w === "fail" && <span className="sr-only">{STATE_WORD.fail}: </span>}
+              <span className="k-row-time k-row-on group-hover:hidden group-focus-within:hidden" data-testid={w === "fail" ? "row-class" : "row-on"} data-on={w}
+                title={w === "need" && st.since ? `${STATE_WORD.need} since ${when(st.since)}` : `${STATE_WORD[w]} ${when(st.since ?? s.updated)}`}>{w === "need" && <span className="sr-only">{STATE_WORD.need.slice(0, -WAITS_ON_YOU.length)}</span>}{on}</span>
+            </>
           : timed(st)
           ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{rowClock(st, now)}</span>
           : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}

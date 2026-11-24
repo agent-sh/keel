@@ -2,8 +2,10 @@ import { expect, test, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: the top edge of the window. The rail's brand row and the pane's top bar are one height,
-// so their content starts on one line. Where the pane worked in is wide, its head and the
-// session's tools are one bar. Nothing is drawn at the pane's edge where it meets the rail: a
+// so their content starts on one line. Where a pane is as wide as a desk window leaves it (a
+// 40rem pane and up), its head and the session's tools are one bar, and panes side by side end on
+// one line. The head in the bar is one line or two: the title whole with the reason beside it,
+// else the title over the state and its reason, which then have the head's width. Nothing is drawn at the pane's edge where it meets the rail: a
 // pinned session's head once wore an ink tab there, a short white line in the dark theme.
 
 // What lies at a point, top first: the classes of each element whose own background is the ink.
@@ -49,6 +51,22 @@ test("the rail and a pinned pane meet in one clean top edge, the head and its to
   expect(t.width, "the tools keep a share of the bar they do not use").toBeLessThan(top.width / 2 - 8);
   await shoot(page, "top-edge-01-pinned-1920");
 
+  // Panes side by side: the other pane's head ends where the bar does.
+  const { session: other } = await (await request.post("/api/sessions", { data: { model, title: "Beside the pinned one" } })).json();
+  try {
+    await expect(page.locator(`[data-testid="session-row"][data-session="${other.id}"]`)).toBeVisible();
+    // Two panes: the second shows a session too (the newest, this one, where nothing else is newer).
+    await page.getByTestId("panes-2").click();
+    await page.mouse.move(1000, 700);
+    await expect(page.getByTestId("station-head")).toHaveCount(2);
+    const ends = await page.getByTestId("station-head").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().bottom)));
+    for (const end of ends) expect(Math.abs(end - (brand.y + brand.height)), `panes end at ${ends.join(", ")}, the brand row at ${brand.y + brand.height}`).toBeLessThanOrEqual(1);
+    await shoot(page, "top-edge-04-two-panes");
+    await page.getByTestId("panes-1").click();
+  } finally {
+    await request.delete(`/api/sessions/${other.id}`);
+  }
+
   // On a phone the pinned head is clean too.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(head).toBeVisible();
@@ -68,7 +86,8 @@ test("a head with a long title and a long reason is still one bar, the brand row
     // An approval it waits on (never given): the head's reason is long, and the band is the thicker one of a state that calls the owner.
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo a long command line that keeps going on and on so the reason does not fit beside the title > top-edge-long-reason.txt" } }])}` } });
     const pane = page.getByTestId("station").and(page.locator(`[data-station="${session.id}"]`));
-    for (const width of [1920, 1440]) {
+    // Below 1400 the bar is one too (it once was two rows there, 125px against the brand row's 60).
+    for (const width of [1920, 1440, 1366, 1200, 1050]) {
       await page.setViewportSize({ width, height: 1040 });
       await page.goto(`/s/${session.id}`);
       await expect(pane).toHaveAttribute("data-watch", "need", { timeout: 15_000 });
@@ -78,12 +97,19 @@ test("a head with a long title and a long reason is still one bar, the brand row
       const t = (await pane.getByTestId("session-header").boundingBox())!;
       expect(Math.abs(t.y - h.y), `at ${width} the tools are a row under the head`).toBeLessThan(1);
       expect(Math.abs(h.y + h.height - (brand.y + brand.height)), `at ${width} the bar and the brand row end apart`).toBeLessThanOrEqual(1);
-      // The reason keeps room beside the title, on the same line.
+      // The reason has room for about twenty characters at least: beside a title shown whole, or on the
+      // line under it with the head's width (this title is too long to leave it room beside).
       const why = (await head.getByTestId("station-why").boundingBox())!, name = (await head.getByTestId("station-title").boundingBox())!;
-      expect(Math.abs(why.y + why.height / 2 - (name.y + name.height / 2)), "the reason is on the title's line").toBeLessThan(4);
-      expect(why.width).toBeGreaterThan(80);
+      const chars = await head.getByTestId("station-why").evaluate((el) => el.getBoundingClientRect().width / (parseFloat(getComputedStyle(el).fontSize) * 0.5));
+      expect(chars, `at ${width} the reason is cut to about ${Math.round(chars)} characters`).toBeGreaterThan(20);
+      const beside = Math.abs(why.y + why.height / 2 - (name.y + name.height / 2)) < 4;
+      if (beside) expect(await head.getByTestId("station-title").evaluate((el) => el.scrollWidth <= el.clientWidth), `at ${width} the reason is beside a cut title`).toBe(true);
+      else {
+        expect(why.y, `at ${width} the reason is under the title`).toBeGreaterThan(name.y + name.height - 2);
+        expect(why.width, `at ${width} the reason under the title is cut short of the head`).toBeGreaterThan(h.width * 0.5);
+      }
+      if (width === 1440 || width === 1050) await shoot(page, `top-edge-03-long-${width}`);
     }
-    await shoot(page, "top-edge-03-long-1440");
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
   }

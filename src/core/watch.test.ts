@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Session } from "./types.ts";
-import { askBrief, askText, clockText, LIST_TIER, liveAgentCounts, span, stateLine, stateOf, WATCH_LABEL, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
+import { askBrief, askText, briefText, clockText, LIST_TIER, liveAgentCounts, pendingText, span, stateLine, stateOf, WATCH_LABEL, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
 
 const s = (over: Partial<Session> = {}): Session => ({
   id: "p", title: "", model: "m", workspace: "/w", created: 0, updated: 0, phase: "idle", archived: false,
@@ -71,6 +71,26 @@ test("a session whose turn ended waits while something it set up will wake it", 
   expect(stateOf(s({ phase: "working" }), undefined, { pending: [timer] }).watch).toBe("work");
   expect(stateOf(s({ settings: { last_end: "interrupted" } }), undefined, { pending: [timer] }).watch).toBe("stop");
   expect(stateOf(s(), undefined, { pending: [timer], asks: [{ kind: "plan" }] }).watch).toBe("need");
+});
+
+test("a command given no description is named in words, its shell text kept for the tooltip", () => {
+  const raw = { kind: "command", text: "sleep 3000 && echo built", raw: true, since: 3 };
+  const said = { kind: "command", text: "Wait for the build", since: 4 };
+  // Its own shell text is the whole reason; the brief says what it is.
+  const st = stateOf(s(), undefined, { pending: [raw] });
+  expect(st).toEqual({ watch: "work", agents: 0, why: "command", text: "Command in background: sleep 3000 && echo built", brief: "Command in background", since: 3 });
+  expect(briefText(st)).toBe("Command in background");
+  expect(whyText(st)).toBe("Command in background: sleep 3000 && echo built");
+  // The brief counts the rest as the whole does.
+  expect(stateOf(s(), undefined, { pending: [raw, said] })).toMatchObject({ text: "Command in background: sleep 3000 && echo built, and 1 more", brief: "Command in background, and 1 more" });
+  // A command with a description is words already: no brief, and the whole is what a head shows.
+  const words = stateOf(s(), undefined, { pending: [said] });
+  expect(words.brief).toBeUndefined();
+  expect(briefText(words)).toBe("Command in background: Wait for the build");
+  // An agent's command: the agent is named, its shell text is not.
+  const agent = stateOf(s(), undefined, { agents: 1, parked: 1, pending: [{ ...raw, agent: "Scout" }] });
+  expect(agent).toMatchObject({ watch: "wait", why: "agent", text: "Agent Scout: command: sleep 3000 && echo built", brief: "Agent Scout: command in background" });
+  expect(pendingText({ ...said, agent: "Scout" }, true)).toBe("Agent Scout: command: Wait for the build");
 });
 
 test("a running turn says what it does now, and a stream that went silent says for how long", () => {

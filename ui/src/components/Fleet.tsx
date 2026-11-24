@@ -87,7 +87,7 @@ export function MachineChip({ session }: { session: Session }) {
     // name for the tooltip and the reader. The move is still one press away.
     <>
       <Server aria-hidden="true" className="size-3.5" />
-      <span className="sr-only">{name}</span>
+      <span className="sr-only">Runs on {name}</span>
       {h?.state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
     </>
   );

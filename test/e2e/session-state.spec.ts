@@ -416,7 +416,10 @@ test("a row says why once: what is asked of the owner, the step with its time, t
       // Said once: no second "needs you" on the row.
       expect((await r.innerText()).match(/needs you/gi)).toHaveLength(1);
       await expect(r.getByTestId("needs-you")).toHaveCount(0);
-      await expect(r.getByTestId("row-time")).toHaveText(/^(now|\d+m)$/);
+      // Who it waits on stands in the time's place; the time is its tooltip.
+      await expect(r.getByTestId("row-on")).toHaveText("Needs you");
+      await expect(r.getByTestId("row-on")).toBeVisible();
+      await expect(r.getByTestId("row-on")).toHaveAttribute("title", /^Needs you since /);
     }
     // A message this browser could not send is the same kind of reason.
     // (The refusal arrives after the owner moved to another session, so the message is kept for its own.)
