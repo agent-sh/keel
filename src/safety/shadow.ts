@@ -3,7 +3,8 @@
 // own repository (its index, refs and objects stay as they were). Every
 // operation on one shadow runs one at a time.
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { addAll, git, gitEach, gitSync, innerHead } from "../core/git.ts";
 import { capPatch } from "./patch.ts";
@@ -26,6 +27,13 @@ const snapCap = () => Number(process.env.KEEL_CHECKPOINT_SNAPSHOT_MB ?? 1024) * 
 // rebuilt, not written by hand (most are gitignored anyway; a folder without a
 // .gitignore still holds them).
 const ALWAYS_OUT = ["node_modules/", ".venv/", "venv/", "__pycache__/", ".cache/", ".mypy_cache/", ".pytest_cache/", ".ruff_cache/", ".tox/", ".gradle/", ".next/", ".nuxt/", ".turbo/", ".parcel-cache/", "target/"];
+// A folder found too large for whole-tree mode is remembered in the shadow's own state, so the next
+// daemon start does not walk its listing again (one to five seconds of a child's CPU for a folder of
+// hundreds of thousands of files). It is walked again when the folder's top level changed (names and
+// mtimes), when the caps differ, or after a week.
+const LARGE_FILE = "keel-large.json";
+const LARGE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+type Large = { reason: string; listed: number; top: string; entries: number; file_cap: number; snap_cap: number; at: number };
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 export class Shadow {
@@ -85,6 +93,34 @@ export class Shadow {
     if (r.code !== 0) throw new Error(`git ${args[0]} failed (${r.code}): ${r.err.trim().slice(0, 500)}`);
   }
 
+  // The top level of the workspace as one digest: each entry's name and mtime, and the folder's own
+  // mtime. What the shadow never snapshots (its own state folder, the rebuilt trees) is left out.
+  private async topPrint(): Promise<{ top: string; entries: number }> {
+    const skip = new Set(ALWAYS_OUT.map((o) => o.slice(0, -1)));
+    const own = this.own ? this.own.split("/").filter(Boolean)[0] : undefined;
+    const names = (await readdir(this.workspace)).filter((n) => !skip.has(n) && n !== own).sort();
+    const stamps = await Promise.all(names.map(async (n) => { try { return `${n}\0${(await lstat(join(this.workspace, n))).mtimeMs}`; } catch { return `${n}\0gone`; } }));
+    const here = (await lstat(this.workspace)).mtimeMs;
+    return { top: createHash("sha256").update(`${here}\n${stamps.join("\n")}`).digest("hex"), entries: names.length };
+  }
+
+  // What an earlier start found too large, when it still holds: same top level, same caps, under a week.
+  private async remembered(): Promise<Large | undefined> {
+    let m: Large;
+    try { m = JSON.parse(readFileSync(join(this.dir, LARGE_FILE), "utf8")); } catch { return undefined; }
+    if (!m || typeof m.reason !== "string" || Date.now() - m.at > LARGE_MAX_AGE_MS || Date.now() < m.at) return undefined;
+    if (m.file_cap !== fileCap() || m.snap_cap !== snapCap()) return undefined;
+    try { return (await this.topPrint()).top === m.top ? m : undefined; } catch { return undefined; }
+  }
+
+  private remember(reason: string, listed: number, print?: { top: string; entries: number }) {
+    try {
+      if (!reason || !print) { rmSync(join(this.dir, LARGE_FILE), { force: true }); return; }
+      const m: Large = { reason, listed, top: print.top, entries: print.entries, file_cap: fileCap(), snap_cap: snapCap(), at: Date.now() };
+      writeFileSync(join(this.dir, LARGE_FILE), JSON.stringify(m));
+    } catch {}
+  }
+
   private inited = false;
   private async init() {
     if (this.gitDir || this.inited) return;
@@ -135,7 +171,7 @@ export class Shadow {
   // repositories lists hundreds of thousands of files (48 MB of names), and
   // holding that whole, then a stat of every file in one pass, held the loop
   // for seconds at a session's first call after each start.
-  private async sizeUp(index: string): Promise<boolean | "same"> {
+  private async sizeUp(index: string, print?: { top: string; entries: number }): Promise<boolean | "same"> {
     this.writeExcludes([]);
     const cap = fileCap(), most = snapCap();
     // What the last snapshot left out stays listed for good: a file over the cap, an inner repository
@@ -171,6 +207,7 @@ export class Shadow {
     if (over) {
       this.mode = "written";
       this.reason = `the workspace would add more than ${Math.round(most / 1024 / 1024)} MB to its checkpoints, so only the files the session writes are kept`;
+      this.remember(this.reason, listed, print);
       return false;
     }
     this.skipped = big;
@@ -193,15 +230,26 @@ export class Shadow {
       if (this.mode === "tree") {
         if (this.gitDir) return this.realTree();
         const index = join(this.dir, "keel-index");
+        const known = this.last ? undefined : await this.remembered();
+        if (known) {
+          this.mode = "written";
+          this.reason = known.reason;
+          return this.writtenTree(paths ?? []);
+        }
+        let print: { top: string; entries: number } | undefined;
         try {
-          const sized = await this.sizeUp(index);
+          // Taken before the walk: a change made during it is seen by the next start.
+          print = await this.topPrint().catch(() => undefined);
+          const sized = await this.sizeUp(index, print);
           if (!sized) return this.writtenTree(paths ?? []);
           if (sized === "same") return this.last!;
+          this.remember("", 0); // whole-tree mode again: nothing is remembered
           this.unborn = (await this.addAll(index, 30_000)).filter((i) => !i.tracked && !i.head).map((i) => i.path);
         } catch (e) {
           // Too large or too slow to snapshot whole: fall back to the files the tools write.
           this.mode = "written";
           this.reason = `the whole workspace could not be snapshotted (${(e as Error).message.slice(0, 160)})`;
+          this.remember(this.reason, 0, print);
           return this.writtenTree(paths ?? []);
         }
         return (this.last = (await this.git(["write-tree"], { index })).trim());

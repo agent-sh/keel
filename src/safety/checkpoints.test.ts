@@ -450,3 +450,59 @@ test("a workspace over the snapshot cap stops its listing at the cap and keeps o
     if (before === undefined) delete process.env.KEEL_CHECKPOINT_SNAPSHOT_MB; else process.env.KEEL_CHECKPOINT_SNAPSHOT_MB = before;
   }
 });
+
+// A folder found too large for whole-tree mode is remembered with its shadow: a later daemon start
+// over the same folder does not walk its listing again, until the top level changes.
+test("a workspace found too large is not walked again at the next start, until its top level changes", async () => {
+  const { Shadow } = await import("./shadow.ts");
+  const dir = join(root, `case-${++n}`);
+  const ws = join(dir, "ws");
+  mkdirSync(join(ws, "repo-a"), { recursive: true });
+  for (let i = 0; i < 400; i++) writeFileSync(join(ws, "repo-a", `f${i}.txt`), "y".repeat(50));
+  writeFileSync(join(ws, "top.txt"), "t\n");
+  const state = join(dir, "state", "checkpoints");
+  const start = () => {
+    const sh = new Shadow(state, ws);
+    let walks = 0;
+    const list = sh.listEach.bind(sh);
+    sh.listEach = (args, opts, each) => { walks++; return list(args, opts, each); };
+    return { sh, walks: () => walks };
+  };
+  const before = process.env.KEEL_CHECKPOINT_SNAPSHOT_MB;
+  process.env.KEEL_CHECKPOINT_SNAPSHOT_MB = String(10_000 / 1024 / 1024);
+  try {
+    const first = start();
+    const t1 = await first.sh.snapshot(["top.txt"]);
+    expect(first.sh.mode).toBe("written");
+    expect(first.walks()).toBe(1);
+    const ls = async (sh: InstanceType<typeof Shadow>, t: string) => (await sh.git(["ls-tree", "-r", t])).trim();
+    // A second start: no walk, the same snapshot, the same reason.
+    const second = start();
+    const t2 = await second.sh.snapshot(["top.txt"]);
+    expect(second.walks()).toBe(0);
+    expect(second.sh.mode).toBe("written");
+    expect(second.sh.reason).toBe(first.sh.reason);
+    expect(t2).toBe(t1);
+    expect(await ls(second.sh, t2)).toBe(await ls(first.sh, t1));
+    expect(await ls(second.sh, t2)).toContain("top.txt");
+    expect(await ls(second.sh, t2)).not.toContain("repo-a");
+    // A top level that changed: walked again.
+    writeFileSync(join(ws, "new.txt"), "n\n");
+    const third = start();
+    await third.sh.snapshot(["top.txt"]);
+    expect(third.walks()).toBe(1);
+    expect(third.sh.mode).toBe("written");
+    // Remembered again for the start after it.
+    const fourth = start();
+    await fourth.sh.snapshot(["top.txt"]);
+    expect(fourth.walks()).toBe(0);
+    // A larger cap is another question: walked, and the folder now fits.
+    process.env.KEEL_CHECKPOINT_SNAPSHOT_MB = "100";
+    const fifth = start();
+    await fifth.sh.snapshot();
+    expect(fifth.walks()).toBe(1);
+    expect(fifth.sh.mode).toBe("tree");
+  } finally {
+    if (before === undefined) delete process.env.KEEL_CHECKPOINT_SNAPSHOT_MB; else process.env.KEEL_CHECKPOINT_SNAPSHOT_MB = before;
+  }
+});
