@@ -7,7 +7,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { McpServerConfig } from "./config.ts";
-import { ownerHome } from "../core/paths";
+import { ownerEnv, ownerHome } from "../core/paths";
 
 export type SourceServer = { source: string; label: string; file: string; name: string; config: McpServerConfig; project?: boolean };
 
@@ -155,7 +155,9 @@ export function readSources(cwd: string, failed: { file: string; error: string }
   const dotMcp = join(cwd, ".mcp.json");
   guard(dotMcp, () => add("claude:project", "Claude Code (.mcp.json)", dotMcp, json(dotMcp)?.mcpServers, claudeShape, true));
   // Servers of the Claude Code plugins that are turned on, with the plugin's own folder filled in.
-  const claudeDir = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+  // (A variable of the owner's shell names a folder in his home: a daemon that may not read the home does not follow it, and
+  // a named import home is the whole home.)
+  const claudeDir = (!process.env.KEEL_IMPORT_HOME && ownerEnv("CLAUDE_CONFIG_DIR")) || join(home, ".claude");
   const installed = join(claudeDir, "plugins", "installed_plugins.json");
   guard(installed, () => {
     const plugins = json(installed)?.plugins;
@@ -174,10 +176,10 @@ export function readSources(cwd: string, failed: { file: string; error: string }
       add(`claude:plugin:${id}`, `Claude Code plugin ${id.split("@")[0]}`, file, servers, claudeShape, false, expand);
     }
   });
-  const desktop = join(process.env.XDG_CONFIG_HOME?.startsWith("/") && !process.env.KEEL_IMPORT_HOME ? process.env.XDG_CONFIG_HOME : join(home, ".config"), "Claude", "claude_desktop_config.json");
+  const desktop = join(ownerEnv("XDG_CONFIG_HOME")?.startsWith("/") && !process.env.KEEL_IMPORT_HOME ? ownerEnv("XDG_CONFIG_HOME")! : join(home, ".config"), "Claude", "claude_desktop_config.json");
   guard(desktop, () => add("claude-desktop", "Claude Desktop", desktop, json(desktop)?.mcpServers, claudeShape));
 
-  const codexHome = process.env.KEEL_IMPORT_HOME ? join(home, ".codex") : process.env.CODEX_HOME ?? join(home, ".codex");
+  const codexHome = process.env.KEEL_IMPORT_HOME ? join(home, ".codex") : ownerEnv("CODEX_HOME") ?? join(home, ".codex");
   const codexToml = join(codexHome, "config.toml");
   guard(codexToml, () => add("codex", "Codex", codexToml, toml(codexToml)?.mcp_servers, codexShape));
   const codexProject = join(cwd, ".codex", "config.toml");
@@ -200,7 +202,7 @@ export function readSources(cwd: string, failed: { file: string; error: string }
   for (const f of [join(home, ".config", "opencode", "opencode.json"), join(home, ".config", "opencode", "opencode.jsonc")]) {
     guard(f, () => add("opencode", "OpenCode", f, jsonc(f)?.mcp, opencodeShape));
   }
-  const hermes = join(process.env.KEEL_IMPORT_HOME ? join(home, ".hermes") : process.env.HERMES_HOME ?? join(home, ".hermes"), "config.yaml");
+  const hermes = join(process.env.KEEL_IMPORT_HOME ? join(home, ".hermes") : ownerEnv("HERMES_HOME") ?? join(home, ".hermes"), "config.yaml");
   guard(hermes, () => add("hermes", "Hermes", hermes, yaml(hermes)?.mcp_servers, hermesShape));
   const zed = join(home, ".config", "zed", "settings.json");
   guard(zed, () => add("zed", "Zed", zed, jsonc(zed)?.context_servers, zedShape));

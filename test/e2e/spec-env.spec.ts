@@ -197,3 +197,56 @@ test("a scratch daemon on the owner's home lists none of his machines and reads 
     for (const dir of [state, home]) rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Bring your setup reads the other harnesses' settings from the import home. A scratch daemon on
+// the owner's own home (KEEL_ACCOUNT_HOME stands for it here) may not read it, and a missing
+// KEEL_IMPORT_HOME is a home with nothing in it: the plan lists nothing of his.
+test("a scratch daemon on the owner's home plans nothing of his harness setups", async () => {
+  test.setTimeout(120_000);
+  const state = join(ROOT, `spec-env-port-${Date.now().toString(36)}`);
+  const home = `${state}-ws`;
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  writeFileSync(join(home, ".claude/CLAUDE.md"), "owners-real-claude-instructions\n");
+  writeFileSync(join(home, ".claude/settings.json"), JSON.stringify({
+    permissions: { allow: ["Bash(owners-real-rule:*)"] },
+    hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "owners-real-hook" }] }] },
+  }));
+  writeFileSync(join(home, ".codex/AGENTS.md"), "owners-real-codex-instructions\n");
+  writeFileSync(join(home, ".codex/hooks.json"), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "owners-real-codex-hook" }] }] } }));
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { "owners-real-server": { command: "owners-real-mcp" } } }));
+  writeFileSync(join(home, ".codex/config.toml"), '[mcp_servers.owners-real-codex-server]\ncommand = "owners-real-codex-mcp"\n');
+  // A plugin turned on in Claude Code, with a server of its own, and Codex's and Hermes's settings.
+  const plugin = join(home, ".claude/plugins/owners-real-plugin");
+  mkdirSync(plugin, { recursive: true });
+  writeFileSync(join(plugin, ".mcp.json"), JSON.stringify({ mcpServers: { "owners-real-plugin-server": { command: "owners-real-plugin-mcp" } } }));
+  writeFileSync(join(home, ".claude/plugins/installed_plugins.json"), JSON.stringify({ plugins: { "owners-real-plugin@m": [{ scope: "user", installPath: plugin }] } }));
+  const settings = JSON.parse(readFileSync(join(home, ".claude/settings.json"), "utf8"));
+  writeFileSync(join(home, ".claude/settings.json"), JSON.stringify({ ...settings, enabledPlugins: { "owners-real-plugin@m": true } }));
+  mkdirSync(join(home, ".hermes"), { recursive: true });
+  writeFileSync(join(home, ".hermes/config.yaml"), "mcp_servers:\n  owners-real-hermes-server:\n    command: owners-real-hermes-mcp\n");
+  const plan = async (d: Awaited<ReturnType<typeof start>>) => JSON.stringify(await d.api("/api/port"));
+  // The variables a shell of his sets: they point into his home like the home itself does.
+  const shell = { CLAUDE_CONFIG_DIR: join(home, ".claude"), CODEX_HOME: join(home, ".codex"), XDG_CONFIG_HOME: join(home, ".config"), HERMES_HOME: join(home, ".hermes") };
+  let d: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    // Control: a daemon whose home is not the account's reads it, so the fixtures are found.
+    d = await start(state, [], { ...shell, KEEL_IMPORT_HOME: undefined });
+    const control = await plan(d);
+    for (const word of ["owners-real-hook", "owners-real-codex-hook", "owners-real-server", "owners-real-codex-server", "owners-real-plugin-server", "owners-real-hermes-server"]) expect(control).toContain(word);
+    await stop(d);
+    d = undefined;
+    // The same home as the account's, and an import home that is not there: nothing of it is listed.
+    for (const importHome of [undefined, join(state, "no-import-home")]) {
+      d = await start(state, [], { ...shell, KEEL_ACCOUNT_HOME: home, KEEL_IMPORT_HOME: importHome });
+      const text = await plan(d);
+      expect(text).not.toContain("owners-real");
+      expect((await d.api("/api/port")).items.filter((i: { state: string }) => i.state !== "skip" && i.state !== "done")).toEqual([]);
+      await stop(d);
+      d = undefined;
+    }
+  } finally {
+    if (d) await stop(d);
+    for (const dir of [state, home]) rmSync(dir, { recursive: true, force: true });
+  }
+});
