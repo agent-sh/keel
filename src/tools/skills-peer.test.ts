@@ -3,16 +3,25 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { allHooks } from "../engine/hooks.ts";
 import { blocksOf } from "../engine/prompt-store.ts";
-import { loadSkill, renderForOwnerIn, servedSkill, servedSkills, skillHome, type Skill, type SkillHome } from "./skills.ts";
+import { loadSettings, patchSettings } from "../admin/settings.ts";
+import { peerSkills, readSkill } from "../fleet/skills.ts";
+import { dropChoice, choiceOf } from "./skill-turn.ts";
+import { loadSkill, peerDigest, preloadSkillIn, renderForOwnerIn, servedSkill, servedSkills, skillHome, skillRun, type Skill, type SkillHome } from "./skills.ts";
 
 // The skills of a session placed on another machine are that machine's: the listing, the skill tool and the owner's
 // command read them there, and a machine that does not answer gives none, never this machine's.
 
 const dirs: string[] = [];
+const settingsDir = mkdtempSync(join(process.env.TMPDIR ?? ".", "skills-peer-settings-"));
 afterEach(() => {
   skillHome.of = undefined;
+  skillRun.grant = undefined;
+  patchSettings({ fleet_skills: { trusted: null } });
+  dropChoice("s1");
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
+
+loadSettings(settingsDir, () => {});
 
 // A repository on this machine that holds a skill the peer lacks.
 function localRepo(): string {
@@ -39,7 +48,7 @@ function home(skills: Skill[] | { error: string }, bodies: Record<string, string
       if ("error" in skills) return skills;
       const skill = skills.find((s) => s.name === name);
       if (!skill) return { missing: { names: skills.map((s) => s.name) } };
-      return { skill, raw: `---\nname: ${name}\n---\n${bodies[name] ?? "peer body"} in ${"${CLAUDE_SKILL_DIR}"}\n`, vars: { CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir }, grantable: false };
+      return { skill, raw: `---\nname: ${name}\n---\n${bodies[name] ?? "peer body"} in ${"${CLAUDE_SKILL_DIR}"}\n`, vars: { CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir } };
     },
   };
 }
@@ -130,4 +139,94 @@ test("a machine serves its skills of a folder, and one skill's text with its var
   expect("skill" in one && one.vars.CLAUDE_SESSION_ID).toBe("s9");
   const none = servedSkill(dir, "nope", "s9");
   expect("missing" in none && none.missing.names).toContain("local-only");
+});
+
+// A peer decides nothing about what runs unasked here: its word that a skill may grant is not read, and only
+// the owner's entry for that machine and skill, at the text he trusted, grants (and takes model, effort, fork).
+const risky = (): Skill => ({ ...peerSkill("evil", "d"), allowedTools: ["Bash(*)", "mcp__srv__tool"], model: "big", effort: "max", fork: { background: false } });
+const riskyHome = (): SkillHome => ({
+  machine: "devbox",
+  list: async () => ({ skills: [risky()] }),
+  // (The reply as a lying machine sends it: it says the skill may grant.)
+  get: async () => ({ skill: risky(), raw: "---\nname: evil\n---\nbody\n", vars: {}, grantable: true } as any),
+});
+const ctx1 = () => ({ sessionId: "s1", cwd: "/nonexistent", signal: new AbortController().signal, seen: new Map(), spillDir: "" }) as any;
+
+test("a skill of a peer grants nothing, takes no model, effort or fork, without the owner's entry for it", async () => {
+  const granted: unknown[] = [];
+  let forked = 0;
+  skillRun.grant = (_s, rules) => void granted.push(rules);
+  skillRun.fork = async () => (forked++, { content: "forked" } as any);
+  skillHome.of = () => riskyHome();
+  const r = await loadSkill("evil", "", ctx1());
+  expect(granted).toEqual([]);
+  expect(forked).toBe(0);
+  expect(choiceOf("s1")).toBeUndefined();
+  const text = String(r.content);
+  expect(text).toContain("ask as usual: it is on devbox");
+  expect(text).not.toContain("run without asking");
+  expect(text).not.toContain("big");
+  // The owner's command as well.
+  const own = await renderForOwnerIn("evil", "", { id: "s1", workspace: "/w" }, { grant: "now", count: false });
+  expect("text" in own && own.text).toContain("ask as usual: it is on devbox");
+  expect(granted).toEqual([]);
+  skillRun.fork = undefined as any;
+});
+
+test("the owner's entry for a machine and skill, at the text he trusted, grants; a changed text does not", async () => {
+  const granted: any[] = [];
+  skillRun.grant = (_s, rules) => void granted.push(rules);
+  skillHome.of = () => riskyHome();
+  const raw = "---\nname: evil\n---\nbody\n";
+  expect(patchSettings({ fleet_skills: { trusted: { devbox: { evil: peerDigest(raw) } } } }).ok).toBe(true);
+  const r = await loadSkill("evil", "", ctx1());
+  expect(granted.length).toBe(1);
+  expect(String(r.content)).toContain("run without asking");
+  // Another machine of the same skill name, or another text, is not covered.
+  granted.length = 0;
+  expect(patchSettings({ fleet_skills: { trusted: { devbox: { evil: peerDigest("other") } } } }).ok).toBe(true);
+  await loadSkill("evil", "", ctx1());
+  expect(granted).toEqual([]);
+  expect(patchSettings({ fleet_skills: { trusted: { devbox: { evil: "nope" } } } }).ok).toBe(false);
+});
+
+test("an agent placed on a peer preloads the peer's skill, not this machine's", async () => {
+  const dir = localRepo();
+  skillHome.of = () => home([peerSkill("y", "from the peer")], { y: "use it" });
+  const got = await preloadSkillIn("y", dir, "c1");
+  expect("text" in got && got.text).toContain("use it in /peer/skills/y");
+  expect(await preloadSkillIn("local-only", dir, "c1")).toEqual({ error: "no skill of that name on devbox" });
+  skillHome.of = () => home({ error: "down" });
+  expect("error" in (await preloadSkillIn("y", dir, "c1"))).toBe(true);
+});
+
+test("a malformed answer from a machine is read for what it is", async () => {
+  expect(readSkill(null)).toBeNull();
+  expect(readSkill({ name: "x" })).toBeNull();
+  expect(readSkill(peerSkill("ok", "d"))?.name).toBe("ok");
+  const asks: any[] = [];
+  const answers: Record<string, unknown> = { "/api/fleet/hands/skills": { skills: [null, 7, peerSkill("ok", "d"), { name: "bad" }] } };
+  const fleet: any = { row: () => ({ id: "m1", name: "devbox", workspace_root: "/w" }), handsJson: async (_id: string, path: string) => (asks.push(path), answers[path]) };
+  const home = peerSkills(fleet, () => ({ id: "s1", workspace: "/w", machine: "m1" }), () => {})("s1")!;
+  const l = await home.list();
+  expect("skills" in l && l.skills.map((k) => k.name)).toEqual(["ok"]);
+  answers["/api/fleet/hands/skill"] = { skill: { name: "bad" }, raw: "x", vars: {} };
+  expect("error" in (await home.get("bad"))).toBe(true);
+  answers["/api/fleet/hands/skill"] = { skill: peerSkill("ok", "d"), raw: "x", vars: { A: "1", B: 2 } };
+  const g = await home.get("ok");
+  expect("vars" in g && g.vars).toEqual({ A: "1" });
+});
+
+test("the last good list stands in for a few minutes when a read fails", async () => {
+  let t = 0;
+  let down = false;
+  const fleet: any = { row: () => ({ id: "m1", name: "devbox", workspace_root: "/w" }), handsJson: async () => { if (down) throw new Error("reset"); return { skills: [peerSkill("ok", "d")] }; } };
+  const home = peerSkills(fleet, () => ({ id: "s1", workspace: "/w", machine: "m1" }), () => {}, () => t)("s1")!;
+  expect("skills" in (await home.list())).toBe(true);
+  down = true;
+  t = 4 * 60_000;
+  const kept = await home.list();
+  expect("skills" in kept && kept.skills.map((k) => k.name)).toEqual(["ok"]);
+  t = 6 * 60_000;
+  expect("error" in (await home.list())).toBe(true);
 });

@@ -3,7 +3,9 @@
 // description once (frozen, so cached); the body loads only when the model
 // calls the skill tool, with Claude Code's argument substitution.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
+import { registerSettings, settings } from "../admin/settings.ts";
 import { basename, dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
@@ -423,9 +425,9 @@ const choiceOf = (skill: Skill) => ({ ...(skill.model ? { model: skill.model } :
 
 // The grant a skill makes, or why it makes none.
 const NOT_TRUSTED = "it is this repository's own skill, and its tools run without asking only once the owner trusts it himself (the session's Trust panel)";
-function grantOf(skill: Skill, vars: Record<string, string>, grantable = mayGrant(skill)): { rules: { kind: RuleKind; pattern: string }[]; granted: string[]; left: string[]; held?: string } {
+function grantOf(skill: Skill, vars: Record<string, string>, grantable = mayGrant(skill), why = NOT_TRUSTED): { rules: { kind: RuleKind; pattern: string }[]; granted: string[]; left: string[]; held?: string } {
   if (!skill.allowedTools?.length) return { rules: [], granted: [], left: [] };
-  if (!grantable) return { rules: [], granted: [], left: [], held: NOT_TRUSTED };
+  if (!grantable) return { rules: [], granted: [], left: [], held: why };
   if (!skillRun.grant) return { rules: [], granted: [], left: [], held: "nothing here grants them" };
   const { rules, left } = skillRules(skill, vars);
   const leftNames = new Set(left.map((l) => l.slice(0, l.indexOf(" (")).trim()));
@@ -443,9 +445,28 @@ export type SkillHome = {
   get(name: string): Promise<PeerSkill | { missing: { names: string[]; held?: string } } | { error: string }>;
 };
 export const skillHome: { of?: (sessionId: string) => SkillHome | null } = {};
-// A skill as the machine that holds it read it: its text, the variables of its text
-// and whether its allowed-tools may run without asking (that machine's trust).
-export type PeerSkill = { skill: Skill; raw: string; vars: Record<string, string>; grantable: boolean };
+// A skill as the machine that holds it read it: its text and the variables of its text.
+// What it may do on this machine is decided here, never by that machine (see peerTrusted).
+export type PeerSkill = { skill: Skill; raw: string; vars: Record<string, string> };
+
+// The owner's own word on a skill of another machine: the digest of its text he trusted, by machine
+// and skill name (`fleet_skills.trusted`). With none, or with the text changed since, its allowed-tools
+// ask as usual and the model, effort and fork it names are not taken. The machine's own answer about it
+// counts for nothing: it is the one a skill would have to talk past.
+registerSettings("fleet_skills", { trusted: {} as Record<string, Record<string, string>> }, (v) => {
+  if (!v.trusted || typeof v.trusted !== "object" || Array.isArray(v.trusted)) return "trusted maps a machine to the skills trusted on it";
+  for (const [m, skills] of Object.entries(v.trusted as Record<string, unknown>)) {
+    if (!skills || typeof skills !== "object" || Array.isArray(skills)) return `trusted: ${m} maps a skill name to the digest of its text`;
+    for (const [k, d] of Object.entries(skills)) if (typeof d !== "string" || !/^[0-9a-f]{64}$/.test(d)) return `trusted: ${m}: ${k} is not a sha-256 digest`;
+  }
+  return undefined;
+});
+export const peerDigest = (raw: string) => createHash("sha256").update(raw).digest("hex");
+export function peerTrusted(machine: string, name: string, raw: string): boolean {
+  const d = (settings().fleet_skills?.trusted as Record<string, Record<string, string>> | undefined)?.[machine]?.[name];
+  return typeof d === "string" && d === peerDigest(raw);
+}
+const peerHeld = (machine: string) => `it is on ${machine}, and the owner has not trusted it from here (fleet_skills in Settings)`;
 
 // What a machine serves of its skills to a session placed on it (the hands routes): what it
 // discovers for the folder, under its own trust and scan rules, and a skill's text with its variables.
@@ -461,19 +482,29 @@ export function servedSkill(cwd: string, name: string, sessionId: string): PeerS
     const held = heldBack.find((h) => want(h.name));
     return { missing: { names, ...(held ? { held: heldText(held) } : {}) } };
   }
-  return { skill, raw: readFileSync(skill.file, "utf8"), vars: varsOf(skill, cwd, sessionId), grantable: mayGrant(skill) };
+  return { skill, raw: readFileSync(skill.file, "utf8"), vars: varsOf(skill, cwd, sessionId) };
 }
 const heldText = (h: { name: string; dir: string }) => `The skill "${h.name}" is this repository's and does not load: ${(skillFilter.held?.(h.dir) ?? "the owner has not trusted it").replace(/\.?$/, ".")}`;
 
 // A skill found for a session: here, or on the machine its tools run on.
-type Found = PeerSkill & { machine?: string };
+// `held`: why its allowed-tools ask (a skill of another machine the owner has not trusted from here).
+type Found = PeerSkill & { grantable: boolean; machine?: string; held?: string };
+
+// A skill of another machine as this one takes it: its text and variables are the machine's own, what it
+// may do here is the owner's word kept here. Untrusted, it grants nothing and its model, effort and fork
+// are not taken (it is plain text then; a skill only narrows or informs).
+function adoptPeer(machine: string, r: PeerSkill): Found {
+  const trusted = peerTrusted(machine, r.skill.name, r.raw);
+  const { model: _m, effort: _e, fork: _f, ...rest } = r.skill;
+  return { ...r, skill: trusted ? r.skill : rest, grantable: trusted, machine, ...(trusted ? {} : { held: peerHeld(machine) }) };
+}
 async function findSkill(ctx: { sessionId: string; cwd: string }, name: string): Promise<{ found: Found } | { error: string }> {
   const home = skillHome.of?.(ctx.sessionId);
   if (home) {
     const r = await home.get(name);
     if ("error" in r) return { error: `The skills on ${home.machine}, where this session's tools run, could not be read: ${r.error}. None are offered; this machine's skills are not used there.` };
     if ("missing" in r) return { error: r.missing.held ?? `No skill named "${name}" on ${home.machine}. Available: ${r.missing.names.join(", ") || "none"}.` };
-    return { found: { ...r, machine: home.machine } };
+    return { found: adoptPeer(home.machine, r) };
   }
   const want = (n: string) => n === name || n === name.replace(/^\//, "");
   const skill = discoverSkills(ctx.cwd).filter((s) => s.enabled).find((s) => want(s.name));
@@ -498,7 +529,7 @@ function peerHooksSaid(raw: string, machine: string): string {
 export async function loadSkill(name: string, args: string, ctx: ToolContext): Promise<ToolOutput> {
   const r = await findSkill(ctx, name);
   if ("error" in r) return fail(r.error);
-  const { skill, raw, vars, grantable, machine } = r.found;
+  const { skill, raw, vars, grantable, machine, held } = r.found;
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);
   const { body } = frontmatter(raw);
   const text = renderSkill(body, args ?? "", skill.arguments, vars);
@@ -510,7 +541,7 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
   // Sent again unless the model can still see it: after a clear, a rewind or
   // another branch it is gone from the context even though it was loaded.
   // (Loading it again grants its tools again, for this turn: Claude Code re-applies them.)
-  const g = grantOf(skill, vars, grantable);
+  const g = grantOf(skill, vars, grantable, held);
   if (g.rules.length) skillRun.grant!(ctx.sessionId, g.rules, skill.name, false);
   holdChoice(ctx.sessionId, choiceOf(skill), skill.name, grantable, false);
   const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine) : hooksSaid(skill, raw, ctx.sessionId));
@@ -533,6 +564,20 @@ export function preloadSkill(name: string, cwd: string, sessionId: string): { te
   return { text: `Skill ${skill.name} (base directory ${skill.dir}):\n\n${renderSkill(body, "", skill.arguments, varsOf(skill, cwd, sessionId)).trim()}` };
 }
 
+// The same for an agent that may be placed on another machine: what it preloads is read there.
+export async function preloadSkillIn(name: string, cwd: string, sessionId: string): Promise<{ text: string } | { error: string }> {
+  const home = skillHome.of?.(sessionId);
+  if (!home) return preloadSkill(name, cwd, sessionId);
+  const r = await home.get(name);
+  if ("error" in r) return { error: `the skills on ${home.machine}, where its tools run, could not be read: ${r.error}` };
+  if ("missing" in r) return { error: `no skill of that name on ${home.machine}` };
+  const { skill, raw, vars } = r;
+  if (!skill.enabled) return { error: `it is turned off on ${home.machine}` };
+  if (!skill.modelInvocable) return { error: "only the owner invokes it (disable-model-invocation)" };
+  usage?.record(skill.name);
+  return { text: `Skill ${skill.name} (base directory ${skill.dir}, on ${home.machine}):\n\n${renderSkill(frontmatter(raw).body, "", skill.arguments, vars).trim()}` };
+}
+
 // The owner invoking a skill from the message box: same rendering, and skills
 // hidden from the model are allowed; ones marked not user-invocable are not.
 // Its allowed-tools hold for the turn the owner's command starts (`grant`).
@@ -550,11 +595,11 @@ export async function renderForOwnerIn(name: string, args: string, s: { id: stri
   const r = await home.get(name);
   if ("error" in r) return { error: `the skills on ${home.machine}, where this session's tools run, could not be read: ${r.error}` };
   if ("missing" in r || r.skill.name !== name) return { error: `no skill named ${name} on ${home.machine}` };
-  return ownerText({ ...r, machine: home.machine }, args, s.id, opts);
+  return ownerText(adoptPeer(home.machine, r), args, s.id, opts);
 }
 
 function ownerText(f: Found, args: string, sessionId: string, opts: { grant?: "next" | "now"; cmd?: string; count?: boolean }): { skill: Skill; text: string } | { error: string } {
-  const { skill, raw, vars, grantable, machine } = f;
+  const { skill, raw, vars, grantable, machine, held } = f;
   const name = skill.name;
   if (!skill.userInvocable) return { error: `${name} is not meant to be invoked by hand` };
   if (!skill.enabled) return { error: `${name} is turned off in Settings > Skills` };
@@ -563,7 +608,7 @@ function ownerText(f: Found, args: string, sessionId: string, opts: { grant?: "n
   if (opts.count !== false) usage?.record(skill.name);
   let extra = "";
   if (opts.grant && !skill.fork) {
-    const g = grantOf(skill, vars, grantable);
+    const g = grantOf(skill, vars, grantable, held);
     if (g.rules.length) skillRun.grant!(sessionId, g.rules, skill.name, opts.grant === "next", opts.cmd);
     holdChoice(sessionId, choiceOf(skill), skill.name, grantable, opts.grant === "next", opts.cmd);
     extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, machine ? peerHooksSaid(raw, machine) : hooksSaid(skill, raw, sessionId));

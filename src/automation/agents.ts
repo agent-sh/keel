@@ -31,7 +31,7 @@ import { isReviewer, parseWrites } from "../safety/write-scope.ts";
 import * as writeAsks from "./write-asks.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
-import { carriedPlugins, preloadSkill } from "../tools/skills.ts";
+import { carriedPlugins, preloadSkillIn } from "../tools/skills.ts";
 import { catalogSources } from "../tools/catalog.ts";
 import { speedOffer } from "../providers/registry.ts";
 import { enabledUnits } from "../plugins/registry.ts";
@@ -1071,7 +1071,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const preloaded: string[] = [];
   let bytes = 0;
   for (const name of def.skills ?? []) {
-    const r = preloadSkill(name, placed?.cwd ?? iso?.cwd ?? parent.workspace, child.id);
+    const r = await preloadSkillIn(name, placed?.cwd ?? iso?.cwd ?? parent.workspace, child.id);
     if ("error" in r) { left.push(`the skill ${name}: ${r.error}`); continue; }
     // A definition (a repository's too) cannot fill the agent's context with skills: past the bound one is not preloaded.
     const n = Buffer.byteLength(r.text);

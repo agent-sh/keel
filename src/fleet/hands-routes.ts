@@ -146,14 +146,14 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
     "/api/fleet/hands/skills": {
       POST: async (req: Request) => {
         const b = await body(req);
-        if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd))) return bad("not a directory inside the granted one");
+        if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd)) || !contains(realOf(b.root), realOf(b.cwd))) return bad("not a directory inside the granted one");
         return json({ skills: existsSync(b.cwd) ? servedSkills(resolve(b.cwd)) : [] });
       },
     },
     "/api/fleet/hands/skill": {
       POST: async (req: Request) => {
         const b = await body(req);
-        if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd))) return bad("not a directory inside the granted one");
+        if (!b.cwd || !b.root || !contains(resolve(b.root), resolve(b.cwd)) || !contains(realOf(b.root), realOf(b.cwd))) return bad("not a directory inside the granted one");
         if (typeof b.name !== "string" || !b.name || typeof b.session !== "string" || !/^[\w-]+$/.test(b.session)) return bad("a skill is asked for by name, for a session");
         return json(servedSkill(resolve(b.cwd), b.name, b.session));
       },
