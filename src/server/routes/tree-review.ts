@@ -57,7 +57,7 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
   };
 
   // What the owner's decision on an area does, and the words it is recorded with.
-  async function decide(root: string, v: TreeView, key: string, action: string, note: string, only: string[] | undefined): Promise<{ status: number; body: unknown }> {
+  async function decide(root: string, v: TreeView, key: string, action: string, note: string, only: string[] | undefined, subset?: string[]): Promise<{ status: number; body: unknown }> {
     const area = v.areas.find((a) => a.key === key);
     if (!area || !v.repo) return { status: 404, body: { error: "no such area in this tree's review (read it again)" } };
     const all = area.branches.map((b) => ({ branch: b, head: area.marks[b]! }));
@@ -96,7 +96,9 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
     // Not landed: what the proposed order holds back (its agent works, the owner sent it back or dropped an
     // area it changes, on its head now). An area the owner dropped lands once its decision is cleared.
     const blocked = new Map(area.branches.filter((b) => v.held[b]).map((b) => [b, v.held[b]!]));
-    const branches = inOrder(v.order, area.branches.filter((b) => !blocked.has(b)));
+    // `subset`: land only these branches of the area (the ones that do not conflict); the rest stay for a later decision.
+    const wanted = subset?.length ? new Set(subset) : null;
+    const branches = inOrder(v.order, area.branches.filter((b) => !blocked.has(b) && (!wanted || wanted.has(b))));
     if (!branches.length) return { status: 409, body: { error: `nothing to land: ${[...blocked].map(([b, why]) => `${b}: ${why}`).join("; ")}` } };
     const r = await q.add(v.repo, branches, null);
     const outcome = [
@@ -139,7 +141,8 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
         const only = Array.isArray(body?.agents) ? body.agents.filter((x: unknown) => typeof x === "string") : undefined;
         try {
           const v = await tr.view(req.params.id, { fresh: true, repo: typeof body?.repo === "string" ? body.repo : undefined });
-          const r = await decide(req.params.id, v, key, action, note, only);
+          const subset = Array.isArray(body?.branches) ? body.branches.filter((x: unknown) => typeof x === "string") : undefined;
+          const r = await decide(req.params.id, v, key, action, note, only, subset);
           return json({ ...(r.body as object), view: r.status === 200 ? await tr.view(req.params.id, { repo: v.repo ?? undefined }) : undefined }, r.status);
         } catch (e) {
           errors.capture("server", e, { at: "tree review decide", session: req.params.id });

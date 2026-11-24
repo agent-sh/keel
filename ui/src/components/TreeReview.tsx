@@ -10,9 +10,10 @@ import type { Session } from "../../../src/core/types.ts";
 import { useTreeMark } from "../lib/board.ts";
 import { usePhoneWidth } from "../lib/list-hold.ts";
 import { failed, onFeature, reportUnlessGone, scope } from "../lib/store.ts";
-import { decide, laneOf, readArea, readTree, type AreaDetail, type AreaHunk, type Decision, type TreeArea, type TreeBranch, type TreeOverlap, type TreeView } from "../lib/tree-review.ts";
+import { decide, laneOf, readArea, readTree, wouldConflict, type AreaDetail, type AreaHunk, type Decision, type TreeArea, type TreeBranch, type TreeOverlap, type TreeView } from "../lib/tree-review.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { PicturesArea } from "./Pictures.tsx";
+import { confirmAction } from "./Confirm.tsx";
 
 const short = (b: string) => b.replace(/^keel\//, "");
 const sha = (s: string | null | undefined) => (s ? s.slice(0, 9) : "?");
@@ -164,7 +165,7 @@ const decided = (a: TreeArea) => {
   return acts.length === 1 ? acts[0]! : acts.length ? "mixed" : "none";
 };
 
-function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeView; lanes: Lanes; onDecide: (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[]) => Promise<boolean>; busy: boolean }) {
+function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeView; lanes: Lanes; onDecide: (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[]) => Promise<boolean>; busy: boolean }) {
   const [back, setBack] = useState(false);
   const [note, setNote] = useState("");
   const agentsHere = view.branches.filter((b) => a.branches.includes(b.branch));
@@ -182,16 +183,35 @@ function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeV
   const carried = Object.entries(a.carries).filter(([b]) => !view.held[b]);
   const heldHere = a.branches.filter((b) => view.held[b]);
   const btn = "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-caption disabled:opacity-50";
+  // The branches that would conflict when landed lie in the order after the one they meet: landing them is
+  // the owner's call, so the main button lands the rest and the whole set asks first.
+  const risky = wouldConflict(view, a.order);
+  const safe = a.order.filter((b) => !risky.includes(b));
+  const landAll = async () => {
+    if (risky.length && !(await confirmAction({
+      title: `Land all ${a.order.length} branches?`,
+      body: `${risky.map(short).join(", ")} would conflict when landing: ${risky.length === 1 ? "its agent rebases it" : "their agents rebase them"} onto the branch that lands first.`,
+      action: `Land all ${a.order.length}`,
+    }))) return;
+    await onDecide("land");
+  };
   return (
     <div className="flex flex-col gap-2 border-b border-line px-4 py-3" data-testid="tree-area-head">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h3 className="min-w-0 truncate font-mono text-ui font-medium text-fg max-md:whitespace-normal max-md:break-all">{a.key === "." ? "top level" : a.key}</h3>
         <span className="text-caption text-muted">{a.files.length} {a.files.length === 1 ? "file" : "files"} · <span className="text-ok">+{a.added}</span> <span className="text-danger">-{a.removed}</span></span>
         <span className="flex-1" />
-        <button type="button" disabled={busy || !a.order.length} onClick={() => void onDecide("land")} data-testid="tree-land"
+        {a.order.length > 0 && risky.length > 0 && safe.length > 0 && (
+          <button type="button" disabled={busy} onClick={() => void onDecide("land", undefined, undefined, safe)} data-testid="tree-land"
+            title={`Queues ${safe.map(short).join(", ")}. ${risky.map(short).join(", ")} would conflict when landing and stays for its agent to rebase.`}
+            className={cn(btn, "bg-accent text-accent-fg hover:bg-accent-hover")}>
+            <GitMerge className="size-3.5" />Land {safe.length}, {risky.length} would conflict
+          </button>
+        )}
+        <button type="button" disabled={busy || !a.order.length} onClick={() => void landAll()} data-testid={risky.length > 0 && safe.length > 0 ? "tree-land-all" : "tree-land"}
           title={a.order.length ? `Queued in this order: ${a.order.map(short).join(", ")}` : "No branch here can land now: see what holds it"}
-          className={cn(btn, "bg-accent text-accent-fg hover:bg-accent-hover")}>
-          <GitMerge className="size-3.5" />Land {a.order.length > 1 ? `${a.order.length} branches` : "it"}
+          className={cn(btn, risky.length > 0 && safe.length > 0 ? "border border-line text-fg hover:bg-hover" : "bg-accent text-accent-fg hover:bg-accent-hover")}>
+          <GitMerge className="size-3.5" />{risky.length > 0 && safe.length > 0 ? `Land all ${a.order.length}` : <>Land {a.order.length > 1 ? `${a.order.length} branches` : "it"}</>}
         </button>
         <button type="button" disabled={busy} onClick={() => { if (!back) { setNote(""); setTo(agentsHere.map((b) => b.agent)); } setBack(!back); }} data-testid="tree-back" className={cn(btn, "border border-line text-fg hover:bg-hover")}>
           <CornerUpLeft className="size-3.5" />Send back
@@ -425,13 +445,13 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
   }, [session.id, at, view]);
   const lanes: Lanes = useMemo(() => new Map((view?.branches ?? []).map((b, i) => [b.branch, i])), [view]);
   const area = view?.areas.find((a) => a.key === at) ?? null;
-  const onDecide = async (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[]) => {
+  const onDecide = async (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[]) => {
     if (!area) return false;
     setBusy(true);
     setErr("");
     setSaid("");
     try {
-      const r = await decide(session.id, { area: area.key, action, note, agents, repo: view?.repo });
+      const r = await decide(session.id, { area: area.key, action, note, agents, branches, repo: view?.repo });
       if (r.view) setView(r.view);
       setSaid(r.outcome ?? "");
       return true;

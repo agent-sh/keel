@@ -249,3 +249,66 @@ for (const n of [6, 30]) {
     await page.setViewportSize({ width: 1920, height: 1040 });
   });
 }
+
+// An area where one branch would conflict with another: the main button lands the ones that do not
+// ("Land 2, 1 would conflict"), and landing the whole set asks first. Two agents change line 3 of one file
+// (the one that changes more lands first, the other is rebased onto it), a third adds a file of its own.
+test("the tree review lands the branches that do not conflict, and asks before it lands them all", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+  const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `tree-safe-${Date.now()}`, "repo");
+  mkdirSync(join(repo, "src/board"), { recursive: true });
+  mkdirSync(join(repo, ".keel"));
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "src/board/rules.ts"), Array.from({ length: 10 }, (_, i) => `export const rule${i + 1} = ${i + 1};`).join("\n") + "\n");
+  writeFileSync(join(repo, "check.sh"), "echo checking; test -f src/board/rules.ts\n");
+  writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { files: "sh check.sh" }, land: { checks: ["files"] } }));
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "init");
+  const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`;
+  const commit = (msg: string) => `git add -A && git -c user.name=k -c user.email=k@k commit -qm '${msg}'`;
+  const lane = (title: string, command: string) => ({ name: "spawn_agent", input: { message: `${title}\n${calls([{ name: "Bash", input: { command } }])}` } });
+  const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start three agents.", `script:batch ${JSON.stringify([
+    lane("Lane big", `sed -i 's/rule3 = 3/rule3 = 300/; s/rule4 = 4/rule4 = 400/' src/board/rules.ts && ${commit("Lane big")}`),
+    lane("Lane small", `sed -i 's/rule3 = 3/rule3 = 30/' src/board/rules.ts && ${commit("Lane small")}`),
+    lane("Lane own", `printf 'export const own = 1;\\n' > src/board/own.ts && ${commit("Lane own")}`),
+  ])}`) } });
+  const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
+  await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(3);
+  const by = async (title: string) => (await agentsOf()).find((a) => a.title === title)!;
+  const big = await by("Lane big"), small = await by("Lane small"), own = await by("Lane own");
+  const entries = async () => ((await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as any[]).map((e) => e.branch);
+
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "board");
+  await page.getByTestId("board-review-tree").click();
+  const dlg = page.getByTestId("tree-review");
+  await expect(dlg.getByTestId("tree-summary")).toContainText("3 branches to land · 1 area · 1 overlap (1 would conflict)", { timeout: 60_000 });
+  // The main button lands the two that do not conflict and says so; landing all three is a plain button beside it.
+  await expect(dlg.getByTestId("tree-land")).toHaveText("Land 2, 1 would conflict");
+  await expect(dlg.getByTestId("tree-land")).toHaveAttribute("title", new RegExp(`${small.branch.replace(/^keel\//, "")} would conflict`));
+  await expect(dlg.getByTestId("tree-land-all")).toHaveText("Land all 3");
+  await page.mouse.move(0, 0);
+  await shoot(page, "tree-review-03-safe-subset");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await shoot(page, "tree-review-04-safe-subset-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+
+  // Landing all three asks first: Cancel queues nothing.
+  await dlg.getByTestId("tree-land-all").click();
+  const sure = page.getByTestId("confirm");
+  await expect(sure).toContainText("Land all 3 branches?");
+  await expect(sure).toContainText(small.branch.replace(/^keel\//, ""));
+  await shoot(page, "tree-review-05-land-all-asks");
+  await sure.getByRole("button", { name: "Cancel" }).click();
+  await expect(sure).toHaveCount(0);
+  expect(await entries()).toEqual([]);
+
+  // The main button queues the two that do not conflict, and the one that would stays out of the queue.
+  await dlg.getByTestId("tree-land").click();
+  await expect(dlg.getByTestId("tree-said")).toContainText("Queued in this order");
+  await expect.poll(async () => (await entries()).sort(), { timeout: 30_000 }).toEqual([big.branch, own.branch].sort());
+  await expect(dlg.getByTestId("tree-said")).not.toContainText(`Not queued: ${small.branch}`);
+});
