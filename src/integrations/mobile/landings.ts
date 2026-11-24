@@ -30,6 +30,11 @@ export type LandingsDeps = {
   sendBack: (agentId: string, text: string, key: string) => Promise<{ waits: boolean; held?: boolean }>;
 };
 
+// The queue's entries of a branch (the queue makes its table; none yet is no entry).
+function entriesOf(store: Store, repo: string, branch: string): string[] {
+  try { return store.db.query<{ id: string }, [string, string]>("SELECT id FROM landing_queue WHERE repo = ? AND branch = ?").all(repo, branch).map((x) => x.id); } catch { return []; }
+}
+
 export function landings(d: LandingsDeps) {
   const areas = new Map<string, Promise<string>>();
   const numstat = (repo: string, base: string, head: string) => {
@@ -97,12 +102,14 @@ export function landings(d: LandingsDeps) {
     if ("status" in got) return got;
     const q = d.landing(), repo = got.repo;
     if (!q || !repo) return { status: 409, error: q ? "The branch's repository is not known on this machine." : "The landing queue is not running.", card: got.card };
+    // (What was live before this call: an entry it did not make is someone else's, and is not taken out below.)
+    const before = new Set(entriesOf(d.store, repo, got.card.branch));
     const r = await q.add(repo, [got.card.branch], null);
     const e = r.queued[0];
     if (!e) return { status: 409, error: `Not queued: ${r.refused[0]?.why ?? "the queue took nothing"}.`, card: got.card };
     // The queue took the branch as it is now: a head that moved since the card was read is not what was decided.
     if (e.tip !== got.card.head) {
-      if (e.state === "queued") q.remove(e.id, null);
+      if (e.state === "queued" && !before.has(e.id)) q.remove(e.id, null);
       return { status: 409, error: "The branch moved while it was being queued. Read the card again before deciding.", card: got.card };
     }
     return { entry: { id: e.id, state: e.state, why: e.why ?? null }, warnings: r.warnings, card: got.card };

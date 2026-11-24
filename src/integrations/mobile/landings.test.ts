@@ -75,6 +75,12 @@ test("a landing goes to the queue only on the facts shown, and only for the head
   setTip("b".repeat(40));
   const moved: any = await L.land(card!.key, card!.fp);
   expect([moved.status, removed]).toEqual([409, ["e1"]]);
+  // An entry that was live before this call is not its own: it stays, and the answer is the same refusal.
+  store.db.exec("CREATE TABLE IF NOT EXISTS landing_queue (id TEXT PRIMARY KEY, repo TEXT, branch TEXT)");
+  store.db.query("INSERT INTO landing_queue (id, repo, branch) VALUES ('e1', ?, 'keel/ag1')").run(dir);
+  const theirs: any = await L.land(card!.key, card!.fp);
+  expect([theirs.status, removed]).toEqual([409, ["e1"]]);
+  store.db.exec("DROP TABLE landing_queue");
   // Landed meanwhile, or gone from the tree: no card to decide on.
   setRows([row("ag1", { landed: { state: "yes", how: "ancestor" } })]);
   expect(await L.land(card!.key, card!.fp)).toMatchObject({ status: 409, card: null });
