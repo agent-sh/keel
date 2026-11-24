@@ -77,6 +77,10 @@ export type ReadOpts = {
   // Folders a command reads and writes into a layer of its own (an overlay: `up` and `work` are its folders, on
   // one file system): what it writes there stays out of the folder. Only where overlays mount (overlays()).
   layers?: { at: string; up: string; work: string }[];
+  // The session's own temp folder, a folder on disk bound at /tmp for every command (and TMPDIR points there): what a
+  // command leaves in /tmp is there for the next one, and is not the machine's /tmp (memory on many machines) nor
+  // another session's. Without it /tmp is an empty folder in memory for each command.
+  tmp?: string;
 };
 
 // The folders at the top of a Linux file system that hold the system.

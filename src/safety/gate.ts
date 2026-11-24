@@ -610,7 +610,15 @@ export class Gate {
     const worktrees = this.agentTrees(session.id);
     const root = (this.rootOf(session), this.pins.get(`${session.id}\0${session.workspace}`)?.id);
     const more = [...this.readMore.values()].flatMap((f) => f(session));
-    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts), ...more], ...(worktrees.length ? { worktrees } : {}), ...(root ? { root } : {}), ...(profile === "workspace-write" ? this.held(session) : {}) };
+    const tmp = this.tmpOf(session.id);
+    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts), ...more], ...(worktrees.length ? { worktrees } : {}), ...(root ? { root } : {}), ...(tmp ? { tmp } : {}), ...(profile === "workspace-write" ? this.held(session) : {}) };
+  }
+  // The session's own temp folder (bound at /tmp in its sandbox): under its spill folder, which goes with the session.
+  // None when it cannot be made: the command then has an empty /tmp in memory.
+  private tmpOf(sessionId: string): string | undefined {
+    const dir = join(this.store.stateDir, "spill", sessionId, "tmp");
+    try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { return undefined; }
+    return dir;
   }
   // What an agent's write scope keeps read-only in its sandbox: its folder when no place of the scope holds it, and
   // the branches another checkout has out (sandbox.ts compose).

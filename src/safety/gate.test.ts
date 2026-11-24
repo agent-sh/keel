@@ -725,3 +725,17 @@ test("the columns of an agent's tie are added each on its own", () => {
   expect(g.setPerm(s.id, { mode: "ask" }, { follows: true, want: "plan" }).mode).toBe("ask");
   expect(g.tieOf(s.id)).toEqual({ follows: true, want: "plan" });
 });
+
+// A session's sandbox /tmp is a folder under its own spill folder, which goes with the session.
+test("each session's sandbox temp folder is under its spill folder", () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-gate-")));
+  const g = new Gate(store, new Bus(), () => true);
+  const a = store.createSession({ workspace: store.stateDir, model: "fixture:m" });
+  const b = store.createSession({ workspace: store.stateDir, model: "fixture:m" });
+  const at = (s: Session) => g.readOpts(s, "workspace-write").tmp;
+  expect(at(a)).toBe(join(store.stateDir, "spill", a.id, "tmp"));
+  expect(at(b)).toBe(join(store.stateDir, "spill", b.id, "tmp"));
+  expect(existsSync(at(a)!)).toBe(true);
+  // A session on another machine has no sandbox of this one's: nothing is made for it.
+  expect(g.readOpts({ ...a, machine: "desk" } as Session, "workspace-write").tmp).toBeUndefined();
+});

@@ -536,3 +536,36 @@ test.skipIf(!sandboxStatus().available)("a submodule's hooks and config are read
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A session's /tmp in its sandbox is a folder of its own on disk, kept for its next command and
+// not another session's: not the machine's /tmp, and not an empty folder in memory for each command.
+test.skipIf(!sandboxStatus().available)("a sandboxed session's /tmp is its own folder, kept across commands", () => {
+  const root = scratch();
+  try {
+    const ws = join(root, "ws");
+    mkdirSync(ws);
+    const mine = join(root, "spill-a/tmp"), theirs = join(root, "spill-b/tmp");
+    mkdirSync(mine, { recursive: true });
+    mkdirSync(theirs, { recursive: true });
+    const runIn = (tmp: string, script: string) => {
+      const r = Bun.spawnSync(confine(["bash", "-c", script], { sandbox: "workspace-write", network: false }, ws, undefined, { tmp }), { cwd: ws, stdout: "pipe", stderr: "pipe", env: { ...ownEnv() } });
+      return r.stdout.toString() + r.stderr.toString();
+    };
+    expect(runIn(mine, "echo x > /tmp/k")).toBe("");
+    // The next command of the session finds it; another session's command does not, and neither does the machine's /tmp.
+    expect(runIn(mine, "cat /tmp/k")).toBe("x\n");
+    expect(runIn(theirs, "test -e /tmp/k && echo seen || echo none")).toBe("none\n");
+    expect(existsSync("/tmp/k")).toBe(false);
+    expect(readFileSync(join(mine, "k"), "utf8")).toBe("x\n");
+    // TMPDIR is that folder, which is on disk: the same kind of file system as the folder beside it.
+    expect(runIn(mine, "echo $TMPDIR; echo y > $TMPDIR/t")).toBe("/tmp\n");
+    expect(readFileSync(join(mine, "t"), "utf8")).toBe("y\n");
+    const kind = (p: string) => Bun.spawnSync(["stat", "-f", "-c", "%T", p], { stdout: "pipe" }).stdout.toString();
+    expect(runIn(mine, "stat -f -c %T /tmp")).toBe(kind(mine));
+    // Without one, /tmp is empty memory for each command, as it was.
+    const plain = Bun.spawnSync(confine(["bash", "-c", "ls -A /tmp | wc -l"], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "pipe", env: { ...ownEnv() } });
+    expect(plain.stdout.toString().trim()).toBe("0");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
