@@ -26,6 +26,8 @@ import * as taskOut from "./task-out.ts";
 import * as taskRenames from "./task-renames.ts";
 import * as writeAsks from "./write-asks.ts";
 import * as agents from "./agents.ts";
+import * as caps from "./caps.ts";
+import { dollars, raisedCap } from "./cap-rules.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
 import { waitCost, waitNow } from "./wait-cost.ts";
@@ -76,7 +78,7 @@ function loopsDue(): string | undefined {
   const n = D().store.db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM loops WHERE enabled = 1 AND next_ms IS NOT NULL AND next_ms <= ?").get(Date.now() + LOOP_HORIZON)?.n ?? 0;
   return n ? `${n} loop${n > 1 ? "s" : ""} due within 15 minutes` : undefined;
 }
-const TURN_WORDS: Record<string, string> = { end_turn: "finished", error: "failed", interrupted: "stopped", max_tokens: "cut off at the output limit", refusal: "declined by the model", restart: "parked for a daemon stop" };
+const TURN_WORDS: Record<string, string> = { budget: "stopped at its dollar cap", end_turn: "finished", error: "failed", interrupted: "stopped", max_tokens: "cut off at the output limit", refusal: "declined by the model", restart: "parked for a daemon stop" };
 const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_user"]);
 
 function init(deps: Deps) {
@@ -87,6 +89,7 @@ function init(deps: Deps) {
   alerts.waitHook.of = (id) => waitCost(id);
   alerts.waitHook.now = (id) => waitNow(id);
   agents.migrate();
+  caps.migrate();
   writeAsks.init();
   leftovers.migrate(deps.store);
   // What commands left running in their scopes, this daemon's and the one's before a restart: listed, and
@@ -187,7 +190,7 @@ function init(deps: Deps) {
     closingOver: (id) => flush(id),
     turnStart: (s) => agents.onTurnStart(s.id),
     // An agent whose budget is spent writes its report in one more step (src/automation/budget.ts).
-    budget: (s) => (s.parent_id ? agents.budgetSpent(s.id) : undefined),
+    budget: (s) => (s.parent_id ? agents.budgetSpent(s.id) : caps.closing(s.id, false)),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
     turnEnd: (s, reason) => {
@@ -367,6 +370,8 @@ function init(deps: Deps) {
   g.__keelAutomationLeave = joinPulse("automation", () => {
     // A notification held back while the owner attended its session goes out when they no longer do.
     alerts.tickWithheld();
+    // The dollar caps' figures: a read every ten seconds while any is set (src/automation/caps.ts).
+    caps.pulse();
     // Most passes find nothing active: one indexed query says so and the
     // pass ends there (each step below would find nothing to do).
     if (!busy(deps)) return;
@@ -428,6 +433,26 @@ export const automationRoutes: RouteModule = (deps) => {
   init(deps);
   const { store, providers } = deps;
   const session = (id: string) => store.session(id);
+  // A dollar cap set (null clears it) on a session: a top session's settings, an agent's dollar budget. A dollar
+  // cap is counted from listed prices only, so a model with none refuses it, as an agent's budget does.
+  const setCap = async (id: string, usd: number | null) => {
+    const s = store.session(id)!;
+    if (usd !== null) {
+      const why = agents.usdRefusal({ usd }, s.model, (await providers.resolve(s.model)).info.price);
+      if (why) throw Object.assign(new Error(why.replace("budget.usd", "a dollar cap")), { status: 409 });
+    }
+    if (s.parent_id) {
+      if (!agents.setUsd(id, usd)) throw Object.assign(new Error("the session is an agent's session with no record"), { status: 409 });
+    } else {
+      // A cap counts from when it was first set: changing its dollars does not forget what was spent.
+      const was = caps.capOf(s);
+      store.mergeSettings(id, usd === null ? { cap_usd: null, cap_from: null } : { cap_usd: usd, cap_from: was?.from || Date.now() });
+    }
+    const now = store.session(id);
+    if (now) deps.bus.emit({ t: "session", session: now });
+    await caps.changed(id, usd !== null);
+    return caps.current().find((c) => c.id === id) ?? null;
+  };
   const leftCtx = () => ({ store, isRunning: (sid: string) => deps.engine.isRunning(sid), workspace: deps.workspace });
   const opt = (v: unknown) => (typeof v === "string" ? v : undefined);
   const treeSeen = (b: any): leftovers.TreeSeen => ({ repo: String(b?.repo ?? ""), path: String(b?.path ?? ""), head: opt(b?.head), ignored: Number(b?.ignored) || 0 });
@@ -701,6 +726,35 @@ export const automationRoutes: RouteModule = (deps) => {
         }
         return json({ ok: true });
       },
+    },
+
+    // --- dollar caps (src/automation/caps.ts): the figures of every cap, one read off the loop.
+    //   PUT /api/sessions/:id/cap { usd }: a cap for the session and what it starts (null clears it);
+    //   an agent's session carries it as its dollar budget. POST { raise: true } doubles it.
+    "/api/caps": {
+      GET: () => attempt(async () => json({ caps: await caps.refresh() })),
+    },
+    "/api/sessions/:id/cap": {
+      GET: (req: any) => attempt(async () => {
+        if (!session(req.params.id)) return bad("no such session", 404);
+        return json({ cap: (await caps.refresh()).find((c) => c.id === req.params.id) ?? null });
+      }),
+      PUT: (req: any) => attempt(async () => {
+        if (!isLocal(req) || forwardedStanding(req)) return bad("change a cap from the daemon's own desk", 403);
+        const s = session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const { usd } = await body(req);
+        if (usd !== null && (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0)) return bad("usd is a number above 0, or null to clear the cap");
+        return json({ cap: await setCap(s.id, usd === null ? null : Math.round(usd * 100) / 100 || usd) });
+      }),
+      POST: (req: any) => attempt(async () => {
+        if (!isLocal(req) || forwardedStanding(req)) return bad("change a cap from the daemon's own desk", 403);
+        const s = session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const now = (await caps.refresh()).find((c) => c.id === s.id);
+        if (!now) return bad("the session has no cap to raise", 409);
+        return json({ cap: await setCap(s.id, raisedCap(now.usd, now.spent)) });
+      }),
     },
 
     // --- incidents: one row a cause across sessions, open and cleared in the last day (src/automation/incidents.ts).

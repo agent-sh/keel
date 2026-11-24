@@ -158,6 +158,8 @@ export type SessionSettings = {
   accept_messages?: boolean; // false: messages from other sessions are refused
   peer_turns?: number; // turns other sessions may start before the owner speaks here again
   max_steps?: number;  // model steps one turn may take; absent = no budget
+  cap_usd?: number;    // a dollar cap for this session and everything it starts (src/automation/caps.ts); absent = none
+  cap_from?: number;   // when the cap began: what it counts the tree's spend from
   skill_mode?: string; // a skill kept on as standing instructions
   acp_switches?: Record<string, boolean>; // an ACP agent's boolean options as the owner set them, by id: sent before its next prompt
   cache_long?: boolean; // an agent's request came after a pause near its short cache lifetime: it asks for the long one from then on

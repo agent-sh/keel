@@ -1311,6 +1311,8 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
     raise("declined", sessionId, `${STATE_WORD.declined}: ${title}`, plainLine(text) || "The model declined the turn.", said ? { event_id: said.id } : undefined);
     return;
   }
+  // The session's dollar cap is reached: new work waits until the owner raises it (src/automation/caps.ts).
+  if (reason === "budget") { raise("limit", sessionId, `${limitWord("cap")}: ${title}`, "The session reached its dollar cap. Raise it to go on.", { cls: "cap" }); return; }
   if (reason === "interrupted" || opts.loopRun) return;
   // A question that expired unanswered in this turn, with none answered after
   // it: the owner still owes that decision, so the turn is not filed as finished.

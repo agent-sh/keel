@@ -408,6 +408,8 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
   }
   if (reason === "restart") return void save(g!);
   if (reason === "error" || reason === "max_tokens") return void done({ ...g!, status: "paused", status_reason: reason === "error" ? "a turn failed: fix it, then resume" : "a reply hit the output limit" });
+  // The session's dollar cap is reached: a goal does not go on to spend past it (src/automation/caps.ts).
+  if (reason === "budget") return void done({ ...g!, status: "paused", status_reason: "the session's dollar cap is reached: raise it, then resume" });
   if (reason === "interrupted") {
     // Only the owner's own Stop pauses the goal as theirs. A stop that keeps the queue waiting for its own
     // time does too, and says which (a move of the session, an archive: no turn may start under it).

@@ -394,6 +394,12 @@
 /* A message of theirs that waits in the session's queue: its glyph and how many, before the time. */
 .k-row-queued { display: inline-flex; align-items: center; gap: 0.125rem; flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--st-wait-ink); }
 .k-row-queued svg { width: 0.75rem; height: 0.75rem; }
+/* A dollar cap on the session: the share spent, and the rate an hour; amber from 80 percent, red at the cap. */
+.k-row-cap { display: inline-flex; align-items: center; gap: 0.125rem; flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+.k-row-cap svg { width: 0.75rem; height: 0.75rem; }
+.k-row-cap[data-level="warn"] { color: var(--st-work-ink); }
+.k-row-cap[data-level="spent"] { color: var(--st-fail-ink); }
+.k-row-cap-rate { margin-left: 0.125rem; font-weight: 500; color: var(--faint); }
 /* The row a count above the list went to: ringed and washed for a moment, so it is found among
    rows that look alike, also after a press of the pointer (which shows no focus ring). */
 .k-row[data-jump] { box-shadow: inset 0 0 0 2px var(--ring); animation: k-jump 1.6s ease-in; }

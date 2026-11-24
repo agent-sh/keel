@@ -77,7 +77,7 @@ export const FAIL_WORD: Record<string, string> = {
 };
 export const failWord = (cls: string | undefined) => (cls ? FAIL_WORD[cls] ?? "" : "");
 // A turn that failed on a limit of the provider's, by the limit's class: a rate limit is not a usage limit.
-const LIMIT_WORD: Record<string, string> = { rate_limit: "Rate limited", overloaded: "Overloaded", quota: "Usage limit" };
+const LIMIT_WORD: Record<string, string> = { rate_limit: "Rate limited", overloaded: "Overloaded", quota: "Usage limit", cap: "Cap reached" };
 export const limitWord = (cls: unknown) => LIMIT_WORD[String(cls ?? "")] ?? "Usage limit";
 
 const plural = (n: number) => `${n} agent${n === 1 ? "" : "s"}`;

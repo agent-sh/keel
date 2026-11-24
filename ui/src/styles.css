@@ -334,7 +334,7 @@
   font-family: var(--font-inst); font-stretch: 75%; word-spacing: -0.28em;
 }
 /* 2. A figure a glance reads: a clock, an age, a count. */
-.k-face-figure, .k-station-clock, .k-row-queued, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
+.k-face-figure, .k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
   font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
 }
 /* 3. A session's call sign on the folded rail. */

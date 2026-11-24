@@ -11,7 +11,7 @@
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, ArrowDown, Bug, Columns2, Folder, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, Bug, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
 import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
@@ -25,6 +25,8 @@ import { focusAsk } from "../lib/asks.ts";
 import { announce } from "../lib/announce.ts";
 import { useNeedUnderLooks } from "../lib/looks.ts";
 import { useQueued } from "../lib/queued.ts";
+import { useCap } from "../lib/caps.ts";
+import { capTip, dollars } from "../../../src/automation/cap-rules.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { opened, openFocus } from "../lib/self-focus.ts";
 import { fitBands } from "../lib/rail-fit.ts";
@@ -211,6 +213,8 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
   // state line, whatever the state is (it is the reason itself when the session is otherwise at rest).
   const waitingSend = useWaitingSend(s.id);
   const queued = useQueued(s.id, QUEUES.includes(w) && !restore);
+  // Its dollar cap, when it has one: the share spent and the rate of the last ten minutes (lib/caps.ts).
+  const cap = useCap(s.id);
   // When its machine last told of it (the state says so once the daemon serves it; until then, its last change).
   const toldAt = (st as { as_of?: number }).as_of ?? s.updated;
   const shown = useStations((x) => x.shown.includes(s.id));
@@ -319,6 +323,8 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
         <SessionBadges sessionId={s.id} />
         {/* What it needs is under a look: its pane shows another session for now. */}
         {under && <span className="k-row-under" data-testid="row-under" role="img" aria-label={`${STATE_WORD.need}, under a look`} title={`${STATE_WORD.need} while its pane shows another session for now`}><Layers2 aria-hidden="true" /></span>}
+        {/* Its dollar cap: what share is spent, and the rate an hour. */}
+        {cap && !left && <span className="k-row-cap" data-testid="row-cap" data-level={cap.level} title={capTip(cap, s.title || "This session")}><Gauge aria-hidden="true" />{Math.floor(cap.pct * 100)}%{cap.burn_hour > 0 && <span className="k-row-cap-rate">{dollars(cap.burn_hour)}/h</span>}</span>}
         {/* A message of theirs that waits in the session's queue. */}
         {queued > 0 && !left && <span className="k-row-queued" data-testid="row-queued" role="img" aria-label={queuedWord(queued)} title={`${queued} message${queued > 1 ? "s" : ""} of yours ${queued > 1 ? "wait" : "waits"} here for the turn to end`}><MessageSquareMore aria-hidden="true" />{queued}</span>}
         {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}

@@ -51,6 +51,7 @@ import { targetsOf } from "../engine/nested.ts";
 import type { Tool } from "../tools/types.ts";
 import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
 import type { NowLine } from "./now-line.ts";
+import * as caps from "./caps.ts";
 import { budgetOfMeta, closingText, endedWords, mergeBudget, parseBudget, spentOn, type Budget, type Limit, type Used } from "./budget.ts";
 import { agentTitle } from "./agent-title.ts";
 import { lookup as earlierLookup } from "./earlier.ts";
@@ -927,6 +928,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     if (bad) throw new Error(bad);
   }
   parseBudget(input.budget); // refused before anything is made
+  { const capped = caps.refusal(rootSession(parentId)); if (capped) throw Object.assign(new Error(capped), { status: 409 }); }
   { const w = parseWrites(input.writes ?? [], parent.workspace, realOf(homedir())); if ("error" in w) throw new Error(w.error); }
   { const bad = apiRefusal(parentId, input.api); if (bad) throw new Error(bad); }
   const root = rootSession(parentId);
@@ -1877,6 +1879,7 @@ function budgetEnd(a: AgentRecord): string {
     const k = spentOn(x.budget, usedOf(x));
     if (k) return endedWords(x.budget, k, x === a ? undefined : x.title);
   }
+  if (caps.refusal(rootSession(a.session_id))) return "the dollar cap of the session above it was reached";
   return endedWords(a.budget ?? undefined, undefined);
 }
 // The agents above an agent, the nearest first (at most the depth limit's worth).
@@ -1894,10 +1897,21 @@ export function budgetSpent(sessionId: string): string | undefined {
   for (const x of [a, ...ancestorsOf(a)]) {
     if (!x.budget || isEnded(x)) continue;
     const u = usedOf(x);
+    // (A dollar budget is a cap: its 80 percent is told once, to the agent's parent.)
+    if (x.budget.usd !== undefined) caps.observeAgent(x, x.budget.usd, u.usd);
     const k: Limit | undefined = spentOn(x.budget, u);
     if (k) return closingText(x.budget, u, k, x === a ? undefined : x.title);
   }
-  return undefined;
+  // The session at the top may carry a dollar cap for its whole tree.
+  return caps.closing(rootSession(sessionId), true);
+}
+// An agent's dollar budget set, changed or cleared by the owner from its header (the rest of its budget stays).
+export function setUsd(sessionId: string, usd: number | null): AgentRecord | undefined {
+  const a = byChild(sessionId);
+  if (!a) return undefined;
+  const { usd: _was, ...rest } = a.budget ?? {};
+  const budget: Budget | null = usd === null ? (Object.keys(rest).length ? rest : null) : { ...rest, usd };
+  return update(a.id, { budget });
 }
 // A dollar limit is counted only from listed prices: on a model with none (a plan, a local model)
 // it would never be reached, so it is refused, with what to give instead.

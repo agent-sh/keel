@@ -279,6 +279,15 @@ under `~/.cache/keel-work/bun/research/`.
   `earlier-rank.ts`, the outcome words `earlier-line.ts`, the reads on the read thread `earlier-facts.ts`).
   Outcomes come from git, the review and landing rows and the agent's record, never from a model; the lookup
   takes at most four seconds and never fails a spawn.
+- A session carries a dollar cap for itself and everything it starts (`cap_usd` from `cap_from` in its
+  settings; an agent's own dollar budget is the same cap over its task: `src/automation/caps.ts`, the pure
+  rules in `cap-rules.ts`). Its row and header show the share spent and the rate of the last ten minutes
+  with the hour's forecast from it (one `caps` frame when a figure changed). The pulse reads them off the
+  loop, one statement a cap on the ledger's session index, every ten seconds while any cap is set; the gate
+  before a step reads only when a cap is above the session. At 80 percent the owner (a top session's own
+  failures list) or the parent (an agent) is told once with the spend and the forecast, again for a raised
+  cap; at 100 percent the next step is the report, no agent starts, a goal pauses, and one press (doubling,
+  `POST /api/sessions/:id/cap`) lets the work go on.
 - A session's agent slots are its tree's and count the agents that work. An
   agent that waits on a wait of its own holds none. Its wake, and an agent
   asked for while every slot works, wait in line as owed and take the next

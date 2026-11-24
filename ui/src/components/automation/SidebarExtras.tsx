@@ -1,5 +1,7 @@
-import { Bell, BellOff, ChevronRight, ListCollapse, Moon, Repeat } from "lucide-react";
+import { Bell, BellOff, ChevronRight, Gauge, ListCollapse, Moon, Repeat } from "lucide-react";
 import type React from "react";
+import { useCap } from "../../lib/caps.ts";
+import { capTip, dollars } from "../../../../src/automation/cap-rules.ts";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
 import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
@@ -141,6 +143,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
               {/* How many agents are below it: the rows that follow, a step further in. */}
               {below > 0 && <span className="k-child-below" data-testid="child-below" title={`${below} agent${below > 1 ? "s" : ""} below it`}>+{below}</span>}
               <span className="k-child-state" data-watch={st.watch} data-testid="child-state">{st.word}</span>
+              <ChildCap id={a.session_id} title={title} />
               {/* Its parent's section says where it runs; only an agent placed elsewhere names its machine. */}
               {(sessions[a.session_id]?.machine ?? a.machine ?? undefined) !== (sessions[parentId]?.machine ?? undefined) && <Where s={{ machine: sessions[a.session_id]?.machine ?? a.machine }} />}
               {unread[a.session_id] || news ? (
@@ -163,6 +166,13 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
       })}
     </div>
   );
+}
+
+// An agent with a dollar budget: the share spent and the rate, as a session's row says them.
+function ChildCap({ id, title }: { id: string; title: string }) {
+  const cap = useCap(id);
+  if (!cap) return null;
+  return <span className="k-row-cap" data-testid="child-cap" data-level={cap.level} title={capTip(cap, title)}><Gauge aria-hidden="true" />{Math.floor(cap.pct * 100)}%{cap.burn_hour > 0 && <span className="k-row-cap-rate">{dollars(cap.burn_hour)}/h</span>}</span>;
 }
 
 // On a session row: unread alerts and scheduled work.

@@ -17,6 +17,8 @@ import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopo
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { openPanel, PanelsButton } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
+import { CapControl } from "./CapControl.tsx";
+import { useCap } from "../lib/caps.ts";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
 
 // Popovers of the header load after the page (their Base UI parts are large).
@@ -234,9 +236,12 @@ export function SessionHeader({ session }: { session: Session }) {
   const tokenWords = `${fmtTokens(input_)} in (${cached}% cached), ${fmtTokens(u.output)} out`;
   const usageId = useId();
   const folder = session.workspace.split("/").pop();
+  // A cap that is set stays in the row (it is what the owner watches); the button that sets one folds first.
+  const capped = !!useCap(session.id);
 
   // In the row's order; the rank says which stays longest when the row is short.
   const tools: Tool[] = [
+    { id: "cap", label: "Dollar cap", rank: capped ? 7 : 0, node: <CapControl session={session} /> },
     { id: "machine", label: "Runs on", rank: 4, node: <MachineChip session={session} /> },
     { id: "background", label: "Background", rank: 3, node: <BackgroundButton sessionId={session.id} /> },
     { id: "worktree", label: "Worktree", rank: 5, node: <Suspense fallback={null}><WorktreeChip session={session} /></Suspense> },
