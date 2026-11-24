@@ -88,6 +88,9 @@ export const toolRoutes: RouteModule = (deps) => {
     adoptJobs(join(deps.store.stateDir, "spill"), (file, why) =>
       deps.errors.capture("tool", new Error(`A record of a background command was not taken over at this start: ${why}. Nothing was signalled for it. The record: ${file}`), { at: "adopt jobs" }, { group: "a job's record was not taken over" }));
   } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
+  // The commands whose end a note of the session already tells (what a restart between storing the note and marking
+  // it reported must not tell twice). Notes stored before this table are not in it.
+  deps.store.migrate("CREATE TABLE IF NOT EXISTS told_jobs (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, job TEXT NOT NULL, PRIMARY KEY (session_id, job)) WITHOUT ROWID");
   const toldCut = new Set<string>();
   registerHooks({
     // A call a restart cut while it ran a command: its result says what became
@@ -111,7 +114,8 @@ export const toolRoutes: RouteModule = (deps) => {
       if ((req.purpose ?? "turn") !== "turn") return req;
       // A job's end already stored (a restart came between storing it and
       // marking it reported) is not said twice.
-      const said = (job: string) => !!deps.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'note' AND data LIKE ? LIMIT 1").get(s.id, `%"jobs":[%"${job}"%`);
+      // (Asked of a table kept for it: a search of the session's events for the job's id reads them all, on the loop.)
+      const said = (job: string) => !!deps.store.db.query("SELECT 1 FROM told_jobs WHERE session_id = ? AND job = ?").get(s.id, job);
       const drained = drainNotices(s.id);
       const stored = (list: typeof drained) => { for (const x of list) try { x.stored?.(); } catch (e) { deps.errors.capture("server", e, { at: "a note was stored", session: s.id }); } };
       const before = drained.filter((x) => x.job && said(x.job));
@@ -123,6 +127,7 @@ export const toolRoutes: RouteModule = (deps) => {
       const text = `<system-reminder>\n${n.map((x) => x.text).join("\n")}\n</system-reminder>`;
       const jobs = n.flatMap((x) => (x.job ? [x.job] : []));
       deps.bus.emit({ t: "event", event: deps.store.append(s.id, "note", { text, model: true, ...(jobs.length ? { jobs } : {}) }) });
+      for (const job of jobs) deps.store.db.query("INSERT OR IGNORE INTO told_jobs (session_id, job) VALUES (?, ?)").run(s.id, job);
       ackNotices(drained);
       stored(n);
       const messages = req.messages.slice();

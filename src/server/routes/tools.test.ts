@@ -36,3 +36,21 @@ test("a session's notices go with a step of its turn, never with a sampling, sum
   expect(JSON.stringify(turn.messages)).toContain("deploy --token x");
   expect(drainNotices(s.id)).toEqual([]);
 });
+
+test("a command's end a note already tells is not told again, found without a search over the session's events", async () => {
+  const s = store.createSession({ workspace: dir, model: "p:m" });
+  const sql: string[] = [];
+  const query = store.db.query.bind(store.db);
+  (store.db as any).query = (text: string) => (sql.push(text), query(text));
+  try {
+    const req = (): ProviderRequest => ({ model: "m", system: "", messages: [{ role: "user", content: [{ type: "text", text: "go" }] }], tools: [], signal: new AbortController().signal, purpose: "turn" });
+    addNotice(s.id, "The command `a` ended.", { job: "job-7" });
+    expect(JSON.stringify((await hook.beforeRequest!(s, req())).messages)).toContain("The command `a` ended.");
+    // Told: the same end noted again (a restart came between storing it and marking it reported).
+    addNotice(s.id, "The command `a` ended AGAIN.", { job: "job-7" });
+    expect(JSON.stringify((await hook.beforeRequest!(s, req())).messages)).not.toContain("AGAIN");
+    expect(sql.filter((q) => /\bFROM events\b/.test(q) && /LIKE/i.test(q))).toEqual([]);
+  } finally {
+    (store.db as any).query = query;
+  }
+});

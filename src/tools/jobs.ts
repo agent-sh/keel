@@ -1552,7 +1552,7 @@ export const findJob = (sessionId: string, id: string | number) =>
 
 // A note for the model's next request, whatever starts it (the owner ran a command it should know
 // of; a restart cut its agents).
-export function addNotice(sessionId: string, text: string, o: Pick<Notice, "key" | "fresh" | "stored"> = {}) {
+export function addNotice(sessionId: string, text: string, o: Pick<Notice, "key" | "fresh" | "stored" | "job"> = {}) {
   const list = notices.get(sessionId) ?? [];
   list.push({ text, ...o });
   notices.set(sessionId, list);
