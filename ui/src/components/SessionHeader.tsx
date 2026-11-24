@@ -155,6 +155,7 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
   const [open, setOpen] = useState(false);
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const [n, setN] = useState(tools.length);
+  const popup = useRef<HTMLDivElement>(null);
   useEffect(() => {
     list.current = el;
     if (!el) return;
@@ -194,7 +195,8 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
         <Popover.Positioner data-stow="" sideOffset={6} align="end" className="z-50 outline-none">
           {/* Kept in the page while closed (it measures its rows), it is a dialog only while open: a closed one
               is not a second dialog under the one that is (the shortcut sheet). */}
-          <Popover.Popup className="k-stow" data-testid="header-more" aria-label="Session actions" role={open ? "dialog" : "none"} finalFocus={button}>
+          {/* Opened by the keys, they go to its first control; by a pointer, to the list itself (no row lights up under nothing). */}
+          <Popover.Popup ref={popup} tabIndex={-1} className="k-stow" data-testid="header-more" aria-label="Session actions" role={open ? "dialog" : "none"} finalFocus={button} initialFocus={(how) => (how === "keyboard" ? true : popup.current)}>
             <div ref={setEl} hidden={!n || undefined}>
               {tools.map((t) => t.item ? <div key={t.id} className="k-stow-act">{t.item(close)}</div> : (
                 <div key={t.id} className="k-stow-row" role="group" aria-label={t.label} data-tool={t.id} onClick={reach}>
