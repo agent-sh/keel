@@ -71,7 +71,9 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await page.goto(`/s/${a}`);
   await expect(panes).toHaveCount(1);
   await expect(pane(0)).toHaveAttribute("data-station", a);
+  await page.getByTestId("list-arrange").click();
   await expect(page.getByTestId("panes-1")).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
 
   // Opening another session opens it in the same pane.
   await entry(b).click();

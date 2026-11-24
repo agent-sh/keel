@@ -94,9 +94,6 @@
    tag. A control never leaves the bar and no word runs under another. */
 .k-rail[data-open] { container: rail / inline-size; }
 .k-rail[data-open] .k-brand-name { white-space: nowrap; }
-/* The pane count gives way before the fold button leaves the bar: its options keep their size and
-   its track scrolls sideways (six panes to choose from, in a very wide window, at the narrowest). */
-.k-rail[data-open] .k-rail-brand .k-panes { flex-shrink: 1; min-width: 0; }
 .k-rail[data-open] .k-rail-brand .k-fold { flex-shrink: 0; }
 /* The foot: the counts keep their size and the Settings word shortens; narrower, it goes. */
 .k-rail[data-open] .k-rail-foot > * { flex-shrink: 0; }
@@ -109,16 +106,6 @@
   .k-rail[data-open] .k-rail-brand { gap: 0.375rem; padding-left: 0.625rem; }
   .k-rail[data-open] .k-rail-brand .k-fold { min-width: 2rem; padding: 0 0.375rem; }
 }
-/* A list narrower than its pane count with the fold beside it (four panes and more in a squeezed list):
-   the count takes a line of its own under the brand, every option whole, none scrolled out of sight. */
-@container rail (max-width: 13rem) {
-  .k-rail[data-open] .k-rail-brand { flex-wrap: wrap; height: auto; min-height: var(--spacing-bar); row-gap: 0.375rem; padding-top: 0.625rem; padding-bottom: 0.5rem; }
-  .k-rail[data-open] .k-rail-brand .k-panes { order: 3; flex: 1 0 100%; margin-left: 0; justify-content: space-between; }
-  .k-rail[data-open] .k-rail-brand .k-panes + .k-fold { margin-left: auto; }
-}
-/* With five or six panes to choose from the name goes sooner. */
-@container rail (max-width: 19rem) { .k-rail[data-open] .k-rail-brand:has(.k-panes > :nth-child(5)) .k-brand-name { display: none; } }
-@container rail (max-width: 21rem) { .k-rail[data-open] .k-rail-brand:has(.k-panes > :nth-child(6)) .k-brand-name { display: none; } }
 /* A row's tag takes a share of the bar, never the title's room; at the narrowest it goes (the tag chips above the list and the session's panel still say it). */
 .k-row-tag { max-width: min(5rem, 26cqi); }
 @container rail (max-width: 16rem) { .k-row-tag { display: none; } }
@@ -708,16 +695,15 @@
 html[data-resizing], html[data-resizing] * { cursor: col-resize !important; user-select: none !important; }
 html[data-resizing] iframe { pointer-events: none; }
 
-/* ---------- How many panes: the owner's number ---------- */
-.k-panes { margin-left: auto; }
-.k-panes + .k-fold { margin-left: 0.25rem; }
-/* Its options are glyphs: square, as wide as they are tall (two classes, to stand over the track's own padding). */
-.k-seg.k-panes > button { padding: 0; }
+/* ---------- How many panes: the owner's number, in the Arrange menu ---------- */
+/* A row of glyphs, one a choice, each as wide as a menu row is high; the chosen one filled, on the hover paper. */
+.k-panes { display: flex; gap: 0.125rem; padding: 0 0.375rem 0.25rem; }
+.k-panes-item { display: grid; place-items: center; width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-md); color: var(--muted); outline: none; cursor: default; }
+.k-panes-item[data-highlighted] { background: var(--hover); color: var(--fg); }
+.k-panes-item[aria-checked="true"] { background: var(--hover); color: var(--fg); }
 .k-panes-glyph { display: flex; gap: 1.5px; width: 0.875rem; height: 0.6875rem; }
 .k-panes-glyph i { flex: 1; border-radius: 1px; background: currentColor; }
-.k-panes button:not([aria-checked="true"]) .k-panes-glyph i { background: transparent; box-shadow: inset 0 0 0 1px currentColor; }
-/* Folded: the same control, stacked two across. */
-.k-rail:not([data-open]) .k-panes { margin: 2px 0 0.375rem; flex-wrap: wrap; justify-content: center; width: 3.25rem; }
+.k-panes-item:not([aria-checked="true"]) .k-panes-glyph i { background: transparent; box-shadow: inset 0 0 0 1px currentColor; }
 
 /* ---------- A pane with no session ---------- */
 .k-pane-empty { background: var(--bg); }

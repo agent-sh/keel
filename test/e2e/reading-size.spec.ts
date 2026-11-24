@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import type { Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, setPanes } from "./shots.ts";
 
 // Feature: the reading size fits the pane. A reply is set at the reading size
 // in a pane with room for it; in a pane among four at 1920 px it is set one
@@ -43,7 +43,7 @@ test("a reply in a four-pane bridge has 55 characters a line or more", async ({ 
   await shoot(page, "reading-size-four-panes");
 
   // One pane: the reading size, and still a readable measure.
-  await page.getByTestId("panes-1").click();
+  await setPanes(page, 1);
   await expect(page.locator("section.k-station")).toHaveCount(1);
   const one = await measure(page);
   console.log(`one pane: ${JSON.stringify(one)}`);

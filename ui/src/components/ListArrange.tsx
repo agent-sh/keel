@@ -3,8 +3,9 @@
 // by the owner's own folders, by working folder or one flat list; sorted by
 // when a session was made (the default: a row keeps its place), by name, by
 // recent work or by state; a row of one line or of two; finished sessions
-// shown or hidden. The arrangement is kept; the filter words are not. The
-// order itself is lib/list-order.ts.
+// shown or hidden. Above them, how many panes are open (a desk only). The
+// arrangement is kept; the filter words are not. The order itself is
+// lib/list-order.ts.
 import { Menu } from "@base-ui/react/menu";
 import { Check, Search, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -13,6 +14,8 @@ import { DEFAULT, keep, readArrange, type Arrange } from "../lib/list-order.ts";
 import type { Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
+import { PaneChoices } from "./Panes.tsx";
+import { phone } from "../lib/ui.ts";
 
 export { order, type Arrange } from "../lib/list-order.ts";
 const KEY = "keel.listArrange";
@@ -90,13 +93,14 @@ export function ListFind({ q, setQ, narrow }: { q: string; setQ: (q: string) => 
       {q && <button type="button" className="k-find-btn" aria-label="Clear the filter" onClick={() => setQ("")}><X /></button>}
       {/* The note about the changed default is read once: it is gone when the menu that showed it closes. */}
       <Menu.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) readNote(); }}>
-        <Menu.Trigger className={cn("k-find-btn", changed && "k-find-on")} data-testid="list-arrange" aria-label="Arrange the list" title="Group, sort and show">
+        <Menu.Trigger className={cn("k-find-btn", changed && "k-find-on")} data-testid="list-arrange" aria-label="Arrange the panes and the list" title="Panes, group, sort and show">
           <SlidersHorizontal />
         </Menu.Trigger>
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="end" sideOffset={6} className="z-50 outline-none">
             <Menu.Popup className={cn(popupClass, "w-60")} data-testid="arrange-menu">
               {note && <p className="k-arrange-note" data-testid="arrange-note">Rows now keep their place.</p>}
+              {!phone() && <PaneChoices />}
               <div className={label}>Group</div>
               {GROUPS.map(([g, name]) => (
                 <Menu.Item key={g} closeOnClick={false} className={itemClass} data-testid={`arrange-group-${g}`} aria-checked={a.group === g} role="menuitemradio" onClick={() => setArrange({ group: g })}>

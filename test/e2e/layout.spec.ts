@@ -2,7 +2,7 @@ import type { APIRequestContext, Page } from "./isolate.ts";
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { openPanel, shoot, tabInto } from "./shots.ts";
+import { openPanel, shoot, tabInto, setPanes } from "./shots.ts";
 
 // Feature: the layout is the owner's. The number of panes is the one picked
 // in the rail (1, 2, 3, more when the window holds them) and Keel never adds
@@ -63,7 +63,7 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await expect(panes).toHaveCount(1);
   await expect(pane(0)).toHaveAttribute("data-station", a);
   // Two by the owner's number: the new pane is the one worked in.
-  await page.getByTestId("panes-2").click();
+  await setPanes(page, 2);
   await expect(panes).toHaveCount(2);
   await expect(pane(1)).toHaveAttribute("data-testid", "pane-empty");
   await expect(pane(1)).toContainText("the next session opens here");
@@ -85,7 +85,7 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await expect(panes).toHaveCount(2);
 
   // Three panes by the owner's number: the new one is empty and offers what is not on screen.
-  await page.getByTestId("panes-3").click();
+  await setPanes(page, 3);
   await expect(panes).toHaveCount(3);
   await expect(pane(2)).toHaveAttribute("data-testid", "pane-empty");
   await expect(pane(2)).toContainText("the next session opens here");
@@ -100,17 +100,17 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await pane(2).getByTestId("station-close").click();
   await expect(panes).toHaveCount(2);
   await entry(a).click();
-  await page.getByTestId("panes-1").click();
+  await setPanes(page, 1);
   await expect(panes).toHaveCount(1);
   await expect(pane(0)).toHaveAttribute("data-station", a);
   await shoot(page, "layout-03-one-pane");
-  await page.getByTestId("panes-2").click();
+  await setPanes(page, 2);
   await expect(panes).toHaveCount(2);
   await expect(pane(1)).toHaveAttribute("data-testid", "pane-empty");
   await page.reload();
   await expect(panes).toHaveCount(1);
   await expect(pane(0)).toHaveAttribute("data-station", a);
-  await page.getByTestId("panes-2").click();
+  await setPanes(page, 2);
 
   // A session dragged from the list lands in the pane it is dropped on.
   await entry(d).dragTo(pane(1));
@@ -221,29 +221,43 @@ test("pane count and settings choices by keyboard", async ({ page, request }) =>
   await page.goto(`/s/${s.id}`);
   const panes = page.getByTestId("bridge").locator(":scope > [data-slot]");
   const count = page.getByTestId("pane-count");
-  await page.getByTestId("panes-2").click();
+  await setPanes(page, 2);
   await expect(panes).toHaveCount(2);
-  await tabInto(page, count);
-  await expect(at(count)).toHaveAttribute("data-testid", "panes-2");
-  await page.keyboard.press("ArrowRight");
-  await expect(at(count)).toHaveAttribute("data-testid", "panes-3");
-  await expect(panes).toHaveCount(3);
+  // The pane count is the first row of the Arrange menu above the list (not beside the logo): opened from the
+  // keyboard, the keys start on its first choice and walk the choices as menu rows, and a choice closes the menu.
+  const arrange = page.getByTestId("list-arrange");
+  const menu = page.getByTestId("arrange-menu");
+  await expect(page.getByTestId("sidebar").locator(".k-rail-brand").getByTestId("pane-count")).toHaveCount(0);
+  await arrange.focus();
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeVisible();
+  await expect(count).toHaveAccessibleName("Panes");
+  await expect(page.getByTestId("panes-2")).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByTestId("panes-1")).toHaveAttribute("data-highlighted", "");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByTestId("panes-3")).toHaveAttribute("data-highlighted", "");
+  await expect(page.getByTestId("panes-3")).toHaveAccessibleName("3 panes");
   await shoot(page, "layout-09-pane-count-by-keyboard");
-  await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("ArrowLeft");
-  await expect(at(count)).toHaveAttribute("data-testid", "panes-1");
+  await page.keyboard.press("Enter");
+  await expect(panes).toHaveCount(3);
+  await expect(menu).toBeHidden();
+  await expect(arrange).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("panes-1")).toHaveAttribute("data-highlighted", "");
+  await page.keyboard.press("Enter");
   await expect(panes).toHaveCount(1);
   expect((await stored("keel.panes")).count).toBe(1);
-  await page.keyboard.press("Tab");
-  await expect(at(count)).toHaveCount(0);
-  // A pane command sets the number from outside the group: Tab still lands on the number shown.
+  // A pane command sets the number from outside the menu: the menu then marks the number shown.
   await page.keyboard.press("Control+k");
   await page.getByTestId("palette-input").fill("3 panes");
   await page.getByRole("option", { name: /3 panes/ }).first().click();
   await expect(panes).toHaveCount(3);
-  await tabInto(page, count);
-  await expect(at(count)).toHaveAttribute("data-testid", "panes-3");
-  // The ring of the option under the keyboard stays inside the group's track.
+  await arrange.click();
+  await expect(page.getByTestId("panes-3")).toHaveAttribute("aria-checked", "true");
+  await page.getByTestId("panes-1").click();
+  await expect(panes).toHaveCount(1);
+  // The ring of an option under the keyboard stays inside its group.
   const inside = (group: ReturnType<typeof page.getByTestId>) => group.evaluate((g) => {
     const el = g.querySelector<HTMLElement>(":focus")!;
     const c = getComputedStyle(el);
@@ -251,10 +265,6 @@ test("pane count and settings choices by keyboard", async ({ page, request }) =>
     const a = el.getBoundingClientRect(), b = g.getBoundingClientRect();
     return c.outlineStyle !== "none" && a.left - reach >= b.left && a.right + reach <= b.right && a.top - reach >= b.top && a.bottom + reach <= b.bottom;
   });
-  expect(await inside(count)).toBe(true);
-  await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("ArrowLeft");
-  await expect(panes).toHaveCount(1);
 
   await page.goto("/settings/general");
   const theme = page.getByRole("radiogroup", { name: "Theme" });
@@ -800,8 +810,8 @@ test("a session placed in a chosen pane by keyboard", async ({ page, request }) 
 
     // With an empty pane on the bridge, the keys start on it (it costs no session its pane),
     // and the card that stands beside a row is away while the menu is open.
-    await page.getByTestId("panes-2").click();
-    await page.getByTestId("panes-3").click();
+    await setPanes(page, 2);
+    await setPanes(page, 3);
     await expect.poll(slots).toEqual([c, a, null]);
     await row.hover();
     await expect(page.getByTestId("rail-card")).toBeVisible();

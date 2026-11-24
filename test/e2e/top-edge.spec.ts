@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, setPanes } from "./shots.ts";
 
 // Feature: the top edge of the window. The rail's brand row and the pane's top bar are one height,
 // so their content starts on one line. Where a pane is as wide as a desk window leaves it (a
@@ -76,7 +76,7 @@ test("nothing is drawn where a pane meets the rail, in a state that calls the ow
     }
     // Two panes: the one worked in is the first, against the rail.
     await page.goto(`/s/${fail}`);
-    await page.getByTestId("panes-2").click();
+    await setPanes(page, 2);
     const helm = page.getByTestId("bridge").locator(':scope > [data-slot="0"]');
     await expect(page.getByTestId("bridge").locator(':scope > [data-slot="1"]')).toBeVisible();
     // (The new pane takes the keys; a press in the first gives them back.)
@@ -85,7 +85,7 @@ test("nothing is drawn where a pane meets the rail, in a state that calls the ow
     await page.mouse.move(1000, 700);
     await edgeClean(page, helm, "the pane worked in, beside another");
     await shoot(page, "top-edge-05-edge-two-panes");
-    await page.getByTestId("panes-1").click();
+    await setPanes(page, 1);
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`).catch(() => {});
   }
@@ -132,7 +132,7 @@ test("the rail and a pinned pane meet in one clean top edge, the head and its to
   const { session: other } = await (await request.post("/api/sessions", { data: { model, title: "Beside the pinned one" } })).json();
   try {
     // Two panes, the other session dropped on the second from the list.
-    await page.getByTestId("panes-2").click();
+    await setPanes(page, 2);
     const second = page.getByTestId("bridge").locator(':scope > [data-slot="1"]');
     await expect(second).toBeVisible();
     await page.locator(`[data-testid="session-row"][data-session="${other.id}"]`).dragTo(second);
@@ -142,7 +142,7 @@ test("the rail and a pinned pane meet in one clean top edge, the head and its to
     const ends = await page.getByTestId("station-head").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().bottom)));
     for (const end of ends) expect(Math.abs(end - (brand.y + brand.height)), `panes end at ${ends.join(", ")}, the brand row at ${brand.y + brand.height}`).toBeLessThanOrEqual(1);
     await shoot(page, "top-edge-04-two-panes");
-    await page.getByTestId("panes-1").click();
+    await setPanes(page, 1);
   } finally {
     await request.delete(`/api/sessions/${other.id}`);
   }

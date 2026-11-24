@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, setPanes } from "./shots.ts";
 
 // Feature: the top bar at rest, and rows that read calm. Every pane's head ends on one line at every
 // desk width, in one title size, whichever pane holds the keys. The bar rests with the permission
@@ -28,7 +28,7 @@ test("every pane's head ends on one line, in one title size, at every desk width
     for (const width of [1050, 1366, 1920]) {
       await page.setViewportSize({ width, height: 900 });
       await page.goto(`/s/${a}`);
-      await page.getByTestId("panes-2").click();
+      await setPanes(page, 2);
       const second = page.getByTestId("bridge").locator(':scope > [data-slot="1"]');
       await page.locator(`[data-testid="session-row"][data-session="${b}"]`).dragTo(second);
       await expect(second).toHaveAttribute("data-station", b);
@@ -45,7 +45,7 @@ test("every pane's head ends on one line, in one title size, at every desk width
         expect(title.y + title.height, `at ${width} a title sits below the brand row`).toBeLessThanOrEqual(brand.y + brand.height);
       }
       if (width !== 1920) await shoot(page, `rest-bar-01-two-${width}`);
-      await page.getByTestId("panes-1").click();
+      await setPanes(page, 1);
     }
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);
@@ -181,7 +181,7 @@ test("a pane alone has no tools at rest, its menu has them; beside another pane 
       await request.patch(`/api/sessions/${a}`, { data: { pinned: false } });
       await expect(head.locator(".k-station-tools")).toHaveCount(0);
       // Beside another pane they rest in each head, and the menu has no second copy.
-      await page.getByTestId("panes-2").click();
+      await setPanes(page, 2);
       const second = page.getByTestId("bridge").locator(':scope > [data-slot="1"]');
       await page.locator(`[data-testid="session-row"][data-session="${b}"]`).dragTo(second);
       await expect(second).toHaveAttribute("data-station", b);
@@ -190,7 +190,7 @@ test("a pane alone has no tools at rest, its menu has them; beside another pane 
       await expect(page.getByTestId("menu-rename")).toBeVisible();
       await expect(page.getByTestId("menu-pin")).toHaveCount(0);
       await page.keyboard.press("Escape");
-      await page.getByTestId("panes-1").click();
+      await setPanes(page, 1);
     }
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);

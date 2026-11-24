@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, setPanes } from "./shots.ts";
 
 // Feature: the daily paths by keyboard. Each test names the path it holds.
 const MODEL = "scripted:stand-in";
@@ -207,7 +207,7 @@ test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ 
   await expect(page.getByTestId("composer")).toBeFocused();
 
   // With a second pane a row has one more action (place it in a pane): still one Tab stop, and Right reaches all four.
-  await page.getByTestId("panes-2").click();
+  await setPanes(page, 2);
   const off = page.getByTestId("session-list").locator('[data-testid="session-row"]:not([data-shown])').first();
   await off.focus();
   for (const act of ["row-pin", "row-beside", "row-place", "row-archive"]) {

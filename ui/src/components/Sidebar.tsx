@@ -43,7 +43,7 @@ import { useReach } from "../lib/reach.ts";
 import { auto, useAuto } from "../lib/automation.ts";
 import { briefText, failWord, folderOf, Mark, modelOf, ROW_BEAT, rowClock, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
-import { DRAG, dragSession, PaneCount } from "./Panes.tsx";
+import { DRAG, dragSession } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { Grip } from "./Grip.tsx";
 import { Kbd } from "./Kbd.tsx";
@@ -1287,7 +1287,6 @@ export function Sidebar({ open }: { open: boolean }) {
       <div className="k-rail-brand">
         <span className="k-logo" data-live={link.live || undefined} title={link.word}><Logo /></span>
         <span className="k-brand-name">Keel</span>
-        {open && !phone() && <PaneCount />}
         {open && toggle}
       </div>
       {open && !rail.over && !rail.narrow && !phone() && (
@@ -1309,7 +1308,6 @@ export function Sidebar({ open }: { open: boolean }) {
       )}
       <div className="k-rail-acts">
         {!open && toggle}
-        {!open && <PaneCount />}
         <button type="button" className="k-new-session k-act" data-testid="new-session" aria-label={newUnsent ? `New session, ${NEW_UNSENT[newUnsent].line}` : "New session"} title={newUnsent ? NEW_UNSENT[newUnsent].title : "New session (Ctrl Shift O)"} aria-current={route.name === "new" ? "page" : undefined} onClick={() => runCommand("new-session")}>
           <Plus /><span className="k-act-label">New session</span>
           {/* A first message kept in the New box, which nobody may be looking at: said here, in words when the list is open (in the shortcut's place). */}

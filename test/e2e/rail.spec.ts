@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, setPanes } from "./shots.ts";
 
 // Feature: the rail always says which session is which. With room it is the
 // list (title, state, time, by folder), with one pane, two or three open at
@@ -123,7 +123,7 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   expect(await stored("keel.list")).toBe("true");
 
   // Three panes (the owner's number) still leave room at this width: the list stays.
-  await page.getByTestId("panes-3").click();
+  await setPanes(page, 3);
   await entry(twin).click(); // it takes the free pane
   await expect(stations).toHaveCount(3);
   await expect(side).toHaveAttribute("data-open", "true");

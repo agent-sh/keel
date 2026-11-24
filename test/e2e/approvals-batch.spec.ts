@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, setPanes } from "./shots.ts";
 
 // Feature: several requests waiting at once. They are a list of rows; the one
 // that has the keyboard is the framed one and the others step back; each is
@@ -837,17 +837,22 @@ test("a card that was whole reads cut when its pane narrows, and whole again whe
     await expect(card).not.toHaveAttribute("data-must-open", "true");
     await expect(once).toBeFocused();
     await expect(card).toHaveAttribute("data-live", "true");
-    // The panes change with no resize of the window, by a press made in the page (the keyboard stays
-    // where it is): the card says it is cut, takes no answer, and the keyboard leaves its Allow once.
-    const panes = (n: number) => page.evaluate((n) => document.querySelector<HTMLElement>(`[data-testid="panes-${n}"]`)!.click(), n);
-    await panes(4);
+    // Two panes, chosen in the Arrange menu: the card is still whole, and the keyboard goes back to its Allow once.
+    const panes = (n: number) => setPanes(page, n);
+    await panes(2);
+    await expect(card).not.toHaveAttribute("data-must-open", "true");
+    await once.focus();
+    // The window narrows while the keyboard is on Allow once, so the pane narrows under it: the card says it is
+    // cut, takes no answer, and the keyboard leaves its Allow once.
+    await page.setViewportSize({ width: 1366, height: 1040 });
     await expect(card).toHaveAttribute("data-must-open", "true");
     await expect(card.getByTestId("approval-cut")).toBeVisible();
     await expect(page.getByTestId("approvals")).toBeFocused();
     await page.keyboard.press("Enter");
     await page.waitForTimeout(300);
     expect((await cards())[0]!.state).toBe("pending");
-    // One pane again: whole, and it can be answered.
+    // A wide window and one pane again: whole, and it can be answered.
+    await page.setViewportSize({ width: 1920, height: 1040 });
     await panes(1);
     await expect(card).not.toHaveAttribute("data-must-open", "true");
     await expect(card.getByTestId("approval-cut")).toHaveCount(0);

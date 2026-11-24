@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, setPanes } from "./shots.ts";
 
 // Feature: the home screen is the watch over every session. Its headline is
 // the state of the sessions in the state words; the sessions that need the
@@ -311,7 +311,7 @@ test("home: a new-session pane beside others lists what needs the owner", async 
   try {
     await page.addInitScript(() => { if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.setItem("keel.focus", "false"); } });
     await page.goto("/");
-    await page.getByTestId("panes-2").click();
+    await setPanes(page, 2);
     await page.getByRole("button", { name: "New session" }).first().click();
     const pane = page.locator(".k-station-new");
     await expect(pane.getByTestId("new-composer")).toBeVisible();
@@ -323,7 +323,7 @@ test("home: a new-session pane beside others lists what needs the owner", async 
     await expect(pane.getByTestId("recent-session")).toHaveCount(0);
     expect(await pane.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     await shoot(page, "home-06-pane");
-    await page.getByTestId("panes-1").click();
+    await setPanes(page, 1);
   } finally {
     await drop(request, [asks.id]);
   }

@@ -70,6 +70,15 @@ export async function pickModel(page: Page, id = HAIKU) {
 // (a real model takes a moment before its first call; the stand-in makes it at once).
 export const scriptBash = (command: string, afterMs?: number) => `script:calls ${JSON.stringify([{ name: "Bash", input: { command }, ...(afterMs ? { after_ms: afterMs } : {}) }])}`;
 
+// Sets how many panes are open from the Arrange menu above the session list, where the choice is
+// (the menu closes on the choice). The list must be open.
+export async function setPanes(page: Page, n: number) {
+  const item = page.getByTestId(`panes-${n}`);
+  if (!(await item.isVisible())) await page.getByTestId("list-arrange").click();
+  await item.click();
+  await expect(page.getByTestId("arrange-menu")).toBeHidden();
+}
+
 // Opens a side panel of the session on screen from the Panels picker.
 // Nothing happens when it is already open.
 export async function openPanel(page: Page, id: string) {
