@@ -34,6 +34,8 @@ export function PermissionMenu({ sessionId, openSignal = 0 }: { sessionId: strin
   const modes = useSafety((s) => s.modes);
   const groups = useSafety((s) => s.modeGroups);
   const sandbox = useSafety((s) => s.sandbox);
+  const defaultMode = useSafety((s) => s.defaultMode);
+  const waiting = useSafety((s) => (s.approvals[sessionId]?.length ?? 0) > 0);
   const filter = filterSaid(sandbox);
   const [grantsOpen, setGrantsOpen] = useState(false);
   // /permissions with no mode opens this menu (in the box that has the focus: `openSignal` counts the asks).
@@ -72,16 +74,21 @@ export function PermissionMenu({ sessionId, openSignal = 0 }: { sessionId: strin
   if (!perm) return null;
   const mode = modes.find((m) => m.id === perm.mode);
   const set = (patch: Partial<Omit<SessionPerm, "session_id">>) => safety.setPerm(sessionId, patch).catch(reportError);
-  const Icon = perm.mode === "full-auto" ? ShieldOff : perm.sandbox !== "off" ? ShieldCheck : Shield;
+  // The control is neutral ink in every session. Full auto draws warm, with the struck shield, only when
+  // it is unusual here (new sessions start in another mode, so the owner chose it for this one) or a call
+  // in this session waits on the owner (Full auto still asks about the ones it flags).
+  const warm = perm.mode === "full-auto" && (waiting || (defaultMode !== null && defaultMode !== "full-auto"));
+  const Icon = warm ? ShieldOff : perm.sandbox !== "off" ? ShieldCheck : Shield;
 
   return (
     <>
       <Popover.Root open={open} onOpenChange={setOpen} onOpenChangeComplete={(o) => { if (o) showInUse(); }}>
         <Popover.Trigger
           data-testid="permission-menu"
+          data-warm={warm ? "" : undefined}
           className={cn(
             "k-mode-pick inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui text-muted transition-colors hover:bg-hover hover:text-fg data-popup-open:bg-hover",
-            perm.mode === "full-auto" && "text-warn",
+            warm && "text-warn",
           )}
         >
           <Icon className="size-3.5" />
