@@ -4,10 +4,11 @@
 // the owner lands it through the landing queue in the order proposed from the overlaps, sends it back to
 // its agents with a note, or drops it.
 import { Dialog } from "@base-ui/react/dialog";
-import { ArrowRight, Check, CornerUpLeft, GitMerge, Loader2, RefreshCw, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, CornerUpLeft, GitMerge, Loader2, RefreshCw, Trash2, TriangleAlert, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { useTreeMark } from "../lib/board.ts";
+import { usePhoneWidth } from "../lib/list-hold.ts";
 import { failed, onFeature, reportUnlessGone, scope } from "../lib/store.ts";
 import { decide, laneOf, readArea, readTree, type AreaDetail, type AreaHunk, type Decision, type TreeArea, type TreeBranch, type TreeOverlap, type TreeView } from "../lib/tree-review.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -52,7 +53,7 @@ function Who({ b, lanes }: { b: TreeBranch; lanes: Lanes }) {
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption" data-testid="tree-who" data-branch={b.branch} data-verdict={b.verdict ?? "none"}>
       <Dot i={lanes.get(b.branch) ?? 0} />
       <span className="font-mono text-fg">{short(b.branch)}</span>
-      <span className="min-w-0 max-w-[16rem] truncate text-muted" title={`${b.title} (agent ${b.agent})`}>{b.title}</span>
+      <span className="min-w-0 max-w-[16rem] truncate text-muted max-md:max-w-full max-md:whitespace-normal" title={`${b.title} (agent ${b.agent})`}>{b.title}</span>
       <span className={cn("text-micro font-medium", v.cls)} data-testid="tree-verdict">{v.word}</span>
       <span className={cn("text-micro", c.cls)} data-testid="tree-checks">{c.word}</span>
       {b.working && <span className="text-micro text-st-work">working</span>}
@@ -109,7 +110,7 @@ function File({ f, view, lanes }: { f: AreaDetail["files"][number]; view: TreeVi
   return (
     <section className="k-diff-file" data-testid="tree-file" data-path={f.path}>
       <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line bg-sunken px-3 py-1.5">
-        <span className="min-w-[12rem] flex-1 truncate font-mono text-caption text-fg" title={f.path}>{f.path}</span>
+        <span className="min-w-[12rem] flex-1 truncate font-mono text-caption text-fg max-md:whitespace-normal max-md:break-all" title={f.path}>{f.path}</span>
         {counts.slice(0, DOTS).map((c) => (
           <span key={c.branch} className="inline-flex items-center gap-1 font-mono text-micro text-muted" data-testid="tree-file-count">
             <Dot i={lanes.get(c.branch) ?? 0} className="size-2" />
@@ -183,7 +184,7 @@ function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeV
   return (
     <div className="flex flex-col gap-2 border-b border-line px-4 py-3" data-testid="tree-area-head">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h3 className="min-w-0 truncate font-mono text-ui font-medium text-fg">{a.key === "." ? "top level" : a.key}</h3>
+        <h3 className="min-w-0 truncate font-mono text-ui font-medium text-fg max-md:whitespace-normal max-md:break-all">{a.key === "." ? "top level" : a.key}</h3>
         <span className="text-caption text-muted">{a.files.length} {a.files.length === 1 ? "file" : "files"} · <span className="text-ok">+{a.added}</span> <span className="text-danger">-{a.removed}</span></span>
         <span className="flex-1" />
         <button type="button" disabled={busy || !a.order.length} onClick={() => void onDecide("land")} data-testid="tree-land"
@@ -313,7 +314,7 @@ function AreaList({ view, lanes, at, onPick }: { view: TreeView; lanes: Lanes; a
   const ovs = new Map(view.overlaps.map((o) => [o.id, o]));
   return (
     <section className="flex flex-col gap-1 px-3 py-3">
-      <h4 className="k-label flex items-center gap-2 px-1">Areas<span className="flex-1" /><span className="font-normal"><kbd className="font-mono">j</kbd> <kbd className="font-mono">k</kbd> to move</span></h4>
+      <h4 className="k-label flex items-center gap-2 px-1">Areas<span className="flex-1" /><span className="font-normal max-md:hidden"><kbd className="font-mono">j</kbd> <kbd className="font-mono">k</kbd> to move</span></h4>
       <ul className="flex flex-col gap-0.5" data-testid="tree-areas">
         {view.areas.map((a) => {
           const conflict = a.overlaps.some((id) => ovs.get(id)?.conflict);
@@ -322,7 +323,7 @@ function AreaList({ view, lanes, at, onPick }: { view: TreeView; lanes: Lanes; a
               <button type="button" onClick={() => onPick(a.key)} aria-current={a.key === at ? "true" : undefined} data-testid="tree-area" data-area={a.key} data-decision={decided(a)}
                 className={cn("flex w-full flex-col gap-1 rounded-lg px-2.5 py-2 text-left", a.key === at ? "k-picked" : "hover:bg-hover")}>
                 <span className="flex w-full items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate font-mono text-caption text-fg">{a.key === "." ? "top level" : a.key}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-caption text-fg max-md:whitespace-normal max-md:break-all">{a.key === "." ? "top level" : a.key}</span>
                   {decided(a) !== "none" && <span className={cn("shrink-0 text-micro", a.decisions.every((d) => d.current) ? "text-muted" : "text-warn")}>{decided(a) === "mixed" ? "decided in part" : ACTION_WORD[decided(a) as Decision["action"]].toLowerCase()}{a.decisions.every((d) => d.current) ? "" : " · moved"}</span>}
                 </span>
                 <span className="flex w-full items-center gap-2 whitespace-nowrap text-micro text-muted" data-testid="tree-area-counts">
@@ -353,7 +354,7 @@ function Branches({ view, lanes }: { view: TreeView; lanes: Lanes }) {
           <li key={b.branch} className="flex flex-col gap-0.5" data-testid="tree-branch" data-branch={b.branch}>
             <span className="flex min-w-0 items-center gap-2 text-caption">
               <Dot i={lanes.get(b.branch) ?? 0} />
-              <span className="min-w-0 truncate font-mono text-fg" title={b.branch}>{short(b.branch)}</span>
+              <span className="min-w-0 truncate font-mono text-fg max-md:whitespace-normal max-md:break-all" title={b.branch}>{short(b.branch)}</span>
               <span className={cn("shrink-0 text-micro font-medium", verdictOf(b).cls)}>{verdictOf(b).word}</span>
             </span>
             <span className="pl-4.5 text-micro text-faint">
@@ -377,6 +378,9 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [said, setSaid] = useState("");
+  // A phone shows one column: the areas, then the one picked (a way back at its top).
+  const phone = usePhoneWidth();
+  const [step, setStep] = useState<"areas" | "area">("areas");
   const load = useCallback(async (fresh: boolean) => {
     setBusy(true);
     setErr("");
@@ -460,7 +464,7 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
           <div className="flex items-center gap-3 border-b border-line px-4 py-3">
             <div className="flex min-w-0 flex-1 flex-col">
               <Dialog.Title className="truncate text-ui font-semibold text-fg">Review the tree</Dialog.Title>
-              <p className="truncate text-caption text-muted" data-testid="tree-summary">
+              <p className="truncate text-caption text-muted max-md:whitespace-normal max-md:break-words" data-testid="tree-summary">
                 {view ? <>
                   {view.branches.length} {view.branches.length === 1 ? "branch" : "branches"} to land · {view.areas.length} {view.areas.length === 1 ? "area" : "areas"} · {view.overlaps.length} {view.overlaps.length === 1 ? "overlap" : "overlaps"}{conflicts ? ` (${conflicts} would conflict)` : ""}
                   {view.base && <> · base <span className="font-mono">{view.base}</span> at <span className="font-mono">{sha(view.base_tip)}</span></>}
@@ -487,14 +491,19 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
           {view && !view.branches.length ? (
             <p className="k-empty px-4 py-6"><b>Nothing to review</b>No agent of this session's tree has a branch with work the base lacks.</p>
           ) : (
-            <div className="grid min-h-0 flex-1 grid-cols-[24rem_minmax(0,1fr)]" style={{ flexShrink: 1 }}>
-              <div className="min-h-0 divide-y divide-line overflow-y-auto border-r border-line bg-sunken">
+            <div className="grid min-h-0 flex-1 grid-cols-[24rem_minmax(0,1fr)] max-md:grid-cols-[minmax(0,1fr)]" style={{ flexShrink: 1 }}>
+              <div className={cn("min-h-0 divide-y divide-line overflow-y-auto border-r border-line bg-sunken max-md:border-r-0", phone && step === "area" && "hidden")} data-testid="tree-side">
                 {view && <Order view={view} lanes={lanes} />}
-                {view && <AreaList view={view} lanes={lanes} at={at} onPick={setAt} />}
+                {view && <AreaList view={view} lanes={lanes} at={at} onPick={(k) => { setAt(k); setStep("area"); }} />}
                 {view && <Branches view={view} lanes={lanes} />}
                 {view && <p className="px-4 py-2 text-micro text-faint" data-testid="tree-took">Read {ago(view.at)} in {view.took_ms} ms: {view.stats.diffs} diffs read, {view.stats.kept} kept from before, {view.stats.merges} merges.</p>}
               </div>
-              <div className="flex min-h-0 min-w-0 flex-col overflow-y-auto">
+              <div className={cn("flex min-h-0 min-w-0 flex-col overflow-y-auto", phone && step === "areas" && "hidden")}>
+                {phone && (
+                  <button type="button" onClick={() => setStep("areas")} data-testid="tree-areas-back" className="flex items-center gap-1.5 self-start px-4 py-2 text-caption text-muted hover:text-fg">
+                    <ArrowLeft className="size-3.5" />Areas
+                  </button>
+                )}
                 {view && area && <AreaHead a={area} view={view} lanes={lanes} onDecide={onDecide} busy={busy} />}
                 <div className="flex flex-col gap-3 p-4" data-testid="tree-area-files">
                   {detail && view && detail.key === at ? detail.files.map((f) => <File key={f.path} f={f} view={view} lanes={lanes} />) : <p className="text-caption text-faint">Reading the area…</p>}

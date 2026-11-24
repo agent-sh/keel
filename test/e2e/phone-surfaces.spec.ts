@@ -477,5 +477,88 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+
+    test("the tree review reads as one column on a phone: areas, one area's diff, and its decisions by a finger", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(180_000);
+      await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+      const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `phone-tree-${Date.now()}-${size.width}`, "repo");
+      mkdirSync(join(repo, "src/board"), { recursive: true });
+      mkdirSync(join(repo, "src/landing"), { recursive: true });
+      mkdirSync(join(repo, ".keel"));
+      const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repo, encoding: "utf8" });
+      git("init", "-q", "-b", "main");
+      writeFileSync(join(repo, "src/board/rules.ts"), Array.from({ length: 10 }, (_, i) => `export const rule${i + 1} = ${i + 1};`).join("\n") + "\n");
+      writeFileSync(join(repo, "src/landing/queue.ts"), Array.from({ length: 6 }, (_, i) => `export const step${i + 1} = ${i + 1};`).join("\n") + "\n");
+      writeFileSync(join(repo, "README.md"), "# demo\n");
+      writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { files: "test -f src/board/rules.ts" }, land: { checks: ["files"] } }));
+      git("add", "-A");
+      git("commit", "-qm", "init");
+      const commit = (msg: string) => `git add -A && git -c user.name=k -c user.email=k@k commit -qm '${msg}'`;
+      const coord = (await (await request.post("/api/sessions", { data: { model: STAND_IN, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+      const lane = (title: string, command: string) => ({ name: "spawn_agent", input: { message: `${title}\n${calls([{ name: "Bash", input: { command } }])}` } });
+      try {
+        await request.post(`/api/sessions/${coord}/messages`, { data: { text: `script:batch ${JSON.stringify([
+          lane("Lane alpha", `sed -i 's/rule3 = 3/rule3 = 30/' src/board/rules.ts && mkdir -p ui/src/components && printf 'export const BoardCard = () => null;\\n' > ui/src/components/BoardCard.tsx && ${commit("Lane alpha")}`),
+          lane("Lane beta", `sed -i 's/rule3 = 3/rule3 = 300/; s/rule4 = 4/rule4 = 400/' src/board/rules.ts && ${commit("Lane beta")}`),
+          lane("Lane gamma", `sed -i 's/step2 = 2/step2 = 20/' src/landing/queue.ts && printf 'Landing steps.\\n' >> README.md && ${commit("Lane gamma")}`),
+        ])}` } });
+        const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
+        await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(3);
+        await expect.poll(() => idle(request, coord), { timeout: 60_000 }).toBe(true);
+        await page.goto(`/s/${coord}`);
+        await page.getByTestId("panel-menu").first().tap();
+        await page.getByTestId("panel-pick-board").tap();
+        await page.getByTestId("board-review-tree").tap();
+        const dlg = page.getByTestId("tree-review");
+        await expect(dlg.getByTestId("tree-summary")).toContainText("3 branches to land");
+        await expect(dlg.getByTestId("tree-area")).toHaveCount(3);
+        // The dialog is the page's size and the page does not scroll sideways.
+        await inside(page, dlg);
+        await noSideScroll(page);
+        expect(await small(dlg), "every control of the review is a finger's target").toEqual([]);
+        // The areas are read at the page's width, not past it: the list does not leave the diff 0 px wide.
+        const widths = await dlg.evaluate((el) => { const w = el.getBoundingClientRect().width; return { w, areas: document.querySelector<HTMLElement>('[data-testid="tree-areas"]')!.getBoundingClientRect().width }; });
+        expect(widths.areas, "the area list fits the dialog").toBeLessThanOrEqual(widths.w);
+        await shoot(page, `phone-surfaces-16-tree-areas-${size.width}`);
+        // An area is opened by a press and its diff and decisions are reached.
+        await dlg.locator('[data-testid="tree-area"][data-area="src/board"]').tap();
+        const files = dlg.getByTestId("tree-area-files");
+        await expect(files.locator('[data-testid="tree-file"][data-path="src/board/rules.ts"]')).toBeVisible();
+        await expect(dlg.getByTestId("tree-overlap").first()).toBeVisible();
+        await inside(page, dlg);
+        await noSideScroll(page);
+        const land = dlg.getByTestId("tree-land");
+        await land.scrollIntoViewIfNeeded();
+        for (const t of ["tree-land", "tree-back", "tree-drop"]) {
+          const b = dlg.getByTestId(t);
+          await b.scrollIntoViewIfNeeded();
+          const r = (await b.boundingBox())!;
+          expect(r.x, `${t} is inside the page`).toBeGreaterThanOrEqual(0);
+          expect(r.x + r.width, `${t} is inside the page`).toBeLessThanOrEqual(size.width);
+        }
+        // Where two branches change the same lines, both sides are reached (side by side, scrolling inside the area, not the page).
+        const sides = dlg.getByTestId("tree-overlap-sides").first();
+        await sides.scrollIntoViewIfNeeded();
+        await noSideScroll(page);
+        await shoot(page, `phone-surfaces-17-tree-diff-${size.width}`);
+        await dlg.getByTestId("tree-back").tap();
+        const form = dlg.getByTestId("tree-back-form");
+        await expect(form).toBeVisible();
+        await form.scrollIntoViewIfNeeded();
+        await inside(page, form);
+        expect(await small(form), "the send-back form's controls are finger targets").toEqual([]);
+        await shoot(page, `phone-surfaces-18-tree-back-${size.width}`);
+        // Back to the areas by a press, and the other area opens as the same page.
+        await dlg.getByTestId("tree-areas-back").scrollIntoViewIfNeeded();
+        await dlg.getByTestId("tree-areas-back").tap();
+        await expect(dlg.getByTestId("tree-area")).toHaveCount(3);
+        await dlg.locator('[data-testid="tree-area"][data-area="src/landing"]').tap();
+        await expect(dlg.locator('[data-testid="tree-file"][data-path="src/landing/queue.ts"]')).toBeVisible();
+        await noSideScroll(page);
+      } finally {
+        await drop(request, coord);
+      }
+    });
   });
 }
