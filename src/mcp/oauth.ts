@@ -4,8 +4,8 @@
 // metadata (RFC 8414 / OIDC discovery) with the issuer checked, a client from
 // the config or dynamic registration (RFC 7591), PKCE S256, the resource
 // parameter (RFC 8707), and the iss check on the redirect (RFC 9207).
-// Client ID metadata documents need a public HTTPS URL, which a local daemon
-// does not have, so registration is the path for servers we have no client for.
+// The client, in the spec's order: the config's, then a Client ID Metadata Document (the owner's published
+// https URL, when the authorization server says it supports them), then dynamic registration (RFC 7591).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeOwnFile } from "../core/ownfile.ts";
@@ -41,7 +41,8 @@ const refreshing = new Map<string, Promise<string | undefined>>();
 
 export class OAuthStore {
   private path: string;
-  constructor(stateDir: string) {
+  // `metadataUrl`: where the owner published Keel's client metadata document ("" when none: dynamic registration).
+  constructor(stateDir: string, private metadataUrl: () => string = () => "") {
     this.path = join(stateDir, "mcp-oauth.json");
   }
 
@@ -175,8 +176,16 @@ export class OAuthStore {
     const key = `${server} ${as.issuer} ${redirectUri}`;
     let client: Client | undefined = cfg.client_id
       ? { client_id: cfg.client_id, client_secret: cfg.client_secret_env ? process.env[cfg.client_secret_env] : undefined, redirect_uri: redirectUri }
-      : f.clients[key];
+      : undefined;
+    // Nothing is registered for a metadata document: the server reads it from its URL, so there is nothing to keep.
+    let cimdWhy = "";
+    if (!client && as.client_id_metadata_document_supported === true && this.metadataUrl()) {
+      cimdWhy = await metadataProblem(this.metadataUrl(), redirectUri);
+      if (!cimdWhy) client = { client_id: this.metadataUrl(), redirect_uri: redirectUri };
+    }
+    client ??= f.clients[key];
     if (!client) {
+      if (!as.registration_endpoint && cimdWhy) throw new Error(`${as.issuer} wants a client metadata document, and Keel's cannot be used: ${cimdWhy}`);
       if (!as.registration_endpoint) throw new Error(`${as.issuer} offers no client registration; set oauth.client_id for this server in mcp.json`);
       const r = await fetch(as.registration_endpoint, {
         method: "POST",
@@ -298,6 +307,25 @@ const canonicalResource = (url: string) => {
   return u.toString().replace(/\/$/, "");
 };
 
+// Why the owner's client metadata document cannot be offered ("" when it can): the draft's checks a client makes
+// of its own document (it is JSON, its client_id is its URL, it lists the redirect), so the owner is told here and not by
+// the authorization server's error page. A loopback redirect matches with any port (RFC 8252 7.3).
+async function metadataProblem(url: string, redirectUri: string): Promise<string> {
+  const d = await getJson(url);
+  if (!d || typeof d !== "object") return `${url} did not answer with a JSON document`;
+  if (d.client_id !== url) return `its client_id is ${JSON.stringify(d.client_id)}, not ${url}`;
+  const uris: unknown[] = Array.isArray(d.redirect_uris) ? d.redirect_uris : [];
+  const same = (a: string, b: string) => {
+    if (a === b) return true;
+    try {
+      const x = new URL(a), y = new URL(b);
+      const loop = (h: string) => h === "127.0.0.1" || h === "[::1]" || h === "localhost";
+      return x.protocol === "http:" && y.protocol === "http:" && loop(x.hostname) && x.hostname === y.hostname && x.pathname === y.pathname;
+    } catch { return false; }
+  };
+  return uris.some((u) => typeof u === "string" && same(u, redirectUri)) ? "" : `it does not list the redirect ${redirectUri}`;
+}
+
 async function getJson(url: string): Promise<any | null> {
   try {
     const r = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
@@ -337,7 +365,7 @@ async function authServerMetadata(issuer: string) {
     const d = await getJson(t);
     if (!d?.authorization_endpoint || !d.token_endpoint) continue;
     if (d.issuer && d.issuer.replace(/\/$/, "") !== issuer.replace(/\/$/, "")) continue;
-    return d as { issuer: string; authorization_endpoint: string; token_endpoint: string; registration_endpoint?: string; revocation_endpoint?: string };
+    return d as { issuer: string; authorization_endpoint: string; token_endpoint: string; registration_endpoint?: string; revocation_endpoint?: string; client_id_metadata_document_supported?: boolean };
   }
   // Servers from before discovery existed: the spec's default endpoints.
   return {

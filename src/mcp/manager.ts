@@ -375,6 +375,21 @@ const IDLE_PASS_MS = 60_000;
 registerSettings("mcp_idle", { close_browser_min: 10 }, (v) =>
   typeof v.close_browser_min === "number" && Number.isFinite(v.close_browser_min) && v.close_browser_min >= 0 ? undefined : "close_browser_min is a number of minutes, 0 or more (0: never)");
 
+// Where the owner published Keel's client metadata document (the MCP authorization spec's Client ID Metadata
+// Documents). An authorization server that supports them is signed in to with this URL as the client id; one that does
+// not, or none set, registers a client as before. The document is the owner's to host: its client_id is this URL and
+// its redirect_uris list the daemon's callback (http://127.0.0.1:<port>/api/mcp/oauth/callback; a loopback port may differ).
+registerSettings("mcp_oauth", { client_metadata_url: "" }, (v) => {
+  const u = v.client_metadata_url;
+  if (typeof u !== "string") return "client_metadata_url is an https address, or empty for none";
+  if (!u) return undefined;
+  try {
+    const x = new URL(u);
+    if (x.protocol !== "https:" || x.pathname === "/" || x.hash || x.username || x.password) return "client_metadata_url is an https address with a path and no fragment or credentials (https://example.com/client.json)";
+  } catch { return "client_metadata_url is an https address, or empty for none"; }
+  return undefined;
+});
+
 // A call an app made: its server's result as it came (structured content and all).
 export type AppCall = { raw(r: McpCallResult): void };
 
@@ -406,7 +421,7 @@ export class McpManager {
   // scratch file for any other. One built without it holds only what it is
   // given and cannot save: it never falls back to the owner's file.
   constructor(private errors: ErrorTracker, private stateDir: string, private workspace: string, private configFile?: string) {
-    this.oauth = new OAuthStore(stateDir);
+    this.oauth = new OAuthStore(stateDir, () => (settings().mcp_oauth.client_metadata_url as string) || "");
     this.bundledOffPath = join(stateDir, "mcp-bundled-off.json");
     this.publishedPath = join(stateDir, "mcp-instructions.json");
     this.askedPath = join(stateDir, "mcp-asked.json");

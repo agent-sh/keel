@@ -256,3 +256,74 @@ test("a refresh the server refuses as invalid_client drops the cached registrati
   expect(file().clients).toEqual({});
   expect(clientOf(await store.begin("s", url, null, redirect))).toBe("reg-2");
 });
+
+// A Client ID Metadata Document (MCP authorization, client registration): used when the server says it supports
+// one and the owner published one; otherwise a client is registered.
+let cimdSupported = true;
+let registerable = true;
+let doc: any;
+const cimd: ReturnType<typeof Bun.serve> = Bun.serve({
+  port: 0,
+  hostname: "127.0.0.1",
+  async fetch(req) {
+    const u = new URL(req.url);
+    const base = u.origin;
+    if (u.pathname === "/.well-known/oauth-authorization-server") {
+      return Response.json({
+        issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
+        ...(registerable ? { registration_endpoint: `${base}/register` } : {}),
+        ...(cimdSupported ? { client_id_metadata_document_supported: true } : {}),
+      });
+    }
+    if (u.pathname === "/register") return Response.json({ client_id: `reg-${++registered}` });
+    if (u.pathname === "/client.json") return Response.json(doc());
+    return new Response(null, { status: 404 });
+  },
+});
+afterAll(() => cimd.stop(true));
+const docUrl = () => `http://127.0.0.1:${cimd.port}/client.json`;
+const mcpUrl = () => `http://127.0.0.1:${cimd.port}/mcp`;
+const goodDoc = () => ({ client_id: docUrl(), client_name: "Keel", redirect_uris: [redirect], token_endpoint_auth_method: "none" });
+
+test("a server that supports client metadata documents is signed in to with the owner's document, and nothing is registered", async () => {
+  registered = 0; cimdSupported = true; registerable = false; doc = goodDoc;
+  const store = new OAuthStore((fresh(), dir), docUrl);
+  const url = await store.begin("s", mcpUrl(), null, redirect);
+  expect(clientOf(url)).toBe(docUrl());
+  expect(registered).toBe(0);
+  expect(file().clients).toEqual({});
+  expect(file().pending[stateOf(url)].client).toEqual({ client_id: docUrl(), redirect_uri: redirect });
+});
+
+test("with both offered the document wins over a registration, a cached one included; a configured client wins over both", async () => {
+  registered = 0; cimdSupported = true; registerable = true; doc = goodDoc;
+  const store = new OAuthStore((fresh(), dir), docUrl);
+  expect(clientOf(await store.begin("s", mcpUrl(), null, redirect))).toBe(docUrl());
+  expect(clientOf(await store.begin("s", mcpUrl(), null, redirect, { client_id: "mine" }))).toBe("mine");
+  expect(registered).toBe(0);
+  // The same store with no document published registers, as before.
+  const plain = new OAuthStore(dir);
+  expect(clientOf(await plain.begin("s", mcpUrl(), null, redirect))).toBe("reg-1");
+  expect(clientOf(await store.begin("s", mcpUrl(), null, redirect))).toBe(docUrl());
+});
+
+test("a server with no support for documents registers a client, though one is published", async () => {
+  registered = 0; cimdSupported = false; registerable = true; doc = goodDoc;
+  const store = new OAuthStore((fresh(), dir), docUrl);
+  expect(clientOf(await store.begin("s", mcpUrl(), null, redirect))).toBe("reg-1");
+});
+
+test("a document that cannot be offered is said to the owner when nothing else can sign in, and registers when something can", async () => {
+  cimdSupported = true; registerable = false;
+  const store = new OAuthStore((fresh(), dir), docUrl);
+  doc = () => ({ ...goodDoc(), client_id: "https://elsewhere.example/client.json" });
+  await expect(store.begin("s", mcpUrl(), null, redirect)).rejects.toThrow(/its client_id is "https:\/\/elsewhere.example\/client.json"/);
+  doc = () => ({ ...goodDoc(), redirect_uris: ["http://127.0.0.1:9/other"] });
+  await expect(store.begin("s", mcpUrl(), null, redirect)).rejects.toThrow(/does not list the redirect/);
+  // A loopback redirect on another port is the same redirect.
+  doc = () => ({ ...goodDoc(), redirect_uris: ["http://127.0.0.1:9/cb"] });
+  expect(clientOf(await store.begin("s", mcpUrl(), null, "http://127.0.0.1:47950/cb"))).toBe(docUrl());
+  registered = 0; registerable = true;
+  doc = () => ({ ...goodDoc(), client_id: "x" });
+  expect(clientOf(await store.begin("s", mcpUrl(), null, redirect))).toBe("reg-1");
+});
