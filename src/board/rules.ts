@@ -451,6 +451,12 @@ export const branchGone = (r: BoardRow) => !!r.branch && !r.head && r.worktree =
 // Work a coordinator still owes a landing: a branch not landed, or one git could not read.
 export const toLand = (r: BoardRow) => !!r.landed && r.landed.state !== "yes" && r.landed.state !== "nothing" && !branchGone(r);
 
+// A branch with nothing left but the landing: not landed, no agent at work on it, its named checks all passed on its head,
+// nothing uncommitted in its worktree, and no reviewer's refusal. (A worktree not read is not known clean.)
+export const readyToLand = (r: BoardRow) =>
+  toLand(r) && r.landed?.state === "no" && !live(r.state) && r.checks?.state === "known" && r.checks.failed.length === 0 && r.checks.notRun.length === 0 && r.checks.passed.length > 0
+  && !!r.work && !r.work.uncommitted && !(r.review && (r.review.verdict === "refused" || r.review.verdict === "disputed"));
+
 // The board in a few hundred tokens: each agent that needs the coordinator in a line of its own (one that
 // works, or whose branch is not landed), the rest by their ids on one line. `all`: every row in full;
 // `agent`: that row alone, in full.

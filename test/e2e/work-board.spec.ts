@@ -91,6 +91,20 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(approver.branch).toBeTruthy();
   await idle(coord);
 
+  // Alpha's branch has nothing left but the landing: its checks passed on its head, its worktree is clean, a reviewer
+  // approved it. Its own session says so above the message box and offers the board's action, the tree review. The
+  // coordinator's tree does not say it: beta is refused and gamma still works.
+  await page.goto(`/s/${alpha.session_id}`);
+  await expect(page.getByTestId("dock-ready")).toHaveText("Ready to land", { timeout: 30_000 });
+  await shoot(page, "board-00-ready-to-land");
+  await page.getByTestId("dock-land").click();
+  await expect(page.getByTestId("tree-review")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("tree-review")).toBeHidden();
+  await page.goto(`/s/${coord}`);
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(page.getByTestId("dock-ready")).toHaveCount(0);
+
   // Alpha lands through the queue onto the moved main: rebased, so main holds its patch under another commit.
   await send(coord, calls([{ name: "keel__landing_queue", input: { action: "queue", branches: [alpha.branch] } }]));
   const entry = async () => ((await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as any[]).find((e) => e.branch === alpha.branch);
@@ -101,6 +115,9 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(() => git(repo, "merge-base", "--is-ancestor", alphaTip, main)).toThrow();
   await expect.poll(() => existsSync(join(top, "after.log")) && readFileSync(join(top, "after.log"), "utf8"), { timeout: 30_000 }).toBe(`${main}\n`);
   await idle(coord);
+  await page.goto(`/s/${alpha.session_id}`);
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(page.getByTestId("dock-ready")).toHaveCount(0);
 
   // The board, as the page and the API read it.
   const board = async () => (await (await request.get(`/api/sessions/${coord}/board?fresh=1`)).json()) as any;

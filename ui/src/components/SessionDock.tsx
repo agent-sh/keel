@@ -1,7 +1,13 @@
-// Above the composer: the session's current plan and its background jobs.
+// Above the composer: the session's current plan, its background jobs, and what it changed (with Review, and the
+// landing when its branch is ready).
 import { Collapsible } from "@base-ui/react/collapsible";
-import { ChevronRight, ListChecks, Square, SquareTerminal } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronRight, FileDiff, ListChecks, Square, SquareTerminal } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import type { Session } from "../../../src/core/types.ts";
+import { readyToLand, toLand } from "../../../src/board/rules.ts";
+import { rootOf } from "../lib/agent-tree.ts";
+import { useBoard, useTreeMark } from "../lib/board.ts";
+import { useChanged, type Changed } from "../lib/session-changes.ts";
 import { branchLine } from "../lib/rows.ts";
 import { actions, api, liveNow, onFeature, reportError, reportUnlessGone, useStore, type JobView } from "../lib/store.ts";
 import { splitId } from "../lib/fleet-ids.ts";
@@ -10,6 +16,10 @@ import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
 import { useUI } from "../lib/ui.ts";
 import { PlanCard } from "./ToolCall.tsx";
+import { openPanel } from "./SidePanel.tsx";
+
+// The tree review (land, send back or drop each area), the one action the work board offers for landing.
+const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
 
 const since = (t: number) => {
   const s = Math.max(0, Math.round((liveNow() - t) / 1000)); // stopped while the daemon is unreachable
@@ -48,6 +58,44 @@ function useJobs(sessionId: string, working: boolean) {
     return () => { stop = true; clearTimeout(timer); off(); };
   }, [sessionId, turn]);
   return jobs.filter((j) => j.background && (j.running || (j.ended ?? 0) > Date.now() - 60_000));
+}
+
+
+// The line above the box for what the session changed: its files and lines, and Review (the Changes panel). Where the
+// session is in a tree with agents and its branch has nothing left but the landing (its own, or every branch of a
+// coordinator's tree that waits to land), it says so and offers the board's own action: the tree review.
+function ChangesLine({ changed, ready, land }: { changed: Changed | null; ready: boolean; land?: Session }) {
+  const [landing, setLanding] = useState(false);
+  if (!changed && !ready) return null;
+  return (
+    <div className="k-docket-line" data-testid="dock-changes" data-ready={ready || undefined}>
+      <FileDiff className="k-docket-glyph" />
+      {changed && (
+        <span className="flex min-w-0 shrink items-baseline gap-1.5 truncate" data-testid="dock-changes-count">
+          <span className="whitespace-nowrap text-fg">{changed.files} {changed.files === 1 ? "file" : "files"}</span>
+          <span className="font-mono text-micro text-ok">+{changed.added}</span>
+          <span className="font-mono text-micro text-danger">-{changed.removed}</span>
+        </span>
+      )}
+      {ready && <span className="shrink-0 whitespace-nowrap font-medium text-ok" data-testid="dock-ready">Ready to land</span>}
+      <span className="ml-auto flex shrink-0 items-center gap-0.5">
+        {changed && <button type="button" className="k-docket-act" data-testid="dock-review" title="The files this session changed, with a revert for each" onClick={() => openPanel("changes")}>Review</button>}
+        {ready && land && <button type="button" className="k-docket-act" data-testid="dock-land" title="Every agent's branch as one diff by area: land, send back or drop each area" onClick={() => setLanding(true)}>Land</button>}
+      </span>
+      {landing && land && <Suspense fallback={null}><TreeReviewDialog session={land} onClose={() => setLanding(false)} /></Suspense>}
+    </div>
+  );
+}
+
+// The line with the work board's say: read only where the session has agents in its tree (or is one), as the Board
+// panel reads it, so a session with none costs no board.
+function BoardChangesLine({ sessionId, root, changed }: { sessionId: string; root: string; changed: Changed | null }) {
+  const b = useBoard(root);
+  const rootSession = useStore((s) => s.sessions[root]);
+  // An agent's own branch; a coordinator's whole tree (what is left to land, and all of it ready).
+  const rows = b ? (root === sessionId ? b.rows.filter((r) => toLand(r)) : b.rows.filter((r) => r.session_id === sessionId)) : [];
+  const ready = rows.length > 0 && rows.every((r) => readyToLand(r));
+  return <ChangesLine changed={changed} ready={ready} land={rootSession} />;
 }
 
 // `panel`: this pane has the side panel. While its Tasks tab is open the plan
@@ -91,8 +139,11 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
   }, [key]);
   const plan = held?.plan ?? (older?.key === key ? older.plan : null);
   const jobs = useJobs(sessionId, working);
+  const changed = useChanged(sessionId);
+  const root = useStore((s) => rootOf((id) => s.sessions[id]?.parent_id, sessionId));
+  const tree = useTreeMark(root);
   const active = !inPanel && plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled");
-  if (!active && !jobs.length) return null;
+  if (!active && !jobs.length && !changed && !tree) return null;
   const done = plan?.filter((p) => p.status === "completed").length ?? 0;
   const now = plan?.find((p) => p.status === "in_progress");
   return (
@@ -140,6 +191,7 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
           )}
         </div>
       ))}
+      {tree ? <BoardChangesLine sessionId={sessionId} root={root} changed={changed} /> : <ChangesLine changed={changed} ready={false} />}
     </div>
   );
 }

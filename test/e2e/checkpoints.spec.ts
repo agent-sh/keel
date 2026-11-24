@@ -37,6 +37,13 @@ test("checkpoints and rewind", async ({ page, request }) => {
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\ntwo\nthree\n");
 
   await page.goto(`/s/${session.id}`);
+  // One line above the message box says what the session changed, and Review opens the Changes panel.
+  const line = page.getByTestId("dock-changes");
+  await expect(line.getByTestId("dock-changes-count")).toHaveText(/^4 files\s*\+\d+\s*-\d+$/);
+  await expect(line.getByTestId("dock-ready")).toHaveCount(0);
+  await shoot(page, "ckpt-00-changes-line");
+  await line.getByTestId("dock-review").click();
+  await expect(page.getByTestId("changes-panel")).toBeVisible();
   await openPanel(page, "changes");
   const panel = page.getByTestId("changes-panel");
   await expect(panel.getByTestId("diff-file")).toHaveCount(4);
