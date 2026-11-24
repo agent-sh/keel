@@ -30,6 +30,7 @@ import type { Asked, AskedLink, ToolResultBlock, ToolUseBlock } from "../../../s
 import { SETTLE_MS } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, keysSettled, noteAnswer, noteOneKey, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
+import { openSession } from "../lib/automation.ts";
 import { actions, api, failed, getState, reportError, useStore } from "../lib/store.ts";
 import { askedQuestions, questions, resultText, siteOf, type UiQuestion } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
@@ -224,7 +225,7 @@ function RulingOffer({ sessionId, callId, offer }: { sessionId: string; callId: 
 export function Questions({ sessionId, agent, lead = true }: { sessionId: string; agent?: boolean; lead?: boolean }) {
   const calls = useStore((s) => s.questionCalls[sessionId]) ?? NONE;
   const events = useStore((s) => (agent ? undefined : s.events[sessionId]));
-  const told = useAskedCalls(sessionId, agent ? calls : NONE);
+  const { told, lost } = useAskedCalls(sessionId, agent ? calls : NONE);
   const uses = useMemo(() => {
     if (!calls.length) return [];
     if (agent) return calls.map((id) => told.get(id)).filter((u): u is ToolUseBlock => !!u);
@@ -238,7 +239,7 @@ export function Questions({ sessionId, agent, lead = true }: { sessionId: string
   }, [calls, events, told, agent]);
   // What a server asked on a call that runs (the call's input is not the question).
   const asks = useStore((s) => s.questionAsks[sessionId]);
-  if (!uses.length) return null;
+  if (!uses.length && !lost) return null;
   return (
     <div className={agent ? "flex flex-col gap-2" : "mb-2 flex flex-col gap-2"}>
       {uses.map((u, i) => {
@@ -246,23 +247,44 @@ export function Questions({ sessionId, agent, lead = true }: { sessionId: string
         // (A card of its own per question: a server's next one on the same call starts empty and takes an answer.)
         return <Docked key={asked ? `${u.id}:${asked.id}` : u.id} use={u} sessionId={sessionId} first={lead && i === 0} asked={asked} />;
       })}
+      {lost && (
+        <p data-testid="question-unreadable" className="text-caption text-muted">
+          This question could not be read here: <button type="button" onClick={() => openSession(sessionId)} className="text-accent-ink underline underline-offset-2 hover:text-fg">open the agent to answer</button>.
+        </p>
+      )}
     </div>
   );
 }
 
-// The calls that ask an agent's open questions, read from the daemon once per set of calls.
-function useAskedCalls(sessionId: string, calls: string[]): Map<string, ToolUseBlock> {
+// The calls that ask an agent's open questions, read from the daemon once per set of calls. A read that fails
+// or lacks a call (an older peer, a connection that dropped) is made once more; `lost` says a call is still
+// missing after that, and the card tells the owner to open the agent.
+const RETRY_MS = 1500;
+function useAskedCalls(sessionId: string, calls: string[]): { told: Map<string, ToolUseBlock>; lost: boolean } {
   const [got, setGot] = useState(() => new Map<string, ToolUseBlock>());
+  const [lostFor, setLostFor] = useState("");
   const key = calls.join();
   useEffect(() => {
     if (!key) return;
     let gone = false;
-    api<{ calls?: { call_id: string; name: string; input: unknown }[] }>(`/api/sessions/${sessionId}/questions`)
-      .then((r) => { if (!gone) setGot(new Map((r.calls ?? []).map((c) => [c.call_id, { type: "tool_use", id: c.call_id, name: c.name, input: c.input } as ToolUseBlock]))); })
-      .catch((e) => { if ((e as { status?: number }).status !== 404) reportError(e, { at: "agent question" }); });
-    return () => { gone = true; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const want = key.split(",");
+    const read = (retry: boolean) => {
+      api<{ calls?: { call_id: string; name: string; input: unknown }[] }>(`/api/sessions/${sessionId}/questions`)
+        .then((r) => (r.calls ?? []).map((c) => [c.call_id, { type: "tool_use", id: c.call_id, name: c.name, input: c.input } as ToolUseBlock] as const))
+        .catch((e) => { if ((e as { status?: number }).status !== 404 && retry) reportError(e, { at: "agent question" }); return [] as (readonly [string, ToolUseBlock])[]; })
+        .then((found) => {
+          if (gone) return;
+          if (found.length) setGot(new Map(found));
+          if (want.every((id) => found.some(([c]) => c === id))) setLostFor("");
+          else if (!retry) timer = setTimeout(() => read(true), RETRY_MS);
+          else setLostFor(key);
+        });
+    };
+    read(false);
+    return () => { gone = true; clearTimeout(timer); };
   }, [sessionId, key]);
-  return got;
+  return { told: got, lost: !!key && lostFor === key };
 }
 
 // In the conversation, under a call whose server asks the owner something: a

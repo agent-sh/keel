@@ -81,6 +81,59 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
   });
 }
 
+// An agent whose questions the page cannot read (a failed read, an older peer): one more read, and then a way to the agent.
+async function askedByAgent(request: Parameters<typeof approvals>[0], root: string) {
+  await request.put(`/api/sessions/${root}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${root}/messages`, { data: { text: calls([spawn(`Beta\n${calls([colors])}`)]) } });
+  await expect.poll(async () => (await agentsOf(request, root)).length, { timeout: 45_000 }).toBe(1);
+  const beta = (await agentsOf(request, root))[0]!.session_id;
+  await expect.poll(async () => (await pending(request, beta)).length, { timeout: 30_000 }).toBe(1);
+  return beta;
+}
+
+test("an agent's question is read once more when the first read fails", async ({ page, request }) => {
+  await scripted(request);
+  const root = await create(request, "Retry root", folder("tree-retry"));
+  const ids = [root];
+  try {
+    const beta = await askedByAgent(request, root);
+    ids.push(beta);
+    let reads = 0;
+    await page.route(`**/api/sessions/${beta}/questions`, (route) => (++reads === 1 ? route.fulfill({ status: 500, contentType: "application/json", body: "{\"error\":\"try again\"}" }) : route.fallback()));
+    await page.goto(`/s/${root}`);
+    await expect(ask(page, root).getByTestId("question-submit")).toHaveCount(1, { timeout: 30_000 });
+    expect(reads).toBe(2);
+    await expect(page.getByTestId("question-unreadable")).toHaveCount(0);
+  } finally {
+    await drop(request, ...ids.reverse());
+  }
+});
+
+for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }]) {
+  test(`a question that cannot be read says to open the agent at ${size.width}x${size.height}`, async ({ page, request }) => {
+    await scripted(request);
+    await page.setViewportSize(size);
+    const root = await create(request, "Unreadable root", folder("tree-unreadable"));
+    const ids = [root];
+    try {
+      const beta = await askedByAgent(request, root);
+      ids.push(beta);
+      let reads = 0;
+      await page.route(`**/api/sessions/${beta}/questions`, (route) => { reads++; return route.fulfill({ status: 404, contentType: "application/json", body: "{\"error\":\"not found\"}" }); });
+      await page.goto(`/s/${root}`);
+      const note = ask(page, root).getByTestId("question-unreadable");
+      await expect(note).toContainText("open the agent to answer", { timeout: 30_000 });
+      expect(reads).toBe(2);
+      await expect(ask(page, root).getByTestId("question-submit")).toHaveCount(0);
+      await shoot(page, `tree-approvals-04-${size.width}`);
+      await note.getByRole("button").click();
+      await expect(page).toHaveURL(new RegExp(`/s/${beta}$`));
+    } finally {
+      await drop(request, ...ids.reverse());
+    }
+  });
+}
+
 test("the inbox opens an agent's approval on the session at the top of its tree", async ({ page, request }) => {
   await scripted(request);
   const ws = folder("tree-inbox");
