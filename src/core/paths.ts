@@ -75,6 +75,11 @@ export function ownerHome(): string {
   return mayReadHome() ? homeDir() : join(resolve(process.env.KEEL_CONFIG_DIR!), ".owner-home-withheld");
 }
 
+// The environment as a lookup of the owner's tools (the PATH, XDG_*, HERMES_HOME,
+// the bridges' homes): for a daemon that may not read the home, only the
+// KEEL_* settings it was given itself (KEEL_PARLAR, KEEL_PHONE_SOCKET, ...).
+export const ownerLookup = (k: string): string | undefined => (mayReadHome() || k.startsWith("KEEL_") ? process.env[k] : undefined);
+
 // An environment variable that points into the owner's home (CODEX_HOME,
 // CLAUDE_CONFIG_DIR, XDG_*): as set for a daemon that may read the home, else unset.
 export const ownerEnv = (name: string): string | undefined => (mayReadHome() ? process.env[name] : undefined);

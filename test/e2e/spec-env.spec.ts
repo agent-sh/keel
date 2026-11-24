@@ -169,14 +169,18 @@ test("a scratch daemon on the owner's home lists none of his machines and reads 
   const bin = join(home, ".local/bin/momentum");
   writeFileSync(bin, '#!/bin/sh\necho \'{"sessions":[],"disk":{"used":"owners-real-report"}}\'\n');
   chmodSync(bin, 0o755);
+  // His memory tool and voice tool, the bundled MCP servers a daemon finds in the home.
+  for (const n of ["tacit", "parlar"]) { writeFileSync(join(home, ".local/bin", n), "#!/bin/sh\nexit 0\n"); chmodSync(join(home, ".local/bin", n), 0o755); }
   const names = async (d: Awaited<ReturnType<typeof start>>) => ((await d.api("/api/fleet/machines")).machines as { name: string }[]).map((m) => m.name);
-  const fresh = { MOMENTUM_BIN: undefined, KEEL_SSH_CONFIG: undefined };
+  const fresh = { MOMENTUM_BIN: undefined, KEEL_SSH_CONFIG: undefined, TACIT_BIN: undefined, KEEL_PARLAR: undefined };
   let d: Awaited<ReturnType<typeof start>> | undefined;
   try {
     // Control: a daemon whose home is not the account's reads its own home, so the fixtures are found.
     d = await start(state, [], fresh);
     expect(await names(d)).toContain("owners-real-host");
     expect((await d.api("/api/momentum")).available).toBe(true);
+    const found = await settled(d.api);
+    expect(["tacit", "parlar"].map((n) => found.find((x) => x.name === n)?.state)).not.toContain("missing");
     await stop(d);
     d = undefined;
     // The same home as the account's: none of it is read.
@@ -185,6 +189,9 @@ test("a scratch daemon on the owner's home lists none of his machines and reads 
     const memory = await d.api("/api/momentum");
     expect(memory).toEqual({ available: false });
     expect((await d.api("/api/integrations")).momentum.available).toBe(false);
+    // And none of his MCP servers connect: the memory and voice tools are not found.
+    const servers = await settled(d.api);
+    expect(["tacit", "parlar"].map((n) => servers.find((x) => x.name === n)?.state)).toEqual(["missing", "missing"]);
   } finally {
     if (d) await stop(d);
     for (const dir of [state, home]) rmSync(dir, { recursive: true, force: true });

@@ -45,7 +45,7 @@ test("a process started with a scratch HOME loads agents and skill folders from 
 });
 
 test("a daemon with a config folder of its own may not read the account's home, and reads its own scratch home", async () => {
-  const { mayReadHome, ownerHome, ownerEnv, defaultConfigDir } = await import("./paths.ts");
+  const { mayReadHome, ownerHome, ownerEnv, ownerLookup, defaultConfigDir } = await import("./paths.ts");
   const { sshHosts } = await import("../fleet/sshconfig.ts");
   const { findBin } = await import("../integrations/tacit.ts");
   const { claudeRoot } = await import("../integrations/import/claude.ts");
@@ -72,6 +72,9 @@ test("a daemon with a config folder of its own may not read the account's home, 
     expect(mayReadHome()).toBe(false);
     expect(ownerHome().startsWith(join(dir, "config"))).toBe(true);
     expect(ownerEnv("CODEX_HOME")).toBeUndefined();
+    // The owner's PATH is not searched for his tools; a KEEL_* setting the daemon was given is.
+    expect(ownerLookup("PATH")).toBeUndefined();
+    expect(ownerLookup("KEEL_CONFIG_DIR")).toBe(join(dir, "config"));
     expect(sshHosts()).toEqual([]);
     expect(findBin("MOMENTUM_BIN", "momentum")).toBeNull();
     expect(claudeRoot().startsWith(home)).toBe(false);

@@ -3,7 +3,7 @@
 import type { RouteModule } from "../app.ts";
 import type { McpManager } from "../../mcp/manager.ts";
 import { discoverParlar, installVoice, Voice } from "../../integrations/voice.ts";
-import { ownerHome } from "../../core/paths";
+import { ownerHome, ownerLookup } from "../../core/paths";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -13,7 +13,7 @@ export const voiceRoutes: RouteModule = (deps) => {
   const g = globalThis as { __keelMcp?: McpManager; __keelVoice?: Voice };
   // Under `bun --hot` this module runs again: the old waits and watch end first.
   g.__keelVoice?.shutdown();
-  const found = discoverParlar(ownerHome(), (k) => process.env[k]);
+  const found = discoverParlar(ownerHome(), ownerLookup);
   const v = "bin" in found ? new Voice(found.bin, deps.store, deps.engine, deps.bus, deps.errors) : null;
   g.__keelVoice = v ?? undefined;
   installVoice(v, g.__keelMcp, deps.bus, found);

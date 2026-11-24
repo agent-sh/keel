@@ -27,7 +27,7 @@ import type { McpTool } from "../mcp/client.ts";
 import { toOutput } from "../mcp/result.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import shipped from "./phone_tools.json" with { type: "json" };
-import { ownerHome } from "../core/paths";
+import { ownerHome, ownerLookup } from "../core/paths";
 
 export const PHONE_SERVER = "phone";
 const ARM_HOW = "Hermes app on the phone: Me > This phone > Control";
@@ -161,7 +161,7 @@ export class Phone {
 // The McpManager state of phone control, from what the gateway last said.
 const STATE: Record<PhoneStatus["state"], McpState> = { unknown: "idle", armed: "armed", not_armed: "not_armed", unreachable: "unreachable" };
 
-export function installPhone(m: McpManager, home = ownerHome(), env: (k: string) => string | undefined = (k) => process.env[k]) {
+export function installPhone(m: McpManager, home = ownerHome(), env: (k: string) => string | undefined = ownerLookup) {
   const found = discoverPhone(home, env);
   const tools = (shipped.tools as any[]).map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) as McpTool[];
   const phone = "socket" in found ? new Phone(found.socket, () => m.isOff(PHONE_SERVER)) : null;
