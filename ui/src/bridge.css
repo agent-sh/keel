@@ -1441,8 +1441,9 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .k-settings-rail[data-open] + .k-settings-scroll { display: none; }
 /* One column for every section, in the free space beside the rail: the reading width for forms, the full
-   width for tables and figures, each centred. The title is the column's first line, on the type scale. */
-.k-settings-body { max-width: 52rem; margin-inline: auto; padding: 1rem 1rem 1.5rem; }
+   width for tables and figures, both from the same left edge, so the title does not jump from one page to the
+   next. The title is the column's first line, on the type scale. */
+.k-settings-body { max-width: 52rem; margin-inline: 0 auto; padding: 1rem 1rem 1.5rem; }
 .k-settings-body[data-wide] { max-width: 92rem; }
 /* A line cut short with an ellipsis: a section's names, URLs and paths, a panel's file names. A phone writes it whole:
    no hover shows the rest, and a title is no way to read it on a touch screen. */

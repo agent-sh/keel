@@ -847,7 +847,7 @@ test("a session placed in a chosen pane by keyboard", async ({ page, request }) 
   }
 });
 
-// Feature: every Settings section sits in one column centred beside the rail, under one title size, and the
+// Feature: every Settings section sits in one column with one left edge beside the rail, under one title size, and the
 // rail keeps the groups the owner rarely needs folded until the section shown is in one.
 test("settings sections share one column and one title size, and the rail folds", async ({ page }) => {
   await page.setViewportSize({ width: 2200, height: 1040 });
@@ -863,13 +863,15 @@ test("settings sections share one column and one title size, and the rail folds"
     });
   };
   const sizes = new Set<number>();
+  const lefts: number[] = [];
   // (Customize is the same frame: its sections stand in the same column under the same title.)
   for (const [id, at] of [["general", "settings"], ["network", "settings"], ["usage", "settings"], ["skills", "customize"]] as const) {
     const m = await titleSize(id, at);
     sizes.add(m.size);
-    // Centred in the free space (a scrollbar's width at most apart).
-    expect(Math.abs(m.left - m.right), `${id} column centred`).toBeLessThanOrEqual(20);
+    lefts.push(m.left);
   }
+  // One left edge for every section, narrow column or wide: the title does not jump from page to page.
+  expect(new Set(lefts.map((l) => Math.round(l))).size, `left edges ${lefts.join(", ")}`).toBe(1);
   // One title size, the type scale's title step (1.5rem).
   expect([...sizes]).toEqual([1.5]);
 
