@@ -70,11 +70,11 @@ test("each request says what it was for, from a fixed list", () => {
     const start = t.add("turn_start");
     t.add("turn_end", { reason: "end_turn" });
     t.span(start.id, "turn", {});
-    const shapes = [{ purpose: "turn" }, { purpose: "summary" }, { purpose: "reader" }, { purpose: "purpose-marker" }, undefined];
+    const shapes = [{ purpose: "turn" }, { purpose: "summary" }, { purpose: "reader" }, { purpose: "judge" }, { purpose: "purpose-marker" }, undefined];
     const ids = shapes.map((shape, i) => t.span(start.id, "request", { attempt: i + 1, shape }).span_id);
     const receipt = turnReceipt(t.store, t.tracer, start.id)!;
     expect(receipt.requests.map((r) => [r.span_id, r.purpose, r.attempt]))
-      .toEqual(["turn", "summary", "reader", "other", "other"].map((purpose, i) => [ids[i]!, purpose, i + 1]));
+      .toEqual(["turn", "summary", "reader", "judge", "other", "other"].map((purpose, i) => [ids[i]!, purpose, i + 1]));
     expect(JSON.stringify(receipt)).not.toMatch(/marker|fixture-span-name/);
   } finally {
     t.close();

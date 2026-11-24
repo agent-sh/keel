@@ -157,7 +157,7 @@ export function TokensView({ range }: { range: Range }) {
                     <div className="mt-1.5 flex flex-col gap-1">
                       {t.per_request.map((q, i) => (
                         <div key={i} className="flex items-center gap-2">
-                          <span className="w-16 shrink-0 text-micro text-faint">{q.purpose === "turn" ? `step ${i + 1}` : q.purpose === "summary" ? "summary" : q.purpose === "reader" ? "reader" : q.purpose === "sampling" ? "sampling" : "side"}</span>
+                          <span className="w-16 shrink-0 text-micro text-faint">{q.purpose === "turn" ? `step ${i + 1}` : q.purpose === "summary" ? "summary" : q.purpose === "reader" ? "reader" : q.purpose === "sampling" ? "sampling" : q.purpose === "judge" ? "safety" : "side"}</span>
                           <ZoneBar z={q.zones} max={maxReq} />
                         </div>
                       ))}
