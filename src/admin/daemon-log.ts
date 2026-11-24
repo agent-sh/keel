@@ -47,10 +47,11 @@ export function providersLine(p: { available: { id: string; models: number }[]; 
 export function mcpLine(servers: { name: string; state: string }[]): string {
   if (!servers.length) return "[daemon] MCP servers: none configured";
   const by = (st: (s: string) => boolean) => servers.filter((s) => st(s.state)).map((s) => s.name);
-  const up = by((s) => s === "ready" || s === "idle" || s === "armed"), bad = by((s) => s === "error" || s === "unreachable" || s === "missing"), off = by((s) => s === "disabled");
+  // "idle" and "armed" have no process yet: they start at the first call, so they are not "connected".
+  const up = by((s) => s === "ready"), lazy = by((s) => s === "idle" || s === "armed"), bad = by((s) => s === "error" || s === "unreachable" || s === "missing"), off = by((s) => s === "disabled");
   const auth = by((s) => s === "needs_auth");
-  const rest = servers.length - up.length - bad.length - off.length - auth.length;
-  return clip(`[daemon] MCP servers: ${servers.length} configured${up.length ? `; connected: ${list(up)}` : ""}${bad.length ? `; failed: ${list(bad)}` : ""}${auth.length ? `; need sign-in: ${list(auth)}` : ""}${off.length ? `; ${off.length} disabled` : ""}${rest ? `; ${rest} not connected yet` : ""}`);
+  const rest = servers.length - up.length - lazy.length - bad.length - off.length - auth.length;
+  return clip(`[daemon] MCP servers: ${servers.length} configured${up.length ? `; connected: ${list(up)}` : ""}${lazy.length ? `; ready on first call: ${list(lazy)}` : ""}${bad.length ? `; failed: ${list(bad)}` : ""}${auth.length ? `; need sign-in: ${list(auth)}` : ""}${off.length ? `; ${off.length} disabled` : ""}${rest ? `; ${rest} not connected yet` : ""}`);
 }
 
 // `commands`: the commands that run in front of those turns now; a restart waits for them past the turns' time (drain-commands.ts).

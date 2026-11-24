@@ -70,6 +70,9 @@ export function logBytes(stateDir: string): number {
   try { return statSync(`${storePath(stateDir)}-wal`).size; } catch { return 0; }
 }
 
+// The store's log and its index, by name: what a process that holds the log has open (log-holders.ts).
+export const logPaths = (stateDir: string): string[] => [`${storePath(stateDir)}-wal`, `${storePath(stateDir)}-shm`];
+
 const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
 // Where a path lands, also when nothing is there yet: its links followed as far as they go (a link
 // whose target does not exist lands where that target would be), then the folders above it.

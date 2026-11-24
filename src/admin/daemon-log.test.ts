@@ -15,6 +15,9 @@ test("a start, the providers and the MCP servers are one bounded line each", () 
   expect(mcpLine([])).toBe("[daemon] MCP servers: none configured");
   expect(mcpLine([{ name: "a", state: "ready" }, { name: "b", state: "error" }, { name: "c", state: "disabled" }, { name: "d", state: "connecting" }, { name: "e", state: "needs_auth" }]))
     .toBe("[daemon] MCP servers: 5 configured; connected: a; failed: b; need sign-in: e; 1 disabled; 1 not connected yet");
+  // A server with no process yet (idle, or armed with the phone's gateway) is not connected: it starts at its first call.
+  expect(mcpLine([{ name: "a", state: "ready" }, { name: "b", state: "idle" }, { name: "c", state: "armed" }]))
+    .toBe("[daemon] MCP servers: 3 configured; connected: a; ready on first call: b, c");
   const many = mcpLine(Array.from({ length: 300 }, (_, i) => ({ name: `server-with-a-long-name-${i}`, state: "ready" })));
   expect(many.length).toBeLessThanOrEqual(400);
   expect(many).toContain("and 292 more");

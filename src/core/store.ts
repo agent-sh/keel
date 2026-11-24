@@ -15,7 +15,8 @@ import { asker, asking } from "./asker.ts";
 import { labelled } from "./statement-label.ts";
 import { encodeOwed, OWED_FILE, OWED_FILE_MAX, OWED_V, owedLineKey, owedRefusal, owedSql, readOwed, type OwedLine, type OwedRecord, type OwedSql } from "./owed.ts";
 import { fileFacts, openedLog, restLog, sealLog } from "./log-pages.ts";
-import { holdStore, logBytes, storePath } from "./store-files.ts";
+import { logHolders, logStartLine } from "./log-holders.ts";
+import { holdStore, logBytes, logPaths, storePath } from "./store-files.ts";
 import { Side } from "./side.ts";
 import { keyBlocks } from "./message-facts.ts";
 import { cacheStatements } from "./statement-cache.ts";
@@ -729,7 +730,7 @@ export class Store {
     // daemon listens (seconds from a cold disk): said as it begins and when it is over.
     const logMb = Math.round(logBytes(stateDir) / 1_048_576);
     const reading = logMb > LOG_SAID_MB ? performance.now() : 0;
-    if (reading) console.log(`[store] reading ${logMb} MB of the store's log, left by a daemon that did not stop cleanly`);
+    if (reading) console.log(logStartLine(logMb, logHolders(logPaths(stateDir))));
     // (The database file as the process before left it, looked at before anything here opens it: log-pages.ts.)
     const found = fileFacts(storePath(stateDir));
     this.db = new Database(storePath(stateDir), { create: true, strict: true });
