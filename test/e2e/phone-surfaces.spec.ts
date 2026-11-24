@@ -848,5 +848,43 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    test("an ACP agent's child rows write the child's name and what it asks whole, in the transcript and under the session", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(120_000);
+      await request.delete("/api/acp/agents/children-p").catch(() => {});
+      expect((await request.post("/api/acp/agents", { data: { id: "children-p", command: "bun", args: [join(import.meta.dirname, "fixtures/acp-agent-children.ts")] } })).ok()).toBe(true);
+      const ws = folder("phone-acp-children");
+      const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "acp:children-p", title: "Phone ACP children" } })).json();
+      try {
+        await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+        await page.goto(`/s/${session.id}`);
+        const pane = page.getByRole("region", { name: /Phone ACP children/ });
+        await pane.getByTestId("composer").fill("start the children");
+        await page.keyboard.press("Enter");
+        const lines = pane.getByTestId("agent-line");
+        await expect(lines).toHaveCount(2, { timeout: 45_000 });
+        await expect(pane.getByTestId("approval").first()).toBeVisible({ timeout: 30_000 });
+        // Each child's row: its name and what it asks are whole (a line of the row, wrapped), and every control is a target.
+        const cut = await lines.evaluateAll((els) => els.flatMap((l) => [...l.querySelectorAll<HTMLElement>('[data-testid="agent-line-name"], [data-testid="agent-line-step"]')].filter((e) => e.scrollWidth > e.clientWidth + 1 || e.scrollHeight > e.clientHeight + 1).map((e) => e.textContent)));
+        expect(cut, "words of the child rows cut off").toEqual([]);
+        await noSideScroll(page);
+        await shoot(page, `phone-surfaces-25-acp-children-${size.width}`);
+        // The step's own line for each child names it too.
+        await pane.getByTestId("work-step").locator(".k-line[data-step]").first().tap();
+        const titles = pane.getByTestId("agent-call-title");
+        await expect(titles).toHaveCount(2);
+        for (const t of await titles.all()) {
+          expect(await t.evaluate((e) => e.scrollHeight - e.clientHeight), "the call's words are cut").toBeLessThanOrEqual(1);
+          const b = (await t.boundingBox())!;
+          expect(b.x + b.width).toBeLessThanOrEqual(size.width);
+          expect(b.width, "the name has a line to stand on").toBeGreaterThan(size.width * 0.5);
+        }
+        await noSideScroll(page);
+        await shoot(page, `phone-surfaces-26-acp-children-calls-${size.width}`);
+      } finally {
+        await drop(request, session.id);
+        await request.delete("/api/acp/agents/children-p");
+      }
+    });
   });
 }

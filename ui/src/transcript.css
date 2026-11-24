@@ -217,6 +217,19 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-agent-line[data-need] .k-agent-line-step { color: var(--fg); }
 .k-agent-line-end { display: flex; flex-shrink: 0; align-items: center; gap: 0.5rem; margin-left: auto; padding-left: 0.25rem; font-size: var(--text-micro); font-variant-numeric: tabular-nums; color: var(--faint); white-space: nowrap; }
 .k-agent-line-open { width: 0.8125rem; height: 0.8125rem; opacity: 0.55; }
+/* A phone: the agent's name is written whole, the word beside it, and what it does under the name; the stop
+   and open marks of its call stand on a row of their own under the line, so the line keeps the width the words need. */
+@media (pointer: coarse) and (max-width: 767px) {
+  .k-agent-line { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; height: auto; min-height: var(--spacing-tap); padding-block: 0.25rem; }
+  .k-agent-line > .k-agent-line-name { grid-column: 2; max-width: none; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+  .k-agent-line > .k-agent-line-word { grid-column: 3; }
+  .k-agent-line > .k-agent-line-end { grid-column: 4; }
+  .k-agent-line > .k-agent-line-step { grid-column: 2 / -1; grid-row: 2; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+  .k-line-agent { flex-wrap: wrap; }
+  .k-line-agent > .k-line { flex: 1 1 100%; }
+  .k-line-agent .k-line-text:not([data-wrap]) { display: block; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+  .k-line-agent > .k-line-acts { margin-left: auto; }
+}
 .k-agent-line:is(:hover, :focus-visible) .k-agent-line-open { opacity: 1; color: var(--fg); }
 
 /* Under a call's line, opened or not: rows of who said or did something about it, and what. One grammar for
