@@ -9,6 +9,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { OFFLINE, QUEUED, STATE_WORD } from "./core/state-words.ts";
+import { sectionsIn } from "../ui/src/lib/settings-find.macro.ts";
 
 type Src = { file: string; text: string };
 const UI = join(import.meta.dir, "../ui/src");
@@ -467,6 +468,53 @@ function shared(list: Src[]): string[] {
   return out;
 }
 
+// A Settings section is made of the Settings kit (components/settings/kit.tsx), so that sections built by
+// different hands read as one page: a group's box, a status and a label are the kit's. A section's module
+// draws no framed box of its own (a border on the raised surface with a corner: Group or Card), no status
+// tag of its own (a small tinted chip: Status) and no label in capitals. The sections not moved yet are
+// named in NOT_ON_KIT, each with what it still draws; the list only shrinks.
+const NOT_ON_KIT = [
+  "components/ContentRoutes.tsx", "components/ElsewherePanel.tsx", "components/LogsSettings.tsx",
+  "components/PhonePanel.tsx", "components/PortPanel.tsx", "components/PrReviews.tsx",
+  "components/ProvidersPanel.tsx", "components/ResourcesPanel.tsx", "components/SafetySettings.tsx", "components/Settings.tsx",
+];
+// The module each registered section shows: a lazy import's file, a component imported by name, or the file that registers it.
+function sectionFiles(list: Src[]): string[] {
+  const out = new Set<string>();
+  const norm = (base: string, rel: string) => relative(UI, join(UI, base, "..", rel));
+  for (const s of list) {
+    if (!s.text.includes("settingsSections.add(")) continue;
+    for (const x of sectionsIn(s.text)) {
+      if (x.from) { out.add(norm(s.file, x.from)); continue; }
+      const imp = x.name ? s.text.match(new RegExp(`import \\{[^}]*\\b${x.name}\\b[^}]*\\} from "([^"]+)"`)) : null;
+      out.add(imp ? norm(s.file, imp[1]!) : s.file);
+    }
+  }
+  return [...out].sort();
+}
+function offKit(list: Src[], sections: string[], waiting: string[] = NOT_ON_KIT): string[] {
+  const out: string[] = [];
+  const of = new Set(sections);
+  for (const s of list) {
+    if (!of.has(s.file)) continue;
+    const found: string[] = [];
+    for (const { value, line } of strings(s.text)) {
+      const c = new Set(classList(value));
+      if (!c.size) continue;
+      const corner = [...c].some((x) => /^rounded(-(sm|md|lg|xl|xs))?$/.test(x));
+      // (A field or a control has a height of its own; a code span is mono.)
+      if (c.has("font-mono") || [...c].some((x) => /^h-\d/.test(x))) continue;
+      if (corner && c.has("border") && c.has("bg-raised")) found.push(at(s, line, `a framed box of its own (${value.slice(0, 40)}): use Group or Card of components/settings/kit.tsx`));
+      else if (corner && (c.has("text-micro") || c.has("text-caption")) && [...c].some((x) => /^bg-/.test(x)) && [...c].some((x) => /^px-(1|1\.5|2)$/.test(x))) found.push(at(s, line, `a status tag of its own (${value.slice(0, 40)}): use Status of components/settings/kit.tsx`));
+      else if (c.has("uppercase")) found.push(at(s, line, "a label in capitals: a group's title or Status"));
+    }
+    if (waiting.includes(s.file)) { if (!found.length) out.push(`${s.file}: is on the kit now; take it out of NOT_ON_KIT`); }
+    else out.push(...found);
+  }
+  for (const f of waiting) if (!of.has(f) && list.length > 1) out.push(`${f}: in NOT_ON_KIT but no Settings section shows it`);
+  return out;
+}
+
 // A state has one word, written once: in the vocabulary (src/core/state-words.ts).
 // No other module of the page writes a state word, or one of the words the
 // vocabulary retired, as text of its own: a label that is the word, a line
@@ -684,6 +732,7 @@ test("a label, a picked row and a switch are their shared class", () => expect(s
 test("a state word is written once, in the vocabulary", () => expect(stateLiterals(page)).toEqual([]));
 test("a test id interpolates only a reviewed, fixed set of names", () => expect(testIds(page)).toEqual([]));
 test("a state word is set in sentence case", () => expect(shoutedStates(sheets)).toEqual([]));
+test("a Settings section is made of the Settings kit", () => expect(offKit(page, sectionFiles(page))).toEqual([]));
 
 // ---------- The checks themselves ----------
 
@@ -750,6 +799,9 @@ test("each check refuses what it is for", () => {
   expect(stateLiterals(tsx('<span>{agent} asks</span>\n<span data-offline>offline</span>', "components/Sidebar.tsx"))).toHaveLength(2);
   // A label in another case is the same word: an attribute's string, a word that leads a sentence.
   expect(stateLiterals(tsx('<span title="Needs You" />\nconst a = "NEEDS YOU";\nconst b = "needs you";\n<i aria-label="Needs you, under a look" />'))).toHaveLength(4);
+  // A section that draws its own box, tag or capitals; one named as waiting that no longer does.
+  expect(offKit(tsx('<section className="rounded-lg border border-line bg-raised p-4" />\n<span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>\n<h3 className="text-micro uppercase">Tools</h3>'), ["components/Thing.tsx"], [])).toHaveLength(3);
+  expect(offKit(tsx('<Group title="Tools"><Status>archived</Status></Group>'), ["components/Thing.tsx"], ["components/Thing.tsx"])).toHaveLength(1);
   // And no rule turns one to capitals.
   expect(shoutedStates(css(".k-row-state { font-weight: 700; text-transform: uppercase; }\n.k-rail .k-sum-word, .k-other { text-transform: uppercase; }"))).toHaveLength(2);
 });
@@ -784,6 +836,10 @@ test("each check lets ordinary edits through", () => {
   expect(pageSizes(tsx('// Tailwind text-sm is not used here.\n/* nor text-[1.1rem] */\nconst tick = { fontSize: "var(--text-micro)" };\n<p className="text-ui text-[color:var(--x)] text-[var(--c)]" />'))).toEqual([]);
   expect(segmented(tsx('<Seg kind="tabs" label="View" value={v} onChange={set} options={o} />\n// role="tablist" is the Seg component\'s'), [])).toEqual([]);
   expect(empties(tsx('<p className="text-caption text-muted">No further approval is asked for this folder.</p>'), [])).toEqual([]);
+  // The kit's parts, a box that is not a section's, and a section not moved yet are let through.
+  expect(offKit(tsx('<Group title="Tools" pad><Status tone="ok">Well</Status><Empty>None.</Empty></Group>\n<span className="rounded-full bg-sunken px-2 text-micro" />'), ["components/Thing.tsx"], [])).toEqual([]);
+  expect(offKit(tsx('<div className="rounded-lg border border-line bg-raised" />'), [], [])).toEqual([]);
+  expect(offKit(tsx('<div className="rounded-lg border border-line bg-raised" />'), ["components/Thing.tsx"], ["components/Thing.tsx"])).toEqual([]);
   expect(pageTimes(tsx('const n = (1234567).toLocaleString();\nconst m = total.toLocaleString("en-US");\nconst d = new Date(ts).toLocaleDateString();'))).toEqual([]);
   expect(daemonTimes(tsx('const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", {\n  hour: "2-digit",\n  minute: "2-digit",\n  hourCycle: "h23",\n});\nconst zone = Intl.DateTimeFormat().resolvedOptions().timeZone;', "fleet/resume.ts"))).toEqual([]);
   expect(selectors(css(".k-thing[data-open] > .k-part:hover, .dark .k-thing { color: red; }\nsvg.text-warn { color: var(--warn); }\n@keyframes k-x { from { opacity: 0; } }\n@media (max-width: 767px) { .k-thing { color: red; } }"))).toEqual([]);

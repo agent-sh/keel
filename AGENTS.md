@@ -464,7 +464,12 @@ under `~/.cache/keel-work/bun/research/`.
   Lengths are rem, in CSS and in arbitrary classes (`h-[1.125rem]`), so the
   text size the owner picks scales everything; px only for hairlines (2px or
   less), shadows and media queries. JS that measures in px multiplies by the
-  scale (`ui/src/lib/rail.ts`).
+  scale (`ui/src/lib/rail.ts`). A Settings section is made of the Settings kit
+  (`ui/src/components/settings/kit.tsx`: Page, Group, SettingRow, List and
+  Item, Status, Empty, Notice, Table): no box, status tag or capitals of its
+  own, and it does not scroll sideways at 1366 or on a phone
+  (`src/ui-conventions.test.ts` holds it; the sections not moved yet are named
+  there and the list only shrinks).
 - The desktop app (`desktop/`) is the same page in a native window. The page
   learns it from `window.keelShell` (`ui/src/lib/shell.ts`), never from its
   user agent, and uses it only where the app does something a tab cannot. The

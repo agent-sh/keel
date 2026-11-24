@@ -341,7 +341,7 @@ export function StoragePanel() {
                 open={openFolder === f.workspace} onOpen={() => setOpenFolder(openFolder === f.workspace ? null : f.workspace)}
                 lead={<span aria-hidden className={cn("text-caption transition-transform", openFolder === f.workspace && "rotate-90")}>›</span>}
                 meta={<><span className="text-faint">{f.sessions} sessions, {f.checkpoints} checkpoints</span><span className="w-16 text-right">{fmtBytes(f.bytes)}</span></>}>
-                <div className="max-h-80 overflow-y-auto rounded-md border border-line bg-raised" data-testid="checkpoint-sessions">
+                <div className="k-set-box max-h-80 overflow-y-auto" data-testid="checkpoint-sessions">
                   <List label={`Sessions of ${f.workspace}`} dense>
                     {f.session_list.map((x) => (
                       <Item key={x.id} testid="checkpoint-session" data-id={x.id} name={x.title || "Untitled"} onOpen={x.subagent ? undefined : () => navigate({ name: "session", id: x.id })}
