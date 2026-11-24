@@ -1,6 +1,10 @@
 package dev.avifenesh.keel
 
 import dev.avifenesh.keel.ui.Block
+import dev.avifenesh.keel.ui.Shown
+import dev.avifenesh.keel.ui.lastReplyAt
+import dev.avifenesh.keel.ui.replyStartAbove
+import dev.avifenesh.keel.ui.toReplyStart
 import dev.avifenesh.keel.ui.blocks
 import dev.avifenesh.keel.ui.MathRun
 import dev.avifenesh.keel.ui.inline
@@ -19,6 +23,33 @@ import org.junit.Test
 
 // Pure logic of the app. What it shares with the daemon (signed bytes, shapes) is in ContractTest.
 class WireTest {
+    @Test fun theLastReplysStartIsFoundAndSaidAboveTheViewOnlyWhileItIs() {
+        fun msg(id: String, role: String = "agent", kind: String = "text", content: String = "words") = Msg(id, "s-1", role, kind, content, 0.0)
+        // Newest first, as the transcript lists them: a status line under the reply, then the reply.
+        val list = listOf(msg("st", kind = "status"), msg("r2"), msg("t1", kind = "trace"), msg("me", role = "user"), msg("r1"))
+        assertEquals(1, lastReplyAt(list, lead = 0))
+        // The live item of a running turn sits under it: the reply is one further up the list.
+        assertEquals(2, lastReplyAt(list, lead = 1))
+        // The owner wrote after the last reply: no reply of this turn to jump to.
+        assertEquals(-1, lastReplyAt(listOf(msg("me2", role = "user"), msg("r1")), lead = 0))
+        assertEquals(-1, lastReplyAt(listOf(msg("ap", kind = "approval"), msg("blank", content = "")), lead = 0))
+        assertEquals(-1, lastReplyAt(emptyList(), lead = 0))
+        // The list counts up from its foot: the view ends 1500 px up. A reply 8 screens tall at the foot
+        // starts far above; one whose top is inside the view does not.
+        assertTrue(replyStartAbove(1, listOf(Shown(0, 0, 80), Shown(1, 80, 12000)), 1500))
+        assertEquals(false, replyStartAbove(1, listOf(Shown(0, 0, 80), Shown(1, 80, 600), Shown(2, 680, 900)), 1500))
+        assertEquals(false, replyStartAbove(1, listOf(Shown(0, 0, 80), Shown(1, 80, 1420)), 1500))
+        assertTrue(replyStartAbove(1, listOf(Shown(0, 0, 80), Shown(1, 80, 1421)), 1500))
+        // Not shown: above when only newer items are shown; below (the owner read further up) it is not.
+        assertTrue(replyStartAbove(3, listOf(Shown(0, 0, 700), Shown(1, 700, 900)), 1500))
+        assertEquals(false, replyStartAbove(1, listOf(Shown(4, 0, 700), Shown(5, 700, 900)), 1500))
+        assertEquals(false, replyStartAbove(-1, listOf(Shown(0, 0, 12000)), 1500))
+        assertEquals(false, replyStartAbove(0, emptyList(), 1500))
+        // The jump: its top brought down to the top of the view, under the list's top padding.
+        assertEquals(12080 - 1500 + 30, toReplyStart(Shown(1, 80, 12000), 1500, 30))
+        assertEquals(0, toReplyStart(Shown(1, 80, 600), 1500, 30))
+    }
+
     @Test fun theDaemonsErrorsAreListedWholeAndCountedAsThePageCountsThem() {
         val body = JSONObject("""{"errors":[
             {"id":"e1","message":"HTTP 402: the account has no credit left. Add credit or switch the session to another model.","source":"provider","count":4,"first":100,"last":160,"read":false,"recovered":false,"chat_id":"s-1","title":"Billing check","sessions":3},

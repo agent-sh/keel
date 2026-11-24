@@ -30,6 +30,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -137,7 +140,9 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
         if (error.isNotBlank()) Notice(error, color = if (error.startsWith("Offline.")) k.muted else k.danger, modifier = Modifier.padding(S.md))
         val items = msgs.filter { it.kind != "deleted" }
         val newest = items.lastOrNull()
-        FollowingList(newest?.id, newest?.mine == true, draft.length, Modifier.weight(1f).fillMaxWidth()) {
+        // The last reply, for the way to its start when a long one opens at its end.
+        val replyAt = lastReplyAt(items.asReversed(), lead = if (isWorking || draft.isNotBlank()) 1 else 0)
+        FollowingList(newest?.id, newest?.mine == true, draft.length, Modifier.weight(1f).fillMaxWidth(), replyAt = replyAt) {
             if (isWorking || draft.isNotBlank()) item(key = "live") {
                 Column(Modifier.padding(horizontal = S.lg, vertical = 6.dp)) {
                     if (draft.isNotBlank()) Markdown(draft)
@@ -173,8 +178,37 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
  * brings the view down. Read further up, the view stays where it is, and a button leads back down.
  * (A list keeps its place by the item it shows: a message added after it would land below the screen.)
  */
+/** One item the list shows: its place in the list, and where it sits counted up from the list's foot (px). */
+data class Shown(val index: Int, val offset: Int, val size: Int)
+
+/**
+ * Where the conversation's last reply is in the transcript's list (newest first, `lead` items under the
+ * messages, such as a running turn's live line), or -1: there is none, or the owner wrote after it.
+ */
+fun lastReplyAt(newestFirst: List<Msg>, lead: Int): Int {
+    for ((i, m) in newestFirst.withIndex()) {
+        if (m.mine) return -1
+        if (m.kind != "approval" && m.kind != "trace" && m.kind != "status" && m.content.isNotBlank()) return lead + i
+    }
+    return -1
+}
+
+/**
+ * Whether the start (the top line) of the item at `reply` is above what the list shows. The list runs
+ * from its foot: `shown` are its visible items with offsets counted up from the foot, `viewEnd` is where the
+ * view ends at the top. An item not shown is above when only newer (lower) items are shown.
+ */
+fun replyStartAbove(reply: Int, shown: List<Shown>, viewEnd: Int): Boolean {
+    if (reply < 0 || shown.isEmpty()) return false
+    val it = shown.firstOrNull { it.index == reply } ?: return shown.maxOf { it.index } < reply
+    return it.offset + it.size > viewEnd
+}
+
+/** How far to scroll (px, toward older items) so a shown reply's top line sits at the top of the view, under its padding `pad`. */
+fun toReplyStart(reply: Shown, viewEnd: Int, pad: Int): Int = (reply.offset + reply.size - (viewEnd - pad)).coerceAtLeast(0)
+
 @Composable
-fun FollowingList(newest: String?, newestMine: Boolean, growth: Int, modifier: Modifier = Modifier, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
+fun FollowingList(newest: String?, newestMine: Boolean, growth: Int, modifier: Modifier = Modifier, replyAt: Int = -1, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
     val k = k()
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -195,15 +229,41 @@ fun FollowingList(newest: String?, newestMine: Boolean, growth: Int, modifier: M
         seen = newest
         if ((arrived && newestMine) || follow) toEnd(false)
     }
+    // The last reply starts above the view (a long one opens at its end): a way to its first line.
+    val shown = { list.layoutInfo.visibleItemsInfo.map { Shown(it.index, it.offset, it.size) } }
+    val startAbove by remember(replyAt) { derivedStateOf { replyStartAbove(replyAt, shown(), list.layoutInfo.viewportEndOffset) } }
+    suspend fun toReply() {
+        own = true
+        try {
+            // Not laid out yet (it is above all that is shown): brought to the foot first, then measured.
+            if (shown().none { it.index == replyAt }) list.scrollToItem(replyAt)
+            val at = shown().firstOrNull { it.index == replyAt } ?: return
+            list.animateScrollBy(toReplyStart(at, list.layoutInfo.viewportEndOffset, list.layoutInfo.afterContentPadding).toFloat())
+        } finally { own = false; follow = !list.canScrollBackward }
+    }
     Box(modifier) {
         LazyColumn(Modifier.fillMaxSize(), state = list, reverseLayout = true, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = S.md), content = content)
-        if (!follow && list.canScrollBackward) Box(
-            Modifier.align(Alignment.BottomCenter).padding(bottom = S.md).size(44.dp).clip(RoundedCornerShape(S.rPill))
-                .background(k.raised).border(1.dp, k.lineStrong, RoundedCornerShape(S.rPill))
-                .press({ scope.launch { toEnd(true) } })
-                .semantics { contentDescription = "Latest" }.testTag("to-latest"),
-            contentAlignment = Alignment.Center,
-        ) { KIcon(Ic.ArrowDown, k.fg, 20.dp) }
+        Column(Modifier.align(Alignment.BottomCenter).padding(bottom = S.md), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(S.sm)) {
+            if (startAbove) Row(
+                Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(S.rPill))
+                    .background(k.raised).border(1.dp, k.lineStrong, RoundedCornerShape(S.rPill))
+                    .press({ scope.launch { toReply() } })
+                    .semantics { contentDescription = "Start of the reply" }.testTag("to-reply-start")
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                KIcon(Ic.ArrowUp, k.fg, 18.dp)
+                Spacer(Modifier.width(8.dp))
+                Txt("Start of the reply", T.uiStrong, k.fg, maxLines = 1)
+            }
+            if (!follow && list.canScrollBackward) Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(S.rPill))
+                    .background(k.raised).border(1.dp, k.lineStrong, RoundedCornerShape(S.rPill))
+                    .press({ scope.launch { toEnd(true) } })
+                    .semantics { contentDescription = "Latest" }.testTag("to-latest"),
+                contentAlignment = Alignment.Center,
+            ) { KIcon(Ic.ArrowDown, k.fg, 20.dp) }
+        }
     }
 }
 

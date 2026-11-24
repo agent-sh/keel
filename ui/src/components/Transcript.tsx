@@ -1106,6 +1106,28 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const [fresh, setFresh] = useState<{ ev: string | null; at: number } | null>(null);
   // Where it is against the view: above it, below it, or in it (null).
   const [freshAt, setFreshAt] = useState<"above" | "below" | null>(null);
+  // Whether the start of the last reply is above the view while the reader is inside it: a reply longer
+  // than the view opens at its end, and a way to its first line stands at the conversation's foot.
+  const [replyUp, setReplyUp] = useState(false);
+  const lastReply = () => { const all = content.current?.querySelectorAll<HTMLElement>('[data-testid="assistant-text"]'); return all?.length ? all[all.length - 1]! : null; };
+  const lookReply = (view: DOMRect) => {
+    const r = lastReply()?.getBoundingClientRect();
+    const up = !!r && r.height > view.height && r.top < view.top - 8 && r.bottom > view.top + 8;
+    if (up !== replyUp) setReplyUp(up);
+  };
+  // To it: its first line at the view's top, as the reader's own move (the view stops following the end).
+  const toReply = () => {
+    const el = scroller.current, at = lastReply();
+    if (!el || !at) return;
+    stick.current = false;
+    setAway(true);
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    el.scrollTop += at.getBoundingClientRect().top - el.getBoundingClientRect().top - 0.75 * rem;
+    lastTop.current = el.scrollTop;
+    remember();
+    saveSoon(true);
+    looks.current();
+  };
   const arrive = useRef(true); // the owner is coming (back) to this conversation: what came since is new, on screen or not
   const sawFresh = useRef(false);
   const going = useRef(0);
@@ -1174,6 +1196,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (!el || !events?.length || document.hidden) return;
     const here = presentAt(sessionId);
     const view = el.getBoundingClientRect();
+    lookReply(view);
     if (!reading && !fresh) {
       const p = placeOf(sessionId);
       const last = events.at(-1)!;
@@ -1502,6 +1525,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     <span className="k-new-jump">
       <button type="button" data-testid="new-since-jump" data-where={freshAt} onClick={toFresh}>{freshAt === "above" ? <ArrowUp className="size-3.5" /> : <ArrowDown className="size-3.5" />}{newSinceAt(clock(fresh.at))}</button>
       <button type="button" data-testid="new-since-read" aria-label={MARK_READ} title={MARK_READ} onClick={endFresh}><Check className="size-3.5" /></button>
+    </span>
+  ) : null;
+
+  const wayStart = replyUp ? (
+    <span className="k-new-jump">
+      <button type="button" data-testid="reply-start-jump" onClick={toReply}><ArrowUp className="size-3.5" />Start of the reply</button>
     </span>
   ) : null;
 
@@ -1979,11 +2008,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       {/* The way to where what is new starts, while that line is not in view, stands at the conversation's
           foot: with the way to the end when the reader is away from it; when they follow the end, over the
           room under the last line, where no line is. */}
-      {!(away || earlier) && wayNew && <div className="k-new-bar">{wayNew}</div>}
+      {!(away || earlier) && (wayNew || wayStart) && <div className="k-new-bar">{wayNew ?? wayStart}</div>}
       {(away || earlier) && (
         // A strip of its own under the conversation: the way to the end never lies over a line being read.
         <div className="k-latest-bar">
-          {wayNew}
+          {wayNew ?? wayStart}
           <button
             type="button"
             onClick={() => toEnd(true)}

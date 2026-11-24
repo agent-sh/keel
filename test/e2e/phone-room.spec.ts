@@ -899,6 +899,36 @@ test.describe("on a phone, the errors", () => {
   });
 });
 
+// A session opens at the end of its last reply. When that reply is longer than the view, a way to its
+// first line stands at the conversation's foot; a tap puts that line at the view's top. (A 30-item
+// reply's start was 3,235 px above, with no way there but a long scroll.)
+test.describe("on a phone, a long last reply", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("has a way to its start", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Long reply" } })).json();
+    try {
+      const items = Array.from({ length: 30 }, (_, i) => `${i + 1}. The retry at step ${i + 1} waits \`${(i + 1) * 250} ms\` before it tries the request again, longer than the gateway's timeout on a slow day.`).join("\\n");
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:say ## Findings\\n${items}` } });
+      await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(1);
+      await page.goto(`/s/${session.id}`);
+      const pane = page.locator(".k-station[data-helm]");
+      const reply = pane.getByTestId("assistant-text").last();
+      await expect(reply).toContainText("The retry at step 30");
+      const jump = pane.getByTestId("reply-start-jump");
+      await expect(jump).toBeVisible();
+      await shoot(page, "phone-19-reply-start");
+      await jump.tap();
+      const at = () => pane.evaluate((el) => { const v = el.querySelector(".k-reading")!.getBoundingClientRect(); const all = el.querySelectorAll('[data-testid="assistant-text"]'); return Math.round(all[all.length - 1]!.getBoundingClientRect().top - v.top); });
+      await expect.poll(at).toBeGreaterThanOrEqual(0);
+      expect(await at()).toBeLessThan(80);
+      await expect(jump).toHaveCount(0);
+      await shoot(page, "phone-20-reply-start-went");
+    } finally { await request.delete(`/api/sessions/${session.id}`); }
+  });
+});
+
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
 // another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
 // box is taken as it shows, cut by what clips it). A target is what a press acts on: a

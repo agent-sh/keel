@@ -81,6 +81,52 @@ class TranscriptTest {
     }
 }
 
+// A long last reply opens at its end: a way up leads to its first line, and goes once that line is shown.
+class ReplyStartTest {
+    @get:Rule val rule = createComposeRule()
+
+    @Test fun aLongLastReplyOffersItsStartAndTheTapBringsItsFirstLineToTheTop() {
+        rule.setContent {
+            KeelTheme(1) {
+                // Newest at the foot: a short status line, the reply eight screens tall, an older message.
+                FollowingList("st", false, 0, Modifier.size(360.dp, 640.dp).testTag("list"), replyAt = 1) {
+                    item(key = "st") { Text("Done", Modifier.fillMaxWidth().height(40.dp).testTag("st")) }
+                    item(key = "reply") {
+                        androidx.compose.foundation.layout.Column(Modifier.fillMaxWidth().testTag("reply")) {
+                            Text("First line of the reply", Modifier.height(40.dp).testTag("first-line"))
+                            androidx.compose.foundation.layout.Spacer(Modifier.height(5000.dp))
+                            Text("Last line of the reply", Modifier.height(40.dp))
+                        }
+                    }
+                    item(key = "older") { Text("older", Modifier.fillMaxWidth().height(200.dp).testTag("older")) }
+                }
+            }
+        }
+        rule.onNodeWithTag("to-reply-start").assertIsDisplayed().performClick()
+        rule.waitForIdle()
+        // Its first line at the top of the list, under the list's own padding (12 dp), and the way up is gone.
+        val list = rule.onNodeWithTag("list").fetchSemanticsNode().boundsInRoot
+        val first = rule.onNodeWithTag("first-line", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val pad = with(rule.density) { 12.dp.toPx() }
+        org.junit.Assert.assertEquals(list.top + pad, first.top, 2f)
+        rule.onNodeWithTag("to-reply-start").assertDoesNotExist()
+        // At the start, the way down to the latest is there.
+        rule.onNodeWithTag("to-latest").assertIsDisplayed()
+    }
+
+    @Test fun aShortLastReplyOffersNoJump() {
+        rule.setContent {
+            KeelTheme(1) {
+                FollowingList("r", false, 0, Modifier.size(360.dp, 640.dp).testTag("list"), replyAt = 0) {
+                    item(key = "r") { Text("A short reply", Modifier.fillMaxWidth().height(200.dp)) }
+                }
+            }
+        }
+        rule.waitForIdle()
+        rule.onNodeWithTag("to-reply-start").assertDoesNotExist()
+    }
+}
+
 // A reply's words leave the phone: the whole reply by its copy button, a code block by its own.
 class CopyTest {
     @get:Rule val rule = createComposeRule()

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -216,7 +217,11 @@ fun Markdown(md: String, style: TextStyle = T.body, modifier: Modifier = Modifie
             is Block.Para -> BasicText(text[0], style = base)
             is Block.Heading -> BasicText(text[0], style = (if (b.level <= 2) T.title else T.bodyStrong).copy(color = k.fg), modifier = Modifier.padding(top = 4.dp))
             is Block.Item -> Row(Modifier.padding(start = (b.depth * 16).dp)) {
-                BasicText(b.marker, style = base.copy(color = k.muted), modifier = Modifier.width(if (b.marker == "•") 16.dp else 24.dp))
+                // A number's column is sized by the text (room for "30."), and the number never wraps: at a large
+                // text size a fixed column broke "28." over two lines.
+                val numberColumn = with(androidx.compose.ui.platform.LocalDensity.current) { (base.fontSize * 1.75f).toDp() }
+                BasicText(b.marker, style = base.copy(color = k.muted), softWrap = false, maxLines = 1,
+                    modifier = if (b.marker == "•") Modifier.width(16.dp) else Modifier.widthIn(min = numberColumn).padding(end = 4.dp))
                 BasicText(text[0], style = base, modifier = Modifier.weight(1f))
             }
             is Block.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
