@@ -57,7 +57,7 @@ test("PR Steward fixes a failed check, ends when it is green, reads only trusted
     const script = `Push the branch.\nscript:calls ${JSON.stringify([{ name: "Bash", input: { command: "git push -q -u origin HEAD" } }])}\nscript:then-calls ${JSON.stringify([{ name: "Bash", input: { command: fix } }, { name: "Bash", input: { command: "gh pr merge 7 --squash" } }])}`;
     expect((await api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text: script }) })).status).toBeLessThan(300);
     const events = async () => (await api(`/api/sessions/${id}`)).body.events as any[];
-    const idle = () => expect.poll(async () => { const b = (await api(`/api/sessions/${id}`)).body; return !b.running && b.events.at(-1)?.kind === "turn_end"; }, { timeout: 90_000 }).toBe(true);
+    const idle = () => expect.poll(async () => { const b = (await api(`/api/sessions/${id}`)).body; return !b.running && b.events.filter((e: any) => e.kind !== "note").at(-1)?.kind === "turn_end"; }, { timeout: 90_000 }).toBe(true);
     const turns = async () => (await events()).filter((e) => e.kind === "user" && e.data.kind === "steward");
     await idle();
     const headOf = () => git(bare, "rev-parse", `refs/heads/${branch}`);
