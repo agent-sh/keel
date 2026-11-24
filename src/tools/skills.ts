@@ -439,7 +439,8 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
     const names = discoverSkills(ctx.cwd, heldBack).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
     // A repository's skill held back by its trust: the model is told why, not that it does not exist.
     const held = heldBack.find((h) => h.name === name || h.name === name.replace(/^\//, ""));
-    if (held) return fail(`The skill "${held.name}" is this repository's and does not load: ${skillFilter.held?.(held.dir) ?? "the owner has not trusted it"}.`);
+    // (The reason may end its own sentence: one full stop, not two.)
+    if (held) return fail(`The skill "${held.name}" is this repository's and does not load: ${(skillFilter.held?.(held.dir) ?? "the owner has not trusted it").replace(/\.?$/, ".")}`);
     return fail(`No skill named "${name}". Available: ${names.join(", ") || "none"}.`);
   }
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);

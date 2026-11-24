@@ -7,7 +7,7 @@ import { errorText } from "../engine/retry.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { D, capture, clip, deliver, isPending, parkedOn, rider, stillRunning, type Pending, heldWhy } from "./core.ts";
 import { cutTurn } from "./waits.ts";
-import { acked, add, classOf, cleared, fingerprintOf, merged, render, room, settledBy, SELF, type Failure, type FailureGroup, type FailureKind, type Known, type Told } from "./failure-groups.ts";
+import { acked, add, classOf, cleared, fingerprintOf, merged, render, room, settledBy, split, SELF, type Failure, type FailureGroup, type FailureKind, type Known, type Told } from "./failure-groups.ts";
 
 // A session's own account of what went wrong in its scope, kept so nobody has
 // to ask: every failure of its turns, of its agents and their tools, and of
@@ -115,16 +115,20 @@ export function record(sessionId: string, f: Failure, from = sessionId): boolean
 }
 
 // What `from` keeps of its agents' failures goes to `to`, a cause both keep made one: the agents moved there (a
-// lost context's successor takes its working agents). In the caller's transaction, so nothing owed stays where
-// no one reads it, and a start does not wake the session that lost its context for it (recover).
+// lost context's successor takes its working agents). Its own failures (the ref SELF) stay: they are what it lost
+// its context to, and the successor was told that in its brief. In the caller's transaction, so nothing owed stays
+// where no one reads it, and a start does not wake the session that lost its context for it (recover).
 export function moveTo(from: string, to: string) {
   const { db } = D().store;
   for (const r of db.query<Row, [string]>("SELECT * FROM session_failures WHERE session_id = ?").all(from)) {
     const g = toGroup(r);
+    const { taken, kept } = split(g, (x) => x.id !== SELF);
+    if (!taken) continue;
     const had = one(to, g.fp);
-    save(to, had ? merged(had, g) : g);
+    save(to, had ? merged(had, taken) : taken);
+    if (kept) save(from, kept);
+    else db.query("DELETE FROM session_failures WHERE session_id = ? AND fp = ?").run(from, g.fp);
   }
-  db.query("DELETE FROM session_failures WHERE session_id = ?").run(from);
 }
 
 function prune(sessionId: string) {

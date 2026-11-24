@@ -89,6 +89,7 @@ test("a skill folder past what the scan reads is not trusted, with the reason, a
     Object.assign(skillFilter, { allow: (d: string) => t.skillAllowed(d), held: (d: string) => t.skillHeld(d) });
     const out = JSON.stringify(await loadSkill("big", "", { cwd: repo, sessionId: "s1" } as any));
     expect(out).toContain(`The skill \\"big\\" is this repository's and does not load: ${f.refused}`);
+    expect(out).not.toContain("..");
   } finally {
     for (const k of Object.keys(skillFilter) as (keyof typeof skillFilter)[]) delete skillFilter[k];
     Object.assign(skillFilter, was);

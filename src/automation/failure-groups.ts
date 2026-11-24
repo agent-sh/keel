@@ -210,6 +210,17 @@ export function merged(a: FailureGroup, b: FailureGroup): FailureGroup {
   return { ...a, sample: first.sample, count: a.count + b.count, owed, wake: owed > 0 && (a.wake || b.wake), told: a.told + b.told, first_ts: first.first_ts, last_ts: Math.max(a.last_ts, b.last_ts), refs };
 }
 
+// One cause split by who had it: the refs `take` picks, as a group of their own, and the rest. The counts are the
+// refs' (a group's count is every occurrence of its refs); what each part was told is its refs' told. null: no ref.
+export function split(g: FailureGroup, take: (r: FailureRef) => boolean): { taken: FailureGroup | null; kept: FailureGroup | null } {
+  const part = (refs: FailureRef[]): FailureGroup | null => {
+    if (!refs.length) return null;
+    const count = refs.reduce((n, r) => n + r.n, 0), owed = sum(refs);
+    return { ...g, count, owed, wake: g.wake && owed > 0, told: Math.min(count, refs.reduce((n, r) => n + (r.told ?? 0), 0)), refs: refs.map((r) => ({ ...r })) };
+  };
+  return { taken: part(g.refs.filter(take)), kept: part(g.refs.filter((r) => !take(r))) };
+}
+
 // A ref with `took` of what it was owed told. What is left, if anything,
 // landed after the notice was made: with `newest` it is the ref's newest
 // failures, and its span starts at the first of them when that is still kept.

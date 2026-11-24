@@ -204,11 +204,15 @@ test("a context that declines while its own agent works hands the task and the a
   const kid = await agents.spawn(a.session_id, { prompt: "look it up", isolation: "none", background: true });
   // A failure of one of its agents is owed to it, worth a turn of its own.
   expect(failures.record(a.session_id, { kind: "agent", cls: "provider error", message: "the request failed", ref: { id: kid.id, label: "look it up" }, tell: "wake" })).toBe(true);
+  // Its own failure (what it lost its context to) is not its agents': it stays with it.
+  expect(failures.record(a.session_id, { kind: "turn", cls: "provider error", message: "the request failed", tell: "ride" })).toBe(true);
   store.append(a.session_id, "assistant", { blocks: [{ type: "text", text: "I will not" }], stop: "refusal" });
   store.append(a.session_id, "turn_end", { reason: "refusal" });
   agents.onTurnEnd(a.session_id, "refusal");
   await settled();
   const now = agents.get(a.id)!;
+  const own = (sid: string) => store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM session_failures WHERE session_id = ? AND kind = 'turn'").get(sid)!.n;
+  expect([own(a.session_id), own(now.session_id)]).toEqual([1, 0]);
   // The loss is recorded and a successor started, though its agent still works.
   expect([now.status, now.lost?.map((l) => l.kind), now.session_id === a.session_id]).toEqual(["running", ["refusal"], false]);
   // What the lost context was owed of its agents' failures is the successor's: a start never wakes the lost one for it.

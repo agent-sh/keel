@@ -490,3 +490,12 @@ test("one cause kept by two sessions merges into one: counts and what is owed ad
   expect([m.count, m.owed, m.wake, m.first_ts, m.last_ts]).toEqual([4, a.owed + b.owed, true, 5, 30]);
   expect(m.refs.map((r) => [r.id, r.n, r.owed])).toEqual([["a1", 2, 2], ["a2", 1, 0], ["a3", 1, 1]]);
 });
+
+test("a cause split by who had it: each part counts only its own refs", () => {
+  const f = (id: string | undefined, tell?: "wake" | "ride"): Failure => ({ kind: "agent", cls: "provider error", message: "the request failed", ref: id ? { id, label: id } : { id: "self" }, tell });
+  const g = add(add(add(undefined, f(undefined), 5), f("a1", "wake"), 10), f("a2", "ride"), 20);
+  const { taken, kept } = fg.split(g, (r) => r.id !== "self");
+  expect([taken!.count, taken!.owed, taken!.wake, taken!.refs.map((r) => r.id)]).toEqual([2, g.owed, true, ["a1", "a2"]]);
+  expect([kept!.count, kept!.owed, kept!.wake, kept!.refs.map((r) => r.id)]).toEqual([1, 0, false, ["self"]]);
+  expect(fg.split(g, () => false).taken).toBeNull();
+});
