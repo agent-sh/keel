@@ -77,7 +77,7 @@ export const overlapRoutes: RouteModule = (deps: Deps) => {
   const json = (data: unknown, status = 200) => Response.json(data, { status });
   return {
     "/api/sessions/:id/overlap": {
-      GET: (req: any) => (store.session(req.params.id) ? json(ov.view(req.params.id)) : json({ error: "no such session" }, 404)),
+      GET: async (req: any) => (store.session(req.params.id) ? json({ ...ov.view(req.params.id), unheld: await ov.unheld(req.params.id) }) : json({ error: "no such session" }, 404)),
     },
     // The owner's refresh: a pass now, answered when it is done.
     "/api/sessions/:id/overlap/check": {
@@ -92,7 +92,7 @@ export const overlapRoutes: RouteModule = (deps: Deps) => {
           }
           await ov.scan(at.repo);
         }
-        return json(ov.view(req.params.id));
+        return json({ ...ov.view(req.params.id), unheld: await ov.unheld(req.params.id) });
       },
     },
   };

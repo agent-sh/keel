@@ -4,12 +4,39 @@ import type { Session } from "../../../src/core/types.ts";
 import type { Clash } from "../../../src/worktree/overlap.ts";
 import { openSession } from "../lib/automation.ts";
 import { isLive, queueBranches, removeEntry, useLanding, type LandingEntry, type LandingView } from "../lib/landing.ts";
-import { loadOverlap, otherOf, useOverlap, type Pair } from "../lib/overlap.ts";
+import { loadOverlap, otherOf, useOverlap, type OverlapView, type Pair } from "../lib/overlap.ts";
 import { failed, useStore } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 
 const lines = ([first, last]: [number, number]) => (last < first ? `removed after ${last}` : first === last ? `${first}` : `${first}-${last}`);
 const short = (b: string) => b.replace(/^keel\//, "");
+
+// Worktrees Keel made that no live session holds: with no commit yet, or a branch whose agent ended.
+function Unheld({ list }: { list: NonNullable<OverlapView["unheld"]> }) {
+  const bare = list.filter((u) => u.commits === 0).length;
+  return (
+    <div className="flex flex-col gap-1" data-testid="overlap-unheld">
+      <p className="k-empty px-1" data-testid="overlap-unheld-head">
+        {bare ? `${bare} worktree${bare === 1 ? "" : "s"} with no commit yet` : "No live branch"}
+        {bare < list.length && `${bare ? ", " : ": "}${list.length - bare} branch${list.length - bare === 1 ? "" : "es"} whose session is not live`}
+      </p>
+      <ul className="flex flex-col">
+        {list.map((u) => (
+          <li key={u.branch} className="flex min-w-0 items-center gap-2 rounded-lg px-1 py-1 text-caption hover:bg-hover" data-testid="overlap-unheld-row" data-branch={u.branch}>
+            <GitBranch className="size-3.5 shrink-0 text-faint" />
+            <span className="min-w-0 truncate font-mono text-fg" title={u.branch}>{short(u.branch)}</span>
+            <button type="button" className="min-w-0 flex-1 truncate text-left text-muted hover:text-accent" onClick={() => openSession(u.session_id)}>{u.title || "a session"}</button>
+            <span className="shrink-0 text-micro text-faint">
+              {u.commits ? `${u.commits} commit${u.commits === 1 ? "" : "s"}` : "no commit"}
+              {u.uncommitted ? ` · ${u.uncommitted} uncommitted file${u.uncommitted === 1 ? "" : "s"}` : ""}
+              {` · ${u.why === "ended" ? "agent ended" : "session archived"}`}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 // The pairs given, each with its files and where the two sides meet. Seen
 // from `mine` (the session's own branch) when it is one of the pair's sides.
@@ -180,7 +207,9 @@ export function BranchesPanel({ session }: { session: Session }) {
 
       <section className="flex flex-col gap-1.5">
         <h3 className="k-label px-1">Live branches</h3>
-        {v.branches.length === 0 ? <p className="k-empty px-1">No session holds a branch of this repository: a worktree Keel makes, or a branch a session commits to, shows here.</p> : (
+        {v.branches.length === 0 ? (
+          v.unheld?.length ? <Unheld list={v.unheld} /> : <p className="k-empty px-1">No session holds a branch of this repository: a worktree Keel makes, or a branch a session commits to, shows here.</p>
+        ) : (
           <ul className="flex flex-col" data-testid="overlap-branches">
             {v.branches.map((b) => {
               const n = v.pairs.filter((p) => p.conflict && (p.a === b.branch || p.b === b.branch)).length;

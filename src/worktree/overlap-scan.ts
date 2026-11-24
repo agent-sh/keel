@@ -49,7 +49,11 @@ type ToldRow = { session_id: string; repo: string; a: string; b: string; told: s
 export type Pair = { a: string; b: string; base: boolean; a_tip: string; b_tip: string; conflict: boolean; error?: string; files: ConflictFile[]; checked: number; a_session?: string; b_session?: string; waits?: true };
 // `checked`: it has commits of its own and its pairs were checked (a branch with none has nothing to land).
 export type Branch = { branch: string; tip: string; session_id: string; title: string; managed: boolean; checked: boolean };
-export type View = { repo: string | null; base: string | null; base_tip: string | null; mine: string | null; branches: Branch[]; pairs: Pair[]; clean: number; checked: number | null; last?: Pass };
+// A worktree Keel made whose holder is not live (its agent ended, its session archived), so it is no live branch:
+// what it holds, for the panel to say instead of "nothing". `commits`: its own, past the base; `uncommitted`: files
+// changed or new in its folder (null when the folder could not be read).
+export type Unheld = { branch: string; session_id: string; title: string; why: "ended" | "archived"; commits: number; uncommitted: number | null };
+export type View = { unheld?: Unheld[]; repo: string | null; base: string | null; base_tip: string | null; mine: string | null; branches: Branch[]; pairs: Pair[]; clean: number; checked: number | null; last?: Pass };
 // What the last pass of a repository cost: the merges it ran and their time.
 export type Pass = { at: number; ms: number; merges: number; reused: number; diffs: number };
 
@@ -565,6 +569,30 @@ export class Overlaps {
     }));
     const baseTip = rows.find((r) => r.base)?.b_tip ?? null;
     return { repo, base: base?.replace(/^refs\/(heads|remotes)\//, "") ?? rows.find((r) => r.base)?.b ?? null, base_tip: baseTip, mine: branch ?? null, branches, pairs, clean: rows.filter((r) => !r.conflict && !r.error).length, checked: rows.length ? Math.max(...rows.map((r) => r.checked)) : null, ...(this.passes.get(repo) ? { last: this.passes.get(repo) } : {}) };
+  }
+
+  // The worktrees of the session's repository that no live session holds, and what each holds.
+  async unheld(sessionId: string): Promise<Unheld[]> {
+    const at = this.whereOf(sessionId);
+    if (!at) return [];
+    const owners = this.owners(at.repo);
+    let rows: { branch: string; session_id: string; path: string; base: string }[] = [];
+    try { rows = this.store.db.query<{ branch: string; session_id: string; path: string; base: string }, [string]>("SELECT branch, session_id, path, base FROM worktrees WHERE repo_root = ? AND state = 'active' ORDER BY created").all(at.repo); } catch { return []; }
+    const base = (await this.baseOf(at.repo))?.replace(/^refs\/(heads|remotes)\//, "");
+    const out: Unheld[] = [];
+    for (const r of rows.filter((x) => !owners.has(x.branch)).slice(0, 20)) {
+      const s = this.store.session(r.session_id);
+      const [ahead, dirty] = await Promise.all([
+        git(at.repo, ["rev-list", "--count", `${base ?? r.base}..${r.branch}`], { read: true }),
+        git(r.path, ["status", "--porcelain", "--untracked-files=all"], { read: true }),
+      ]);
+      out.push({
+        branch: r.branch, session_id: r.session_id, title: s?.title ?? "", why: s && !s.archived ? "ended" : "archived",
+        commits: ahead.code === 0 ? Number(ahead.out.trim()) || 0 : 0,
+        uncommitted: dirty.code === 0 ? dirty.out.split("\n").filter(Boolean).length : null,
+      });
+    }
+    return out;
   }
 
   // The repository and branch a session works on: its managed worktree's, else its folder's.

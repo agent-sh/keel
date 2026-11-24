@@ -222,3 +222,35 @@ test("a conflict with the base goes to the branch's own agent, which rebases it;
   expect(git(repo, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ") && l.includes("/landing/"))).toEqual([]);
   expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
 });
+
+// Feature: a worktree whose agent ended with files it never committed. The Branches panel does not say
+// that no session holds a branch: it says how many worktrees have no commit yet, and for each its agent,
+// its uncommitted files and that its agent ended.
+test("the Branches panel names a worktree with no commit yet instead of saying no session holds a branch", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+  const top = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `landing-bare-${Date.now()}`);
+  const repo = join(top, "repo");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "notes.md"), "line 1\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "init");
+  const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+  const builder = { name: "spawn_agent", input: { message: `Builder\n${scriptBash("echo one > one.txt && echo two > two.txt")}` } };
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start a builder.", `script:calls ${JSON.stringify([builder])}`) } });
+  await expect.poll(async () => ((await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[]).filter((a) => a.status === "completed").length, { timeout: 90_000 }).toBe(1);
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "branches");
+  const panel = page.getByTestId("branches-panel");
+  await expect(panel.getByTestId("overlap-unheld-head")).toContainText("1 worktree with no commit yet");
+  const row = panel.getByTestId("overlap-unheld-row");
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("Builder");
+  await expect(row).toContainText("2 uncommitted files");
+  await expect(row).toContainText("agent ended");
+  await expect(panel).not.toContainText("No session holds a branch");
+  await shoot(page, "landing-05-no-commit-yet");
+  expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
+});

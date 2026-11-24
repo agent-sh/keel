@@ -347,3 +347,20 @@ test("a branch that conflicts with the base is told to rebase; its pair conflict
   expect(after).toContain("would conflict with keel/y");
   expect(after).toContain("No longer conflicting: keel/x with the base main.");
 });
+
+// The panel said no session held a branch while a builder's worktree held uncommitted files: a worktree whose
+// holder is not live is listed with what it holds (commits, uncommitted files, why it is not live).
+test("a worktree no live session holds is listed with its commits and uncommitted files", async () => {
+  const { repo, store, ov, a } = setup();
+  store.db.run("CREATE TABLE IF NOT EXISTS worktrees (session_id TEXT PRIMARY KEY, repo_root TEXT NOT NULL, path TEXT NOT NULL, branch TEXT NOT NULL, base TEXT NOT NULL, base_commit TEXT NOT NULL, state TEXT NOT NULL, snapshot_ref TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL)");
+  const path = join(repo, "..", "builder");
+  g(repo, "worktree", "add", "-q", "-b", "keel/builder", path, "main");
+  writeFileSync(join(path, "new.ts"), "export {};\n");
+  writeFileSync(join(path, "notes.md"), "changed\n");
+  const holder = store.createSession({ model: "scripted:stand-in", workspace: path, title: "Builder" });
+  store.db.run("INSERT INTO worktrees VALUES (?, ?, ?, 'keel/builder', 'main', '', 'active', NULL, 1, 1)", [holder.id, repo, path]);
+  // Held by a live session: a live branch, not listed.
+  expect(await ov.unheld(a)).toEqual([]);
+  store.db.run("UPDATE sessions SET archived = 1 WHERE id = ?", [holder.id]);
+  expect(await ov.unheld(a)).toEqual([{ branch: "keel/builder", session_id: holder.id, title: "Builder", why: "archived", commits: 0, uncommitted: 2 }]);
+});
