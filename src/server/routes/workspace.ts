@@ -65,6 +65,13 @@ function score(q: string, path: string): number {
   return j === q.length ? sc - s.length / 50 : -1;
 }
 
+// The folders a session used, without the worktrees Keel makes for its agents (in its state folder):
+// a start box or a folder search that offers one would start in an agent's branch.
+export const notManaged = (paths: readonly string[], stateDir: string): string[] => {
+  const made = join(stateDir, "worktrees");
+  return paths.filter((p) => !contains(made, p));
+};
+
 export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
   // A folder the page may read: inside the home directory or the daemon's workspace.
   const readable = (real: string) => contains(HOME, real) || contains(resolve(workspace), real);
@@ -90,8 +97,10 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
         // A session placed on another machine names a folder there, not here.
         for (const s of store.sessions({ archived: true })) if (!s.machine && (!seen.has(s.workspace) || seen.get(s.workspace)! < s.updated)) seen.set(s.workspace, s.updated);
         for (const s of store.sessions()) if (!s.machine && (!seen.has(s.workspace) || seen.get(s.workspace)! < s.updated)) seen.set(s.workspace, s.updated);
+        // Not the worktrees Keel made for its agents: the box would start in an agent's branch.
+        const kept = new Set(notManaged([...seen.keys()], store.stateDir));
         const recent = [...seen.entries()]
-          .filter(([p]) => existsSync(p))
+          .filter(([p]) => kept.has(p) && existsSync(p))
           .sort((a, b) => b[1] - a[1])
           .slice(0, 12)
           .map(([path, last]) => ({ path, name: basename(path), is_git: isGit(path), last }));
@@ -105,7 +114,7 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
     "/api/fs/find": {
       GET: async (req: Request) => {
         const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
-        const used = usedFolders(400).filter((p) => readable(p)).slice(0, 200);
+        const used = notManaged(usedFolders(400), store.stateDir).filter((p) => readable(p)).slice(0, 200);
         const repos = (process.env.KEEL_REPO_ROOTS ?? dirname(resolve(workspace))).split(":").filter(Boolean).map((r) => resolve(r.replace(/^~(?=$|\/)/, HOME)));
         const { folders, partial } = await folderIndex(findRoots(HOME, used, repos), used);
         return json({ hits: q ? rankFolders(q, folders, 20) : [], partial, folders: folders.length });

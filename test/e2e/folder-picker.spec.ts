@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
+import { isScratch } from "./scratch.ts";
 
 // Feature: the folder a new session works in, found by name. A name typed in
 // the folder picker matches the folders in the home and beside the folders
@@ -101,5 +102,40 @@ test("the folder picker finds a folder by name, Enter takes it, and what cannot 
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Feature: a new session does not start in an agent's worktree. The folders a session worked in are
+// offered newest first, and the worktrees Keel makes for its agents are the newest of all while agents
+// work: the box would start in a branch of an agent. They are left out; the folder they came from stays.
+test("the recent folders leave out the worktrees Keel makes for its agents", async ({ page, request }) => {
+  const daemon = await (await request.get("/api/daemon")).json();
+  const facts = { ...daemon, home: (await (await request.get("/api/workspaces")).json()).home, providers: (await (await request.get("/api/providers")).json()).providers.filter((p: any) => p.available).map((p: any) => p.id) };
+  test.skip(!isScratch(facts), "needs a scratch daemon: it makes a folder in the daemon's state folder");
+  const word = `wt${Date.now().toString(36)}`;
+  const { home } = facts;
+  const managed = join(daemon.state_dir, "worktrees", `${word}-agent`);
+  const repo = join(home, ".keel-e2e", word, `${word}-repo`);
+  mkdirSync(managed, { recursive: true });
+  mkdirSync(repo, { recursive: true });
+  const made: string[] = [];
+  try {
+    // The repository's session is the older one: the agent's worktree is newer than it.
+    for (const [title, workspace] of [["Repository", repo], ["Agent worktree", managed]]) {
+      const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: `${title} ${word}`, workspace } })).json();
+      made.push(session.id);
+    }
+    const recent = ((await (await request.get("/api/workspaces")).json()).recent as { path: string }[]).map((r) => r.path);
+    expect(recent).toContain(repo);
+    expect(recent.filter((p) => p.includes(`${word}-agent`))).toEqual([]);
+    await page.goto("/");
+    await page.getByTestId("workspace-picker").click();
+    await expect(page.getByTestId("workspace-popup")).toContainText(`${word}-repo`);
+    await expect(page.getByTestId("workspace-popup")).not.toContainText(`${word}-agent`);
+    await shoot(page, "folder-picker-04-no-worktrees");
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
+    rmSync(managed, { recursive: true, force: true });
+    rmSync(join(home, ".keel-e2e", word), { recursive: true, force: true });
   }
 });
