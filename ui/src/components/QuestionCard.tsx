@@ -550,7 +550,7 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
         {asked?.note && <p className="text-caption text-warn" data-testid="question-note">{asked.note}</p>}
         {qs.map((q) => (
           // (No wider than the card: a fieldset is as wide as its widest content by default, and a cut text's is its whole line.)
-          <fieldset key={q.id} data-q={q.id} className="flex min-w-0 flex-col gap-2">
+          <fieldset key={q.id} data-q={q.id} className="flex min-w-0 flex-col gap-2 max-md:gap-1">
             <Legend q={q} />
             {q.options.length > 0 && (
               <div className="grid gap-1.5 sm:grid-cols-2" role={q.multi ? "group" : "radiogroup"}>
@@ -608,7 +608,7 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
           </label>
         )}
         {/* Answer stays at the card's lower edge while a long question scrolls under it. */}
-        <div className="sticky bottom-0 -mx-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-b-lg border-t border-line bg-raised px-3.5 py-2.5 max-md:py-2" data-testid="question-foot">
+        <div className="sticky bottom-0 -mx-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-b-lg border-t border-line bg-raised px-3.5 py-2.5 max-md:py-1.5" data-testid="question-foot">
           {!toOpen && (
             <button
               type="button"
