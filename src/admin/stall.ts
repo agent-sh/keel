@@ -472,6 +472,28 @@ export class StallMonitor {
   }
 }
 
+// A stall under the row's mark reaches the log alone. One that keeps coming
+// back is worth a row all the same: the same cause (the group its row would
+// have) RECUR_N times within RECUR_MS. Each stall of the cause from then on
+// counts on that row.
+export const RECUR_N = 3;
+export const RECUR_MS = 3_600_000;
+export class Recurrence {
+  private seen = new Map<string, number[]>();
+  // Notes a stall of `group` at `now` (ms): how many of its cause fell within the window, this one included.
+  add(group: string, now: number): number {
+    for (const [g, ts] of this.seen) {
+      const kept = ts.filter((t) => now - t < RECUR_MS);
+      if (kept.length) this.seen.set(g, kept);
+      else this.seen.delete(g);
+    }
+    const ts = this.seen.get(group) ?? [];
+    ts.push(now);
+    this.seen.set(group, ts);
+    return ts.length;
+  }
+}
+
 // The daemon's one monitor: made with the admin routes, started once the server listens.
 export function watchWith(m: StallMonitor) {
   G.__keelStallMonitor?.stop();

@@ -644,6 +644,46 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
   return { code: proc.signalCode ? -1 : code, out, err };
 }
 
+// The entries a listing prints (with -z), handed to `each` a pipe's chunk at a time as they come, so the
+// listing is never held whole: one of a folder that holds many repositories printed 48 MB, and reading
+// that into one string and splitting it held the loop for seconds. `each` returns false to stop: git is
+// killed there (`stopped`). Never throws for a failed command: the code says.
+export async function gitEach(dir: string, args: string[], o: GitOpts, each: (entries: string[]) => boolean): Promise<{ code: number; err: string; stopped?: true }> {
+  let p: Plan;
+  try { p = plan(dir, args, o); } catch (e) { return { code: 128, err: `git: ${(e as Error).message}` }; }
+  if ("fail" in p) return { code: 128, err: p.fail };
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn(p.argv, { cwd: p.cwd, env: p.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: o.timeout ?? 120_000, killSignal: "SIGKILL", signal: o.signal });
+  } catch (e) {
+    return { code: 127, err: `git could not start: ${(e as Error).message}` };
+  }
+  const err = readText(proc.stderr as ReadableStream<Uint8Array>);
+  const text = new TextDecoder();
+  let rest = "", stopped = false;
+  const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const buf = rest + text.decode(value, { stream: true });
+      const parts = buf.split("\0");
+      rest = parts.pop()!;
+      if (parts.length && !each(parts)) { stopped = true; break; }
+      // A pipe that holds more resolves the next read at once, as a microtask: without a turn of the
+      // loop between chunks the whole listing would still run as one task, and nothing else would.
+      await new Promise<void>((done) => setImmediate(done));
+    }
+    if (!stopped && rest) stopped = !each([rest]);
+  } finally {
+    if (stopped) { reader.cancel().catch(() => {}); try { proc.kill("SIGKILL"); } catch { /* gone already */ } }
+  }
+  const code = await proc.exited;
+  const e = await err;
+  if (stopped) return { code: 0, err: e, stopped: true };
+  return { code: proc.signalCode ? -1 : code, err: e };
+}
+
 // The first `max` names a listing prints (with -z), and no more: git is stopped there, so a listing over a very
 // large index costs what its first names cost. `pick`: only the entries it takes are counted. `none`: no
 // repository here. `late`: it did not answer in time. `failed`: git refused the call (a path outside the

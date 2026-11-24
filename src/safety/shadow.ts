@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { addAll, git, gitSync, innerHead } from "../core/git.ts";
+import { addAll, git, gitEach, gitSync, innerHead } from "../core/git.ts";
 import { capPatch } from "./patch.ts";
 import { timed } from "../admin/stall.ts";
 import { homeDir } from "../core/paths";
@@ -75,6 +75,16 @@ export class Shadow {
     return r.out;
   }
 
+  // A -z listing read as it comes (gitEach): `each` takes a chunk's entries and returns false to stop.
+  async listEach(args: string[], opts: { index?: string; timeout?: number }, each: (entries: string[]) => boolean): Promise<void> {
+    const here = existsSync(this.workspace);
+    const r = await gitEach(here ? this.workspace : this.dir, ["-c", "core.autocrlf=false", "-c", "core.quotepath=false", ...args], {
+      ...(this.gitDir ? {} : { mode: "own" as const, gitDir: this.dir, workTree: here ? this.workspace : undefined }),
+      index: opts.index, timeout: opts.timeout ?? 60_000,
+    }, each);
+    if (r.code !== 0) throw new Error(`git ${args[0]} failed (${r.code}): ${r.err.trim().slice(0, 500)}`);
+  }
+
   private inited = false;
   private async init() {
     if (this.gitDir || this.inited) return;
@@ -119,23 +129,49 @@ export class Shadow {
   // last written out as, and nothing more is run for it. Most snapshots are
   // that one: a turn takes one before its first call that can change files,
   // one after each such call and one at its end, and most calls change none.
+  //
+  // The listing is read as it comes and sized a chunk at a time, and it stops
+  // once what it would add passes the snapshot cap: a folder that holds many
+  // repositories lists hundreds of thousands of files (48 MB of names), and
+  // holding that whole, then a stat of every file in one pass, held the loop
+  // for seconds at a session's first call after each start.
   private async sizeUp(index: string): Promise<boolean | "same"> {
     this.writeExcludes([]);
-    const list = (await this.git(["ls-files", "-z", "--others", "--modified", "--deleted", "--exclude-standard"], { index, timeout: 30_000 })).split("\0").filter(Boolean);
-    if (!list.length && this.last) { this.skipped = []; return "same"; }
+    const cap = fileCap(), most = snapCap();
     // What the last snapshot left out stays listed for good: a file over the cap, an inner repository
     // with no commit yet. When the listing is those and nothing else, and each is still what it was,
     // the snapshot is the last one's tree, and what it skipped is what that one skipped.
-    if (this.last && await this.leftOut(list)) { this.writeExcludes(this.skipped); return "same"; }
-    this.last = undefined;
+    const was = new Set(this.skipped), unborn = new Set(this.unborn);
+    let leftOut = !!this.last, listed = 0, total = 0, over = false;
+    const repos: string[] = [];
     const big: string[] = [];
-    const cap = fileCap();
-    let total = 0;
-    for (const p of list) {
-      let size = 0;
-      try { const st = lstatSync(join(this.workspace, p)); if (!st.isFile()) continue; size = st.size; } catch { continue; }
-      if (size > cap) big.push(p);
-      else total += size;
+    await this.listEach(["ls-files", "-z", "--others", "--modified", "--deleted", "--exclude-standard"], { index, timeout: 30_000 }, (entries) => timed(() => "sizing up a checkpoint's new files", () => {
+      for (const p of entries) {
+        if (!p) continue;
+        listed++;
+        if (leftOut && p.endsWith("/") && unborn.has(p.slice(0, -1))) { repos.push(p.slice(0, -1)); continue; }
+        if (leftOut && !was.has(p)) leftOut = false;
+        let size = -1;
+        try { const st = lstatSync(join(this.workspace, p)); if (st.isFile()) size = st.size; } catch {}
+        if (size > cap) { big.push(p); continue; }
+        if (leftOut) leftOut = false; // listed before as over the cap, and gone or under it now
+        if (size > 0) total += size;
+        if (total > most) { over = true; return false; }
+      }
+      return true;
+    }));
+    if (!listed && this.last) { this.skipped = []; return "same"; }
+    // (Asked as the whole snapshot asks: one that has a commit by now is recorded by it.)
+    if (leftOut && this.last) {
+      let same = true;
+      for (const r of repos) if (await innerHead(this.workspace, r)) { same = false; break; }
+      if (same) { this.writeExcludes(this.skipped); return "same"; }
+    }
+    this.last = undefined;
+    if (over) {
+      this.mode = "written";
+      this.reason = `the workspace would add more than ${Math.round(most / 1024 / 1024)} MB to its checkpoints, so only the files the session writes are kept`;
+      return false;
     }
     this.skipped = big;
     if (big.length) {
@@ -143,29 +179,11 @@ export class Shadow {
       // Drop a grown file even if its version in the private index differs.
       await this.git(["--literal-pathspecs", "rm", "-q", "-f", "--cached", "--ignore-unmatch", "--", ...big], { index });
     }
-    if (total > snapCap()) {
-      this.mode = "written";
-      this.reason = `the workspace would add ${Math.round(total / 1024 / 1024)} MB to its checkpoints (over ${Math.round(snapCap() / 1024 / 1024)} MB), so only the files the session writes are kept`;
-      return false;
-    }
     return true;
   }
 
   // The inner repositories the last whole snapshot found with no commit to record.
   private unborn: string[] = [];
-  // Whether every listed path is one the last snapshot left out and would leave out again.
-  private async leftOut(list: string[]): Promise<boolean> {
-    const big = new Set(this.skipped), unborn = new Set(this.unborn), cap = fileCap();
-    const repos: string[] = [];
-    for (const p of list) {
-      if (p.endsWith("/") && unborn.has(p.slice(0, -1))) { repos.push(p.slice(0, -1)); continue; }
-      if (!big.has(p)) return false;
-      try { const st = lstatSync(join(this.workspace, p)); if (!st.isFile() || st.size <= cap) return false; } catch { return false; }
-    }
-    // (Asked as the whole snapshot asks: one that has a commit by now is recorded by it.)
-    for (const r of repos) if (await innerHead(this.workspace, r)) return false;
-    return true;
-  }
 
   // Snapshot to a tree. Whole workspace in tree mode (the workspace's
   // .gitignore files apply); in written mode only `paths` (relative).

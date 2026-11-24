@@ -298,6 +298,9 @@ test("a snapshot of an unchanged workspace runs one git process and gives the la
   let runs: string[] = [];
   const git = sh.git.bind(sh);
   sh.git = (args, opts) => { runs.push(args[0]!); return git(args, opts); };
+  // (The listing of what differs is read as it comes, through its own call.)
+  const list = sh.listEach.bind(sh);
+  sh.listEach = (args, opts, each) => { runs.push(args[0]!); return list(args, opts, each); };
   // What a store that has never seen the workspace makes of it: the whole work, every time.
   let k = 0;
   const whole = () => new Shadow(join(dir, `other-${++k}`, "checkpoints"), ws).snapshot();
@@ -347,6 +350,9 @@ test("an unchanged workspace with a file over the cap and an inner repository wi
   let runs: string[] = [];
   const git = sh.git.bind(sh);
   sh.git = (args, opts) => { runs.push(args[0]!); return git(args, opts); };
+  // (The listing of what differs is read as it comes, through its own call.)
+  const list = sh.listEach.bind(sh);
+  sh.listEach = (args, opts, each) => { runs.push(args[0]!); return list(args, opts, each); };
   let k = 0;
   const whole = async () => { const o = new Shadow(join(dir, `other-${++k}`, "checkpoints"), ws); return { tree: await o.snapshot(), skipped: o.skipped }; };
   const snap = async () => { runs = []; const tree = await sh.snapshot(); return { tree, skipped: sh.skipped, runs: runs.length }; };

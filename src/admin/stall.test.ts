@@ -2,7 +2,7 @@
 // late a tick is, what held the loop, how often the timer fires, and what the
 // row says.
 import { afterEach, expect, test } from "bun:test";
-import { describeStall, dropBeat, during, inFlight, shareBeat, type Stall, StallMonitor, timed, TurnWatch } from "./stall.ts";
+import { describeStall, dropBeat, during, inFlight, Recurrence, RECUR_MS, shareBeat, type Stall, StallMonitor, timed, TurnWatch } from "./stall.ts";
 import { ALLOW_MASK, IDLE_ALLOW } from "./stall-beat.ts";
 import { type Cause, decide, type Sample, unknown, UNSEEN } from "./stall-cause.ts";
 
@@ -384,4 +384,19 @@ test("a stall in the kernel says what it was for, and reading, writing and takin
   // A cause from a watcher that names no share keeps the words it had.
   const old = describeStall({ ms: 2_000, busy_ms: 1_900, in_flight: [], turns: [], cause: { kind: "compute", key: "compute", text: "x", sampled_ms: 2_000, run_ms: 1_900, kernel_ms: 1_800, wait_ms: 0 } } as unknown as Stall);
   expect(old.message).toBe("Daemon unresponsive for 2.0 s: on a processor in the kernel, for system calls of its own, outside anything it times");
+});
+
+// A shorter stall reaches the log alone until its cause comes back: the third of one cause within the hour is a row.
+test("a cause that recurs three times in an hour is counted per cause, within the window", () => {
+  const r = new Recurrence();
+  const t0 = 10_000_000;
+  expect(r.add("stall compute kernel memory untimed", t0)).toBe(1);
+  expect(r.add("stall cpu_wait", t0 + 1_000)).toBe(1);
+  expect(r.add("stall compute kernel memory untimed", t0 + 20 * 60_000)).toBe(2);
+  expect(r.add("stall compute kernel memory untimed", t0 + 40 * 60_000)).toBe(3);
+  // The first fell out of the window: two within the hour before this one, and this one.
+  expect(r.add("stall compute kernel memory untimed", t0 + RECUR_MS + 1)).toBe(3);
+  // Another cause counts by itself, and one gone for an hour starts again.
+  expect(r.add("stall cpu_wait", t0 + RECUR_MS + 1_001)).toBe(1);
+  expect(r.add("stall compute kernel memory untimed", t0 + 3 * RECUR_MS)).toBe(1);
 });
