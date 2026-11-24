@@ -21,7 +21,7 @@
 // on the Open link itself, and nothing else opens or fetches it.
 import { Collapsible } from "@base-ui/react/collapsible";
 import { ExternalLink, MessageCircleQuestion } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Under } from "./ToolCall.tsx";
 import { CALL_STOPPED, NEEDS_ANSWER } from "../lib/work.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
@@ -43,19 +43,49 @@ const NONE: string[] = [];
 // `constructor`): only an entry the record itself holds is its answer.
 const at = <T,>(o: Record<string, T> | undefined, k: string): T | undefined => (o && Object.hasOwn(o, k) ? o[k] : undefined);
 
-const Head = ({ open, answered, from }: { open: boolean; answered: boolean; from?: string }) => (
-  <div className="flex items-center gap-2 border-b border-line px-3.5 py-2 text-ui">
+// (`slim`: an open question of the agent's on a phone has no head row: the ring says it waits, the
+// card's label says who asks, and the question's header leads its text. Its choices get the room.)
+const Head = ({ open, answered, from, slim }: { open: boolean; answered: boolean; from?: string; slim?: boolean }) => (
+  <div className={cn("flex items-center gap-2 border-b border-line px-3.5 py-2 text-ui", slim && "max-md:hidden")}>
     <MessageCircleQuestion className={cn("size-3.5 shrink-0", open ? "text-accent-ink" : "text-muted")} />
     <span className="min-w-0 truncate font-medium" data-testid="question-from">{from !== undefined ? `MCP server ${from} is asking` : open ? "The agent is asking" : answered ? "Answered" : "Question"}</span>
     {open && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-accent animate-pulse-dot" />}
   </div>
 );
+// On a phone the header leads the question's first line: the text has the card's width.
 const Legend = ({ q }: { q: UiQuestion }) => (
   <legend className="mb-1.5 flex items-baseline gap-2">
-    {q.header && <span className="rounded-md bg-accent-soft px-1.5 py-px text-micro font-medium uppercase tracking-wide text-accent-ink">{q.header}</span>}
-    <span className="text-read font-medium leading-snug">{q.question}</span>
+    {q.header && <span className="k-q-chip max-md:hidden">{q.header}</span>}
+    <QuestionText text={q.question} header={q.header} />
   </legend>
 );
+
+// A phone cuts a long question at three lines (bridge.css), so that its choices show with it, and
+// offers the rest: one tap and it reads whole. The cut is read from the page as it is laid out.
+function QuestionText({ text, header }: { text: string; header?: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [cut, setCut] = useState(false);
+  const [whole, setWhole] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || whole) return;
+    const look = () => setCut(el.scrollHeight > el.clientHeight + 1);
+    look();
+    const ro = new ResizeObserver(look);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, whole]);
+  // Cut, the text itself is the control (three lines are a finger's height): its last line ends in what a tap does.
+  const open = cut && !whole;
+  return (
+    <span className="relative min-w-0">
+      <span ref={ref} className="k-q-text text-read font-medium leading-snug" data-whole={whole || undefined} data-testid="question-text"
+        role={open ? "button" : undefined} tabIndex={open ? 0 : undefined} aria-expanded={open ? false : undefined}
+        onClick={open ? () => setWhole(true) : undefined} onKeyDown={open ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setWhole(true); } } : undefined}>{header && <span className="k-q-chip k-q-lead md:hidden">{header}</span>}{text}</span>
+      {open && <span className="k-q-more" aria-hidden="true" data-testid="question-more">Read it all</span>}
+    </span>
+  );
+}
 
 // The page a server sends the owner to: the site, then the whole address.
 const LinkShown = ({ link, from }: { link: AskedLink; from: string }) => {
@@ -405,7 +435,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
       onKeyDownCapture={dropRepeats}
       onKeyDown={onKeyDown}
     >
-      <Head open answered={false} from={asked?.from} />
+      <Head open answered={false} from={asked?.from} slim={!asked} />
       <div className="flex flex-col gap-4 px-3.5 pt-3">
         {asked && (
           // The server's own words: plain text set apart from the card's, never markup or a link.
@@ -418,7 +448,8 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
         {asked?.notes?.map((n) => <p key={n} className="text-caption text-warn" data-testid="question-notes">{n}</p>)}
         {asked?.note && <p className="text-caption text-warn" data-testid="question-note">{asked.note}</p>}
         {qs.map((q) => (
-          <fieldset key={q.id} data-q={q.id} className="flex flex-col gap-2">
+          // (No wider than the card: a fieldset is as wide as its widest content by default, and a cut text's is its whole line.)
+          <fieldset key={q.id} data-q={q.id} className="flex min-w-0 flex-col gap-2">
             <Legend q={q} />
             {q.options.length > 0 && (
               <div className="grid gap-1.5 sm:grid-cols-2" role={q.multi ? "group" : "radiogroup"}>
@@ -438,7 +469,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
                       data-n={i + 1}
                       className={cn(
                         // (Brought into view, it stops over the card's Answer row, not under it.)
-                        "k-q-option flex scroll-mb-14 items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
+                        "k-q-option flex scroll-mb-14 items-start gap-2.5 rounded-md border px-3 py-2 max-md:py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
                         on ? "border-accent bg-accent-soft" : "border-line bg-sunken hover:border-line-strong",
                       )}
                     >
@@ -476,7 +507,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
           </label>
         )}
         {/* Answer stays at the card's lower edge while a long question scrolls under it. */}
-        <div className="sticky bottom-0 -mx-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-b-lg border-t border-line bg-raised px-3.5 py-2.5" data-testid="question-foot">
+        <div className="sticky bottom-0 -mx-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-b-lg border-t border-line bg-raised px-3.5 py-2.5 max-md:py-2" data-testid="question-foot">
           {!toOpen && (
             <button
               type="button"

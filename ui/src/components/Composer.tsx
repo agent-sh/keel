@@ -1198,6 +1198,8 @@ function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
       const pane = el.closest<HTMLElement>(".k-session");
       el.style.minHeight = pane && c.offsetHeight ? `${Math.min(Math.ceil(c.offsetHeight + pad()), Math.round(pane.clientHeight * 0.3))}px` : "";
       el.toggleAttribute("data-asking", w.offsetHeight > 0);
+      // Said on the pane, which a phone's style sheet reads: an open question there takes the room of the session's tools row.
+      el.closest(".k-station")?.toggleAttribute("data-question", w.offsetHeight > 0 && !!c.querySelector('.k-question[data-state="open"]'));
       // The scroll bar sits in the column's side padding: the cards keep the box's edges.
       const bar = el.offsetWidth - el.clientWidth;
       el.style.marginRight = bar ? `calc(-0.25rem - ${bar}px)` : "";

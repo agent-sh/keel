@@ -1096,6 +1096,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* Rows brought into view stop under their list's bar, not behind it (its height is set by the list). */
 .k-ask-list > .k-approval, .k-ask-list > .k-approval * { scroll-margin-top: var(--k-ask-bar, 0px); }
 .k-question { border-radius: var(--radius-md); box-shadow: none; }
+/* A question's header: a small tag in the accent, beside its question (on a phone, in the card's head). */
+/* The rest of a question cut on a phone: said at the end of its last line, over a fade (the text is what a tap opens). */
+.k-q-more { position: absolute; right: 0; bottom: 0; padding-left: 2.5rem; background: linear-gradient(90deg, transparent, var(--raised) 2rem); font-size: var(--text-ui); line-height: 1.6; font-weight: 500; color: var(--accent-ink); pointer-events: none; }
+/* (Leading the text, it sits on the first line's middle, a space after it.) */
+.k-q-lead { display: inline-block; margin-right: 0.5rem; vertical-align: 0.125em; line-height: 1.4; }
+.k-q-chip { border-radius: var(--radius-md); padding: 1px 0.375rem; background: var(--accent-soft); font-size: var(--text-micro); font-weight: 500; text-transform: uppercase; letter-spacing: 0.025em; color: var(--accent-ink); }
 /* A waiting question keeps its Answer row at the tray's lower edge while it scrolls: that edge is not faded. */
 .k-tray:has(.k-question[data-state="open"])[data-more="down"] { mask-image: none; }
 .k-tray:has(.k-question[data-state="open"])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
@@ -1112,6 +1118,16 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
      (its tools, Stop among them, come back with the tap). */
   .k-session:has(.k-tray[data-asking]) > .k-reading-room { min-height: clamp(0px, calc((100% - 24rem) / 2), var(--spacing-tap)); }
   .k-tray[data-asking] + .k-box[data-calm]:not(:focus-within) > .k-compose-tools { display: none; }
+  /* An open question takes the room of the session's tools row and of the state line, which the card
+     says (Composer marks the pane): the title stays above it, and both come back once it is answered. */
+  .k-station[data-question] :is(.k-session-header, .k-station-identity .k-station-rest) { display: none; }
+  /* And the strip of the conversation gives the card its room too, where the card needs it. */
+  .k-station[data-question] .k-session > .k-reading-room { min-height: 0; }
+  /* What is asked comes first: the line of the other sessions that wait goes under the card. */
+  .k-station[data-question] .k-asks { display: flex; flex-direction: column; }
+  .k-station[data-question] .k-asks > [data-testid="waiting-elsewhere"] { order: 1; margin: 0.375rem 0 0; }
+  /* A long question is cut at three lines, its choices in view with it; "Read it all" shows the rest. */
+  .k-q-text:not([data-whole]) { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   /* Tapped or holding something, the box keeps its tools row whole above the dock: the cards give way
      first, down to the room Tray keeps them (they scroll), and a long draft only after them. */
   .k-tray[data-asking]:has(+ .k-box:is(:focus-within, :not([data-calm]))) { flex-shrink: 100000; }

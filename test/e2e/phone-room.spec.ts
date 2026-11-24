@@ -731,6 +731,58 @@ test.describe("on a phone at a large text size, the head", () => {
   });
 });
 
+// At 130% and 150% text a waiting question still shows every choice with no scroll: while it waits the
+// card takes the room of the session's tools row, the state line and the conversation's strip; its
+// header leads the question, a long question is cut at three lines (a tap reads it all), and the
+// line of the other sessions that wait goes under it.
+test.describe("on a phone at a large text size, a waiting question", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("shows every choice without a scroll, and reads whole with a tap", async ({ browser, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const made: string[] = [];
+    const make = async (title: string, mode: string, text: string) => {
+      const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `${title} ${tag}` } })).json();
+      made.push(session.id);
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode, sandbox: "off" } });
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
+      return session.id as string;
+    };
+    try {
+      await make("Other request", "ask", `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch other.txt" } }])}`);
+      const id = await make("Choose the fix scope", "full-auto", `script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ header: "Scope", question: "Fix only cart.js or the whole checkout module? The module has four other callers of the retry helper.", options: [{ label: "Only cart.js", description: "Smallest change, ships today" }, { label: "Whole module", description: "Every caller of the helper gets the bound" }, { label: "Ask the team first" }], multiSelect: false }] } }])}`);
+      await expect.poll(async () => ((await (await request.get(`/api/sessions/${id}/questions`)).json()).pending ?? []).length, { timeout: 30_000 }).toBe(1);
+      for (const [width, height] of [[390, 844], [412, 915]] as const) for (const scale of [1.3, 1.5]) {
+        const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width, height }, hasTouch: true, isMobile: true });
+        await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+        const page = await ctx.newPage();
+        try {
+          await page.goto(`/s/${id}`);
+          const pane = page.locator(".k-station[data-helm]");
+          await expect(pane.getByTestId("question-option")).toHaveCount(3);
+          await expect(pane.getByTestId("waiting-elsewhere")).toBeAttached();
+          const shown = () => pane.evaluate((el) => {
+            const t = el.querySelector('[data-testid="composer-tray"]')!.getBoundingClientRect();
+            const foot = el.querySelector('[data-testid="question-foot"]')!.getBoundingClientRect();
+            const bottom = Math.min(t.bottom, foot.top);
+            return [...el.querySelectorAll('[data-testid="question-option"]')].filter((e) => { const r = e.getBoundingClientRect(); return r.top >= t.top - 1 && r.bottom <= bottom + 1; }).length;
+          });
+          await expect.poll(shown, { timeout: 5000 }).toBe(3);
+          await shoot(page, `phone-14-question-${width}-${scale}`);
+          // A question cut short reads whole with a tap on it.
+          const text = pane.getByTestId("question-text");
+          if (await pane.getByTestId("question-more").count()) {
+            await text.tap();
+            await expect(pane.getByTestId("question-more")).toHaveCount(0);
+            await expect.poll(() => text.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+          }
+        } finally { await ctx.close(); }
+      }
+    } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
+  });
+});
+
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
 // another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
 // box is taken as it shows, cut by what clips it). A target is what a press acts on: a
