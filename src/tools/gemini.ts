@@ -6,7 +6,7 @@ import { heldFile } from "../core/store-files.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
-import { abs, editFile, editShown, globFiles, guardOverwrite, hold, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
+import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -71,7 +71,9 @@ const read_file: Tool = {
     end_line: { type: "integer", description: "Optional: the 1-based line number to end reading at (inclusive)." },
   }, ["file_path"]),
   async run(input, ctx) {
-    const p = abs(String(input.file_path ?? ""), ctx);
+    const at = fileOf(input, "file_path", ctx);
+    if ("error" in at) return fail(at.error);
+    const p = at.p;
     const s = Number(input.start_line) || undefined;
     const e = Number(input.end_line) || undefined;
     if (s || e) {
@@ -116,7 +118,9 @@ const write_file: Tool = {
     content: { type: "string", description: "The content to write to the file. Do not use omission placeholders; provide complete literal content." },
   }, ["file_path", "content"]),
   async run(input, ctx) {
-    const p = abs(String(input.file_path ?? ""), ctx);
+    const at = fileOf(input, "file_path", ctx);
+    if ("error" in at) return fail(at.error);
+    const p = at.p;
     const existed = mtime(p) !== -1;
     const g = await guardOverwrite(p, ctx);
     if (g) return fail(g);
@@ -140,7 +144,9 @@ const replace: Tool = {
     allow_multiple: { type: "boolean", description: "If true, the tool will replace all occurrences of `old_string`." },
   }, ["file_path", "instruction", "old_string", "new_string"]),
   async run(input, ctx) {
-    const p = abs(String(input.file_path ?? ""), ctx);
+    const at = fileOf(input, "file_path", ctx);
+    if ("error" in at) return fail(at.error);
+    const p = at.p;
     if (input.old_string === "" && mtime(p) === -1) {
       { const no = await writeFile(p, String(input.new_string ?? ""), ctx); if (no) return fail(no); }
       return ok(`Created new file: ${p} with provided content.`);

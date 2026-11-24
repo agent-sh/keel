@@ -15,7 +15,7 @@
 //   session's writable folders, by where the file really is (Keel's config
 //   is outside them).
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -360,8 +360,8 @@ test("in Full auto a sandboxed session's file tools write only where its command
 // The gate looks at a path, then the tool opens it: a command that runs beside the call can change what the name is
 // in between. The tool opens the file the gate judged (the gate hands it the judged paths, as the engine passes
 // them on) and nothing else.
-async function judgedThenRun(s: Session, name: string, input: Record<string, unknown>, between?: () => void): Promise<{ gate: string; out: string }> {
-  const ctx = { sessionId: s.id, cwd: s.workspace, signal: new AbortController().signal, spillDir: join(state, "spill", s.id), seen: new Map<string, number>() } as any;
+async function judgedThenRun(s: Session, name: string, input: Record<string, unknown>, between?: () => void, seen = new Map<string, number>()): Promise<{ gate: string; out: string }> {
+  const ctx = { sessionId: s.id, cwd: s.workspace, signal: new AbortController().signal, spillDir: join(state, "spill", s.id), seen } as any;
   let r: any = "waiting";
   const asked = gate.beforeTool(s, { id: `r${n++}`, tool: tool(name), input, ctx }).then((x) => (r = x));
   const open = () => gate.approvals({ session: s.id, pending: true });
@@ -432,6 +432,43 @@ test("a name that changes between the gate's look and the tool's open: the tool 
     rmSync(flip, { force: true });
     for (const t of ["t1", "t2"]) rmSync(join(ws, t), { force: true });
   }
+}, 120_000);
+
+test("a file tool called with `path` for its file writes that file, and with no path says so, never the session's folder", async () => {
+  gate.setPerm(session.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  // A tree like an agent's worktree: its modules folder is a link to another folder.
+  const shared = join(ws, ".modules-store");
+  mkdirSync(join(shared, "pkg"), { recursive: true });
+  writeFileSync(join(shared, "pkg/index.js"), "one\n");
+  rmSync(join(ws, "node_modules"), { force: true });
+  symlinkSync(shared, join(ws, "node_modules"));
+  for (const key of ["file_path", "path"]) {
+    for (const [name, base] of [["new", "src/new-" + key], ["old", "src/old"]]) {
+      for (const how of ["absolute", "relative"]) {
+        const rel = `${base}-${how}.ts`;
+        if (name === "old") put(join(ws, rel), "old\n");
+        const file = how === "absolute" ? join(ws, rel) : rel;
+        // (An existing file is read before it is replaced, as the tool asks.)
+        const seen = new Map<string, number>();
+        if (name === "old") seen.set(join(ws, rel), statSync(join(ws, rel)).mtimeMs);
+        const got = await judgedThenRun(session, "Write", { [key]: file, content: `${key}-${name}-${how}\n` }, undefined, seen);
+        expect([key, name, how, got.gate, got.out]).toEqual([key, name, how, "ran", expect.stringMatching(/created successfully|updated successfully/)]);
+        expect([key, name, how, readFileSync(join(ws, rel), "utf8")]).toEqual([key, name, how, `${key}-${name}-${how}\n`]);
+      }
+    }
+  }
+  // Through the linked folder: a file there is written where the link leads.
+  const through = await judgedThenRun(session, "Write", { path: join(ws, "node_modules/pkg/made.js"), content: "made\n" });
+  expect([through.gate, readFileSync(join(shared, "pkg/made.js"), "utf8")]).toEqual(["ran", "made\n"]);
+  // No path at all: the gate refuses an edit that names no file; a read that gets this far says what it lacks (it
+  // is never read from the session's folder).
+  for (const [tool, input] of [["Write", { content: "x" }], ["Edit", { old_string: "a", new_string: "b" }], ["write_file", { content: "x" }]] as [string, Record<string, unknown>][]) {
+    expect([tool, (await judgedThenRun(session, tool, input)).gate]).toEqual([tool, "refused"]);
+  }
+  for (const [tool, input] of [["Read", {}], ["read_file", {}]] as [string, Record<string, unknown>][]) {
+    expect([tool, (await judgedThenRun(session, tool, input)).out]).toEqual([tool, expect.stringMatching(/needs file_path/)]);
+  }
+  rmSync(join(ws, "node_modules"), { force: true });
 }, 120_000);
 
 test("after the gate's look a tool does no I/O on a name: a file that cannot be opened, a folder that is not there, a pipe, another file's hard link, a replaced session folder", async () => {

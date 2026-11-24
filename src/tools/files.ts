@@ -17,6 +17,14 @@ import { credentialAt, homeOf, placesOf, storesUnder } from "../safety/credentia
 // The file a tool's path names, as the kernel reaches it (links followed, `..` applied where the walk stands): the
 // path the gate judged (realOf), and the one every file tool opens, so the two cannot differ.
 export const abs = (p: string, ctx: ToolContext) => realOf(atCwd(ctx.cwd, p));
+// The file a call names, from the key its schema has. A model sometimes sends `path` (the word most tools use) in
+// its place, and the gate judges both keys, so the tool takes the same ones: a call whose file the gate judged is
+// the call that opens it. A call that names no file never falls to the session's folder: `abs("")` is that folder.
+export function fileOf(input: Record<string, unknown> | undefined, key: string, ctx: ToolContext): { p: string } | { error: string } {
+  const named = [input?.[key], input?.path].find((v): v is string => typeof v === "string" && v !== "");
+  if (named === undefined) return { error: `This call needs ${key}: the path of the file. Nothing was read or written.` };
+  return { p: abs(named, ctx) };
+}
 export const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return -1; } };
 
 // ---- the file a tool opens is the file that was judged ----------------------

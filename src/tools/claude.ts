@@ -2,7 +2,7 @@
 // argument shapes and result wording (code.claude.com/docs/en/tools-reference).
 import { realOf } from "../core/paths.ts";
 import { heldWrite } from "../core/store-files.ts";
-import { abs, editFile, editShown, globFiles, guardOverwrite, hold, mtime, readFile, ripgrep, writeFile } from "./files.ts";
+import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, mtime, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -124,7 +124,9 @@ const Read: Tool = {
     allow_large: { type: "boolean", description: "Read a text file, or a line range of one, over the usual size limits, up to what still fits in your context. Only when you need all of it." },
   }, ["file_path"]),
   async run(input, ctx) {
-    const r = await readFile(abs(String(input.file_path ?? ""), ctx), ctx, {
+    const at = fileOf(input, "file_path", ctx);
+    if ("error" in at) return { content: at.error, is_error: true };
+    const r = await readFile(at.p, ctx, {
       offset: Number(input.offset) || undefined, limit: Number(input.limit) || (input.offset || input.allow_large ? undefined : 2000), pages: input.pages, large: !!input.allow_large,
     });
     return { content: r.content, is_error: r.error };
@@ -143,7 +145,9 @@ const Write: Tool = {
     content: { type: "string", description: "The content to write to the file" },
   }, ["file_path", "content"]),
   async run(input, ctx) {
-    const p = abs(String(input.file_path ?? ""), ctx);
+    const at = fileOf(input, "file_path", ctx);
+    if ("error" in at) return fail(at.error);
+    const p = at.p;
     const content = String(input.content ?? "");
     const existed = mtime(p) !== -1;
     const g = await guardOverwrite(p, ctx);
@@ -169,7 +173,9 @@ const Edit: Tool = {
     replace_all: { type: "boolean", description: "Replace all occurrences of old_string (default false)" },
   }, ["file_path", "old_string", "new_string"]),
   async run(input, ctx) {
-    const p = abs(String(input.file_path ?? ""), ctx);
+    const at = fileOf(input, "file_path", ctx);
+    if ("error" in at) return fail(at.error);
+    const p = at.p;
     const r = await editFile(p, String(input.old_string ?? ""), String(input.new_string ?? ""), !!input.replace_all, ctx);
     if ("error" in r) return fail(r.error);
     return { ...ok(`The file ${p} has been updated successfully.${r.ok}`), shown: editShown(r.before, String(input.old_string ?? "")) };
@@ -191,7 +197,9 @@ const NotebookEdit: Tool = {
     edit_mode: { type: "string", enum: ["replace", "insert", "delete"] },
   }, ["notebook_path", "new_source"]),
   async run(input, ctx) {
-    const p = abs(String(input.notebook_path ?? ""), ctx);
+    const at = fileOf(input, "notebook_path", ctx);
+    if ("error" in at) return fail(at.error);
+    const p = at.p;
     if (!ctx.seen.has(p)) return fail(`Read ${p} before editing it.`);
     { const held = heldWrite(p); if (held) return fail(held); }
     let nb: any;
