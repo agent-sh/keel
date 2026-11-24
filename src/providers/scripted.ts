@@ -188,7 +188,7 @@ export class ScriptedProvider implements Provider {
     if (/^script:outage-end\b/.test(lastText) && this.outage.until) { this.outage.until = 0; this.saveOutage(); }
     const gone = this.down("requests");
     if (gone) throw gone;
-    // A family's stand-in refuses a tool its wire refuses, as that provider does.
+    // A family's stand-in refuses a tool its wire refuses, and a reference to a tool it is not sent, as that provider does.
     const wire = this.wireOf(req.model);
     if (wire) { const refused = schemaRefusal(req, wire); if (refused) throw refused; }
     // A retry is the same request: system, messages, tools, model and effort, byte for byte.
@@ -786,6 +786,15 @@ function schemaRefusal(req: ProviderRequest, wire: Wire, only?: string): Provide
   if (!body) return undefined;
   if (wire === "anthropic_messages") {
     const i = (body.tools ?? []).findIndex((t: any) => first(t.name, t.input_schema));
+    // A tool_reference in a result to a tool the request does not declare (valid.ts anthropicProblems).
+    if (i < 0 && !only) {
+      const declared = new Set((body.tools ?? []).map((t: any) => t.name));
+      for (const [m, msg] of (body.messages ?? []).entries()) for (const [k, b] of (Array.isArray(msg.content) ? msg.content : []).entries()) {
+        if (b.type !== "tool_result" || !Array.isArray(b.content)) continue;
+        const ref = b.content.find((c: any) => c.type === "tool_reference" && !declared.has(c.tool_name));
+        if (ref) return refuse(`messages.${m}.content.${k}: Tool reference '${ref.tool_name}' not found in available tools`);
+      }
+    }
     if (i < 0) return undefined;
     const why = first(body.tools[i].name, body.tools[i].input_schema)!;
     return refuse(/property name/.test(why)

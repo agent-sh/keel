@@ -154,3 +154,25 @@ test("the 2020-12 meta-schema check names what is wrong", () => {
   expect(metaProblem({ type: "object", allOf: [] })).toBe("the input: allOf [] is not a list of schemas");
   expect(metaProblem({ type: "object", properties: { a: { type: ["string", "null"] } } })).toBeUndefined();
 });
+
+test("a schema that fits as it is keeps its draft-07 or 2020-12 $schema: the bytes a pin holds", () => {
+  const sdk = { $schema: "http://json-schema.org/draft-07/schema#", type: "object", properties: { q: { type: "string" } }, required: ["q"], additionalProperties: false };
+  const now = { ...sdk, $schema: "https://json-schema.org/draft/2020-12/schema" };
+  for (const w of ["anthropic_messages", "openai_responses", "chat_completions", "gemini_generate_content", "portable"] as const) {
+    expect(fitSchema(sdk, w)).toEqual({ schema: sdk, notes: [] });
+    expect(fitSchema(now, w)).toEqual({ schema: now, notes: [] });
+  }
+  // Changed to fit: it is 2020-12 from then on, and says no older draft.
+  const changed = fitSchema({ ...sdk, properties: { "a b": { type: "string" } }, required: [] }, "anthropic_messages") as any;
+  expect(changed.schema.$schema).toBeUndefined();
+  expect(Object.keys(changed.schema.properties)).toEqual(["a_b"]);
+  // Another dialect is not kept, nor a $schema below the root.
+  expect((fitSchema({ ...sdk, $schema: "http://json-schema.org/draft-04/schema#" }, "anthropic_messages") as any).schema.$schema).toBeUndefined();
+});
+
+test("a property named like an Object method is no rename", () => {
+  const f = fitSchema({ type: "object", properties: { "a b": { type: "string" }, constructor: { type: "string" }, toString: { type: "string" } }, required: ["constructor", "a b"] }, "anthropic_messages") as any;
+  expect(Object.keys(f.schema.properties)).toEqual(["a_b", "constructor", "toString"]);
+  expect(f.schema.required).toEqual(["constructor", "a_b"]);
+  expect(unrename({ a_b: 1, constructor: 2, toString: 3, valueOf: 4 }, f.renames)).toEqual({ "a b": 1, constructor: 2, toString: 3, valueOf: 4 });
+});

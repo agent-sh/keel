@@ -11,6 +11,7 @@
 // route that refuses it) keep the provider-neutral pair search_tools/mcp_call
 // and every built-in eager.
 import { testBuild } from "../core/build.ts";
+import { SessionMap } from "../core/session-map.ts";
 import type { Message } from "../core/types.ts";
 import { catalogReady, catalogTools, judgedOf, score, stale, unavailableNote, type CatalogTool, type Judged } from "./catalog.ts";
 import { fail, type Tool, type ToolOutput } from "./types.ts";
@@ -59,11 +60,29 @@ export function nativeName(t: Pick<CatalogTool, "qualified" | "mcp">): string {
   return `${raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 55)}_${h}`;
 }
 
+// The catalog tools a session's requests leave out, by name with why: their
+// input schema cannot be made to fit the session's wire (src/engine/tool-fit.ts
+// marks them at each fit, before the request is sent). Its tool search does not
+// offer them: a reference to a tool the request does not declare is refused.
+const leftOut = new SessionMap<Map<string, string>>(1024);
+export function markFit(session: string, kept: Iterable<string>, left: { name: string; why: string }[]) {
+  let m = leftOut.get(session);
+  if (!m && !left.length) return;
+  if (!m) leftOut.set(session, (m = new Map()));
+  for (const n of kept) m.delete(n);
+  for (const l of left) m.set(l.name, l.why);
+}
+export const leftOutOf = (session: string | undefined): ReadonlyMap<string, string> | undefined => (session ? leftOut.get(session) : undefined);
+export const forgetFit = (session: string) => void leftOut.delete(session);
+const notOffered = (name: string, why: string) => `${name} is not offered: ${why.replace(/[.\s]+$/, "")}.`;
+
 // What a call to a tool the request does not declare is told besides its name:
 // a catalog tool called by its own name where catalog tools run through the
 // search pair is named with the call that runs it, and one where they load
 // on demand with the search that loads it.
 export async function unknownToolHint(name: string, tools: Tool[], session?: string): Promise<string> {
+  const off = leftOutOf(session)?.get(name);
+  if (off !== undefined) return ` ${notOffered(name, off)}`;
   const t = (await catalogTools(session)).find((c) => !c.hidden && (nativeName(c) === name || c.qualified === name));
   const call = tools.some((x) => x.name === "mcp_call");
   const search = tools.find((x) => x.search || x.name === TOOL_SEARCH)?.name;
@@ -113,11 +132,23 @@ function wrap(t: CatalogTool): Deferred {
 }
 
 // A tool named by a tool_reference earlier in the conversation that the
-// catalog no longer has: still declared, so the request stays valid.
-const gone = (name: string): Deferred => ({
-  name, description: "No longer available.", input_schema: { type: "object", properties: {} }, defer: true, readOnly: true, catalog: name, left: true,
-  run: async () => fail(`${name} is no longer available (its server was removed or is not connected).`),
+// catalog no longer has, or that the request leaves out (`why`: its schema
+// cannot be made to fit): still declared, so the request stays valid.
+const gone = (name: string, why?: string): Deferred => ({
+  name, description: why === undefined ? "No longer available." : "Not offered.", input_schema: { type: "object", properties: {} }, defer: true, readOnly: true, catalog: name, left: true,
+  run: async () => fail(why === undefined ? `${name} is no longer available (its server was removed or is not connected).` : notOffered(name, why)),
 });
+
+// The request's tools with a stand-in for each tool an earlier tool_reference
+// names that they do not declare (one the fit left out after the search
+// loaded it): the provider refuses a reference to a tool it is not sent.
+export function keepReferenced(tools: Tool[], messages: Message[], session?: string): Tool[] {
+  const names = new Set(tools.map((t) => t.name));
+  const missing = [...referenced(messages)].filter((n) => !names.has(n));
+  if (!missing.length) return tools;
+  const off = leftOutOf(session);
+  return [...tools, ...missing.map((n) => gone(n, off?.get(n)))];
+}
 
 export function referenced(messages: Message[]): Set<string> {
   const out = new Set<string>();
@@ -215,7 +246,9 @@ export function toolSearch(builtins: (sessionId?: string) => Tool[]): Tool {
       const own = builtins(ctx?.sessionId).map((t) => ({ name: t.name, qualified: t.name, description: t.description, server: "built-in", hidden: false }));
       const cat = (await catalogTools(ctx?.sessionId)).map((t) => ({ name: nativeName(t), qualified: nativeName(t), description: t.description, server: t.server, hidden: !!t.hidden }));
       // A hidden tool answers an exact name only (its call says why it is off).
-      const all = [...own, ...cat.filter((c) => !own.some((o) => o.name === c.name))];
+      // A tool the session's requests leave out is not one it can load (src/engine/tool-fit.ts).
+      const off = leftOutOf(ctx?.sessionId);
+      const all = [...own, ...cat.filter((c) => !own.some((o) => o.name === c.name) && !off?.has(c.name))];
       const pool = all.filter((t) => !t.hidden);
       if (!query) {
         const by = new Map<string, string[]>();
@@ -228,6 +261,8 @@ export function toolSearch(builtins: (sessionId?: string) => Tool[]): Tool {
         const want = query.slice(7).split(",").map((s) => s.trim()).filter(Boolean);
         hits = want.map((w) => all.find((t) => t.name === w) ?? all.find((t) => t.name.toLowerCase() === w.toLowerCase())).filter(Boolean) as typeof pool;
         const missing = want.filter((w) => !hits.some((h) => h.name.toLowerCase() === w.toLowerCase()));
+        const notHere = missing.flatMap((w) => { const why = off?.get(w); return why === undefined ? [] : [notOffered(w, why)]; });
+        if (!hits.length && notHere.length) return fail(notHere.join(" "));
         if (!hits.length) return fail(`No deferred tool named ${missing.join(", ")}. ${unavailableNote(ctx?.sessionId)} Search by keywords instead.`.replace("  ", " "));
       } else {
         const m = /^\+(\S+)\s*(.*)$/.exec(query);

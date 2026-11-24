@@ -50,7 +50,11 @@
 // Besides the wires' rules, two of Keel's own: a `$ref` Keel cannot resolve
 // inside the schema (another document, a name that is not there) is sent as
 // "any value", since a model cannot read a shape it is not given; and the
-// root `$schema` is not sent (the schema is 2020-12 once fitted).
+// root `$schema` of a schema Keel changed is not sent (it is 2020-12 once
+// fitted). A schema that fits as it is keeps its `$schema` when that names
+// draft-07 or 2020-12 (`KEPT_DIALECT`): the official TypeScript SDK's servers
+// write draft-07, the wires take it, and the bytes stay the ones a session's
+// pin and cache hold.
 import type { Wire } from "../types.ts";
 
 export type FitTarget = Wire | "portable";
@@ -79,6 +83,8 @@ export const SCHEMA_RULES: Record<FitTarget, Rules> = {
   portable: { label: "any provider", rootBanned: OPENAI.rootBanned, names: PROPERTY_NAME, meta: true, arrayItems: true, enumScalars: true, refAlone: true },
 };
 
+// The root `$schema` values a schema that otherwise fits is sent with.
+const KEPT_DIALECT = /^https?:\/\/json-schema\.org\/(draft-07\/schema|draft\/2020-12\/schema)#?$/;
 const COMBINATORS = ["allOf", "anyOf", "oneOf"] as const;
 const TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
 // Type names servers write that are not JSON Schema's (Python's, OpenAPI's upper case): the same type.
@@ -270,7 +276,11 @@ function repair(c: Ctx, node: unknown, path: string, depth = 0): unknown {
     if (why) note(c, why);
     else c.changed = true;
   };
-  if ("$schema" in node) drop("$schema");
+  if ("$schema" in node) {
+    // (Taken off the working copy only: a schema nothing else changes is sent as written.)
+    if (path === "" && KEPT_DIALECT.test(String(node.$schema))) delete node.$schema;
+    else drop("$schema");
+  }
   if ("type" in node) {
     const t = typeOf(c, node.type, path);
     if (t === undefined) drop("type");
@@ -479,14 +489,18 @@ function enums(c: Ctx, node: unknown, path: string, depth = 0) {
   for (const ch of children(node, path)) enums(c, ch.get(), ch.path, depth + 1);
 }
 
+// A name as a rename map gives it, by the map's own keys only.
+const renamedTo = (map: Record<string, string>, k: string) => (Object.hasOwn(map, k) ? map[k]! : k);
+
 function rename(c: Ctx, root: Json, pattern: RegExp): Record<string, string> | undefined {
   if (!isObj(root.properties)) return undefined;
   const keys = Object.keys(root.properties);
   const bad = keys.filter((k) => !pattern.test(k));
   if (!bad.length) return undefined;
   const taken = new Set(keys.filter((k) => pattern.test(k)));
-  const map: Record<string, string> = {};
-  const back: Record<string, string> = {};
+  // (No prototype: a property may be named `constructor` or `toString`.)
+  const map: Record<string, string> = Object.create(null);
+  const back: Record<string, string> = Object.create(null);
   for (const k of bad) {
     const base = (k.replace(/[^a-zA-Z0-9_.-]/g, "_") || "_").slice(0, 64);
     let n = base;
@@ -495,8 +509,8 @@ function rename(c: Ctx, root: Json, pattern: RegExp): Record<string, string> | u
     map[k] = n;
     back[n] = k;
   }
-  root.properties = Object.fromEntries(keys.map((k) => [map[k] ?? k, root.properties[k]]));
-  if (Array.isArray(root.required)) root.required = root.required.map((r: string) => map[r] ?? r);
+  root.properties = Object.fromEntries(keys.map((k) => [renamedTo(map, k), root.properties[k]]));
+  if (Array.isArray(root.required)) root.required = root.required.map((r: string) => renamedTo(map, r));
   const shownRenames = bad.map((k) => `${shown(k)} is \`${map[k]}\``);
   note(c, `Some parameter names are changed to ones the provider takes, and given back to the tool as the server names them: ${shownRenames.join(", ")}`);
   return back;
@@ -632,9 +646,16 @@ export function noted(description: string, notes: string[]): string {
 }
 
 // An input the model wrote under renamed parameters, as the server names them.
+// One input is given back as one object, whoever asks (the gate's target and
+// the run read the same object: what was judged is keyed on it).
+const unrenamed = new WeakMap<Record<string, string>, WeakMap<object, unknown>>();
 export function unrename(input: unknown, back: Record<string, string> | undefined): unknown {
   if (!back || !isObj(input)) return input;
-  return Object.fromEntries(Object.entries(input).map(([k, v]) => [back[k] ?? k, v]));
+  let by = unrenamed.get(back);
+  if (!by) unrenamed.set(back, (by = new WeakMap()));
+  let out = by.get(input);
+  if (out === undefined) by.set(input, (out = Object.fromEntries(Object.entries(input).map(([k, v]) => [renamedTo(back, k), v]))));
+  return out;
 }
 
 // A tool's schema the provider refused in a request: what it is sent as for
@@ -644,7 +665,7 @@ export const BARE_SCHEMA: Record<string, unknown> = Object.freeze({ type: "objec
 export const bareNote = (description: string) =>
   `${description.trimEnd()}${description.trim() ? "\n\n" : ""}The provider refused this tool's input schema, so its parameters are not shown: call it with the arguments its description names.`;
 
-type FitTool = { name: string; description: string; input_schema: Record<string, unknown>; freeform?: unknown; run?: (input: any, ctx: any) => any; judge?: (input: any) => any };
+type FitTool = { name: string; description: string; input_schema: Record<string, unknown>; freeform?: unknown; run?: (input: any, ctx: any) => any; target?: (input: any, session?: string) => any; judge?: (input: any) => any };
 
 // A request's tools fitted to a wire: each as it fits, a tool that cannot be
 // made to fit left out and named in `left`, and one in `bare` sent without its
@@ -667,6 +688,8 @@ export function fitTools<T extends FitTool>(tools: T[], target: FitTarget, bare?
       description: noted(t.description, f.notes),
       input_schema: f.schema,
       ...(back && t.run ? { run: (input: any, ctx: any) => t.run!(unrename(input, back), ctx) } : {}),
+      // The gate judges the call as the server will get it (src/tools/defer.ts keys what it judged on that input).
+      ...(back && t.target ? { target: (input: any, session?: string) => t.target!(unrename(input, back), session) } : {}),
       ...(back && t.judge ? { judge: (input: any) => t.judge!(unrename(input, back)) } : {}),
     });
   }

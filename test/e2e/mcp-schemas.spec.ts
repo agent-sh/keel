@@ -22,7 +22,7 @@ test.afterEach(async ({ request }) => {
 // object whose description names its groups, the column is renamed for the
 // wire and given back to the server under its own name, the string tool is
 // left out and named once in the session's failures and in Settings > MCP
-// servers, and a schema the provider still refuses is sent once more with that
+// servers (its tool search does not load it), and a schema the provider still refuses is sent once more with that
 // tool declared without its parameters.
 test("mcp schemas: a server with tools a provider refuses works end to end", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
@@ -71,6 +71,22 @@ test("mcp schemas: a server with tools a provider refuses works end to end", asy
     await expect(page.getByTestId("turn-end").last()).toBeVisible();
     await shoot(page, "mcp-schemas-02-calls");
 
+    // The tool left out is not one the search loads: by its name the search says why, and a
+    // keyword that matches it finds only the tools the request declares. A reference to a tool
+    // the request does not declare is refused by the provider, so the next request shows it.
+    await page.getByTestId("composer").fill(calls([
+      { name: "ToolSearch", input: { query: "select:mcp__shapes__textual" } },
+      { name: "ToolSearch", input: { query: "+shapes text" } },
+    ]));
+    await page.keyboard.press("Enter");
+    await ends(2);
+    expect((await events(request, session.id)).filter((e) => e.kind === "turn_end").at(-1).data.reason).not.toBe("error");
+    const refs = (await events(request, session.id)).filter((e) => e.kind === "tool_result")
+      .flatMap((e) => (e.data.results as any[]).flatMap((r) => (Array.isArray(r.content) ? r.content : []).filter((c: any) => c.type === "tool_reference").map((c: any) => c.tool_name as string)));
+    expect(refs).toContain("mcp__shapes__echo");
+    expect(refs).not.toContain("mcp__shapes__textual");
+    expect((await results(request, session.id)).some((r) => r.includes('mcp__shapes__textual is not offered: its input is "string"'))).toBe(true);
+
     // The tool left out is in the session's failures, once, however many requests left it out.
     const left = async () => ((await (await request.get(`/api/errors?session=${session.id}`)).json()).failures ?? [])
       .filter((g: any) => g.cls === "tool left out");
@@ -82,7 +98,7 @@ test("mcp schemas: a server with tools a provider refuses works end to end", asy
     const errorsBefore = (await (await request.get("/api/errors")).json()).errors.filter((e: any) => /input_schema/.test(e.message)).length;
     await page.getByTestId("composer").fill("script:refuse-schema echo");
     await page.keyboard.press("Enter");
-    await ends(2);
+    await ends(3);
     await expect(page.getByTestId("assistant-text").last()).toContainText("The tool mcp__shapes__echo was declared without its parameters, after 1 refusal of its schema.");
     const refused = (await (await request.get("/api/errors")).json()).errors.filter((e: any) => /input_schema/.test(e.message));
     expect(refused.length).toBe(errorsBefore + 1);
@@ -91,7 +107,7 @@ test("mcp schemas: a server with tools a provider refuses works end to end", asy
     await expect.poll(async () => ((await (await request.get(`/api/errors?session=${session.id}`)).json()).failures ?? []).filter((g: any) => g.cls === "tool schema refused").length).toBe(1);
     await page.getByTestId("composer").fill("script:refuse-schema echo again");
     await page.keyboard.press("Enter");
-    await ends(3);
+    await ends(4);
     await expect(page.getByTestId("assistant-text").last()).toContainText("declared without its parameters, after 0 refusals of its schema.");
     await shoot(page, "mcp-schemas-03-refused");
   } finally {

@@ -32,7 +32,7 @@ import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
-import { isDeferError, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
+import { isDeferError, keepReferenced, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
 import { allHooks, cacheBreaks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
@@ -597,7 +597,7 @@ export class Engine {
   ) {
     this.prompts = new PromptStore(store);
     this.pins = new BuildPins(store);
-    this.toolFit = new ToolFit((e, context) => this.errors.capture("provider", e, context));
+    this.toolFit = new ToolFit(store, (e, context) => this.errors.capture("provider", e, context));
     this.cachePlans = new CachePlans({
       store, errors,
       append: (id, kind, data) => this.append(id, kind, data),
@@ -2006,6 +2006,8 @@ export class Engine {
       st.tools = this.toolFit.fit(session, fitWireOf(st.provider, st.info), st.tools);
       // A deferred tool the conversation loaded keeps the definition it was loaded with (src/engine/build-pin.ts).
       if (st.info.id === session.model) st.tools = this.pins.loaded(id, st.tools, referenced(messages));
+      // A tool an earlier search loaded that the fit leaves out is still declared, as a stand-in that says why.
+      st.tools = keepReferenced(st.tools, messages, id);
     }
     // A tool whose schema the provider refused in this session goes without its parameters.
     if (!bare) st.tools = this.toolFit.overlay(id, st.tools);
