@@ -264,7 +264,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // A small change shows its lines under the closed line, as a failure shows its reason.
   const small = useMemo(() => (!open && !peek && change && changed ? smallChange(use) : null), [open, peek, change, changed, use]);
   return (
-    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined}>
+    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-quote-from={`the ${use.name} call`} data-quote-out={`the output of ${use.name}`} data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined}>
       <Collapsible.Trigger className="k-line" title={isShell && input.description ? `The model's note: ${input.description}` : undefined}>
         {/* The line's words, as one run of text: the verb, how it stands, why it is marked, what it was made on.
             A marked call's words wrap, so what it was made on is whole on the page. */}

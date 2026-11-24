@@ -384,6 +384,8 @@ body {
   overscroll-behavior: none;
 }
 ::selection { background: var(--accent-soft); }
+/* The words a comment is being written on keep their mark while the comment box has the focus (SelectionBar). */
+::highlight(keel-quote) { background: var(--accent-soft); }
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 /* A popup on its way out (a dialog, a sheet, its backdrop) takes no press. (What it still lies over is
    not in view until it is gone: an approval card asks for that itself, ApprovalCard.tsx.) */

@@ -243,7 +243,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk, bare
           ) : !p || !p.lines.length ? (
             !mode && <p className="k-empty px-3 py-2">No text change shown.</p>
           ) : (
-            <table className="w-full border-collapse" data-plain={numbered ? undefined : ""} data-marks={onComment ? "" : undefined} style={{ "--k-diff-digits": digits } as CSSProperties} onKeyDown={onComment ? onKeys : undefined} onFocus={onComment ? onFocusLine : undefined} onClick={onComment ? onClickLine : undefined}>
+            <table className="w-full border-collapse" data-path={f.path} data-plain={numbered ? undefined : ""} data-marks={onComment ? "" : undefined} style={{ "--k-diff-digits": digits } as CSSProperties} onKeyDown={onComment ? onKeys : undefined} onFocus={onComment ? onFocusLine : undefined} onClick={onComment ? onClickLine : undefined}>
               <tbody>
                 {p.lines.map((l, i) => {
                   if (l.kind === "hunk") hunks++;

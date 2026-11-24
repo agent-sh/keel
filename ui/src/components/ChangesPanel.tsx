@@ -111,7 +111,7 @@ export function ChangesPanel({ session }: { session: Session }) {
   const firstTurn = here[0]?.turn;
 
   return (
-    <div data-testid="changes-panel" className="flex h-full min-h-0 flex-col">
+    <div data-testid="changes-panel" data-quote-from="the changes" className="flex h-full min-h-0 flex-col">
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center gap-3 border-b border-line px-3 py-2">
           <Seg kind="tabs" panel={panel} label="Which changes" value={tab} onChange={setTab} options={[{ value: "session", label: "Session", testid: "tab-session" }, { value: "turns", label: "By turn", testid: "tab-turns" }]} />

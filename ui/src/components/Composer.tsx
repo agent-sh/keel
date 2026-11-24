@@ -20,6 +20,7 @@ import { lineage } from "../../../src/core/tree.ts";
 import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { PASTED } from "../lib/paste-key.ts";
+import { registerBox, withQuote } from "../lib/quote.ts";
 import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
 import { appSaysNow, useAppSays } from "./Stale.tsx";
 import { cn, fmtSize, scrollMotion } from "../lib/utils.ts";
@@ -789,6 +790,31 @@ const SessionComposer = memo(function SessionComposer({
     ref.current?.focus();
     void attempt({ id: crypto.randomUUID(), text, images, queue, state: "sending" }, true);
   };
+
+  // What the selection bar hands this box (lib/quote.ts): a comment goes at once as the owner's own message,
+  // the way Enter sends (it steers a turn that works) or the queue key queues it; a quote is put in the draft.
+  useEffect(() => {
+    if (!sid) return;
+    return registerBox(sid, {
+      say: (text, queue) => {
+        const why = blocked([]);
+        if (why) return setNotice(why);
+        void attempt({ id: crypto.randomUUID(), text, images: [], queue: queue && !!working && !!onQueue, state: "sending" }, false);
+      },
+      quote: (selected) => {
+        const next = withQuote(draft.current.text, selected);
+        setText(next);
+        setMenu(null);
+        requestAnimationFrame(() => {
+          const el = ref.current;
+          if (!el) return;
+          el.focus();
+          el.setSelectionRange(next.length, next.length);
+          el.scrollTop = el.scrollHeight;
+        });
+      },
+    });
+  });
 
   const retry = (id: string) => {
     const entry = sendDrafts(shelf).find((d) => d.id === id);

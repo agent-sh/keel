@@ -8,6 +8,7 @@ import { ChildApprovals } from "./automation/ChildApprovals.tsx";
 import { sequenceAt } from "../lib/asks.ts";
 import { stopHere } from "../lib/automation.ts";
 import { Composer } from "./Composer.tsx";
+import { SelectionBar } from "./SelectionBar.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
 import { openPanel, SidePanel, usePanelSheet } from "./SidePanel.tsx";
 import { LiveSourceBanner } from "./TakeOver.tsx";
@@ -78,6 +79,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   // The conversation is drawn by what changes in it, not each time its pane draws its part (the
   // header, the panel, the message box): a long one is not gone through again for those.
   const transcript = useMemo(() => <Transcript sessionId={id} />, [id]);
+  // The session and its panel: the words selected anywhere in them are offered for a quote or a comment.
+  const body = useRef<HTMLDivElement>(null);
   if (!session && (missing === id || gone)) {
     return (
       <div className="flex flex-1 flex-col" data-testid="session-missing">
@@ -105,7 +108,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   return (
     <>
       {header ?? <SessionHeader session={session} />}
-      <div className="relative flex min-h-0 flex-1">
+      <div ref={body} className="relative flex min-h-0 flex-1">
         <div className="k-session flex min-w-0 flex-1 flex-col" inert={covered}>
           {/* Until the conversation is here (its events, and the chunk that draws them), the pane says it is loading. */}
           <Boundary><Suspense fallback={<TranscriptLoading />}>{loaded ? transcript : <TranscriptLoading unreached={unreached === id} />}</Suspense></Boundary>
@@ -119,6 +122,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
           </div>
         </div>
         {panel && <Boundary><SidePanel session={session} /></Boundary>}
+        <SelectionBar sid={session.id} root={body} working={session.phase === "working"} />
       </div>
     </>
   );

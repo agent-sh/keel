@@ -189,7 +189,7 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
   }).catch(reportError);
   if (editing) return <EditPrompt e={e} sid={sid} back={editing === "keys"} onDone={() => setEditing(false)} />;
   return (
-    <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
+    <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id} data-quote-from="your message">
       <OwnerWords
         className="k-user-words"
         label={origin === "steer" ? <span className="k-label" data-testid="origin-steer">Steered into the turn</span>
@@ -470,7 +470,7 @@ function AssistantBlocks({ blocks, prose, sid }: { blocks: AssistantBlock[]; pro
     <>
       {prose.map((i) => {
         const b = blocks[i]!;
-        if (b.type === "text") return <div key={i} data-testid="assistant-text"><Markdown text={b.text} sessionId={remote ? undefined : sid} /></div>;
+        if (b.type === "text") return <div key={i} data-testid="assistant-text" data-quote-from="the reply"><Markdown text={b.text} sessionId={remote ? undefined : sid} /></div>;
         // A thought may carry only opaque state for replay (an encrypted item): nothing to show.
         if (b.type === "thinking") return b.thinking.trim() ? <Thinking key={i} text={b.thinking} /> : null;
         return null;
@@ -1958,7 +1958,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           if (near && down) later(true);
         }}
       >
-        <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-[var(--k-row-gap,1rem)] px-4 py-8 md:px-6" data-testid="transcript" data-working={session.phase === "working" || undefined}>
+        <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-[var(--k-row-gap,1rem)] px-4 py-8 md:px-6" data-testid="transcript" data-quote-from="the conversation" data-working={session.phase === "working" || undefined}>
           {previewing && (
             <div className="sticky top-2 z-10 flex items-center gap-2 rounded-lg border border-brass/50 bg-raised px-3.5 py-2 text-ui shadow-2" data-testid="branch-preview" data-pinned="1">
               <GitBranch className="size-4 shrink-0 text-brass" />

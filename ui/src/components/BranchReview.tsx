@@ -122,7 +122,7 @@ export function BranchReview({ session }: { session: Session }) {
   const fileDiff = async (path: string) => (await api<Branch>(`/api/sessions/${sessionId}/changes/branch?path=${encodeURIComponent(path)}`)).diff;
 
   return (
-    <div className="flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="branch-review">
+    <div className="flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="branch-review" data-quote-from="the branch review">
       <ReviewFindings session={session} />
       <FailsBefore session={session} />
       <div className="flex items-start gap-2 px-1">
