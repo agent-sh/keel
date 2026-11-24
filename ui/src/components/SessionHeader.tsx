@@ -1,6 +1,6 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch, LayoutList, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Clock, Copy, Ellipsis, Folder, FolderPlus, GitBranch, LayoutList, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
@@ -9,6 +9,7 @@ import { actions, getState, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
 import { openPlaced } from "../lib/looks.ts";
 import { useStations } from "../lib/stations.ts";
+import { later, useAway } from "../lib/later.ts";
 import { cn, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { archive, isPinned } from "../lib/sessops.ts";
@@ -17,6 +18,7 @@ import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopo
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { openPanel, PanelsButton } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
+import { putAwayCount } from "../../../src/core/state-words.ts";
 import { REST_AT } from "../../../src/automation/cap-rules.ts";
 import { CapControl } from "./CapControl.tsx";
 import { useCap } from "../lib/caps.ts";
@@ -230,6 +232,34 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
   );
 }
 
+// The requests put away with Later (lib/later.ts), as a count in the head: a press, or Enter on it, brings them
+// back above the message box and the keyboard to them. The turn waited for them all along.
+function LaterPill({ id }: { id: string }) {
+  const away = useAway(id);
+  if (!away.size) return null;
+  const bring = () => {
+    later.bring(id);
+    // Once the cards are drawn again: the first of them takes the keyboard.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-ask-card]`)?.focus({ preventScroll: false });
+    }));
+  };
+  const words = putAwayCount(away.size);
+  return (
+    <button
+      type="button"
+      data-testid="later-pill"
+      onClick={bring}
+      aria-label={`${words}: bring ${away.size === 1 ? "it" : "them"} back`}
+      title={`${away.size === 1 ? "A request waits" : `${away.size} requests wait`} for your answer, put away with Later. The turn still waits. Press to bring ${away.size === 1 ? "it" : "them"} back.`}
+      className="inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-accent/40 bg-accent-soft px-2 text-caption font-medium text-accent-ink outline-none hover:border-accent focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      <Clock className="size-3" aria-hidden="true" />
+      {words}
+    </button>
+  );
+}
+
 export function SessionHeader({ session }: { session: Session }) {
   const menuButton = useRef<HTMLButtonElement>(null); // where a menu item's failed copy is said
   const [editing, setEditing] = useState(false);
@@ -373,6 +403,7 @@ export function SessionHeader({ session }: { session: Session }) {
             {folder}
           </button>
         )}
+        {!editing && <LaterPill id={session.id} />}
       </div>
       <div data-tools="" className="k-head-tools">
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}

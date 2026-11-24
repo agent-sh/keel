@@ -20,7 +20,7 @@
 // own that cannot reach this one; that is the answer. No key opens it but one
 // on the Open link itself, and nothing else opens or fetches it.
 import { Collapsible } from "@base-ui/react/collapsible";
-import { ExternalLink, MessageCircleQuestion } from "lucide-react";
+import { Clock, ExternalLink, MessageCircleQuestion } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Under } from "./ToolCall.tsx";
 import { CALL_STOPPED, NEEDS_ANSWER } from "../lib/work.ts";
@@ -31,10 +31,11 @@ import type { Asked, AskedLink, ToolResultBlock, ToolUseBlock } from "../../../s
 import { SETTLE_MS } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, keysSettled, noteAnswer, noteOneKey, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
+import { later, useAway } from "../lib/later.ts";
 import { openSession } from "../lib/automation.ts";
 import { actions, api, failed, getState, reportError, useStore } from "../lib/store.ts";
 import { askedQuestions, questions, resultText, siteOf, type UiQuestion } from "../lib/tools.ts";
-import { cn } from "../lib/utils.ts";
+import { cn, focusBox } from "../lib/utils.ts";
 import { justOnce, keepRuling, useOfferMark, type Scope } from "../lib/rulings.ts";
 import { Seg } from "./Seg.tsx";
 
@@ -49,11 +50,17 @@ const at = <T,>(o: Record<string, T> | undefined, k: string): T | undefined => (
 
 // (`slim`: an open question of the agent's on a phone has no head row: the ring says it waits, the
 // card's label says who asks, and the question's header leads its text. Its choices get the room.)
-const Head = ({ open, answered, from, slim }: { open: boolean; answered: boolean; from?: string; slim?: boolean }) => (
+const Head = ({ open, answered, from, slim, onLater }: { open: boolean; answered: boolean; from?: string; slim?: boolean; onLater?: () => void }) => (
   <div className={cn("flex items-center gap-2 border-b border-line px-3.5 py-2 text-ui", slim && "max-md:hidden")}>
     <MessageCircleQuestion className={cn("size-3.5 shrink-0", open ? "text-accent-ink" : "text-muted")} />
     <span className="min-w-0 truncate font-medium" data-testid="question-from">{from !== undefined ? `MCP server ${from} is asking` : open ? "The agent is asking" : answered ? "Answered" : "Question"}</span>
-    {open && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-accent animate-pulse-dot" />}
+    {onLater && (
+      // Put away to the count in the session's head (lib/later.ts): the turn still waits for the answer.
+      <button type="button" data-testid="ask-later" onClick={onLater} title="Put this away to the count in the head: the turn still waits for it" className="ml-auto inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40">
+        <Clock className="size-3.5" aria-hidden="true" />Later
+      </button>
+    )}
+    {open && <span className={cn("size-1.5 shrink-0 rounded-full bg-accent animate-pulse-dot", !onLater && "ml-auto")} />}
   </div>
 );
 // On a phone the header leads the question's first line: the text has the card's width.
@@ -239,13 +246,16 @@ export function Questions({ sessionId, agent, lead = true }: { sessionId: string
   }, [calls, events, told, agent]);
   // What a server asked on a call that runs (the call's input is not the question).
   const asks = useStore((s) => s.questionAsks[sessionId]);
-  if (!uses.length && !lost) return null;
+  // Put away with Later (an agent's questions are answered where they are asked: no Later there).
+  const away = useAway(sessionId);
+  const shown = !agent && away.size ? uses.filter((u) => !away.has(u.id)) : uses;
+  if (!shown.length && !lost) return null;
   return (
     <div className={agent ? "flex flex-col gap-2" : "mb-2 flex flex-col gap-2"}>
-      {uses.map((u, i) => {
+      {shown.map((u, i) => {
         const asked = at(asks, u.id);
         // (A card of its own per question: a server's next one on the same call starts empty and takes an answer.)
-        return <Docked key={asked ? `${u.id}:${asked.id}` : u.id} use={u} sessionId={sessionId} first={lead && i === 0} asked={asked} />;
+        return <Docked key={asked ? `${u.id}:${asked.id}` : u.id} use={u} sessionId={sessionId} first={lead && i === 0} asked={asked} onLater={agent ? undefined : () => { later.put(sessionId, u.id); requestAnimationFrame(() => focusBox(sessionId)); }} />;
       })}
       {lost && (
         <p data-testid="question-unreadable" className="text-caption text-muted">
@@ -315,7 +325,7 @@ export function AskedUnder({ use, sessionId, children }: { use: ToolUseBlock; se
 // chosen. No key answers within the settle time of the keyboard arriving, by
 // being held, or under a dialog.
 // `asked`: the question is not the call's input but what a server asked while the call ran.
-function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId: string; first: boolean; asked?: Asked }) {
+function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; sessionId: string; first: boolean; asked?: Asked; onLater?: () => void }) {
   const qs = useMemo(() => (asked ? askedQuestions(asked) : questions(use.name, use.input)), [asked, use.name, use.input]);
   const key = asked ? `${sessionId}:${use.id}:${asked.id}` : `${sessionId}:${use.id}`;
   const [picked, setPicked] = useState<Picked>(() => answerDrafts.get(key)?.picked ?? {});
@@ -522,7 +532,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
       onKeyDownCapture={dropRepeats}
       onKeyDown={onKeyDown}
     >
-      <Head open answered={false} from={asked?.from} slim={!asked} />
+      <Head open answered={false} from={asked?.from} slim={!asked} onLater={onLater} />
       <div className="flex flex-col gap-4 px-3.5 pt-3">
         {asked && (
           // The server's own words: plain text set apart from the card's, never markup or a link.

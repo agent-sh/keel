@@ -179,6 +179,9 @@ export const inBackground = (st: Stated | undefined) => st?.watch === "work" && 
 export const TURN_ENDED = "Turn ended";
 export const stillRuns = (commands: number) => `${TURN_ENDED}, ${commands === 1 ? "1 command still runs" : `${commands} commands still run`}`;
 
+// The count in a session's head of the requests the owner put away with Later (they still wait on the owner).
+export const putAwayCount = (n: number) => `${n} waiting`;
+
 // How many things wait on the owner in these sessions, each once: an approval, a question, a plan,
 // a secret to give, a turn to resume, a message not sent. A session with three requests is three.
 // The one count behind the tab's title, the home headline, the list's line, the phone's dock and

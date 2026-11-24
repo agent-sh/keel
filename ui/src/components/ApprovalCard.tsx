@@ -1,7 +1,7 @@
 import { runsAt, type Where } from "../lib/runs-at.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Check, CheckCheck, ChevronDown, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { Check, CheckCheck, ChevronDown, Clock, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, keyPressable, KEY_MS, nextAction, paintedReader, pressable, readOnSteps, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving, useAuto } from "../lib/automation.ts";
@@ -10,11 +10,12 @@ import { editBody, type EditBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
 import { dropRepeats, keyedTo, keyRefused, keyTried, keysArrived, mayTake, noteAnswer, owned, pageFocus, pressKeysSettled, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
+import { later, useAway } from "../lib/later.ts";
 import { modalOpen } from "../lib/overlay.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError, useStore } from "../lib/store.ts";
 import { tipSay } from "../lib/tips.ts";
-import { cn } from "../lib/utils.ts";
+import { cn, focusBox } from "../lib/utils.ts";
 import { BlockedCards } from "./BlockedCards.tsx";
 import { Spelled } from "./Spelled.tsx";
 import { trayGauge } from "./Composer.tsx";
@@ -355,7 +356,10 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
 // `where`: the folder (and branch) the asker works in, when that is not the folder of the page the
 // cards are answered on: an agent's own worktree. Each card says it.
 export function Approvals({ sessionId, asker, where }: { sessionId: string; asker?: string; where?: Where }) {
-  const cards = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
+  const all = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
+  // Put away with Later (an agent's requests are answered where they are asked: no Later there).
+  const away = useAway(sessionId);
+  const cards = useMemo(() => (!asker && away.size ? all.filter((a) => !away.has(a.id)) : all), [all, away, asker]);
   const list = useRef<HTMLDivElement>(null);
   const { view, tick, waiting, setHot, spend, own, reader, latest } = useReadings(list, cards);
   // A reading on by keys under way (End, Space): one at a time, and a press meanwhile joins it.
@@ -409,6 +413,9 @@ export function Approvals({ sessionId, asker, where }: { sessionId: string; aske
     fit();
     return () => sized.disconnect();
   }, [many]);
+
+  // Later: the cards go to the count in the head, and the keyboard goes back to the message box (their buttons are gone).
+  const putAway = (...ids: string[]) => { later.put(sessionId, ...ids); requestAnimationFrame(() => focusBox(sessionId)); };
 
   const allowAll = async (tool: string, ids: string[]) => {
     noteAnswer(...ids);
@@ -605,6 +612,7 @@ export function Approvals({ sessionId, asker, where }: { sessionId: string; aske
                   : ""}
               </span>
               <span className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+                {!asker && <LaterButton onPress={() => putAway(...cards.map((c) => c.id))} lone={false} all />}
                 {groups.map((g) => (
                   <AllowAll
                     key={g.tool}
@@ -654,6 +662,7 @@ export function Approvals({ sessionId, asker, where }: { sessionId: string; aske
               enterOpens={at?.on === "list" && shut[0]?.id === a.id && hold.keys === "ready"}
               touch={touch}
               keysOn={at?.on === "list" ? "list" : at?.id !== a.id ? "" : at.on === "once" ? "once" : at.on === "card" ? "card" : ""}
+              onLater={asker ? undefined : () => putAway(a.id)}
             />
           ))}
         </div>
@@ -828,11 +837,12 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card now.
 // `keysOn`: where the keyboard is, as far as this card goes: on its Allow once, on the card
 // itself, or on the list. `touch`: the pointer is a finger.
-function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, keyLive, keyUnseen, armedKey, whole, onWhole, enterOpens, keysOn, touch }: {
+function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, keyLive, keyUnseen, armedKey, whole, onWhole, enterOpens, keysOn, touch, onLater }: {
   a: Approval; first: boolean; asker?: string; where?: Where; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
   hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; read: () => unknown; cut: boolean; unseen?: Unseen;
   keyLive: boolean; keyUnseen?: number; armedKey: (of?: "once" | "grant") => boolean;
   whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list"; touch: boolean;
+  onLater?: () => void; // put away to the count in the session head (an agent's requests have none)
 }) {
   const dense = many && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
   const Icon = a.risk === "high" ? ShieldAlert : ICON[a.kind];
@@ -1296,6 +1306,7 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
                 {a.why ? `High risk: ${a.why}` : "High risk"}
               </span>
             )}
+            {onLater && <LaterButton onPress={onLater} lone={a.risk !== "high"} />}
           </div>
           {notice}
           {summary}
@@ -1465,6 +1476,23 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
         </div>
       )}
     </div>
+  );
+}
+
+// Puts a waiting request away to the count in the session's head (lib/later.ts). The turn still waits on it.
+// Not an answer: it needs no settle time and takes no key of the card's.
+export function LaterButton({ onPress, lone = true, all }: { onPress: () => void; lone?: boolean; all?: boolean }) {
+  return (
+    <button
+      type="button"
+      data-testid="ask-later"
+      onClick={onPress}
+      title={all ? "Put these away to the count in the head: the turn still waits for them" : "Put this away to the count in the head: the turn still waits for it"}
+      className={cn("inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40", lone && "ml-auto")}
+    >
+      <Clock className="size-3.5" aria-hidden="true" />
+      {all ? "All later" : "Later"}
+    </button>
   );
 }
 
