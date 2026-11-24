@@ -23,8 +23,11 @@ enum class Form {
     /** A ring with a gap that does not turn: waiting to resume. */ OPEN,
 }
 
-/** What to draw: the form, the palette tokens of its fill and its edge (the stylesheet's names), whether a halo breathes, and the dot's word. */
-data class Look(val dot: Dot, val form: Form, val fill: String, val edge: String, val breathes: Boolean, val word: String)
+/**
+ * What to draw: the form, the palette tokens of its fill and its edge (the stylesheet's names), whether it has a soft halo
+ * (the work dot alone) and whether the halo breathes (it stands still under reduced motion), and the dot's word.
+ */
+data class Look(val dot: Dot, val form: Form, val fill: String, val edge: String, val halo: Boolean, val breathes: Boolean, val word: String)
 
 const val WAITING_ON_AGENTS = "Waiting on agents"
 const val COMMAND_IN_BACKGROUND = "Command in background"
@@ -60,18 +63,18 @@ fun dotWordOf(chat: Chat, dot: Dot, ring: String): String = when {
     else -> dot.word
 }
 
-/** The form of a dot; a halo breathes only on the work dot, and only where motion is allowed. */
+/** The form of a dot; a halo is the work dot's alone, and it breathes only where motion is allowed. */
 fun look(dot: Dot, ring: String = "", word: String = dot.word, reducedMotion: Boolean = false): Look = when {
-    (dot == Dot.WORK || dot == Dot.WAIT) && ring.isNotEmpty() -> Look(dot, Form.IN_RING, "--dot-work", "--dot-work", false, word)
-    dot == Dot.NEED -> Look(dot, Form.EDGED, "--dot-need", "--dot-need-edge", false, word)
-    dot == Dot.WORK -> Look(dot, Form.SOLID, "--dot-work", "--dot-work", !reducedMotion, word)
-    dot == Dot.WAIT -> Look(dot, Form.HALF, "--dot-work", "--dot-work", false, word)
-    dot == Dot.FAIL -> Look(dot, Form.SOLID, "--dot-fail", "--dot-fail", false, word)
-    dot == Dot.DECLINED -> Look(dot, Form.HOLLOW, "--dot-fail", "--dot-fail", false, word)
-    dot == Dot.DONE -> Look(dot, Form.SOLID, "--dot-done", "--dot-done", false, word)
-    dot == Dot.IDLE -> Look(dot, Form.HOLLOW, "--st-idle", "--st-idle", false, word)
-    dot == Dot.STOP -> Look(dot, Form.SQUARE, "--st-idle", "--st-idle", false, word)
-    else -> Look(dot, Form.OPEN, "--st-idle", "--st-idle", false, word)
+    (dot == Dot.WORK || dot == Dot.WAIT) && ring.isNotEmpty() -> Look(dot, Form.IN_RING, "--dot-work", "--dot-work", false, false, word)
+    dot == Dot.NEED -> Look(dot, Form.EDGED, "--dot-need", "--dot-need-edge", false, false, word)
+    dot == Dot.WORK -> Look(dot, Form.SOLID, "--dot-work", "--dot-work", true, !reducedMotion, word)
+    dot == Dot.WAIT -> Look(dot, Form.HALF, "--dot-work", "--dot-work", false, false, word)
+    dot == Dot.FAIL -> Look(dot, Form.SOLID, "--dot-fail", "--dot-fail", false, false, word)
+    dot == Dot.DECLINED -> Look(dot, Form.HOLLOW, "--dot-fail", "--dot-fail", false, false, word)
+    dot == Dot.DONE -> Look(dot, Form.SOLID, "--dot-done", "--dot-done", false, false, word)
+    dot == Dot.IDLE -> Look(dot, Form.HOLLOW, "--st-idle", "--st-idle", false, false, word)
+    dot == Dot.STOP -> Look(dot, Form.SQUARE, "--st-idle", "--st-idle", false, false, word)
+    else -> Look(dot, Form.OPEN, "--st-idle", "--st-idle", false, false, word)
 }
 
 /**

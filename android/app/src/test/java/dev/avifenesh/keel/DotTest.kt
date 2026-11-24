@@ -31,11 +31,15 @@ class DotTest {
 
     @Test fun onlyTheWorkDotBreathesAndNotUnderReducedMotion() {
         assertEquals(listOf(Dot.WORK), Dot.entries.filter { look(it).breathes })
+        assertEquals(listOf(Dot.WORK), Dot.entries.filter { look(it).halo })
+        // Under reduced motion the halo stays, still.
         assertFalse(look(Dot.WORK, reducedMotion = true).breathes)
+        assertTrue(look(Dot.WORK, reducedMotion = true).halo)
         // A session that only waits on what it left going is a dot in a ring, and the ring does not breathe.
         val ring = look(Dot.WORK, ring = "agents")
         assertEquals(Form.IN_RING, ring.form)
         assertFalse(ring.breathes)
+        assertFalse(ring.halo)
         assertEquals(Form.IN_RING, look(Dot.WAIT, ring = "command").form)
         // A ring means nothing on a state that is not work or waiting.
         assertEquals(Form.SOLID, look(Dot.DONE, ring = "agents").form)

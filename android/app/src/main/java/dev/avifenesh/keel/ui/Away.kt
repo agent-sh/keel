@@ -28,6 +28,9 @@ import androidx.compose.ui.unit.dp
 import dev.avifenesh.keel.Away
 import dev.avifenesh.keel.AwaySession
 import dev.avifenesh.keel.State
+import dev.avifenesh.keel.Dot
+import dev.avifenesh.keel.dotOfState
+import dev.avifenesh.keel.look
 
 /** A digest's state word as the list's marks draw it. */
 private fun stateOf(watch: String): State = when (watch) {
@@ -75,7 +78,7 @@ private fun AwayRow(r: AwaySession, onOpen: () -> Unit) {
     val k = k()
     val s = stateOf(r.watch)
     Row(Modifier.fillMaxWidth().press(onOpen).semantics { contentDescription = "away-${r.title}" }.padding(start = 16.dp, end = 14.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.Top) {
-        Box(Modifier.padding(top = 5.dp, end = 10.dp)) { StateMark(s, 9.dp) }
+        Box(Modifier.padding(top = 5.dp, end = 10.dp)) { DotMark(look(Dot.of(r.watch) ?: dotOfState(s), word = Dot.of(r.watch)?.word ?: s.word), 9.dp) }
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Txt(r.title, T.uiStrong, k.fg, Modifier.weight(1f), maxLines = 1)

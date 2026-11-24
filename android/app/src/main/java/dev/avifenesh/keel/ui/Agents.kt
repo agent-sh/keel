@@ -28,6 +28,9 @@ import androidx.compose.ui.unit.dp
 import dev.avifenesh.keel.AgentRow
 import dev.avifenesh.keel.Chat
 import dev.avifenesh.keel.State
+import dev.avifenesh.keel.dotOf
+import dev.avifenesh.keel.dotWordOf
+import dev.avifenesh.keel.look
 import dev.avifenesh.keel.agentTree
 import dev.avifenesh.keel.ago
 import dev.avifenesh.keel.elapsed
@@ -105,7 +108,8 @@ private fun AgentLine(r: AgentRow, s: State, since: Double?, now: Double, onOpen
             .padding(start = S.lg + indent.dp, end = S.lg, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        Box(Modifier.padding(top = 5.dp, end = 10.dp)) { StateMark(s, 9.dp) }
+        val (dot, ring) = dotOf(c, s)
+        Box(Modifier.padding(top = 5.dp, end = 10.dp)) { DotMark(look(dot, ring, dotWordOf(c, dot, ring), reducedMotion()), 9.dp) }
         Column(Modifier.weight(1f)) {
             Txt(c.title, T.ui, k.fg, maxLines = 1)
             val line = when {

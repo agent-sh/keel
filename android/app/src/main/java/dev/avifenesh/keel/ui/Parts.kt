@@ -69,36 +69,6 @@ fun Txt(text: String, style: TextStyle, color: Color = k().fg, modifier: Modifie
 fun KIcon(v: ImageVector, color: Color = k().fg, size: Dp = 20.dp, modifier: Modifier = Modifier) =
     Image(rememberVectorPainter(v), null, modifier.size(size), colorFilter = ColorFilter.tint(color))
 
-/**
- * The state mark, a shape as well as a color: needs you a diamond, working a
- * turning ring with a gap, failed a square, done a dot, not started a ring,
- * stopped a hollow square.
- */
-@Composable
-fun StateMark(s: State, size: Dp = 10.dp, modifier: Modifier = Modifier) {
-    val k = k()
-    val c = k.of(s)
-    val turn = if (s == State.WORKING) {
-        val t = rememberInfiniteTransition(label = "turn")
-        t.animateFloat(0f, 360f, infiniteRepeatable(tween(1100, easing = LinearEasing), RepeatMode.Restart), label = "turn").value
-    } else 0f
-    Canvas(modifier.size(size).semantics { contentDescription = s.word }) {
-        val w = this.size.minDimension
-        val stroke = w * 0.2f
-        when (s) {
-            State.NEEDS -> {
-                val p = Path().apply { moveTo(w / 2, 0f); lineTo(w, w / 2); lineTo(w / 2, w); lineTo(0f, w / 2); close() }
-                drawPath(p, c)
-            }
-            State.WORKING -> rotate(turn) { drawArc(c, -60f, 280f, false, Offset(stroke / 2, stroke / 2), Size(w - stroke, w - stroke), style = Stroke(stroke, cap = StrokeCap.Round)) }
-            State.FAILED -> drawRoundRect(c, Offset(w * 0.08f, w * 0.08f), Size(w * 0.84f, w * 0.84f), CornerRadius(w * 0.12f))
-            State.DONE -> drawCircle(c, w / 2)
-            State.IDLE -> drawCircle(c, (w - stroke) / 2, style = Stroke(stroke * 0.8f))
-            State.STOPPED -> drawRoundRect(c, Offset(stroke / 2, stroke / 2), Size(w - stroke, w - stroke), CornerRadius(w * 0.15f), style = Stroke(stroke))
-        }
-    }
-}
-
 /** A state as words, in the instrument face and the state's color. */
 @Composable
 fun StateTag(s: State, extra: String = "", only: Boolean = false) = Row(verticalAlignment = Alignment.CenterVertically) {

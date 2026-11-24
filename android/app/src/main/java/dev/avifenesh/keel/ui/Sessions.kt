@@ -35,6 +35,12 @@ import dev.avifenesh.keel.Hub
 import dev.avifenesh.keel.Prefs
 import dev.avifenesh.keel.Route
 import dev.avifenesh.keel.State
+import dev.avifenesh.keel.NEW_WORD
+import dev.avifenesh.keel.dotOf
+import dev.avifenesh.keel.dotWordOf
+import dev.avifenesh.keel.look
+import dev.avifenesh.keel.showsNews
+import androidx.compose.foundation.shape.CircleShape
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.ago
 import dev.avifenesh.keel.elapsed
@@ -174,7 +180,9 @@ private fun SessionRow(r: Row3, now: Double) {
         Modifier.fillMaxWidth().press({ Ui.open(c.id) }).semantics { contentDescription = "session-${c.title}" }.padding(horizontal = S.lg, vertical = 12.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        Box(Modifier.padding(top = 6.dp, end = 12.dp)) { StateMark(r.state, 10.dp) }
+        val (dot, ring) = dotOf(c, r.state)
+        val lk = look(dot, ring, dotWordOf(c, dot, ring), reducedMotion())
+        Box(Modifier.padding(top = 6.dp, end = 12.dp)) { DotMark(lk, 10.dp, halo = true) }
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Txt(c.title, T.uiStrong.copy(fontSize = T.body.fontSize * 0.95f), k.fg, Modifier.weight(1f), maxLines = 1)
@@ -202,12 +210,13 @@ private fun SessionRow(r: Row3, now: Double) {
                     Spacer(Modifier.width(S.sm))
                     Txt("${c.agents} agent${if (c.agents == 1) "" else "s"}", T.meta, k.workInk, maxLines = 1, modifier = Modifier.semantics { contentDescription = "agents-of-${c.title}" })
                 }
-                if (c.unread > 0) {
-                    Spacer(Modifier.width(S.sm))
-                    Box(Modifier.clip(RoundedCornerShape(S.rPill)).background(k.ink).padding(horizontal = 7.dp, vertical = 1.dp)) { Txt("${c.unread}", T.label, k.inkFg) }
-                }
                 if (c.pinned) { Spacer(Modifier.width(S.sm)); Box(Modifier.size(6.dp).clip(RoundedCornerShape(1.dp)).background(k.lineStrong)) }
             }
+        }
+        // News is a dot at the row's end, centered on the row; a row that needs the owner or failed says more than a dot does.
+        if (showsNews(dot, c.unread)) {
+            Spacer(Modifier.width(S.sm))
+            Box(Modifier.align(Alignment.CenterVertically).size(7.dp).clip(CircleShape).background(k.unread).semantics { contentDescription = "$NEW_WORD, ${c.unread} unread" })
         }
     }
     Rule(Modifier.padding(start = 38.dp))
