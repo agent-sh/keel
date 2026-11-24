@@ -116,6 +116,21 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
     expect(await counts()).toEqual(trimmed);
     await page.unroute("**/api/sessions");
+
+    // At every desk width, the narrowest rail (232px at 1050) included: one line, nothing cut, else marks and figures.
+    for (const [width, listW] of [[1050, 232], [1366, 232], [1920, 232], [1050, 0], [1920, 0]] as const) {
+      await page.setViewportSize({ width, height: 1040 });
+      await page.evaluate((w) => { if (w) localStorage.setItem("keel.listW", String(w)); else localStorage.removeItem("keel.listW"); }, listW);
+      await page.goto(`/s/${parent}`);
+      await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+      const fit = () => toggle.evaluate((el) => {
+        const sum = el.getBoundingClientRect(), cut = [...el.querySelectorAll<HTMLElement>(".k-kids-part, .k-kids-total")].filter((e) => e.getClientRects().length).map((e) => e.getBoundingClientRect());
+        return { h: Math.round(sum.height), over: Math.max(0, ...cut.map((r) => Math.round(r.right - sum.right))), words: el.hasAttribute("data-words") };
+      });
+      await expect.poll(async () => { const f = await fit(); return f.h <= 30 && f.over <= 0; }, { message: `the agents line at ${width}, list ${listW || "default"}: ${JSON.stringify(await fit())}` }).toBe(true);
+      await shoot(page, `session-list-01-agents-line-${width}-${listW || "wide"}`);
+    }
+    await page.evaluate(() => localStorage.removeItem("keel.listW"));
   } finally {
     await request.post(`/api/sessions/${parent}/interrupt`, { data: { by: "owner" } }).catch(() => {});
     await request.delete(`/api/sessions/${parent}`).catch(() => {});

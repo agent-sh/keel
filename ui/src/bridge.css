@@ -464,13 +464,17 @@
 /* Each count is its state's mark and a number, as a row is its mark and its title; what calls the owner is in that state's ink.
    Where the list is wide enough for the whole sentence the words stand too (they are always the line's name and tooltip). */
 .k-kids-word { display: none; font-size: var(--text-micro); line-height: 1; }
-/* A line of two states or fewer is a sentence in the text face: "4 agents · 3 working · 1 done".
-   A mark only before what calls the owner (its state, its ink); the others are words alone. */
-.k-kids-sum[data-words] .k-kids-word { display: inline; }
-.k-kids-sum[data-words] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-mark { display: none; }
-.k-kids-sum[data-words] .k-kids-part { gap: 0.1875rem; }
-.k-kids-sum[data-words] .k-kids-label { font-size: var(--text-micro); }
-.k-kids-sum[data-words] .k-kids-total .k-kids-n { color: var(--muted); }
+/* A line of three states or fewer is a sentence in the text face: "4 agents 3 working 1 done".
+   A mark only before what calls the owner (its state, its ink); the others are words alone.
+   The sentence needs about 18 rem of list for three states ("1 failed 1 working 6 done"); in a list dragged narrower the line falls
+   back to the marks and figures, which keep one line down to the narrowest list. */
+@container rail (min-width: 18.5rem) {
+  .k-kids-sum[data-words] .k-kids-word { display: inline; }
+  .k-kids-sum[data-words] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-mark { display: none; }
+  .k-kids-sum[data-words] .k-kids-part { gap: 0.1875rem; }
+  .k-kids-sum[data-words] .k-kids-label { font-size: var(--text-micro); }
+  .k-kids-sum[data-words] .k-kids-total .k-kids-n { color: var(--muted); }
+}
 .k-kids-part[data-watch="need"] :is(.k-kids-n, .k-kids-word) { color: var(--st-need-ink); }
 .k-kids-part:is([data-watch="fail"], [data-watch="declined"]) :is(.k-kids-n, .k-kids-word) { color: var(--st-fail-ink); }
 @container rail (min-width: 30rem) { .k-kids-part .k-kids-word { display: inline; } .k-kids-sum[data-many] .k-kids-label { display: inline; } }
