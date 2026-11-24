@@ -18,7 +18,7 @@ function sources(): string[] {
 }
 
 // Components whose label or title is a row's or a block's name on the page.
-const NAMED = new Set(["SettingRow", "Panel", "Section", "Line", "Row", "Block", "Stat", "ReaderHead"]);
+const NAMED = new Set(["SettingRow", "Group", "Panel", "Section", "Line", "Row", "Block", "Stat", "ReaderHead"]);
 
 // The plain words of an attribute's value: a string, or the strings and the fixed
 // parts of a template inside braces (label={on ? "Pause" : "Resume"}, label={`Advisor of "${t}"`}).

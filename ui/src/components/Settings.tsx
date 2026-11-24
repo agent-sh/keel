@@ -1,5 +1,5 @@
 import { ArrowLeft, Bot, ChevronDown, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { settingsSections } from "../lib/extend.ts";
 import { actions, api, reportError, useStore, useModels } from "../lib/store.ts";
 import { ASK_USD_DEFAULT } from "../../../src/engine/switch-rule.ts";
@@ -13,18 +13,9 @@ import { SmallModels } from "./SmallModels.tsx";
 import { NewModelCards } from "./NewModels.tsx";
 import { Seg } from "./Seg.tsx";
 
-// Settings building blocks other lanes reuse for their sections.
-export function SettingRow({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="k-setting flex flex-col gap-3 border-b border-line py-4 last:border-0 sm:flex-row sm:items-center sm:gap-8">
-      <div className="min-w-0 flex-1">
-        <div className="text-base font-medium">{label}</div>
-        {hint && <div className="mt-0.5 text-ui text-muted">{hint}</div>}
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
-  );
-}
+// Settings building blocks other lanes reuse for their sections: the kit (components/settings/kit.tsx).
+import { Card, SettingRow } from "./settings/kit.tsx";
+export { Card, SettingRow };
 
 // One choice of a few: a radio group with one Tab stop, on the option chosen;
 // the arrows move to the next option and choose it. Wider than its place (a
@@ -34,10 +25,6 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
   return (
     <Seg label={label} value={value} onChange={onChange} options={options} />
   );
-}
-
-export function Card({ children }: { children: ReactNode }) {
-  return <div className="k-card rounded-lg border border-line bg-raised px-5 shadow-1">{children}</div>;
 }
 
 // Text size: six steps, each shown as the letter at its size. It scales the

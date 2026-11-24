@@ -1444,6 +1444,105 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-card + .k-after-card { margin-top: 0.875rem; }
 .k-setting > div:first-child > div:first-child { font-weight: 600; }
 
+/* ---------- The Settings kit (components/settings/) ----------
+   Every section is made of the same few parts: a page of groups, a group's head (its name, a
+   count, a line of what it is, its actions) over one framed box, and in the box rows (a setting:
+   label, hint, control), items of a list (a mark, a name and its line, figures, a status, the
+   actions), a table, an empty line. One type scale: a group's name is base and bold, a row's label
+   base, a hint ui, a figure and a list's second line caption. A status is one chip in one of six
+   tones. Narrow (a phone, a large text size), an item's figures and actions go under its name and
+   a table drops its minor columns: a section never scrolls sideways. */
+.k-set-page { display: flex; flex-direction: column; gap: 2rem; min-width: 0; }
+.k-set-intro { max-width: 48rem; margin-top: -1rem; font-size: var(--text-ui); line-height: 1.55; color: var(--muted); text-wrap: pretty; }
+.k-set-group { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
+.k-set-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 0.5rem 1rem; }
+.k-set-head > div:first-child { min-width: 0; flex: 1 1 18rem; }
+.k-set-title { display: flex; align-items: baseline; gap: 0.5rem; font-size: var(--text-base); font-weight: 650; line-height: 1.35; letter-spacing: -0.005em; color: var(--fg); }
+.k-set-count { font-size: var(--text-caption); font-weight: 400; font-variant-numeric: tabular-nums; color: var(--faint); }
+.k-set-hint { max-width: 48rem; margin-top: 0.1875rem; font-size: var(--text-caption); line-height: 1.5; color: var(--muted); text-wrap: pretty; }
+.k-set-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.k-set-box { min-width: 0; padding: 0 1.25rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); }
+/* A group's box is as wide as its column: what is inside lays out by the box's width. */
+.k-set-group > .k-set-box { container: set-box / inline-size; }
+.k-set-box[data-pad] { padding: 1rem 1.25rem; }
+/* A list or a table runs to the box's edges; its rows keep the box's inset. */
+.k-set-box > .k-set-list, .k-set-box > .k-set-table-wrap { margin: 0 -1.25rem; }
+
+.k-set-list { display: flex; flex-direction: column; min-width: 0; }
+.k-set-item {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-areas: "main meta status act";
+  align-items: center; column-gap: 1rem; row-gap: 0.375rem; min-height: 3rem; padding: 0.5rem 1.25rem;
+  border-bottom: 1px solid color-mix(in oklch, var(--line) 60%, transparent);
+}
+.k-set-item[data-lead] { grid-template-columns: 1rem minmax(0, 1fr) auto auto auto; grid-template-areas: "lead main meta status act"; column-gap: 0.75rem; }
+.k-set-item:last-child { border-bottom: 0; }
+.k-set-item[data-open] { background: var(--sunken); }
+.k-set-lead { grid-area: lead; display: grid; place-items: center; align-self: start; height: 1.25rem; color: var(--faint); }
+.k-set-main { grid-area: main; min-width: 0; }
+.k-set-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); font-weight: 500; line-height: 1.45; color: var(--fg); }
+.k-set-name[data-mono] { font-family: var(--font-mono); font-size: var(--text-caption); }
+.k-set-sub { margin-top: 0.125rem; font-size: var(--text-caption); line-height: 1.45; color: var(--faint); overflow-wrap: anywhere; }
+/* A list of many short rows (figures, names): a tighter row. A line cut to one (clip) keeps its whole words in its title. */
+.k-set-list[data-dense] > .k-set-item { min-height: 2.25rem; padding-block: 0.3125rem; }
+.k-set-sub[data-clip] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.k-set-meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.25rem 1rem; font-size: var(--text-caption); font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+.k-set-item > .k-set-status { grid-area: status; }
+.k-set-act { grid-area: act; display: flex; align-items: center; justify-content: flex-end; gap: 0.375rem; }
+.k-set-meta:empty, .k-set-act:empty { display: none; }
+/* A share drawn under an item's name: how much of the most this one is. */
+.k-set-bar { display: block; height: 0.25rem; margin-top: 0.3125rem; border-radius: 999px; background: var(--sunken); overflow: hidden; }
+.k-set-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--series-1); }
+.k-set-detail { padding: 0.75rem 1.25rem; border-bottom: 1px solid color-mix(in oklch, var(--line) 60%, transparent); background: var(--sunken); }
+.k-set-more { padding: 0.75rem 1.25rem; border-top: 1px solid color-mix(in oklch, var(--line) 60%, transparent); }
+/* Narrow: the name takes the line beside its status, and figures and actions go under it. */
+@container set-box (max-width: 34rem) {
+  .k-set-item { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "main status" "meta meta" "act act"; }
+  .k-set-item[data-lead] { grid-template-columns: 1rem minmax(0, 1fr) auto; grid-template-areas: "lead main status" ". meta meta" ". act act"; }
+  .k-set-meta, .k-set-act { justify-content: flex-start; white-space: normal; }
+}
+
+/* A status: one chip, one tone, the word of the vocabulary (src/core/state-words.ts) where it has one. */
+.k-set-status { display: inline-flex; align-items: center; gap: 0.375rem; flex-shrink: 0; max-width: 100%; height: 1.375rem; padding: 0 0.5rem; border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; line-height: 1; white-space: nowrap; background: var(--sunken); color: var(--muted); }
+.k-set-status::before { content: ""; flex-shrink: 0; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--st-idle); }
+.k-set-status[data-tone="ok"] { background: color-mix(in oklch, var(--ok) 13%, transparent); color: var(--ok-ink); }
+.k-set-status[data-tone="ok"]::before { background: var(--ok); }
+.k-set-status[data-tone="warn"] { background: color-mix(in oklch, var(--warn) 15%, transparent); color: var(--warn-ink); }
+.k-set-status[data-tone="warn"]::before { background: var(--warn); }
+.k-set-status[data-tone="broken"] { background: var(--danger-soft); color: var(--danger-ink); }
+.k-set-status[data-tone="broken"]::before { background: var(--danger); border-radius: 1px; }
+.k-set-status[data-tone="new"] { background: var(--brass-soft); color: var(--brass-ink); }
+.k-set-status[data-tone="new"]::before { background: var(--brass); }
+.k-set-status[data-tone="info"] { background: var(--accent-soft); color: var(--accent-ink); }
+.k-set-status[data-tone="info"]::before { display: none; }
+
+/* Nothing to show, inside the box where the rows would be. */
+.k-set-box > .k-set-empty, .k-set-list > .k-set-empty { padding: 1rem 0; }
+.k-set-list > .k-set-empty { padding: 1rem 1.25rem; }
+
+/* A notice in a section: what the page cannot do or see, in the state's ink. */
+.k-set-notice { padding: 0.875rem 1.25rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); font-size: var(--text-ui); line-height: 1.55; color: var(--muted); }
+.k-set-notice > b { display: block; margin-bottom: 0.125rem; font-size: var(--text-base); font-weight: 600; color: var(--fg); }
+.k-set-notice[data-tone="warn"] { border-color: color-mix(in oklch, var(--warn) 45%, transparent); }
+.k-set-notice[data-tone="warn"] > b { color: var(--warn-ink); }
+.k-set-notice[data-tone="broken"] { border-color: color-mix(in oklch, var(--danger) 40%, transparent); }
+.k-set-notice[data-tone="broken"] > b { color: var(--danger-ink); }
+
+/* A table: its name column takes what is left and cuts its words short; minor columns go when
+   the box is narrow, and under that the table scrolls inside its box, never the page. */
+.k-set-table-wrap { min-width: 0; overflow-x: auto; }
+.k-set-table { width: 100%; border-collapse: collapse; font-size: var(--text-ui); font-variant-numeric: tabular-nums; }
+.k-set-table th { padding: 0.5rem 0.75rem 0.375rem; border-bottom: 1px solid var(--line); text-align: left; font-size: var(--text-caption); font-weight: 400; color: var(--faint); white-space: nowrap; }
+.k-set-table td { padding: 0.4375rem 0.75rem; border-bottom: 1px solid color-mix(in oklch, var(--line) 60%, transparent); white-space: nowrap; }
+.k-set-table tr:last-child > td { border-bottom: 0; }
+.k-set-table :is(th, td):first-child { padding-left: 1.25rem; }
+.k-set-table :is(th, td):last-child { padding-right: 1.25rem; }
+.k-set-table :is(th, td)[data-end] { text-align: right; }
+.k-set-table td[data-grow] { width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.k-set-table tr[data-act] { cursor: pointer; }
+.k-set-table tr[data-act]:hover > td { background: var(--hover); }
+.k-set-table tr[data-open] > td { background: var(--sunken); }
+@container set-box (max-width: 52rem) { .k-set-table [data-minor] { display: none; } }
+
 /* ---------- Micro-interactions ---------- */
 /* Streaming: an amber caret after the last word while the reply is written.
    It leaves with the reply. Steady, not blinking: the words arriving move it,
