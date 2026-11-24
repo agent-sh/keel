@@ -41,16 +41,25 @@ test("a failure in three sessions of a repository is proposed as a lesson, accep
       await idle(request, id);
     }
 
-    // The miner reads them as one cause in three trees; the small model drafts its note.
+    // The miner reads them as one cause in three trees; the small model drafts its note. It is drafted at
+    // once when the repository's pace of trees decides its trial within a week (a daemon whose store is a few
+    // hours old reads three trees as a slow pace): else it waits behind the proposals, and the owner drafts it.
     await page.goto("/settings/lessons");
     await expect(page.getByTestId("lessons")).toBeVisible();
     await expect.poll(async () => {
       await request.post("/api/lessons/mine");
       return (lesson = await lessonOf(request, here))?.state;
-    }, { timeout: 30_000 }).toBe("proposed");
+    }, { timeout: 30_000 }).toMatch(/^(proposed|waiting)$/);
+    if (lesson!.state === "waiting") {
+      await page.getByTestId("lessons-waiting").getByRole("button").first().click();
+      await page.locator(`[data-testid="lesson-waiting"][data-lesson="${lesson!.id}"]`).getByRole("button", { name: "Draft" }).click();
+    }
+    await expect.poll(async () => (lesson = await lessonOf(request, here))?.state, { timeout: 30_000 }).toBe("proposed");
     const card = page.locator(`[data-testid="lesson-proposal"][data-lesson="${lesson!.id}"]`);
     await expect(card).toBeVisible();
     await expect(card.getByTestId("lesson-counts")).toHaveText("3 failures in 3 agent trees, 3 sessions");
+    // Every tree of the repository failed with it: a trial needs the trials' least sample.
+    await expect(card.getByTestId("lesson-trial")).toContainText("100% of the repository's 3 trees failed with it. A trial needs 64 trees an arm");
     await expect(card.getByTestId("lesson-text")).toHaveValue(/^Before you run a command here, check it cannot fail like this: ls: cannot access/);
     await card.scrollIntoViewIfNeeded();
     await shoot(page, "lessons-01-proposed");
@@ -65,7 +74,7 @@ test("a failure in three sessions of a repository is proposed as a lesson, accep
     await expect(live.getByTestId("lesson-line")).toContainText(`half of the new agent trees of ${basename(here)} are told it`);
     lesson = await lessonOf(request, here);
     const { experiment } = await (await request.get(`/api/experiments/${lesson!.exp_id}`)).json();
-    expect(experiment).toMatchObject({ state: "running", template: "lesson", unit: "agent", repo: lesson!.repo, lesson: lesson!.id, primary: "lesson_class" });
+    expect(experiment).toMatchObject({ state: "running", template: "lesson", unit: "agent", repo: lesson!.repo, lesson: lesson!.id, primary: "lesson_class", stop: { sessions_per_arm: 64 } });
 
     // The repository's next agents: each drawn at its start, the lesson in the task of the ones in its arm only.
     const lead = await create("Lesson lead");

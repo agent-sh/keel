@@ -241,16 +241,25 @@ under `~/.cache/keel-work/bun/research/`.
   read thread; `src/automation/lessons.ts` keeps them): a tool call's failure
   class from the tool ledger, a cause of `session_failures` that is not a
   tool's, a provider's or a message's, or a review finding by its words, in
-  three agent trees within two weeks. A small model of the owner's chain drafts
-  its note, or says no agent could avoid it (kept apart). Settings > Lessons
-  shows each with its evidence; the owner accepts it (in his words), edits or
-  drops it, and a dropped cause is never proposed again. An accepted lesson
-  rides in the task of the repository's agents at their start, never in a
-  system prompt. Its trial is a live experiment of the lesson template (unit:
-  agent trees, an agent a top-level session started; only the repository's),
-  read on `lesson_class`, the count of its own class once a tree: kept when the
-  arm told it wins, else dropped with the numbers. While another live
-  experiment runs, an accepted lesson goes to every agent and its trial waits.
+  three agent trees within two weeks. What a failure said reaches a model or
+  the owner with the vault's secrets and anything key-shaped hidden and the
+  machine's folders folded (`exampleOf`, `told` in `lesson-draft.ts`). The
+  owner is shown five at a time, the most trees first, each drafted by a small
+  model of the owner's chain (or said to be no agent's to avoid, kept apart);
+  the rest wait undrafted behind them. Only a cause whose trial the
+  repository's own pace of trees decides within a week is drafted by itself
+  (`perArm`, `trialOf`: the sample that finds a halved class four times in
+  five); each card says what its trial needs. Settings > Lessons shows each
+  with its evidence; the owner accepts it (in his words), edits or drops it,
+  and a dropped cause is never proposed again. An accepted lesson rides in the
+  task of the repository's agents at their start, never in a system prompt.
+  Its trial is a live experiment of the lesson template (unit: agent trees,
+  an agent a top-level session started; only the repository's), read on
+  `lesson_class`, whether a tree failed with its class (0 or 1): kept when
+  the arm told it wins, dropped with the numbers when the trial shows it hurt,
+  and otherwise in use, undecided, with its numbers (`fateOf`). While another
+  live experiment runs, an accepted lesson goes to every agent and its trial
+  waits.
 - Agents start agents down to a depth limit, under one budget for the whole
   tree (`src/core/agent-tree.ts` says the numbers and why). A report goes to
   the agent that started it; an agent is not finished while its own agents

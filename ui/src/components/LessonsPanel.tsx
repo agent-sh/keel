@@ -18,6 +18,13 @@ const tag = "shrink-0 rounded-xs px-1.5 text-micro";
 const sourceWords = (l: Lesson) => (l.source === "tool" ? `${l.label} call` : l.source === "review" ? "review finding" : l.label.split(" ")[0] === "agent" ? "agent failure" : `${l.label.split(" ")[0]} failure`);
 const rate = (v: number | null) => (v === null ? "not measured" : `${v === 0 ? "0" : (v * 100).toFixed(v * 100 < 10 ? 1 : 0)} per 100 trees`);
 const armLine = (o: Outcome) => o.arms.map((a) => `${a.arm}: ${rate(a.per_tree)} (${plural(a.trees, "tree")})`).join(", ");
+// What a trial of the cause would need, from the repository's own pace of agent trees.
+function trialWords(e: Lesson["evidence"]): string {
+  if (!e.repo_trees || e.rate === undefined || !e.per_arm) return "";
+  const share = `${(e.rate * 100).toFixed(e.rate * 100 < 10 ? 1 : 0)}% of the repository's ${plural(e.repo_trees, "tree")} failed with it`;
+  const days = e.trial_days === undefined || e.trial_days > 365 ? "more than a year" : `about ${plural(e.trial_days, "day")}`;
+  return `${share}. A trial needs ${e.per_arm} trees an arm: ${days} at ${e.trees_a_day} trees a day.`;
+}
 
 function Evidence({ l }: { l: Lesson }) {
   const sessions = useStore((s) => s.sessions);
@@ -43,6 +50,7 @@ function Evidence({ l }: { l: Lesson }) {
         ))}
         {e.trees > shown.length && <span className="text-faint">and {plural(e.trees - shown.length, "more tree")}</span>}
       </div>
+      {trialWords(e) && <div className="text-caption text-faint tabular-nums" data-testid="lesson-trial">{trialWords(e)}</div>}
     </div>
   );
 }
@@ -79,6 +87,7 @@ function lineOf(l: Lesson): string {
     return `In its trial: half of the new agent trees of ${l.repo_name} are told it.${p ? ` ${armLine(p)}.` : ""}${size}`;
   }
   if (l.state === "kept") return `Kept for every agent of ${l.repo_name}: ${l.outcome ? `${armLine(l.outcome)}. ` : ""}${l.outcome?.text ?? ""}`.trim();
+  if (l.state === "undecided") return `On trial, undecided: told to every agent of ${l.repo_name}. ${l.outcome ? `${armLine(l.outcome)}. ` : ""}${l.outcome?.text ?? ""}`.trim();
   return "";
 }
 
@@ -142,7 +151,7 @@ export function LessonsPanel() {
   };
   const all = data?.lessons ?? [];
   const of = (...states: Lesson["state"][]) => all.filter((l) => states.includes(l.state));
-  const open = of("proposed"), drafting = of("drafting"), live = of("trial", "accepted", "kept"), quiet = of("quiet"), gone = of("dropped");
+  const open = of("proposed"), drafting = of("drafting"), live = of("trial", "accepted", "undecided", "kept"), waiting = of("waiting"), quiet = of("quiet"), gone = of("dropped");
   return (
     <div className="flex flex-col gap-4" data-testid="lessons">
       <div className="flex items-start gap-4">
@@ -159,7 +168,7 @@ export function LessonsPanel() {
       <h3 className="k-label">Proposed</h3>
       <Card>
         {data === null ? <p className="py-4 text-ui text-muted">Reading...</p>
-          : !open.length && !drafting.length ? <p className="py-4 text-ui text-muted" data-testid="lessons-none">No lesson to decide. One is proposed when a failure repeats in three agent trees of a repository.</p>
+          : !open.length && !drafting.length ? <p className="py-4 text-ui text-muted" data-testid="lessons-none">No lesson to decide. One is proposed when a failure repeats in three agent trees of a repository, often enough for a trial to decide within a week.</p>
           : <>
               {open.map((l) => <Proposal key={l.id} l={l} busy={busy} act={act} />)}
               {drafting.map((l) => (
@@ -169,6 +178,20 @@ export function LessonsPanel() {
               ))}
             </>}
       </Card>
+      {waiting.length > 0 && (
+        <Folded title={`${plural(waiting.length, "more cause")}, not drafted`} testid="lessons-waiting">
+          {waiting.map((l) => (
+            <div key={l.id} className="flex items-start gap-4 border-b border-line py-3 last:border-0" data-testid="lesson-waiting" data-lesson={l.id}>
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex items-baseline gap-2"><span className="text-ui font-medium">{l.repo_name}</span><span className={cn(tag, "bg-sunken text-muted")}>{sourceWords(l)}</span></div>
+                <div className="truncate font-mono text-micro text-muted" title={l.evidence.examples[0]}>{l.evidence.examples[0]}</div>
+                <div className="text-caption text-faint tabular-nums">{plural(l.evidence.failures, "failure")} in {plural(l.evidence.trees, "agent tree")}. {trialWords(l.evidence)}</div>
+              </div>
+              <button type="button" className="k-btn shrink-0" disabled={busy} onClick={() => act(() => proposeLesson(l.id))}>Draft</button>
+            </div>
+          ))}
+        </Folded>
+      )}
       {live.length > 0 && (
         <>
           <h3 className="k-label">In use</h3>

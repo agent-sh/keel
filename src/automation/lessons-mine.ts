@@ -21,11 +21,14 @@
 // count is of trees, not sessions: one tree's agents share their task, and a
 // cause they repeat is told to that tree already (src/automation/failures.ts).
 import type { Database } from "bun:sqlite";
+import { homedir } from "node:os";
 import { basename } from "node:path";
+import { keyShaped } from "../core/conceal.ts";
 import { repoRoot } from "../core/repo-root.ts";
 
 export type Source = "tool" | "failure" | "review";
-// One failure of a class in one session: `n` of them (a failure row counts several).
+// One failure of a class in one session: `n` of them (a failure row counts several). `example`: the
+// failure's text as recorded (mineFrom makes the candidate's examples of it).
 export type Hit = { source: Source; key: string; label: string; example: string; session: string; ts: number; n: number; words?: string[] };
 export type SessionRow = { id: string; parent_id: string | null; workspace: string; machine: string | null; repo_root: string | null };
 export type Evidence = { session: string; tree: string; n: number; ts: number };
@@ -33,6 +36,10 @@ export type Candidate = {
   key: string; source: Source; label: string; repo: string; repo_name: string;
   failures: number; sessions: number; trees: number; first_ts: number; last_ts: number;
   examples: string[]; words?: string[]; evidence: Evidence[];
+  // What a trial of it needs (trialOf): the repository's trees in the window and a day, the share of
+  // them the class failed in, the trees an arm needs and the days the repository takes to start them.
+  // Absent when the repository's trees could not be counted.
+  repo_trees?: number; trees_a_day?: number; rate?: number; per_arm?: number; trial_days?: number;
 };
 
 // A cause in three trees is a pattern of the repository's work: one tree's
@@ -88,11 +95,28 @@ const hash = (s: string) => Bun.hash(s).toString(36);
 export const toolKey = (tool: string, cls: string) => `tool:${tool}:${hash(`${tool}\0${cls}`)}`;
 export const failureKey = (fp: string) => `failure:${fp}`;
 
-// A failure's text as one line for the owner and the drafting model.
-export function exampleOf(text: string): string {
-  const line = firstLines(text).join(" / ").replace(/[\p{Cc}\u2028\u2029]+/gu, " ");
+// A failure's text as one line for the owner and the drafting model: anything shaped like a key hidden
+// (the vault's own values are hidden where a prompt is made, src/automation/lesson-draft.ts), and the
+// paths of the machine folded (foldPaths).
+export function exampleOf(text: string, repo: string | null = null, home = homedir()): string {
+  const line = foldPaths(keyShaped(firstLines(text).join(" / ")), repo, home).replace(/[\p{Cc}\u2028\u2029]+/gu, " ");
   return line.length > EXAMPLE_CHARS ? `${line.slice(0, EXAMPLE_CHARS - 1)}…` : line;
 }
+// The folders of the machine out of a failure's words: the repository's own as a relative path, a
+// worktree's (Keel's, or a repository's `<name>.worktrees/` beside it) as <worktree>, the home folder
+// as ~. What a cause is about stays (the file under them); whose machine it is does not.
+const WORKTREE = /(?:\/[^\s"'`:()<>]*)?\/(?:worktrees|[\w.-]+\.worktrees)\/[\w.-]+/g;
+const escaped = (s: string) => s.replace(/[.*+?^$|()[\]{}\\]/g, "\\$&");
+// A folder named whole: at the end of a path, never the start of a longer name.
+const folder = (dir: string) => new RegExp(`${escaped(dir)}(?=/|(?![\\w.-]))`, "g");
+export function foldPaths(text: string, repo: string | null, home: string): string {
+  let t = text.replace(WORKTREE, "<worktree>");
+  if (repo && repo !== "/") t = t.split(`${repo}/`).join("./").replace(folder(repo), ".");
+  if (home && home !== "/") t = t.replace(folder(home), "~");
+  return t;
+}
+// Every path out of a text, for words that stand without one (a plain draft).
+export const noPaths = (text: string) => text.replace(/(?:[\w.~@<>-]*\/)+[\w.~@%+-]*/g, "<path>");
 
 // ---- review findings by their words ----
 
@@ -144,7 +168,7 @@ export function hitsOf(db: Database, since: number): Hit[] {
     "SELECT session_id, ts, tool, error FROM telemetry_tools WHERE is_error = 1 AND ts >= ? ORDER BY ts DESC LIMIT ?").all(since, ROWS))) {
     const error = r.error ?? "";
     const cls = toolClass(error);
-    if (cls) out.push({ source: "tool", key: toolKey(r.tool, cls), label: r.tool, example: exampleOf(error), session: r.session_id, ts: r.ts, n: 1 });
+    if (cls) out.push({ source: "tool", key: toolKey(r.tool, cls), label: r.tool, example: error, session: r.session_id, ts: r.ts, n: 1 });
   }
   const agentSession = new Map<string, string>();
   const sessionOfAgent = (id: string) => {
@@ -153,7 +177,7 @@ export function hitsOf(db: Database, since: number): Hit[] {
   };
   for (const r of tried(() => db.query<{ session_id: string; fp: string; kind: string; cls: string; sample: string; count: number; last_ts: number; refs: string }, [number, number]>(
     "SELECT session_id, fp, kind, cls, sample, count, last_ts, refs FROM session_failures WHERE last_ts >= ? AND kind NOT IN ('tool', 'provider', 'message') ORDER BY last_ts DESC LIMIT ?").all(since, ROWS))) {
-    const base = { source: "failure" as const, key: failureKey(r.fp), label: `${r.kind} ${r.cls}`, example: exampleOf(r.sample) };
+    const base = { source: "failure" as const, key: failureKey(r.fp), label: `${r.kind} ${r.cls}`, example: r.sample };
     const refs = (json(r.refs) ?? []) as { id: string; n?: number; ts?: number }[];
     let named = 0;
     for (const ref of refs) {
@@ -168,9 +192,9 @@ export function hitsOf(db: Database, since: number): Hit[] {
   }
   const findings = findingsOf(db, since);
   // A finding a small model put in a kind is of that kind's class; the rest are classed by their words.
-  for (const f of findings) if (f.kind) out.push({ source: "review", key: kindKey(f.kind), label: f.kind, example: exampleOf(f.text), session: f.session, ts: f.ts, n: 1 });
+  for (const f of findings) if (f.kind) out.push({ source: "review", key: kindKey(f.kind), label: f.kind, example: f.text, session: f.session, ts: f.ts, n: 1 });
   for (const f of clusterFindings(findings.filter((f) => !f.kind && f.words.length >= 3))) {
-    out.push({ source: "review", key: reviewKey(f.seed), label: f.seed.join(" "), example: exampleOf(f.text), session: f.session, ts: f.ts, n: 1, words: f.seed });
+    out.push({ source: "review", key: reviewKey(f.seed), label: f.seed.join(" "), example: f.text, session: f.session, ts: f.ts, n: 1, words: f.seed });
   }
   return out;
 }
@@ -185,6 +209,7 @@ export function untagged(db: Database, since: number, max: number): { ref: strin
 }
 
 // The review findings and refusing verdicts from `since` (to `until`), each in the session of the work it judged.
+// A reviewer may quote what it found, a leaked key too: the words are read with anything key-shaped hidden.
 // `kind`: the kind a small model gave it (null: none of the kinds), undefined while it was not asked.
 // `judge`: the session of whoever judged it.
 type Finding = { ref: string; session: string; judge: string; ts: number; text: string; words: string[]; kind?: string | null };
@@ -205,7 +230,8 @@ function findingsOf(db: Database, since: number, until = Number.MAX_SAFE_INTEGER
   for (const v of tried(() => db.query<{ agent_id: string; commit_sha: string; session_id: string; branches: string; why: string; at: number }, [number, number, number]>(
     "SELECT v.agent_id, v.commit_sha, a.session_id, v.branches, v.why, v.at FROM review_verdicts v JOIN agents a ON a.id = v.agent_id WHERE v.land = 'no' AND v.at >= ? AND v.at <= ? ORDER BY v.at DESC LIMIT ?").all(since, until, ROWS))) {
     const ref = verdictRef(v.agent_id, v.commit_sha);
-    findings.push({ ref, session: branchSession(v.branches) ?? v.session_id, judge: v.session_id, ts: v.at, text: v.why, words: wordsOf(v.why), kind: kindOf(ref) });
+    const why = keyShaped(v.why);
+    findings.push({ ref, session: branchSession(v.branches) ?? v.session_id, judge: v.session_id, ts: v.at, text: why, words: wordsOf(why), kind: kindOf(ref) });
   }
   for (const r of tried(() => db.query<{ id: string; session_id: string; data: string; created: number }, [number, number, number]>(
     "SELECT id, session_id, data, created FROM reviews WHERE state = 'done' AND created >= ? AND created <= ? ORDER BY created DESC LIMIT ?").all(since, until, ROWS))) {
@@ -215,7 +241,8 @@ function findingsOf(db: Database, since: number, until = Number.MAX_SAFE_INTEGER
       // A finding the owner dismissed was not a failure.
       if (!f.title || f.state === "dismissed") continue;
       const ref = findingRef(r.id, f.id ?? i);
-      findings.push({ ref, session, judge: r.session_id, ts: r.created, text: f.body ? `${f.title}: ${f.body}` : f.title, words: wordsOf(f.title), kind: kindOf(ref) });
+      const title = keyShaped(f.title);
+      findings.push({ ref, session, judge: r.session_id, ts: r.created, text: keyShaped(f.body ? `${f.title}: ${f.body}` : f.title), words: wordsOf(title), kind: kindOf(ref) });
     }
   }
   return findings;
@@ -263,7 +290,8 @@ export function repoOfSession(sessions: ReadonlyMap<string, SessionRow>, id: str
 }
 
 // The hits grouped into classes per repository, those in `trees` agent trees or more, the most trees first.
-export function mineFrom(hits: Hit[], sessions: ReadonlyMap<string, SessionRow>, root: (dir: string) => string | null, trees = TREES): Candidate[] {
+// `census`: each repository's trees in the window and a day (treesOf), which say what a trial of a class needs.
+export function mineFrom(hits: Hit[], sessions: ReadonlyMap<string, SessionRow>, root: (dir: string) => string | null, trees = TREES, census?: ReadonlyMap<string, Census>): Candidate[] {
   const repoCache = new Map<string, string | null>();
   const repoOf = (id: string) => {
     if (!repoCache.has(id)) repoCache.set(id, repoOfSession(sessions, id, root));
@@ -283,7 +311,7 @@ export function mineFrom(hits: Hit[], sessions: ReadonlyMap<string, SessionRow>,
     c.failures += h.n;
     c.first_ts = Math.min(c.first_ts, h.ts);
     c.last_ts = Math.max(c.last_ts, h.ts);
-    if (h.example && c.examples.length < EXAMPLES && !c.examples.includes(h.example)) c.examples.push(h.example);
+    if (h.example && c.examples.length < EXAMPLES) { const eg = exampleOf(h.example, repo); if (!c.examples.includes(eg)) c.examples.push(eg); }
     g.ses.add(h.session);
     const tree = treeOf(sessions, h.session);
     const e = g.trs.get(tree);
@@ -296,17 +324,65 @@ export function mineFrom(hits: Hit[], sessions: ReadonlyMap<string, SessionRow>,
     c.sessions = ses.size;
     c.trees = trs.size;
     c.evidence = [...trs.values()].sort((a, b) => b.ts - a.ts).slice(0, EVIDENCE);
+    const n = census?.get(c.repo);
+    if (n && n.trees > 0) Object.assign(c, trialOf(Math.min(1, c.trees / n.trees), n.trees, n.a_day));
     out.push(c);
   }
   return out.sort((a, b) => b.trees - a.trees || b.failures - a.failures || b.last_ts - a.last_ts);
 }
 
+// ---- what a trial needs ----
+// A lesson's trial (src/admin/experiments.ts, the lesson template) counts in each agent tree whether its
+// class failed there (0 or 1), and names a winner only at the sample size it set in advance. That size is
+// the one a two-sided test of two shares at the trials' 5% needs to find, four times in five, a lesson that
+// halves its class: a note an agent reads at its start and follows removes most of a mistake it names, and
+// one that cuts less is not worth the words in every agent's task. (Against the trials' own decision, on
+// trees drawn at the class's rate: 80 of 100 kept at 20% and at 8.8% with a half cut, 2 of 100 kept
+// with no effect.) Never fewer trees than the trials' default (FAMILIES_PER_ARM): the intervals are bootstrapped.
+export const CUT = 0.5;
+export const MIN_PER_ARM = 64;
+const Z = 1.959964 + 0.841621;
+export function perArm(rate: number): number {
+  const p1 = Math.min(1, Math.max(0, rate)), p2 = p1 * (1 - CUT);
+  if (p1 <= 0) return Number.POSITIVE_INFINITY;
+  return Math.max(MIN_PER_ARM, Math.ceil((Z * Z * (p1 * (1 - p1) + p2 * (1 - p2))) / ((p1 - p2) ** 2)));
+}
+// A lesson is proposed only for a class whose trial the repository's own pace of agent trees decides within
+// a week: one that would run for months holds the one live trial slot and leaves its lesson unproven.
+export const TRIAL_DAYS = 7;
+export function trialOf(rate: number, repoTrees: number, aDay: number): Pick<Candidate, "repo_trees" | "trees_a_day" | "rate" | "per_arm" | "trial_days"> {
+  const n = perArm(rate);
+  return { repo_trees: repoTrees, trees_a_day: Math.round(aDay * 10) / 10, rate: Math.round(rate * 1000) / 1000, per_arm: Number.isFinite(n) ? n : 0,
+    trial_days: Number.isFinite(n) && aDay > 0 ? Math.ceil((2 * n) / aDay) : Number.MAX_SAFE_INTEGER };
+}
+export const decidable = (c: Pick<Candidate, "trial_days">) => c.trial_days !== undefined && c.trial_days <= TRIAL_DAYS;
+
+// Each repository's trees started since `since` (a top-level session's own work, and each agent it started)
+// and how many a day, over the window or the part of it the store covers (at least an hour: a store a few
+// minutes old would read a burst as a pace).
+export type Census = { trees: number; a_day: number };
+export function treesOf(db: Database, since: number, now: number, root: (dir: string) => string | null): Map<string, Census> {
+  const rows = tried(() => db.query<{ id: string }, [number]>(
+    "SELECT s.id FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_id WHERE s.created >= ? AND (s.parent_id IS NULL OR p.parent_id IS NULL)").all(since));
+  if (!rows.length) return new Map();
+  const sessions = sessionsOf(db, rows.map((r) => r.id));
+  const oldest = tried(() => db.query<{ t: number | null }, []>("SELECT MIN(created) AS t FROM sessions").all())[0]?.t ?? since;
+  const days = Math.max(1 / 24, (now - Math.max(since, oldest)) / 86_400_000);
+  const count = new Map<string, number>();
+  for (const r of rows) {
+    const repo = repoOfSession(sessions, r.id, root);
+    if (repo) count.set(repo, (count.get(repo) ?? 0) + 1);
+  }
+  return new Map([...count].map(([repo, trees]) => [repo, { trees, a_day: trees / days }]));
+}
+
 // The read thread's task: the candidates of every repository over the last `days`.
 export function mineRead(db: Database, a: { now: number; days?: number; trees?: number }): Candidate[] {
-  const hits = hitsOf(db, a.now - (a.days ?? DAYS) * 86_400_000);
+  const since = a.now - (a.days ?? DAYS) * 86_400_000;
+  const hits = hitsOf(db, since);
   const cache = new Map<string, string | null>();
   const root = (dir: string) => { if (!cache.has(dir)) cache.set(dir, repoRoot(dir)); return cache.get(dir)!; };
-  return mineFrom(hits, sessionsOf(db, hits.map((h) => h.session)), root, a.trees ?? TREES);
+  return mineFrom(hits, sessionsOf(db, hits.map((h) => h.session)), root, a.trees ?? TREES, treesOf(db, since, a.now, root));
 }
 
 // ---- a trial's count ----
@@ -315,14 +391,15 @@ export function mineRead(db: Database, a: { now: number; days?: number; trees?: 
 export const ofClass = (cls: { source: Source; key: string; words?: string[] }, h: Hit) =>
   h.source === cls.source && (h.key === cls.key || (cls.source === "review" && !cls.key.startsWith("review:kind:") && !!cls.words && !!h.words && similar(cls.words, h.words)));
 
-// Failures of one class in each family of a trial, from `since` on: a family is
-// a root session and every session the experiment gave its arm (`sessions`).
+// Whether a family of a trial failed with one class (1) or not (0), from `since` on: a family is a root
+// session and every session the experiment gave its arm (`sessions`). Once a tree: the trial asks whether a
+// lesson keeps its agents from the mistake, and one agent that repeats it twenty times is one tree that made it.
 // The ledger and the failure table are read by the sessions' own rows (indexed by session).
-export function familyCounts(db: Database, cls: { source: Source; key: string; words?: string[] }, sessions: { id: string; root: string }[], since: number, until: number): Map<string, number> {
+export function familyHas(db: Database, cls: { source: Source; key: string; words?: string[] }, sessions: { id: string; root: string }[], since: number, until: number): Map<string, number> {
   const out = new Map<string, number>();
   const rootOf = new Map(sessions.map((s) => [s.id, s.root]));
   for (const s of sessions) out.set(s.root, out.get(s.root) ?? 0);
-  const add = (session: string, n: number) => { const r = rootOf.get(session); if (r !== undefined) out.set(r, (out.get(r) ?? 0) + n); };
+  const add = (session: string, n: number) => { const r = rootOf.get(session); if (r !== undefined && n > 0) out.set(r, 1); };
   const ids = [...rootOf.keys()];
   if (cls.source === "tool") {
     const q = db.query<{ tool: string; error: string | null }, [string, number, number]>("SELECT tool, error FROM telemetry_tools WHERE session_id = ? AND is_error = 1 AND ts >= ? AND ts <= ?");

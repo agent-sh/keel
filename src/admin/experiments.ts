@@ -108,8 +108,8 @@ export const METRICS = {
   keep_miss: { label: "miss of a priced summary's kept size", better: "lower", unit: "share" },
   // Read-only steps over the reads they sent (src/engine/read-run.ts): 1 is one read a step, lower is batched.
   steps_per_read: { label: "steps per read", better: "lower", unit: "share" },
-  // Read once a family, over its life: failures of the class a lesson is about (src/automation/lessons.ts).
-  lesson_class: { label: "failures of the lesson's class", better: "lower", unit: "count" },
+  // Read once a family, over its life: whether it failed with the class a lesson is about, 0 or 1 (src/automation/lessons.ts).
+  lesson_class: { label: "trees that failed with the lesson's class", better: "lower", unit: "share" },
 } as const;
 export type Metric = keyof typeof METRICS;
 // The metrics read once a family rather than once a turn: a count over the
