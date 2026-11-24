@@ -1115,12 +1115,17 @@ let desktop: ReturnType<typeof desktopNotifications> | undefined;
 // Where an alert's click leads: a path of the page (with its query). The
 // session it names, at the card or the message it is about; the inbox when
 // the session is gone.
+// A failure with no session to open (an outage across sessions, a failed loop, a session that is
+// gone) opens the Errors panel, where its incident and its row are; anything else the inbox.
+const FAILURE_KINDS: ReadonlySet<AlertKind> = new Set(["failed", "limit", "loop_failed", "outage", "declined", "refused"]);
+export const opensErrors = (a: Alert) => FAILURE_KINDS.has(a.kind) && !alertTarget(a).open;
+
 export function alertPath(id: string): string {
   const a = getAlert(id);
   const t = a && alertTarget(a);
   const approval = a?.kind === "approval" ? a.data?.approval_id : undefined;
   const session = approval ? (t?.approval === "pending" ? t.parent ?? t.open : null) : t?.open;
-  if (!session) return "/?inbox=1";
+  if (!session) return a && FAILURE_KINDS.has(a.kind) ? "/?errors=1" : "/?inbox=1";
   const q = new URLSearchParams();
   if (approval) q.set("approval", approval);
   else if (a?.data?.event_id && !t?.child_deleted) q.set("e", a.data.event_id);

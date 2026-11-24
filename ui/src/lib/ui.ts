@@ -83,7 +83,8 @@ let state: UIState = {
   scale: 1,
   palette: false,
   shortcuts: false,
-  errors: false,
+  // A failure notification with no session to open lands on the Errors panel (src/automation/alerts.ts alertPath).
+  errors: new URLSearchParams(location.search).has("errors"),
   modelMenu: 0,
   effortMenu: 0,
   permMenu: 0,

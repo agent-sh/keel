@@ -105,14 +105,7 @@ fun SessionsScreen() {
     val rows = sessionRows(chats, cards, working)
     // What happened while the owner was away (read by the Hub each time the phone is level again).
     val away by Hub.away.collectAsState()
-    // The daemon's open errors, for the count on the way to them: read while the list is on the screen,
-    // once a minute (an error comes with no frame of the stream).
-    val life = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(life) {
-        life.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
-            while (true) { Hub.readErrors(); delay(60_000) }
-        }
-    }
+    // (The daemon's open errors are read when the phone is level and follow the stream's frames after.)
 
     Column(Modifier.fillMaxSize()) {
         Head("Sessions", sub = { ConnLine() }) {

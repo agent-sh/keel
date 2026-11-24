@@ -545,3 +545,17 @@ test("a wait's line says what it costs as the list is read; its key stays the on
     alerts.waitHook.now = was.now;
   }
 });
+
+test("a failure with no session to open leads to the Errors panel; anything else with none to the inbox", () => {
+  const { session } = scratch();
+  const s = session("Build");
+  const outage = alerts.raise("outage", null, "Provider outage: 3 sessions", "HTTP 529")!;
+  expect([alerts.alertPath(outage.id), alerts.opensErrors(outage)]).toEqual(["/?errors=1", true]);
+  const failed = alerts.raise("failed", s, "Failed: Build", "HTTP 500")!;
+  expect([alerts.alertPath(failed.id), alerts.opensErrors(failed)]).toEqual([`/s/${s}`, false]);
+  // A loop's failure names no session: the Errors panel.
+  const loop = alerts.raise("loop_failed", null, "Loop failed: nightly", "exit 1")!;
+  expect([alerts.alertPath(loop.id), alerts.opensErrors(loop)]).toEqual(["/?errors=1", true]);
+  const back = alerts.raise("snooze_over", null, "Alerts are back", "")!;
+  expect([alerts.alertPath(back.id), alerts.opensErrors(back)]).toEqual(["/?inbox=1", false]);
+});

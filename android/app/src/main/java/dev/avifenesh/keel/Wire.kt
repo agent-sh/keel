@@ -586,6 +586,19 @@ data class ErrorList(val rows: List<ErrorRow>, val unread: Int) {
         val next = if (row == null) rows.filter { it.id != id } else rows.map { if (it.id == id) row else it }
         return ErrorList(next, next.count { it.unread })
     }
+    /**
+     * An `error_changed` frame: the kind as it is now, first as the newest when it happened again, or off the
+     * list when it is `gone` (resolved, or let go before the store took it). The count follows.
+     */
+    fun changed(row: ErrorRow, gone: Boolean): ErrorList {
+        val rest = rows.filter { it.id != row.id }
+        val next = when {
+            gone -> rest
+            (rows.firstOrNull { it.id == row.id }?.last ?: -1.0) == row.last -> rows.map { if (it.id == row.id) row else it }
+            else -> (listOf(row) + rest).sortedByDescending { it.last }
+        }
+        return ErrorList(next, next.count { it.unread })
+    }
     companion object {
         fun of(o: JSONObject) = ErrorList(
             o.optJSONArray("errors")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty().map(ErrorRow::of),
@@ -593,6 +606,8 @@ data class ErrorList(val rows: List<ErrorRow>, val unread: Int) {
         )
         /** POST /v1/errors/<id>/<action>: the row as it is now. */
         fun row(o: JSONObject): ErrorRow? = o.optJSONObject("row")?.let(ErrorRow::of)
+        /** An `error_changed` frame: the row, and whether it left the open list. */
+        fun frame(o: JSONObject): Pair<ErrorRow, Boolean>? = o.optJSONObject("row")?.let { ErrorRow.of(it) to o.optBoolean("gone") }
     }
 }
 
@@ -910,6 +925,8 @@ data class PushMsg(
     val kind: String, val chat: String?, val title: String, val body: String, val card: String?, val choices: List<String>, val id: String?, val held: Boolean = false,
     /** A "live" push: sessions working, cards waiting, when the longest turn started (ms). */
     val working: Int = 0, val needs: Int = 0, val since: Long = 0,
+    /** Where its notification leads when it names no session: "errors" for a failure with no session to open. */
+    val open: String = "",
 ) {
     companion object {
         fun of(d: Map<String, String>) = PushMsg(
@@ -920,6 +937,7 @@ data class PushMsg(
             // The request is opened and read before it is allowed: its notification carries no Allow.
             held = !d["hold"].isNullOrBlank(),
             working = d["w"]?.toIntOrNull() ?: 0, needs = d["q"]?.toIntOrNull() ?: 0, since = d["since"]?.toLongOrNull() ?: 0,
+            open = d["open"].orEmpty(),
         )
     }
     /**
@@ -1032,3 +1050,4 @@ fun newestTs(held: List<Msg>): Double = held.maxOfOrNull { it.ts } ?: 0.0
  * made. That send is done, and the same words sent again are a new prompt.
  */
 fun sendArrived(held: List<Msg>, text: String, after: Double): Boolean = held.any { it.mine && it.content == text && it.ts > after }
+

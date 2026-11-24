@@ -87,7 +87,7 @@ object Hub {
 
     fun reset() {
         live?.cancel(); live = null; saver?.cancel(); dirty = false
-        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L; away.value = null; errors.value = null
+        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L; away.value = null
         note.value = ""; conn.value = Conn.OFF
     }
 
@@ -192,8 +192,8 @@ object Hub {
     fun seenAway() { away.value = null; scope.launch { runCatching { Api.delete("/v1/away") } } }
     /** The owner touched the app `idleMs` ago: the end of an absence, as a page in use says. */
     suspend fun present(idleMs: Long) { Api.post("/v1/presence", JSONObject().put("idle_ms", idleMs)) }
-    /** The daemon's open errors (the page's Errors panel): read when the phone is level, while the list shows, and in the Errors view. */
-    val errors = MutableStateFlow<ErrorList?>(null)
+    /** The daemon's open errors (the page's Errors panel): read when the phone is level, kept from the stream's frames after. */
+    val errors get() = feed.errors
     fun readErrors() { scope.launch { runCatching { errorList() } } }
     suspend fun errorList(): ErrorList = ErrorList.of(Api.get("/v1/errors")).also { errors.value = it }
     /** Read (out of the count), unread again, or resolved (off the list), on the page too. */
@@ -201,6 +201,10 @@ object Hub {
         val row = ErrorList.row(Api.post("/v1/errors/${Uri.encode(id)}/$action"))
         // One the store never took is let go when read or resolved: it leaves the list.
         errors.value = errors.value?.marked(id, if (action == "resolve" || id.startsWith("unwritten-")) null else row)
+    }
+    /** Every open one shown, read at once (the page's Mark all read): the list as the daemon has it after. */
+    suspend fun readAllErrors(ids: List<String>) {
+        errors.value = ErrorList.of(Api.post("/v1/errors/read-all", JSONObject().put("ids", org.json.JSONArray(ids))))
     }
     suspend fun search(q: String): SearchResult = SearchResult.of(Api.get("/v1/search?q=${Wire.enc(q)}"))
     suspend fun startOffer(): Start = Start.of(Api.get("/v1/start"))

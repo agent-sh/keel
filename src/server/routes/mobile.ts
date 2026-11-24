@@ -1,7 +1,7 @@
 // The phone: pairing and the device list for the workbench (/api/mobile), the
 // Hermes Mobile API the phone app calls (/v1), and phone push as an alert channel.
 import { renderSVG } from "uqr";
-import { atDesk, liveWait, get as alertOf, registerChannel, type Alert } from "../../automation/alerts.ts";
+import { atDesk, liveWait, get as alertOf, opensErrors, registerChannel, type Alert } from "../../automation/alerts.ts";
 import { costLine, costs } from "../../core/wait-rank.ts";
 import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
@@ -53,6 +53,8 @@ export function alertPush(a: Alert, card?: { hold: string[]; glance: boolean; li
   // What the wait costs as it stands, and the key the phone orders what waits by: the one it began with (src/core/wait-rank.ts).
   const now = liveWait(a);
   if (costs(now)) { data.cost = costLine(now, Date.now()); data.wk = String(a.data.wait.key ?? 0); }
+  // A failure with no session to open opens the app's Errors view, as its click on the desktop opens the Errors panel.
+  try { if (opensErrors(a)) data.open = "errors"; } catch {}
   const high = ["approval", "question", "failed", "loop_failed", "limit", "test"].includes(a.kind);
   data.pri = high ? "high" : "normal";
   return { kind, session_id: a.session_id, high, data };

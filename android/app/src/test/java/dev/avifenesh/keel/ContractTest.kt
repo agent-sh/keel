@@ -128,6 +128,8 @@ class ContractTest {
         "errors" to { o -> ErrorList.of(o).toString() },
         "error_row" to { o -> ErrorList.of(JSONObject().put("errors", JSONArray().put(o))).rows.toString() },
         "error_marked" to { o -> ErrorList.row(o).toString() },
+        // A frame changes the list the phone holds: one read before it, as the app reads it when level.
+        "error_changed" to { o -> level().also { it.errors.value = ErrorList.of(examples("errors").first()); it.frame(o) }.errors.value.toString() },
         "away" to { o -> Away.of(o).toString() },
         "away_session" to { o -> Away.of(JSONObject().put("away", JSONObject().put("sessions", JSONArray().put(o))))!!.sessions.toString() },
         "start_model" to { o -> Start.of(JSONObject().put("models", JSONArray().put(o))).models.toString() },

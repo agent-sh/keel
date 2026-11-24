@@ -893,6 +893,14 @@ export function mobileApi(ctx: MobileCtx) {
                 const s = store.session(a.chat_id);
                 if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
+              else if (f.t === "error") {
+                // A kind of failure happened, was read, healed or resolved: its row as the Errors view lists it
+                // (`gone`: resolved, or a kind the store never took that was let go), so the view and its count
+                // follow without a read of the list.
+                const kept = f.error.id.startsWith("unwritten-") ? errors.unwritten().find((u) => u.id === f.error.id) : errors.get(f.error.id);
+                const rec = kept ?? f.error;
+                send({ type: "error_changed", row: errorRow(rec), gone: !kept || !!rec.resolved_ts });
+              }
               else if (f.t === "feature" && f.name === "approval") {
                 const a = cardOf(f.data as Approval);
                 send({ type: "approval", seq: mobile.globalSeq(), approval: a });
@@ -1153,6 +1161,22 @@ export function mobileApi(ctx: MobileCtx) {
     },
     // What broke on the daemon, as the page's Errors panel lists it: the open kinds of failure.
     "/v1/errors": { GET: signed(() => json(errorList())) },
+    // Every open one the phone was shown, read at once (`ids`), as the page's Mark all read: one that
+    // happened again after it was shown came back unread and is read with the rest only if listed.
+    "/v1/errors/read-all": {
+      POST: signed(withBody((_r, _d, b) => {
+        const ids: string[] = Array.isArray(b.ids) ? b.ids.filter((x: unknown): x is string => typeof x === "string").slice(0, ERRORS_LISTED) : [];
+        if (!ids.length) return err("ids is the list of the errors shown", 400);
+        for (const id of ids) {
+          if (id.startsWith("unwritten-")) { errors.dismiss(id); continue; }
+          const e = store.error(id);
+          if (!e || e.resolved_ts || e.read_ts) continue;
+          store.readError(id, true);
+          bus.emit({ t: "error", error: errors.get(id)! });
+        }
+        return json(errorList());
+      })),
+    },
     // Read (out of the count, still listed), unread again, or resolved (off the list), as on the page.
     "/v1/errors/:eid/:action": {
       POST: signed((req) => {

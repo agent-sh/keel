@@ -12,10 +12,11 @@ test("an arrival from outside the page holds the keyboard off the answers for a 
 });
 
 test("a path from the shell is read into what the page acts on", () => {
-  expect(pathParts("/s/abc?approval=ap1")).toEqual({ pathname: "/s/abc", event: null, approval: "ap1", inbox: false });
-  expect(pathParts("/s/abc?e=ev9")).toEqual({ pathname: "/s/abc", event: "ev9", approval: null, inbox: false });
-  expect(pathParts("/?inbox=1")).toEqual({ pathname: "/", event: null, approval: null, inbox: true });
-  expect(pathParts("/settings/safety")).toEqual({ pathname: "/settings/safety", event: null, approval: null, inbox: false });
+  expect(pathParts("/s/abc?approval=ap1")).toEqual({ pathname: "/s/abc", event: null, approval: "ap1", inbox: false, errors: false });
+  expect(pathParts("/s/abc?e=ev9")).toEqual({ pathname: "/s/abc", event: "ev9", approval: null, inbox: false, errors: false });
+  expect(pathParts("/?inbox=1")).toEqual({ pathname: "/", event: null, approval: null, inbox: true, errors: false });
+  expect(pathParts("/?errors=1")).toEqual({ pathname: "/", event: null, approval: null, inbox: false, errors: true });
+  expect(pathParts("/settings/safety")).toEqual({ pathname: "/settings/safety", event: null, approval: null, inbox: false, errors: false });
 });
 
 test("a color is told as the bytes the canvas drew", () => {

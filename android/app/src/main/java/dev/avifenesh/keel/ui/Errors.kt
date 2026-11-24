@@ -83,7 +83,13 @@ fun ErrorsScreen() {
             "Errors",
             sub = { if (l != null) Txt(if (l.open.isEmpty()) "Nothing open" else "${l.open.size} open · ${l.unread} unread", T.meta, k.muted) },
             lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = Route.Tabs(0) }) },
-        )
+        ) {
+            // The page's Mark all read: every open one shown leaves the count and stays listed.
+            val shown = l?.open?.filter { it.unread }.orEmpty()
+            if (shown.isNotEmpty()) Btn("Read all", {
+                scope.launch { runCatching { Hub.readAllErrors(shown.map { it.id }) }.onFailure { note = reach(it) } }
+            }, Tone.QUIET, compact = true, tag = "errors-read-all")
+        }
         if (note.isNotBlank()) Notice(note, modifier = Modifier.padding(horizontal = S.lg, vertical = S.sm))
         Rule()
         when {

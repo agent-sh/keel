@@ -1183,7 +1183,7 @@ describe("the wire contract", () => {
     start: [["models", "start_model"], ["folders", "start_folder"], ["machines", "start_machine"]],
     search: [["hits", "search_hit"]],
     away: [["away.sessions", "away_session"]],
-    errors: [["errors", "error_row"]], error_marked: [["row", "error_row"]],
+    errors: [["errors", "error_row"]], error_marked: [["row", "error_row"]], error_changed: [["row", "error_row"]],
   };
   // What a value breaks of its shape's fields, the shapes inside it included; `seen` collects the fields it has.
   function broken(shape: string, v: any, seen = new Set<string>(), out: string[] = []) {
@@ -1312,6 +1312,7 @@ describe("the wire contract", () => {
     console.error = quiet;
     take("errors", (await call("GET", "/v1/errors")).body);
     take("error_marked", (await call("POST", `/v1/errors/${both.id}/read`)).body);
+    take("errors", (await call("POST", "/v1/errors/read-all", { ids: [both.id] })).body);
     (providers as any).models = listing;
     fleetRows = [];
     take("error", (await call("POST", `/v1/chats/${s.id}/messages`, { text: "" })).body);
@@ -1336,6 +1337,11 @@ describe("the wire contract", () => {
     take("push", pushData(alertPush({ id: "al1", ts: Date.now(), kind: "approval", session_id: s.id, title: "Fix the build needs your approval", body: "rm -rf build", read: false, data: { approval_id: "apr_9", hold: [] }, channels: [] } as any), mobile.globalSeq(), "push_1"));
     take("push", pushData(testMessage(), mobile.globalSeq(), "push_2"));
     take("push", pushData({ kind: "live", high: false, data: liveData(liveStatus([{ title: "Fix the build", running: true, since: 1000, needs: 0 }, { title: "Docs", running: true, since: 2000, needs: 1 }])) }, mobile.globalSeq(), "push_3"));
+    // A failure with no session to open: its notification opens the Errors view.
+    const outage = pushData(alertPush({ id: "al2", ts: Date.now(), kind: "outage", session_id: null, title: "Provider outage", body: "HTTP 529", read: false, data: {}, channels: [] } as any), mobile.globalSeq(), "push_5");
+    expect(outage.open).toBe("errors");
+    take("push", outage);
+    expect(alertPush({ id: "al3", ts: Date.now(), kind: "failed", session_id: s.id, title: "Failed", body: "x", read: false, data: {}, channels: [] } as any).data.open).toBeUndefined();
     // A phone pairs, then unpairs.
     const k3 = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const pairReq: any = new Request("http://x/v1/pair", { method: "POST", body: JSON.stringify({ code: mobile.createPairCode(600), device_name: "p", pub: k3.publicKey.export({ type: "spki", format: "der" }).toString("base64"), apub, lock: true }) });
@@ -1360,6 +1366,10 @@ describe("the wire contract", () => {
       bus.emit({ t: "event", event: res } as any);
       bus.emit({ t: "session", session: store.updateSession(s.id, { head: left.id }) } as any);
       bus.emit({ t: "session", session: failed, deleted: true } as any);
+      // A kind of failure happens again, and one is resolved.
+      const again = tracker.capture("server", new Error("The loop was held (contract)"));
+      tracker.resolve(again.id, true);
+      bus.emit({ t: "error", error: tracker.get(again.id)! } as any);
       jest.advanceTimersByTime(15_000);
     } finally {
       jest.useRealTimers();
@@ -1368,7 +1378,8 @@ describe("the wire contract", () => {
     await st.close();
     const SHAPE: Record<string, string> = { message: "message_frame", chat: "chat_frame" };
     for (const f of st.frames) take(SHAPE[f.type] ?? f.type, f);
-    expect(new Set(st.frames.map((f) => f.type))).toEqual(new Set(["hello", "message", "chat", "working", "delta", "approval", "chat_reset", "chat_removed", "seq"]));
+    expect(new Set(st.frames.map((f) => f.type))).toEqual(new Set(["hello", "message", "chat", "working", "delta", "approval", "chat_reset", "chat_removed", "error_changed", "seq"]));
+    expect(st.frames.filter((f) => f.type === "error_changed").map((f) => f.gone)).toContain(true);
 
     // Catch-ups that say more than events: a branch that changed, a cursor that cannot be caught up from.
     take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}`)).body);

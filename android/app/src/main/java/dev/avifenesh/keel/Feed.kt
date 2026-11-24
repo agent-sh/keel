@@ -32,6 +32,11 @@ class Feed {
     val synced = MutableStateFlow(false)
     /** Counts the times everything held was dropped and read whole again: the session on screen loads its page again. */
     val reloads = MutableStateFlow(0)
+    /**
+     * The daemon's open errors (the page's Errors panel), once read (GET /v1/errors): kept from the stream's
+     * `error_changed` frames after that. Null until read: a frame alone does not make a list.
+     */
+    val errors = MutableStateFlow<ErrorList?>(null)
     /** Called with each card that opens. */
     var onCard: ((Card) -> Unit)? = null
 
@@ -60,7 +65,7 @@ class Feed {
     @Synchronized fun clear() {
         cursor = 0; catching = false; held.clear(); streamSyncs = false; broken = null; epoch++
         chats.value = emptyMap(); msgs.value = emptyMap(); older.value = emptyMap(); cards.value = emptyMap()
-        working.value = emptyMap(); drafts.value = emptyMap(); synced.value = false
+        working.value = emptyMap(); drafts.value = emptyMap(); synced.value = false; errors.value = null
     }
 
     /**
@@ -203,6 +208,7 @@ class Feed {
                 else { working.update { it - c }; drafts.update { it - c } }
             }
             "approval" -> e.optJSONObject("approval")?.let { mergeCards(listOf(Card.of(it))) }
+            "error_changed" -> ErrorList.frame(e)?.let { (row, gone) -> errors.update { it?.changed(row, gone) } }
             // Frames were dropped on the way. A stream that syncs sends `hello` with the catch-up next.
             "resync" -> return !streamSyncs
         }

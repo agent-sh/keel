@@ -63,6 +63,12 @@ test("shell: the page tells its look, goes where the shell asks without a reload
     await expect(page.getByTestId("inbox-panel")).toBeVisible();
     expect(await page.evaluate(() => (window as any).__same)).toBe(true);
     await page.keyboard.press("Escape");
+    // A failure's click with no session to open (an outage, a failed loop) opens the Errors panel.
+    await tell(page, { open: "/?errors=1" });
+    await expect(page.getByTestId("errors-panel")).toBeVisible();
+    expect(await page.evaluate(() => (window as any).__same)).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("errors-panel")).toHaveCount(0);
 
     // The session on screen, in a window of its own: the page asks the shell for it.
     await tell(page, { open: `/s/${a.id}` });

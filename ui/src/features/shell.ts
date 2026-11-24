@@ -80,7 +80,7 @@ if (host) {
     else if (detail?.scale) stepScale(detail.scale === "up" ? 1 : -1);
     const open = detail?.open;
     if (typeof open !== "string") return;
-    const { pathname, event, approval, inbox } = pathParts(open);
+    const { pathname, event, approval, inbox, errors } = pathParts(open);
     // Only the click on a request's own notification may land on its answer.
     const chosen = detail?.from === "click";
     if (!chosen) { broughtHere(); offAnswers(); }
@@ -91,6 +91,7 @@ if (host) {
     }
     if (approval && getUI().route.name === "session") focusApproval(approval, chosen ? "allow" : "card");
     if (inbox) dispatchEvent(new Event("keel-open-inbox"));
+    if (errors) setUI({ errors: true });
   });
 
   // The app's own engine collects its script heap far later than a browser does, and holds

@@ -42,6 +42,10 @@ sealed class Route {
     data class Diff(val id: String, val path: String, val turn: Long?, val label: String) : Route()
     /** The helper's memory. */
     object Memory : Route()
+    companion object {
+        /** Where a notification's `to` leads: errors (the Errors view), else the sessions. */
+        fun of(to: String): Route = when (to) { "errors" -> Errors; else -> Tabs(0) }
+    }
 }
 
 object BuildConfigLike {
@@ -96,6 +100,8 @@ class MainActivity : FragmentActivity() {
             else { Ui.link.value = l; Ui.linkError.value = "" }
         }
         i?.getStringExtra("chat")?.let { if (Prefs.paired) Ui.open(it) }
+        // A notification that names no session leads to a list: what needs the owner, the Errors view, or the sessions.
+        i?.getStringExtra("to")?.let { if (Prefs.paired && i.getStringExtra("chat") == null) Ui.route.value = Route.of(it) }
     }
 
     // The owner's last touch, told to the daemon at most every 20 s (a page reports as often): the phone

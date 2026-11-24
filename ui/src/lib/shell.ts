@@ -120,9 +120,10 @@ export async function shellCopy(text: string): Promise<void> {
 }
 
 // A path the shell asked the page to show, as the parts the page acts on.
-export function pathParts(path: string): { pathname: string; event: string | null; approval: string | null; inbox: boolean } {
+// `errors`: a failure with no session to open (src/automation/alerts.ts alertPath) opens the Errors panel.
+export function pathParts(path: string): { pathname: string; event: string | null; approval: string | null; inbox: boolean; errors: boolean } {
   const u = new URL(path, "http://keel.invalid");
-  return { pathname: u.pathname, event: u.searchParams.get("e"), approval: u.searchParams.get("approval"), inbox: u.searchParams.has("inbox") };
+  return { pathname: u.pathname, event: u.searchParams.get("e"), approval: u.searchParams.get("approval"), inbox: u.searchParams.has("inbox"), errors: u.searchParams.has("errors") };
 }
 
 // Whether the page asks the app's engine for a collection now (features/shell.ts): the owner

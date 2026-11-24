@@ -22,7 +22,9 @@
   "A chat row carries `h`, eight hex digits of its content. A reconnecting phone says what it holds in a bounded number of bytes (`held` on GET /v1/events or /v1/sync): its rows go into `n` buckets by `fnv(id) % n`, and each bucket is said by eight hex digits, the sum mod 2^32 of `fnv(\"<id>:<h>\")` over its rows (FNV-1a, 32 bits, over UTF-8; an empty bucket is 00000000), joined by dots in bucket order, `n` of them (at most 256). The catch-up then sends only the rows of the buckets whose digest differs, with `buckets` naming them (`n`, and `of`, their indices) and `complete` false: the phone drops each row it holds in those buckets that was not sent. `held` at the top of this file is a worked example. A whole read (since 0, or a cursor that cannot be caught up from), and a `held` not of this form, send every row.",
   "search (GET /v1/search?q=<words>) is the page's search across sessions: titles first, then what was said and done, one hit a session at most. A hit's `snippet` holds the words found between \u0001 and \u0002; `kind` says where (title, user, assistant, tool_use, tool_result, summary). `limits` says in words what the query limited the search to (state:failed, since:yesterday).",
   "helper (GET /v1/helper, PATCH /v1/helper with `on`) is the owner's helper: whether it is on, its conversation (`chat_id`, a chat of the list marked `helper`), how many records its memory holds, and what it was told lately, newest first (helper_event: `chat_id` is the session it is about, null for mail). Turning it on makes its conversation the first time. memory (GET /v1/helper/memory[?q=<words>]) is its memory's records (memory_record), found by key, alias, topic or words with `q`; DELETE /v1/helper/memory/<key> forgets one. A daemon that runs no helper answers 409.",
-  "What waits on the owner is in the order of the next-look queue (src/core/wait-rank.ts): the costliest wait first, then the one asked first. A pending card says when its alert was first raised (`asked`, seconds) and what its wait costs: `wait` holds the facts it began with (`at` and `until` in seconds; `key`, what the wait costs a minute in dollars, is the order's key and never changes while the card waits), `wait_line` what it costs as it stands when the card is sent (the agents that wait then, the cache's life then), in words. The app orders the cards that wait by `wait.key`, then `asked` (a card without one, its `ts`), then `id`. A push of an ask whose wait costs something also carries the words as they stand in `cost` and the key in `wk` (the app does not read them yet)."
+  "What waits on the owner is in the order of the next-look queue (src/core/wait-rank.ts): the costliest wait first, then the one asked first. A pending card says when its alert was first raised (`asked`, seconds) and what its wait costs: `wait` holds the facts it began with (`at` and `until` in seconds; `key`, what the wait costs a minute in dollars, is the order's key and never changes while the card waits), `wait_line` what it costs as it stands when the card is sent (the agents that wait then, the cache's life then), in words. The app orders the cards that wait by `wait.key`, then `asked` (a card without one, its `ts`), then `id`. A push of an ask whose wait costs something also carries the words as they stand in `cost` and the key in `wk` (the app does not read them yet).",
+  "error_changed is a frame of the stream: one kind of failure changed (it happened again, was read, healed or resolved), as its error_row; `gone`: it left the open list (resolved, or let go before the store took it). The app keeps its Errors list and count from these frames.",
+  "A push of kind failed, outage or another failure says `open: errors` when it has no session to open: its notification opens the Errors view."
  ],
  "signing": {
   "request": [
@@ -355,7 +357,8 @@
    "hold": "string?",
    "w": "string?",
    "q": "string?",
-   "since": "string?"
+   "since": "string?",
+   "open": "string?"
   },
   "changes": {
    "turns": "array",
@@ -491,6 +494,11 @@
   },
   "error_marked": {
    "row": "object"
+  },
+  "error_changed": {
+   "type": "string",
+   "row": "object",
+   "gone": "boolean"
   }
  },
  "examples": {
@@ -2489,6 +2497,18 @@
     "title": "2 sessions working · 1 needs you",
     "body": "Fix the build · Docs",
     "since": "1795195000500"
+   },
+   {
+    "t": "failed",
+    "c": "",
+    "s": "50",
+    "n": "push_6",
+    "title": "Provider outage: 3 sessions",
+    "body": "HTTP 529 from the provider",
+    "ek": "outage",
+    "pri": "high",
+    "reply": "0",
+    "open": "errors"
    }
   ],
   "file_change": [
@@ -2977,6 +2997,39 @@
      "title": "Billing check",
      "sessions": 2
     }
+   }
+  ],
+  "error_changed": [
+   {
+    "type": "error_changed",
+    "row": {
+     "id": "01a2-0b2b-8043",
+     "message": "HTTP 402: the account has no credit left. Add credit to the account or switch the session to another model.",
+     "source": "provider",
+     "count": 4,
+     "first": 1795195000.0,
+     "last": 1795195003.5,
+     "read": false,
+     "recovered": false,
+     "chat_id": "s-1",
+     "title": "Billing check",
+     "sessions": 2
+    },
+    "gone": false
+   },
+   {
+    "type": "error_changed",
+    "row": {
+     "id": "01a2-0b2b-8044",
+     "message": "The loop was held for 3.2 s: a read of the ledger on the main thread",
+     "source": "server",
+     "count": 1,
+     "first": 1795195060.0,
+     "last": 1795195060.0,
+     "read": false,
+     "recovered": false
+    },
+    "gone": true
    }
   ]
  },
