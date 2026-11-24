@@ -19,7 +19,7 @@ import { Live } from "./live.ts";
 import { sessionTopic } from "./scope.ts";
 import { readsOf } from "./reads.ts";
 import { fold, searchTerms } from "./search-query.ts";
-import { lastCall } from "./routes/calls-read.ts";
+import { callAge, lastCall } from "./routes/calls-read.ts";
 import type { FindRow } from "./routes/find-read.ts";
 import { FindTurns } from "./routes/find-turns.ts";
 import index from "../../ui/index.html";
@@ -612,7 +612,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const before = q.has("before") && Number.isFinite(Number(q.get("before"))) ? Number(q.get("before")) : null;
           const reads = readsOf(store);
           const call = await lastCall({ db: store.db, named: (a) => reads.run("calls.named", a), answered: (a) => reads.run("calls.answered", a), line: () => store.lineage(s.id) }, s.id, names, before);
-          return json({ call });
+          return json({ call, ...(call ? callAge(store.db, s.id, call.seq, before) : {}) });
         }),
       },
 

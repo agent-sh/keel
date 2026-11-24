@@ -1,10 +1,11 @@
 import { Checkbox } from "@base-ui/react/checkbox";
-import { Check, CircleDot, ExternalLink, Flag, Pause, Play, Trash2, X } from "lucide-react";
+import { Check, ChevronRight, CircleDot, ExternalLink, Flag, ListChecks, Pause, Play, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../../src/core/types.ts";
 import { auto, openSession, useAuto, type Goal, type Task } from "../../lib/automation.ts";
 import { remoteId, splitId } from "../../lib/fleet-ids.ts";
 import { composing } from "../../lib/keys.ts";
+import { planLine, planState, turnsSince, useMinute } from "../../lib/plan-age.ts";
 import { reportError, failed, useStore, useModels } from "../../lib/store.ts";
 import { cn, fmtTokens } from "../../lib/utils.ts";
 import { ModelPicker } from "../ModelPicker.tsx";
@@ -223,6 +224,14 @@ export function TasksPanel({ session }: { session: Session }) {
   const [text, setText] = useState("");
   useEffect(() => void auto.loadSessionPlan(sid).catch(reportError), [sid]);
   const done = list?.filter((t) => t.status === "completed").length ?? 0;
+  // A list left alone while the session went on, or with every item done, is one quiet line (lib/plan-age.ts).
+  const events = useStore((s) => s.events[sid]);
+  const clock = useMinute();
+  const [unfolded, setUnfolded] = useState(false);
+  const at = list?.length ? Math.max(...list.map((t) => t.updated_ms)) : 0;
+  const state = list?.length ? planState({ at, turns: events ? turnsSince(events, at) : 0, now: clock, working: session.phase === "working", items: list, endedAt: session.archived ? Number.MAX_SAFE_INTEGER : session.settings.done_ms }) : "live";
+  useEffect(() => setUnfolded(false), [sid, state, at]);
+  const folded = state !== "live" && !unfolded;
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-3" data-testid="tasks-panel">
       <SectionTitle right={<Flag className="size-3.5 text-faint" />}>Goal</SectionTitle>
@@ -230,7 +239,16 @@ export function TasksPanel({ session }: { session: Session }) {
       <SectionTitle right={list?.length ? <span className="text-micro text-faint tabular-nums">{done}/{list.length}</span> : null}>Tasks</SectionTitle>
       <div data-testid="task-list">
         {list?.length === 0 && <Empty>No tasks yet. The model's plan shows here, and so do yours.</Empty>}
-        {list?.map((t) => <TaskRow key={t.id} t={t} sid={sid} />)}
+        {state !== "live" && list?.length ? (
+          <div className="px-2">
+            <button type="button" className="k-docket-line" data-testid="task-fold" data-state={state} aria-expanded={!folded} onClick={() => setUnfolded(!unfolded)}>
+              <ListChecks className="k-docket-glyph" />
+              <span className="min-w-0 truncate text-faint">{planLine(state, { at, now: clock, items: list })}</span>
+              <ChevronRight className={cn("k-docket-more ml-auto transition-transform", !folded && "rotate-90")} />
+            </button>
+          </div>
+        ) : null}
+        {!folded && list?.map((t) => <TaskRow key={t.id} t={t} sid={sid} />)}
       </div>
       <form
         className="px-3 pt-2"

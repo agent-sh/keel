@@ -13,6 +13,7 @@ import { actions, api, liveNow, onFeature, reportError, reportUnlessGone, useSto
 import { splitId } from "../lib/fleet-ids.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
+import { planLine, planState, turnsSince, useMinute } from "../lib/plan-age.ts";
 import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
 import { useUI } from "../lib/ui.ts";
 import { PlanCard } from "./ToolCall.tsx";
@@ -122,19 +123,19 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
       if (e.kind !== "assistant") continue;
       for (let k = e.data.blocks.length - 1; k >= 0; k--) {
         const b = e.data.blocks[k];
-        if (b.type === "tool_use" && toolKind(b.name) === "plan" && accepted.has(b.id)) return { plan: planItems(b.name, b.input), before: 0 };
+        if (b.type === "tool_use" && toolKind(b.name) === "plan" && accepted.has(b.id)) return { plan: planItems(b.name, b.input), at: e.ts, before: 0 };
       }
     }
     // The page holds the end of the branch: a plan accepted before that part is asked for.
-    return { plan: null, before: line.length && line[0]!.parent !== null ? line[0]!.seq : 0 };
+    return { plan: null, at: 0, before: line.length && line[0]!.parent !== null ? line[0]!.seq : 0 };
   }, [events, head]);
-  const [older, setOlder] = useState<{ key: string; plan: ReturnType<typeof planItems> | null } | null>(null);
+  const [older, setOlder] = useState<{ key: string; plan: ReturnType<typeof planItems> | null; at: number; turns: number } | null>(null);
   const key = held?.before ? `${sessionId} ${held.before}` : "";
   useEffect(() => {
     if (!key) return;
     let stop = false;
-    api<{ call: { name: string; input: unknown } | null }>(`/api/sessions/${sessionId}/last-call?names=${PLAN_TOOLS.join(",")}&before=${held!.before}`)
-      .then((r) => { if (!stop) setOlder({ key, plan: r.call ? planItems(r.call.name, r.call.input) : null }); })
+    api<{ call: { name: string; input: unknown } | null; ts?: number; turns?: number }>(`/api/sessions/${sessionId}/last-call?names=${PLAN_TOOLS.join(",")}&before=${held!.before}`)
+      .then((r) => { if (!stop) setOlder({ key, plan: r.call ? planItems(r.call.name, r.call.input) : null, at: r.ts ?? 0, turns: r.turns ?? 0 }); })
       .catch((e) => reportUnlessGone(e, { at: "dock plan" }));
     return () => { stop = true; };
   }, [key]);
@@ -144,7 +145,14 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
   const root = useStore((s) => rootOf((id) => s.sessions[id]?.parent_id, sessionId));
   const tree = useTreeMark(root);
   const agents = useAgentsTally(sessionId);
-  const active = !inPanel && plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled");
+  // A plan the session left alone while it went on is one quiet line (lib/plan-age.ts); a finished or
+  // marked-finished one is not shown. (An older plan whose age is not known yet is shown as it stands.)
+  const clock = useMinute();
+  const doneMs = useStore((s) => s.sessions[sessionId]?.settings.done_ms);
+  const archived = useStore((s) => !!s.sessions[sessionId]?.archived);
+  const known = held?.plan ? { at: held.at, turns: events ? turnsSince(events, held.at) : 0 } : older?.key === key && older.at ? { at: older.at, turns: older.turns + (events ? turnsSince(events, 0) : 0) } : null;
+  const state = plan && known ? planState({ ...known, now: clock, working, items: plan, endedAt: archived ? Number.MAX_SAFE_INTEGER : doneMs }) : "live";
+  const active = !inPanel && plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled") && state !== "ended";
   if (!active && !jobs.length && !changed && !tree && !agents) return null;
   const done = plan?.filter((p) => p.status === "completed").length ?? 0;
   const now = plan?.find((p) => p.status === "in_progress");
@@ -157,9 +165,15 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
         <Collapsible.Root className="k-docket-plan group/plan">
           <Collapsible.Trigger className="k-docket-line" data-testid="dock-plan">
             <ListChecks className="k-docket-glyph" />
-            <span className="k-face-figure k-docket-n">{done}/{plan.length}</span>
-            <span className="min-w-0 truncate">{now ? (now.active ?? now.text) : "Plan"}</span>
-            <span className="k-docket-track" aria-hidden="true"><span style={{ width: `${(100 * done) / plan.length}%` }} /></span>
+            {state === "stale" && known ? (
+              <span className="min-w-0 truncate text-faint" data-testid="dock-plan-stale">{planLine("stale", { ...known, now: clock, items: plan })}</span>
+            ) : (
+              <>
+                <span className="k-face-figure k-docket-n">{done}/{plan.length}</span>
+                <span className="min-w-0 truncate">{now ? (now.active ?? now.text) : "Plan"}</span>
+                <span className="k-docket-track" aria-hidden="true"><span style={{ width: `${(100 * done) / plan.length}%` }} /></span>
+              </>
+            )}
             <ChevronRight className="k-docket-more transition-transform group-data-[open]/plan:rotate-90" />
           </Collapsible.Trigger>
           <Collapsible.Panel className="k-docket-panel">

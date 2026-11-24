@@ -158,3 +158,13 @@ export async function lastCall(
     page = await d.named({ session, names, before, below: page.below, max: THERE_ROWS });
   }
 }
+
+// When the reply that holds a call was stored, and how many turns of the session ended after it and
+// before the place the reader holds from (`before`, a seq): what a reader needs to say how long ago
+// the call was. Two reads by index, bounded by one session's turn ends.
+export function callAge(db: Database, session: string, seq: number, before: number | null): { ts?: number; turns?: number } {
+  const at = db.query<{ ts: number }, [string, number]>("SELECT ts FROM events WHERE session_id = ? AND seq = ?").get(session, seq)?.ts;
+  if (at === undefined) return {};
+  const turns = db.query<{ n: number }, [string, number, number]>("SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND kind = 'turn_end' AND ts > ? AND seq < ?").get(session, at, before ?? END)?.n ?? 0;
+  return { ts: at, turns };
+}
