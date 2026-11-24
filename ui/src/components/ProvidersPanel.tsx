@@ -109,7 +109,7 @@ function ProviderRow({ p }: { p: Row }) {
       <Dot tone={tone(p)} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="truncate text-base font-medium">{p.label}</span>
+          <span className="k-truncate text-base font-medium">{p.label}</span>
           <span className="rounded-xs bg-sunken px-1.5 text-micro uppercase tracking-wide text-faint">{WIRE[p.wire] ?? p.wire}</span>
           {p.kind !== "builtin" && <span className="text-micro text-faint">{p.server ?? p.kind}</span>}
           {p.source === "providers.toml" && <span className="text-micro text-faint">providers.toml</span>}
@@ -125,7 +125,7 @@ function ProviderRow({ p }: { p: Row }) {
             )}
           </span>
         </div>
-        {p.detail && <div className="truncate text-caption text-faint" title={p.detail}>{p.detail}{p.account ? ` · ${p.account}` : ""}</div>}
+        {p.detail && <div className="k-truncate text-caption text-faint" title={p.detail}>{p.detail}{p.account ? ` · ${p.account}` : ""}</div>}
         {p.available && l.fetched_ms && l.state !== "failed" && <div className="text-micro text-faint">listed {ago(l.fetched_ms)}</div>}
         {p.available && p.problem && <ProblemNote p={p.problem} label={p.label} detail={p.problem.kind === "auth" ? p.detail : undefined} />}
         {p.available && p.routes?.map((r) => <RouteProblemNote key={r.route} p={r} provider={p.id} />)}

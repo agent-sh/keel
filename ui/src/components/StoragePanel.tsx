@@ -48,7 +48,7 @@ function UnreadableSettings({ why, onReset }: { why: string; onReset: () => Prom
       <div className="min-w-0 flex-1">
         <div className="font-medium">settings.json cannot be read; these are the defaults</div>
         <div className="mt-0.5 text-muted">{why}. Saving is off so the file keeps your other settings. Fix it and restart the daemon, or reset: the file moves aside, kept as is.</div>
-        {moved && <div className="mt-1 truncate font-mono text-caption text-faint" title={moved}>{moved}</div>}
+        {moved && <div className="mt-1 k-truncate font-mono text-caption text-faint" title={moved}>{moved}</div>}
       </div>
       <button type="button" className={btn} onClick={() => onReset().then(setMoved).catch(reportError)}>Reset</button>
     </div>
@@ -92,7 +92,7 @@ function Bars({ rows }: { rows: { label: string; bytes: number; hint?: string }[
       {rows.map((r) => (
         // Three columns with room; on a narrow page the name and the size share a line and the bar runs under both.
         <div key={r.label} className="grid grid-cols-[9rem_1fr_5.5rem] items-center gap-x-3 gap-y-1.5 text-ui @max-[30rem]/settings:grid-cols-[minmax(0,1fr)_auto]">
-          <span className="truncate" title={r.hint}>{r.label}</span>
+          <span className="k-truncate" title={r.hint}>{r.label}</span>
           <div className="h-2 rounded-full bg-sunken @max-[30rem]/settings:col-span-2 @max-[30rem]/settings:row-start-2">
             <div className="h-2 rounded-full bg-series-1" style={{ width: `${Math.max(r.bytes ? 1 : 0, (r.bytes / max) * 100)}%` }} />
           </div>
@@ -189,7 +189,7 @@ export function StoragePanel() {
       {unreadable !== undefined && <UnreadableSettings why={unreadable} onReset={resetSettings} />}
       <Group title={<span className="text-title font-semibold tabular-nums tracking-[-0.01em]" data-testid="storage-total">{fmtBytes(r.total_bytes)}</span>}
         hint={<>
-          <span className="block truncate font-mono" title={r.state_dir}>{r.state_dir}</span>
+          <span className="block k-truncate font-mono" title={r.state_dir}>{r.state_dir}</span>
           <span title={when(r.measured_ms)}>measured {ago(r.measured_ms) === "now" ? "just now" : `${ago(r.measured_ms)} ago`}</span>
           {/* The sessions' sizes come from a read of every event, made once a start and kept: when that read is older than the sizes on disk, it says so. */}
           {r.scanned_ms !== undefined && r.measured_ms - r.scanned_ms > 120_000 && <span title={when(r.scanned_ms)} data-testid="storage-scanned">, sessions read {ago(r.scanned_ms)} ago</span>}

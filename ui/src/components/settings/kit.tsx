@@ -199,7 +199,7 @@ export function Row({ name, after, title, open, onOpen, detail, detailTestid, ch
                 {dropped.map((c, i) => (
                   <div key={i}>
                     <dt>{c.props.col.head}</dt>
-                    <dd className={c.props.className?.split(" ").filter((x) => !/^(max-w-|truncate$)/.test(x)).join(" ") || undefined}>{c.props.children}</dd>
+                    <dd className={c.props.className?.split(" ").filter((x) => !/^(max-w-|k-truncate$|truncate$)/.test(x)).join(" ") || undefined}>{c.props.children}</dd>
                   </div>
                 ))}
               </dl>

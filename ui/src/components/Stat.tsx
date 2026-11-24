@@ -16,11 +16,11 @@ export function Stats({ children, testid, className, plain }: { children: ReactN
 export function Stat({ label, value, sub, tone, testid }: { label: string; value: ReactNode; sub?: ReactNode; tone?: "danger"; testid?: string }) {
   return (
     <div className="min-w-0 flex-[1_1_9.5rem] bg-raised px-4 py-3 group-data-[plain]/stats:bg-transparent group-data-[plain]/stats:p-0" data-stat="" data-testid={testid}>
-      <div className="truncate text-caption text-muted">{label}</div>
+      <div className="k-truncate text-caption text-muted">{label}</div>
       {/* A figure cut short reads as another figure: the whole one is its tooltip. */}
-      <div className={cn("mt-1 truncate text-title font-semibold tabular-nums", tone === "danger" && "text-danger")} title={typeof value === "string" || typeof value === "number" ? String(value) : undefined}>{value}</div>
+      <div className={cn("mt-1 k-truncate text-title font-semibold tabular-nums", tone === "danger" && "text-danger")} title={typeof value === "string" || typeof value === "number" ? String(value) : undefined}>{value}</div>
       {/* On the page itself the line under a figure is read whole; in a framed strip it keeps to one line. */}
-      {sub && <div className="mt-0.5 truncate text-caption text-faint group-data-[plain]/stats:whitespace-normal" title={typeof sub === "string" ? sub : undefined}>{sub}</div>}
+      {sub && <div className="mt-0.5 k-truncate text-caption text-faint group-data-[plain]/stats:whitespace-normal" title={typeof sub === "string" ? sub : undefined}>{sub}</div>}
     </div>
   );
 }
@@ -63,7 +63,7 @@ export function Split({ parts, format, heads, testid }: { parts: Part[]; format:
         {parts.map((p) => (
           <div key={p.label} className="contents" data-testid={p.testid}>
             <span className="size-2 translate-y-[-1px] rounded-xs" style={{ background: p.color }} aria-hidden />
-            <dt className="min-w-0 truncate text-muted">{p.label}</dt>
+            <dt className="min-w-0 k-truncate text-muted">{p.label}</dt>
             <dd className="text-right font-medium tabular-nums">{format(p.value)}</dd>
             {also && <dd className="hidden text-right text-caption tabular-nums text-muted @[19rem]:block">{p.also}</dd>}
             <dd className="min-w-10 text-right text-caption tabular-nums text-faint">{pct(p.value)}</dd>

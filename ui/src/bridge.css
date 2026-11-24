@@ -1419,6 +1419,13 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-settings-rail[data-open] + .k-settings-scroll { display: none; }
 .k-settings-body { max-width: 52rem; padding: 1rem 1rem 1.5rem; }
 .k-settings-body[data-wide] { max-width: 92rem; }
+/* A line cut short with an ellipsis: a section's names, URLs and paths, a panel's file names. A phone writes it whole:
+   no hover shows the rest, and a title is no way to read it on a touch screen. */
+/* (In the components layer, as the utility it replaces was: a width or a wrap a part's own classes give still applies.) */
+@layer components { .k-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
+@media (pointer: coarse) and (max-width: 767px) {
+  .k-truncate, .k-set-sub[data-clip], .k-settings-body :is(.k-path, .k-editor-bar > span:first-child) { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+}
 /* The bar carries the title on a narrow page; the heading stays for a screen reader. */
 .k-settings-body > h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Wide: the grouped rail stands beside the section and the bar is gone. */

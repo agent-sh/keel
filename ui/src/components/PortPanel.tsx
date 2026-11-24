@@ -37,7 +37,7 @@ function Row({ it, on, toggle }: { it: Item; on: boolean; toggle: () => void }) 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="shrink-0 text-caption text-faint">{it.source}</span>
-          <span className="min-w-0 truncate text-ui font-medium" title={it.title}>{it.title}</span>
+          <span className="min-w-0 k-truncate text-ui font-medium" title={it.title}>{it.title}</span>
           {it.result ? <span className="ml-auto shrink-0 rounded-xs bg-sunken px-1.5 text-micro font-medium text-ok">Brought</span>
             : it.error ? <span className="ml-auto shrink-0 rounded-xs bg-danger-soft px-1.5 text-micro font-medium text-danger">Failed</span>
             : <span className={cn("ml-auto shrink-0 rounded-xs px-1.5 text-micro font-medium", STATE[it.state].cls)}>{STATE[it.state].label}</span>}

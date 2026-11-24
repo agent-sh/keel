@@ -34,7 +34,7 @@ function Items({ label, items, tone }: { label: string; items: Item[]; tone: str
       </div>
       <ul className="space-y-1">
         {items.slice(0, 5).map((i) => (
-          <li key={i.id} className="truncate text-ui" title={i.detail}>{i.title}</li>
+          <li key={i.id} className="k-truncate text-ui" title={i.detail}>{i.title}</li>
         ))}
         {items.length > 5 && <li className="text-caption text-faint">{items.length - 5} more in momentum's report</li>}
       </ul>
@@ -95,7 +95,7 @@ export function IntegrationsSettings() {
           <Status on={!!info?.tacit.available}>{info ? (info.tacit.available ? "On" : "Not installed") : "..."}</Status>
         </SettingRow>
         {info?.tacit.bin && (
-          <SettingRow label="Binary"><span className="block max-w-[26rem] truncate font-mono text-caption text-muted" title={info.tacit.bin}>{info.tacit.bin}</span></SettingRow>
+          <SettingRow label="Binary"><span className="block max-w-[26rem] k-truncate font-mono text-caption text-muted" title={info.tacit.bin}>{info.tacit.bin}</span></SettingRow>
         )}
         {info?.tacit.available && (
           <SettingRow label="Corrections are written as" hint="A correction sent from the Memory panel is a note in the store. The store has no writer for Keel, so the note is recorded under one of the store's own writers, named here; its first sentence says it came from Keel.">
@@ -108,7 +108,7 @@ export function IntegrationsSettings() {
           <Status on={!!report?.available}>{report ? (report.available ? "Reporting" : "Not installed") : "..."}</Status>
         </SettingRow>
         {info?.momentum.socket && (
-          <SettingRow label="Control socket"><span className="block max-w-[26rem] truncate font-mono text-caption text-muted" title={info.momentum.socket} data-testid="momentum-socket">{info.momentum.socket}</span></SettingRow>
+          <SettingRow label="Control socket"><span className="block max-w-[26rem] k-truncate font-mono text-caption text-muted" title={info.momentum.socket} data-testid="momentum-socket">{info.momentum.socket}</span></SettingRow>
         )}
       </Card>
       {r && (

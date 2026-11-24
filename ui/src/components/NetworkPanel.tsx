@@ -64,9 +64,9 @@ export function NetworkPanel() {
                   <ul className="flex flex-col gap-1 text-caption">
                     {pairs(h.host).map((p) => (
                       <li key={p.session_id ?? ""} className="flex flex-wrap gap-x-3">
-                        {p.session_id ? <button type="button" className="k-link truncate text-accent hover:underline" onClick={() => navigate({ name: "session", id: p.session_id! })}>{title(p.session_id)}</button> : <span className="text-muted">Keel itself</span>}
+                        {p.session_id ? <button type="button" className="k-link k-truncate text-accent hover:underline" onClick={() => navigate({ name: "session", id: p.session_id! })}>{title(p.session_id)}</button> : <span className="text-muted">Keel itself</span>}
                         <span className="tabular-nums text-muted">{plural(p.rows, "transfer")}, {fmtSize(p.bytes)}{p.refused ? `, ${p.refused} refused` : ""}</span>
-                        <span className="truncate text-faint">{list(p.tools).join(", ")}</span>
+                        <span className="k-truncate text-faint">{list(p.tools).join(", ")}</span>
                       </li>
                     ))}
                   </ul>
@@ -76,7 +76,7 @@ export function NetworkPanel() {
                 <Cell col={H.bytes!}>{fmtSize(h.bytes)}{h.unknown_bytes > 0 && <span className="text-faint" title={`${plural(h.unknown_bytes, "transfer")} whose bytes are not counted (a git push, a body sent as a stream)`}> +?</span>}</Cell>
                 <Cell col={H.refused!} className={h.refused ? "text-st-fail" : "text-faint"}>{h.refused || "none"}</Cell>
                 <Cell col={H.sessions!} className="text-muted">{h.sessions}</Cell>
-                <Cell col={H.by!} className="max-w-60 truncate text-caption text-muted" title={list(h.tools).join(", ")}>{list(h.tools).join(", ")}</Cell>
+                <Cell col={H.by!} className="max-w-60 k-truncate text-caption text-muted" title={list(h.tools).join(", ")}>{list(h.tools).join(", ")}</Cell>
                 <Cell col={H.last!} className="text-caption text-muted">{clock(h.last)}</Cell>
               </Row>
             ))}
@@ -90,13 +90,13 @@ export function NetworkPanel() {
             {r.sessions.map((x) => (
               <tr key={x.session_id ?? ""} data-testid="network-session" data-session={x.session_id ?? ""}>
                 <Cell col={S.session!}>
-                  {x.session_id ? <button type="button" onClick={() => navigate({ name: "session", id: x.session_id! })} className="k-link truncate hover:underline">{title(x.session_id)}</button> : <span className="text-muted">Keel itself</span>}
+                  {x.session_id ? <button type="button" onClick={() => navigate({ name: "session", id: x.session_id! })} className="k-link k-truncate hover:underline">{title(x.session_id)}</button> : <span className="text-muted">Keel itself</span>}
                   {x.parent_id && <span className="ml-2 text-caption text-faint">agent of {title(x.parent_id)}</span>}
                 </Cell>
                 <Cell col={S.rows!}>{x.rows.toLocaleString()}</Cell>
                 <Cell col={S.bytes!}>{fmtSize(x.bytes)}</Cell>
                 <Cell col={S.refused!} className={x.refused ? "text-st-fail" : "text-faint"}>{x.refused || "none"}</Cell>
-                <Cell col={S.hosts!} className="max-w-96 truncate font-mono text-caption text-muted" title={list(x.hosts).join(", ")}>{list(x.hosts).join(", ")}</Cell>
+                <Cell col={S.hosts!} className="max-w-96 k-truncate font-mono text-caption text-muted" title={list(x.hosts).join(", ")}>{list(x.hosts).join(", ")}</Cell>
               </tr>
             ))}
           </Table>
@@ -108,7 +108,7 @@ export function NetworkPanel() {
           <List label="Latest" dense>
             {r.recent.map((x, i) => (
               <Item key={i} testid="network-row" mono name={`${x.host}${x.port ? `:${x.port}` : ""}`}
-                sub={<span className="block truncate" title={x.why ?? undefined}>{x.tool}{x.via ? `, ${x.via}` : ""}. {x.session_id ? title(x.session_id) : "Keel itself"}{x.why ? `: ${x.why}` : ""}</span>}
+                sub={<span className="block k-truncate" title={x.why ?? undefined}>{x.tool}{x.via ? `, ${x.via}` : ""}. {x.session_id ? title(x.session_id) : "Keel itself"}{x.why ? `: ${x.why}` : ""}</span>}
                 status={x.outcome === "sent" ? undefined : <Status tone={x.outcome === "refused" ? "broken" : "warn"}>{OUTCOME[x.outcome] ?? x.outcome}</Status>}
                 meta={<>
                   <span className="w-16 text-right">{x.bytes_out === null ? "?" : fmtSize(x.bytes_out)}</span>

@@ -52,9 +52,9 @@ const HOW = { keel: "Keel made it for this session", found: "New in the reposito
 function Who({ by }: { by?: By }) {
   if (!by) return <span className="text-faint">no session known</span>;
   return (
-    <span className="flex max-w-52 items-baseline gap-1.5 truncate" data-testid="leftover-by" data-how={by.how}>
+    <span className="flex max-w-52 items-baseline gap-1.5 k-truncate" data-testid="leftover-by" data-how={by.how}>
       {by.how === "found" && <span className="shrink-0 text-faint" title={HOW.found}>found by</span>}
-      <button type="button" className="k-link min-w-0 truncate text-left hover:underline" title={`${by.title}${by.how ? `\n${HOW[by.how]}` : ""}`} onClick={() => navigate({ name: "session", id: by.session_id })}>
+      <button type="button" className="k-link min-w-0 k-truncate text-left hover:underline" title={`${by.title}${by.how ? `\n${HOW[by.how]}` : ""}`} onClick={() => navigate({ name: "session", id: by.session_id })}>
         {by.title || "Untitled"}
       </button>
     </span>
@@ -138,7 +138,7 @@ export function LeftoversPanel() {
   const foreignItem = (f: Foreign) => (
     <Item key={f.cgroup} testid="leftover-foreign" data-unit={f.unit} mono name={f.commands[0] ?? "no process"}
       title={f.commands.join("\n")}
-      sub={<span className="block truncate" title={[f.cgroup, f.why, f.marks.length ? `marks ${f.marks.join(", ")}` : "", f.sessions.length ? `sessions ${f.sessions.join(", ")}` : ""].filter(Boolean).join("\n")}>
+      sub={<span className="block k-truncate" title={[f.cgroup, f.why, f.marks.length ? `marks ${f.marks.join(", ")}` : "", f.sessions.length ? `sessions ${f.sessions.join(", ")}` : ""].filter(Boolean).join("\n")}>
         {f.commands.length > 1 ? `+${f.commands.length - 1} more kinds · ` : ""}{f.unit}{f.cwd ? ` · ${f.cwd}${f.gone ? " (folder gone)" : ""}` : ""}
       </span>}
       meta={<>
@@ -171,7 +171,7 @@ export function LeftoversPanel() {
           <List label="Left running">
             {s.processes.map((p) => (
               <Item key={`${p.session_id}:${p.job_id}`} testid="leftover-process" data-job={p.job_id} mono name={p.command} title={`${p.command}\n${p.cwd}`}
-                sub={p.scope && <span className={cn("block truncate", p.scope.fate.act !== "keep" && "text-warn")} data-testid="leftover-fate" data-act={p.scope.fate.act}
+                sub={p.scope && <span className={cn("block k-truncate", p.scope.fate.act !== "keep" && "text-warn")} data-testid="leftover-fate" data-act={p.scope.fate.act}
                   title={p.scope.builds.length ? p.scope.builds.map((b) => `${b.kind}, pid ${b.pid}, ${mb(b.memory_bytes)}`).join("\n") : undefined}>{fateLine(p.scope)}</span>}
                 meta={<>
                   {p.ports.map((port) => <Status key={port} tone="info" testid="leftover-port">:{port}</Status>)}

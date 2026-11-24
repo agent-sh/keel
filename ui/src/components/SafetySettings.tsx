@@ -320,8 +320,8 @@ function WorktreesCard() {
                 const s = sessions[w.session_id];
                 return (
                   <li key={w.session_id} className="flex items-center gap-2 text-caption">
-                    <span className="max-w-[45%] shrink-0 truncate font-mono">{w.branch}</span>
-                    <span className="min-w-0 flex-1 truncate text-faint">{s ? (s.archived ? "archived" : s.title || "session") : "session deleted"}</span>
+                    <span className="max-w-[45%] shrink-0 k-truncate font-mono">{w.branch}</span>
+                    <span className="min-w-0 flex-1 k-truncate text-faint">{s ? (s.archived ? "archived" : s.title || "session") : "session deleted"}</span>
                     <span className={w.state === "parked" ? "shrink-0 text-warn" : "shrink-0 text-muted"}>{w.state}{w.state === "active" && (w.dirty || w.commits_ahead) ? ` · ${w.dirty} changed · ${w.commits_ahead} ahead` : ""}</span>
                   </li>
                 );
@@ -400,7 +400,7 @@ function PasskeysCard() {
             <ul className="mt-3 flex flex-col gap-1" data-testid="passkey-list">
               {info.passkeys.map((p) => (
                 <li key={p.id} className="flex items-center gap-2 text-caption">
-                  <span className="min-w-0 flex-1 truncate">{p.label ?? "Passkey"}</span>
+                  <span className="min-w-0 flex-1 k-truncate">{p.label ?? "Passkey"}</span>
                   <span className="font-mono text-faint">{p.rp_id}</span>
                   <span className="text-faint">{p.used ? `used ${new Date(p.used).toLocaleDateString()}` : "not used yet"}</span>
                   <button className="text-faint hover:text-danger" onClick={() => api(`/api/owner-presence/${encodeURIComponent(p.id)}`, { method: "DELETE" }).then(load).catch((e) => setMsg({ text: failed(e, { at: "SafetySettings" }), error: true }))}>Remove</button>
@@ -456,7 +456,7 @@ function RemoteAccessCard() {
             A request through a tunnel or proxy, from another address or from another account on this machine needs this daemon's access token. Open this link once on the other device; it keeps the token as a cookie. Anyone with the link can use Keel as you.
           </p>
           <div className="mt-3 flex items-center gap-2">
-            <code className="min-w-0 flex-1 truncate rounded bg-code px-2 py-1 font-mono text-caption text-fg" data-testid="remote-access-link">{full.replace(/token=[^&]+/, "token=\u2026")}</code>
+            <code className="min-w-0 flex-1 k-truncate rounded bg-code px-2 py-1 font-mono text-caption text-fg" data-testid="remote-access-link">{full.replace(/token=[^&]+/, "token=\u2026")}</code>
             <button data-testid="remote-access-copy" onClick={(e) => copyOrSay(full, e.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })} className="k-btn k-btn-lg">{copied ? "Copied" : "Copy link"}</button>
           </div>
           {!link.hosts.length && <p className="k-empty mt-2">No tunnel host is set: start the daemon with KEEL_ALLOWED_HOSTS naming it.</p>}

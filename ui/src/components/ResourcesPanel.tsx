@@ -83,7 +83,7 @@ export function ResourcesPanel() {
         <Stat label="Daemon" value={fmtBytes(d.rss_bytes)} sub={d.growth.per_hour_bytes == null ? `peak ${fmtBytes(d.peak_rss_bytes)}` : `${d.growth.per_hour_bytes >= 0 ? "+" : "-"}${fmtBytes(Math.abs(d.growth.per_hour_bytes))} an hour`} />
         <Stat testid="tile-cpu" label="CPU now" value={fmtCpu(r.totals.cpu_percent)} sub={`daemon ${fmtCpu(d.cpu_percent)}, ${fmtMs(d.cpu_user_ms + d.cpu_system_ms)} in all`} />
         <Stat testid="tile-left" label="Left running" value={r.left?.at ? fmtBytes(r.left.memory_bytes) : "not measured yet"}
-          sub={r.left?.at ? <button type="button" className="k-link truncate hover:underline" data-testid="tile-left-open" onClick={() => navigate({ name: "settings", section: "leftovers" })}
+          sub={r.left?.at ? <button type="button" className="k-link k-truncate hover:underline" data-testid="tile-left-open" onClick={() => navigate({ name: "settings", section: "leftovers" })}
             title={r.left.others.scopes ? `${fmtBytes(r.left.others.memory_bytes)} more in ${r.left.others.scopes} job scopes of other Keel daemons, which this one leaves alone` : undefined}>
             {r.left.scopes} {r.left.scopes === 1 ? "command" : "commands"}{r.left.others.scopes ? `, others ${fmtBytes(r.left.others.memory_bytes)}` : ""}
           </button> : undefined} />
@@ -130,7 +130,7 @@ export function ResourcesPanel() {
             <Row key={p.pid} testid="process-row" title={p.command}
               name={<span className="font-mono text-caption">{p.label}</span>}
               after={p.session_id && (
-                <button type="button" onClick={() => navigate({ name: "session", id: p.session_id! })} className="k-link ml-2 max-w-full truncate text-caption text-accent hover:underline">
+                <button type="button" onClick={() => navigate({ name: "session", id: p.session_id! })} className="k-link ml-2 max-w-full k-truncate text-caption text-accent hover:underline">
                   {title(p.session_id)}
                 </button>
               )}>
@@ -148,7 +148,7 @@ export function ResourcesPanel() {
         <Group testid="resources-sessions" title="By session" hint="Commands the session's tools started, ended ones included.">
           <Table cols={Object.values(S)} label="By session">
             {r.sessions.map((s) => (
-              <Row key={s.session_id} name={<button type="button" onClick={() => navigate({ name: "session", id: s.session_id })} className="k-link max-w-full truncate hover:underline">{title(s.session_id)}</button>}>
+              <Row key={s.session_id} name={<button type="button" onClick={() => navigate({ name: "session", id: s.session_id })} className="k-link max-w-full k-truncate hover:underline">{title(s.session_id)}</button>}>
                 <Cell col={S.running!} className="text-muted">{s.processes}</Cell>
                 <Cell col={S.mem!}>{fmtBytes(s.rss_bytes)}</Cell>
                 <Cell col={S.time!} className="text-muted">{fmtMs(s.total.cpu_user_ms + s.total.cpu_system_ms)}</Cell>
