@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { allHooks, registerHooks } from "../engine/hooks.ts";
 
 const hooksAtStart = allHooks().length;
-afterAll(() => { allHooks().length = hooksAtStart; });
+afterAll(async () => { allHooks().length = hooksAtStart; (await import("../admin/settings.ts")).loadSettings(process.env.KEEL_STATE_DIR!, () => {}); });
 
 const SERVER = join(import.meta.dir, "../../test/support/stallfs.py");
 const canMount = !!Bun.which("fusermount3") && !!Bun.which("python3") && existsSync("/dev/fuse");

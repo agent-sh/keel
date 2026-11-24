@@ -164,3 +164,21 @@ test("a test that calls mkdtemp makes it under the run's TMPDIR or removes it", 
   });
   expect(found).toEqual([]);
 });
+
+// The run's config and state folders (test/preload.ts) are read by every test file of the run, which shares one
+// process. A file that removes one, or leaves the settings tied to a folder it removed, fails the files after it
+// (ENOENT on the next settings save), and which files come after depends on the folder's order on the disk.
+// A file that needs a folder to remove makes one of its own (tempTree in test/env.ts).
+test("a test file removes none of the run's shared folders and puts the settings back", () => {
+  const tests = [...files(join(ROOT, "src"), /\.test\.ts$/), ...files(join(ROOT, "scripts"), /\.test\.ts$/)].filter((f) => !f.endsWith("conventions.test.ts"));
+  // (The sandbox specs remove the TMPDIR they set for one command, which is theirs: they put it back.)
+  const removing = /\b(rmSync|rmdirSync|rm|rmdir)\(\s*(join\(\s*)?process\.env\.(KEEL_STATE_DIR|KEEL_CONFIG_DIR|KEEL_IMPORT_\w+|HOME)\b/;
+  expect(tests.filter((f) => removing.test(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f))).toEqual([]);
+  // The settings file is the last one loaded (src/admin/settings.ts): a file that loads one from a folder of its own
+  // loads the run's state folder again when it ends.
+  const own = tests.filter((f) => {
+    const loads = [...readFileSync(f, "utf8").matchAll(/\bloadSettings\(([^,)]*)/g)].map((m) => m[1]!.trim());
+    return loads.some((a) => a !== "process.env.KEEL_STATE_DIR!") && !loads.includes("process.env.KEEL_STATE_DIR!");
+  });
+  expect(own.map((f) => relative(ROOT, f))).toEqual([]);
+});

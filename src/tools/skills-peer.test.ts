@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { allHooks } from "../engine/hooks.ts";
@@ -21,6 +21,8 @@ afterEach(() => {
 });
 
 loadSettings(settingsDir, () => {});
+// The settings are process-wide: the files after this one get the scratch state folder's again.
+afterAll(() => { loadSettings(process.env.KEEL_STATE_DIR!, () => {}); });
 
 // A repository on this machine that holds a skill the peer lacks.
 function localRepo(): string {

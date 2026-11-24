@@ -6,7 +6,7 @@
 // reach on the machine, point into one fresh folder, removed when the last
 // test is done. A test that needs its own sets it over these.
 import { afterAll, afterEach, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { allHooks } from "../src/engine/hooks.ts";
@@ -91,6 +91,12 @@ for (const k of unset) delete process.env[k];
 // What every file starts with: the settings above, as they are here.
 const start: Record<string, string | undefined> = { ...scratch, ...Object.fromEntries(unset.map((k) => [k, undefined])) };
 
+// The run's shared folders (the config, state, temp and home folders above, and what is under them that was made
+// here): every file of the run reads them, so a file that removes one leaves the next without it. A file that needs
+// a folder to remove makes one of its own (tempTree in test/env.ts). One that is gone at the end of a file is made
+// again, and the file that removed it is named.
+const shared = [dir, ...Object.values(scratch)].filter((p) => { try { return statSync(p).isDirectory(); } catch { return false; } });
+
 // Turn hooks are process-wide (src/engine/hooks.ts): one a test file leaves
 // registered runs in every later file's turns, on a store that file closed. A
 // file must end with no hook of its own registered. The one hook a module
@@ -141,8 +147,10 @@ function leftBehind() {
   const { loadSettings, settingsFile } = settingsModule;
   const gone = settingsAfterLast !== "" && settingsFile() === settingsAfterLast && !existsSync(dirname(settingsAfterLast)) ? settingsAfterLast : "";
   settingsAfterLast = "";
+  const removed = shared.filter((p) => !existsSync(p));
+  for (const p of removed) mkdirSync(p, { recursive: true });
   if (gone) loadSettings(process.env.KEEL_STATE_DIR!, () => {});
-  if (!left.length && !tied && !moved.length && !gone) return;
+  if (!left.length && !tied && !moved.length && !gone && !removed.length) return;
   const by = new Map<string, string[]>();
   for (const k of moved) {
     const value = `${k}=${process.env[k] ?? "(unset)"}`, from = cameFrom.get(value) ?? file;
@@ -155,6 +163,7 @@ function leftBehind() {
   const said: string[] = [];
   if (left.length) said.push(`${file} ended with ${left.length} turn hook${left.length > 1 ? "s" : ""} of its own still registered (${left.map((h) => Object.keys(h).join("+")).join("; ")}). Hooks are process-wide: take them off in the test that adds them, or in afterAll.`);
   if (gone) said.push(`${file} ended with the settings tied to ${gone}, a folder it removed. The settings are process-wide: load the scratch state folder again (loadSettings(process.env.KEEL_STATE_DIR!, () => {})) in afterAll.`);
+  if (removed.length) said.push(`${file} ended with the run's shared folder${removed.length > 1 ? "s" : ""} removed: ${removed.join(", ")}. Every file of the run reads them: remove only a folder of the file's own (tempTree in test/env.ts).`);
   if (tied) said.push(`${file} ended with the secrets vault still tied to its store. The vault is process-wide: set vault.ledger to null and vault.parentOf to () => null before the store closes.`);
   for (const [from, values] of by) said.push(`${from} ended with settings of the environment changed: ${values.join(", ")}. The environment is process-wide: put back what a test changed, in the test or in afterAll (test/env.ts does both).`);
   throw new Error(said.join("\n"));
