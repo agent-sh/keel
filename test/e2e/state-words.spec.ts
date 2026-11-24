@@ -293,7 +293,9 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     // A phone: the same words in the list of background work.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${coord}`);
-    await expect(page.getByTestId("agent-call").first()).toBeVisible();
+    // (The page opens at the newest: the agents' reports, which is what is read here; the spawn cards far above
+    // are drawn only when scrolled to, since the transcript draws what is near the view.)
+    await expect(station(page, coord).getByTestId("agent-report").last()).toBeVisible();
     await reportsWhole("a phone");
     await shoot(page, "state-words-04-phone");
     if (await page.getByTestId("background-button").isVisible()) {
