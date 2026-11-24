@@ -172,6 +172,11 @@ under `~/.cache/keel-work/bun/research/`.
   limits attaching to ancestors, and Settings > Health says both facts (`sandbox:environment`,
   `sandbox:ptrace`). A daemon a client command starts in its own process is not started again; its
   row warns.
+- WebFetch uses the fetch program when it is installed, and the program resolves and connects by itself. With
+  a proxy in the environment (`HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`, and `NO_PROXY` not covering the name)
+  it would send the name in CONNECT and the proxy would resolve it again after the local check, so the
+  built-in fetch is used then (`viaProxy`, `src/tools/pinned.ts`): it resolves once, vets every address and
+  connects to a vetted one, the proxy getting that address.
 - A turn ends as "interrupted" only when `Engine.interrupt` was called for it,
   and every caller says who it is with a word of `src/core/stoppers.ts`, kept
   on the turn's end (`stopped_by`). What is said of the stop and what follows

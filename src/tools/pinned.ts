@@ -9,6 +9,16 @@ import { addressBytes, internalAddress } from "../core/hosts.ts";
 import { noteOutward, outward } from "../safety/egress.ts";
 import { requestBytes } from "../safety/egress-count.ts";
 
+// Whether a request to this name would go through a proxy the environment names (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY,
+// either case) and NO_PROXY does not cover the name. A program that sends such a request puts the name in
+// CONNECT and the proxy resolves it again after any local check; the built-in path puts the vetted address there.
+export function viaProxy(u: URL, env: Record<string, string | undefined> = process.env): boolean {
+  if (!["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"].some((k) => env[k] || env[k.toLowerCase()])) return false;
+  const host = u.hostname.toLowerCase();
+  const skipped = (env.NO_PROXY ?? env.no_proxy ?? "").split(",").map((x) => x.trim().toLowerCase().replace(/^\*?\./, "")).filter(Boolean);
+  return !skipped.some((x) => x === "*" || host === x || host.endsWith(`.${x}`));
+}
+
 export type Reached = { res: Response } | { refused: string };
 
 // The addresses a name has, IPv4 first (the one connected to is the first).

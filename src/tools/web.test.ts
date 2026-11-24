@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { pinnedFetch } from "./pinned.ts";
 import { setEgressSink } from "../safety/egress.ts";
 import { fetched, fetchFor, MARKUP_MAX, plainFetch, webFetch } from "./web.ts";
+import { viaProxy } from "./pinned.ts";
 import { pdf, png } from "../../test/e2e/fixtures/files.ts";
 import { nameLocal, PUBLIC } from "../../test/e2e/fixtures/local-names.ts";
 
@@ -311,3 +312,25 @@ test.skipIf(!Bun.which("openssl"))("a pinned request connects to the given addre
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("with a proxy in the way the fetch program is not used: the name is not left for the proxy to resolve", () => scene(async ({ dir, led }) => {
+  expect(viaProxy(new URL(`https://${HOST}/`), { HTTPS_PROXY: "http://proxy.test:3128" })).toBe(true);
+  expect(viaProxy(new URL(`https://${HOST}/`), { https_proxy: "http://proxy.test:3128", NO_PROXY: "other.test, .example.test" })).toBe(false);
+  expect(viaProxy(new URL(`https://${HOST}/`), { ALL_PROXY: "socks5://proxy.test:1080", NO_PROXY: "*" })).toBe(false);
+  expect(viaProxy(new URL(`https://${HOST}/`), {})).toBe(false);
+  // Without one the program makes the request; with one the built-in path makes it, to the vetted address.
+  await webFetch(`https://${HOST}/img`, { spillDir: dir });
+  expect(led.rows.some((x) => x.via === "fetch helper")).toBe(true);
+  led.rows.length = 0;
+  const keep = { HTTPS_PROXY: process.env.HTTPS_PROXY, NO_PROXY: process.env.NO_PROXY };
+  process.env.HTTPS_PROXY = "http://proxy.test:3128";
+  process.env.NO_PROXY = "127.0.0.1,localhost";
+  try {
+    const r = await webFetch(`https://${HOST}/img`, { spillDir: dir });
+    expect(r.text).toMatch(/^\[image\/png/);
+    expect(led.rows.some((x) => x.via === "fetch helper")).toBe(false);
+    expect(led.rows.filter((x) => x.via === "web fetch").map((x) => x.outcome)).toEqual(["sent"]);
+  } finally {
+    for (const [k, v] of Object.entries(keep)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+}));

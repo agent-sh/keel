@@ -15,7 +15,7 @@ import { READ_WHOLE_CHARS } from "../engine/reader.ts";
 import { chunks, readText } from "../core/proc.ts";
 import { privateHost } from "../core/hosts.ts";
 import { noteOutward } from "../safety/egress.ts";
-import { vettedFetch } from "./pinned.ts";
+import { vettedFetch, viaProxy } from "./pinned.ts";
 import { endpointOf, requestBytes } from "../safety/egress-count.ts";
 import { homeDir } from "../core/paths";
 
@@ -154,7 +154,10 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     noteOutward({ via: "web fetch", host: u.hostname, port: Number(u.port) || 443, bytes: 0, outcome: "refused", why: "a local or private address" });
     return { text: `${u.hostname} is a local or private address; reach local servers with curl in the shell.`, error: true };
   }
-  const bin = findBin("harness-webfetch-cli", "KEEL_WEBFETCH_BIN");
+  // The fetch program resolves and connects by itself, and through a proxy it sends the name in CONNECT, so the
+  // proxy resolves it again after any check made here: with a proxy in the way the built-in path fetches, to an
+  // address it vetted (src/tools/pinned.ts).
+  const bin = viaProxy(u) ? undefined : findBin("harness-webfetch-cli", "KEEL_WEBFETCH_BIN");
   if (bin) {
     const params: any = { url: u.href, extract: o.extract ?? "markdown" };
     if (o.method) params.method = o.method;
