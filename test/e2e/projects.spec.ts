@@ -9,8 +9,9 @@ test.use({ viewport: { width: 1700, height: 980 } });
 // a folder, a file and a default mode; a session in its folder joins it, a
 // new session from the project starts in its folder and mode, a session
 // dragged onto the project joins it and leaves it from its panel. The
-// instructions are a block of each member's kept prompt, and a change to them
-// is made again at the next turn and named.
+// instructions are a block of each member's kept prompt; a change to them is
+// told at the tail of a warm session, and a compaction folds it into the
+// prompt and names it.
 test("projects: instructions, folders, defaults, membership", async ({ page, request }) => {
   const word = `pj${Date.now().toString(36)}`;
   const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", word);
@@ -89,9 +90,21 @@ test("projects: instructions, folders, defaults, membership", async ({ page, req
   await expect(page.getByTestId("project-instructions-save")).toHaveText("Saved");
   await request.post(`/api/sessions/${a.id}/messages`, { data: { text: "second" } });
   await turns(a.id, 2);
+  // The cache is warm, so the kept prompt stays as it was sent and the change
+  // is told at the tail of the history as a note (src/engine/prompt-note.ts).
   const k2 = await kept();
-  expect(k2.text).toContain(`main-${word}`);
-  expect(k2.changed.blocks).toEqual(["Project instructions"]);
+  expect(k2.text).toContain(`next-${word}`);
+  expect(k2.text).not.toContain(`main-${word}`);
+  const told = (await (await request.get(`/api/sessions/${a.id}`)).json()).events.filter((e: any) => e.kind === "note" && e.data.kind === "prompt_update");
+  expect(told.map((e: any) => Object.keys(e.data.blocks))).toEqual([["Project instructions"]]);
+  expect(told[0].data.text).toContain(`main-${word}`);
+  // A compaction folds it into the prompt, which names the block that changed.
+  await request.post(`/api/sessions/${a.id}/compact`, { data: {} });
+  await request.post(`/api/sessions/${a.id}/messages`, { data: { text: "third" } });
+  await turns(a.id, 3);
+  const k3 = await kept();
+  expect(k3.text).toContain(`main-${word}`);
+  expect(k3.changed.blocks).toEqual(["Project instructions"]);
 
   // Drag a session from No project onto the project's head: it joins.
   await page.goto(`/s/${b.id}`);
