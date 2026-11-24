@@ -144,7 +144,7 @@ test("an http wait on a loopback port a process of the session listens on is set
   const port = 48777;
   const job = startJob({ sessionId: s.id, command: `exec bun -e 'Bun.serve({ port: ${port}, hostname: "127.0.0.1", fetch: () => new Response("ok") }); setInterval(() => {}, 1000)' # ${port + 1}`, cwd: dir, logDir: join(dir, "jobs"), background: true });
   const was = { ...bindWait };
-  Object.assign(bindWait, { wait: 300 });
+  Object.assign(bindWait, { young: 300 });
   try {
     const refused = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port + 1}/health` }, ctx);
     expect(refused.is_error).toBe(true);
@@ -170,18 +170,18 @@ test("an http wait waits for a server the session just started to bind its port,
   const dir = mkdtempSync(join(tmpdir(), "keel-job-"));
   const port = 48781;
   const was = { ...bindWait };
-  Object.assign(bindWait, { wait: 8000, every: 50 });
+  Object.assign(bindWait, { every: 50, marks: 200 });
   const job = startJob({ sessionId: s.id, command: `sleep 1; exec bun -e 'Bun.serve({ port: ${port}, hostname: "127.0.0.1", fetch: () => new Response("ok") }); setInterval(() => {}, 1000)'`, cwd: dir, logDir: join(dir, "jobs"), background: true });
   try {
     const ok = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port}/health` }, ctx);
     expect(ok.is_error).toBeFalsy();
     expect(text(ok)).toContain("Scheduled http wait");
     // A port the new command never binds is refused when the time is up.
-    Object.assign(bindWait, { wait: 300 });
+    Object.assign(bindWait, { young: Date.now() - job.started + 300 });
     const refused = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port + 1}/health` }, ctx);
     expect(text(refused)).toContain(`no process of this session listens on ${port + 1} yet`);
     // A command that started long ago is not waited for.
-    Object.assign(bindWait, { wait: 8000, young: -1 });
+    Object.assign(bindWait, { young: -1 });
     const t = Date.now();
     expect((await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port + 2}/health` }, ctx)).is_error).toBe(true);
     expect(Date.now() - t).toBeLessThan(1000);
@@ -191,6 +191,40 @@ test("an http wait waits for a server the session just started to bind its port,
     for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
   }
 });
+
+// The ways a server is started that left the wait refused at once: behind a gate that takes a while, after a build,
+// and detached from the command's own group and session (setsid nohup, which the shell's end leaves behind).
+const freePort = () => { const l = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } }); const p = l.port; l.stop(true); return p; };
+const SERVER = (port: number) => `bun -e 'Bun.serve({ port: ${port}, hostname: "127.0.0.1", fetch: () => new Response("ok") }); setInterval(() => {}, 1000)'`;
+async function startedLike(name: string, command: (port: number) => string, gap = 0) {
+  const { startJob, stopJob } = await import("../tools/jobs.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-form-"));
+  const port = freePort();
+  const job = startJob({ sessionId: s.id, command: command(port), cwd: dir, logDir: join(dir, "jobs"), background: true });
+  try {
+    if (gap) await Bun.sleep(gap);
+    const r = await tool("WaitFor").run({ kind: "http", url: `http://127.0.0.1:${port}/health` }, ctx);
+    return { name, refused: !!r.is_error, said: text(r) };
+  } finally {
+    await stopJob(job);
+    for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
+    // (A detached server is not the job's to stop here.)
+    Bun.spawnSync(["pkill", "-f", `port: ${port},`]);
+  }
+}
+test("an http wait waits while a command the session started in the last minute still runs, whatever its start form", async () => {
+  const forms = [
+    // A gate (waitfor --capacity) or a build that holds the server back for longer than the old ten seconds.
+    await startedLike("gated", (port) => `sleep 13 && exec ${SERVER(port)}`),
+    // Asked for after a while, with the server still to come.
+    await startedLike("later", (port) => `sleep 3 && exec ${SERVER(port)}`, 1500),
+    // Detached: the shell ends at once and the server, in a session of its own, keeps running.
+    await startedLike("setsid", (port) => `setsid nohup ${SERVER(port)} > /dev/null 2>&1 &`),
+    await startedLike("gated setsid", (port) => `(sleep 2; exec setsid nohup ${SERVER(port)} > /dev/null 2>&1) &`),
+  ];
+
+  expect(forms.map((f) => [f.name, f.refused])).toEqual([["gated", false], ["later", false], ["setsid", false], ["gated setsid", false]]);
+}, 60_000);
 
 test("CronDelete deletes the model's own scheduled tasks, not the owner's", async () => {
   const mine = loops.create({ session_id: s.id, schedule: "10m", prompt: "check", created_by: "model" }).loop;

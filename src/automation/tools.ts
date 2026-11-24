@@ -14,7 +14,7 @@ import { privateHost } from "../tools/web.ts";
 import { heldSays } from "../core/stoppers.ts";
 import { statusText } from "./now.ts";
 import { existsSync } from "node:fs";
-import { jobPidsOf, jobsOf, running } from "../tools/jobs.ts";
+import { jobHasProcesses, jobPidsOf, jobsOf, processesOf, running, type Job } from "../tools/jobs.ts";
 import { portsOf } from "../fleet/portal.ts";
 import { isOwnPort } from "../safety/net-proxy.ts";
 import { basename, dirname, join } from "node:path";
@@ -423,27 +423,48 @@ const waitSchema = {
   required: ["kind"],
 };
 
-// The session's running background commands, and the ports their processes listen on.
-const ownJobs = (sessionId: string) => jobsOf(sessionId).filter(running);
+// The session's commands that still have processes (the command itself, or what it left running: a server
+// started with `&` or setsid stays in its scope or its group), and the ports those processes listen on.
+const ownJobs = (sessionId: string) => jobsOf(sessionId).filter((j) => running(j) || jobHasProcesses(j));
 const ownPorts = (sessionId: string) => {
   const pids = new Map(ownJobs(sessionId).map((j) => [j.id, jobPidsOf(j)] as const));
   return [...portsOf(pids).values()].flat().map((p) => p.port).filter((p) => !isOwnPort(p));
 };
 
 // A server the session started a moment ago has not bound its port yet (a dev server takes seconds to
-// start), and the wait asked for next would be refused as naming a port nothing listens on. When a command of
-// the session that is still running started within `young` ms, the port is looked at for up to `wait` ms
-// before it is refused; with no such command it is refused at once. (A test sets them shorter.)
-export const bindWait = { wait: 10_000, young: 30_000, every: 250 };
+// start, a build or a gate such as waitfor --capacity may come first), and the wait asked for next would be
+// refused as naming a port nothing listens on. While a command of the session that is still running started
+// within `young` ms, the port is looked at every `every` ms, so the wait ends when the last of them is
+// `young` old; with no such command it is refused at once. (A test sets them shorter.) What listens is found
+// by the pid tree under each command, and by the mark its processes carry (a server started with setsid and
+// left by the shell's end is in no tree and no group): the marks are read every `marks` ms, not at each look.
+export const bindWait = { young: 60_000, every: 250, marks: 1000 };
 async function bound(u: URL, sessionId: string): Promise<boolean> {
-  const recent = () => ownJobs(sessionId).some((j) => Date.now() - j.started <= bindWait.young);
-  const until = Date.now() + bindWait.wait;
   if (!waits.localProbe(u, [Number(u.port || (u.protocol === "https:" ? 443 : 80))])) return false; // not a loopback address: no process of the session can bind it
-  while (recent() && Date.now() < until) {
+  const young = () => jobsOf(sessionId).filter((j) => Date.now() - j.started <= bindWait.young);
+  let marked = 0, markedOn = false, markedPortsNow: number[] = [];
+  // Where no cgroup holds a command, a process that left its group and session (setsid) is known by its mark alone.
+  const markedLook = async () => {
+    if (Date.now() - marked < bindWait.marks) return;
+    marked = Date.now();
+    const loose = young().filter((j) => j.contain !== "cgroup");
+    markedPortsNow = await markedPorts([...new Set([...ownJobs(sessionId), ...loose])]);
+    markedOn = (await processesOf(loose).catch(() => new Map())).size > 0;
+  };
+  const listening = () => waits.localProbe(u, [...ownPorts(sessionId), ...markedPortsNow]);
+  const waiting = () => young().some((j) => running(j) || jobHasProcesses(j)) || markedOn;
+  await markedLook();
+  while (!listening() && waiting()) {
     await Bun.sleep(bindWait.every);
-    if (waits.localProbe(u, ownPorts(sessionId))) return true;
+    await markedLook();
   }
-  return false;
+  return listening();
+}
+// The ports of the processes of these commands, found by what the daemon holds them by and by their mark.
+async function markedPorts(list: Job[]): Promise<number[]> {
+  const held = await processesOf(list).catch(() => new Map<string, { pid: number }[]>());
+  const pids = new Map([...held].map(([id, ps]) => [id, ps.map((p) => p.pid)] as const));
+  return [...portsOf(pids).values()].flat().map((p) => p.port).filter((p) => !isOwnPort(p));
 }
 
 // `monitorName`: the family's name for the monitor tool (what a refusal names as the other way).
