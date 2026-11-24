@@ -25,7 +25,7 @@ import { fmtMs, fmtPct, Panel, Table } from "./UsagePanel.tsx";
 type Row = {
   asked: number; recalls: number; empty: number; repeat: number; skipped: number; late: number; timeouts: number; failures: number;
   facts: number; tokens: number; facts_checked: number; used: number; recalls_checked: number; recalls_used: number;
-  repeats: number; cut: number; wait_ms: number; wait_max_ms: number;
+  repeats: number; cut: number; wait_ms: number; wait_max_ms: number; proc_ms: number;
 };
 // `store`: how the memory store answers right now (the kinds of call that are out, or often late).
 type Kinds = { ask: boolean; tool: boolean };
@@ -85,7 +85,7 @@ function UsageTable({ since }: { since: number }) {
         ? <span title={`${x.used} of ${plural(x.facts_checked, "fact")} named by the reply or a tool call of their turn`}>{x.recalls_used} <span className="text-faint">of {x.recalls_checked}<span className="max-sm:hidden">, {fmtPct(x.facts_checked ? x.used / x.facts_checked : null)} of facts</span></span></span>
         : <span className="text-faint">none yet</span>,
       <span title={x.cut ? `${x.cut} more had no room in their block and followed with a later step` : undefined}>{x.repeats}{x.cut ? <span className="text-faint">, {x.cut} carried on</span> : null}</span>,
-      <span title={`longest wait ${fmtMs(x.wait_max_ms)}`}>{fmtMs(x.wait_ms)}</span>,
+      <span title={`longest wait ${fmtMs(x.wait_max_ms)}; the memory hook ran for ${fmtMs(x.proc_ms)} in all, waited for or not`}>{fmtMs(x.wait_ms)}</span>,
     ];
   };
   const out = r.total.timeouts + r.total.failures;

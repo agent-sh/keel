@@ -1144,23 +1144,25 @@ test("a kind of tool call the store has nothing for is asked only now and then, 
   expect(w.tacit.stats().tools).toMatchObject({ quiet_skipped: 2, quiet_asked: 2 });
   await until(() => w.tacit.stats().quiet[0]?.quiet === 5);
   expect(w.tacit.stats().quiet).toEqual([{ kind: "shell", quiet: 5 }]);
-  // The session's first call of another command is asked (a rule tied to `git push` comes with
-  // the first one), whatever the count; the same command again is not.
+  // A program is asked once to learn whether the store answers its calls (a rule tied to `git push`
+  // comes with the first `git` call). Then its calls are asked only in the sample while the store
+  // answers none of them, whatever the command's words or the session.
   await w.run(s, "git push origin");
   await asks(s, 6);
   await w.run(s, "git push origin");
   await asks(s, 6);
-  // A command that goes on in other words is another topic (a rule tied to `git push origin x` is
-  // not one tied to `git push origin main`): the first of each is asked.
   await w.run(s, "git push origin main"); // the one call in two the count asks
   await asks(s, 7);
   await w.run(s, "git push origin x");
-  await asks(s, 8);
-  // A new session's first call of the kind is asked; so is a call that names the store.
+  await asks(s, 7);
+  // A new session's first call of a program is not asked for being its first: this one is a program
+  // never asked (asked to learn it), the next one is of a program the store answered nothing for.
   const t = w.session();
-  await w.run(t, "touch plain");
+  await w.run(t, "echo plain");
   await asks(t, 1);
   await w.run(t, "touch plain");
+  await asks(t, 1);
+  // A call that names the store is asked in full.
   await w.run(t, "tacit fact some-name");
   await asks(t, 2);
   // Another kind is asked in full, its own count.
@@ -1178,7 +1180,19 @@ test("a kind of tool call the store has nothing for is asked only now and then, 
   await asks(t, before + 2);
   // How each kind answered is kept: a daemon that starts again goes on from it.
   await w.run(t, "touch plain");
+  // The store answered a `touch` call: a new session's `touch` call is asked when its kind is quiet,
+  // and a `git` call, which it never answered, is not. The families are kept too.
+  await until(() => w.tacit.stats().quiet[0]?.quiet === 3);
+  const u = w.session();
+  await w.run(u, "touch plain");
+  await asks(u, 1);
+  await w.run(u, "git push elsewhere");
+  await asks(u, 1);
   const again = new Tacit(w.store, w.bus, { capture: () => ({}) } as any, st.bin, SPEED, { quietAfter: 3, sampleEvery: 2 });
   expect(again.stats().quiet).toEqual([{ kind: "shell", quiet: 3 }]);
+  // The time of the hook processes is in the meter, for the asks nobody waited for as for the rest.
+  const proc = () => w.store.db.query<{ asked: number; ms: number; unwaited: number }, []>("SELECT COUNT(*) AS asked, COALESCE(SUM(proc_ms), 0) AS ms, COALESCE(SUM(wait_ms = 0 AND proc_ms > 0), 0) AS unwaited FROM telemetry_memory WHERE path = 'store_tool' AND outcome != 'skipped'").get()!;
+  await until(() => proc().unwaited > 0);
+  expect(proc().ms).toBeGreaterThan(0);
   void dir;
 }, { quietAfter: 3, sampleEvery: 2 }), 120_000);

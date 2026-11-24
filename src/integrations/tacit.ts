@@ -55,9 +55,9 @@ import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
 import { RECORD_FORMAT, toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
-import { asksMemory, factLines, factOf, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
+import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
-import { afterAnswer, afterAsk, callTopics, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
+import { afterAnswer, afterAsk, callFamilies, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
 
 // A call is known by its session and its id: ids are unique within a session only.
 const preKey = (session: string, call: string) => `${session}\0${call}`;
@@ -135,7 +135,6 @@ export function tacitToolCall(tool: string, args: any): { tool_name: string; too
 // past this many forgets them and asks about its next ones again: an ask more, never one less, and
 // a session holds about 70 KB of them at most. Few repeat: of the quiet kind's calls 97 in 100
 // had a topic the session had not asked yet.
-const TOPICS_KEPT = 2000;
 
 // Claude Code caps a hook's context at 10,000 characters; so does Keel, per
 // block: what a block cannot hold is owed, never dropped.
@@ -344,9 +343,10 @@ export class Tacit {
   // `light`: a call of a quiet kind, asked and not waited for (memory-yield.ts).
   private preTool = new Map<string, { call: Running; holds: Promise<boolean>; light: boolean }>(); // by preKey(session, call id)
   // How each kind of tool call has answered (memory-yield.ts), kept in memory_tool_yield; and the
-  // topics each session has asked about, by kind (its first call of a command or a folder is asked).
+  // families of call the store was asked about, by kind, with how many times it answered one
+  // (memory_tool_families): a quiet kind's call is asked when its family was never asked or was answered.
   private kinds = new Map<string, KindYield>();
-  private kindsAsked = new SessionMap<Set<string>>(256);
+  private families = new Map<string, number>(); // "<kind> <family>" -> answers with a fact
   // A kind of call that did not answer in time is out until one does: its
   // calls are made and not waited for. `failing`: its calls end in an error.
   private out: Record<Kind, boolean> = { ask: false, tool: false };
@@ -429,7 +429,11 @@ export class Tacit {
 CREATE TABLE IF NOT EXISTS memory_owed (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, hook TEXT NOT NULL, line TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS memory_owed_session ON memory_owed(session_id, id);
 CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, checkpoint TEXT);
-CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEGER NOT NULL, updated INTEGER NOT NULL);`);
+CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEGER NOT NULL, updated INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered INTEGER NOT NULL, updated INTEGER NOT NULL);`);
+    // A family not met for as long as the meter's rows are kept is learned again.
+    store.db.query("DELETE FROM memory_tool_families WHERE updated < ?").run(Date.now() - KEEP_MS);
+    for (const r of store.db.query<{ key: string; answered: number }, []>("SELECT key, answered FROM memory_tool_families").all()) this.families.set(r.key, r.answered);
     for (const r of store.db.query<{ kind: string; quiet: number }, []>("SELECT kind, quiet FROM memory_tool_yield").all()) this.kinds.set(r.kind, { quiet: r.quiet, passed: 0 });
     if (!store.db.query<{ name: string }, []>("PRAGMA table_info(memory_owed)").all().some((c) => c.name === "answer")) store.db.exec("ALTER TABLE memory_owed ADD COLUMN answer INTEGER");
   }
@@ -1012,18 +1016,18 @@ CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEG
   private admit(id: string, hook: OwedHook, r: HookResult, shown: Set<string>, waitMs: number, by: { hook?: string; call?: string; ref?: string } = {}): string | null {
     const path = PATH_OF[hook];
     if (!r.text) {
-      this.meter.record(id, path, { outcome: r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", waitMs });
+      this.meter.record(id, path, { outcome: r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", waitMs, procMs: r.ms });
       return null;
     }
     const fit = fitMemory(r.text, shown, MEMORY_CAP - FRAME);
     if (!fit.text) {
-      this.meter.record(id, path, { outcome: "repeat", repeats: fit.repeats, waitMs });
+      this.meter.record(id, path, { outcome: "repeat", repeats: fit.repeats, waitMs, procMs: r.ms });
       return null;
     }
     this.owe(id, hook, fit.owed);
     for (const l of fit.lines) shown.add(l);
     const block = memoryBlock(hook, fit.text);
-    this.meter.record(id, path, { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length, waitMs, by: { hook, ...by } });
+    this.meter.record(id, path, { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length, waitMs, procMs: r.ms, by: { hook, ...by } });
     return block;
   }
 
@@ -1129,25 +1133,30 @@ CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEG
     for (const n of names) for (const end of [".jsonl", ".mark"]) if (n.endsWith(end) && !this.store.session(n.slice(0, -end.length))) this.removeTranscript(n.slice(0, -end.length));
   }
 
-  // Whether a tool call is asked about, by how its kind has answered (memory-yield.ts).
-  private toolAskFor(session: string, input: { tool_name: string; tool_input: any }): { kind: string; ask: ToolAsk } {
+  // Whether a tool call is asked about, by how its kind has answered (memory-yield.ts). `families`: the
+  // call's, for what it answers.
+  private toolAskFor(input: { tool_name: string; tool_input: any }): { kind: string; ask: ToolAsk; families: string[] } {
     const kind = toolKind(input);
     const y = this.kinds.get(kind) ?? freshYield();
-    let asked = this.kindsAsked.get(session);
-    if (!asked) this.kindsAsked.set(session, (asked = new Set()));
-    const topics = callTopics(input);
-    const keys = topics.length ? topics.map((t) => `${kind} ${t}`) : [kind];
-    // The asked topics of a session stay below a bound: a session past it is asked about its next ones as new.
-    if (asked.size > TOPICS_KEPT) asked.clear();
-    const ask = toolAsk(y, keys.some((k) => !asked!.has(k)), namesStore(input), this.yieldRules.quietAfter, this.yieldRules.sampleEvery);
-    if (ask !== "skip") for (const k of keys) asked.add(k);
+    const families = callFamilies(input).map((f) => `${kind} ${f}`);
+    // Known: one of its families answered once, or was never asked (the store is asked once to learn it); a call of none is only sampled.
+    const known = families.some((f) => (this.families.get(f) ?? 1) > 0);
+    const ask = toolAsk(y, known, namesStore(input), this.yieldRules.quietAfter, this.yieldRules.sampleEvery);
+    if (ask !== "skip") {
+      const now = Date.now(), q = this.store.db.query("INSERT OR IGNORE INTO memory_tool_families (key, answered, updated) VALUES (?, 0, ?)");
+      for (const f of families) if (!this.families.has(f)) { this.families.set(f, 0); q.run(f, now); }
+    }
     this.kinds.set(kind, afterAsk(y, ask));
-    return { kind, ask };
+    return { kind, ask, families };
   }
   // What an asked call answered. Kept on disk when the kind changes state, and every 25 answers
   // between: a restart goes on from about where it was, at one write in 25 calls.
-  private toolAnswered(kind: string, r: HookResult) {
+  private toolAnswered(kind: string, r: HookResult, families: string[]) {
     if (r.outcome !== "hit" && r.outcome !== "empty") return; // the store did not answer: nothing learned
+    if (r.outcome === "hit") {
+      const now = Date.now(), q = this.store.db.query("INSERT INTO memory_tool_families (key, answered, updated) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET answered = answered + 1, updated = excluded.updated");
+      for (const f of families) { this.families.set(f, (this.families.get(f) ?? 0) + 1); q.run(f, now); }
+    }
     const was = this.kinds.get(kind) ?? freshYield();
     const y = afterAnswer(was, r.outcome === "hit");
     this.kinds.set(kind, y);
@@ -1256,7 +1265,8 @@ CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEG
             // Measured as a timeout when the turn waited its full wait for it,
             // as late when it did not wait at all (asking was already out).
             if (waits) t.miss("ask", hook, s.id);
-            t.meter.record(s.id, PATH_OF[hook], { outcome: waits ? "timeout" : "late", waitMs });
+            const row = t.meter.record(s.id, PATH_OF[hook], { outcome: waits ? "timeout" : "late", waitMs });
+            c.done.then((r) => t.meter.addProc(row, r.ms), () => {});
             t.oweLater(s.id, hook, c);
             if (t.out.ask) t.tell(s.id, "ask", "timeout");
             return;
@@ -1290,7 +1300,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEG
         }
         // A kind of call the store has long had nothing for is asked only now and then, and then
         // not waited for (memory-yield.ts).
-        const { kind, ask } = t.toolAskFor(s.id, input);
+        const { kind, ask, families } = t.toolAskFor(input);
         if (ask === "skip") return void t.metrics.tools.quiet_skipped++;
         if (ask === "light") t.metrics.tools.quiet_asked++;
         // Whether the call changes something, where that is known now (a
@@ -1299,7 +1309,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEG
         const changes = direct ? !call.tool.readOnly : changesSomething(input);
         // Runs beside the tool; its answer joins the result, or the next request.
         const p = t.call(s, "pre-tool", input);
-        p.done.then((r) => t.toolAnswered(kind, r), () => {});
+        p.done.then((r) => t.toolAnswered(kind, r, families), () => {});
         // Whether the result is held for the answer: only for a call that changes something, of a kind asked in full.
         const holds = ask === "light" ? Promise.resolve(false) : call.tool.target ? call.tool.target(call.input, s.id).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
         t.preTool.set(preKey(s.id, call.id), { call: p, holds, light: ask === "light" });
@@ -1324,7 +1334,8 @@ CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEG
         // A call slower than the hook's wait is a late call whoever waited.
         const slow = (r: HookResult) => r.outcome === "timeout" || (r.outcome !== "skipped" && (r.ms ?? 0) > toolWait);
         if (!p.got) {
-          t.meter.record(s.id, "store_tool", { outcome: waits ? "timeout" : "late", waitMs: performance.now() - began });
+          const row = t.meter.record(s.id, "store_tool", { outcome: waits ? "timeout" : "late", waitMs: performance.now() - began });
+          p.done.then((r) => t.meter.addProc(row, r.ms), () => {});
           const owed = t.oweLater(s.id, "pre-tool", p);
           // A quiet kind's call: what it answers joins a later request, and nothing waits for it.
           if (entry.light) return;

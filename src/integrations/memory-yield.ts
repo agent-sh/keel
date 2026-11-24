@@ -6,11 +6,12 @@
 // call while the store answers it now and then. A kind the store has not
 // answered for QUIET_AFTER calls in a row is quiet. A quiet kind's call is
 // still asked when it names the store (it records a step of its own), when
-// the session has not asked about its command or its file yet (a rule the
-// store ties to `git push` comes with the session's first `git push`, one
-// tied to `git push origin main` with its first such push; one tied to a
-// file with its first write of it; callTopics), and as one call
-// in SAMPLE_EVERY, so a store that starts answering the kind is seen. A
+// the store has ever answered a call of its family or none of the family was
+// ever asked (a rule tied to `git push` is found by the first `git` call, and
+// every `git` call after it is asked once the store has answered one; a
+// program the store never answered is asked once and then only in the
+// sample; callFamilies), and as one call in SAMPLE_EVERY, so a store that
+// starts answering the kind or the family is seen. A
 // quiet kind's asks are not waited for: their answer, if any, joins the next
 // request. One answer with a fact makes the kind asked in full again. An
 // answer counts when it carries a fact, used or not: a rule before an action
@@ -21,6 +22,7 @@
 // every note given unused many times in a repository was one of the owner's
 // standards, decisions or past mistakes, or given as a title: no use count
 // sees what the model does not do because of those.
+import { dirname } from "node:path";
 import { filesOf, type StoreCall } from "./tacit-tools.ts";
 
 // Edits in the measured stores answer about one call in 150; QUIET_AFTER is
@@ -70,6 +72,19 @@ export function callTopics(call: StoreCall): string[] {
   return [...new Set(filesOf(call))];
 }
 
+// What an answer of the store speaks for: the program of each command of a
+// shell line (the first word of each topic), the folder of each file a write
+// touches, an MCP tool by its name. A call is of the families its topics are;
+// the store ties a fact to a command, a file or an area, and a family is the
+// widest group a fact of one kind has been seen to cover.
+// A word that can be a program or its subcommand: not a path, a file or a flag, which are as many as there are calls.
+const PROGRAM = /^[a-z0-9][\w-]*$/;
+export function callFamilies(call: StoreCall): string[] {
+  if (call.tool_name.startsWith("mcp__")) return [call.tool_name];
+  if (call.tool_name === "Bash" || (call.tool_name === "apply_patch" && !filesOf(call).length)) return [...new Set(callTopics(call).map((t) => t.split(" ")[0]!).filter((w) => PROGRAM.test(w)))];
+  return [...new Set(filesOf(call).map((f) => dirname(f)))];
+}
+
 // How a kind has answered: calls answered in a row with nothing (`quiet`),
 // and quiet calls passed over since the last one asked (`passed`).
 export type KindYield = { quiet: number; passed: number };
@@ -77,9 +92,10 @@ export const freshYield = (): KindYield => ({ quiet: 0, passed: 0 });
 
 // full: asked and waited for as before; light: asked, not waited for; skip: not asked.
 export type ToolAsk = "full" | "light" | "skip";
-export function toolAsk(y: KindYield, first: boolean, namesStore: boolean, quietAfter = QUIET_AFTER, every = SAMPLE_EVERY): ToolAsk {
+// `known`: the store has answered a call of the call's family, or none of the family was asked yet.
+export function toolAsk(y: KindYield, known: boolean, namesStore: boolean, quietAfter = QUIET_AFTER, every = SAMPLE_EVERY): ToolAsk {
   if (namesStore || y.quiet < quietAfter) return "full";
-  if (first || y.passed + 1 >= every) return "light";
+  if (known || y.passed + 1 >= every) return "light";
   return "skip";
 }
 // The kind's count after a decision and, for a call that was asked, its answer.

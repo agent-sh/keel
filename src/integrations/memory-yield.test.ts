@@ -1,6 +1,6 @@
 // The pure rules of which memory lookups are made and which facts are given.
 import { expect, test } from "bun:test";
-import { afterAnswer, afterAsk, callTopics, freshYield, toolAsk, toolKind, type KindYield } from "./memory-yield.ts";
+import { afterAnswer, afterAsk, callFamilies, callTopics, freshYield, toolAsk, toolKind, type KindYield } from "./memory-yield.ts";
 
 test("a kind of tool call is asked in full until the store has had nothing for it many times in a row", () => {
   let y = freshYield();
@@ -58,4 +58,13 @@ test("asks of a quiet kind keep their count across decisions", () => {
   expect(afterAsk(y, "skip")).toEqual({ quiet: 2, passed: 2 });
   expect(afterAsk(y, "light")).toEqual({ quiet: 2, passed: 0 });
   expect(afterAsk(y, "full")).toEqual(y);
+});
+
+test("a call's families: the programs of a shell line, the folders of a write, an MCP tool", () => {
+  const sh = (command: string) => callFamilies({ tool_name: "Bash", tool_input: { command } }).sort();
+  expect(sh("cd /home/x/repo && FOO=1 /usr/bin/git push")).toEqual(["cd", "git", "push", "repo"]);
+  expect(sh("git push origin main")).toEqual(sh("git push origin dev"));
+  expect(callFamilies({ tool_name: "Edit", tool_input: { file_path: "/r/src/a.ts" } })).toEqual(["/r/src"]);
+  expect(callFamilies({ tool_name: "Write", tool_input: { file_path: "a.ts" } })).toEqual(["."]);
+  expect(callFamilies({ tool_name: "mcp__github__get_pr", tool_input: {} })).toEqual(["mcp__github__get_pr"]);
 });

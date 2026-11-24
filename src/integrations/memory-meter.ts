@@ -131,7 +131,7 @@ function stringsOf(v: unknown, out: string[] = []): string[] {
 // A deleted session's given rows deleted in one statement: a few milliseconds of the loop.
 const DROP_PART = 500;
 const ORPHANS_AFTER_MS = 30_000;
-type Sum = Record<"asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms", number>;
+type Sum = Record<"asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms" | "proc_ms", number>;
 type Open = { row: number; facts: Fact[]; ts: number; given: number[] };
 // Where a block came from, for the list of what a session was given: the
 // store's hook, the tool it was asked about (a tool's name) and what it
@@ -174,6 +174,8 @@ CREATE TABLE IF NOT EXISTS memory_given (
   name TEXT NOT NULL, call TEXT, ref TEXT, tokens INTEGER NOT NULL DEFAULT 0, used INTEGER);
 CREATE INDEX IF NOT EXISTS memory_given_session ON memory_given(session_id, id);
 CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
+    // proc_ms: the time of the hook process that answered the ask (nobody may have waited for it).
+    if (!store.db.query<{ name: string }, []>("PRAGMA table_info(telemetry_memory)").all().some((c) => c.name === "proc_ms")) store.db.exec("ALTER TABLE telemetry_memory ADD COLUMN proc_ms INTEGER NOT NULL DEFAULT 0");
     this.prune();
     void this.gone;
     registerHooks({ turnEnd: (s) => this.settle(s.id) });
@@ -229,7 +231,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
   // `row`: an earlier row of the same ask (a block that came late), written
   // over with how it ended. `by`: where the block came from; with it each
   // named fact gets its own row in memory_given, in the same commit.
-  record(sessionId: string, path: MemoryPath, r: { outcome: MemoryOutcome; text?: string; facts?: Fact[]; repeats?: number; cut?: number; waitMs?: number; by?: GivenBy }, row?: number): number {
+  record(sessionId: string, path: MemoryPath, r: { outcome: MemoryOutcome; text?: string; facts?: Fact[]; repeats?: number; cut?: number; waitMs?: number; procMs?: number; by?: GivenBy }, row?: number): number {
     this.prune();
     const per = bytesPerToken(this.store.session(sessionId)?.model);
     const tokens = r.text ? Math.round(Buffer.byteLength(r.text) / per) : 0;
@@ -237,11 +239,12 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     const values = [r.outcome, r.facts?.length ?? 0, tokens, r.repeats ?? 0, r.cut ?? 0] as const;
     const db = this.store.db;
     const given: number[] = [];
+    const proc = Math.round(r.procMs ?? 0);
     db.transaction(() => {
       if (row !== undefined) db.query("UPDATE telemetry_memory SET outcome = ?, facts = ?, tokens = ?, repeats = ?, cut = ? WHERE id = ?").run(...values, row);
       else row = db
-        .query("INSERT INTO telemetry_memory (session_id, ts, path, outcome, facts, tokens, repeats, cut, wait_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(sessionId, ts, path, ...values, Math.round(r.waitMs ?? 0)).lastInsertRowid as number;
+        .query("INSERT INTO telemetry_memory (session_id, ts, path, outcome, facts, tokens, repeats, cut, wait_ms, proc_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sessionId, ts, path, ...values, Math.round(r.waitMs ?? 0), proc).lastInsertRowid as number;
       // No row for a session that is gone (the rows go with their session).
       if (!r.by || !this.store.session(sessionId)) return;
       const q = db.query("INSERT INTO memory_given (session_id, ts, recall, path, hook, name, call, ref, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -258,6 +261,11 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
       this.open.set(sessionId, list);
     }
     return row!;
+  }
+
+  // The hook process of an ask that nothing waited for ended: its time joins the row.
+  addProc(row: number, ms: number | undefined) {
+    if (ms) this.store.db.query("UPDATE telemetry_memory SET proc_ms = proc_ms + ? WHERE id = ?").run(Math.round(ms), row);
   }
 
   // The turn ended: each recall of it gets the count of its facts that the
@@ -316,7 +324,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     const cols = `COUNT(*) AS asked, ${n("added")} AS recalls, ${n("empty")} AS empty, ${n("repeat")} AS repeat, ${n("skipped")} AS skipped, ${n("late")} AS late, ${n("timeout")} AS timeouts, ${n("failure")} AS failures,
       ${added("facts")} AS facts, ${added("tokens")} AS tokens, ${added("facts", checked)} AS facts_checked, ${added("used", checked)} AS used,
       ${added("1", checked)} AS recalls_checked, ${added("1", " AND used > 0")} AS recalls_used,
-      COALESCE(SUM(repeats), 0) AS repeats, COALESCE(SUM(cut), 0) AS cut, COALESCE(SUM(wait_ms), 0) AS wait_ms, COALESCE(MAX(wait_ms), 0) AS wait_max_ms`;
+      COALESCE(SUM(repeats), 0) AS repeats, COALESCE(SUM(cut), 0) AS cut, COALESCE(SUM(wait_ms), 0) AS wait_ms, COALESCE(MAX(wait_ms), 0) AS wait_max_ms, COALESCE(SUM(proc_ms), 0) AS proc_ms`;
     const from = `FROM telemetry_memory WHERE ${where.join(" AND ")}`;
     return { total: `SELECT ${cols} ${from}`, paths: `SELECT path, ${cols} ${from} GROUP BY path`, args };
   }
