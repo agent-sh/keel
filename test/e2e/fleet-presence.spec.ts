@@ -176,11 +176,16 @@ test("a remote session names its machine once, and the foot line of its part cou
     // It works there: the folded line says so, and what is only a count before is not all it says.
     await expect(foot.getByTestId("machine-foot-work")).toHaveText("1 working", { timeout: 30_000 });
     await shoot(page, "fleet-presence-04-foot-counts");
-    // The far session's page: the machine is the button, once.
+    // The far session's page: the machine is named once in the head, by the tag beside the title; its button (the
+    // move) is in the session's menu with the other tools, not in the row.
     await page.goto(`/s/${farId}`);
-    await expect(page.getByTestId("machine-chip")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("station-machine")).toBeHidden();
+    await expect(page.getByTestId("station-machine")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("station-machine")).toHaveText("far-desk");
+    await expect(page.getByTestId("machine-chip")).toBeHidden();
     await expect(page.locator('[data-testid="session-header"], [data-testid="station-head"]').getByText("far-desk").filter({ visible: true })).toHaveCount(1);
+    await page.getByTestId("session-menu").click();
+    await expect(page.getByTestId("header-more").getByTestId("machine-chip")).toBeVisible();
+    await page.keyboard.press("Escape");
     await shoot(page, "fleet-presence-05-one-machine-chip");
   } finally {
     for (const id of local) await request.delete(`/api/sessions/${id}`);
