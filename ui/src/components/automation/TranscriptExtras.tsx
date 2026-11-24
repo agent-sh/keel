@@ -438,6 +438,7 @@ const LOSS_WORDS = {
   refusal: "the model declined to go on",
   context: "its context could not be made to fit",
   provider: "its provider kept failing",
+  account: "its model's account is out of credit or signed out",
 } as const;
 function LostContexts({ agent }: { agent: AgentRecord }) {
   return (

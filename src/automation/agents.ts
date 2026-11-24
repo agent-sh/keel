@@ -2106,12 +2106,13 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // What it failed on, when that is all it has to report (it wrote nothing itself).
   let cause = status === "failed" && !got.own ? got.error || how.note || "" : "";
   let cls = how.end_reason === "restart" ? "restart" : classOf(got.error);
-  // A context lost to a refusal, a window or its provider: a fresh one takes
+  // A context lost to a refusal, a window, its provider or (a successor's first request) a route out
+  // of credit or signed out: a fresh one takes
   // the task up (src/automation/successor.ts), or the report says why not. Not
   // while its provider's outage is open, nor when the provider asked for a wait
   // longer than a turn waits: a successor would fail the same way at once.
   const loss = a.machine || defOf(a.id)?.silent ? undefined
-    : lossOf({ status, end_reason: how.end_reason, cls, ...(status === "failed" ? await providerState(a.model, got.events) : {}) });
+    : lossOf({ status, end_reason: how.end_reason, cls, ...(status === "failed" ? await providerState(a.model, got.events) : {}), successor: !!a.lost?.length });
   if (loss) {
     const r = await succeed(a, loss, got, cls).catch((e) => { capture(e, { at: "agent successor", agent: a.id }); return undefined; });
     if (r === "started" || r === "gone") return;
@@ -2190,12 +2191,13 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
 // What the provider said of itself when the turn failed: whether its outage is
 // open (src/providers/outage.ts), and the time it asked to be tried again at
 // when that is longer than a turn waits (the turn's error event, RetryTooLong).
-async function providerState(model: string, evs: readonly StoredEvent[]): Promise<{ outage: boolean; retryAt?: number }> {
+async function providerState(model: string, evs: readonly StoredEvent[]): Promise<{ outage: boolean; retryAt?: number; shut: boolean }> {
   const { providers } = D();
   const id = (await providers.resolve(model).then((r) => r.provider?.id, () => undefined)) ?? model.slice(0, Math.max(0, model.indexOf(":")));
   const err = evs.findLast((e) => e.kind === "error");
   const at = Number(err?.data.retry_at);
-  return { outage: !!providers.outages?.active(id), ...(Number.isFinite(at) && at > 0 ? { retryAt: at } : {}) };
+  // A route the failure just marked out of credit or signed out (the registry reads each failed request).
+  return { outage: !!providers.outages?.active(id), shut: !!routeShut(model), ...(Number.isFinite(at) && at > 0 ? { retryAt: at } : {}) };
 }
 
 // The lost agent's task as its brief gave it: the parent's words of its first

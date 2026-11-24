@@ -23,6 +23,20 @@ test("a loss is a refusal, a full context or the provider; any other end is not"
   expect(lossOf({ status: "failed", end_reason: "restart", cls: "server" })).toBeUndefined();
 });
 
+test("a successor whose route the failure shut (out of credit, signed out) is lost to its account, and moves to another route", () => {
+  const f = { status: "failed", end_reason: "error" };
+  for (const cls of ["quota", "auth"]) expect(lossOf({ ...f, cls, shut: true, successor: true })).toBe("account");
+  // Only a successor, only a route the registry marked, only an account's failure.
+  expect(lossOf({ ...f, cls: "quota", shut: true })).toBeUndefined();
+  expect(lossOf({ ...f, cls: "quota", successor: true })).toBeUndefined();
+  expect(lossOf({ ...f, cls: "invalid_request", shut: true, successor: true })).toBeUndefined();
+  // It is bounded as any loss: a second successor, then no third.
+  expect(decideSuccessor("account", [lost("refusal", "gpt")], "gpt")).toEqual({ go: true, n: 2, switchFamily: false, avoid: [] });
+  expect(decideSuccessor("account", [lost("refusal", "gpt"), lost("account", "gpt")], "gpt").go).toBe(false);
+  expect(parentLine({ title: "T", id: "a1", loss: "account", n: 2, model: "p:b", moved: true, skipped: [{ model: "p:a", why: "out of credit" }] }))
+    .toContain("lost its context: its model's account is out of credit or signed out");
+});
+
 test("the first refusal goes on with the same model, the second moves family, the third tells the parent", () => {
   expect(decideSuccessor("refusal", [], "gpt")).toEqual({ go: true, n: 1, switchFamily: false, avoid: [] });
   expect(decideSuccessor("refusal", [lost("refusal", "gpt")], "gpt")).toEqual({ go: true, n: 2, switchFamily: true, avoid: ["gpt"] });

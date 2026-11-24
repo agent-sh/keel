@@ -368,6 +368,11 @@ export class ScriptedProvider implements Provider {
       const said = msgs.slice(repliesAt + 1).filter((m) => m.role === "assistant").length;
       return reply(texts[Math.min(said, texts.length - 1)] ?? "Scripted reply.");
     }
+    // `script:no-credit-fresh MODEL` on a later line: that model's account is out of credit for a fresh
+    // context's first request (a successor's capsule, src/automation/successor.ts) and answers the
+    // credit refusal there; the context that wrote the line, and other models, are answered as usual.
+    const noCredit = owner.match(/\nscript:no-credit-fresh[ \t]+(\S+)/)?.[1];
+    if (noCredit && noCredit === req.model && owner.includes("with a fresh context:")) throw new ProviderError("quota", "Scripted: your credit balance is too low to make this request. Add credits at https://example.com/billing.", 402);
     const scenario = owner.match(/script:([a-z-]+)/)?.[1] ?? "";
     // `script:refuse-schema NAME`: the provider refuses the input schema of the tool NAME (by its
     // own name or as an MCP tool's) while it is declared with its parameters, in the words of the

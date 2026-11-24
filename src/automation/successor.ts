@@ -32,7 +32,7 @@ import type { Family } from "../providers/types.ts";
 
 export const MAX_SUCCESSORS = 2;
 
-export type LossKind = "refusal" | "context" | "provider";
+export type LossKind = "refusal" | "context" | "provider" | "account";
 // What was lost before, in this task: the session, the model, how, and the
 // messages its parent sent while that context worked (they go on to the next).
 export type Lost = { kind: LossKind; model: string; family: Family; session: string; category?: string; at: number; steers?: string[] };
@@ -41,6 +41,7 @@ export const LOSS_WORDS: Record<LossKind, string> = {
   refusal: "the model declined to go on",
   context: "its context could not be made to fit the model's window",
   provider: "its provider kept failing",
+  account: "its model's account is out of credit or signed out",
 };
 
 // The classes of a failed turn (src/admin/classes.ts) a fresh context can get
@@ -53,11 +54,17 @@ const PROVIDER_CLASSES = new Set(["rate_limit", "overloaded", "server", "stream_
 // How an agent's task was lost, or undefined when it ended on its own terms
 // (it reported, was stopped, ran out of a step budget or the budget it was
 // given). `outage`: the provider's outage is open (src/providers/outage.ts);
-// `retryAt`: the provider asked for a wait longer than a turn waits.
-export function lossOf(o: { status: string; end_reason?: string | null; cls?: string; outage?: boolean; retryAt?: number }): LossKind | undefined {
+// `retryAt`: the provider asked for a wait longer than a turn waits; `shut`: the
+// route the failure came from is now marked out of credit or signed out (the
+// registry marks it on that failure); `successor`: the agent is already a
+// successor. A successor that met a shut route moves to another route (a
+// first context that did is reported to its parent, which chooses; a spawn
+// passes over shut routes already). The bound is MAX_SUCCESSORS all the same.
+export function lossOf(o: { status: string; end_reason?: string | null; cls?: string; outage?: boolean; retryAt?: number; shut?: boolean; successor?: boolean }): LossKind | undefined {
   if (o.status === "incomplete") return o.end_reason === "refusal" ? "refusal" : undefined;
   if (o.status !== "failed" || o.end_reason === "restart") return undefined;
   if (o.cls === "context_overflow") return "context";
+  if (o.shut && o.successor && (o.cls === "quota" || o.cls === "auth")) return "account";
   if (o.outage || o.retryAt !== undefined) return undefined;
   return o.cls && PROVIDER_CLASSES.has(o.cls) ? "provider" : undefined;
 }

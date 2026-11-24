@@ -151,3 +151,43 @@ test("a successor is not started on a route out of credit: it starts on the next
     await request.delete(`/api/sessions/${session.id}`);
   }
 });
+
+// A successor whose first request is refused over credit is not the end of the work: the route is
+// marked out of credit for the others, and the agent is taken up once more on the next route, within
+// the two successors a task gets. The scripted GPT stand-in answers the credit refusal to a fresh
+// context only (`script:no-credit-fresh`), as an account that ran out between two contexts does.
+test("a successor whose first request is refused over credit is taken up on the next route", async ({ request }) => {
+  test.setTimeout(150_000);
+  const api = async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") => (await request.fetch(path, { method, ...(body === undefined ? {} : { data: body }) })).json();
+  const models = (await api("/api/models")).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === WORKER), "needs the scripted GPT stand-in: the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const repo = join(DEV, `repo-nocredit-${Date.now()}`);
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "README.md"), "# successor\n");
+  git(repo, "add", "-A");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "first");
+  const { session } = await api("/api/sessions", { model: PARENT, title: "Successor out of credit", workspace: repo });
+  try {
+    await api(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+    const task = `Look around\n${calls([{ name: "Bash", input: { command: "echo ok" } }])}\nscript:no-credit-fresh gpt-stand-in\nscript:then-refuse`;
+    await api(`/api/sessions/${session.id}/messages`, { text: calls([{ name: "spawn_agent", input: { message: task, model: WORKER } }]) });
+    const agent = async () => (await api(`/api/sessions/${session.id}/agents`)).agents[0];
+    await expect.poll(async () => (await agent())?.status, { timeout: 120_000 }).toBe("incomplete");
+    const a = await agent();
+    // The first context declined; its successor on the same model was refused over credit; the next
+    // successor did not start on that route, and the work was not given up at the credit refusal.
+    expect(a.lost.map((l: any) => [l.kind, l.model])).toEqual([["refusal", WORKER], ["account", WORKER]]);
+    expect(a.model).not.toBe(WORKER);
+    const heard = async () => ((await api(`/api/sessions/${session.id}`)).events as any[]).filter((e) => e.kind === "user").map((e) => String(e.data.text ?? "")).join("\n");
+    await expect.poll(heard, { timeout: 30_000 }).toContain('status="incomplete"');
+    const said = await heard();
+    expect(said).toContain("lost its context: its model's account is out of credit or signed out");
+    expect(said).toMatch(new RegExp(`successor 2 of at most 2\\). It skipped ${WORKER} \\(`));
+    expect(said).toContain(`on ${a.model}`);
+    const providers = ((await api("/api/providers")).providers as any[]).find((p) => p.id === "scripted");
+    expect(providers.routes.some((r: any) => r.route === WORKER && r.kind === "billing")).toBe(true);
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
