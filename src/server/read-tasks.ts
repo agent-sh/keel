@@ -24,8 +24,11 @@ import { egressReport, type EgressAsk } from "../safety/egress-report.ts";
 import { scanFiles, type FilesAsk } from "../admin/health-files.ts";
 import { mineRead, untagged } from "../automation/lessons-mine.ts";
 import { BUDGET_MS, trialRead, type TrialAsk } from "../safety/trial-read.ts";
+import { readProcs, type ProcAsk } from "../admin/proc-read.ts";
 
 export const tasks = {
+  // What /proc says of the processes under the daemon (the resource sampler's pass, src/admin/proc-read.ts).
+  "proc.sample": (_db: Database, a: ProcAsk) => readProcs(a),
   // One statement and its rows. The statement is not kept: its text may carry
   // values of one request.
   sql: (db: Database, a: { sql: string; params?: (string | number | null)[] }): unknown[] => {

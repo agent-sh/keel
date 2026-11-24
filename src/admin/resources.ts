@@ -3,9 +3,11 @@
 // session booked to it (tools run with KEEL_SESSION in their environment),
 // and a history of samples. Sampling is cheap (a few small /proc reads) and
 // runs every 5 s while a turn works, every 30 s when idle.
-import { readdirSync, readFileSync, statfsSync } from "node:fs";
+import { statfsSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
 import { liveJobs, type Job } from "../tools/jobs.ts";
+import { fds, read, readProcs, status, stat, type CgroupCost, type ProcAsk, type ProcRaw, type ProcRead } from "./proc-read.ts";
+import type { Reads } from "../server/reads.ts";
 import { timed } from "./stall.ts";
 import { vault } from "../safety/secrets.ts";
 
@@ -22,7 +24,6 @@ export function shown(raw: string): string {
   return out;
 }
 
-const TICK_MS = 10; // USER_HZ is 100 on Linux (getconf CLK_TCK)
 const ACTIVE_MS = 5_000;
 const IDLE_MS = 30_000;
 const HISTORY_MS = 24 * 3600_000;
@@ -33,21 +34,6 @@ export type Proc = {
 };
 type Sample = { ts_ms: number; unmeasured_ended: number; cpu_percent: number; daemon_cpu_percent: number; cpu_ms: number; daemon_cpu_ms: number; rss_bytes: number; daemon_rss_bytes: number; processes: number; busy: boolean };
 
-const read = (p: string) => { try { return readFileSync(p, "utf8"); } catch { return ""; } };
-const BOOT_MS = (() => {
-  const btime = /^btime (\d+)/m.exec(read("/proc/stat"));
-  return btime ? Number(btime[1]) * 1000 : 0;
-})();
-
-function stat(pid: number) {
-  const s = read(`/proc/${pid}/stat`);
-  const close = s.lastIndexOf(")");
-  if (close < 0) return null;
-  const f = s.slice(close + 2).split(" ");
-  // fields after the name: state(0) ppid(1) ... utime(11) stime(12) ... starttime(19)
-  return { name: s.slice(s.indexOf("(") + 1, close), ppid: Number(f[1]), utime: Number(f[11]) * TICK_MS, stime: Number(f[12]) * TICK_MS, start: BOOT_MS + Number(f[19]) * TICK_MS };
-}
-
 // Where the daemon's resident memory is. The kernel's split: its own memory
 // (anon) and mapped files such as its binary (file). The runtime's: live
 // JavaScript objects, what the heap holds in all, and memory held outside it
@@ -56,12 +42,6 @@ function stat(pid: number) {
 export function memorySplit(statusText: string, u: { heapUsed: number; heapTotal: number; external: number; arrayBuffers: number }) {
   const kb = (k: string) => Number(new RegExp(`^${k}:\\s+(\\d+)`, "m").exec(statusText)?.[1] ?? 0) * 1024;
   return { anon_bytes: kb("RssAnon"), file_bytes: kb("RssFile"), heap_used_bytes: u.heapUsed, heap_total_bytes: u.heapTotal, external_bytes: u.external, array_buffers_bytes: u.arrayBuffers };
-}
-
-function status(pid: number) {
-  const s = read(`/proc/${pid}/status`);
-  const kb = (k: string) => Number(new RegExp(`^${k}:\\s+(\\d+)`, "m").exec(s)?.[1] ?? 0) * 1024;
-  return { rss: kb("VmRSS"), hwm: kb("VmHWM"), threads: Number(/^Threads:\s+(\d+)/m.exec(s)?.[1] ?? 0) };
 }
 
 // What of the daemon is in swap: its own process (VmSwap of its status
@@ -90,20 +70,6 @@ function swap(): Swap {
   const own = /^0::(\/.*)$/m.exec(read("/proc/self/cgroup"))?.[1];
   const dir = own ? `/sys/fs/cgroup${own}`.replace(/\/$/, "") : "";
   return swapFrom(read(`/proc/${process.pid}/status`), dir ? read(`${dir}/memory.swap.current`) : "", dir ? read(`${dir}/memory.swap.max`) : "", own ?? "", process.env.KEEL_SUPERVISED === "systemd");
-}
-
-const fds = (pid: number) => { try { return readdirSync(`/proc/${pid}/fd`).length; } catch { return undefined; } };
-
-function sessionOf(pid: number): string | undefined {
-  const env = read(`/proc/${pid}/environ`);
-  const m = /(?:^|\0)KEEL_SESSION=([^\0]+)/.exec(env);
-  return m?.[1];
-}
-
-// A language server (src/lsp) carries its id in its environment, as its
-// session: it is booked to the session whose edit started it.
-function lspOf(pid: number): string | undefined {
-  return /(?:^|\0)KEEL_LSP=([^\0]+)/.exec(read(`/proc/${pid}/environ`))?.[1];
 }
 
 function kindOf(name: string, command: string, session?: string, lsp?: string): string {
@@ -148,15 +114,7 @@ export function intervalCpu(prev: Map<string, number>, now: { pid: number; start
   return { used, at, gone };
 }
 
-// What a job's cgroup says it used: CPU of every process it ever had (ended
-// ones included) and the memory it holds now (page cache too). Null without one.
-export function cgroupCost(dir: string): { pids: number[]; cpu_user_ms: number; cpu_system_ms: number; memory_bytes: number } | null {
-  const procs = read(`${dir}/cgroup.procs`);
-  const cpu = read(`${dir}/cpu.stat`);
-  if (!procs && !cpu) return null;
-  const usec = (k: string) => Number(new RegExp(`^${k} (\\d+)`, "m").exec(cpu)?.[1] ?? 0) / 1000;
-  return { pids: procs.split("\n").filter(Boolean).map(Number), cpu_user_ms: usec("user_usec"), cpu_system_ms: usec("system_usec"), memory_bytes: Number(read(`${dir}/memory.current`).trim() || 0) };
-}
+export { cgroupCost } from "./proc-read.ts";
 
 export type JobCost = { id: string; session_id: string; label: string; contain: "cgroup" | "group"; processes: number; cpu_user_ms: number; cpu_system_ms: number; memory_bytes: number; pids: number[] };
 
@@ -177,7 +135,7 @@ export class Resources {
   private startRss = process.memoryUsage().rss;
   helpers = 0;
 
-  constructor(bus: Bus, private stateDir: string) {
+  constructor(bus: Bus, private stateDir: string, private reads?: Pick<Reads, "run">) {
     bus.on((f) => {
       if (f.t !== "session") return;
       const was = this.busy.size;
@@ -194,41 +152,44 @@ export class Resources {
   private schedule(ms: number) {
     clearTimeout(this.timer);
     // (Read from /proc for every process under the daemon: named, should it ever hold the loop.)
-    this.timer = setTimeout(() => { try { timed(() => `sampling what the daemon's ${this.procs.length} processes use`, () => this.sample(), true); } finally { this.schedule(this.busy.size ? ACTIVE_MS : IDLE_MS); } }, ms);
+    this.timer = setTimeout(() => {
+      const again = () => this.schedule(this.busy.size ? ACTIVE_MS : IDLE_MS);
+      if (this.reads && this.busy.size) { this.sampleOff().catch(() => {}).finally(again); return; }
+      try { timed(() => `sampling what the daemon's ${this.procs.length} processes use`, () => this.sample(), true); } finally { again(); }
+    }, ms);
     (this.timer as any).unref?.();
   }
 
-  // Every process under the daemon, children of children included, and every
-  // process of the jobs still alive: from its cgroup when it has one (that
-  // holds setsid and double-forked descendants, and what a finished command
-  // left running), else its leader and the leader's children, for jobs a
-  // previous daemon started and this one adopted. Each thread's `children`
-  // file names the processes it started, so only these trees are read.
-  private descendants(jobs: { job: Job; cg: ReturnType<typeof cgroupCost> }[]): { pids: number[]; jobOf: Map<number, Job> } {
-    const out: number[] = [];
-    const jobOf = new Map<number, Job>();
-    const seen = new Set<number>([process.pid]);
-    const add = (n: number) => { if (seen.has(n)) return false; seen.add(n); out.push(n); return true; };
-    const walk = (pid: number, j?: Job) => {
-      let tids: string[] = [];
-      try { tids = readdirSync(`/proc/${pid}/task`); } catch { return; }
-      for (const t of tids) for (const c of read(`/proc/${pid}/task/${t}/children`).split(" ")) {
-        const n = Number(c);
-        if (n && add(n)) { if (j) jobOf.set(n, j); walk(n, j); }
-      }
-    };
-    for (const { job, cg } of jobs) {
-      if (cg) for (const pid of cg.pids) { add(pid); jobOf.set(pid, job); }
-      else if (stat(job.pid)) { add(job.pid); jobOf.set(job.pid, job); walk(job.pid, job); }
-    }
-    walk(process.pid);
-    return { pids: out, jobOf };
+  // What the pass reads of /proc, asked of the read thread while a turn works (the pass then comes
+  // every 5 s and reads a few dozen processes), on the loop when the daemon is idle (it would keep
+  // the thread, and its memory, alive for a pass of a few reads).
+  private ask(jobs: Job[]): ProcAsk {
+    return { self: process.pid, jobs: jobs.map((j) => ({ id: j.id, pid: j.pid, cgroup: j.cgroup })), seen: [...this.seen].map(([pid, p]) => [pid, p.name]) };
   }
 
+  // One pass on the loop.
   sample(): void {
-    const now = Date.now();
-    const jobs = liveJobs().map((job) => ({ job, cg: job.cgroup ? cgroupCost(job.cgroup) : null }));
-    const { pids, jobOf } = this.descendants(jobs);
+    const jobs = liveJobs();
+    this.apply(readProcs(this.ask(jobs)), jobs);
+  }
+
+  // One pass with the reads of /proc on the thread; the loop puts the answer together. The pass falls
+  // back to the loop when the thread cannot answer.
+  async sampleOff(): Promise<void> {
+    const jobs = liveJobs();
+    let got: ProcRead;
+    try { got = await this.reads!.run("proc.sample", this.ask(jobs)); } catch { return this.sample(); }
+    timed(() => `sampling what the daemon's ${this.procs.length} processes use`, () => this.apply(got, jobs), true);
+  }
+
+  // An answer older than the pass the loop made meanwhile (a refresh) is dropped.
+  private apply(got: ProcRead, jobList: Job[]): void {
+    const now = got.at;
+    if (now < this.measured) return;
+    const jobs = jobList.map((job, i) => ({ job, cg: got.cgroups[i] ?? null }));
+    const pids = got.pids;
+    const jobOf = new Map<number, Job>();
+    for (const [pid, id] of got.jobOf) { const j = jobList.find((x) => x.id === id); if (j) jobOf.set(pid, j); }
     const live = new Set(pids);
     // A process that ended: its last CPU stays on its session's total.
     for (const [pid, p] of this.seen) {
@@ -240,23 +201,22 @@ export class Resources {
       this.seen.delete(pid); this.last.delete(pid); this.prev.delete(pid);
     }
     const procs: Proc[] = [];
-    for (const pid of pids) {
-      const st = stat(pid);
-      if (!st) continue;
-      const s = status(pid);
+    for (const r of got.procs) {
+      const known = this.seen.get(r.pid); // its environment was read at its first sample
       // A process's arguments can hold a value it was given (a plugin server's
       // sensitive setting in its argv): known values are hidden in what is shown.
-      const args = shown(read(`/proc/${pid}/cmdline`)).split("\0").filter(Boolean);
-      const command = args.join(" ").slice(0, 1000) || st.name;
-      const known = this.seen.get(pid); // its environment was read at its first sample
-      const session_id = this.seen.get(pid)?.session_id ?? sessionOf(pid) ?? jobOf.get(pid)?.sessionId;
-      const cpu = st.utime + st.stime;
+      const args = shown(r.cmdline).split("\0").filter(Boolean);
+      const command = args.join(" ").slice(0, 1000) || r.name;
+      // (A process whose name changed ran another program: its environment is read again.)
+      const session_id = (r.env ? r.env.session : known?.session_id) ?? jobOf.get(r.pid)?.sessionId;
+      const lsp = r.env ? r.env.lsp : known?.kind === "lsp" ? "lsp" : undefined;
+      const cpu = r.utime + r.stime;
       const p: Proc = {
-        pid, ppid: st.ppid, name: st.name, label: labelOf(st.name, args), command, kind: kindOf(st.name, command, session_id, known ? (known.kind === "lsp" ? "lsp" : undefined) : lspOf(pid)), session_id, started_ms: st.start,
-        rss_bytes: s.rss, peak_rss_bytes: s.hwm, cpu_user_ms: st.utime, cpu_system_ms: st.stime, cpu_percent: this.percent(pid, cpu, now), threads: s.threads, open_files: fds(pid),
+        pid: r.pid, ppid: r.ppid, name: r.name, label: labelOf(r.name, args), command, kind: kindOf(r.name, command, session_id, lsp), session_id, started_ms: r.start,
+        rss_bytes: r.rss, peak_rss_bytes: r.hwm, cpu_user_ms: r.utime, cpu_system_ms: r.stime, cpu_percent: this.percent(r.pid, cpu, now), threads: r.threads, open_files: r.fds,
       };
       procs.push(p);
-      this.seen.set(pid, p);
+      this.seen.set(r.pid, p);
     }
     procs.sort((a, b) => b.rss_bytes - a.rss_bytes);
     this.procs = procs;

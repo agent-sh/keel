@@ -19,6 +19,7 @@ import { collected } from "../../core/collector.ts";
 // (search-fill.ts): running, events filled, how long it took.
 import { fill } from "./search-fill.ts";
 import { Resources } from "../../admin/resources.ts";
+import { readsOf } from "../reads.ts";
 import { checkpointerOf } from "../../core/checkpoint.ts";
 // `left`: what commands left running in their job scopes hold (src/automation/scopes.ts, its last pass), and
 // the job scopes of other daemons that this one never touches.
@@ -32,7 +33,7 @@ export let resources: Resources | undefined;
 
 export const resourceRoutes: RouteModule = ({ store, bus }) => {
   resources?.stop(); // a hot reload makes a new sampler
-  const r = (resources = new Resources(bus, store.stateDir));
+  const r = (resources = new Resources(bus, store.stateDir, readsOf(store)));
   heavyChanged.tell = (c) => bus.emit({ t: "feature", name: "heavy", session_id: c.session_id, data: c });
   return {
     "/api/resources": {
