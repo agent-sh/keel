@@ -2955,6 +2955,8 @@ export class Engine {
         // a prompt typed while idle does: the turn they joined may be one a wait
         // or a loop started in a session the owner had stopped.
         for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: ownersMeta(q.meta) })) this.emitQueue(id);
+        // A row a stopping daemon owed a start, taken by the turn the next one continued: nothing is owed for an empty queue.
+        if (this.owed.has(id) && !this.store.queue(id).length) this.settleOwed(id);
         session = this.store.session(id)!;
         // A model or effort chosen while the turn runs takes effect at its next request: the
         // owner's, or an inline skill's for the rest of the turn (turnWant). A turn that went on on

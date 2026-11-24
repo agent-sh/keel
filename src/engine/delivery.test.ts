@@ -841,3 +841,27 @@ test("an ask is the owner's words; an ask with another mark, or a peer's message
   store.deleteSession(d.id);
   expect(told.sort()).toEqual(["mixed:deleted", "peer:deleted"]);
 });
+
+// A prompt that came while the daemon stopped is owed a start (queue_owed). The turn a restart cut is continued
+// by the next daemon, and its first request takes the row; the debt is paid there, not left for a later start.
+test("a queued prompt taken by the continued turn's first request leaves no start owed", async () => {
+  const dir = scratch("owed-continued");
+  let reached!: () => void;
+  const waiting = new Promise<void>((r) => (reached = r));
+  let first = true;
+  const a = rig(dir, { request: async (req) => { if (!first) return; first = false; reached(); await untilStopped(req); } });
+  const s = a.session();
+  a.engine.send(s.id, "the task");
+  await waiting;
+  await a.engine.drain(0);
+  const q = a.engine.message(s.id, "sent during the drain", { kind: "steer", agent_id: "ag_1" }).queued!;
+  const owed = (r: typeof a) => r.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM queue_owed").get()!.n;
+  expect(owed(a)).toBe(1);
+
+  const b = rig(dir);
+  await b.engine.recover(b.store.bootWorking, noRecover);
+  for (let i = 0; i < 400 && (b.engine.isRunning(s.id) || b.store.queue(s.id).length); i++) await b.engine.idle(s.id).then(() => Bun.sleep(1));
+  expect(promptsOf(b.store, s.id, q.id)).toHaveLength(1);
+  expect(b.store.queue(s.id)).toEqual([]);
+  expect(owed(b)).toBe(0);
+});
