@@ -8,7 +8,7 @@ import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
-import { fetchFor, webSearch } from "./web.ts";
+import { fetched, fetchFor, webSearch } from "./web.ts";
 
 const INLINE_OK = 30_000;
 const INLINE_FAIL = 10_000;
@@ -297,15 +297,14 @@ const WebFetch: Tool = {
   description:
     "Fetch a URL (http is upgraded to https) and answer prompt from the page: a long page is read by a smaller, faster " +
     "model that returns what the prompt asks for, and the whole page is saved to a file you can Read; a short page " +
-    "comes back as markdown (PDFs as text). Write prompt as the question to answer. Local and private addresses are " +
+    "comes back as markdown (PDFs as text, an image shown, any other file saved and named). Write prompt as the question to answer. Local and private addresses are " +
     "refused: use curl in Bash for those. A redirect to another host is reported, not followed.",
   input_schema: obj({
     url: { type: "string", description: "The URL to fetch content from" },
     prompt: { type: "string", description: "The prompt to run on the fetched content: what to find or extract" },
   }, ["url", "prompt"]),
   async run(input, ctx) {
-    const r = await fetchFor(String(input.url ?? ""), String(input.prompt ?? ""), ctx);
-    return { content: r.text, is_error: r.error };
+    return fetched(await fetchFor(String(input.url ?? ""), String(input.prompt ?? ""), ctx));
   },
 };
 

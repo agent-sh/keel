@@ -9,6 +9,8 @@ import { registerCatalog, type CatalogTool } from "./catalog.ts";
 import { sendShown } from "../safety/addresses.ts";
 import { spill } from "./spill.ts";
 import type { ToolContext } from "./types.ts";
+import type { ImageBlock } from "../core/types.ts";
+import { bodyKind, plain, saveBlob, sizeWords, type BodyKind, type SavedFile } from "./blob.ts";
 import { READ_WHOLE_CHARS } from "../engine/reader.ts";
 import { chunks, readText } from "../core/proc.ts";
 import { privateHost } from "../core/hosts.ts";
@@ -111,7 +113,9 @@ async function exaSearch(query: string, count: number, signal?: AbortSignal): Pr
 // the caller charges the page it gets. `cut`: the body was longer than what
 // was read.
 export type FetchOpts = { method?: string; body?: string; headers?: Record<string, string>; extract?: string; spillDir: string; whole?: boolean; budget?: { left: number } };
-export type Fetched = { text: string; error?: boolean; cut?: boolean; took?: number };
+// `images`: an image the page is, to show the model beside the text that names its file.
+// `files`: the file the page was saved as, for the transcript's list of files.
+export type Fetched = { text: string; error?: boolean; cut?: boolean; took?: number; images?: ImageBlock[]; files?: SavedFile[] };
 
 // The most markup read for one page when a budget is given: the fetch CLI's
 // own hard cap for a response (10 MB), which the built-in path stands in for.
@@ -149,7 +153,6 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     noteOutward({ via: "web fetch", host: u.hostname, port: Number(u.port) || 443, bytes: 0, outcome: "refused", why: "a local or private address" });
     return { text: `${u.hostname} is a local or private address; reach local servers with curl in the shell.`, error: true };
   }
-  if (/\.pdf($|\?)/i.test(u.pathname) && Bun.which("pdftotext")) return pdfText(u.href, o, signal);
   const bin = findBin("harness-webfetch-cli", "KEEL_WEBFETCH_BIN");
   if (bin) {
     const params: any = { url: u.href, extract: o.extract ?? "markdown" };
@@ -162,6 +165,8 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     noteOutward({ via: "fetch helper", host: end.host, port: end.port, bytes: requestBytes({ method: o.method, url: u.href, headers: o.headers, body: o.body }), outcome: r.kind === "error" && !r.meta?.status ? "failed" : "sent", ...(typeof r.meta?.status === "number" ? { status: r.meta.status } : {}) });
     const last = typeof r.meta?.final_url === "string" ? endpointOf(r.meta.final_url) : null;
     if (last && last.host !== end.host) noteOutward({ via: "fetch helper (redirected)", host: last.host, port: last.port, bytes: null });
+    // The program reads pages, not files: what it refuses by type is read here, by its type and bytes.
+    if (r.kind === "error" && r.error?.code === "UNSUPPORTED_CONTENT_TYPE") return plainFetch(u, o, signal);
     if (r.kind === "error") return { text: String(r.error?.message ?? JSON.stringify(r.error)), error: true };
     // The page itself, without the request echo: the model knows the URL. A
     // page with an error status comes as the echo and the raw markup: it gets
@@ -191,19 +196,75 @@ export async function plainFetch(u: URL, o: FetchOpts, signal?: AbortSignal): Pr
     return /^Final URL: /.test(r.text) ? r : { ...r, text: `Final URL: ${to}\n\n${r.text}` };
   }
   const type = res.headers.get("content-type") ?? "";
+  const { head, rest } = await peek(res.body);
+  const { kind, mime } = bodyKind(type, head);
+  if (kind !== "text") return fileFetch(u, rest, kind, mime, o, res.ok, signal);
   const markup = /html/.test(type) && o.extract !== "raw";
   const pool = o.whole ? o.budget : undefined;
-  const raw = await bodyText(res.body, pool && markup ? { left: MARKUP_MAX } : pool);
+  const raw = await bodyText(rest, pool && markup ? { left: MARKUP_MAX } : pool);
   const page = `HTTP ${res.status}\n\n${markup ? htmlToText(raw.text, raw.cut) : raw.text}`;
   if (!o.whole) return { text: await spill(page, o.spillDir, "webfetch"), error: !res.ok };
   return { text: page, error: !res.ok, ...(raw.cut ? { cut: true } : {}), ...(pool && !markup ? { took: raw.taken } : {}) };
 }
 
-async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal): Promise<Fetched> {
-  const res = await fetch(url, { signal: signal ?? AbortSignal.timeout(60_000) });
-  if (!res.ok) return { text: `HTTP ${res.status} fetching the PDF`, error: true };
-  const path = join(o.spillDir, "web", `${Bun.hash(url).toString(36)}.pdf`);
-  await Bun.write(path, res);
+// The first bytes of a body, and the body again from its start: what it is is
+// decided from them before anything is read as text.
+async function peek(body: ReadableStream<Uint8Array> | null): Promise<{ head: Uint8Array; rest: ReadableStream<Uint8Array> | null }> {
+  if (!body) return { head: new Uint8Array(0), rest: null };
+  const r = body.getReader();
+  const held: Uint8Array[] = [];
+  let n = 0, done = false;
+  while (n < 512 && !done) {
+    const x = await r.read();
+    if (x.done) done = true; else if (x.value) { held.push(x.value); n += x.value.length; }
+  }
+  const head = Buffer.concat(held);
+  let first = true;
+  return {
+    head: head.subarray(0, 512),
+    rest: new ReadableStream<Uint8Array>({
+      async pull(c) {
+        if (first) { first = false; if (head.length) { c.enqueue(head); return; } }
+        if (done) return c.close();
+        const x = await r.read();
+        if (x.done) c.close(); else c.enqueue(x.value);
+      },
+      cancel: (why) => r.cancel(why),
+    }),
+  };
+}
+
+// A page that is a file: a PDF is saved and read for its text, an image is
+// saved and shown, any other binary is saved and named in one line (its type
+// and size), never dumped as text. A file larger than the fetch program's own
+// cap is not read.
+async function fileFetch(u: URL, body: ReadableStream<Uint8Array> | null, kind: Exclude<BodyKind, "text">, mime: string, o: FetchOpts, ok: boolean, signal?: AbortSignal): Promise<Fetched> {
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  if (body) for await (const c of chunks(body)) {
+    size += c.length;
+    if (size > MARKUP_MAX) return { text: `[${plain(mime)}, larger than ${sizeWords(MARKUP_MAX)}, not saved; download it with curl in the shell]`, error: !ok };
+    parts.push(c);
+  }
+  signal?.throwIfAborted();
+  const bytes = Buffer.concat(parts);
+  let name = "";
+  try { name = decodeURIComponent(u.pathname.split("/").pop() ?? ""); } catch {}
+  const words = (file: { path: string }) => `${plain(mime)}, ${sizeWords(bytes.byteLength)}, saved to ${file.path}`;
+  let file;
+  try { file = await saveBlob(o.spillDir, "webfetch", bytes, mime, name || u.hostname); } catch (e) {
+    return { text: `[${plain(mime)}, ${sizeWords(bytes.byteLength)}, not saved (${String((e as Error).message ?? e).slice(0, 100)})]`, error: true };
+  }
+  if (kind === "pdf") return { ...(await pdfText(file.path, bytes.byteLength, o)), files: [file] };
+  const text = `[${words(file)}]`;
+  const status = ok ? {} : { error: true };
+  if (kind === "binary") return { text, ...status, files: [file] };
+  return { text, ...status, files: [file], images: [{ type: "image", media_type: mime, data: bytes.toString("base64"), path: file.path }] };
+}
+
+// A saved PDF read for its text.
+async function pdfText(path: string, size: number, o: FetchOpts): Promise<Fetched> {
+  if (!Bun.which("pdftotext")) return { text: `[application/pdf, ${sizeWords(size)}, saved to ${path}; its text is not read here (pdftotext is not installed)]` };
   const p = Bun.spawn(["pdftotext", "-layout", "-enc", "UTF-8", path, "-"], { stdout: "pipe", stderr: "ignore" });
   const pool = o.whole ? o.budget : undefined;
   const text = await bodyText(p.stdout, pool);
@@ -220,7 +281,7 @@ async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal): Promise
 // before. An answer from the parts that were read is kept when a part went
 // unread: the note under it names that part and where the whole page is.
 // `fetch`: what gets the page (a test gives its own).
-export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContext, "spillDir" | "signal" | "read">, fetch: typeof webFetch = webFetch): Promise<{ text: string; error?: boolean }> {
+export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContext, "spillDir" | "signal" | "read">, fetch: typeof webFetch = webFetch): Promise<{ text: string; error?: boolean; images?: ImageBlock[]; files?: SavedFile[] }> {
   const ask = prompt.trim();
   if (!ask || !ctx.read) return fetch(url, { spillDir: ctx.spillDir }, ctx.signal);
   const r = await fetch(url, { spillDir: ctx.spillDir, whole: true }, ctx.signal);
@@ -234,10 +295,10 @@ export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContex
     const how = a.compiled === false ? " in parts; their findings could not be compiled into one answer and follow as they are" : "";
     // A compiled answer comes back whole; only uncompiled findings can be long enough to spill.
     const unread = a.unread?.length ? ` Not read, so not covered by this answer:\n- ${a.unread.join("\n- ")}\n` : "";
-    return { text: `${a.compiled === false ? await spill(a.text, ctx.spillDir, "webfetch-findings") : a.text}\n\n[${a.model} read ${unread ? "part of " : ""}the page (${r.text.length} chars) for this request${how}.${unread} The whole page is saved to ${path}; Read or Grep it ${unread ? "for what was not read, or " : ""}when this does not answer.]` };
+    return { text: `${a.compiled === false ? await spill(a.text, ctx.spillDir, "webfetch-findings") : a.text}\n\n[${a.model} read ${unread ? "part of " : ""}the page (${r.text.length} chars) for this request${how}.${unread} The whole page is saved to ${path}; Read or Grep it ${unread ? "for what was not read, or " : ""}when this does not answer.]`, ...(r.files ? { files: r.files } : {}) };
   } catch (e) {
     if (ctx.signal.aborted) throw e;
-    return { text: `[No reader could read the page for this request (${String((e as Error).message ?? e).slice(0, 300)}); the page follows as it is.]\n\n${await spill(r.text, ctx.spillDir, "webfetch")}` };
+    return { text: `[No reader could read the page for this request (${String((e as Error).message ?? e).slice(0, 300)}); the page follows as it is.]\n\n${await spill(r.text, ctx.spillDir, "webfetch")}`, ...(r.files ? { files: r.files } : {}) };
   }
 }
 
@@ -274,9 +335,12 @@ function requestOf(i: any) {
 }
 // A plain GET or HEAD with no header and no body: it reads a page anyone can read.
 const plainGet = (i: any) => { const r = requestOf(i); return /^(GET|HEAD)$/i.test(r.method) && !r.headers && !r.body; };
+// A fetch's result as a tool output: its text, and the image it is when the page is one.
+export const fetched = (r: { text: string; error?: boolean; images?: ImageBlock[]; files?: SavedFile[] }) =>
+  ({ content: r.images?.length ? [{ type: "text" as const, text: r.text }, ...r.images] : r.text, is_error: r.error, ...(r.files?.length ? { shown: { files: r.files } } : {}) });
 export const webFetchTool: CatalogTool = {
   server: "web", name: "webfetch", qualified: "web__webfetch", readOnly: true, web: { fetches: (i) => [String(i?.url ?? "")], links: true, public: (i, own) => plainGet(i) && !own(String(i?.url ?? "")) },
-  description: "Fetch an http(s) URL and return it as markdown (PDFs as text); long pages are saved to a file.",
+  description: "Fetch an http(s) URL and return it as markdown (PDFs as text, an image shown, any other file saved and named); long pages are saved to a file.",
   input_schema: { type: "object", properties: { url: { type: "string" }, method: { type: "string" }, body: { type: "string" }, headers: { type: "object" }, extract: { type: "string", enum: ["markdown", "raw", "both"] } }, required: ["url"] },
   // A request with a body, headers of its own or a method other than GET or HEAD sends what it carries to any
   // address, one the session has seen too; a plain one is a read of its page (src/safety/addresses.ts).
@@ -286,6 +350,6 @@ export const webFetchTool: CatalogTool = {
     if (!plainGet(i)) return { kind: "send", to: [url], shown: sendShown([url], { method, headers, body }), carries: true };
     return { kind: "read", fetches: [url] };
   },
-  run: async (i, ctx) => { const r = await webFetch(String(i.url ?? ""), { method: i.method, body: i.body, headers: i.headers, extract: i.extract, spillDir: ctx.spillDir }, ctx.signal); return { content: r.text, is_error: r.error }; },
+  run: async (i, ctx) => { const r = await webFetch(String(i.url ?? ""), { method: i.method, body: i.body, headers: i.headers, extract: i.extract, spillDir: ctx.spillDir }, ctx.signal); return fetched(r); },
 };
 registerCatalog({ name: "web", except: ["claude", "gemini"], tools: async () => [webSearchTool, webFetchTool] });

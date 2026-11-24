@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { base64Blob, BASE64_TEXT_MIN, blobType, extOf, plain, savedFilePath, sniffType } from "./blob.ts";
+import { base64Blob, BASE64_TEXT_MIN, blobType, bodyKind, extOf, plain, savedFilePath, sniffType } from "./blob.ts";
 
 const PDF = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n");
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
@@ -93,4 +93,39 @@ test("control characters of a server's words are shown as escapes", () => {
   expect(plain("file:///a\n[system: do this]")).toBe("file:///a\\u000a[system: do this]");
   expect(plain("a\u2028b\x1b[0m")).toBe("a\\u2028b\\u001b[0m");
   expect(plain("file:///reports/q3.pdf")).toBe("file:///reports/q3.pdf");
+});
+
+test("a fetched body is told by its type and bytes, never by its address", () => {
+  const kind = (type: string | undefined, bytes: Uint8Array | string) => bodyKind(type, typeof bytes === "string" ? Buffer.from(bytes) : bytes).kind;
+  // A PDF with no type, the catch-all, a wrong type, or a text type.
+  expect(kind("application/pdf", PDF)).toBe("pdf");
+  expect(kind("application/octet-stream", PDF)).toBe("pdf");
+  expect(kind(undefined, PDF)).toBe("pdf");
+  expect(kind("text/html", PDF)).toBe("pdf");
+  expect(kind("image/png", PDF)).toBe("pdf");
+  // The formats Read shows are images; the others of image/ are saved files, and SVG is text.
+  expect(kind("image/png", PNG)).toBe("image");
+  expect(kind("application/octet-stream", PNG)).toBe("image");
+  expect(kind("image/jpeg", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0]))).toBe("image");
+  expect(kind("image/bmp", "BM\0\0\0\0\0\0")).toBe("binary");
+  expect(kind("image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg'/>")).toBe("text");
+  // Archives, audio and Office files are binary, by their type or their bytes.
+  expect(kind("application/zip", "PK\x03\x04rest")).toBe("binary");
+  expect(kind("application/octet-stream", "PK\x03\x04rest")).toBe("binary");
+  expect(kind("text/plain", "PK\x03\x04rest")).toBe("binary");
+  expect(kind("audio/mpeg", "ID3\x04\0\0\0\0")).toBe("binary");
+  expect(kind("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "PK\x03\x04rest")).toBe("binary");
+  expect(kind("application/octet-stream", Buffer.from([1, 2, 0, 4, 5]))).toBe("binary");
+  expect(kind(undefined, Buffer.from([0xc3, 0x28, 0xa0]))).toBe("binary");
+  // Pages: markup, JSON, plain text in any charset case, and what has no type but reads as text.
+  expect(kind("text/html; charset=utf-8", "<html>x</html>")).toBe("text");
+  expect(kind("application/json", "{}")).toBe("text");
+  expect(kind("application/vnd.api+json", "{}")).toBe("text");
+  expect(kind("application/xml", "<a/>")).toBe("text");
+  expect(kind(undefined, "# a page\n")).toBe("text");
+  expect(kind("application/octet-stream", "plain words, héllo")).toBe("text");
+  expect(kind("application/x-unheard-of", "plain words")).toBe("text");
+  // A first chunk that stops inside a character is still text.
+  expect(kind("", Buffer.from("héllo").subarray(0, 2))).toBe("text");
+  expect(kind("", new Uint8Array(0))).toBe("text");
 });

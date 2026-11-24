@@ -12,7 +12,7 @@ import { jobsOf, running, waitJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
-import { fetchFor, webSearch } from "./web.ts";
+import { fetched, fetchFor, webSearch } from "./web.ts";
 
 const obj = (properties: Record<string, unknown>, required: string[]) => ({ type: "object", properties, required });
 
@@ -288,11 +288,11 @@ const web_fetch: Tool = {
   async run(input, ctx) {
     const urls = promptUrls(input.prompt);
     if (!urls.length) return fail("The prompt must contain at least one URL starting with http:// or https://.");
-    const parts = await Promise.all(urls.map(async (u) => {
-      const r = await fetchFor(u, String(input.prompt), ctx).catch((e) => ({ text: String(e.message), error: true }));
-      return `--- ${u} ---\n${r.text}`;
+    const got = await Promise.all(urls.map(async (u) => {
+      const r: Awaited<ReturnType<typeof fetchFor>> = await fetchFor(u, String(input.prompt), ctx).catch((e) => ({ text: String(e.message), error: true }));
+      return { ...r, text: `--- ${u} ---\n${r.text}` };
     }));
-    return ok(parts.join("\n\n"));
+    return fetched({ text: got.map((r) => r.text).join("\n\n"), images: got.flatMap((r) => r.images ?? []), files: got.flatMap((r) => r.files ?? []) });
   },
 };
 

@@ -82,6 +82,31 @@ export function blobType(declared: string | undefined, bytes: Uint8Array): strin
   return sniffed ?? "application/octet-stream";
 }
 
+// What a fetched body is, from its Content-Type and its first bytes, never
+// from the address's extension: text to read as text, a PDF to read for its
+// text, an image the model can look at (the formats Read shows), or any other
+// binary, which is saved as a file and named instead of dumped as text.
+export type BodyKind = "text" | "pdf" | "image" | "binary";
+const INLINE_IMAGE = /^image\/(png|jpeg|gif|webp)$/;
+const TEXTUAL = /^(text\/|application\/(json|xml|xhtml\+xml|(x-)?javascript|ecmascript|(x-)?yaml|toml|x-www-form-urlencoded|x-ndjson|x-sh|sql|graphql)$|image\/svg\+xml$)|\+(json|xml|yaml)$/;
+// Bytes that read as text: no NUL, and UTF-8 (a character cut at the end of the first bytes is not a fault).
+export function looksText(b: Uint8Array): boolean {
+  if (b.includes(0)) return false;
+  try { new TextDecoder("utf-8", { fatal: true }).decode(b, { stream: true }); return true; } catch { return false; }
+}
+export function bodyKind(declared: string | undefined, head: Uint8Array): { kind: BodyKind; mime: string } {
+  const t = typeOf(declared), sniffed = sniffType(head);
+  // A page that is called text and starts like a file format is that file.
+  const mime = TEXTUAL.test(t) && sniffed ? sniffed : blobType(declared, head);
+  if (mime === "application/pdf") return { kind: "pdf", mime };
+  if (INLINE_IMAGE.test(mime)) return { kind: "image", mime };
+  if (TEXTUAL.test(mime)) return { kind: "text", mime };
+  // A type of a format we know, or of media, is binary; one we do not know (or no type) is what its bytes are.
+  const known = mime in MIME_EXT || /^(audio|video|image|font)\//.test(mime);
+  if (GENERIC.has(mime) || !known) return { kind: looksText(head) ? "text" : "binary", mime };
+  return { kind: "binary", mime };
+}
+
 // The extension a type gives, without the dot: from the table, else from a
 // structured suffix (`application/vnd.x+json`), else the subtype when it is a
 // plain word (`audio/amr`), else `bin`.
