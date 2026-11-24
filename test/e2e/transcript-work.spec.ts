@@ -533,6 +533,12 @@ test("a call waiting for approval says so, closed, and asks for no output", asyn
   await expect(call.locator(".k-line-text")).toContainText("Run");
   await expect(call.locator(".k-line-text")).not.toContainText("rm -rf");
   await expect(page.getByTestId("approval")).toContainText("rm -rf build-out");
+  // The card stands right under its step, not at the foot of an empty pane: the gap between them is
+  // a few lines, and the pane's message box stays at its own foot.
+  const step = (await page.locator('.k-step[data-state="need"]').boundingBox())!, card = (await page.getByTestId("approval").boundingBox())!, box = (await page.getByTestId("composer").boundingBox())!;
+  expect(card.y - (step.y + step.height), "the card is far under its step").toBeLessThan(120);
+  expect(card.y, "the card is above its step").toBeGreaterThan(step.y + step.height - 1);
+  expect(card.y + card.height, "the card lies over the message box").toBeLessThanOrEqual(box.y + 1);
   // Allowed, it runs and ends as any command.
   await page.getByTestId("approval").getByRole("button", { name: /Allow once/i }).click();
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });

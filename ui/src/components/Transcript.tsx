@@ -1436,7 +1436,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     const c = content.current;
     if (!c) return;
-    let late = 0;
+    let late = 0, lateUnder = 0;
     const ro = new ResizeObserver(() => {
       // A size change queued before the transcript left the page lands after it: nothing to measure.
       const el = scroller.current;
@@ -1452,6 +1452,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
       if (box && box.style.getPropertyValue("--sbw") !== sbw) { cancelAnimationFrame(late); late = requestAnimationFrame(() => box.style.setProperty("--sbw", sbw)); }
+      // The room under the last row of a conversation that does not fill its view: a card that waits on the
+      // owner (the tray over the message box) stands that much higher, right under its step (bridge.css).
+      // None where the conversation fills the view: the card is at the box then, as it was.
+      const rest = el.scrollHeight > el.clientHeight + 1 ? 0 : Math.max(0, Math.floor(el.clientHeight - (c.offsetHeight - parseFloat(getComputedStyle(c).paddingBottom)) - parseFloat(getComputedStyle(document.documentElement).fontSize)));
+      if (box && box.style.getPropertyValue("--k-under") !== `${rest}px`) { cancelAnimationFrame(lateUnder); lateUnder = requestAnimationFrame(() => box.style.setProperty("--k-under", `${rest}px`)); }
       standing(c);
       hold(el);
       // Then which blocks to draw, with the view where it now stands. (Here the layout is done:
@@ -1497,7 +1502,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // End is for the pane worked in: the command names its session.
     const onEnd = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId) toEnd(true); };
     addEventListener("keel:end", onEnd);
-    return () => { ro.disconnect(); cancelAnimationFrame(late); removeEventListener("keel:end", onEnd); };
+    return () => { ro.disconnect(); cancelAnimationFrame(late); cancelAnimationFrame(lateUnder); removeEventListener("keel:end", onEnd); };
   }, [!!events, sessionId]);
 
   // History read away from the end stays whole in the store meanwhile, also under a cover (a

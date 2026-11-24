@@ -630,7 +630,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 }
 
 /* Rendered markdown in assistant replies. */
-.prose-keel { font-size: var(--text-read); line-height: 1.7; overflow-wrap: anywhere; }
+.prose-keel { font-size: var(--text-base); line-height: 1.65; overflow-wrap: anywhere; }
 /* Space between blocks: every block but the first. Not written "* + *": a
    sibling rule (+ or ~) with a side that has no class, id or attribute to
    key on (a bare tag, or *) applies to any element, so each element removed

@@ -2,9 +2,9 @@ import { expect, test } from "./isolate.ts";
 import type { Page } from "./isolate.ts";
 import { shoot, setPanes } from "./shots.ts";
 
-// Feature: the reading size fits the pane. A reply is set at the reading size
-// in a pane with room for it; in a pane among four at 1920 px it is set one
-// step down with less margin, so a line holds 55 characters or more.
+// Feature: a reply is set at the body size of the type scale, a step above the rows of work and not
+// twice them, in every pane, and so are the owner's words. A line holds 55 characters or more in a pane
+// among four at 1920 px, and not more than 110 in a pane alone.
 test("a reply in a four-pane bridge has 55 characters a line or more", async ({ page, request }) => {
   const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
   test.skip(!model.startsWith("scripted:"), "the long reply is scripted");
@@ -35,6 +35,8 @@ test("a reply in a four-pane bridge has 55 characters a line or more", async ({ 
   await expect(page.locator("section.k-station")).toHaveCount(4);
   await page.locator(`section.k-station[data-station="${long}"] .prose-keel p`).first().waitFor();
   await document_fonts(page);
+  const body = await page.evaluate(() => parseFloat(getComputedStyle(document.body).fontSize));
+  const row = await page.evaluate(() => { const probe = document.createElement("span"); probe.className = "text-caption"; document.body.append(probe); const px = parseFloat(getComputedStyle(probe).fontSize); probe.remove(); return px; });
   const four = await measure(page);
   console.log(`four panes: ${JSON.stringify(four)}`);
   expect(four.pane).toBeLessThan(520);
@@ -47,13 +49,13 @@ test("a reply in a four-pane bridge has 55 characters a line or more", async ({ 
   await expect(page.locator("section.k-station")).toHaveCount(1);
   const one = await measure(page);
   console.log(`one pane: ${JSON.stringify(one)}`);
-  expect(one.px).toBeGreaterThan(four.px);
-  expect(one.px).toBeGreaterThanOrEqual(18);
-  expect(one.chars).toBeLessThanOrEqual(95);
+  expect(one.px, "the size does not depend on the pane").toBe(four.px);
+  expect(one.px, "the body size of the type scale").toBe(body);
+  expect(one.px / row, "the reply is a step above the rows of work").toBeLessThan(1.3);
+  expect(one.chars).toBeLessThanOrEqual(110);
   expect(one.owner).toBe(one.px);
 
-  // A phone is a narrow pane too: one step down for the reply and the owner's words alike,
-  // which holds 48 characters a line or more where the reading size held 44.
+  // A phone is a narrow pane too: the same size, 48 characters a line or more.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(async () => (await measure(page)).pane).toBeLessThanOrEqual(390);
   const phone = await measure(page);

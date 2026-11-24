@@ -986,16 +986,13 @@ html[data-resizing] iframe { pointer-events: none; }
 /* Inside a station the transcript fills it, a little tighter than reading width. */
 .k-station .k-transcript { max-width: 46rem; padding-top: 1.375rem; --k-row-gap: 0.875rem; }
 .k-station .k-compose-in { max-width: 46rem; }
-/* The reading size fits the pane. A pane among four is too narrow for 18 px
-   text at a readable measure (38 characters a line): under 28rem, where the
-   reading size holds fewer than 55 characters a line, the reply is set one
-   step down with less margin. A phone is such a pane: at 390 px the reading
-   size gives 44 characters a line and the base size 50, at the platform's
-   own body size. The owner's words are the reply's size in every pane. */
+/* A reply and the owner's words are set at the body size of the type scale (--text-base), in every pane:
+   a step above the rows of work, not twice them. A pane under 28rem (a phone, a pane among four) only
+   tightens its margins and line height. */
 .k-reading { container: reading / inline-size; }
 @container reading (max-width: 28rem) {
   .k-transcript { padding-inline: 0.875rem; }
-  .k-transcript .prose-keel { font-size: var(--text-base); line-height: 1.6; }
+  .k-transcript .prose-keel { line-height: 1.6; }
   .k-transcript .prose-keel :not(pre) > code { font-size: var(--text-ui); }
   .k-transcript .prose-keel h1 { font-size: var(--text-head); }
   .k-transcript .prose-keel h2 { font-size: var(--text-read); }
@@ -1114,7 +1111,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-home-recent:is([data-watch="wait"], [data-watch="resume"]) .k-home-recent-word { color: var(--st-wait-ink); }
 
 /* ---------- Components in the Bridge language ---------- */
-.prose-keel { font-size: var(--text-read); line-height: 1.65; }
+.prose-keel { font-size: var(--text-base); line-height: 1.65; }
 .k-turn-end, .k-session-usage { font-size: var(--text-micro); }
 /* Composer: a flat console field; violet ring when it has the keyboard. */
 .k-composer-box { border-radius: var(--radius-md); box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
@@ -1139,6 +1136,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-ask-bar { background: var(--bg); }
 .k-station[data-helm] .k-ask-bar { background: var(--raised); }
 .k-ask-list[data-bar-stays] > .k-ask-bar { position: sticky; top: 0; z-index: 1; }
+/* A conversation that does not fill its view leaves room under its last row. A card that waits on the owner
+   stands right under its step, not at the foot of that room: the tray is lifted by the room's height
+   (Transcript.tsx writes it as --k-under), the message box stays at its own foot. Where the conversation
+   fills the view the room is none and the card is at the box. */
+.k-session .k-tray[data-asking] { transform: translateY(calc(var(--k-under, 0px) * -1)); }
 .k-tray:has(.k-ask-list[data-bar-stays])[data-more="up"] { mask-image: none; }
 .k-tray:has(.k-ask-list[data-bar-stays])[data-more="up down"] { mask-image: linear-gradient(to top, transparent, #000 1.25rem); }
 /* A card taller than the region keeps its answers in view while it is read (ApprovalCard.tsx
