@@ -39,6 +39,7 @@ test("independent review with findings", async ({ page, request }) => {
   const reviewer = page.getByTestId("reviewer");
   await expect(reviewer).toBeVisible();
   await shoot(page, "review-01-start");
+  await reviewer.getByTestId("review-open-form").click();
   await reviewer.getByTestId("review-start").click();
   const card = reviewer.getByTestId("review").first();
   await expect(card).toHaveAttribute("data-state", "running");
@@ -101,7 +102,16 @@ test("a review of uncommitted work names the commit that took it", async ({ page
   await page.goto(`/s/${session.id}`);
   await openPanel(page, "review");
   const reviewer = page.getByTestId("reviewer");
+  // The panel opens on the diff: the review form is behind one button, so the first file is high on the page.
+  await expect(page.getByTestId("diff-file").first()).toBeVisible();
+  await expect(reviewer.getByTestId("review-start")).toHaveCount(0);
+  expect((await page.getByTestId("diff-file").first().boundingBox())!.y, "the diff comes first").toBeLessThan(380);
+  await shoot(page, "review-03-diff-first");
+  await reviewer.getByTestId("review-open-form").click();
+  await expect(reviewer.getByTestId("review-start")).toBeVisible();
+  await shoot(page, "review-04-form-open");
   await reviewer.getByTestId("review-start").click();
+  await expect(reviewer.getByTestId("review-start")).toHaveCount(0);
   const card = reviewer.getByTestId("review").first();
   await expect(card).toHaveAttribute("data-state", "done", { timeout: 150_000 });
   await expect(card.getByTestId("review-heading")).toHaveText("Review of uncommitted work");

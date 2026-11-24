@@ -28,6 +28,8 @@ export function ReviewFindings({ session }: { session: Session }) {
   const [existing, setExisting] = useState<string | null>(null);
   const [lit, setLit] = useState<string | null>(null);
   const [older, setOlder] = useState(false);
+  // The form that starts a review stays shut: the panel opens on the diff, and a review is one button away.
+  const [form, setForm] = useState(false);
 
   const load = useCallback(() => api<{ reviews: Review[] }>(`/api/sessions/${session.id}/reviews`).then((r) => setReviews(byCreated(r.reviews))).catch(reportError), [session.id]);
   useEffect(() => {
@@ -44,6 +46,7 @@ export function ReviewFindings({ session }: { session: Session }) {
       const r = await api<{ review: Review; skipped: boolean; note?: string }>(`/api/sessions/${session.id}/reviews`, { method: "POST", body: JSON.stringify({ scope, kind, model, focus: focus.trim() || undefined }) });
       // A reused review keeps its place in the history (it is not the newest).
       setReviews((l) => byCreated([...l.filter((x) => x.id !== r.review.id), r.review]));
+      setForm(false);
       if (r.skipped) { setErr(r.note ?? "This change was reviewed already."); setExisting(r.review.id); }
     } catch (e) {
       setErr(failed(e, { at: "ReviewFindings" }));
@@ -64,11 +67,16 @@ export function ReviewFindings({ session }: { session: Session }) {
 
   return (
     <section className="k-reviewer rounded-xl border border-line bg-raised p-3" data-testid="reviewer">
-      <div className="flex items-center gap-2 px-0.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
         <ScanSearch className="size-4 text-accent" />
         <h3 className="text-ui font-medium">Independent review</h3>
-        <span className="text-caption text-faint">a read-only reviewer with its own context</span>
+        <span className="min-w-0 flex-1 text-caption text-faint max-md:hidden">a read-only reviewer with its own context</span>
+        <button type="button" onClick={() => setForm(!form)} aria-expanded={form} data-testid="review-open-form"
+          className="k-btn ml-auto">
+          {form ? "Close" : "Review the change"}
+        </button>
       </div>
+      {form && (<>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <Segmented label="What to review" value={scope} onChange={setScope} options={[{ value: "uncommitted", label: "Uncommitted" }, { value: "branch", label: "Branch" }, { value: "commit", label: "Last commit" }]} />
         <Segmented label="Kind" value={kind} onChange={setKind} options={[{ value: "code", label: "Bugs" }, { value: "security", label: "Security" }]} />
@@ -86,6 +94,7 @@ export function ReviewFindings({ session }: { session: Session }) {
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ScanSearch className="size-3.5" />} Review
         </button>
       </div>
+      </>)}
       {err && (
         <p className="mt-2 flex items-center gap-2 text-caption text-warn" data-testid="review-note-err">
           {err}
