@@ -74,17 +74,19 @@ function bench() {
   const told: { cls: string; message: string; how: string }[] = [];
   const errors: string[] = [];
   let held: string | undefined;
+  // A hold that begins after this many questions of it: the owner's Stop that comes while a pass awaits.
+  let asks = 0, holdAfter = Infinity;
   const deps = {
     error: (e: unknown) => void errors.push(String((e as Error).message)), changed: () => {},
     tell: (_s: string, cls: string, message: string, how: "wake" | "ride") => void told.push({ cls, message, how }),
-    held: () => held, agents: agents as never,
+    held: () => (++asks > holdAfter ? "the owner stopped this session" : held), agents: agents as never,
   };
   const lp = new LanePlans(store, deps);
   const session = store.createSession({ model: "m:x", workspace: repo, title: "coord" });
   // Two lanes that meet in src/z.ts (one file of four: not proposed as one): lane 2 after lane 1.
   const plan = () => lp.make(session.id, [{ title: "a", brief: "Edit src/z.ts.", files: ["src/z.ts", "src/x.ts", "src/a1.ts", "src/a2.ts"] }, { title: "b", brief: "Edit src/z.ts too.", files: ["src/z.ts", "src/y.ts", "src/b1.ts", "src/b2.ts"] }], "session");
   const byTitle = (t: string) => [...made.values()].find((a) => a.title === t);
-  return { store, repo, lp, deps, made, refuse, told, errors, plan, byTitle, setHeld: (w: string | undefined) => void (held = w) };
+  return { store, repo, lp, deps, made, refuse, told, errors, plan, byTitle, setHeld: (w: string | undefined) => void (held = w), holdAfter: (n: number) => { asks = 0; holdAfter = n; } };
 }
 
 test("a plan starts nothing while its session is held, and goes on when the hold ends", async () => {
@@ -189,4 +191,37 @@ test("a restart between a lane's claim and its agent leaves the lane to start ag
   const again = new LanePlans(b.store, b.deps);
   expect((await again.view(v.id))!.lanes[0]!.state).toBe("planned");
   expect((await again.start(v.id, [0])).started).toEqual([0]);
+});
+
+test("a hold made while a pass awaits stops the start: the hold is looked at again before each spawn", async () => {
+  const b = bench();
+  const v = await b.plan();
+  await b.lp.start(v.id, "order");
+  b.byTitle("a")!.status = "completed"; // no branch: nothing of it to land
+  // The pass's first look finds no hold; the owner's Stop comes during its awaits.
+  b.holdAfter(1);
+  await b.lp.look();
+  expect(b.byTitle("b")).toBeUndefined();
+  expect((await b.lp.view(v.id))!.lanes[1]!.state).toBe("waiting");
+  b.holdAfter(Infinity);
+  await b.lp.look();
+  expect(b.byTitle("b")?.status).toBe("running");
+});
+
+test("a restart between the claim and the agent of a merged unit gives every lane of it the one agent", async () => {
+  const b = bench();
+  const v = await b.lp.make(b.store.createSession({ model: "m:x", workspace: b.repo, title: "coord2" }).id, [{ title: "a", brief: "Edit src/z.ts.", files: ["src/z.ts"] }, { title: "b", brief: "Edit src/z.ts too.", files: ["src/z.ts"] }], "session");
+  expect(v.proposal.units.map((u) => u.lanes)).toEqual([[0, 1]]);
+  const out = await b.lp.start(v.id, "order");
+  expect(out.started).toEqual([0, 1]);
+  const agent = b.byTitle("a + b")!;
+  // The claim was written and the agent made; the daemon stopped before the lanes were given it.
+  b.store.db.query("UPDATE plan_lanes SET agent_id = NULL, session_id = NULL WHERE plan_id = ?").run(v.id);
+  b.store.db.query("CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, parent_id TEXT, created INTEGER, session_id TEXT)").run();
+  b.store.db.query("INSERT INTO agents (id, parent_id, created, session_id) VALUES (?, ?, ?, ?)").run(agent.id, v.session_id, Date.now() + 1, agent.session_id);
+  const again = new LanePlans(b.store, b.deps);
+  const lanes = (await again.view(v.id))!.lanes;
+  expect(lanes.map((l) => [l.state, l.agent?.id])).toEqual([["started", agent.id], ["started", agent.id]]);
+  await again.look();
+  expect(b.made.size).toBe(1);
 });

@@ -129,18 +129,32 @@ export class LanePlans {
   }
 
   // A start a restart cut between its claim and its agent: the agent it made, if it made one (its
-  // parent's agent of that title made since the claim), else the lane is not started.
+  // parent's agent made since the claim, titled as the unit's lanes joined: launch), else the lanes
+  // are not started. A merged unit's lanes are one start: they all get that agent or all start again.
   private claimsCut() {
-    const cut = this.store.db.query<{ plan_id: string; idx: number; started: number | null; session: string; title: string }, []>(
-      "SELECT l.plan_id, l.idx, l.started, p.session_id AS session, l.title FROM plan_lanes l JOIN lane_plans p ON p.id = l.plan_id WHERE l.state = 'started' AND l.agent_id IS NULL").all();
+    const cut = this.store.db.query<{ plan_id: string; idx: number; started: number | null; session: string; title: string; proposal: string | null }, []>(
+      "SELECT l.plan_id, l.idx, l.started, p.session_id AS session, l.title, p.proposal FROM plan_lanes l JOIN lane_plans p ON p.id = l.plan_id WHERE l.state = 'started' AND l.agent_id IS NULL ORDER BY l.plan_id, l.idx").all();
+    const units = new Map<string, typeof cut>();
     for (const r of cut) {
+      const k = parse<Proposal>(r.proposal, { units: [], waves: 0 }).units.findIndex((u) => u.lanes.includes(r.idx));
+      const key = `${r.plan_id}\0${k < 0 ? `lane${r.idx}` : k}`;
+      (units.get(key) ?? units.set(key, []).get(key)!).push(r);
+    }
+    for (const ls of units.values()) {
+      const first = ls[0]!;
+      const order = parse<Proposal>(first.proposal, { units: [], waves: 0 }).units.find((u) => u.lanes.includes(first.idx))?.lanes ?? [];
+      const ranked = [...ls].sort((a, b) => order.indexOf(a.idx) - order.indexOf(b.idx));
+      // The title launch gave the agent: the lanes it started, joined.
+      const joined = ranked.map((r) => r.title).join(" + ").slice(0, 120);
       let made: { id: string; session_id: string } | null = null;
       try {
         made = this.store.db.query<{ id: string; session_id: string }, [string, number]>("SELECT id, session_id FROM agents WHERE parent_id = ? AND created >= ? AND id NOT IN (SELECT agent_id FROM plan_lanes WHERE agent_id IS NOT NULL) ORDER BY created LIMIT 50")
-          .all(r.session, r.started ?? 0).find((a) => this.ag.get(a.id)?.title.startsWith(r.title.slice(0, 60))) ?? null;
+          .all(first.session, Math.min(...ls.map((r) => r.started ?? 0))).find((a) => this.ag.get(a.id)?.title.startsWith(joined.slice(0, 60))) ?? null;
       } catch { /* no agents table: no agent was made */ }
-      if (made) this.store.db.query("UPDATE plan_lanes SET agent_id = ?, session_id = ? WHERE plan_id = ? AND idx = ?").run(made.id, made.session_id, r.plan_id, r.idx);
-      else this.store.db.query("UPDATE plan_lanes SET state = 'planned', started = NULL WHERE plan_id = ? AND idx = ?").run(r.plan_id, r.idx);
+      for (const r of ls) {
+        if (made) this.store.db.query("UPDATE plan_lanes SET agent_id = ?, session_id = ? WHERE plan_id = ? AND idx = ?").run(made.id, made.session_id, r.plan_id, r.idx);
+        else this.store.db.query("UPDATE plan_lanes SET state = 'planned', started = NULL WHERE plan_id = ? AND idx = ?").run(r.plan_id, r.idx);
+      }
     }
   }
 
@@ -373,6 +387,8 @@ export class LanePlans {
           if (st !== "pending" && !blocker) blocker = { lane: i, ...st };
         }
         if (ready) {
+          // (A hold made while this pass awaited git: nothing starts under it, the lanes keep waiting.)
+          if (this.held(p.session_id)) { heldNow.add(p.session_id); break; }
           this.store.db.query("UPDATE plan_lanes SET state = 'planned', blocked = NULL WHERE plan_id = ? AND idx IN (SELECT value FROM json_each(?)) AND state = 'waiting'").run(plan_id, JSON.stringify(ls.map((r) => r.idx)));
           await this.launch(p, ls.map((r) => ({ ...r, state: "planned" as const })), { started: [], failed: [] }, true);
           moved = true;
