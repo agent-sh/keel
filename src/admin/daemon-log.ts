@@ -147,6 +147,9 @@ const SETTLED: Record<string, string> = { fired: "fired", timeout: "timed out", 
 export const waitEndLine = (o: { id: string; on: string; status: string; ms: number; late?: string; title?: string }) =>
   clip(`[wait] on ${val(o.on)} ${SETTLED[o.status] ?? val(o.status)} after ${dur(Math.max(0, o.ms))}${o.late ? `, ${val(o.late)}` : ""}${inTitle(o.title)} [wait ${val(o.id)}]`);
 
+// A loop that ended by its own limit: its end time or its runs.
+export const loopEndLine = (o: { name: string; why: string; title?: string }) => clip(`[loop] ${title(o.name)} ended: ${reason(o.why, 200)}${inTitle(o.title)}`);
+
 // A loop's run that ended, or one that did not run.
 export const loopLine = (o: { name: string; said: string; title?: string }) => clip(`[loop] ${title(o.name)} run ${reason(o.said, 200)}${inTitle(o.title)}`);
 

@@ -514,12 +514,12 @@ const cronSchema = {
 };
 const cronRun = (input: any, ctx: ToolContext) => guard(() => {
   const { loop } = loops.create({ session_id: ctx.sessionId, schedule: String(input.cron ?? input.schedule), prompt: input.prompt, max_runs: input.recurring === false ? 1 : (input.max_runs ?? null), created_by: "model" });
-  return ok(`Scheduled ${loop.id}: ${loop.schedule_text}, next run ${loop.next_ms ? zonedStamp(loop.next_ms) : "-"}. Recurring tasks expire after 7 days.`);
+  return ok(`Scheduled ${loop.id}: ${loop.schedule_text}, next run ${loop.next_ms ? zonedStamp(loop.next_ms) : "-"}. Recurring tasks expire after 30 days.`);
 });
-const cronDesc = "Schedule a prompt to run in this session on a cron schedule or an interval, between turns (a busy session runs it when its turn ends). Recurring tasks expire after seven days; recurring: false fires once.";
+const cronDesc = "Schedule a prompt to run in this session on a cron schedule or an interval, between turns (a busy session runs it when its turn ends). Recurring tasks expire after 30 days; recurring: false fires once.";
 
-const CronCreate: Tool = { name: "CronCreate", families: CLAUDE, readOnly: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
-const schedule_create: Tool = { name: "schedule_create", families: OTHERS, readOnly: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
+const CronCreate: Tool = { name: "CronCreate", urgent: "loop-30-days", families: CLAUDE, readOnly: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
+const schedule_create: Tool = { name: "schedule_create", urgent: "loop-30-days", families: OTHERS, readOnly: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
 
 const listRun = (_: any, ctx: ToolContext) => guard(() => {
   const ls = loops.list(ctx.sessionId);

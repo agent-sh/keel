@@ -333,3 +333,41 @@ test("a time missed while the daemon was down or the machine slept runs once, ma
   expect(runs[0]!.note).toMatch(/^Catch-up for .+, 2910 min late \(.+\)\. The 2 later times it missed are not run separately\.$/);
   expect(loops.get(daily.id)!.next_ms).toBe(first + 3 * 86_400_000);
 });
+
+// --- how long a model's loop lasts, and the line that says it ended
+
+const DAY = 86400_000;
+// What the daemon says in the session's scope while the body runs.
+const said = (body: () => void) => {
+  const lines: string[] = [];
+  const was = console.log;
+  console.log = (...a: unknown[]) => void lines.push(a.join(" "));
+  try { body(); } finally { console.log = was; }
+  return lines.filter((l) => l.startsWith("[loop]"));
+};
+
+test("a loop the model makes lasts 30 days, and its end is said once in the session", () => {
+  const t0 = Date.now();
+  at(t0);
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1h", prompt: "look", name: "nightly", created_by: "model" });
+  expect(loop.until_ms).toBe(t0 + 30 * DAY);
+  // A longer end the model asks for is cut to the 30 days; the owner's own loop keeps what it asked.
+  expect(loops.create({ session_id: s.id, schedule: "1h", prompt: "x", created_by: "model", until_ms: t0 + 90 * DAY }).loop.until_ms).toBe(t0 + 30 * DAY);
+  at(t0 + 29 * DAY);
+  expect(said(() => loops.tick())).toEqual([]);
+  at(t0 + 30 * DAY + 1000);
+  const lines = said(() => { loops.tick(); loops.tick(); });
+  expect(lines.filter((l) => l.includes('"nightly"'))).toEqual([expect.stringMatching(/"nightly" ended: .*30 days/)]);
+  expect(loops.get(loop.id)).toMatchObject({ enabled: false, disabled_reason: "expired" });
+});
+
+test("a loop that ran its runs says so once, in the session", () => {
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick", name: "twice", max_runs: 1 });
+  const lines = said(() => { loops.runNow(loop.id); step(s.id, 5); end(s.id); });
+  expect(lines.filter((l) => l.includes('"twice" ended'))).toEqual([expect.stringMatching(/"twice" ended: ran its 1 run/)]);
+  expect(loops.get(loop.id)).toMatchObject({ enabled: false, disabled_reason: "ran its 1 runs" });
+});

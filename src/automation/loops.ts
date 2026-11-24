@@ -6,7 +6,7 @@ import { checkZone, localZone, nextCron, intervalStepMs, nextRuns, parseCron, pa
 import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { stopSays } from "../core/stoppers.ts";
-import { loopLine, sayAt } from "../admin/daemon-log.ts";
+import { loopEndLine, loopLine, sayAt } from "../admin/daemon-log.ts";
 import * as channels from "./channels.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { sessionState } from "./state.ts";
@@ -70,7 +70,7 @@ export type RunRecord = {
 };
 
 export const LOOP_LIMIT = 50;
-const MODEL_EXPIRY = 7 * 86400_000; // a Loop a model creates ends within seven days
+const MODEL_EXPIRY = 30 * 86400_000; // a Loop a model creates ends within thirty days
 const AUTO_DEFAULT = 1200; // a self-paced run that names no delay
 const FAIL_PAUSE = 3;
 const WEBHOOK_MIN_INTERVAL = 10_000;
@@ -542,6 +542,18 @@ function closeRuns(sessionId: string, outcome: NonNullable<RunRecord["outcome"]>
   }
 }
 
+// A loop that ends by its own limit is off, and the session is told which limit and when: its end time
+// (a model's loop has thirty days) or its runs. The reason kept on the loop is the short one.
+function endLoop(l: LoopRecord, how: "expired" | "ran its runs", now: number) {
+  const runs = `ran its ${l.max_runs} run${l.max_runs === 1 ? "" : "s"}`;
+  const why = how === "ran its runs" ? runs
+    : l.created_by === "model" && l.until_ms !== null && l.until_ms !== undefined && l.until_ms - l.created >= MODEL_EXPIRY ? `reached its ${MODEL_EXPIRY / 86400_000} days, the longest a loop the model makes lasts`
+    : "reached its end time";
+  patch(l.id, { enabled: false, next_ms: null, disabled_reason: how === "expired" ? "expired" : `ran its ${l.max_runs} runs` });
+  activity.record("loop", "ok", l.session_id, `Loop "${l.name}" ended: ${why}`, { loop_id: l.id });
+  sayAt({ session: l.session_id }, loopEndLine({ name: l.name, why, title: D().store.session(l.session_id)?.title }));
+}
+
 // A loop after one of its runs: only a finished run clears the failure count;
 // a failed or unfinished one adds to it (three in a row pause the loop) and
 // alerts; a run the owner stopped does neither.
@@ -566,7 +578,7 @@ function settleLoop(l: LoopRecord, r: RunRow, outcome: NonNullable<RunRecord["ou
   sayAt({ session: l.session_id }, loopLine({ name: l.name, said: `${said}${next.enabled ? "" : `; the loop is off: ${next.disabled_reason}`}`, title: D().store.session(l.session_id)?.title }), bad ? "warn" : "info");
   if (outcome === "failed") failures.seen(l.session_id, "loop", l.name, why);
   if (bad) alertHook.raise?.("loop_failed", l.session_id, `Loop ${outcome === "failed" ? "failed" : "did not finish"}: ${l.name}`, `${why}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
-  if (l.max_runs && next.runs >= l.max_runs && next.enabled) patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` });
+  if (l.max_runs && next.runs >= l.max_runs && next.enabled) endLoop(l, "ran its runs", now);
   // A webhook request that waited for this run goes now, if the loop still takes one.
   if (l.kind === "webhook") drainWebhook(l.id, now);
 }
@@ -600,8 +612,8 @@ export function tick() {
       try {
         // A webhook loop is due when a request of its waited for its minimum interval.
         if (l.kind === "webhook") { drainWebhook(l.id, now); continue; }
-        if (l.until_ms && now >= l.until_ms) { patch(l.id, { enabled: false, next_ms: null, disabled_reason: "expired" }); continue; }
-        if (l.max_runs && l.runs >= l.max_runs) { patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` }); continue; }
+        if (l.until_ms && now >= l.until_ms) { endLoop(l, "expired", now); continue; }
+        if (l.max_runs && l.runs >= l.max_runs) { endLoop(l, "ran its runs", now); continue; }
         const late = now - l.next_ms! > 60_000;
         // Why it is late, only as far as the daemon knows it: it was not running
         // at the due time, or it was (then the machine slept or the tick was held).
