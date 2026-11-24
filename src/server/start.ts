@@ -6,6 +6,7 @@ import { sleptIn } from "../admin/stall.ts";
 import { watchWake } from "../providers/wake.ts";
 import { endStreams } from "./streams.ts";
 import { setGitViews } from "../core/git.ts";
+import { setOwnTemp } from "../core/temp.ts";
 import { join, resolve } from "node:path";
 import { defaultStateDir } from "../core/paths.ts";
 import { owedAtStop, startNotes, STORE_PASSES } from "../admin/daemon.ts";
@@ -91,6 +92,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // of repositories that are gone, temp files and cache layers past their age.
   if (!opts.client) { void tendSandboxes(); setInterval(() => void tendSandboxes(), 86_400_000).unref?.(); }
   const store = new Store(stateDir);
+  setOwnTemp(stateDir);
   startMark("store");
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);

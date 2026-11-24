@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
+import { tempEnv } from "../core/temp.ts";
 import { readStat } from "../core/pid.ts";
 import { readText } from "../core/proc.ts";
 import { RESTART_RAN } from "../core/stops.ts";
@@ -206,7 +207,7 @@ export function toolEnv(sessionId: string, extra: Record<string, string> = {}): 
   for (const f of envProviders) Object.assign(env, f(sessionId));
   const out: Record<string, string> = { ...env, KEEL_SESSION: sessionId, ...extra };
   for (const f of envDrops.values()) for (const k of f(sessionId)) delete out[k];
-  return out;
+  return tempEnv(out);
 }
 
 // No pager for a command a session runs, whichever tool starts it: on a terminal a pager takes keys, and less runs

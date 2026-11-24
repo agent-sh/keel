@@ -73,7 +73,8 @@ test.skipIf(!sandboxStatus().available)("the run is confined by the session's ow
   const r = await settled((await startFor(session.id, top))!, 60_000);
   expect(r.results[0]).toMatchObject({ path: "w.test.sh", state: "fails" });
   expect(r.unconfined).toBeNull();
-  expect(r.results[0]!.why).toContain("Read-only file system");
+  // (The reason is cut at a fixed length after a path of the run's own temp folder, whose length differs from one run to the next: its start says what it was.)
+  expect(r.results[0]!.why).toMatch(/Read-|Read-only file system/);
   expect(existsSync(join(top, "made.txt"))).toBe(false);
 });
 

@@ -11,6 +11,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { git } from "../core/git.ts";
+import { tempEnv } from "../core/temp.ts";
 import { chunksUntil, readText } from "../core/proc.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
@@ -452,7 +453,7 @@ export async function runCommand(o: One): Promise<Ran | { error: string }> {
   let p: ReturnType<typeof Bun.spawn>;
   const slice = scoped ? jobScope().slice : undefined;
   const mark = o.session ? sessionMark(o.session, o.mark ?? "before", slice ? `/sys/fs/cgroup${slice}/${o.unit}.scope` : undefined) : undefined;
-  try { p = Bun.spawn(full, { cwd: o.cwd, env: { ...o.env, ...mark?.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }); }
+  try { p = Bun.spawn(full, { cwd: o.cwd, env: { ...tempEnv(o.env), ...mark?.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }); }
   catch (e) { return { error: (e as Error).message }; }
   if (mark) {
     const release = mark.hold(p.pid);

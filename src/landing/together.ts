@@ -28,6 +28,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, rmSync, writeSync } from "node:fs";
 import { homeDir } from "../core/paths.ts";
+import { tempEnv } from "../core/temp.ts";
 import { join } from "node:path";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { packagesFor, readsIn, INSTALL_MS } from "../checks/before-run.ts";
@@ -591,7 +592,7 @@ class LocalRunner implements Runner {
   private async provide(): Promise<string | undefined> {
     const top = this.j.repo;
     const common = repoOf(this.dir)?.common ?? top;
-    const env = this.d.env(this.j.who);
+    const env = tempEnv(this.d.env(this.j.who));
     // (A link is made only where the session's own sandbox reads what it points at; else the cache's, or an install.)
     const readable = (p: string) => readsIn((argv) => this.d.confine(argv, this.j.who, this.dir, this.shown), p, this.dir);
     for (const dir of new Set(this.j.checks.map((c) => c.dir))) {
@@ -644,7 +645,7 @@ class LocalRunner implements Runner {
       const low = ["nice", "-n", "10", ...(Bun.which("ionice") ? ["ionice", "-c2", "-n7"] : [])];
       const argv = this.d.confine([...low, "bash", "-c", command], this.j.who, cwd, this.shown);
       // What the landing queue gives its commands (queue.ts sh): the repository, for a setup that links from it.
-      const p = Bun.spawn(argv, { cwd, env: { ...this.d.env(this.j.who), KEEL_LAND_REPO: this.j.repo, KEEL_PAIR: "1", CI: "1" }, stdin: "ignore", stdout: fd, stderr: fd, detached: true });
+      const p = Bun.spawn(argv, { cwd, env: { ...tempEnv(this.d.env(this.j.who)), KEEL_LAND_REPO: this.j.repo, KEEL_PAIR: "1", CI: "1" }, stdin: "ignore", stdout: fd, stderr: fd, detached: true });
       pid = p.pid;
       groups.add(pid);
       let late = false;

@@ -55,6 +55,7 @@ import { parseChecks, readChecks, overlay } from "../checks/named.ts";
 import { noteFor as ledgerNote } from "../checks/runs.ts";
 import { flakyOn } from "../checks/words.ts";
 import { git, locate } from "../core/git.ts";
+import { tempEnv } from "../core/temp.ts";
 import type { Store } from "../core/store.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import type { Overlaps } from "../worktree/overlap-scan.ts";
@@ -851,7 +852,7 @@ export class LandingQueue {
     try {
       writeSync(fd, `$ ${command}\n`);
       const argv = this.d.confine(["bash", "-c", command], who, cwd);
-      const p = Bun.spawn(argv, { cwd, env: { ...this.d.env(who), KEEL_LAND_REPO: repo, CI: "1", ...extra }, stdin: "ignore", stdout: fd, stderr: fd, detached: true });
+      const p = Bun.spawn(argv, { cwd, env: { ...tempEnv(this.d.env(who)), KEEL_LAND_REPO: repo, CI: "1", ...extra }, stdin: "ignore", stdout: fd, stderr: fd, detached: true });
       pid = p.pid;
       groups.add(pid);
       let late = false;
