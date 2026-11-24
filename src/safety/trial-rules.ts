@@ -1,12 +1,12 @@
 // The rules as a replay runs them (src/safety/trial.ts): one stored call, the facts of its session as plain data,
-// the policy's own decision. Nothing here reads the store or the daemon: a trial of a patch loads this file from a
-// patched copy of the source, so what it reaches is the candidate's rules, and the replay of the current rules
-// loads the daemon's own. A module of the rules says, in RULE_MODULES, the pure function the replay reaches it by
+// the policy's own decision. Nothing here reads the store or the daemon: a developer's trial of a patch
+// (`keel safety trial --patch`, in the command's own process, never the daemon's) loads this file from a patched
+// copy of the source, so what it reaches is the candidate's rules. A module of the rules says, in RULE_MODULES, the pure function the replay reaches it by
 // (trial-conventions.test.ts holds every module to it).
 import { contains } from "../core/paths.ts";
 import { parseNamespaces } from "./accounts.ts";
 import { credentialAt, placesOf } from "./credentials.ts";
-import { lasting, looking } from "./looked.ts";
+import { isTextMark, lasting, looking } from "./looked.ts";
 import { classOf, type MarkMcp, type MarkTool } from "./marks.ts";
 import { decide, type Facts, type Mode, type Rule } from "./policy.ts";
 import type { Shared } from "./shared-branches.ts";
@@ -43,7 +43,8 @@ export type CommonFacts = {
 export type ReplayCall = { id: string; name: string; input: unknown; ruled?: Ruled };
 // `mode`: the mode the call is judged in. `namespaces`: the owner's, as he wrote them. `rules`: the standing rules
 // that held for the call. `now`: the disk's lasting answers (git remotes, manifests) read for this trial.
-export type ReplayRules = { mode: Mode; namespaces: string[]; rules: Rule[]; now?: Map<string, unknown> };
+// `texts`: the files the call's decision read, read again now, where they hash as its record says.
+export type ReplayRules = { mode: Mode; namespaces: string[]; rules: Rule[]; now?: Map<string, unknown>; texts?: [string, string][] };
 // `missed`: questions of the disk the call's record has no answer for; `shims`: whether a program name is a
 // version manager's shim was asked, with no record of it.
 export type Replayed = { judged: Judged; kind: string; missed: string[]; shims: boolean };
@@ -59,7 +60,9 @@ const namesOf = (list: string[]) => {
 // One call, decided by the rules as the gate decides it (gate.ts evaluate), from what is stored of it.
 export function replayCall(u: ReplayCall, s: SessionFacts, c: CommonFacts, r: ReplayRules): Replayed {
   const { cls, name } = classOf({ id: u.id, name: u.name, input: u.input }, { workspace: s.workspace, mcp: c.mcp, runCode: c.runCode, mcpCall: c.mcpCall, shell: c.shell }, c.tools, s.folders);
-  const l = looking(s.scope.workspace, [...(u.ruled?.looked ?? []), ...(r.now ?? [])], () => false);
+  // (A file's text is kept as its hash: the text comes in `texts`, or the question stays not answered.)
+  const seed = (u.ruled?.looked ?? []).filter(([, v]) => !isTextMark(v));
+  const l = looking(s.scope.workspace, [...seed, ...(r.now ?? []), ...(r.texts ?? [])], () => false);
   const real = u.ruled?.real;
   const shims = !real && cls.kind === "shell" && !s.machine && cls.interpreter === undefined && shimmedPrograms(cls.command).length > 0;
   const scratch = u.ruled?.named?.length ? [...s.scope.scratch, ...u.ruled.named] : s.scope.scratch;

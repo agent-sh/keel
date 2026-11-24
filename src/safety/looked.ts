@@ -241,12 +241,15 @@ export function looking(workspace: string, seed?: Iterable<[string, unknown]>, m
   return { view, answer, over: () => over, known: () => kept(known), missed: () => [...missed] };
 }
 
-// The answers a decision was made with, as they are kept with the call's result (src/safety/trial.ts Ruled): a
-// small file's text is kept up to KEPT_TEXT characters, a longer one is left out (a replay reads it as not answered).
-export const KEPT_TEXT = 8_192;
+// The answers a decision was made with, as they are kept with the call's result (src/safety/trial.ts Ruled). A
+// file's text is never kept: only its hash and length (a replay reads the file again and uses it when it hashes
+// the same, src/safety/trial-read.ts).
+export type TextMark = { sha256: string; len: number };
+export const textMark = (text: string): TextMark => ({ sha256: new Bun.CryptoHasher("sha256").update(text).digest("hex"), len: text.length });
+export const isTextMark = (v: unknown): v is TextMark => !!v && typeof v === "object" && typeof (v as TextMark).sha256 === "string";
 function kept(known: Map<string, unknown>): [string, unknown][] {
   const out: [string, unknown][] = [];
-  for (const [k, v] of known) if (!(k.startsWith("read\0") && typeof v === "string" && v.length > KEPT_TEXT)) out.push([k, v]);
+  for (const [k, v] of known) out.push([k, k.startsWith("read\0") && typeof v === "string" ? textMark(v) : v]);
   return out;
 }
 // A question of the disk that a later look answers the same (a repository's remotes, a manifest's package, an

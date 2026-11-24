@@ -1,7 +1,8 @@
 // A safety rule tried on the stored calls before it is on (Settings > Safety, `keel safety trial`). A candidate
-// rule set is the current one with a change: a settings diff (the owner's namespaces, standing grants, a mode)
-// or a patch of the rule modules' source. Both are replayed over the tool calls of the last days with no model
-// call, on the read thread (trial-read.ts), through the rules' own pure functions (trial-rules.ts). The report
+// rule set is the current one with a change: a settings diff (the owner's namespaces, standing grants, a mode),
+// replayed by the daemon on its read thread, or a developer's patch of the rule modules' source, replayed by
+// `keel safety trial --patch` in its own process. Both replay the tool calls of the last days with no model
+// call (trial-read.ts), through the rules' own pure functions (trial-rules.ts). The report
 // says, per tool and per class, how many calls the candidate would allow, ask about or refuse that the current
 // rules treated otherwise, by id with a link (never a call's text), and how many of those had run and succeeded.
 // It also holds the current rules' replay against what was stored when each call was decided: the agreement, and
@@ -107,6 +108,8 @@ export type TrialCall = {
   unkept?: true;
   // An agent whose session the shared-branch guard reads (its worktree's checkouts, as git says now).
   guard?: true;
+  // A file its decision read hashes otherwise now (the record keeps a file's hash, not its text).
+  fileChanged?: true;
 };
 
 export type Row = { key: string; n: number; allow: number; ask: number; refuse: number; succeeded: number; share: number | null };
@@ -120,6 +123,9 @@ export type TrialReport = {
   agreement: { compared: number; agreed: number; share: number | null; recorded: { compared: number; agreed: number }; before: Record<string, number>; skipped: Record<string, number>; causes: Cause[] };
   // What the replay does not run, said with every report.
   limits: string[];
+  // A trial stopped at its time budget: it replayed `sessions` of the `of` sessions of the days, the newest first,
+  // and every count above is of those.
+  partial?: { budgetMs: number; sessions: number; of: number };
 };
 
 // The activity row of a call Full auto ran with no review (src/automation/index.ts): the first such row is when
@@ -145,6 +151,7 @@ export function causeOf(c: TrialCall): string {
   if (c.mode && c.modeNow && c.mode !== c.modeNow) return `the session's mode changed since (${c.mode} then, ${c.modeNow} now)`;
   if (c.guard && (c.current.cls === "shared branches" || (s.outcome === "refuse" && c.current.outcome !== "refuse"))) return "an agent's shared-branch guard reads the repository's checkouts as they are now, not as they were";
   if (s.source === "ruled") {
+    if (c.fileChanged) return "a file its decision read has changed since (the record keeps the file's hash, not its text)";
     if (c.asked) return "the replay asked the disk something the stored call has no answer for";
     if (c.rev) return "another build of the rules decided the call";
     return "a fact beside the call changed since (a grant, a namespace, a folder)";
@@ -161,7 +168,7 @@ export function causeOf(c: TrialCall): string {
 
 // The report over every call replayed. `ms`: how long the replay took.
 // `skipped`: calls not replayed, by why (they count in no share).
-export function trialReport(calls: TrialCall[], o: { days: number; since: number; ms: number; cap?: number; skipped?: Record<string, number> }): TrialReport {
+export function trialReport(calls: TrialCall[], o: { days: number; since: number; ms: number; cap?: number; skipped?: Record<string, number>; partial?: TrialReport["partial"] }): TrialReport {
   const cap = o.cap ?? CALLS_MAX;
   const tools = new Map<string, Row>(), classes = new Map<string, Row>();
   const row = (m: Map<string, Row>, key: string) => { let r = m.get(key); if (!r) m.set(key, (r = { key, n: 0, allow: 0, ask: 0, refuse: 0, succeeded: 0, share: null })); return r; };
@@ -203,6 +210,7 @@ export function trialReport(calls: TrialCall[], o: { days: number; since: number
     changed: { n, ...to, succeeded, share: share(succeeded, n), tools: done(tools), classes: done(classes), calls: listed, more: n - listed.length },
     agreement: { compared, agreed, share: share(agreed, compared), recorded: rec, before, skipped, causes: [...causes.values()].sort((a, b) => b.n - a.n) },
     limits: LIMITS,
+    ...(o.partial ? { partial: o.partial } : {}),
   };
 }
 
@@ -256,3 +264,15 @@ export function grantsWith(rules: Rule[], c?: RuleChange): Rule[] {
 
 // Whether a change changes nothing.
 export const emptyChange = (c?: RuleChange) => !c || (!c.namespaces?.add?.length && !c.namespaces?.remove?.length && !c.grants?.add?.length && !c.grants?.remove?.length && !c.mode);
+
+// A change as one text: the same change gives the same text whatever order its keys and lists came in. Its hash
+// names the change a trial replayed and the passkey action that saves it (src/server/routes/safety-trial.ts).
+export function canonicalChange(c?: RuleChange): string {
+  const sorted = (l?: string[]) => (l?.length ? [...l].map((x) => x.trim()).sort() : undefined);
+  const grants = (c?.grants?.add ?? []).map((g) => ({ kind: g.kind, pattern: g.pattern.trim(), scope: g.scope })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return JSON.stringify({
+    namespaces: { add: sorted(c?.namespaces?.add), remove: sorted(c?.namespaces?.remove) },
+    grants: { add: grants.length ? grants : undefined, remove: sorted(c?.grants?.remove) },
+    mode: c?.mode,
+  });
+}

@@ -45,6 +45,10 @@ test("an edit of the owner's rules shows its replay over the stored calls before
   expect(now.agreement.recorded.compared).toBeGreaterThanOrEqual(3);
   expect(now.agreement.recorded.agreed).toBe(now.agreement.recorded.compared);
   expect(now.changed.n).toBe(0);
+  // The daemon tries settings changes only, and saves only a change it replayed.
+  const patched = await request.post("/api/safety/trial", { data: { days: 1, patch: "--- a/x\n+++ b/x\n", repo: "/" } });
+  expect(patched.status()).toBe(400);
+  expect((await request.post("/api/safety/trial/save", { data: { change: { namespaces: { add: ["npm:@untried"] } } } })).status()).toBe(409);
 
   // The owner names the push's namespace as his: the replay says the push would have run, before anything is saved.
   await page.goto("/settings/safety");

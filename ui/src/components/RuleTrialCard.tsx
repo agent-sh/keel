@@ -15,6 +15,8 @@ type Report = {
   changed: { n: number; allow: number; ask: number; refuse: number; succeeded: number; share: number | null; tools: Row[]; classes: Row[]; calls: Changed[]; more: number };
   agreement: { compared: number; agreed: number; share: number | null; recorded: { compared: number; agreed: number }; before: Record<string, number>; causes: Cause[] };
   limits: string[];
+  // Stopped at its time budget: the counts are of the newest `sessions` of `of`.
+  partial?: { budgetMs: number; sessions: number; of: number };
 };
 type Grant = { id: string; kind: "shell" | "edit" | "tool"; pattern: string; scope: string; lifetime: string };
 type GrantAdd = { kind: Grant["kind"]; pattern: string; scope: string };
@@ -172,7 +174,7 @@ export function RuleTrialCard() {
           <div className="flex flex-wrap items-center gap-3 border-t border-line pt-4">
             <span className="text-ui text-muted">Replay the last</span>
             <Select data-testid="trial-days" value={days} onChange={(e) => setDays(e.target.value)} className="w-28">
-              {["1", "3", "7", "14", "30"].map((d) => <option key={d} value={d}>{d === "1" ? "1 day" : `${d} days`}</option>)}
+              {["1", "3", "7"].map((d) => <option key={d} value={d}>{d === "1" ? "1 day" : `${d} days`}</option>)}
             </Select>
             <button type="button" className="k-btn k-btn-lg" onClick={run} disabled={running} data-testid="trial-run">{running ? "Replaying..." : empty ? "Replay the current rules" : "Try the change"}</button>
             <button
@@ -186,6 +188,11 @@ export function RuleTrialCard() {
 
           {r && (
             <div className={cn("flex flex-col gap-4", !fresh && "opacity-60")} data-testid="trial-result">
+              {r.partial && (
+                <p className="text-caption text-warn" data-testid="trial-partial">
+                  The replay stopped at its {Math.round(r.partial.budgetMs / 1000)} s budget after {r.partial.sessions.toLocaleString()} of {r.partial.of.toLocaleString()} sessions, the newest first. The counts below are of those; try fewer days for all of them.
+                </p>
+              )}
               {!report!.tried ? null : (
                 <div className="flex flex-col gap-3">
                   <p className="text-base" data-testid="trial-summary">

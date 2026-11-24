@@ -23,7 +23,7 @@ import { pressReport } from "../admin/presses.ts";
 import { egressReport, type EgressAsk } from "../safety/egress-report.ts";
 import { scanFiles, type FilesAsk } from "../admin/health-files.ts";
 import { mineRead, untagged } from "../automation/lessons-mine.ts";
-import { trialRead, type TrialAsk } from "../safety/trial-read.ts";
+import { BUDGET_MS, trialRead, type TrialAsk } from "../safety/trial-read.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -76,8 +76,9 @@ export const tasks = {
   "lessons.mine": (db: Database, a: { now: number; days?: number; trees?: number }) => mineRead(db, a),
   // The review findings no kind was asked for yet.
   "lessons.untagged": (db: Database, a: { since: number; max: number }) => untagged(db, a.since, a.max),
-  // A safety rule change tried on the stored calls of the last days (src/safety/trial-read.ts). Answers in time.
-  "safety.trial": (db: Database, a: TrialAsk) => trialRead(db, a),
+  // A safety rule change tried on the stored calls of the last days (src/safety/trial-read.ts). Answers in time,
+  // within its budget; the rules are the daemon's own (nothing of the request names code to load).
+  "safety.trial": (db: Database, a: TrialAsk) => trialRead(db, a, { budget: BUDGET_MS }),
 };
 
 export type Tasks = typeof tasks;

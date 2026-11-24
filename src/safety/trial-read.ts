@@ -1,12 +1,14 @@
 // The trial of a rule change on the read thread (src/server/read-tasks.ts): the stored tool calls of the last
 // days, what was stored of how each went, and two replays of the rules over them (trial-rules.ts): the current
-// rules, and the current rules with the change. A patch's trial loads the replay of each side from its own copy
-// of the source (`base`, `cand`). Nothing here writes; the report names calls by id (trial.ts).
+// rules, and the current rules with the change. The daemon's trial is of a settings diff and runs within BUDGET_MS;
+// a developer's trial of a patch runs here in `keel safety trial`'s own process, with each side's rules loaded
+// from its own copy of the source (`rules`), never in the daemon. Nothing here writes; the report names calls by
+// id (trial.ts).
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { locate } from "../core/git.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
-import { hostnameOf, manifestIn, remotesIn } from "./looked.ts";
+import { hostnameOf, isTextMark, manifestIn, remotesIn, textMark } from "./looked.ts";
 import { foldersOf, type MarkMcp, type MarkTool } from "./marks.ts";
 import { checkoutsOf } from "./refwatch.ts";
 import { workspaceBins } from "./bins.ts";
@@ -21,14 +23,21 @@ export type TrialAsk = {
   // The owner's namespaces as he wrote them, the mode a session has when it has none of its own, whether the
   // sandbox can run here, and the build that runs the replay.
   namespaces: string[]; defaultMode: Mode; sandbox: boolean; rev: string;
-  // A patch's trial: the replay entry (trial-rules.ts) of the source as it is and of the source patched.
-  base?: string; cand?: string;
   cap?: number; now?: number;
 };
-type Rules = typeof own;
+export type Rules = typeof own;
+// What the caller runs the trial with, never what a request says: `rules`, each side's rules (a developer's patch
+// trial, trial-rules.ts loaded from two copies of the source); `budget`: the time it may take, in ms, after which
+// it stops and says how far it came; `clock` (tests).
+export type TrialOpts = { rules?: { base: Rules; cand: Rules }; budget?: number; clock?: () => number };
 
 const DAY = 86_400_000;
-export const DAYS_MAX = 30;
+// The daemon's trial runs on the read thread, whose reads are ended at five minutes (src/server/reads.ts): it
+// stops at two, with what it replayed by then. Seven days of a busy store (127k calls) took 44 to 79 s, so the
+// daemon tries up to seven days; the command line's own trial of a patch has no deadline and goes to thirty.
+export const BUDGET_MS = 120_000;
+export const DAYS_MAX = 7;
+export const DAYS_LOCAL = 30;
 const SLICE_MS = 50;
 const MEMO_MAX = 20_000;
 const IMPORTED = "imported from another harness or store (its rules decided it)";
@@ -45,19 +54,31 @@ async function answer(key: string): Promise<unknown> {
   return "late";
 }
 
-export async function trialRead(db: Database, a: TrialAsk): Promise<TrialReport> {
-  const t0 = performance.now();
-  const days = Math.min(Math.max(Math.round(a.days) || 7, 1), DAYS_MAX);
+// A file a stored decision read, read again now: its text where it hashes as the record says.
+async function textNow(file: string, cache: Map<string, { text: string; sha256: string } | null>) {
+  if (!cache.has(file)) {
+    let got: { text: string; sha256: string } | null = null;
+    try { const f = Bun.file(file); if (f.size <= 262_144) { const text = await f.text(); got = { text, sha256: textMark(text).sha256 }; } } catch {}
+    cache.set(file, got);
+  }
+  return cache.get(file)!;
+}
+
+export async function trialRead(db: Database, a: TrialAsk, o: TrialOpts = {}): Promise<TrialReport> {
+  const clock = o.clock ?? (() => performance.now());
+  const t0 = clock();
+  const over = () => o.budget !== undefined && clock() - t0 > o.budget;
+  const days = Math.min(Math.max(Math.round(a.days) || 7, 1), o.rules ? DAYS_LOCAL : DAYS_MAX);
   const now = a.now ?? Date.now();
   const since = now - days * DAY;
-  const base: Rules = a.base ? await import(a.base) : own;
-  const cand: Rules = a.cand ? await import(a.cand) : base;
-  const changed = !!a.cand || !!a.change;
+  const base: Rules = o.rules?.base ?? own;
+  const cand: Rules = o.rules?.cand ?? base;
+  const changed = !!o.rules || !!a.change;
 
   const sc = cols(db, "sessions");
   const parentCol = sc.has("parent_id"), machineCol = sc.has("machine");
   const sessions = db.query<{ id: string; workspace: string; parent_id: string | null; machine: string | null }, [number]>(
-    `SELECT id, workspace, ${parentCol ? "parent_id" : "NULL AS parent_id"}, ${machineCol ? "machine" : "NULL AS machine"} FROM sessions WHERE updated > ?`).all(since);
+    `SELECT id, workspace, ${parentCol ? "parent_id" : "NULL AS parent_id"}, ${machineCol ? "machine" : "NULL AS machine"} FROM sessions WHERE updated > ? ORDER BY updated DESC`).all(since);
   const parents = new Map(parentCol ? db.query<{ id: string; parent_id: string }, []>("SELECT id, parent_id FROM sessions WHERE parent_id IS NOT NULL").all().map((r) => [r.id, r.parent_id]) : []);
   const treeRoot = (id: string) => { let at = id; for (let n = 0; n < 64 && parents.has(at); n++) at = parents.get(at)!; return at; };
   const perms = new Map(has(db, "perm_sessions") ? db.query<{ session_id: string; mode: string; sandbox: string }, []>("SELECT session_id, mode, sandbox FROM perm_sessions").all().map((r) => [r.session_id, r]) : []);
@@ -96,6 +117,7 @@ export async function trialRead(db: Database, a: TrialAsk): Promise<TrialReport>
     return s;
   };
   const lastingNow = new Map<string, unknown>();
+  const texts = new Map<string, { text: string; sha256: string } | null>();
   const skipped: Record<string, number> = {};
   const calls: TrialCall[] = [];
   const uses = db.query<{ id: string; ts: number; data: string }, [string, number]>("SELECT id, ts, data FROM events WHERE session_id = ? AND kind = 'assistant' AND ts > ?");
@@ -105,8 +127,11 @@ export async function trialRead(db: Database, a: TrialAsk): Promise<TrialReport>
      FROM events e, json_each(e.data, '$.results') j WHERE e.session_id = ? AND e.kind = 'tool_result' AND e.ts > ?`);
 
   // The thread's other reads go on beside a long trial: it gives way between sessions every SLICE_MS.
+  // (The newest sessions first: a trial stopped at its budget has replayed the latest calls.)
   let slice = performance.now();
-  for (const s of sessions) {
+  let done = 0, stopped = false;
+  outer: for (const s of sessions) {
+    if (over()) { stopped = true; break; }
     if (performance.now() - slice > SLICE_MS) { await new Promise((r) => setTimeout(r, 0)); slice = performance.now(); }
     const p = perms.get(s.id);
     const modeNow: Mode = p && isMode(p.mode) ? p.mode : a.defaultMode;
@@ -142,9 +167,18 @@ export async function trialRead(db: Database, a: TrialAsk): Promise<TrialReport>
         const st = out.get(b.id);
         // (A call with no stored result is one a stop or a restart cut: nothing is known of how it went.)
         if (!st) continue;
+        if (over()) { stopped = true; break outer; }
         const ruled = st.ruled;
         const mode = ruled?.mode && isMode(ruled.mode) ? ruled.mode : modeNow;
         const u: own.ReplayCall = { id: b.id, name: b.name, input: b.input ?? {}, ruled };
+        // The files its decision read, where they still hash as then; one that changed since stays not answered.
+        const read: [string, string][] = [];
+        let fileChanged = false;
+        if (!machine) for (const [k, v] of ruled?.looked ?? []) {
+          if (!isTextMark(v) || !k.startsWith("read\0")) continue;
+          const t = await textNow(k.slice(5), texts);
+          if (t && t.sha256 === v.sha256) read.push([k, t.text]); else fileChanged = true;
+        }
         const then = (rs: Rule[]) => rs.filter((r) => r.created <= e.ts);
         // (A call made again as it was, in the same folder with the same facts, is decided as it was: a session runs
         // `git status` many times.)
@@ -154,11 +188,11 @@ export async function trialRead(db: Database, a: TrialAsk): Promise<TrialReport>
           const key = `${side}\0${m}\0${rules.map((x) => x.id).join(",")}\0${same}`;
           const had = memo.get(key);
           if (had) return had;
-          let r = R.replayCall(u, facts, common, { mode: m, namespaces: ns, rules, now: lastingNow });
+          let r = R.replayCall(u, facts, common, { mode: m, namespaces: ns, rules, now: lastingNow, texts: read });
           const ask = R.lastingOf(r.missed).filter((k) => !lastingNow.has(k));
           if (ask.length && !machine) {
             for (const k of ask) lastingNow.set(k, await answer(k));
-            r = R.replayCall(u, facts, common, { mode: m, namespaces: ns, rules, now: lastingNow });
+            r = R.replayCall(u, facts, common, { mode: m, namespaces: ns, rules, now: lastingNow, texts: read });
           }
           if (memo.size >= MEMO_MAX) memo.clear();
           memo.set(key, r);
@@ -171,12 +205,16 @@ export async function trialRead(db: Database, a: TrialAsk): Promise<TrialReport>
         calls.push({
           id: b.id, session: s.id, event: e.id, tool: b.name, kind: cur.kind, ts: e.ts, ok: st.verdict === undefined && st.ok,
           stored: storedOutcome(st), current: cur.judged, candidate: next.judged,
-          ...(missed.length ? { asked: true as const } : {}), ...(cur.shims ? { shims: true as const } : {}),
+          ...(missed.length ? { asked: true as const } : {}), ...(fileChanged && missed.some((k) => k.startsWith("read\0")) ? { fileChanged: true as const } : {}), ...(cur.shims ? { shims: true as const } : {}),
           ...(!ruled && mode === "full-auto" && e.ts < reviewsFrom ? { unkept: true as const } : {}), ...(facts.shared ? { guard: true as const } : {}),
           ...(ruled?.rev && ruled.rev !== a.rev ? { rev: ruled.rev } : {}), ...(ruled?.mode ? { mode: ruled.mode } : {}), modeNow,
         });
       }
     }
+    done++;
   }
-  return trialReport(calls, { days, since, ms: Math.round(performance.now() - t0), cap: a.cap, skipped });
+  return trialReport(calls, {
+    days, since, ms: Math.round(clock() - t0), cap: a.cap, skipped,
+    ...(stopped ? { partial: { budgetMs: o.budget!, sessions: done, of: sessions.length } } : {}),
+  });
 }
