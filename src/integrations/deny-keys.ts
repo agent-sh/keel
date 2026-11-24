@@ -28,6 +28,20 @@ export function denyPrefixes(file: unknown): string[] {
   return [...out];
 }
 
+// The command each fact forbids, as the file keys it: the fact's name to its keys' words, options too
+// (`git fetch --all`). A rule is broken by a command that starts with the key's leading words and holds its options.
+export function denyBans(file: unknown): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const facts = (file as { facts?: unknown })?.facts;
+  if (!Array.isArray(facts)) return out;
+  for (const f of facts) {
+    const { key, name } = (f ?? {}) as { key?: unknown; name?: unknown };
+    if (typeof name !== "string" || !Array.isArray(key) || !key.length || key.some((w) => typeof w !== "string")) continue;
+    out.set(name, [...(out.get(name) ?? []), (key as string[]).map((w) => w.toLowerCase()).join(" ")]);
+  }
+  return out;
+}
+
 // Whether a command line's topics (callTopics) start with a key's words, word for word.
 export const stoppable = (topics: string[], prefixes: readonly string[]): boolean =>
   topics.some((t) => prefixes.some((p) => t === p || t.startsWith(`${p} `)));
@@ -35,6 +49,7 @@ export const stoppable = (topics: string[], prefixes: readonly string[]): boolea
 // The keys, read again when the file changed, looked at most every `every` ms.
 export class DenyKeys {
   private prefixes: string[] = [];
+  private bans = new Map<string, string[]>();
   private stamp = "";
   private looked = 0;
   constructor(private every = 10_000, private file = denyKeysFile) {}
@@ -46,10 +61,15 @@ export class DenyKeys {
       const path = this.file();
       const st = statSync(path);
       const stamp = `${st.mtimeMs}:${st.size}`;
-      if (stamp !== this.stamp) { this.prefixes = denyPrefixes(JSON.parse(readFileSync(path, "utf8"))); this.stamp = stamp; }
+      if (stamp !== this.stamp) { const file = JSON.parse(readFileSync(path, "utf8")); this.prefixes = denyPrefixes(file); this.bans = denyBans(file); this.stamp = stamp; }
     } catch {
-      this.prefixes = []; this.stamp = ""; // no file, or one that is not read: no call waits
+      this.prefixes = []; this.bans = new Map(); this.stamp = ""; // no file, or one that is not read: no call waits
     }
     return this.prefixes;
+  }
+  // What the store forbids by a fact's name: the commands of its keys, none for a fact that is not keyed.
+  bansOf(name: string): string[] {
+    this.get();
+    return this.bans.get(name) ?? [];
   }
 }

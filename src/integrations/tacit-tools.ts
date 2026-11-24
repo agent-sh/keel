@@ -25,6 +25,35 @@ import { readOnlyCommand } from "../safety/shell.ts";
 
 export type StoreCall = { tool_name: string; tool_input: any };
 
+// tacit matches Claude Code's and Codex's tool names: translate ours.
+export function tacitToolCall(tool: string, args: any): { tool_name: string; tool_input: any } | null {
+  const s = (...keys: string[]) => keys.map((k) => args?.[k]).find((v) => typeof v === "string") as string | undefined;
+  const lower = tool.toLowerCase();
+  if (["bash", "run_shell_command", "exec_command", "shell", "local_shell"].includes(lower)) {
+    const c = s("command", "cmd") ?? (Array.isArray(args?.command) ? args.command.join(" ") : undefined);
+    return c ? { tool_name: "Bash", tool_input: { command: c } } : null;
+  }
+  if (lower === "apply_patch") {
+    const p = s("input", "patch");
+    return p ? { tool_name: "apply_patch", tool_input: { command: p } } : null;
+  }
+  if (["edit", "replace", "multi_edit", "multiedit"].includes(lower)) {
+    const p = s("file_path", "path", "absolute_path");
+    return p ? { tool_name: "Edit", tool_input: { file_path: p } } : null;
+  }
+  if (["write", "write_file"].includes(lower)) {
+    const p = s("file_path", "path", "absolute_path");
+    return p ? { tool_name: "Write", tool_input: { file_path: p } } : null;
+  }
+  if (lower === "mcp_call") {
+    const q = s("tool");
+    return q ? { tool_name: `mcp__${q}`, tool_input: args?.arguments ?? {} } : null;
+  }
+  // An MCP tool called by its own name: the store matches areas on it, and logs its own tools.
+  if (lower.startsWith("mcp__")) return { tool_name: tool, tool_input: args ?? {} };
+  return null;
+}
+
 // The files a patch writes, as the store reads them from its text.
 const PATCH_FILE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm;
 const patchFiles = (text: string) => [...text.matchAll(PATCH_FILE)].map((m) => m[1]!.trim());

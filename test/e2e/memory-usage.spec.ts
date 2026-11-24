@@ -54,7 +54,8 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   const by = Object.fromEntries(report.paths.map((p: any) => [p.path, p]));
   expect(by.store_start).toMatchObject({ asked: 1, recalls: 1, facts: 1, used: 0 });
   expect(by.store_prompt).toMatchObject({ asked: 3, recalls: 1, facts: 1, facts_checked: 1, used: 1, recalls_used: 1, repeats: 2, timeouts: 0, failures: 0 });
-  expect(by.store_tool).toMatchObject({ asked: 1, recalls: 1, facts: 1, used: 1 });
+  // The tool call's fact is a note by the store's own line: named by the reply, counted a note used.
+  expect(by.store_tool).toMatchObject({ asked: 1, recalls: 1, facts: 1, used: 1, rules: 0 });
   expect(report.total.tokens).toBeGreaterThan(0);
   expect(report.total).toMatchObject({ recalls: 3, recalls_used: 2, repeats: 2 });
   for (const word of ["heron", "code-word", "echo-rule", "script:memory"]) expect(JSON.stringify(report)).not.toContain(word);
@@ -74,7 +75,7 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   for (const label of ["Memory store, session start", "Memory store, with a prompt", "Memory store, with a tool call", "All memory"]) await expect(panel).toContainText(label);
   const row = panel.locator("tbody tr").filter({ hasText: "with a prompt" });
   await expect(row).toContainText(/\d+ of \d+/);
-  await expect(panel.locator("thead")).toContainText("Named in reply (estimate)");
+  await expect(panel.locator("thead")).toContainText("Notes named (estimate)");
   await expect(panel.getByTestId("memory-notes")).toContainText("It reads low");
   await expect(panel.getByTestId("memory-notes")).toContainText("not added again");
   await panel.scrollIntoViewIfNeeded();
@@ -98,7 +99,7 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   const lines = await panel.locator("tbody td:first-child > span").evaluateAll((els) => els.map((el) => ({ words: (el as HTMLElement).innerText.trim().split(/\s+/).length, lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) })));
   expect(lines.length).toBeGreaterThan(0);
   for (const l of lines) expect(l.lines).toBeLessThanOrEqual(l.words);
-  for (const h of ["Recalls", "Tokens added", "Named in reply (estimate)"]) await expect(panel.locator("thead th").filter({ hasText: h })).toBeVisible();
+  for (const h of ["Recalls", "Tokens added", "Notes named (estimate)"]) await expect(panel.locator("thead th").filter({ hasText: h })).toBeVisible();
   await shoot(page, "memory-usage-03-phone");
   await page.setViewportSize({ width: 1920, height: 1040 });
 
@@ -168,4 +169,49 @@ test("memory usage: a path whose recall fell against its day says so", async ({ 
   await expect(fell).toContainText("Recall fell for memory store, with a prompt: facts came with 0 of its last 43 answers in two hours, against 40 of 160 in the day before.");
   await fell.scrollIntoViewIfNeeded();
   await shoot(page, "memory-usage-05-recall-fell");
+});
+
+// A rule works by what the model leaves undone, so naming it says nothing: the store marks it a RULE, and
+// it is followed while the call its words forbid is not made in the session after it was given, broken once
+// it is. A note is used when the model names it. The stand-in gives a rule that forbids `standin-banned`
+// with a command holding standin:rule.
+test("memory usage: a rule is followed until the call it forbids is made, a note is used when named", async ({ page, request }) => {
+  const info = await (await request.get("/api/integrations")).json();
+  test.skip(!info.tacit.bin?.includes("tacit-standin"), "needs the tacit stand-in (TACIT_BIN)");
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Memory rule", text: 'script:calls [{"name":"Bash","input":{"command":"echo standin:rule"}}]' } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await ended(request, session.id, 1);
+  const rule = async () => ((await (await request.get(`/api/memory/given?session_id=${session.id}`)).json()).rows as any[]).find((g) => g.name === "standin-rule");
+  // Given as a rule, and judged when its turn ended: nothing it forbids was done.
+  await expect.poll(async () => (await rule())?.held, { timeout: 15_000 }).toBe(1);
+  expect(await rule()).toMatchObject({ rule: 1, hook: "pre-tool" });
+  const report = async () => ((await (await request.get(`/api/telemetry/memory?session_id=${session.id}`)).json()).paths as any[]).find((p) => p.path === "store_tool");
+  expect(await report()).toMatchObject({ rules: 1, followed: 1, broken: 0, used: 0 });
+  // A later turn makes the call: broken, and the numbers follow.
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: 'script:calls [{"name":"Bash","input":{"command":"standin-banned --now"}}]' } });
+  await ended(request, session.id, 2);
+  await expect.poll(async () => (await rule())?.held, { timeout: 15_000 }).toBe(0);
+  expect(await report()).toMatchObject({ rules: 1, followed: 0, broken: 1 });
+  for (const word of ["standin-banned", "never run"]) expect(JSON.stringify(await (await request.get(`/api/memory/given?session_id=${session.id}`)).json())).not.toContain(word);
+
+  // Where the owner looks: a rule is listed as followed or broken, never as a note nobody named.
+  await page.goto("/settings/usage");
+  await page.getByTestId("usage-panel").getByRole("radio", { name: "Memory" }).click();
+  const panel = page.getByTestId("usage-memory");
+  await expect(panel.locator("tbody tr").filter({ hasText: "with a tool call" }).getByTestId("memory-rules-cell")).toContainText("broken");
+  await panel.getByTestId("memory-tab-given").click();
+  await panel.getByTestId("memory-session").selectOption(session.id);
+  await expect(panel.getByTestId("memory-given-held")).toHaveAttribute("data-held", "0");
+  await expect(panel.getByTestId("memory-given-held")).toHaveText("broken");
+  await shoot(page, "memory-usage-06-rule-broken");
+  await panel.getByTestId("memory-tab-unused").click();
+  await panel.getByTestId("memory-session").selectOption(session.id);
+  const rules = panel.getByTestId("memory-rules");
+  await expect(rules).toContainText("0 followed, 1 broken");
+  await expect(rules.getByTestId("memory-rules-list").getByTestId("memory-fact-row")).toHaveAttribute("data-name", "standin-rule");
+  await expect(rules.getByTestId("memory-fact-used")).toContainText("broken 1");
+  await expect(panel.getByTestId("memory-unused-list").locator('[data-name="standin-rule"]')).toHaveCount(0);
+  await shoot(page, "memory-usage-07-rules");
 });

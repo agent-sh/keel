@@ -231,8 +231,8 @@ test("memory panel: what a session was told, the store's search, a correction th
   // The figures are the strip every Usage view draws; a fact's bar is how often it was given.
   await panel.getByTestId("memory-tab-unused").click();
   await expect(page.getByRole("radiogroup", { name: "Range" })).toBeVisible();
-  await expect(panel.getByTestId("memory-unused-title")).toContainText("Given, never named afterwards (rough)");
-  await expect(panel.getByTestId("memory-unused-caveat")).toContainText("A rule can be followed without any of that");
+  await expect(panel.getByTestId("memory-unused-title")).toContainText("Notes given, never named afterwards (rough)");
+  await expect(panel.getByTestId("memory-unused-caveat")).toContainText("a rule is judged by the call it forbids");
   const unused = panel.getByTestId("memory-unused-list").getByTestId("memory-fact-row");
   await expect(unused).toHaveCount(1);
   await expect(unused.first()).toHaveAttribute("data-name", "keel-bun-e2e");

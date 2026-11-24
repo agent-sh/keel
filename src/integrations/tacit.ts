@@ -57,7 +57,8 @@ import { RECORD_FORMAT, toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { asksMemory, factLines, factOf, KEEP_MS, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
-import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
+import { changesSomething, namesStore, neverAnswered, tacitToolCall } from "./tacit-tools.ts";
+export { tacitToolCall };
 import { DenyKeys, stoppable } from "./deny-keys.ts";
 import { afterAnswer, afterAsk, callFamilies, callTopics, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
 import { mayReadHome } from "../core/paths";
@@ -104,35 +105,6 @@ async function runBoundedResult(argv: string[], stdin: string, ms: number): Prom
 
 export async function runBounded(argv: string[], stdin: string, ms: number): Promise<string | null> {
   return (await runBoundedResult(argv, stdin, ms)).text;
-}
-
-// tacit matches Claude Code's and Codex's tool names: translate ours.
-export function tacitToolCall(tool: string, args: any): { tool_name: string; tool_input: any } | null {
-  const s = (...keys: string[]) => keys.map((k) => args?.[k]).find((v) => typeof v === "string") as string | undefined;
-  const lower = tool.toLowerCase();
-  if (["bash", "run_shell_command", "exec_command", "shell", "local_shell"].includes(lower)) {
-    const c = s("command", "cmd") ?? (Array.isArray(args?.command) ? args.command.join(" ") : undefined);
-    return c ? { tool_name: "Bash", tool_input: { command: c } } : null;
-  }
-  if (lower === "apply_patch") {
-    const p = s("input", "patch");
-    return p ? { tool_name: "apply_patch", tool_input: { command: p } } : null;
-  }
-  if (["edit", "replace", "multi_edit", "multiedit"].includes(lower)) {
-    const p = s("file_path", "path", "absolute_path");
-    return p ? { tool_name: "Edit", tool_input: { file_path: p } } : null;
-  }
-  if (["write", "write_file"].includes(lower)) {
-    const p = s("file_path", "path", "absolute_path");
-    return p ? { tool_name: "Write", tool_input: { file_path: p } } : null;
-  }
-  if (lower === "mcp_call") {
-    const q = s("tool");
-    return q ? { tool_name: `mcp__${q}`, tool_input: args?.arguments ?? {} } : null;
-  }
-  // An MCP tool called by its own name: the store matches areas on it, and logs its own tools.
-  if (lower.startsWith("mcp__")) return { tool_name: tool, tool_input: args ?? {} };
-  return null;
 }
 
 // The topics a session keeps as asked (memory-yield.ts callTopics): in a replay of two busy days
@@ -433,6 +405,7 @@ export class Tacit {
   constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit"), private speed = 1, private yieldRules = { quietAfter: QUIET_AFTER, sampleEvery: SAMPLE_EVERY }) {
     this.bin = bin;
     this.meter = memoryMeter(store);
+    this.meter.denyBans = (name) => this.denyKeys.bansOf(name);
     void this.files;
     this.metrics.processes.limit = HOOK_PROCESSES;
     // memory_owed: lines the store gave that have not reached the model yet
@@ -1050,7 +1023,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   // the context lacks, within a block's cap; what did not fit is owed.
   // `by`: what the block answers (the prompt's event, the tool and its call),
   // kept with each fact's name for the list of what the session was given.
-  private admit(id: string, hook: OwedHook, r: HookResult, shown: Set<string>, waitMs: number, by: { hook?: string; call?: string; ref?: string } = {}): string | null {
+  private admit(id: string, hook: OwedHook, r: HookResult, shown: Set<string>, waitMs: number, by: { hook?: string; call?: string; ref?: string; deny?: "stopped" } = {}): string | null {
     const path = PATH_OF[hook];
     if (!r.text) {
       this.meter.record(id, path, { outcome: r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", waitMs, procMs: r.ms });
@@ -1064,7 +1037,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
     this.owe(id, hook, fit.owed);
     for (const l of fit.lines) shown.add(l);
     const block = memoryBlock(hook, fit.text);
-    this.meter.record(id, path, { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length, waitMs, procMs: r.ms, by: { hook, ...by } });
+    this.meter.record(id, path, { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.owed.filter(isFact).length, waitMs, procMs: r.ms, by: { hook, ...by, ...(by.deny ?? r.deny ? { deny: by.deny ?? "late" } : {}) } });
     return block;
   }
 
@@ -1372,7 +1345,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         d.denied++;
         t.preTool.delete(preKey(s.id, call.id));
         // The row of the ask, as a block would have written it (what the model reads is the refusal).
-        t.admit(s.id, "pre-tool", p.got, t.shownIn(s.id, t.lineage(s.id)), waited, { call: call.tool.name, ref: call.id });
+        t.admit(s.id, "pre-tool", p.got, t.shownIn(s.id, t.lineage(s.id)), waited, { call: call.tool.name, ref: call.id, deny: "stopped" });
         return { deny: p.got.deny };
       },
       async afterTool(s, call, result) {

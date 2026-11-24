@@ -5,6 +5,14 @@
 // the turn's budget), how long the turn waited for it, how it ended, and, once
 // the turn is over, how many of the facts the turn's output named.
 //
+// The facts are two kinds, read from the store's own line: a rule ("- RULE name: text") and a note (any
+// other line). A note is "used" or not, by the proxy below. A rule often works by what the model does not
+// do, so naming it says little: it is "followed" when the call it forbids is not made in the session after
+// it was given, and "broken" when it is. The call a rule forbids is the command of the store's deny key
+// for it, else the command its own text forbids in backquotes ("never run `git stash`"); a rule that names
+// no call is not measurable and is neither. A call the store refused is a rule acting: followed. One that
+// came after its command ran is broken.
+//
 // "Used" is a proxy: a fact counts when the reply or a tool call of its turn
 // holds one of its names as a word, or three of its words in a row that are
 // not all common ones, or when a tool call of the turn touches a path, a
@@ -26,6 +34,8 @@ import { registerHooks } from "../engine/hooks.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { readsOf, type Reads } from "../server/reads.ts";
 import { isFactName } from "./memory-store.ts";
+import { callTopics } from "./memory-yield.ts";
+import { tacitToolCall, type StoreCall } from "./tacit-tools.ts";
 
 // Which inputs the store is asked about. Everything that asks for work is:
 // the owner's words, an agent's or a verifier's task, a parent's steer, a
@@ -62,7 +72,7 @@ export const KEEP_MS = 90 * 86_400_000;
 // facts: they join a later request, and its store_owed row says what they added.
 // failure: the store's.
 export type MemoryOutcome = "added" | "empty" | "repeat" | "skipped" | "late" | "later" | "timeout" | "failure";
-export type Fact = { names: string[]; text: string };
+export type Fact = { names: string[]; text: string; rule?: boolean };
 
 const fold = (s: string) => s.normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase();
 const wordsOf = (s: string) => fold(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
@@ -70,8 +80,8 @@ const wordsOf = (s: string) => fold(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 // One line of a memory block as a fact: "- name: text", "- RULE name: text",
 // "- key (kind): text". A line without a name is its text alone.
 export function factOf(line: string): Fact {
-  const m = /^\s*-\s+(?:RULE\s+)?([^\s:][^:]*?)(?:\s+\([^)]*\))?:\s+(.*)$/.exec(line);
-  return m ? { names: [m[1]!.trim()], text: m[2]! } : { names: [], text: line.replace(/^\s*-\s+/, "") };
+  const m = /^\s*-\s+(RULE\s+)?([^\s:][^:]*?)(?:\s+\([^)]*\))?:\s+(.*)$/.exec(line);
+  return m ? { names: [m[2]!.trim()], text: m[3]!, ...(m[1] ? { rule: true } : {}) } : { names: [], text: line.replace(/^\s*-\s+/, "") };
 }
 export const factLines = (text: string) => text.split("\n").filter((l) => /^\s*-\s/.test(l));
 
@@ -96,6 +106,34 @@ export function handlesOf(text: string): string[] {
   for (const m of text.matchAll(/(?<![\w.-])[\w-]{2,}\.[a-z]{1,5}(?![\w-])/g)) if (m[0].length >= 5 && !/^\d+\.\d+$/.test(m[0])) out.add(m[0].toLowerCase());
   for (const m of text.matchAll(/(?<![\w-])--[a-z][\w-]{2,}/g)) out.add(m[0].toLowerCase());
   return [...out].filter((h) => h.length >= 3);
+}
+
+// The commands a rule's text forbids: what it puts in backquotes after a word of prohibition, in the same
+// sentence ("never run `git stash`", "do not use `rm -rf` here"), lower case, words as written. A span that
+// does not start with a program's name (a path, a flag, a common word) is not a command. A rule with none
+// names no call: it cannot be measured.
+const PROHIBITION = /\b(?:never|do not|don't|must not|mustn't|should not|shouldn't|avoid|forbidden|not allowed)\b/i;
+export function bansOf(text: string): string[] {
+  const out = new Set<string>();
+  for (const sentence of text.split(/(?<=[.;!?])\s+|\n/)) {
+    const at = PROHIBITION.exec(sentence);
+    if (!at) continue;
+    for (const m of sentence.slice(at.index).matchAll(/`([^`\n]{2,80})`/g)) {
+      const w = m[1]!.trim().toLowerCase().split(/\s+/);
+      if (/^[a-z][\w.-]+$/.test(w[0]!) && !COMMON.has(w[0]!) && w.length <= 6) out.add(w.join(" "));
+    }
+  }
+  return [...out];
+}
+
+// Whether a call is what a ban forbids: a shell command that starts with the ban's leading words (as the
+// store matches a command, callTopics) and holds each of its options (the words from its first flag on).
+export function callBreaks(ban: string, call: StoreCall): boolean {
+  const w = ban.split(" "), flag = w.findIndex((x) => x.startsWith("-")), lead = (flag < 0 ? w : w.slice(0, flag)).join(" ");
+  if (!lead || call.tool_name !== "Bash" || !callTopics(call).some((t) => t === lead || t.startsWith(`${lead} `))) return false;
+  if (flag < 0) return true;
+  const tokens = String(call.tool_input?.command ?? "").toLowerCase().split(/\s+/);
+  return w.slice(flag).every((o) => tokens.includes(o));
 }
 
 // The proxy: does this output name the fact, or repeat three of its words in
@@ -133,12 +171,19 @@ function stringsOf(v: unknown, out: string[] = []): string[] {
 // A deleted session's given rows deleted in one statement: a few milliseconds of the loop.
 const DROP_PART = 500;
 const ORPHANS_AFTER_MS = 30_000;
-type Sum = Record<"asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "later" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms" | "proc_ms", number>;
+type Sum = Record<"rules" | "rules_checked" | "followed" | "broken" | "asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "later" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms" | "proc_ms", number>;
 type Open = { row: number; facts: Fact[]; ts: number; given: number[] };
+// A rule given with a call it forbids, judged at each turn's end until it is broken.
+type Bound = { id: number; recall: number; ts: number; bans: string[]; held: 0 | 1 | null };
+// A note not named yet, looked for in the turns after the one it was given in (a bound on what is held).
+type Waiting = { id: number; recall: number; fact: Fact };
+const WAITING_MAX = 400;
 // Where a block came from, for the list of what a session was given: the
 // store's hook, the tool it was asked about (a tool's name) and what it
 // answers (the prompt's event, the tool call).
-export type GivenBy = { hook: string; call?: string; ref?: string };
+// `deny`: the block is a store's deny of a shell command, a rule: "stopped" (the call was refused, the
+// rule acted) or "late" (the command had run when it came, the rule was broken).
+export type GivenBy = { hook: string; call?: string; ref?: string; deny?: "stopped" | "late" };
 export type MemoryFilter = { since?: number; until?: number; session?: string };
 
 // Whether a path's recall fell: the share of its answered asks that gave
@@ -164,6 +209,12 @@ export function recallFell(path: MemoryPath, recent: Window, day: Window): Fell 
 export class MemoryMeter {
   // Recalls of each session's running turn, until it ends.
   private open = new Map<string, Open[]>();
+  private bound = new Map<string, Bound[]>();
+  private waiting = new Map<string, Waiting[]>();
+  // The calls a deny refused, by session: they are what a rule stopped, not what broke one.
+  private refused = new Map<string, Set<string>>();
+  // The commands the store's keys forbid by a fact's name (Tacit sets it).
+  denyBans: (name: string) => string[] = () => [];
 
   constructor(private store: Store) {
     store.migrate(`CREATE TABLE IF NOT EXISTS telemetry_memory (
@@ -177,7 +228,15 @@ CREATE TABLE IF NOT EXISTS memory_given (
 CREATE INDEX IF NOT EXISTS memory_given_session ON memory_given(session_id, id);
 CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     // proc_ms: the time of the hook process that answered the ask (nobody may have waited for it).
-    if (!store.db.query<{ name: string }, []>("PRAGMA table_info(telemetry_memory)").all().some((c) => c.name === "proc_ms")) store.db.exec("ALTER TABLE telemetry_memory ADD COLUMN proc_ms INTEGER NOT NULL DEFAULT 0");
+    const has = (table: string, col: string) => store.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
+    if (!has("telemetry_memory", "proc_ms")) store.db.exec("ALTER TABLE telemetry_memory ADD COLUMN proc_ms INTEGER NOT NULL DEFAULT 0");
+    // rules: facts of a recall that are rules; followed, broken: how many of them are judged so.
+    for (const c of ["rules", "followed", "broken"]) if (!has("telemetry_memory", c)) store.db.exec(`ALTER TABLE telemetry_memory ADD COLUMN ${c} INTEGER NOT NULL DEFAULT 0`);
+    // rule: the store gave it as a rule; bans: the commands it forbids (JSON, none when it names none);
+    // held: 1 followed, 0 broken, NULL not judged (not yet, or it forbids no call).
+    if (!has("memory_given", "rule")) store.db.exec("ALTER TABLE memory_given ADD COLUMN rule INTEGER NOT NULL DEFAULT 0");
+    if (!has("memory_given", "bans")) store.db.exec("ALTER TABLE memory_given ADD COLUMN bans TEXT");
+    if (!has("memory_given", "held")) store.db.exec("ALTER TABLE memory_given ADD COLUMN held INTEGER");
     this.prune();
     void this.gone;
     registerHooks({ turnEnd: (s) => this.settle(s.id) });
@@ -200,7 +259,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
   // A deleted session's given rows go a part at a time, the loop free between
   // parts: one statement over tens of thousands of rows would hold every stream.
   private drop(sessionId: string) {
-    this.open.delete(sessionId);
+    this.forget(sessionId);
     if (!this.dropping.includes(sessionId)) this.dropping.push(sessionId);
     if (this.dropTimer) return;
     const part = () => {
@@ -249,13 +308,25 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
         .run(sessionId, ts, path, ...values, Math.round(r.waitMs ?? 0), proc).lastInsertRowid as number;
       // No row for a session that is gone (the rows go with their session).
       if (!r.by || !this.store.session(sessionId)) return;
-      const q = db.query("INSERT INTO memory_given (session_id, ts, recall, path, hook, name, call, ref, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      const q = db.query("INSERT INTO memory_given (session_id, ts, recall, path, hook, name, call, ref, tokens, rule, bans, held) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      const deny = r.by.deny;
+      if (deny === "stopped" && r.by.ref) { const set = this.refused.get(sessionId) ?? new Set<string>(); set.add(r.by.ref); this.refused.set(sessionId, set); }
       for (const f of r.facts ?? []) {
         const name = f.names[0];
+        // A store's deny is a rule whatever its line says; any other line is a rule when the store marks it.
+        if (deny) f.rule = true;
         // Only a name the store gives a fact: a line of another shape has its text where a name would be.
         // The tokens are of the line as the block held it: "- name: text".
-        given.push(isFactName(name) ? Number(q.run(sessionId, ts, row!, path, r.by.hook, name, r.by.call ?? null, r.by.ref ?? null, Math.round((Buffer.byteLength(name) + Buffer.byteLength(f.text) + 4) / per)).lastInsertRowid) : 0);
+        if (!isFactName(name)) { given.push(0); continue; }
+        // What a rule forbids: the store's key for it, else what its own text forbids. A deny is judged already.
+        const bans = f.rule && !deny ? [...new Set([...this.denyBans(name), ...bansOf(f.text)])] : [];
+        const held = deny === "stopped" ? 1 : deny === "late" ? 0 : null;
+        const id = Number(q.run(sessionId, ts, row!, path, r.by.hook, name, r.by.call ?? null, r.by.ref ?? null, Math.round((Buffer.byteLength(name) + Buffer.byteLength(f.text) + 4) / per), f.rule ? 1 : 0, bans.length ? JSON.stringify(bans) : null, held).lastInsertRowid);
+        given.push(id);
+        if (bans.length) { const list = this.bound.get(sessionId) ?? []; list.push({ id, recall: row!, ts, bans, held: null }); this.bound.set(sessionId, list); }
       }
+      const rules = (r.facts ?? []).filter((f) => f.rule).length;
+      if (rules) db.query("UPDATE telemetry_memory SET rules = ?, followed = ?, broken = ? WHERE id = ?").run(rules, deny === "stopped" ? rules : 0, deny === "late" ? rules : 0, row!);
     })();
     if (r.facts?.length) {
       const list = this.open.get(sessionId) ?? [];
@@ -270,11 +341,13 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     if (ms) this.store.db.query("UPDATE telemetry_memory SET proc_ms = proc_ms + ? WHERE id = ?").run(Math.round(ms), row);
   }
 
-  // The turn ended: each recall of it gets the count of its facts that the
-  // turn's output named after the recall.
+  // The turn ended: each recall of it gets the count of its notes that the
+  // turn's output named after the recall; the rules given with a call they
+  // forbid are judged over the calls made since; a note not named yet is
+  // looked for in this turn too.
   private settle(sessionId: string) {
-    const list = this.open.get(sessionId);
-    if (!list?.length) return;
+    const list = this.open.get(sessionId), bound = this.bound.get(sessionId), waiting = this.waiting.get(sessionId);
+    if (!list?.length && !bound?.length && !waiting?.length) return;
     this.open.delete(sessionId);
     const events = this.store.lineage(sessionId);
     const from = events.findLastIndex((e) => e.kind === "turn_start");
@@ -284,21 +357,65 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     });
     const q = this.store.db.query("UPDATE telemetry_memory SET used = ? WHERE id = ?");
     const one = this.store.db.query("UPDATE memory_given SET used = ? WHERE id = ?");
+    const later = this.store.db.query("UPDATE telemetry_memory SET used = used + 1 WHERE id = ?");
+    const keep: Waiting[] = [];
     // One commit for the whole turn's recalls.
     this.store.db.transaction(() => {
-      for (const o of list) {
+      const turn = said.map((a) => a.text).join("\n"), turnActed = said.map((a) => a.calls).join("\n");
+      for (const w of waiting ?? []) {
+        if (usedBy(w.fact, turn, turnActed)) { one.run(1, w.id); later.run(w.recall); } else keep.push(w);
+      }
+      for (const o of list ?? []) {
         // A reply is stored when it ends: one stored at or after the recall could read it.
         const after = said.filter((a) => a.ts >= o.ts);
         const output = after.map((a) => a.text).join("\n"), acted = after.map((a) => a.calls).join("\n");
         const used = o.facts.map((f) => usedBy(f, output, acted));
-        q.run(used.filter(Boolean).length, o.row);
-        used.forEach((u, i) => { if (o.given[i]) one.run(u ? 1 : 0, o.given[i]!); });
+        // `used` of a recall counts its notes: a rule works by what the model leaves undone, and is judged below.
+        q.run(used.filter((u, i) => u && !o.facts[i]!.rule).length, o.row);
+        used.forEach((u, i) => {
+          if (o.given[i]) one.run(u ? 1 : 0, o.given[i]!);
+          if (!u && o.given[i] && !o.facts[i]!.rule) keep.push({ id: o.given[i]!, recall: o.row, fact: o.facts[i]! });
+        });
       }
+      this.judge(sessionId, events);
     })();
+    if (keep.length) this.waiting.set(sessionId, keep.slice(-WAITING_MAX)); else this.waiting.delete(sessionId);
+  }
+
+  // The rules given with a call they forbid: broken once such a call was made after the rule was given
+  // (not one a deny refused), followed while none was. Each recall's counts follow its rows.
+  private judge(sessionId: string, events: ReturnType<Store["lineage"]>) {
+    const rows = this.bound.get(sessionId);
+    if (!rows?.length) return;
+    const refused = this.refused.get(sessionId);
+    const calls: { ts: number; call: StoreCall }[] = [];
+    for (const e of events) {
+      if (e.kind !== "assistant") continue;
+      for (const b of e.data.blocks ?? []) {
+        if (b.type !== "tool_use" || refused?.has(b.id)) continue;
+        const call = tacitToolCall(String(b.name ?? ""), b.input);
+        if (call) calls.push({ ts: e.ts, call });
+      }
+    }
+    const set = this.store.db.query("UPDATE memory_given SET held = ? WHERE id = ?");
+    const total = this.store.db.query("UPDATE telemetry_memory SET followed = (SELECT COUNT(*) FROM memory_given WHERE session_id = ? AND recall = ? AND held = 1), broken = (SELECT COUNT(*) FROM memory_given WHERE session_id = ? AND recall = ? AND held = 0) WHERE id = ?");
+    for (const r of rows) {
+      if (r.held === 0) continue;
+      const held = calls.some((c) => c.ts >= r.ts && r.bans.some((b) => callBreaks(b, c.call))) ? 0 : 1;
+      if (held === r.held) continue;
+      r.held = held;
+      set.run(held, r.id);
+      total.run(sessionId, r.recall, sessionId, r.recall, r.recall);
+    }
+    // A broken rule needs no further looking.
+    this.bound.set(sessionId, rows.filter((r) => r.held !== 0));
   }
 
   forget(sessionId: string) {
     this.open.delete(sessionId);
+    this.bound.delete(sessionId);
+    this.waiting.delete(sessionId);
+    this.refused.delete(sessionId);
   }
 
   // The given rows whose turn has not ended yet: their check is still to come.
@@ -325,6 +442,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     const checked = " AND used IS NOT NULL";
     const cols = `COUNT(*) AS asked, ${n("added")} AS recalls, ${n("empty")} AS empty, ${n("repeat")} AS repeat, ${n("skipped")} AS skipped, ${n("late")} AS late, ${n("later")} AS later, ${n("timeout")} AS timeouts, ${n("failure")} AS failures,
       ${added("facts")} AS facts, ${added("tokens")} AS tokens, ${added("facts", checked)} AS facts_checked, ${added("used", checked)} AS used,
+      ${added("rules")} AS rules, ${added("rules", checked)} AS rules_checked, ${added("followed")} AS followed, ${added("broken")} AS broken,
       ${added("1", checked)} AS recalls_checked, ${added("1", " AND used > 0")} AS recalls_used,
       COALESCE(SUM(repeats), 0) AS repeats, COALESCE(SUM(cut), 0) AS cut, COALESCE(SUM(wait_ms), 0) AS wait_ms, COALESCE(MAX(wait_ms), 0) AS wait_max_ms, COALESCE(SUM(proc_ms), 0) AS proc_ms`;
     const from = `FROM telemetry_memory WHERE ${where.join(" AND ")}`;

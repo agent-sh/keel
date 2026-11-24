@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { asksMemory, factOf, handlesOf, memoryMeter, recallFell, FELL_DAY_MS, FELL_RECENT_MS } from "./memory-meter.ts";
+import { asksMemory, bansOf, callBreaks, factOf, handlesOf, memoryMeter, recallFell, FELL_DAY_MS, FELL_RECENT_MS } from "./memory-meter.ts";
 import { usedBy } from "./memory-meter.ts";
 import { fitMemory, memoryBlock, shownLines } from "./tacit.ts";
 
@@ -86,7 +86,7 @@ test("the store is asked about what asks for work, not about what the harness de
 });
 
 test("a fact counts as used when the output names it or repeats three of its words in a row", () => {
-  expect(factOf("- RULE deploy-freeze: No deploys on Fridays after noon")).toEqual({ names: ["deploy-freeze"], text: "No deploys on Fridays after noon" });
+  expect(factOf("- RULE deploy-freeze: No deploys on Fridays after noon")).toEqual({ names: ["deploy-freeze"], text: "No deploys on Fridays after noon", rule: true });
   expect(factOf("- person.dana-levi (person): Dana is the accountant")).toEqual({ names: ["person.dana-levi"], text: "Dana is the accountant" });
   expect(factOf("- staging (this machine): The gateway is halcyon")).toMatchObject({ names: ["staging"] });
   const f = factOf("- deploy-freeze: No deploys on Fridays after noon");
@@ -149,6 +149,93 @@ test("the meter reads each path against its own day, now and not at the range th
     const fell = meter.fell(now);
     expect(fell.map((f) => f.path)).toEqual(["store_prompt"]);
     expect(fell[0]).toMatchObject({ recent: { answered: 43, hits: 0 }, day: { answered: 160, hits: 40 } });
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Rules and notes: the store marks a rule in its own line. A rule works by what the model does not do, so it is
+// judged on the call it forbids; a note is used when the model names it.
+test("the store's line says a rule from a note, and a rule's text says the call it forbids", () => {
+  expect(factOf("- RULE no-stash: never run `git stash` in a worktree")).toMatchObject({ names: ["no-stash"], rule: true });
+  expect(factOf("- note-a: agent note (2026-11-19), standard").rule).toBeUndefined();
+  expect(factOf("- rule-x (past mistake): never run denyme.").rule).toBeUndefined();
+  expect(bansOf("In any worktree never run `git stash`: refs are shared. Use `git worktree add` to branch.")).toEqual(["git stash"]);
+  expect(bansOf("Do not use `rm -rf` here, and avoid `git fetch --all`.")).toEqual(["rm -rf", "git fetch --all"]);
+  // No prohibition, no backquote after it, or not a program: no call to judge it by.
+  expect(bansOf("Wait ten minutes before a swap; use `mv` instead.")).toEqual([]);
+  expect(bansOf("Never push without asking.")).toEqual([]);
+  expect(bansOf("Never edit `~/x` or `--force` by hand.")).toEqual([]);
+  const sh = (command: string) => ({ tool_name: "Bash", tool_input: { command } });
+  expect(callBreaks("git stash", sh("cd x && git stash pop"))).toBe(true);
+  expect(callBreaks("git stash", sh("git status"))).toBe(false);
+  expect(callBreaks("git stash", { tool_name: "Edit", tool_input: { file_path: "git stash" } })).toBe(false);
+  // Its options must be there too: `git fetch origin` is not `git fetch --all`.
+  expect(callBreaks("git fetch --all", sh("git fetch origin"))).toBe(false);
+  expect(callBreaks("git fetch --all", sh("git fetch --all --prune"))).toBe(true);
+});
+
+test("a rule is followed while the call it forbids is not made after it was given, broken once it is; a note is used when named, in its turn or a later one", () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "memory-rules-"));
+  const store = new Store(dir);
+  try {
+    const meter = memoryMeter(store);
+    meter.denyBans = (name) => (name === "keyed-rule" ? ["touch banned"] : []);
+    const s = store.createSession({ model: "p:m", workspace: dir });
+    const call = (command: string, id: string) => ({ type: "tool_use", id, name: "Bash", input: { command } });
+    const turn = (blocks: unknown[]) => { store.append(s.id, "turn_start", {}); store.append(s.id, "assistant", { blocks }); store.append(s.id, "turn_end", {}); (meter as any).settle(s.id); };
+    store.append(s.id, "user", { text: "go" });
+    meter.record(s.id, "store_start", { outcome: "added", text: "block", by: { hook: "session-start" }, facts: [
+      factOf("- RULE no-stash: never run `git stash` in a worktree"),
+      factOf("- RULE keyed-rule: a store key names the command"),
+      factOf("- RULE wait-rule: wait ten minutes before a swap"),
+      factOf("- alpha-note: the gateway lives in the west region"),
+      factOf("- beta-note: the cache is warmed by a one token read"),
+    ] });
+    const rows = () => store.db.query<{ name: string; rule: number; held: number | null; used: number | null }, []>("SELECT name, rule, held, used FROM memory_given ORDER BY id").all();
+    const rec = () => store.db.query<Record<string, number>, []>("SELECT facts, rules, followed, broken, used FROM telemetry_memory").get()!;
+    expect(rows().map((r) => [r.name, r.rule, r.held])).toEqual([["no-stash", 1, null], ["keyed-rule", 1, null], ["wait-rule", 1, null], ["alpha-note", 0, null], ["beta-note", 0, null]]);
+    // The first turn names alpha-note; neither forbidden call is made.
+    turn([{ type: "text", text: "The alpha-note says the west region." }, call("git status", "c1")]);
+    expect(rows().map((r) => [r.name, r.held, r.used])).toEqual([["no-stash", 1, 0], ["keyed-rule", 1, 0], ["wait-rule", null, 0], ["alpha-note", null, 1], ["beta-note", null, 0]]);
+    // `used` of the recall counts notes: the rules named nothing, and are counted apart.
+    expect(rec()).toMatchObject({ facts: 5, rules: 3, followed: 2, broken: 0, used: 1 });
+    // A later turn opens the other note with a tool call naming it, and makes the keyed call: that rule is broken, the other still followed.
+    turn([call("tacit fact beta-note", "c2"), call("touch banned file", "c3")]);
+    expect(rows().map((r) => [r.name, r.held, r.used])).toEqual([["no-stash", 1, 0], ["keyed-rule", 0, 0], ["wait-rule", null, 0], ["alpha-note", null, 1], ["beta-note", null, 1]]);
+    expect(rec()).toMatchObject({ rules: 3, followed: 1, broken: 1, used: 2 });
+    // A broken rule stays broken; a call made before a rule was given breaks nothing.
+    turn([call("git status", "c4")]);
+    expect(rows()[1]!.held).toBe(0);
+    meter.record(s.id, "store_tool", { outcome: "added", text: "block", by: { hook: "pre-tool", call: "Bash", ref: "c5" }, facts: [factOf("- RULE stash-again: do not run `git stash`")] });
+    turn([call("git stash list", "c6")]);
+    expect(rows().map((r) => [r.name, r.held])).toEqual([["no-stash", 0], ["keyed-rule", 0], ["wait-rule", null], ["alpha-note", null], ["beta-note", null], ["stash-again", 0]]);
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a call the store refused is the rule acting, and a deny that came after the command ran is a broken rule", () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "memory-deny-"));
+  const store = new Store(dir);
+  try {
+    const meter = memoryMeter(store);
+    meter.denyBans = (name) => (name === "no-stash" ? ["git stash"] : []);
+    const s = store.createSession({ model: "p:m", workspace: dir });
+    store.append(s.id, "user", { text: "go" });
+    // The rule was given at the start, with its key; then the call was refused (deny "stopped"): it is in the history, and breaks nothing.
+    meter.record(s.id, "store_start", { outcome: "added", text: "block", by: { hook: "session-start" }, facts: [factOf("- RULE no-stash: never touch the stash")] });
+    meter.record(s.id, "store_tool", { outcome: "added", text: "block", by: { hook: "pre-tool", call: "Bash", ref: "c1", deny: "stopped" }, facts: [factOf("- no-stash (past mistake): never run git stash.")] });
+    meter.record(s.id, "store_tool", { outcome: "added", text: "block", by: { hook: "pre-tool", call: "Bash", ref: "c2", deny: "late" }, facts: [factOf("- other-rule (past mistake): never run other.")] });
+    store.append(s.id, "turn_start", {});
+    store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c1", name: "Bash", input: { command: "git stash" } }] });
+    store.append(s.id, "turn_end", {});
+    (meter as any).settle(s.id);
+    const rows = store.db.query<{ name: string; rule: number; held: number }, []>("SELECT name, rule, held FROM memory_given ORDER BY id").all();
+    expect(rows.map((r) => [r.name, r.rule, r.held])).toEqual([["no-stash", 1, 1], ["no-stash", 1, 1], ["other-rule", 1, 0]]);
+    expect(store.db.query<Record<string, number>, []>("SELECT SUM(followed) AS followed, SUM(broken) AS broken, SUM(rules) AS rules FROM telemetry_memory").get()).toEqual({ followed: 2, broken: 1, rules: 3 });
   } finally {
     store.db.close();
     rmSync(dir, { recursive: true, force: true });

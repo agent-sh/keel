@@ -28,16 +28,17 @@ import { Stat, Stats } from "./Stat.tsx";
 
 type State = "ok" | "absent" | "slow" | "failed" | "missing" | "expired";
 export type MemorySession = { session_id: string; title: string | null; last: number; facts: number };
-type GivenRow = { id: number; ts: number; recall: number; path: string; hook: string; name: string; call: string | null; ref: string | null; tokens: number; used: number | null; open: boolean };
+type GivenRow = { id: number; ts: number; recall: number; path: string; hook: string; name: string; call: string | null; ref: string | null; tokens: number; used: number | null; rule: number; held: number | null; open: boolean };
 type Given = { available: boolean; rows: GivenRow[]; more: boolean; total: number; tokens: number; named: number; checked: number; blocks: number; block_tokens: number; facts: number };
 type Hit = { name: string; description: string; cut: boolean; scope: string; type: string; created: string; score: number | null; inbox: boolean; ruling: boolean; kind: string; path: string };
 type FactAnswer = {
   state: State; error?: string; correct: { note: string }; page: { command: string; words: string[]; note: string };
   fact?: { name: string; head: string[]; meta: Record<string, string>; body: string; replaced_by?: string };
 };
-type FactRow = { name: string; given: number; sessions: number; checked: number; used: number; tokens: number; last: number };
+type FactRow = { name: string; given: number; sessions: number; checked: number; used: number; rule: number; followed: number; broken: number; tokens: number; last: number };
 type Efficiency = {
   available: boolean; total_facts: number; facts: FactRow[];
+  kinds?: { rules: number; rule_rows: number; followed: number; broken: number; unjudged: number; notes: number; note_rows: number; used: number; unused: number };
   sessions: { session_id: string; title: string | null; gone: number; tokens: number; recalls: number; facts: number }[];
   days: { day: string; tokens: number; recalls: number; sessions: number }[];
   calls: { asked: number; added: number; empty: number; late: number; failed: number; repeat: number; tokens: number };
@@ -61,7 +62,8 @@ const TROUBLE: Record<Exclude<State, "ok">, string> = {
   expired: "The confirmation was used already or came too late. Nothing was sent: send the correction again.",
 };
 const ABSENT = "The memory store is not installed on this machine now. This is what Keel recorded; a fact cannot be opened until the store is back.";
-const ROUGH = "A rough signal, and it reads low: a fact counts as named when its name, three of its words in a row (not all common ones), or a path, file, flag or quoted command it names appeared in the model's later text or tool input of the turn it was given. A rule can be followed without any of that.";
+const RULES = "A rule often works by what the model does not do, so it is judged on the call it forbids: the command of the store's key for it, else a command its text forbids in backquotes. It is followed while no such call is made in the session after it was given, and broken once one is. A call the store refused counts as the rule acting. A rule that names no call is not judged.";
+const ROUGH = "A rough signal, and it reads low: a fact counts as named when its name, three of its words in a row (not all common ones), or a path, file, flag or quoted command it names appeared in the model's later text or tool input of the turn it was given. This is about notes: a rule is judged by the call it forbids.";
 const HOOK: Record<string, string> = {
   "session-start": "At the session's start", "session-start:compact": "After a compaction", "session-start:clear": "After a clear", prompt: "With a prompt", "pre-tool": "Before a tool",
 };
@@ -118,6 +120,18 @@ export function SessionPick({ sessions, value, onChange, all }: { sessions: Memo
 
 // Whether the turn named a fact after it was given: a mark and its word.
 function Named({ g }: { g: GivenRow }) {
+  // A rule works by what the model leaves undone: it is followed or broken, never named or not.
+  if (g.rule) {
+    const [word, mark, why] = g.held === 1 ? ["followed", "border-ok bg-ok", "The call it forbids was not made after it was given"]
+      : g.held === 0 ? ["broken", "border-danger bg-danger", "The call it forbids was made after it was given"]
+      : g.open ? ["turn not over", "border-dashed border-line-strong", "Its turn still runs: it is judged when the turn ends"]
+      : ["rule, no call to judge", "border-dashed border-line-strong", "It names no call the model could make or leave, so it is neither followed nor broken here"];
+    return (
+      <span className={cn("inline-flex shrink-0 items-center gap-1.5 text-caption", g.held === null ? "text-muted" : "text-fg")} title={why} data-testid="memory-given-held" data-held={g.held ?? undefined}>
+        <span className={cn("size-2 rounded-full border-[1.5px]", mark)} aria-hidden />{word}
+      </span>
+    );
+  }
   const [word, mark, why] = g.used === 1 ? ["named", "border-ok bg-ok", undefined]
     : g.used === 0 ? ["not named", "border-line-strong", undefined]
     : g.open ? ["turn not over", "border-dashed border-line-strong", "Its turn still runs: it is checked when the turn ends"]
@@ -275,6 +289,13 @@ export function SearchView({ session, onOpen, under }: { session: string; onOpen
   );
 }
 
+// What became of a rule where it was given: followed, broken, or no call to judge it by.
+const ruleWords = (f: FactRow): string => {
+  const judged = f.followed + f.broken;
+  if (!judged) return "a rule that names no call to judge";
+  return `followed ${f.followed} of ${judged}${f.broken ? `, broken ${f.broken}` : ""}`;
+};
+
 // One list of facts, a part at a time: each with a bar for how often it was given, against the most given of the list.
 function FactList({ facts, id, onOpen, under, testid }: { facts: FactRow[]; id: string; onOpen: OpenFact; under: Under; testid: string }) {
   const [from, setFrom] = useState(0);
@@ -286,18 +307,18 @@ function FactList({ facts, id, onOpen, under, testid }: { facts: FactRow[]; id: 
       <ul className="flex max-w-[64rem] flex-col" data-testid={testid}>
         {shown.map((f) => (
           <Fragment key={f.name}>
-            <li data-testid="memory-fact-row" data-row="" data-name={f.name} data-unused={f.checked > 0 && f.used === 0 ? "" : undefined}
+            <li data-testid="memory-fact-row" data-row="" data-name={f.name} data-unused={!f.rule && f.checked > 0 && f.used === 0 ? "" : undefined}
               className="grid scroll-mt-32 grid-cols-1 items-baseline gap-x-4 gap-y-1 border-b border-line/60 py-2 last:border-0 @3xl:grid-cols-[minmax(0,1fr)_minmax(0,17rem)_6.5rem]">
               <button type="button" className={cn(nameButton, "justify-self-start")} onClick={(e) => onOpen(f.name, e.currentTarget, `${id}${f.name}`)} title="Open this fact">{f.name}</button>
               <div className="min-w-0">
                 {/* How often it was given, against the most given fact of this list; the part of it that was named is filled. */}
                 <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-sunken" aria-hidden>
                   <div className="h-full rounded-full bg-line-strong" style={{ width: `${Math.max(2, (100 * f.given) / most)}%` }}>
-                    {f.used > 0 && <div className="h-full rounded-full bg-ok" style={{ width: `${(100 * f.used) / f.given}%` }} />}
+                    {(f.rule ? f.followed : f.used) > 0 && <div className="h-full rounded-full bg-ok" style={{ width: `${(100 * (f.rule ? f.followed : f.used)) / f.given}%` }} />}
                   </div>
                 </div>
                 <div className="mt-1 text-caption text-muted" data-testid="memory-fact-used">
-                  given {f.given === 1 ? "once" : `${f.given} times`}{f.sessions > 1 ? ` in ${f.sessions} sessions` : ""}, {f.checked ? (f.used ? `named after ${f.used} of ${f.checked}` : "never named after") : "not checked yet"}
+                  given {f.given === 1 ? "once" : `${f.given} times`}{f.sessions > 1 ? ` in ${f.sessions} sessions` : ""}, {f.rule ? ruleWords(f) : f.checked ? (f.used ? `named after ${f.used} of ${f.checked}` : "never named after") : "not checked yet"}
                 </div>
               </div>
               <div className="text-caption tabular-nums text-faint @3xl:text-right" title={`Last given ${when(f.last)}`}>{plural(f.tokens, "token")}<span className="@3xl:hidden">, last given {when(f.last)}</span></div>
@@ -321,8 +342,10 @@ export function UnusedView({ since, session, sessions, onSession, onOpen, onGone
     return () => { live = false; };
   }, [since, session]);
   const c = r?.calls;
-  const unused = r?.facts.filter((f) => f.checked > 0 && f.used === 0) ?? [];
-  const rest = r?.facts.filter((f) => !(f.checked > 0 && f.used === 0)) ?? [];
+  const unused = r?.facts.filter((f) => !f.rule && f.checked > 0 && f.used === 0) ?? [];
+  const rules = r?.facts.filter((f) => f.rule) ?? [];
+  const rest = r?.facts.filter((f) => !f.rule && !(f.checked > 0 && f.used === 0)) ?? [];
+  const k = r?.kinds;
   return (
     <div className="@container flex flex-col gap-5" data-testid="memory-unused">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -333,14 +356,24 @@ export function UnusedView({ since, session, sessions, onSession, onOpen, onGone
         <>
           {!r.available && <p className="text-caption text-muted" data-testid="memory-absent">{ABSENT}</p>}
           <section>
-            <h4 className="text-ui font-medium" data-testid="memory-unused-title">Given, never named afterwards (rough){unused.length ? <span className="font-normal text-faint">, {plural(unused.length, "fact")}, the most given first</span> : null}</h4>
+            <h4 className="text-ui font-medium" data-testid="memory-unused-title">Notes given, never named afterwards (rough){unused.length ? <span className="font-normal text-faint">, {plural(unused.length, "fact")}, the most given first</span> : null}</h4>
             <p className="mb-1 mt-0.5 max-w-[46rem] text-caption text-muted" data-testid="memory-unused-caveat">{ROUGH}</p>
             {unused.length ? <FactList facts={unused} id="u" onOpen={onOpen} under={under} testid="memory-unused-list" />
               : <p className="k-empty mt-2" data-testid="memory-unused-none">{r.facts.length ? "Every fact given in this range was named at least once afterwards." : "Nothing was given in this range."}</p>}
           </section>
+          {k && k.rule_rows > 0 && (
+            <section data-testid="memory-rules">
+              <h4 className="text-ui font-medium">Rules, followed or broken<span className="font-normal text-faint">, {plural(k.rules, "rule")}</span></h4>
+              <p className="mb-1 mt-0.5 max-w-[46rem] text-caption text-muted" data-testid="memory-rules-caveat">{RULES}</p>
+              <p className="mb-1 text-ui text-fg" data-testid="memory-rules-total">
+                {k.followed} followed, {k.broken} broken<span className="text-muted">, {k.unjudged} given with no call to judge them by</span>
+              </p>
+              <FactList facts={rules} id="r" onOpen={onOpen} under={under} testid="memory-rules-list" />
+            </section>
+          )}
           {rest.length > 0 && (
             <section>
-              <h4 className="text-ui font-medium">Named at least once, or not checked yet</h4>
+              <h4 className="text-ui font-medium">Notes named at least once, or not checked yet</h4>
               <FactList facts={rest} id="n" onOpen={onOpen} under={under} testid="memory-used-list" />
             </section>
           )}

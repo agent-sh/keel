@@ -24,7 +24,7 @@ import { fmtMs, fmtPct, Panel, Table } from "./UsagePanel.tsx";
 
 type Row = {
   asked: number; recalls: number; empty: number; repeat: number; skipped: number; late: number; later: number; timeouts: number; failures: number;
-  facts: number; tokens: number; facts_checked: number; used: number; recalls_checked: number; recalls_used: number;
+  facts: number; tokens: number; facts_checked: number; used: number; rules: number; rules_checked: number; followed: number; broken: number; recalls_checked: number; recalls_used: number;
   repeats: number; cut: number; wait_ms: number; wait_max_ms: number; proc_ms: number;
 };
 // `store`: how the memory store answers right now (the kinds of call that are out, or often late).
@@ -75,15 +75,20 @@ function UsageTable({ since }: { since: number }) {
   if (!r) return <p className="text-caption text-faint" data-testid="memory-usage-loading">Reading what memory added in this range</p>;
   const cells = (label: ReactNode, x: Row): ReactNode[] => {
     const why = [x.skipped && `${x.skipped} not asked`, x.empty && `${x.empty} with nothing to add`, x.repeat && `${x.repeat} already in the context`, x.late && `${x.late} not waited for`, x.later && `${x.later} answered after the turn went on, carried to a later step`, x.timeouts && `${x.timeouts} timed out`, x.failures && `${x.failures} failed`].filter(Boolean).join(", ");
+    const notes = x.facts_checked - x.rules_checked;
     return [
       // A phone has room for the path on two lines, not on one: it wraps there, whole, and leaves
       // out the words every path shares (the panel is Memory).
       <span className="block first-letter:uppercase max-sm:whitespace-normal">{label}</span>,
       <span title={why || undefined}>{x.recalls} <span className="text-faint">of {x.asked}</span></span>,
       <span title={plural(x.facts, "fact")}>{fmtTokens(x.tokens)}</span>,
-      x.recalls_checked
-        ? <span title={`${x.used} of ${plural(x.facts_checked, "fact")} named by the reply or a tool call of their turn`}>{x.recalls_used} <span className="text-faint">of {x.recalls_checked}<span className="max-sm:hidden">, {fmtPct(x.facts_checked ? x.used / x.facts_checked : null)} of facts</span></span></span>
-        : <span className="text-faint">none yet</span>,
+      notes
+        ? <span title={`${x.used} of ${plural(notes, "note")} named by the reply or a tool call of their turn`}>{x.recalls_used} <span className="text-faint">of {x.recalls_checked}<span className="max-sm:hidden">, {fmtPct(x.used / notes)} of notes</span></span></span>
+        : <span className="text-faint">{x.recalls_checked ? "no notes" : "none yet"}</span>,
+      // A rule works by what the model leaves undone: followed while the call it forbids is not made, broken once it is.
+      x.rules
+        ? <span title={`${plural(x.rules, "rule")} given: ${x.followed} followed, ${x.broken} broken, ${x.rules - x.followed - x.broken} not judged (no call to judge them by, or their turn is not over)`} data-testid="memory-rules-cell">{x.followed} <span className="text-faint">followed, </span>{x.broken}<span className="text-faint"> broken</span></span>
+        : <span className="text-faint">none</span>,
       <span title={x.cut ? `${x.cut} more had no room in their block and followed with a later step` : undefined}>{x.repeats}{x.cut ? <span className="text-faint">, {x.cut} carried on</span> : null}</span>,
       <span title={`longest wait ${fmtMs(x.wait_max_ms)}; the memory hook ran for ${fmtMs(x.proc_ms)} in all, waited for or not`}>{fmtMs(x.wait_ms)}</span>,
     ];
@@ -95,13 +100,13 @@ function UsageTable({ since }: { since: number }) {
   return (
     <>
       <Table
-        head={["Path", "Recalls", "Tokens added", "Named in reply (estimate)", "Not added again", "Time added"]}
+        head={["Path", "Recalls", "Tokens added", "Notes named (estimate)", "Rules", "Not added again", "Time added"]}
         rows={[...r.paths.map((p) => cells(pathLabel(p.path), p)), ...(r.paths.length > 1 ? [cells(<span className="font-medium">All memory</span>, r.total)] : [])]}
         // A phone keeps what the table is opened for: how often memory was added, what it cost, whether it was used.
-        wide={[4, 5]}
+        wide={[5, 6]}
       />
       <p className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="memory-notes">
-        Named in reply is an estimate: a recall counts when the reply or a tool call of its turn spells the name of one of its facts, or three of its words in a row. It reads low: a fact can shape a reply without being named, and standing rules rarely are. A fact the context already holds is not added again; one its block has no room for follows with the next step.
+        Notes named is an estimate: a recall counts when the reply or a tool call of its turn spells the name of one of its notes, or three of its words in a row. It reads low: a note can shape a reply without being named. A rule works by what the model leaves undone, so it is judged on the call it forbids: followed while that call is not made in the session after the rule was given, broken once it is; a call the store refused is the rule acting, and a rule that names no call is not counted either way. A fact the context already holds is not added again; one its block has no room for follows with the next step.
         {r.fell?.map((f) => (
           <span key={f.path} className="text-warn" data-testid="memory-fell"> Recall fell for {(PATH[f.path] ?? f.path).replace(/^./, (c) => c.toLowerCase())}: facts came with {f.recent.hits} of its last {f.recent.answered} answers in two hours, against {f.day.hits} of {f.day.answered} in the day before.</span>
         ))}

@@ -62,7 +62,7 @@ export function memoryRoutes({ store }: Deps, mem: MemoryStore, meter: MemoryMet
         const before = q.get("before") ? Number(q.get("before")) : Number.MAX_SAFE_INTEGER;
         if (!Number.isFinite(before)) return bad("before is a row's id");
         const [rows, total, blocks] = await Promise.all([
-          reads().sql<{ id: number; used: number | null }>(`SELECT id, ts, recall, path, hook, name, call, ref, tokens, used FROM memory_given WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ${GIVEN_PART + 1}`, [id, before]),
+          reads().sql<{ id: number; used: number | null }>(`SELECT id, ts, recall, path, hook, name, call, ref, tokens, used, rule, held FROM memory_given WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ${GIVEN_PART + 1}`, [id, before]),
           reads().sql<{ n: number; tokens: number; named: number; checked: number }>("SELECT COUNT(*) AS n, COALESCE(SUM(tokens), 0) AS tokens, COALESCE(SUM(used), 0) AS named, COALESCE(SUM(used IS NOT NULL), 0) AS checked FROM memory_given WHERE session_id = ?", [id]),
           reads().sql<{ blocks: number; tokens: number; facts: number }>(`SELECT COUNT(*) AS blocks, COALESCE(SUM(tokens), 0) AS tokens, COALESCE(SUM(facts), 0) AS facts FROM telemetry_memory WHERE session_id = ? AND outcome = 'added' AND ${STORE}`, [id]),
         ]);
@@ -91,11 +91,16 @@ export function memoryRoutes({ store }: Deps, mem: MemoryStore, meter: MemoryMet
         const where = (alias = "") => `${alias}ts >= ?${session ? ` AND ${alias}session_id = ?` : ""}`;
         const args = session ? [since, session] : [since];
         const r = reads();
-        const [facts, count, sessions, days, calls] = await Promise.all([
+        const [facts, count, kinds, sessions, days, calls] = await Promise.all([
           r.sql(`SELECT name, COUNT(*) AS given, COUNT(DISTINCT session_id) AS sessions, COALESCE(SUM(used IS NOT NULL), 0) AS checked, COALESCE(SUM(used), 0) AS used,
+  MAX(rule) AS rule, COALESCE(SUM(held = 1), 0) AS followed, COALESCE(SUM(held = 0), 0) AS broken,
   COALESCE(SUM(tokens), 0) AS tokens, MAX(ts) AS last FROM memory_given WHERE ${where()} GROUP BY name
-  ORDER BY (COALESCE(SUM(used), 0) = 0 AND COALESCE(SUM(used IS NOT NULL), 0) > 0) DESC, given DESC, tokens DESC, name LIMIT ${FACTS_SHOWN}`, args),
+  ORDER BY (MAX(rule) = 0 AND COALESCE(SUM(used), 0) = 0 AND COALESCE(SUM(used IS NOT NULL), 0) > 0) DESC, given DESC, tokens DESC, name LIMIT ${FACTS_SHOWN}`, args),
           r.sql<{ n: number }>(`SELECT COUNT(DISTINCT name) AS n FROM memory_given WHERE ${where()}`, args),
+          // Rules by what became of them (a row a fact was given in), notes by whether a turn named them.
+          r.sql(`SELECT COUNT(DISTINCT CASE WHEN rule = 1 THEN name END) AS rules, COALESCE(SUM(rule = 1), 0) AS rule_rows, COALESCE(SUM(held = 1), 0) AS followed, COALESCE(SUM(held = 0), 0) AS broken,
+  COALESCE(SUM(rule = 1 AND held IS NULL), 0) AS unjudged, COALESCE(SUM(rule = 0), 0) AS note_rows, COALESCE(SUM(rule = 0 AND used = 1), 0) AS used, COALESCE(SUM(rule = 0 AND used = 0), 0) AS unused,
+  COUNT(DISTINCT CASE WHEN rule = 0 THEN name END) AS notes FROM memory_given WHERE ${where()}`, args),
           r.sql(`SELECT m.session_id, s.title, s.id IS NULL AS gone, COALESCE(SUM(m.tokens), 0) AS tokens, COUNT(*) AS recalls, COALESCE(SUM(m.facts), 0) AS facts, MAX(m.ts) AS last
   FROM telemetry_memory m LEFT JOIN sessions s ON s.id = m.session_id WHERE m.outcome = 'added' AND m.${STORE} AND ${where("m.")} GROUP BY m.session_id ORDER BY tokens DESC LIMIT 20`, args),
           r.sql(`SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') AS day, COALESCE(SUM(tokens), 0) AS tokens, COUNT(*) AS recalls, COUNT(DISTINCT session_id) AS sessions
@@ -105,7 +110,7 @@ export function memoryRoutes({ store }: Deps, mem: MemoryStore, meter: MemoryMet
   COALESCE(SUM(${CALLS} AND outcome = 'repeat'), 0) AS repeat, COALESCE(SUM(CASE WHEN outcome = 'added' THEN tokens ELSE 0 END), 0) AS tokens
   FROM telemetry_memory WHERE ${STORE} AND ${where()}`, args),
         ]);
-        return json({ available: mem.available, since_ms: since, estimate: true, facts, total_facts: count[0]?.n ?? facts.length, sessions, days, calls: calls[0] });
+        return json({ available: mem.available, since_ms: since, estimate: true, facts, total_facts: count[0]?.n ?? facts.length, kinds: kinds[0], sessions, days, calls: calls[0] });
       },
     },
     // GET /api/memory/search?q=&session_id=&inbox=1: the store's own search, its order and score as they are.
