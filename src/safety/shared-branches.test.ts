@@ -116,6 +116,7 @@ test("git archive reads: a candidate's tree is built in another checkout, and an
     "cd /r && git archive keel/agent-2 | tar -x -C /tmp/cand",
     "git -C /r archive --format=tar --prefix=cand/ release/1.0 | tar -x -C /tmp/cand",
     "git -C /r archive -0 HEAD src | tar -x -C /tmp/cand",
+    "git -c tar.umask=0022 -C /r archive HEAD | tar -x -C /tmp/cand",
   ]) expect([line, refused(line)]).toEqual([line, null]);
   for (const line of [
     "git -C /r archive --output=/r/.git/hooks/x.tar HEAD",
@@ -126,6 +127,9 @@ test("git archive reads: a candidate's tree is built in another checkout, and an
     "git -C /r archive --exec=sh HEAD",
     "git -C /r archive HEAD $(echo --output=/r/.git/x)",
     "git -C /r archive --prefix --output=/r/.git/x HEAD",
+    "git -c tar.foo.command='rm -rf ~/y' -C /r archive --format=foo HEAD",
+    "git -c core.fsmonitor=x -C /r archive HEAD",
+    "git --config-env=tar.foo.command=CMD -C /r archive --format=foo HEAD",
   ]) expect([line, refused(line) !== null]).toEqual([line, true]);
 });
 

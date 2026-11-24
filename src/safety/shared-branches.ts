@@ -187,7 +187,7 @@ function keyRefused(key: string, value: string | undefined, dir: string | null, 
 }
 
 // Settings whose value git runs as a command (git-config(1)): the value is read as a shell line.
-const RUNS_COMMAND = /^(core\.(fsmonitor|pager|editor|sshcommand|askpass)|credential\.(.+\.)?helper|diff\.external|diff\..+\.(textconv|command)|filter\..+\.(clean|smudge|process)|merge\..+\.driver|sequence\.editor|gpg\.(.+\.)?program|pager\..+|uploadpack\.packobjectshook|core\.alternaterefscommand|remote\..+\.(receivepack|uploadpack)|interactive\.difffilter)$/;
+const RUNS_COMMAND = /^(core\.(fsmonitor|pager|editor|sshcommand|askpass)|credential\.(.+\.)?helper|diff\.external|diff\..+\.(textconv|command)|tar\..+\.command|filter\..+\.(clean|smudge|process)|merge\..+\.driver|sequence\.editor|gpg\.(.+\.)?program|pager\..+|uploadpack\.packobjectshook|core\.alternaterefscommand|remote\..+\.(receivepack|uploadpack)|interactive\.difffilter)$/;
 const commandOf = (value: string) => value.replace(/^!/, "");
 
 // What `git config` writes, when it writes one of those settings.
@@ -272,8 +272,11 @@ const heldSet = (s: Shared) => new Set([...sharedSet(s), ...(s.foreign?.() ?? []
 // through (--remote reaches another repository and --exec runs a program there; a word the shell
 // expands could be either).
 const ARCHIVE_OPTION = /^(--|-[0-9]+|-[lv]+|--(format|prefix|add-file|add-virtual-file|mtime)(=.*)?|--(list|verbose|worktree-attributes))$/;
+// A setting given for the command is let through only when it is known to run nothing: tar.<format>.command
+// is a program the archive is piped through, and any other key could be one too.
+const ARCHIVE_SETTING = /^(tar\.umask|core\.(quotepath|autocrlf|eol|safecrlf|precomposeunicode))$/;
 function archiveReads(g: Git): boolean {
-  return g.sub === "archive" && g.args.every((a) => !unread(a) && (!a.startsWith("-") || ARCHIVE_OPTION.test(a)));
+  return g.sub === "archive" && g.config.every(([k]) => ARCHIVE_SETTING.test(k.toLowerCase())) && g.args.every((a) => !unread(a) && (!a.startsWith("-") || ARCHIVE_OPTION.test(a)));
 }
 
 function movesShared(g: Git, dir: string, home: string, s: Shared): string | null {

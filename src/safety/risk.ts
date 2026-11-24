@@ -260,7 +260,7 @@ function gitParts(words: string[]): { sub: string; args: string[]; set: string[]
 const CODE_KEYS = new Set(["core.hookspath", "core.fsmonitor", "core.sshcommand", "core.editor", "core.pager", "core.askpass", "core.gitproxy", "core.alternaterefscommand", "credential.helper", "url.insteadof",
   "url.pushinsteadof", "diff.external", "diff.textconv", "diff.command", "merge.driver", "filter.clean", "filter.smudge", "filter.process", "gpg.program", "sequence.editor", "init.templatedir", "include.path",
   "includeif.path", "http.proxy", "remote.uploadpack", "remote.receivepack", "remote.proxy", "submodule.update", "man.cmd", "browser.cmd", "web.browser", "difftool.cmd", "mergetool.cmd", "trailer.command",
-  "interactive.difffilter", "sendemail.sendmailcmd", "sendemail.smtpserver", "protocol.allow", "ssh.variant"]);
+  "interactive.difffilter", "tar.command", "sendemail.sendmailcmd", "sendemail.smtpserver", "protocol.allow", "ssh.variant"]);
 // An editor or a pager that is no program worth a card: the no-ops and the plain pagers.
 const TAME = /^(true|:|cat|less|more|)$/;
 function codeKey(key: string, value?: string): boolean {
