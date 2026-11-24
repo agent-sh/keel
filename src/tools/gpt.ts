@@ -158,7 +158,7 @@ export const applyPatchTool: Tool = {
 
 const update_plan: Tool = {
   name: "update_plan",
-  readOnly: true,
+  readOnly: false, kind: "own",
   description: "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.\n",
   input_schema: obj({
     explanation: { type: "string", description: "Optional explanation for this plan update." },

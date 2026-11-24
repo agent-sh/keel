@@ -330,7 +330,7 @@ const WebSearch: Tool = {
 
 const TodoWrite: Tool = {
   name: "TodoWrite",
-  readOnly: true,
+  readOnly: false, kind: "own",
   description:
     "Keep the session's task checklist, shown to the owner. Send the whole list each time. Use it for work of " +
     "three or more steps; exactly one task in_progress while you work; mark a task completed as soon as it is done.",

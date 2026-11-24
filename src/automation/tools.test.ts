@@ -1,5 +1,5 @@
-// The model's automation tools run unasked (the gate reads them as reads), so
-// what each refuses is the whole of its permission.
+// The model's waits, agents and notices run with no card (they act only on what Keel keeps for the session),
+// so what each refuses is the whole of its permission.
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -12,8 +12,12 @@ import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { classifyCall } from "./gate.ts";
+import type { CallClass } from "./policy.ts";
 import { Shadow, type DiffResult, type FileChange } from "./shadow.ts";
 import { hunkPatch } from "./patch.ts";
+
+// A read, and a tool that acts on what Keel keeps for the session (ToolKind "own"), touch no file of the workspace.
+export const changesNoFiles = (cls: CallClass) => cls.kind === "read" || (cls.kind === "control" && !!cls.own);
 
 export type Checkpoint = {
   id: string;
@@ -153,7 +157,7 @@ export class Checkpoints {
   // beforeTool: the turn's start snapshot exists before anything changes.
   async before(s: Session, call: ToolCall) {
     const cls = classifyCall(call);
-    if (cls.kind === "read") return;
+    if (changesNoFiles(cls)) return;
     const sh = this.shadow(s.workspace);
     const turn = this.currentTurn(s.id);
     let live = this.live.get(s.id);
@@ -211,7 +215,7 @@ export class Checkpoints {
   // the last one to end sets it.
   async after(s: Session, call: ToolCall) {
     const live = this.live.get(s.id);
-    if (!live || classifyCall(call).kind === "read") return;
+    if (!live || changesNoFiles(classifyCall(call))) return;
     live.dirty = true;
     const sh = this.shadow(s.workspace);
     if (sh.mode !== "tree") return;

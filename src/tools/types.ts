@@ -86,19 +86,24 @@ export type ToolContext = {
 export type ToolOutput = { content: string | (TextBlock | ImageBlock | ToolRefBlock)[]; is_error?: boolean; shown?: unknown };
 
 // What a call of a tool does, for the permission gate: declared by the tool,
-// never read off its input. readOnly tools are reads; a tool that declares no
-// kind is judged by its name ("other": it asks, and a grant names it).
+// never read off its input. readOnly tools only read: nothing changes outside
+// the call's own result. A tool that declares neither is judged by its name
+// ("other": it asks, and a grant names it).
 //   shell: runs the command in its input here; edit: writes the paths in its
 //   input; control: input to, or the stop of, a process an allowed call
-//   started; remote: acts on another machine.
-export type ToolKind = "shell" | "edit" | "control" | "remote";
+//   started; remote: acts on another machine; own: acts, but only on what
+//   Keel keeps for this session, its agents and the owner (starts or messages
+//   an agent of its tree, sets or cancels a wait, keeps a todo, a verdict or a
+//   memory record, alerts the owner). It runs in every mode with no
+//   card, because what it reaches is held by the mode of the session it
+//   reaches (an agent never runs in a mode that asks less than its parent's)
+//   or is the owner's own. A tool whose effect outlives the turn and runs
+//   later with no one watching (a schedule), or reaches anything else, is not
+//   own: it is "other".
+export type ToolKind = "shell" | "edit" | "control" | "remote" | "own";
 
 export type Tool = ToolSpec & {
   readOnly: boolean;
-  // It changes nothing outside Keel, so the gate reads it as a read, but it acts in Keel: it starts or stops
-  // an agent, messages another session, sets a loop or a wake, sends a notification, records a verdict or
-  // replaces a context. A turn that may only read (the helper's answer to a phone's ask) refuses it.
-  acts?: true;
   // A mark of a change a live session must not wait for (src/core/build.ts
   // URGENT): any new text, written on the tool itself so two branches that
   // each mark a tool change two places and merge clean.

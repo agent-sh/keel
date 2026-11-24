@@ -25,11 +25,17 @@ import { basename, dirname, join } from "node:path";
 // wait_agent, close_agent). Waits and schedules have no Codex counterpart, so
 // the other families get plain snake_case names for them.
 
-// readOnly: these tools change nothing outside Keel itself (a child's own
-// calls pass the gate in its session), so the permission gate reads them as
-// reads; only the monitor runs a command and is judged as one. acts: they still
-// act in Keel (start, message, stop, schedule, wake, notify), so a turn that may
-// only read refuses them.
+// What each tool is to the permission gate, by what it does:
+// - readOnly: it only reads (the lists, wait_agent).
+// - kind "own": it acts, but only on what Keel keeps for this session and its
+//   tree: an agent it starts or messages never runs in a mode that asks less
+//   than this session's (a child's own calls pass the gate in its session), a
+//   wait or a wakeup of this session, a notice to the owner. It runs in every
+//   mode with no card.
+// - neither: it acts beyond the turn (CronCreate leaves a prompt that runs by
+//   itself for 30 days, even after the mode changed), so it asks, is judged in
+//   Auto and is refused in Read only and Plan. The monitor runs a command and
+//   is judged as one.
 const CLAUDE = ["claude"];
 const OTHERS = ["gpt", "gemini", "other"];
 
@@ -113,8 +119,7 @@ const Agent: Tool = {
   urgent: "lost-agent-successor", // a lost agent is started again by itself (src/automation/successor.ts): the parent must not start it by hand
   resultCap: agents.RESULT_CAP, // a report is cut to this by the agents' own code, never in its middle by the engine's smaller cap
   families: CLAUDE,
-  readOnly: true,
-  acts: true,
+  readOnly: false, kind: "own",
   description:
     "Launch a subagent: a separate session with its own context that works on one task and returns a report. " +
     "Use it for independent work that can run beside yours, or a broad search whose file dumps you do not need. Send several Agent calls in one message to run them in parallel. " +
@@ -209,8 +214,7 @@ const SendMessage: Tool = {
   inputAlias: { to: ["agent_id"] },
   urgent: "follow-up-start", // it messages the other agents of its tree; a message to a finished agent may start its work fresh (src/engine/follow-up.ts)
   families: CLAUDE,
-  readOnly: true,
-  acts: true,
+  readOnly: false, kind: "own",
   description: "Send a message to one of your subagents, or to another agent of this session's tree, by agent id or description: it steers a running agent (after its current step) or gives a finished one new work. A finished agent starts where it is cheapest: in its context, or fresh from a capsule of its work (its task, its report, the files and commands of its work); the result says which. Its next report goes to the agent that started it.",
   input_schema: {
     type: "object",
@@ -256,8 +260,7 @@ const spawn_agent: Tool = {
   inputAlias: { message: ["prompt"] },
   urgent: "lost-agent-successor", // a lost agent is started again by itself (src/automation/successor.ts): the parent must not start it by hand
   families: OTHERS,
-  readOnly: true,
-  acts: true,
+  readOnly: false, kind: "own",
   description:
     "Spawn a sub-agent for a well-scoped task. Returns the spawned agent id. The agent works in the background in its own session; its final answer arrives as a message when it finishes, or call wait_agent when you are blocked on it. " +
     "Spawn several in one round for independent subtasks with disjoint write scopes. Spawned agents use your current model unless model names another. A sub-agent may spawn agents of its own, three levels below the session at most; the session's agent limit counts every agent of the tree. " +
@@ -295,8 +298,7 @@ const send_input: Tool = {
   name: "send_input",
   urgent: "follow-up-start", // it messages the other agents of its tree; a message to a finished agent may start its work fresh (src/engine/follow-up.ts)
   families: OTHERS,
-  readOnly: true,
-  acts: true,
+  readOnly: false, kind: "own",
   description: "Send a message to an existing agent: one you spawned, or another agent of this session's tree. Use interrupt=true to redirect the work of one you spawned immediately; otherwise it is handled after its current step. A finished agent starts its new work where it is cheapest: in its context, or fresh from a capsule of its work (its task, its report, the files and commands of its work); the result says which. Its next result goes to the agent that spawned it.",
   input_schema: {
     type: "object",
@@ -389,8 +391,7 @@ async function blocks<T>(ctx: ToolContext, run: () => Promise<T>): Promise<T> {
 const close_agent: Tool = {
   name: "close_agent",
   families: OTHERS,
-  readOnly: true,
-  acts: true,
+  readOnly: false, kind: "own",
   description: "Stop an agent that is no longer needed and return its previous status.",
   input_schema: { type: "object", properties: { target: { type: "string", description: "Agent id to close (from spawn_agent)." } }, required: ["target"] },
   run: (input, ctx) => guard(() => {
@@ -476,14 +477,13 @@ const waitDesc =
 // where other actions ask and the owner can allow it by that name.
 const waitTarget = async (input: any) =>
   input?.kind === "pr_checks" || input?.spec?.kind === "pr_checks" ? { name: "wait_pr_checks", readOnly: false, input, cls: { kind: "other" as const } } : null;
-const WaitFor: Tool = { name: "WaitFor", urgent: "wait-unfit-process-reframed", families: CLAUDE, readOnly: true, acts: true, description: waitDesc, input_schema: waitSchema, run: waitRun("Monitor"), target: waitTarget };
-const wait_for: Tool = { name: "wait_for", urgent: "wait-unfit-process-reframed", families: OTHERS, readOnly: true, acts: true, description: waitDesc, input_schema: waitSchema, run: waitRun("monitor"), target: waitTarget };
+const WaitFor: Tool = { name: "WaitFor", urgent: "wait-unfit-process-reframed", families: CLAUDE, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("Monitor"), target: waitTarget };
+const wait_for: Tool = { name: "wait_for", urgent: "wait-unfit-process-reframed", families: OTHERS, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("monitor"), target: waitTarget };
 
 const cancel_wait: Tool = {
   name: "cancel_wait",
   families: OTHERS,
-  readOnly: true,
-  acts: true,
+  readOnly: false, kind: "own",
   description: "Cancel a wait or monitor of this session by its id.",
   input_schema: { type: "object", properties: { wait_id: { type: "string" } }, required: ["wait_id"] },
   run: (input, ctx) => guard(() => {
@@ -538,8 +538,12 @@ const wakeupRun = (input: any, ctx: ToolContext) => guard(() =>
   ok(loops.scheduleNext(ctx.sessionId, { delay_seconds: input.delaySeconds ?? input.delay_seconds, reason: input.reason, stop: !!input.stop, prompt: input.prompt })));
 const wakeupDesc = "Pace a self-paced loop: at the end of each iteration, say when the next one runs (60 s to an hour): short while something is about to change, long when all is quiet. stop: true ends the loop. Called outside a loop with a prompt, it starts one.";
 
-const ScheduleWakeup: Tool = { name: "ScheduleWakeup", families: CLAUDE, readOnly: true, acts: true, description: wakeupDesc, input_schema: wakeupSchema, run: wakeupRun };
-const schedule_wakeup: Tool = { name: "schedule_wakeup", families: OTHERS, readOnly: true, acts: true, description: wakeupDesc, input_schema: wakeupSchema, run: wakeupRun };
+// Pacing the run it is in is the session's own; a call with a prompt outside a run starts a loop, which runs by itself
+// until it is stopped: judged as the tool that does that, which asks as CronCreate does.
+const wakeupTarget = async (input: any, session?: string) =>
+  session && loops.startsLoop(session, { stop: !!input?.stop, prompt: input?.prompt }) ? { name: "schedule_wakeup_start", readOnly: false, input, cls: { kind: "other" as const } } : null;
+const ScheduleWakeup: Tool = { name: "ScheduleWakeup", urgent: "schedule-is-an-act", families: CLAUDE, readOnly: false, kind: "own", description: wakeupDesc, input_schema: wakeupSchema, run: wakeupRun, target: wakeupTarget };
+const schedule_wakeup: Tool = { name: "schedule_wakeup", urgent: "schedule-is-an-act", families: OTHERS, readOnly: false, kind: "own", description: wakeupDesc, input_schema: wakeupSchema, run: wakeupRun, target: wakeupTarget };
 
 function loopLine(l: loops.LoopRecord) {
   const next = l.next_ms ? zonedStamp(l.next_ms) : "-";
@@ -563,8 +567,8 @@ const cronRun = (input: any, ctx: ToolContext) => guard(() => {
 });
 const cronDesc = "Schedule a prompt to run in this session on a cron schedule or an interval, between turns (a busy session runs it when its turn ends). Recurring tasks expire after 30 days; recurring: false fires once.";
 
-const CronCreate: Tool = { name: "CronCreate", inputAlias: { cron: ["schedule"] }, urgent: "loop-30-days", families: CLAUDE, readOnly: true, acts: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
-const schedule_create: Tool = { name: "schedule_create", inputAlias: { cron: ["schedule"] }, urgent: "loop-30-days", families: OTHERS, readOnly: true, acts: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
+const CronCreate: Tool = { name: "CronCreate", inputAlias: { cron: ["schedule"] }, urgent: "schedule-is-an-act", families: CLAUDE, readOnly: false, description: cronDesc, input_schema: cronSchema, run: cronRun };
+const schedule_create: Tool = { name: "schedule_create", inputAlias: { cron: ["schedule"] }, urgent: "schedule-is-an-act", families: OTHERS, readOnly: false, description: cronDesc, input_schema: cronSchema, run: cronRun };
 
 const listRun = (_: any, ctx: ToolContext) => guard(() => {
   const ls = loops.list(ctx.sessionId);
@@ -589,8 +593,8 @@ const deleteRun = (input: any, ctx: ToolContext) => guard(() => {
   loops.remove(l.id);
   return ok(`Deleted ${l.id}.`);
 });
-const CronDelete: Tool = { name: "CronDelete", families: CLAUDE, readOnly: true, acts: true, description: "Cancel a scheduled task by its id.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, run: deleteRun };
-const schedule_delete: Tool = { name: "schedule_delete", families: OTHERS, readOnly: true, acts: true, description: "Cancel a scheduled task by its id.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, run: deleteRun };
+const CronDelete: Tool = { name: "CronDelete", families: CLAUDE, readOnly: false, kind: "own", description: "Cancel a scheduled task by its id.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, run: deleteRun };
+const schedule_delete: Tool = { name: "schedule_delete", families: OTHERS, readOnly: false, kind: "own", description: "Cancel a scheduled task by its id.", input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, run: deleteRun };
 
 // --- alerts ------------------------------------------------------------------
 
@@ -604,11 +608,11 @@ const notifyRun = (input: any, ctx: ToolContext) => guard(() => {
 });
 const notifyDesc = "Alert the owner when something needs them or a long job is done and they may be away: one short line. It does not wait for an answer. Do not use it for routine progress.";
 const PushNotification: Tool = {
-  name: "PushNotification", inputAlias: { message: ["text"] }, families: CLAUDE, readOnly: true, acts: true, description: notifyDesc,
+  name: "PushNotification", inputAlias: { message: ["text"] }, families: CLAUDE, readOnly: false, kind: "own", description: notifyDesc,
   input_schema: { type: "object", properties: { message: { type: "string", description: "The notification text, one short line" } }, required: ["message"] }, run: notifyRun,
 };
 const notify: Tool = {
-  name: "notify", inputAlias: { text: ["message"] }, families: OTHERS, readOnly: true, acts: true, description: notifyDesc,
+  name: "notify", inputAlias: { text: ["message"] }, families: OTHERS, readOnly: false, kind: "own", description: notifyDesc,
   input_schema: { type: "object", properties: { text: { type: "string", description: "The notification text, one short line" } }, required: ["text"] }, run: notifyRun,
 };
 

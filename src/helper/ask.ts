@@ -41,10 +41,10 @@ export function newestOwnWords(line: readonly StoredEvent[]): StoredEvent | unde
 }
 
 // Why a tool does not run in the helper's turn now: the owner's newest words are an ask and the tool
-// changes something: outside Keel (not readOnly), or in it (`acts`: an agent started, a session messaged,
-// a loop or a wake set, a notification sent). Undefined: it runs as it would.
-export function askRefusal(line: readonly StoredEvent[], tool: { name: string; readOnly: boolean; acts?: boolean }): string | undefined {
-  if (tool.readOnly && !tool.acts) return undefined;
+// is not a read (readOnly: nothing changes outside its result; a tool that starts an agent, messages a
+// session, sets a loop or a wake or sends a notification says so by not being one). Undefined: it runs as it would.
+export function askRefusal(line: readonly StoredEvent[], tool: { name: string; readOnly: boolean }): string | undefined {
+  if (tool.readOnly) return undefined;
   return askOf(newestOwnWords(line)) ? ASK_REFUSAL : undefined;
 }
 

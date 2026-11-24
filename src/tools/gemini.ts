@@ -245,7 +245,7 @@ const list_directory: Tool = {
 
 const write_todos: Tool = {
   name: "write_todos",
-  readOnly: true,
+  readOnly: false, kind: "own",
   description: "Keeps the list of subtasks for a complex request, shown to the user. Send the whole list each time; one task in_progress at a time.",
   input_schema: obj({
     todos: {

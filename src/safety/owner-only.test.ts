@@ -232,7 +232,7 @@ test("a one-call card a restart left parked closes when its call went on without
 const everyClass: { [K in CallClass["kind"]]: Required<Extract<CallClass, { kind: K }>> } = {
   read: { kind: "read", paths: ["/w/repo/a.ts"], unnamed: true, fetches: ["https://example.com/"] },
   send: { kind: "send", to: ["https://example.com/?d=1"], shown: "https://example.com/?d=1\n  d = 1", because: "a query string", carries: true },
-  control: { kind: "control" },
+  control: { kind: "control", own: true },
   shell: { kind: "shell", command: "make", escalate: true, cwd: "/w/repo/sub", interpreter: "zsh" },
   edit: { kind: "edit", paths: ["/w/repo/tsconfig.json"], names: ["plugins"] },
   other: { kind: "other", grant: "keel__spawn_on_machine:m", paths: ["/etc/hosts"], hints: { destructive: true, openWorld: true }, account: { server: "mail", input: { owner: "x" } } },

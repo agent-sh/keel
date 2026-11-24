@@ -506,6 +506,13 @@ export function start(l: LoopRecord, due: number, opts: { note?: string; body?: 
 }
 
 // The model's ScheduleWakeup inside a run of a self-paced loop.
+// Whether a wakeup call starts a loop (outside a self-paced run, with a prompt) and not only paces the run it is in.
+export function startsLoop(sessionId: string, input: { stop?: boolean; prompt?: string }): boolean {
+  const r = openRun(sessionId);
+  const l = r ? get(r.loop_id) : undefined;
+  return (!l || l.kind !== "auto") && !input.stop && !!input.prompt?.trim();
+}
+
 export function scheduleNext(sessionId: string, input: { delay_seconds?: number; reason?: string; stop?: boolean; prompt?: string }): string {
   const r = openRun(sessionId);
   let l = r ? get(r.loop_id) : undefined;

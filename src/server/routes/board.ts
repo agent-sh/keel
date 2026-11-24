@@ -73,8 +73,7 @@ const WorkBoardTool: Tool = {
 
 const VerdictTool: Tool = {
   name: "keel__verdict",
-  readOnly: true,
-  acts: true,
+  readOnly: false, kind: "own",
   description:
     "Record your review verdict on a commit for the work board. The board reads a review's verdict only from this call (or an output_schema answer, or the owner's Review panel): " +
     "LAND lines in your report are shown as your words only, never as approved or refused. Call it once for each commit you judge, after you have judged it: " +

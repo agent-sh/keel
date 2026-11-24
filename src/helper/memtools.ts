@@ -74,7 +74,7 @@ export function memoryTools(mem: () => Memory): Tool[] {
     inputAlso: ["key", "value", "kind", "aliases", "topics"],
     description: "Keep facts in your memory, one short fact per record under a stable key: the owner's preferences, decisions, people and how they relate, commitments with dates, accounts, and lookup data (ids to names). The same key replaces the record, so update instead of adding a near copy. Give aliases for every name it is asked by. Several records in one call. The owner sees and edits them. Never secrets.",
     input_schema: { type: "object", properties: { records: { type: "array", items: recordSchema } }, required: ["records"], additionalProperties: false },
-    readOnly: true,
+    readOnly: false, kind: "own",
     run: (input) => guard(() => {
       const recs = Array.isArray(input.records) ? input.records : input.key ? [input] : [];
       const done = mem().put(recs, "helper");
@@ -86,7 +86,7 @@ export function memoryTools(mem: () => Memory): Tool[] {
     name: "helper__memory_delete",
     description: "Delete records from your memory (they turned false, or the owner asked), by key.",
     input_schema: { type: "object", properties: { keys: { type: "array", items: { type: "string" } } }, required: ["keys"], additionalProperties: false },
-    readOnly: true,
+    readOnly: false, kind: "own",
     run: (input) => guard(() => {
       const keys = list(input.keys);
       const gone = mem().drop(keys);
@@ -112,7 +112,10 @@ export function memoryTools(mem: () => Memory): Tool[] {
       required: ["path"],
       additionalProperties: false,
     },
-    readOnly: true,
+    readOnly: false, kind: "own",
+    // It writes the helper's own memory, and reads the file it is given: judged as the read of that file (a credential
+    // file asks, as for any read), never as nothing.
+    target: async (input) => ({ name: "helper__memory_import", readOnly: true, input }),
     run: (input, ctx) => guard(() => {
       const r = mem().importFile({ path: String(input.path ?? ""), cwd: ctx.cwd, items: input.items, key: input.key, value: input.value, aliases: list(input.aliases), topics: list(input.topics), kind: input.kind });
       if (r.shape) {

@@ -34,8 +34,8 @@ export const MODES = [
   { id: "auto-edits", name: "Auto edits", group: "you", summary: "Folder edits run; commands ask unless read-only or sandboxed", description: "Edits inside the folder run. Commands ask, except read-only ones and sandboxed ones." },
   { id: "auto", name: "Auto", group: "model", summary: "A judge reviews what no rule covers", description: "Reads, edits inside the folder, read-only or sandboxed commands, and standing grants run as usual. The judge reviews other calls and refuses them if it cannot approve. Actions requiring your consent still ask." },
   { id: "full-auto", name: "Full auto", group: "model", summary: "Runs everything; nothing is checked", description: "Every call runs without review, high-risk ones too; the activity list names what was flagged. Use Auto for a judge model. Tools that explicitly require your confirmation still ask." },
-  { id: "read-only", name: "Read only", group: "none", summary: "Reads and read-only commands; the rest is refused", description: "Reads and read-only commands run. A web fetch to an address the session has not seen that carries data asks you. Everything else is refused." },
-  { id: "plan", name: "Plan", group: "none", summary: "Plans first; you approve the plan", description: "Reads and read-only commands run; a web fetch to an address the session has not seen that carries data asks you. The model plans, and you approve the plan before anything changes." },
+  { id: "read-only", name: "Read only", group: "none", summary: "Reads and read-only commands; the rest is refused", description: "Reads and read-only commands run, and so do the session's own records: its agents (they hold this mode), waits, todos and notes to you. A web fetch to an address the session has not seen that carries data asks you. Everything else is refused, a schedule that would run later included." },
+  { id: "plan", name: "Plan", group: "none", summary: "Plans first; you approve the plan", description: "Reads and read-only commands run, and so do the session's own records: its agents (they hold this mode), waits, todos and notes to you; a web fetch to an address the session has not seen that carries data asks you. The model plans, and you approve the plan before anything changes." },
   { id: "reviewer", name: "Reviewer", group: "model", summary: "A reviewer model answers; high risk asks you", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
 ] as const;
 export type Mode = (typeof MODES)[number]["id"];
@@ -89,7 +89,9 @@ export type CallClass =
   // `interpreter`: the program that runs the command when it is not bash. The
   // rules read a command as bash does, so none of it is then taken for a read.
   | { kind: "shell"; command: string; escalate?: boolean; cwd?: string; interpreter?: string }
-  | { kind: "control" } // input to, or the stop of, a process an allowed call started
+  // input to, or the stop of, a process an allowed call started; `own`: an act on what Keel keeps for the
+  // session (ToolKind "own"), which is no read: it changes things, only none the modes guard.
+  | { kind: "control"; own?: true }
   // `names`: the edit writes words that name a program something runs later
   // (NAMES_PROGRAM, by id). It is the owner's call when one of its files,
   // where it lands, is a file those words mean that in.
@@ -145,6 +147,8 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
   switch (tool.kind) {
     case "control":
       return { kind: "control" };
+    case "own":
+      return { kind: "control", own: true };
     case "shell": {
       // The command is read from the key the tool itself reads (its schema
       // names it), and only as text. A tool runs the text of that one key: a

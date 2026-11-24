@@ -21,14 +21,12 @@ describe("a question from the phone's helper row", () => {
     expect(askRefusal([...asked, ev("user", { text: "now send it", origin: "steer" })], send)).toBeUndefined();
   });
 
-  test("a tool the gate reads as a read but that acts in Keel is refused too: agents, messages, loops, wakes, notifications", () => {
+  test("a tool that acts in Keel is not a read, so it is refused too: agents, messages, loops, wakes, notifications", () => {
     const asked = [ev("user", { text: "what is going on?", ask: "phone" })];
     const byName = new Map(automationTools.map((t) => [t.name, t]));
     const acting = ["Agent", "spawn_agent", "SendMessage", "send_input", "close_agent", "CronCreate", "schedule_create", "CronDelete", "schedule_delete", "ScheduleWakeup", "schedule_wakeup", "WaitFor", "wait_for", "cancel_wait", "PushNotification", "notify", "Monitor", "monitor"];
     for (const name of acting) expect([name, askRefusal(asked, byName.get(name)!)]).toEqual([name, ASK_REFUSAL]);
     for (const name of ["CronList", "schedule_list", "wait_agent", "keel__agents_now"]) expect([name, askRefusal(asked, byName.get(name)!)]).toEqual([name, undefined]);
-    // The flag alone does not let a tool through: one marked a read that acts is refused.
-    expect(askRefusal(asked, { name: "spawn_agent", readOnly: true, acts: true })).toBe(ASK_REFUSAL);
   });
 
   test("the answer: the reply's last words, the sessions read, named once; a restart's end is not the answer's", () => {
