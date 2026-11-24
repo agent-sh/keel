@@ -158,6 +158,8 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   const retrying = page.getByTestId("retrying");
   await expect(retrying).toContainText("429 rate limited");
   await expect(retrying).toContainText(/retrying in [1-4]s, attempt 1 of 9/);
+  // The retry waits in the account's line (src/providers/admission.ts), and says so beside the countdown.
+  await expect(retrying.getByTestId("retry-limit")).toHaveText("Waits for the account's limit");
   await shoot(page, "failures-01-retry-countdown");
   await expect(texts.last()).toHaveText("Answered after the rate limit passed.", { timeout: 15_000 });
   await expect(retrying).toHaveCount(0);

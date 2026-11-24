@@ -87,7 +87,7 @@ export class Providers {
   private fixed: Provider[] | null;
   readonly limits = new Limits();
   // One line per account in front of every request (src/providers/admission.ts).
-  readonly admission = new Admission();
+  readonly admission = new Admission({ report: (e) => this.capture(e, { at: "the account's line" }) });
   private usageAt = new Map<string, number>();
   private problems = new Map<string, Problem>();
   // A mark past its time that a choice of new work is trying again, and since when (shut).
@@ -614,7 +614,7 @@ export class Providers {
       stream: async (req: ProviderRequest, onDelta) => {
         const offer = speedOffer(info, req.speed);
         // The account's line: a request waits here while the account's limit holds (its own word only).
-        const ticket = await this.admission.admit(p.accountOf?.(req.model) ?? p.id, req.lane, req.signal);
+        const ticket = await this.admission.admit(p.accountOf?.(req.model) ?? p.id, req.model, req.lane, req.signal);
         const base = p.broker?.value;
         let sawHeaders = false;
         const onHeaders = (h: Headers) => {

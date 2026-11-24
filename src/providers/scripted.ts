@@ -88,9 +88,11 @@ const LONG_WAIT_MS = Number(process.env.KEEL_SCRIPTED_RATE_WAIT_MS) || 15 * 60_0
 // `script:rate-limit-long <ms>` and `script:rate-limit-always <ms>` name the wait themselves: a spec
 // that acts during a wait (calls it off, goes on at once, restarts the daemon) asks for one it
 // cannot outlast, and one that watches the turn come back asks for a short one.
+// These play one turn's wait and answer the next prompt at once, so they are not the account's state:
+// the account's line does not learn them (`requestOnly`, src/providers/admission.ts).
 const longRateLimit = (prompt = "") => {
   const ms = Number(prompt.match(/script:rate-limit-(?:long|always)[ \t]+(\d+)\b/)?.[1]) || LONG_WAIT_MS;
-  return new ProviderError("rate", `Scripted: 429 rate limited, retry after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`}`, 429, ms);
+  return Object.assign(new ProviderError("rate", `Scripted: 429 rate limited, retry after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`}`, 429, ms), { requestOnly: true });
 };
 
 // What a driver throws for each way of not reaching the provider, in the runtime's own words.

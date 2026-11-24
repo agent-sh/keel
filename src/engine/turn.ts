@@ -2177,13 +2177,26 @@ export class Engine {
     fits();
     // Where the request stands in its account's line if the account's limit holds requests; a retry keeps its place.
     // A held request says so in the session's status, with when the account said it takes requests again.
+    // A retry of this request's own 429 keeps its retry status while it waits there (the provider's
+    // message, the attempt, the countdown), with the line's words added.
+    // (Told again only when what it waits for changes: each retry status starts a wait in the trace.)
+    let lineRetry: { attempt: number; max: number; at: number; message: string; limit: string } | undefined;
     req.lane = {
       ...this.laneOf(id, session, purpose, signal), since: Date.now(),
       held: (h) => {
         if (quiet || !shown || signal.aborted) return;
+        if (lineRetry) {
+          if ((h.until ?? lineRetry.at) === lineRetry.at && h.why === lineRetry.limit) return;
+          lineRetry = { ...lineRetry, at: h.until ?? lineRetry.at, limit: h.why };
+          this.status(id, { kind: "retry", ...lineRetry });
+          return;
+        }
         this.status(id, { kind: "model", since: Date.now(), model: st.info.name, limit: { ...(h.until ? { until: h.until } : {}), why: h.why } });
       },
-      going: () => { if (!quiet && shown && !signal.aborted) this.status(id, { kind: "model", since: Date.now(), model: st.info.name }); },
+      going: () => {
+        lineRetry = undefined;
+        if (!quiet && shown && !signal.aborted) this.status(id, { kind: "model", since: Date.now(), model: st.info.name });
+      },
     } satisfies Lane;
     let attempt = 0;
     const carry = outages && this.resumedProviderRetry.get(id);
@@ -2196,7 +2209,9 @@ export class Engine {
       let lastAt: number | undefined;
       this.measure(id, (h) => h.requestSent?.(session, req));
       const since = Date.now();
-      if (!quiet) this.status(id, { kind: "model", since, model: st.info.name });
+      // (A retry the account's line holds keeps its retry status until the line lets it go.)
+      if (lineRetry && !this.providers.admission.held(this.providers.routeOf(st.info.id), st.info.model)) lineRetry = undefined;
+      if (!quiet && !lineRetry) this.status(id, { kind: "model", since, model: st.info.name });
       let first = true;
       // A reply that streamed and then went silent says so: after
       // STREAM_QUIET_MS without output the status names the last output's
@@ -2392,9 +2407,13 @@ export class Engine {
         if (wait > RETRY_WAIT_MAX_MS && retryAfterMs(e) !== undefined) throw new RetryTooLong(e, Date.now() + wait);
         // A rate limit the account's line now holds is waited out there, in its order: the owner's
         // turn ahead of agents, and one request first when the hold ends (src/providers/admission.ts).
-        const line = rateLimited(e) ? this.providers.admission.held(this.providers.routeOf(st.info.id)) : undefined;
+        const line = rateLimited(e) ? this.providers.admission.held(this.providers.routeOf(st.info.id), st.info.model) : undefined;
         if (line) {
           retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: Math.max(0, line.until - Date.now()), then: "waits in the account's line" }));
+          if (shown) {
+            lineRetry = { attempt: counted + 1, max: RETRY.max - 1, at: line.until, message: errorText(e), limit: line.why };
+            this.status(id, { kind: "retry", ...lineRetry });
+          }
           attempt++;
           continue;
         }
