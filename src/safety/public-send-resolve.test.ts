@@ -73,9 +73,13 @@ test("a variable the line set to a written-out value is read as that value, in a
     const h = await run(c, other);
     expect([c, h?.unread, h?.found[0]?.where]).toEqual([c, [], expect.stringMatching(/^commit [0-9a-f]{7} message$/)]);
   }
-  // A name the line sets twice, or in a loop, is not known: the hold says so.
+  // A name the line sets twice is read by its last literal before the use (the gate's written-out line does the same),
+  // so the push is read in the folder the second assignment names.
   const twice = await run(`set -e; D=${other}; D=${dir}; cd "$D" && git push origin main`, other);
-  expect(twice?.unread[0]).toContain("is not known");
+  expect([twice?.unread, twice?.found[0]?.where]).toEqual([[], expect.stringMatching(/^commit [0-9a-f]{7} message$/)]);
+  // A name bound by a loop is not known: the hold says so.
+  const loop = await run(`for D in ${other}; do :; done; cd "$D" && git push origin main`, other);
+  expect(loop?.unread[0]).toContain("is not known");
 });
 
 test("a refspec the line cannot know reads every branch, not a revision that does not exist", async () => {
