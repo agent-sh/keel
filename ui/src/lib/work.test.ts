@@ -80,6 +80,24 @@ test("a result changes only the step that holds its call", () => {
   expect(setResult(steps, "nope", done("nope", ""))).toBeNull();
 });
 
+test("a call the harness ran as another tool is shown as that tool, in the step of that tool's family", () => {
+  // The model wrote bash and read_file: they ran as Bash and Read. Until the result comes they are tools nobody knows.
+  let steps = run([use("Bash", { command: "ls" }), use("bash", { command: "pwd" }), use("bash", { command: "git status" }), use("Edit", { file_path: "/w/a.ts", old_string: "a", new_string: "b" })]);
+  expect(steps.map((x) => [x.family, callsOf(x).length])).toEqual([["run", 1], ["use", 2], ["change", 1]]);
+  const [, a, b] = steps.flatMap(callsOf);
+  steps = setResult(steps, a!.id, { ...done(a!.id, "/w"), resolved_as: "Bash" })!;
+  // It joins the commands before it; the one still unanswered is the step after.
+  expect(steps.map((x) => [x.family, callsOf(x).map((c) => c.use.name)])).toEqual([["run", ["Bash", "Bash"]], ["use", ["bash"]], ["change", ["Edit"]]]);
+  steps = setResult(steps, b!.id, { ...done(b!.id, "clean"), resolved_as: "Bash" })!;
+  expect(steps.map((x) => [x.family, callsOf(x).map((c) => c.use.name)])).toEqual([["run", ["Bash", "Bash", "Bash"]], ["change", ["Edit"]]]);
+  // A call on its own in its step takes the family; the stored call keeps the model's words.
+  steps = run([use("read_file", { file_path: "/w/a.ts" })]);
+  const only = callsOf(steps[0]!)[0]!;
+  steps = setResult(steps, only.id, { ...done(only.id, "x"), resolved_as: "Read" })!;
+  expect([steps[0]!.family, callsOf(steps[0]!)[0]!.use.name]).toEqual(["explore", "Read"]);
+  expect(only.use.name).toBe("read_file");
+});
+
 test("a step's line says what was done, to what and how it went, from the calls alone", () => {
   const calls = [use("Read", { file_path: "/w/src/a.ts" }), use("Read", { file_path: "/w/src/b.ts" }), use("Grep", { pattern: "x" }), use("Read", { file_path: "/w/docs/c.md" })];
   let steps = run(calls);

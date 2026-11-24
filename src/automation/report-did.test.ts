@@ -5,7 +5,7 @@ import { DID_MAX, didLine } from "./report-did.ts";
 
 let n = 0;
 const step = (...uses: [string, unknown][]) => ({ kind: "assistant", data: { blocks: [{ type: "text", text: "words-marker" }, ...uses.map(([name, input]) => ({ type: "tool_use", id: `c${++n}`, name, input }))] } }) as unknown as StoredEvent;
-const result = (id: string, o: { is_error?: boolean; content?: string } = {}) => ({ kind: "tool_result", data: { results: [{ type: "tool_result", tool_use_id: id, content: o.content ?? "output-marker", is_error: o.is_error }] } }) as unknown as StoredEvent;
+const result = (id: string, o: { is_error?: boolean; content?: string; resolved_as?: string } = {}) => ({ kind: "tool_result", data: { results: [{ type: "tool_result", tool_use_id: id, content: o.content ?? "output-marker", is_error: o.is_error, resolved_as: o.resolved_as }] } }) as unknown as StoredEvent;
 
 test("an agent's report carries what it did: steps, calls, which tools failed and the files it edited", () => {
   n = 0;
@@ -35,6 +35,15 @@ test("an agent's report carries what it did: steps, calls, which tools failed an
   n = 0;
   const many = Array.from({ length: 40 }, (_, i) => [step([`tool_with_a_long_name_${i}`, {}]), result(`c${i + 1}`, { is_error: true })]).flat();
   expect(didLine(many).length).toBeLessThanOrEqual(DID_MAX);
+});
+
+test("a call that ran under another name than the model wrote is told by the name it ran as", () => {
+  n = 0;
+  const evs = [
+    step(["edit", { file_path: "/work/repo/src/a.ts" }], ["bash", { command: "make" }]), result("c1", { resolved_as: "Edit" }), result("c2", { is_error: true, resolved_as: "Bash" }),
+    step(),
+  ];
+  expect(didLine(evs)).toBe("(What it did: 2 steps, 2 tool calls, 1 failed (Bash); edited 1 file: src/a.ts.)");
 });
 
 test("a call the reply cut at the output limit is said as not run, not counted among the failed", () => {

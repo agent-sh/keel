@@ -2892,6 +2892,7 @@ export class Engine {
         const r = await this.runTool(session, tools, { ...u, name: found.as.name }, ctx);
         const note = resolvedNote(u.name, found.as.name);
         r.content = typeof r.content === "string" ? `${r.content}\n\n${note}` : [...r.content, { type: "text", text: note }];
+        r.resolved_as = found.as.name;
         return r;
       }
       const none: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: removed ? `${u.name} was removed by an upgrade of Keel and is no longer available. Use the tools you have now.` : noSuchTool(u.name) + (await unknownToolHint(u.name, tools, session.id).catch(() => "")) + closestNote(found && "near" in found ? found.near : []), is_error: true };

@@ -109,13 +109,39 @@ export function setResult(steps: Step[], id: string, result: ToolResultBlock): S
   for (let s = steps.length - 1; s >= 0; s--) {
     const k = steps[s]!.items.findIndex((i) => i.t === "call" && i.id === id);
     if (k < 0) continue;
+    const was = steps[s]!.items[k] as Extract<WorkItem, { t: "call" }>;
+    // A call the harness ran as another tool than the model named (bash for Bash) is shown as that tool.
+    const use = result.resolved_as && result.resolved_as !== was.use.name ? { ...was.use, name: result.resolved_as } : was.use;
     const items = steps[s]!.items.slice();
-    items[k] = { ...(items[k] as Extract<WorkItem, { t: "call" }>), result };
+    items[k] = { ...was, use, result };
     const out = steps.slice();
     out[s] = { ...steps[s]!, items };
-    return out;
+    return use === was.use ? out : refamily(out, s, k);
   }
   return null;
+}
+
+// The call at `k` of step `s` took another name, and so maybe another family: it moves to a step of that
+// family (its own, or the one before when that is the same family).
+function refamily(steps: Step[], s: number, k: number): Step[] {
+  const step = steps[s]!;
+  const item = step.items[k] as Extract<WorkItem, { t: "call" }>;
+  const family = familyOf(item.use.name);
+  if (family === step.family) return steps;
+  const calls = step.items.filter(isCall).length;
+  const prev = steps[s - 1];
+  const joins = prev && prev.family === family && !ALONE.has(family);
+  // The only call of its step: the step takes the family, and joins the one before when that has it.
+  if (calls === 1) {
+    if (joins && step.items.every((i) => i === item)) return [...steps.slice(0, s - 1), { ...prev, items: [...prev.items, item] }, ...steps.slice(s + 1)];
+    return steps.map((st, j) => (j === s ? { ...st, family } : st));
+  }
+  // One of several: what came before it with calls stays, what follows it stays in the step's own family.
+  const before = step.items.slice(0, k), after = step.items.slice(k + 1);
+  const rest: Step[] = after.length ? [{ key: after[0]!.id, family: step.family, items: after }] : [];
+  if (before.some(isCall)) return [...steps.slice(0, s), { ...step, items: before }, { key: item.id, family, items: [item] }, ...rest, ...steps.slice(s + 1)];
+  if (joins && !before.length) return [...steps.slice(0, s - 1), { ...prev, items: [...prev.items, item] }, ...rest, ...steps.slice(s + 1)];
+  return [...steps.slice(0, s), { key: (before[0] ?? item).id, family, items: [...before, item] }, ...rest, ...steps.slice(s + 1)];
 }
 
 export const callsOf = (step: Step) => step.items.filter(isCall);

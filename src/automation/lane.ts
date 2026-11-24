@@ -136,12 +136,14 @@ async function wroteIn(sessionId: string, fromSeq: number, fromTs: number, cwd: 
   const [calls, failed] = await Promise.all([
     reads.sql<CallRow>(`SELECT e.seq AS seq, b.value ->> '$.id' AS id, b.value ->> '$.name' AS name, b.value -> '$.input' AS input FROM events e, json_each(e.data, '$.blocks') b
       WHERE e.session_id = ? AND e.seq > ? AND e.seq <= ? AND e.ts >= ? AND e.kind = 'assistant' AND b.value ->> '$.type' = 'tool_use'`, [sessionId, after, last, fromTs]),
-    reads.sql<{ id: string }>(`SELECT b.value ->> '$.tool_use_id' AS id FROM events e, json_each(e.data, '$.results') b
-      WHERE e.session_id = ? AND e.seq > ? AND e.seq <= ? AND e.ts >= ? AND e.kind = 'tool_result' AND b.value ->> '$.is_error' = 1`, [sessionId, after, last, fromTs]),
+    // The results that failed, and those of calls that ran under another name than the model wrote.
+    reads.sql<{ id: string; as: string | null; bad: number | null }>(`SELECT b.value ->> '$.tool_use_id' AS id, b.value ->> '$.resolved_as' AS "as", b.value ->> '$.is_error' AS bad FROM events e, json_each(e.data, '$.results') b
+      WHERE e.session_id = ? AND e.seq > ? AND e.seq <= ? AND e.ts >= ? AND e.kind = 'tool_result' AND (b.value ->> '$.is_error' = 1 OR b.value ->> '$.resolved_as' IS NOT NULL)`, [sessionId, after, last, fromTs]),
   ]);
   const out: Wrote = { last, calls: [...(had?.calls ?? [])], bad: new Set(had?.bad ?? []) };
-  for (const c of calls) if (c.name && WRITES.has(toolKind(c.name))) out.calls.push({ id: c.id, paths: pathsOf(c, cwd) });
-  for (const f of failed) if (f.id) out.bad.add(f.id);
+  const ranAsName = new Map(failed.flatMap((f) => (f.id && f.as ? [[f.id, f.as] as const] : [])));
+  for (const c of calls) { const name = (c.id && ranAsName.get(c.id)) || c.name; if (name && WRITES.has(toolKind(name))) out.calls.push({ id: c.id, paths: pathsOf(c, cwd) }); }
+  for (const f of failed) if (f.id && f.bad) out.bad.add(f.id);
   wroteKept.delete(key);
   wroteKept.set(key, out);
   if (wroteKept.size > WROTE_KEPT) wroteKept.delete(wroteKept.keys().next().value!);

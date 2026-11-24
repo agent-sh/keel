@@ -185,6 +185,11 @@ test("PreToolUse, PostToolUse, PostToolUseFailure, PostToolBatch", async () => {
   ]);
   expect(notes(s.id).join()).toContain("batch-context");
   expect(stopped).toEqual([]);
+  // A call that ran under another name than the model wrote (stored as bash, run as Bash) is told under the name it ran as.
+  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "b4", name: "bash", input: { command: "ls" } }], stop: "tool_use" });
+  store.append(s.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "b4", content: "a.txt", resolved_as: "Bash" }] });
+  await h.stepDone!(s);
+  expect((await given("PostToolBatch", 2)).flatMap((x) => x.tool_calls).filter((c: any) => c.tool_use_id === "b4")).toEqual([{ tool_name: "Bash", tool_input: { command: "ls" }, tool_use_id: "b4", tool_response: "a.txt" }]);
   // A block here stops the turn before the next model request.
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "b3", name: "Bash", input: { command: "echo w-halt" } }], stop: "tool_use" });
   store.append(s.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "b3", content: "x" }] });

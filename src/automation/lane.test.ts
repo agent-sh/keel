@@ -115,4 +115,8 @@ test("a successor's task is read over the contexts it lost: what they wrote, sai
   // A call whose result failed after the last read wrote nothing.
   store.append(now.id, "tool_result", { results: [{ tool_use_id: "w2", content: "no such file", is_error: true }] });
   expect(await wroteOf(ctx, dir)).toEqual({ names: ["src/parse.ts"], n: 1 });
+  // A write the model named in lower case (stored as edit) ran as Edit: its result says so, and it counts.
+  store.append(now.id, "assistant", { blocks: [{ type: "tool_use", id: "w3", name: "edit", input: { file_path: join(dir, "src/low.ts") } }] });
+  store.append(now.id, "tool_result", { results: [{ tool_use_id: "w3", content: "ok", resolved_as: "Edit" }] });
+  expect(await wroteOf(ctx, dir)).toEqual({ names: ["src/low.ts", "src/parse.ts"], n: 2 });
 });

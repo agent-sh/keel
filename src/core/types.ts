@@ -22,6 +22,9 @@ export type ToolResultBlock = {
   tool_use_id: string;
   content: string | (TextBlock | ImageBlock | ToolRefBlock)[];
   is_error?: boolean;
+  // The name of the offered tool a call ran as when the model wrote another (bash for Bash). The stored
+  // call keeps the name the model wrote, so what reads a call by its tool reads it through this.
+  resolved_as?: string;
 };
 
 export type AssistantBlock = TextBlock | ThinkingBlock | RedactedThinkingBlock | ToolUseBlock;

@@ -348,12 +348,13 @@ export function timeline(events: StoredEvent[] | undefined, working = false): { 
   const errors: number[] = [];
   if (!events) return { spans, ticks, errors };
   const failed = new Set<string>();
-  for (const e of events) if (e.kind === "tool_result") for (const r of e.data.results) if (r.is_error) failed.add(r.tool_use_id);
+  const ranAs = new Map<string, string>(); // calls that ran as another tool than the model named
+  for (const e of events) if (e.kind === "tool_result") for (const r of e.data.results) { if (r.is_error) failed.add(r.tool_use_id); if (r.resolved_as) ranAs.set(r.tool_use_id, r.resolved_as); }
   for (const e of events) {
     if (e.kind === "turn_start") spans.push({ start: e.ts, end: null });
     else if (e.kind === "turn_end" && spans.length) Object.assign(spans[spans.length - 1]!, { end: e.ts, reason: e.data.reason });
     else if (e.kind === "assistant") {
-      for (const b of e.data.blocks as any[]) if (b.type === "tool_use") ticks.push({ ts: e.ts, kind: toolKind(b.name), error: failed.has(b.id) });
+      for (const b of e.data.blocks as any[]) if (b.type === "tool_use") ticks.push({ ts: e.ts, kind: toolKind(ranAs.get(b.id) ?? b.name), error: failed.has(b.id) });
     } else if (e.kind === "error") errors.push(e.ts);
   }
   // Only a working session has an open turn; one cut off ends at its last event.

@@ -801,10 +801,14 @@ test("a call named by case or by another harness's name runs as the offered tool
     const a = await call("a", "bash", { command: "ls" });
     expect(a.is_error).toBeUndefined();
     expect(a.content).toBe("out\n\n(There is no tool named bash; ran as Bash, the name of the tool here. Call it Bash.)");
+    // The result carries the name it ran as: the stored call keeps the one the model wrote.
+    expect(a.resolved_as).toBe("Bash");
     expect(ran).toEqual([{ command: "ls" }]);
+    expect((await call("c", "Bash", { command: "ls" })).resolved_as).toBeUndefined();
     const b = await call("b", "exec_command", { cmd: "ls" });
     expect([b.is_error, b.content]).toEqual([true, "No tool named exec_command. The nearest tools offered: Bash."]);
-    expect(ran.length).toBe(1);
+    expect(b.resolved_as).toBeUndefined();
+    expect(ran.length).toBe(2);
   } finally {
     store.db.close();
   }

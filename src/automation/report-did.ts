@@ -16,6 +16,7 @@
 // parties' words inside a harness line: each is cut to NAME_MAX characters
 // with control characters, brackets and quotes taken out, and the whole line
 // is held to DID_MAX. Pure.
+import { ranAs } from "../core/ran-as.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { notRun, stopKind } from "../core/stops.ts";
 
@@ -45,7 +46,7 @@ export function editTimes(evs: readonly StoredEvent[]): number[] {
     else if (e.kind === "tool_result") {
       for (const r of e.data.results as any[]) {
         const c = calls.get(r.tool_use_id);
-        if (c && !r.is_error && filesOf(c.name, c.input).length) out.push(e.ts);
+        if (c && !r.is_error && filesOf(ranAs(c, r), c.input).length) out.push(e.ts);
       }
     }
   }
@@ -75,9 +76,9 @@ export function didLine(evs: readonly StoredEvent[]): string {
         results++;
         const why = r.is_error ? notRun(r.content) : undefined;
         if (why) { unrun[why] = (unrun[why] ?? 0) + 1; continue; }
-        if (!r.is_error) { if (c) for (const f of filesOf(c.name, c.input)) files.add(f); }
+        if (!r.is_error) { if (c) for (const f of filesOf(ranAs(c, r), c.input)) files.add(f); }
         else if (verdict === "denied") denied++;
-        else if (verdict === "failed" || verdict === undefined) { bad++; const n = safe(c?.name ?? "a tool"); failed[n] = (failed[n] ?? 0) + 1; }
+        else if (verdict === "failed" || verdict === undefined) { bad++; const n = safe(c ? ranAs(c, r) : "a tool"); failed[n] = (failed[n] ?? 0) + 1; }
       }
     }
   }

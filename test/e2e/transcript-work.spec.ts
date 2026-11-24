@@ -276,6 +276,30 @@ test("a failed command's output opens at its first error line, and its line quot
   await page.setViewportSize({ width: 1920, height: 1040 });
 });
 
+test("a call the harness ran under the tool's name is a Run card, as the tool it ran as", async ({ page, request }) => {
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await page.goto(`/s/${session.id}`);
+  // The model wrote bash; the tool is Bash. The stored call keeps the model's word, the result says what it ran as.
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "bash", input: { command: "echo ran-as-bash-marker" } }])}` } });
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  const stored = ((await (await request.get(`/api/sessions/${session.id}/events`)).json()) as any).events as { kind: string; data: any }[];
+  expect(stored.filter((e) => e.kind === "assistant").flatMap((e) => e.data.blocks).find((b: any) => b.type === "tool_use").name).toBe("bash");
+  expect(stored.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results)[0].resolved_as).toBe("Bash");
+  const card = page.locator('[data-testid="tool-call"][data-tool="Bash"]');
+  await expect(card).toHaveCount(1);
+  await expect(card.locator(".k-line-verb")).toHaveText("Ran");
+  await expect(page.locator('[data-testid="tool-call"][data-tool="bash"]')).toHaveCount(0);
+  await shoot(page, "work-19-call-ran-as-another-name");
+  // After a reload the same: the page reads the result's word again.
+  await page.reload();
+  await expect(card).toHaveCount(1);
+  await expect(card.locator(".k-line-verb")).toHaveText("Ran");
+  await card.locator(".k-line").click();
+  await expect(card.getByTestId("terminal")).toContainText("ran-as-bash-marker");
+  await request.delete(`/api/sessions/${session.id}`);
+});
+
 test("an edit's diff is numbered from the file's own lines and folds what did not change", async ({ page, request }) => {
   const ws = join(ROOT, `work-edit-${Date.now()}`);
   mkdirSync(ws, { recursive: true });

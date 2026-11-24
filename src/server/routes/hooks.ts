@@ -16,6 +16,7 @@ import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
 import { ownerStop, replaced } from "../../core/stoppers.ts";
 import { HOOK_BLOCKED } from "../../core/stops.ts";
+import { ranAs } from "../../core/ran-as.ts";
 import { hookLine, sayAt } from "../../admin/daemon-log.ts";
 import { reportedUsage } from "../../providers/reported.ts";
 
@@ -218,8 +219,8 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
         const evs = events(s.id);
         const at = evs.findLastIndex((e) => e.kind === "assistant");
         const uses = at < 0 ? [] : (evs[at]!.data.blocks as any[]).filter((b) => b.type === "tool_use");
-        const results = new Map<string, unknown>(evs.slice(at + 1).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((x: any) => [x.tool_use_id, x.content] as [string, unknown]) : [])));
-        return { tool_calls: uses.map((u) => ({ tool_name: u.name, tool_input: u.input, tool_use_id: u.id, tool_response: results.get(u.id) ?? null })) };
+        const results = new Map<string, any>(evs.slice(at + 1).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((x: any) => [x.tool_use_id, x] as [string, any]) : [])));
+        return { tool_calls: uses.map((u) => ({ tool_name: ranAs(u, results.get(u.id)), tool_input: u.input, tool_use_id: u.id, tool_response: results.get(u.id)?.content ?? null })) };
       });
       if (r.context.length) note(s.id, "PostToolBatch", r.context);
       // A hook that blocks here ends the turn before the next model request, as a stop of the owner's does.
