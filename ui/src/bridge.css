@@ -686,9 +686,7 @@
    nothing lies over the bar's keys or the header under it. When that pane is out of view
    in a row of panes that scrolls sideways, the tab stands at that edge of the row with an
    arrow. */
-/* (From the row of panes: over a band's state colour, whichever state it is.) */
 .k-stations > .k-station[data-aimed] .k-band { background-color: var(--fg); }
-.k-stations > .k-station[data-aimed] .k-band::after { content: none; }
 .k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
 .k-station[data-drop] .k-aim { display: none; }
 .k-aim-edge { position: fixed; z-index: 46; left: auto; transform: none; border-radius: 0 0 0 var(--radius-md); }
@@ -752,30 +750,16 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pane-empty-new svg { width: 0.9375rem; height: 0.9375rem; }
 .k-station:last-child { border-right: 0; }
 
-/* The band: the station's state in one bar across its top. A change of
-   state moves its colour over half a second; while a turn works it breathes
-   between a quiet and a full amber, slowly. Only the colour moves. */
-.k-band { height: var(--k-band-h); flex-shrink: 0; position: relative; overflow: hidden; background-color: var(--line-strong); transition: background-color 480ms var(--ease-out); }
-.k-station[data-watch="need"] { --k-band-h: 0.4375rem; }
-.k-station:is([data-watch="fail"], [data-watch="declined"]) { --k-band-h: 0.375rem; }
-.k-station[data-watch="need"] .k-band { background-color: var(--st-need); }
-.k-station[data-watch="fail"] .k-band { background-color: var(--st-fail); }
-.k-station[data-watch="done"] .k-band { background-color: color-mix(in oklab, var(--st-done) 80%, var(--line)); }
-/* Working: the band breathes between a dim and the full color. The full color
-   is a layer over the dim one and only its opacity moves, which the browser
-   animates off the main thread: a color animated in place made every working
-   pane restyle and repaint on every frame of the screen. */
-.k-station[data-watch="work"] .k-band { background-color: color-mix(in oklab, var(--st-work) 40%, var(--line)); }
-.k-station[data-watch="work"] .k-band::after { content: ""; position: absolute; inset: 0; background-color: var(--st-work); opacity: 0.5; will-change: opacity; animation: k-breathe 3.2s ease-in-out infinite; }
-@keyframes k-breathe { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
-.k-station[data-watch="wait"] .k-band { background-color: color-mix(in oklab, var(--st-wait) 75%, var(--line)); }
+/* The band: the strip across a pane's top. It says no state (the glyph and the word do, once): it is
+   the paper of the bar, and only the pane that takes the keys draws it, in ink (the rule of the aimed
+   pane, above). Its height is the same in every state, so the bars end on one line. */
+.k-band { height: var(--k-band-h); flex-shrink: 0; position: relative; overflow: hidden; background-color: transparent; }
 /* The header's working line: the same breath, in opacity. */
 .k-wake-line { position: absolute; inset: auto 0 -1px; height: 2px; pointer-events: none; background: var(--brass); animation: k-breathe-o 3.2s ease-in-out infinite; }
 @keyframes k-breathe-o { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-/* A turn held on the owner (an approval, a question) is not at work: the band says it waits on them. */
+/* A turn held on the owner (an approval, a question) is not at work: the line goes quiet. */
 .k-station:is([data-watch="need"], [data-watch="wait"]) .k-wake-line { display: none; }
-/* Needs you: the thicker violet band and a tinted head. Still, no blinking. Failed: the thicker red
-   band. Neither draws at the pane's edges: an outline or an edge there stood beside the rail's own
+/* Needs you: a tinted head. Still, no blinking. Neither it nor a failed head draws at the pane's edges: an outline or an edge there stood beside the rail's own
    hairline as a second, lighter line (top-edge.spec.ts). */
 .k-station[data-watch="need"] .k-station-head { background: color-mix(in oklch, var(--st-need) 7%, transparent); }
 
@@ -882,6 +866,13 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station:not([data-helm]) .k-station-identity .k-station-meta { display: flex; justify-content: flex-end; max-width: none; }
 .k-station:not([data-helm]) .k-station-identity .k-station-where { min-width: 0; max-width: 100%; }
 @container (max-width: 2.5rem) { .k-station-where { display: none; } }
+/* What it waits on the owner for, faint after the folder, in the room the folder leaves: one line, and where
+   even five characters do not fit beside the folder it wraps out of the clipped line and is not drawn. */
+.k-station-meta[data-ask] { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-start; column-gap: 0.5rem; height: 1lh; overflow: hidden; }
+.k-station-meta[data-ask] .k-station-where { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.k-station-ask { flex: 1 1 6rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+.k-station:not([data-helm]) .k-station-identity .k-station-meta[data-ask] { max-width: none; }
+.k-station-identity .k-station-meta[data-ask] { max-width: 28rem; }
 .k-station-identity .k-station-tools { flex-shrink: 0; margin-left: auto; }
 /* In a head of the bar's height the tools add nothing to their line's height: their targets reach past it. */
 .k-top-in > .k-station-head .k-station-tools { margin-block: -0.25rem; }
@@ -1719,7 +1710,6 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-row[data-watch="declined"] .k-row-state,
 .k-station[data-watch="declined"] .k-station-word { color: var(--st-fail-ink); }
 .k-rail-card[data-watch="declined"] { border-left-color: var(--st-fail); }
-.k-station[data-watch="declined"] .k-band { background-color: var(--st-fail); }
 :is(.k-alert-icon, .k-inbox-count)[data-watch="declined"] { --k-st: var(--st-fail); }
 
 /* ---------- Tables ---------- */

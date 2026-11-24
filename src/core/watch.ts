@@ -214,6 +214,20 @@ export function askThing(st: Pick<SessionState, "watch" | "why" | "text" | "chil
   return at > 0 ? `${t.slice(6, at)}: ${t.slice(at + 2 + lead.length)}` : t;
 }
 
+// What a session asks of the owner, short, for a bar that has room left after the folder:
+// "approve: git push", "asks: Which store", "plan: Ship it". The tool's own name is dropped from
+// an approval (the card names it); an agent's ask keeps its agent. Empty when nothing asks.
+const ASK_WORD: Partial<Record<AskKind, string>> = { approval: "approve", question: "asks", plan: "plan", secret: "secret" };
+const NO_WORDS = new Set(["An approval waits", "A question waits", "Plan to approve", "A secret is asked for"]);
+export function askSuffix(st: Pick<SessionState, "watch" | "why" | "text" | "child">): string {
+  const word = st.watch === "need" ? ASK_WORD[st.why as AskKind] : undefined;
+  if (!word) return "";
+  let thing = askThing(st);
+  if (st.why === "approval" && !st.child) thing = thing.replace(/^[\w.-]+: /, "");
+  // (An ask with no words of its own is said by its kind alone.)
+  return thing && !NO_WORDS.has(thing) ? `${word}: ${thing}` : word;
+}
+
 // The first ask in the words of a pane's head while the card it stands on is drawn under it: its
 // kind and tool, with how many more wait ("Approve Bash, and 1 more", "Agent Scout: Approve
 // Bash"), not the call, which the card shows whole. `tool`: the tool of the card the page holds.

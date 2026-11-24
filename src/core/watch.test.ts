@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { Session } from "./types.ts";
 import { agentWorks, treeWaiting, type AgentFact } from "./watch.ts";
 import { stateLabel, stateWords } from "./state-words.ts";
-import { askBrief, askText, briefText, clockText, LIST_TIER, liveAgentCounts, pendingText, span, stateLine, stateOf, WATCH_LABEL, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
+import { askBrief, askSuffix, askText, briefText, clockText, LIST_TIER, liveAgentCounts, pendingText, span, stateLine, stateOf, WATCH_LABEL, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
 
 const s = (over: Partial<Session> = {}): Session => ({
   id: "p", title: "", model: "m", workspace: "/w", created: 0, updated: 0, phase: "idle", archived: false,
@@ -187,4 +187,14 @@ test("an agent works while its turn runs, a command it left runs or an agent und
   // A session's own command left running keeps it working, its detail "command in background", never a count apart.
   const bg = stateOf(s(), undefined, { pending: [{ kind: "command", text: "make test", raw: true }] });
   expect([bg.watch, stateWords(bg).phrase]).toEqual(["work", "Working: command in background"]);
+});
+
+test("the bar's reason is the kind and the thing, short: the tool's name is the card's", () => {
+  const of = (ask: Parameters<typeof stateOf>[2]) => askSuffix(stateOf(s(), undefined, ask));
+  expect(of({ asks: [{ kind: "approval", text: "Bash: git push" }] })).toBe("approve: git push");
+  expect(of({ asks: [{ kind: "question", text: "Which store" }] })).toBe("asks: Which store");
+  expect(of({ asks: [{ kind: "plan", text: "Ship it" }] })).toBe("plan: Ship it");
+  expect(of({ asks: [{ kind: "approval", text: "Bash: ls", child: "c", agent: "Scout" }] })).toBe("approve: Scout: Bash: ls");
+  expect(of({ asks: [{ kind: "approval" }] })).toBe("approve");
+  expect(of({})).toBe("");
 });

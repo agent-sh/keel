@@ -32,6 +32,7 @@ import { watchPanes } from "../lib/automation.ts";
 import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
+import { askSuffix } from "../../../src/core/watch.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
 import { COUNTERS, OFFLINE, STATE_WORD, asOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
@@ -153,6 +154,8 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // message box, the agents' too; a declined request in the transcript) the head does not say again: it
   // keeps the state and its clock, and the whole reason is its tooltip.
   const carded = (w === "need" && CARDED.has(st.why ?? "")) || w === "declined";
+  // The head does not say the card's words again, but the reason a session needs the owner stays in view: a faint line after the folder.
+  const ask = !offline && carded && w === "need" ? askSuffix(st) : "";
   const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : carded ? "" : st.text ? briefText(st, now) : "";
   // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
   // Alone there is nothing for them to do that the session's menu and the keys do not (focus changes nothing,
@@ -177,8 +180,10 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
           {timed(st) && !offline && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
           {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}
         </span>
-        <span className="k-station-meta" title={s.workspace}>
+        <span className="k-station-meta" title={s.workspace} data-ask={ask ? "" : undefined}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>
+          {/* What it waits on you for, faint after the folder, cut to the room left (the card says the rest). */}
+          {ask && <span className="k-station-ask" data-testid="station-ask" title={told}>{ask}</span>}
         </span>
         {(panes > 1 || pinned) && <StationTools id={s.id} helm={helm} pinned={pinned} focus={focus} panes={panes} />}
         </div>
