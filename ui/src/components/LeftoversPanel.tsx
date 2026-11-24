@@ -10,7 +10,7 @@ import { navigate } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { PathText } from "./PathText.tsx";
-import { Card } from "./Settings.tsx";
+import { Empty, Group, Item, List, More, Page, Status } from "./settings/kit.tsx";
 
 type By = { session_id: string; title: string; how?: "keel" | "found" };
 // `scope`: what the daemon's last look at the command's job scope found (its memory, since when it idles, its
@@ -32,30 +32,17 @@ function fateLine(sc: Scope): string {
   return `Kept: ${sc.fate.why}.${idle >= 60_000 ? ` Idle ${ago(sc.idle_since).replace(/ ago$/, "")}.` : ""}`;
 }
 
-const btn = "k-btn";
-const tag = "shrink-0 rounded-xs px-1.5 text-micro";
 const SHOWN = 40;
 // What git deletes with a worktree without asking: its ignored files, said by count and the first names.
 const ignoredSay = (names: string[]) => `${names.length === 1 ? "1 ignored path goes" : `${names.length} ignored paths go`} with it: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ", ..." : ""}.`;
-
-function Head({ title, hint, n }: { title: string; hint: string; n?: number }) {
-  return (
-    <div className="flex items-baseline gap-3 border-b border-line py-4">
-      <div className="min-w-0 flex-1">
-        <div className="text-base font-medium">{title}{n !== undefined && <span className="ml-2 font-normal tabular-nums text-faint">{n}</span>}</div>
-        <div className="mt-0.5 text-ui text-muted">{hint}</div>
-      </div>
-    </div>
-  );
-}
 
 // Who an item is known by. "found": it was new in the repository when that agent ended, and who made it is not
 // known (the agent, something it started, the owner, another session).
 const HOW = { keel: "Keel made it for this session", found: "New in the repository when this agent ended; who made it is not known" };
 function Who({ by }: { by?: By }) {
-  if (!by) return <span className="w-52 shrink-0 truncate text-caption text-faint">no session known</span>;
+  if (!by) return <span className="text-faint">no session known</span>;
   return (
-    <span className="flex w-52 shrink-0 items-baseline gap-1.5 truncate text-caption" data-testid="leftover-by" data-how={by.how}>
+    <span className="flex max-w-52 items-baseline gap-1.5 truncate" data-testid="leftover-by" data-how={by.how}>
       {by.how === "found" && <span className="shrink-0 text-faint" title={HOW.found}>found by</span>}
       <button type="button" className="k-link min-w-0 truncate text-left hover:underline" title={`${by.title}${by.how ? `\n${HOW[by.how]}` : ""}`} onClick={() => navigate({ name: "session", id: by.session_id })}>
         {by.title || "Untitled"}
@@ -99,7 +86,7 @@ export function LeftoversPanel() {
     }
   };
 
-  if (!s) return <p className="k-empty py-4" data-testid="leftovers-loading">Reading what sessions left behind.</p>;
+  if (!s) return <Empty testid="leftovers-loading">Reading what sessions left behind.</Empty>;
   const branches = all ? s.branches : s.branches.slice(0, SHOWN);
   // The whole list in one act: every worktree that can be removed and every branch that is all on its base, as shown.
   const trees = s.worktrees.filter((w) => w.removable), merged = s.branches.filter((b) => b.merged);
@@ -126,99 +113,96 @@ export function LeftoversPanel() {
       void load();
     }
   };
+  const age = (t: number | undefined) => <span className="w-14 text-right text-faint" title={t ? when(t) : undefined}>{t ? ago(t) : ""}</span>;
   return (
-    <div className="space-y-5" data-testid="leftovers">
-      <div className="flex items-center gap-3">
-        <p role="status" className="min-w-0 flex-1 text-ui text-muted" data-testid="leftovers-said">{said ?? "Keel removes by itself only the worktrees it made for agents, when nothing in them would be lost. The rest is yours to remove here."}</p>
-        <button type="button" className={btn} data-testid="leftovers-remove-all" disabled={busy !== null || !(trees.length + merged.length)}
+    <Page testid="leftovers">
+      <Group hint={<span role="status" data-testid="leftovers-said">{said ?? "Keel removes by itself only the worktrees it made for agents, when nothing in them would be lost. The rest is yours to remove here."}</span>}
+        actions={<button type="button" className="k-btn k-btn-lg" data-testid="leftovers-remove-all" disabled={busy !== null || !(trees.length + merged.length)}
           title={trees.length + merged.length ? "Every worktree with nothing uncommitted and every branch whose commits are all on its base" : undefined} onClick={removeAll}>
           {allLabel}
-        </button>
-      </div>
+        </button>} />
 
-      <Card>
-        <Head title="Left running" n={s.processes.length} hint={`Commands of sessions whose processes still run after the command's call ended, from this daemon and the ones before it.${s.held?.at ? ` They hold ${mb(s.held.memory_bytes)}.` : ""} ${s.held ? `One whose session ended is stopped once it idles for ${Math.round(s.held.bounds.idle_ms / 60_000)} minutes; a build daemon (Gradle, Kotlin, Bazel, sccache) when its session ends or it builds nothing for ${Math.round(s.held.bounds.build_idle_ms / 60_000)}.` : ""} One with a terminal in it (tmux, script, an editor) or a process put in it from outside is kept until you stop it. Keep one to leave it running.${s.held?.others.scopes ? ` ${s.held.others.scopes} job ${s.held.others.scopes === 1 ? "scope" : "scopes"} of other Keel daemons (${mb(s.held.others.memory_bytes)}) are not this daemon's and are left alone.` : ""}`} />
-        {s.processes.length === 0 && <p className="k-empty py-4">Nothing is left running.</p>}
-        {s.processes.map((p) => (
-          <div key={`${p.session_id}:${p.job_id}`} className="flex min-h-10 items-center gap-3 border-b border-line/60 py-1.5 text-ui last:border-0" data-testid="leftover-process" data-job={p.job_id}>
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate font-mono text-caption" title={`${p.command}\n${p.cwd}`}>{p.command}</span>
-              {p.scope && <span className={cn("truncate text-caption", p.scope.fate.act === "keep" ? "text-faint" : "text-warn")} data-testid="leftover-fate" data-act={p.scope.fate.act}
-                title={p.scope.builds.length ? p.scope.builds.map((b) => `${b.kind}, pid ${b.pid}, ${mb(b.memory_bytes)}`).join("\n") : undefined}>{fateLine(p.scope)}</span>}
-            </span>
-            {p.ports.map((port) => <span key={port} className={cn(tag, "bg-accent-soft font-mono text-accent-ink")} data-testid="leftover-port">:{port}</span>)}
-            {!p.running && <span className={cn(tag, "bg-sunken text-muted")} title="Its command ended; what it started runs on.">command ended</span>}
-            {p.earlier && <span className={cn(tag, "bg-sunken text-muted")} title="A daemon before this one started it; this one took it back at its start." data-testid="leftover-earlier">before restart</span>}
-            {!!p.scope?.builds.length && <span className={cn(tag, "bg-sunken text-muted")}>{[...new Set(p.scope.builds.map((b) => b.kind))].join(", ")}</span>}
-            <span className="w-16 shrink-0 text-right text-caption tabular-nums text-muted" data-testid="leftover-memory" title="Memory of its scope">{p.scope ? mb(p.scope.memory_bytes) : ""}</span>
-            {p.agent && <span className={cn(tag, p.agent.status === "running" || p.agent.status === "waiting" ? "bg-sunken text-muted" : "bg-warn/15 text-warn")}>agent {p.agent.status}</span>}
-            <span className="w-24 shrink-0 text-right text-caption tabular-nums text-faint" title={`pid ${p.pids.join(", ")}`}>pid {p.pids[0]}{p.pids.length > 1 ? ` +${p.pids.length - 1}` : ""}</span>
-            <Who by={{ session_id: p.session_id, title: p.title }} />
-            <span className="w-16 shrink-0 text-right text-caption tabular-nums text-faint" title={when(p.started)}>{ago(p.started)}</span>
-            {p.scope && <button type="button" className={cn(btn, "aria-pressed:bg-accent-soft aria-pressed:shadow-[inset_0_0_0_1px_var(--accent)] aria-pressed:text-accent-ink")} data-testid="leftover-keep" aria-pressed={p.scope.keep} disabled={busy !== null}
-              title={p.scope.keep ? "Kept: Keel does not stop it. Click to let Keel stop it again when it idles." : "Keep it running: Keel will not stop it"}
-              onClick={() => void keep(p, !p.scope!.keep)}>
-              {p.scope.keep ? "Kept" : "Keep"}
-            </button>}
-            <button type="button" className={btn} data-testid="leftover-stop" disabled={busy !== null}
-              onClick={() => act(`p:${p.job_id}`, { title: "Stop this command?", body: `${p.command}\n\nEvery process it started is stopped (${p.pids.length}), and nothing else.`, action: "Stop", danger: true }, "/api/leftovers/stop", { session_id: p.session_id, job_id: p.job_id }, "Every process of it has ended.")}>
-              Stop
-            </button>
-          </div>
-        ))}
-      </Card>
-
-      <Card>
-        <Head title="Worktrees" n={s.worktrees.length} hint="Worktrees of the repositories sessions work in that no live session works in now. One with nothing uncommitted can be removed: its branch and commits stay, and the ignored files in it go with it (you are told how many first)." />
-        {s.worktrees.length === 0 && <p className="k-empty py-4">No worktree is left without a session.</p>}
-        {s.worktrees.map((w) => (
-          <div key={w.path} className="flex min-h-10 items-center gap-3 border-b border-line/60 py-1.5 text-ui last:border-0" data-testid="leftover-worktree" data-path={w.path}>
-            <PathText path={w.path} className="font-mono text-caption" />
-            <span className="w-48 shrink-0 truncate font-mono text-caption text-muted" title={w.branch ?? `detached at ${w.head.slice(0, 10)}`}>{w.branch ?? "detached"}</span>
-            <span className="w-[22rem] shrink-0 truncate text-caption tabular-nums" data-testid="leftover-worktree-holds">
-              {w.missing ? <span className="text-faint">folder gone</span>
-                : <>
-                  <span className={w.dirty ? "text-warn" : "text-faint"}>{w.dirty === undefined ? "status unknown" : `${w.dirty} uncommitted`}</span>
-                  {!!w.ignored?.length && <span className="text-warn" title={w.ignored.join("\n")}>, {w.ignored.length} ignored</span>}
-                  {w.ahead !== undefined && <span className={w.ahead ? "text-fg" : "text-faint"}>, {w.ahead} {w.ahead === 1 ? "commit" : "commits"} not on {w.base}</span>}
+      <Group title="Left running" count={s.processes.length} hint={`Commands of sessions whose processes still run after the command's call ended, from this daemon and the ones before it.${s.held?.at ? ` They hold ${mb(s.held.memory_bytes)}.` : ""} ${s.held ? `One whose session ended is stopped once it idles for ${Math.round(s.held.bounds.idle_ms / 60_000)} minutes; a build daemon (Gradle, Kotlin, Bazel, sccache) when its session ends or it builds nothing for ${Math.round(s.held.bounds.build_idle_ms / 60_000)}.` : ""} One with a terminal in it (tmux, script, an editor) or a process put in it from outside is kept until you stop it. Keep one to leave it running.${s.held?.others.scopes ? ` ${s.held.others.scopes} job ${s.held.others.scopes === 1 ? "scope" : "scopes"} of other Keel daemons (${mb(s.held.others.memory_bytes)}) are not this daemon's and are left alone.` : ""}`}>
+        {s.processes.length === 0 ? <Empty>Nothing is left running.</Empty> : (
+          <List label="Left running">
+            {s.processes.map((p) => (
+              <Item key={`${p.session_id}:${p.job_id}`} testid="leftover-process" data-job={p.job_id} mono name={p.command} title={`${p.command}\n${p.cwd}`}
+                sub={p.scope && <span className={cn("block truncate", p.scope.fate.act !== "keep" && "text-warn")} data-testid="leftover-fate" data-act={p.scope.fate.act}
+                  title={p.scope.builds.length ? p.scope.builds.map((b) => `${b.kind}, pid ${b.pid}, ${mb(b.memory_bytes)}`).join("\n") : undefined}>{fateLine(p.scope)}</span>}
+                meta={<>
+                  {p.ports.map((port) => <Status key={port} tone="info" testid="leftover-port">:{port}</Status>)}
+                  {!p.running && <Status title="Its command ended; what it started runs on.">command ended</Status>}
+                  {p.earlier && <Status title="A daemon before this one started it; this one took it back at its start." testid="leftover-earlier">before restart</Status>}
+                  {!!p.scope?.builds.length && <Status>{[...new Set(p.scope.builds.map((b) => b.kind))].join(", ")}</Status>}
+                  {p.agent && <Status tone={p.agent.status === "running" || p.agent.status === "waiting" ? "quiet" : "warn"}>agent {p.agent.status}</Status>}
+                  <span className="w-14 text-right" data-testid="leftover-memory" title="Memory of its scope">{p.scope ? mb(p.scope.memory_bytes) : ""}</span>
+                  <span className="text-faint" title={`pid ${p.pids.join(", ")}`}>pid {p.pids[0]}{p.pids.length > 1 ? ` +${p.pids.length - 1}` : ""}</span>
+                  <Who by={{ session_id: p.session_id, title: p.title }} />
+                  {age(p.started)}
                 </>}
-            </span>
-            <Who by={w.by} />
-            <span className="w-16 shrink-0 text-right text-caption tabular-nums text-faint" title={w.made ? when(w.made) : undefined}>{w.made ? ago(w.made) : ""}</span>
-            <button type="button" className={btn} data-testid="leftover-remove" disabled={busy !== null || !w.removable} title={w.removable ? undefined : `Kept: ${w.why}`}
-              onClick={() => act(`w:${w.path}`, { title: "Remove this worktree?", body: `${w.path}\n\nThe folder goes. ${w.branch ? `Branch ${w.branch} and its commits stay.` : "It is detached and holds no commit of its own."}${w.ignored?.length ? `\n\n${ignoredSay(w.ignored)}` : ""}`, action: "Remove", danger: true }, "/api/leftovers/worktree/remove", { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0 }, "Removed.")}>
-              Remove
-            </button>
-          </div>
-        ))}
-      </Card>
-
-      <Card>
-        <Head title="Branches" n={s.branches.length} hint="Branches no worktree has out and no live session holds, those with work not on the base first. One whose commits are all on the base can be deleted." />
-        {s.branches.length === 0 && <p className="k-empty py-4">No branch is left without a session.</p>}
-        {branches.map((b) => (
-          <div key={`${b.repo}:${b.name}`} className="flex min-h-10 items-center gap-3 border-b border-line/60 py-1.5 text-ui last:border-0" data-testid="leftover-branch" data-name={b.name}>
-            <span className="min-w-0 flex-1 truncate font-mono text-caption" title={`${b.name}\n${b.top}`}>{b.name}</span>
-            <span className="w-56 shrink-0 truncate text-caption text-faint" title={b.top}>{b.top.split("/").pop()}</span>
-            <span className="w-64 shrink-0 whitespace-nowrap text-caption tabular-nums">
-              {b.ahead === undefined ? <span className="text-faint">no base to compare</span>
-                : b.merged ? <span className="text-ok">all on {b.base}</span>
-                : <span className="text-fg">{b.ahead} {b.ahead === 1 ? "commit" : "commits"} not on {b.base}</span>}
-            </span>
-            <Who by={b.by} />
-            <span className="w-16 shrink-0 text-right text-caption tabular-nums text-faint" title={when(b.at)}>{ago(b.at)}</span>
-            <button type="button" className={btn} data-testid="leftover-delete" disabled={busy !== null || !b.merged} title={b.merged ? undefined : "Kept: it holds commits that are not on the base"}
-              onClick={() => act(`b:${b.name}`, { title: "Delete this branch?", body: `${b.name} in ${b.top}\n\nEvery commit of it is on ${b.base}: nothing is lost.`, action: "Delete", danger: true }, "/api/leftovers/branch/delete", { repo: b.repo, branch: b.name, sha: b.sha }, "Deleted.")}>
-              Delete
-            </button>
-          </div>
-        ))}
-        {s.branches.length > SHOWN && (
-          <div className="py-3">
-            <button type="button" className={btn} onClick={() => setAll(!all)}>{all ? "Show fewer" : `Show all ${s.branches.length}`}</button>
-          </div>
+                actions={<>
+                  {p.scope && <button type="button" className="k-btn aria-pressed:bg-accent-soft aria-pressed:shadow-[inset_0_0_0_1px_var(--accent)] aria-pressed:text-accent-ink" data-testid="leftover-keep" aria-pressed={p.scope.keep} disabled={busy !== null}
+                    title={p.scope.keep ? "Kept: Keel does not stop it. Click to let Keel stop it again when it idles." : "Keep it running: Keel will not stop it"}
+                    onClick={() => void keep(p, !p.scope!.keep)}>
+                    {p.scope.keep ? "Kept" : "Keep"}
+                  </button>}
+                  <button type="button" className="k-btn" data-testid="leftover-stop" disabled={busy !== null}
+                    onClick={() => act(`p:${p.job_id}`, { title: "Stop this command?", body: `${p.command}\n\nEvery process it started is stopped (${p.pids.length}), and nothing else.`, action: "Stop", danger: true }, "/api/leftovers/stop", { session_id: p.session_id, job_id: p.job_id }, "Every process of it has ended.")}>
+                    Stop
+                  </button>
+                </>} />
+            ))}
+          </List>
         )}
-      </Card>
-    </div>
+      </Group>
+
+      <Group title="Worktrees" count={s.worktrees.length} hint="Worktrees of the repositories sessions work in that no live session works in now. One with nothing uncommitted can be removed: its branch and commits stay, and the ignored files in it go with it (you are told how many first).">
+        {s.worktrees.length === 0 ? <Empty>No worktree is left without a session.</Empty> : (
+          <List label="Worktrees">
+            {s.worktrees.map((w) => (
+              <Item key={w.path} testid="leftover-worktree" data-path={w.path} name={<PathText path={w.path} className="font-mono text-caption" />}
+                sub={<span className="flex min-w-0 flex-wrap gap-x-3 tabular-nums">
+                  <span className="font-mono text-muted" title={w.branch ?? `detached at ${w.head.slice(0, 10)}`}>{w.branch ?? "detached"}</span>
+                  <span data-testid="leftover-worktree-holds">
+                    {w.missing ? <span className="text-faint">folder gone</span>
+                      : <>
+                        <span className={w.dirty ? "text-warn" : "text-faint"}>{w.dirty === undefined ? "status unknown" : `${w.dirty} uncommitted`}</span>
+                        {!!w.ignored?.length && <span className="text-warn" title={w.ignored.join("\n")}>, {w.ignored.length} ignored</span>}
+                        {w.ahead !== undefined && <span className={w.ahead ? "text-fg" : "text-faint"}>, {w.ahead} {w.ahead === 1 ? "commit" : "commits"} not on {w.base}</span>}
+                      </>}
+                  </span>
+                </span>}
+                meta={<><Who by={w.by} />{age(w.made)}</>}
+                actions={<button type="button" className="k-btn" data-testid="leftover-remove" disabled={busy !== null || !w.removable} title={w.removable ? undefined : `Kept: ${w.why}`}
+                  onClick={() => act(`w:${w.path}`, { title: "Remove this worktree?", body: `${w.path}\n\nThe folder goes. ${w.branch ? `Branch ${w.branch} and its commits stay.` : "It is detached and holds no commit of its own."}${w.ignored?.length ? `\n\n${ignoredSay(w.ignored)}` : ""}`, action: "Remove", danger: true }, "/api/leftovers/worktree/remove", { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0 }, "Removed.")}>
+                  Remove
+                </button>} />
+            ))}
+          </List>
+        )}
+      </Group>
+
+      <Group title="Branches" count={s.branches.length} hint="Branches no worktree has out and no live session holds, those with work not on the base first. One whose commits are all on the base can be deleted.">
+        {s.branches.length === 0 ? <Empty>No branch is left without a session.</Empty> : (
+          <List label="Branches" dense>
+            {branches.map((b) => (
+              <Item key={`${b.repo}:${b.name}`} testid="leftover-branch" data-name={b.name} mono name={b.name} title={`${b.name}\n${b.top}`}
+                sub={<span className="flex min-w-0 flex-wrap gap-x-3 tabular-nums">
+                  <span title={b.top}>{b.top.split("/").pop()}</span>
+                  {b.ahead === undefined ? <span>no base to compare</span>
+                    : b.merged ? <span className="text-ok">all on {b.base}</span>
+                    : <span className="text-fg">{b.ahead} {b.ahead === 1 ? "commit" : "commits"} not on {b.base}</span>}
+                </span>}
+                meta={<><Who by={b.by} />{age(b.at)}</>}
+                actions={<button type="button" className="k-btn" data-testid="leftover-delete" disabled={busy !== null || !b.merged} title={b.merged ? undefined : "Kept: it holds commits that are not on the base"}
+                  onClick={() => act(`b:${b.name}`, { title: "Delete this branch?", body: `${b.name} in ${b.top}\n\nEvery commit of it is on ${b.base}: nothing is lost.`, action: "Delete", danger: true }, "/api/leftovers/branch/delete", { repo: b.repo, branch: b.name, sha: b.sha }, "Deleted.")}>
+                  Delete
+                </button>} />
+            ))}
+            {s.branches.length > SHOWN && <More><button type="button" className="k-btn" onClick={() => setAll(!all)}>{all ? "Show fewer" : `Show all ${s.branches.length}`}</button></More>}
+          </List>
+        )}
+      </Group>
+    </Page>
   );
 }
