@@ -931,6 +931,45 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    test("the message box's tools are whole while a turn runs at a large text size: none cut to a sliver or over another", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Phone running tools");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 30" } }]) } });
+        for (const scale of [1.3, 1.5]) {
+          const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: size, hasTouch: true, isMobile: true });
+          await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+          const page = await ctx.newPage();
+          try {
+            await page.goto(`/s/${id}`);
+            const box = page.locator(".k-station[data-helm]").locator(".k-box");
+            await expect(box.getByTestId("stop")).toBeVisible({ timeout: 30_000 });
+            await expect(box.getByTestId("attach")).toBeAttached();
+            // Every tool of the row is a whole target inside the box, and a press at its middle lands on it.
+            const bad = await box.evaluate((el) => {
+              const b = el.getBoundingClientRect(), out: string[] = [], rects: { id: string; r: DOMRect }[] = [];
+              for (const id of ["attach", "effort-picker", "model-picker", "context-meter", "queue-button", "stop", "send"]) {
+                const t = el.querySelector(`[data-testid="${id}"]`);
+                if (!t) continue;
+                const r = t.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                if (r.left < b.left - 0.5 || r.right > b.right + 0.5 || r.bottom > b.bottom + 0.5) out.push(`${id} outside the box`);
+                if (!hit || !t.contains(hit)) out.push(`${id} is not what a press at its middle reaches`);
+                for (const o of rects) if (r.left < o.r.right - 1 && r.right > o.r.left + 1 && r.top < o.r.bottom - 1 && r.bottom > o.r.top + 1) out.push(`${id} over ${o.id}`);
+                rects.push({ id, r });
+              }
+              return out;
+            });
+            expect(bad, `the tools at ${scale * 100}% text`).toEqual([]);
+            await noSideScroll(page);
+            await shoot(page, `phone-surfaces-28-running-tools-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+        await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
+      } finally {
+        await drop(request, id);
+      }
+    });
     test("a question the agent asks can be put away with Later by a finger, and the count in the head is pressed back", async ({ page, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
       await settle(request);
