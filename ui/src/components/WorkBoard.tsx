@@ -226,8 +226,9 @@ export function WorkBoard({ session }: { session: Session }) {
   const landed = b.rows.filter((r) => r.landed?.state === "yes").length;
   return (
     <div className="@container flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="work-board" data-quote-from="the work board">
-      <div className="flex items-start gap-2 px-1">
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      {/* The summary keeps a measure of its own (16rem); where the panel has no room for it and the buttons, they stand under it. */}
+      <div className="flex flex-wrap items-start gap-2 px-1">
+        <div className="flex min-w-0 basis-64 grow flex-col gap-0.5">
           <p className="text-ui font-medium text-fg">{b.total} {b.total === 1 ? "agent" : "agents"}</p>
           <p className="text-caption text-muted" data-testid="board-summary">
             {working} working · {landed} landed

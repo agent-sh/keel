@@ -154,6 +154,11 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(card(beta.id)).toBeVisible();
   await shoot(page, "work-board-02-phone");
+  // On a phone the summary has the panel's width and the buttons stand under it, not in a narrow column beside it.
+  const summary = (await page.getByTestId("board-summary").boundingBox())!;
+  const refresh = (await page.getByTestId("board-refresh").boundingBox())!;
+  expect(refresh.y, "Refresh stands under the summary").toBeGreaterThanOrEqual(summary.y + summary.height - 1);
+  expect(summary.width, "the summary has the panel's width").toBeGreaterThan(390 * 0.7);
   await page.setViewportSize({ width: 1920, height: 1040 });
   // Past forty untracked files the lines are counted for the first forty only: every figure says so, and
   // at the phone's width the Open changes button stays on the line of the first figure.
