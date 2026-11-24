@@ -55,7 +55,8 @@ test("a parent with an agent at work reads as working until the agent ends", asy
     await page.goto(`/s/${parent}`);
     const r = row(page, parent);
     await expect(r).toHaveAttribute("data-watch", "work");
-    await expect(r.getByTestId("row-state")).toHaveText("Working · 1 agent");
+    // (A row of one line says no number of agents: the session says it.)
+    await expect(r.getByTestId("row-state")).toHaveText("Working");
     await expect(page.getByTestId("station-word")).toHaveText("Working · 1 agent");
     // The palette's mark says the same.
     await page.keyboard.press("Control+k");

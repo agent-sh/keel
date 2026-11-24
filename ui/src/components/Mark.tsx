@@ -7,12 +7,16 @@ import { WATCH_LABEL, WATCH_RANK, useStatesSince, useWatches, type SessionState,
 import { cn } from "../lib/utils.ts";
 import { beatOf, every } from "../lib/clock.ts";
 import { asOf, span } from "../../../src/core/watch.ts";
+import { backgroundOf, dotWord, type Stated } from "../../../src/core/state-words.ts";
 
 export { briefText, failWord, span, whyText } from "../../../src/core/watch.ts";
 
-// A state is a shape as well as a color, so it reads without color too.
-export function Mark({ w, className }: { w: Watch; className?: string }) {
-  return <span className={cn("k-mark", className)} data-watch={w} role="img" aria-label={WATCH_LABEL[w]} />;
+// The state mark is one small dot (bridge.css): its color is the state, and it keeps its word for a reader and
+// in its tooltip, so color is never the only signal. Given the state itself (`st`, a row's), a session that
+// only waits on its agents or on a command it left in the background has a ring around its dot, and says so.
+export function Mark({ w, st, className }: { w: Watch; st?: Stated; className?: string }) {
+  const word = st ? dotWord(st) : WATCH_LABEL[w];
+  return <span className={cn("k-mark", className)} data-watch={w} data-bg={backgroundOf(st)} role="img" aria-label={word} title={st ? word : undefined} />;
 }
 
 // Re-renders every `ms` while `on`; idle screens do not tick. The time stops

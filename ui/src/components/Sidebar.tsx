@@ -11,7 +11,7 @@
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
 import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
@@ -33,7 +33,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, timeBucket, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, WAITS_ON_YOU, FAILED_WORD, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, WAITS_ON_YOU, FAILED_WORD, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, stateWords, wentWrongWord } from "../../../src/core/state-words.ts";
 import { OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
@@ -41,6 +41,8 @@ import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useA
 import { useLink } from "./Stale.tsx";
 import { useReach } from "../lib/reach.ts";
 import { auto, useAuto } from "../lib/automation.ts";
+import { setAgentsOpen, useAgentsOpen } from "../lib/agents-open.ts";
+import { isCounted } from "../../../src/core/agent-count.ts";
 import { briefText, failWord, folderOf, Mark, modelOf, ROW_BEAT, rowClock, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { DRAG, dragSession, PanesButton } from "./Panes.tsx";
@@ -185,6 +187,37 @@ function RestLine({ s }: { s: Session }) {
   return <span className="k-row-why k-row-last" data-testid="row-last">{line || modelOf(s.model)}</span>;
 }
 
+// The row's chevron for the agents the session started: the tree opens under the row (SessionChildren) and
+// the owner's choice is kept. How many work, wait, failed or are done is said in the session itself
+// (AgentsDock.tsx); the row says only that there is a tree. Shown only for a session that has agents.
+function AgentsToggle({ id }: { id: string }) {
+  const has = useAuto((x) => Object.values(x.agents).some((a) => a.parent_id === id && isCounted(a)));
+  const open = useAgentsOpen(id);
+  if (!has) return null;
+  const words = open ? "Hide agents" : "Show agents";
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      className="k-row-act k-row-kids-toggle"
+      data-testid="children-toggle"
+      aria-expanded={open}
+      aria-label={words}
+      title={words}
+      onClick={(e) => {
+        e.stopPropagation();
+        // The list held under the hand keeps the height of what is under a row: this press is the owner's, so it lets go.
+        const kids = e.currentTarget.closest<HTMLElement>('[data-testid="session-row"]')?.parentElement?.querySelector<HTMLElement>(".k-row-kids");
+        if (kids) { kids.style.height = ""; kids.style.overflow = ""; }
+        if (e.detail > 0) e.currentTarget.blur();
+        setAgentsOpen(id, !open);
+      }}
+    >
+      <ChevronRight className="k-row-kids-fold" aria-hidden="true" />
+    </button>
+  );
+}
+
 // `given`: the session as the list ordered it (held still under the hand); the row shows it as it is now.
 // `gone`: it left the list while the list was held, and its row stays, dimmed, until the hand has left.
 // A row draws again only for what it shows: its own reads (the session as it is now, its state,
@@ -304,7 +337,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       }}
       className="k-row group"
     >
-      <Mark w={w} />
+      <Mark w={w} st={st} />
       {/* The title and the row's own line: the state with why (and the folder, where the list is not
           grouped by it). In a row of one line the words follow the title where it leaves them room,
           and are on the card beside the row where it does not; in a row of two they are the second
@@ -316,7 +349,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           {offline
             ? <span className="k-row-why" data-testid="row-why" data-why="offline">{asOf(clock(toldAt))}</span>
             : SPELLED.includes(w)
-            ? <span className="k-row-state" data-testid="row-state">{stateLabel(st)}</span>
+            ? <span className="k-row-state" data-testid="row-state">{/* One line: how many agents work is said in the session itself, not on its row. */lines === "one" ? stateWords(st).word : stateLabel(st)}</span>
             : lines === "two" && <RestLine s={s} />}
           {/* A state that is not current because the page does not hear the daemon says since when. (A machine out of reach: above.) */}
           {!left && !offline && !!st.as_of && <span className="shrink-0 whitespace-nowrap text-micro text-muted" data-testid="row-asof">{asOf(clock(st.as_of))}</span>}
@@ -328,6 +361,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       </span>
       {/* The first line's end: the tag, the marks, the time, and under the pointer the row's actions in the time's place. */}
       <span className="k-row-end">
+        <AgentsToggle id={s.id} />
         {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
         {s.outside && <OutsideTag o={s.outside} />}
         <SessionBadges sessionId={s.id} />
@@ -395,6 +429,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         </button>
         )}
       </span>
+      {/* News: a white dot at the row's right end (its ink in the light theme: bridge.css). The word for a reader is in the time's place. */}
+      {unread && !gone && !left && <span className="k-row-unread" data-testid="row-unread" aria-hidden="true" />}
       {menu && (
         <RowMenu
           at={menu}

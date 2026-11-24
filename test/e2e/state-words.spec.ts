@@ -86,23 +86,20 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     const open = async () => { await expect(started).toContainText("Started 8 agents"); if ((await started.getAttribute("aria-expanded")) !== "true") await started.click(); };
     await open();
 
-    // The summary counts every agent by state: what needs the owner and what failed first, and the parts add up.
-    // It is one line: how many, then each state's mark and count; the sentence is the line's name and tooltip.
-    const toggle = kids.getByTestId("children-toggle");
-    const summary = { toHaveText: (text: string, o?: { timeout?: number }) => expect(toggle).toHaveAccessibleName(text, o) };
+    // The session itself counts every agent by state (its dock): what needs the owner and what failed first, and the parts
+    // add up. The sidebar says no number: its row has a chevron that opens the tree.
+    const toggle = row(page, coord).getByTestId("children-toggle");
+    const dock = page.getByTestId("dock-agents");
+    const summary = { toHaveText: (text: string, o?: { timeout?: number }) => expect(dock).toHaveAttribute("aria-label", text, o) };
     await summary.toHaveText("8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
-    await expect(toggle).toHaveAttribute("title", "8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
-    await expect(kids.getByTestId("children-total")).toHaveText("8 agents");
-    const parts = kids.getByTestId("children-summary").locator("[data-count]");
+    await expect(dock).toHaveAttribute("title", "8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
+    const parts = dock.getByTestId("dock-agents-part");
     const counts = async () => (await parts.evaluateAll((els) => els.map((e) => Number(e.getAttribute("data-count"))))).reduce((n, x) => n + x, 0);
     expect(await counts()).toBe(8);
     expect(await parts.evaluateAll((els) => els.map((e) => `${e.getAttribute("data-watch")} ${e.getAttribute("data-count")}`))).toEqual(["need 1", "fail 1", "work 3", "wait 2", "done 1"]);
-    // The line is one line high, and every count is inside it: none is cut off at the list's edge.
-    await expect(kids.getByTestId("children-asking")).toHaveText("1 needs you");
-    await expect(kids.getByTestId("children-asking")).toHaveAttribute("title", "1 needs you");
-    const line = (await toggle.boundingBox())!;
-    expect(line.height).toBeLessThanOrEqual(30);
-    for (const part of await parts.all()) { const b = (await part.boundingBox())!; expect(b.x + b.width, "a count is whole").toBeLessThanOrEqual(line.x + line.width); }
+    await expect(parts.first()).toHaveText("1 needs you");
+    await expect(kids.getByTestId("children-total")).toHaveCount(0);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await toggle.click();
     await expect(kids.getByTestId("child-session")).toHaveCount(8);
 
@@ -161,7 +158,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
 
     // Three of its eight agents work: the head says of how many, the total the agents' line starts with,
     // and the pill beside it says the five still out in the agents' line's words (three work, two wait).
-    await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working · 3 of 8 agents");
+    await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working");
     await expect(station(page, coord).getByTestId("station-word")).toHaveText("Working · 3 of 8 agents");
     // (The background list rests in the session menu since the bar holds one menu.)
     await expect(await inHead(page, "background-button")).toHaveText("3 working, 2 waiting");
@@ -177,43 +174,6 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(tree("Bench the cache").getByTestId("child-fresh")).toBeVisible();
     await expect(tree("Summarize the open issues")).not.toHaveAttribute("data-fresh", "true");
     await shoot(page, "state-words-02-agent-ended");
-    // Folded, the line says how many are new after its counts. A count is never cut and the line never wraps:
-    // with too little room for both, "1 new" goes whole; with too little for the counts, the last ones go whole,
-    // and what calls the owner stays (it comes first; the line's name says every count).
-    await toggle.click();
-    const fresh = kids.getByTestId("children-fresh");
-    await expect(fresh).toHaveText("1 new");
-    const whole = () => toggle.evaluate((line) => {
-      const l = line.getBoundingClientRect();
-      const within = (e: Element, box: DOMRect) => { const r = e.getBoundingClientRect(); return r.left >= box.left - 0.5 && r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5; };
-      // (The counts on the line: one the line has no room for lies wholly below it, out of sight.)
-      const counts = [...line.querySelectorAll("[data-count]")].filter((c) => c.getBoundingClientRect().top < l.bottom - 0.5);
-      const extra = line.querySelector(".k-kids-extra")!.getBoundingClientRect();
-      const news = line.querySelector('[data-testid="children-fresh"]')!;
-      const r = news.getBoundingClientRect();
-      return {
-        counts: counts.every((c) => within(c, l)), sum: counts.reduce((n, c) => n + Number(c.getAttribute("data-count")), 0), first: counts[0]?.getAttribute("data-watch"),
-        // "new" is whole in its room or wholly out of it (on the line the room cuts off), never part of it.
-        fresh: within(news, extra) ? "whole" : Math.min(r.right, extra.right) - Math.max(r.left, extra.left) <= 0.5 || Math.min(r.bottom, extra.bottom) - Math.max(r.top, extra.top) <= 0.5 ? "gone" : "cut",
-        lines: Math.round(l.height / parseFloat(getComputedStyle(document.documentElement).fontSize) / 1.5),
-      };
-    });
-    expect(await whole()).toMatchObject({ counts: true, sum: 8, fresh: "whole", lines: 1 });
-    // The list squeezed until the counts just fit, then to half of that.
-    const need = await toggle.evaluate((line) => { const last = [...line.querySelectorAll("[data-count]")].at(-1)!.getBoundingClientRect(); const cs = getComputedStyle(line); return last.right - line.getBoundingClientRect().left + parseFloat(cs.columnGap) + parseFloat(cs.paddingRight) + 1; });
-    // (Room for the counts and half of "1 new": the half is not shown.)
-    await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need + 24);
-    expect(await whole()).toMatchObject({ counts: true, sum: 8, fresh: "gone", lines: 1 });
-    await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need);
-    expect(await whole()).toMatchObject({ counts: true, sum: 8, fresh: "gone", lines: 1 });
-    await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need * 0.6);
-    const short = await whole();
-    expect(short, "the squeezed line keeps whole counts on one line").toMatchObject({ counts: true, fresh: "gone", lines: 1 });
-    expect(["need", "fail"], "what calls the owner is the first count the squeezed line keeps").toContain(short.first);
-    expect(short.sum).toBeLessThan(8);
-    await shoot(page, "state-words-14-agents-line-squeezed");
-    await toggle.evaluate((el) => { (el as HTMLElement).style.width = ""; });
-    await toggle.click();
     await row(page, coord).click();
     await expect(tree("Bench the cache")).not.toHaveAttribute("data-fresh", "true", { timeout: 15_000 });
     await summary.toHaveText("8 agents: 1 failed, 2 working, 2 waiting, 3 done", { timeout: 60_000 });
@@ -270,11 +230,9 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await page.goto(`/s/${coord}`);
     await expect(page.locator("section.k-station[data-station]")).toHaveCount(4);
     await expect(kids.getByTestId("child-session").first()).toBeVisible();
-    // The narrow list keeps the total and what calls the owner (the failed one), whole; the sentence is still the line's name.
-    await expect(kids.getByTestId("children-fail")).toBeVisible();
-    await expect(kids.getByTestId("children-total")).toHaveText(/^8/);
-    await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 2 waiting, 1 stopped, 3 done");
-    for (const part of await parts.all()) { if (!(await part.isVisible())) continue; const b = (await part.boundingBox())!, l = (await toggle.boundingBox())!; expect(b.x + b.width, "a count is whole in the narrow list").toBeLessThanOrEqual(l.x + l.width); }
+    // The narrow list keeps the chevron; the session's own dock says every count.
+    await expect(row(page, coord).getByTestId("children-toggle")).toBeVisible();
+    await expect(dock).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 2 waiting, 1 stopped, 3 done");
     for (const title of ["Fetch the release notes from the tracker", "Watch CI on main"]) {
       const box = (await tree(title).getByTestId("child-title").boundingBox())!;
       expect(box.width, `${title}: its title has room`).toBeGreaterThan(40);
@@ -283,7 +241,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await reportsWhole("four panes");
     await shoot(page, "state-words-10-four-panes");
     await page.evaluate(() => { localStorage.setItem("keel.focus", "true"); localStorage.removeItem("keel.panes"); });
-    // A smaller desk, and the largest text size: the line of counts is still one line with every count in it.
+    // A smaller desk, and the largest text size: the session's line of counts keeps its counts whole.
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/s/${coord}`);
     await expect(kids.getByTestId("child-session").first()).toBeVisible();
@@ -291,8 +249,9 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
     await page.reload();
     await expect(kids.getByTestId("child-session").first()).toBeVisible();
-    expect((await toggle.boundingBox())!.height).toBeLessThanOrEqual(45);
-    for (const part of await parts.all()) { const b = (await part.boundingBox())!, l = (await toggle.boundingBox())!; expect(b.x + b.width, "a count is whole at the largest text").toBeLessThanOrEqual(l.x + l.width); }
+    // (The session's own line holds every count, whole, at the largest text.)
+    const box = (await dock.boundingBox())!;
+    for (const part of await parts.all()) { const b = (await part.boundingBox())!; if (b.y < box.y + box.height) expect(b.x + b.width, "a count is whole at the largest text").toBeLessThanOrEqual(box.x + box.width); }
     await shoot(page, "state-words-13-text-size-1-5");
     await page.evaluate(() => localStorage.removeItem("keel.textScale"));
 
@@ -645,12 +604,12 @@ test("one status a session: every surface counts working and waiting alike, and 
 
     // The parent of the agent that keeps a command going: its row, its head, its pill, its tree line and its board say working.
     await page.goto(`/s/${lead}`);
-    await expect(row(page, lead).getByTestId("row-state")).toHaveText("Working · 1 agent");
+    await expect(row(page, lead).getByTestId("row-state")).toHaveText("Working");
     await expect(station(page, lead).getByTestId("station-word")).toHaveText("Working · 1 agent");
     // (The background list rests in the session menu since the bar holds one menu.)
     await expect(await inHead(page, "background-button")).toHaveText("1 working");
     await leaveHead(page);
-    await expect(row(page, lead).locator("xpath=..").getByTestId("children-toggle")).toHaveAttribute("aria-label", "1 agent: 1 working");
+    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", /^1 agent: 1 working/);
     await openPanel(page, "board");
     await expect(page.getByTestId("board-row").getByTestId("board-state")).toHaveText("working");
     await expect(page.getByTestId("board-summary")).toContainText("1 working");

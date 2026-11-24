@@ -51,30 +51,26 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     expect((await list(request, `?agents_of=${parent}`)).sessions.map((s) => s.id).sort()).toEqual([working, failed, ...finished].sort());
     expect((await (await request.get(`/api/sessions/${finished[0]}?events=0`)).json()).session.parent_id).toBe(parent);
 
-    // The page reads the list once, and the agents line counts every agent.
+    // The page reads the list once, and the session's own line counts every agent; the sidebar says no number.
     const reads: string[] = [];
     page.on("request", (r) => { const u = new URL(r.url()); if (u.pathname === "/api/sessions" && r.method() === "GET") reads.push(u.search); });
     await page.goto(`/s/${parent}`);
-    const kids = row(page, parent).locator("xpath=..").getByTestId("session-children");
-    const toggle = kids.getByTestId("children-toggle");
-    const counts = async () => ({
-      name: await toggle.getAttribute("aria-label"),
-      total: await kids.getByTestId("children-total").innerText(),
-      parts: await kids.getByTestId("children-summary").locator("[data-count]").evaluateAll((els) => els.map((e) => `${e.getAttribute("data-watch")} ${e.getAttribute("data-count")}`)),
-    });
-    await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
-    const trimmed = await counts();
-    expect(trimmed.parts).toEqual(["fail 1", "work 1", "done 6"]);
+    const wrap = row(page, parent).locator("xpath=..");
+    const kids = wrap.getByTestId("session-children");
+    const toggle = row(page, parent).getByTestId("children-toggle");
+    const dock = page.getByTestId("dock-agents");
+    const parts = dock.getByTestId("dock-agents-part");
+    await expect(dock).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+    expect(await parts.evaluateAll((els) => els.map((e) => `${e.getAttribute("data-watch")} ${e.getAttribute("data-count")}`))).toEqual(["fail 1", "work 1", "done 6"]);
     expect(reads).toEqual([""]);
-    // One form whatever the states: each is its mark and its figure, on one line; the words are the line's name and
-    // each part's tooltip ("8 agents 1 failed 1 working 6 done" once read as a sentence that changed shape and wrapped).
-    for (const [part, word] of [["fail", "1 failed"], ["work", "1 working"], ["done", "6 done"]] as const) {
-      await expect(kids.getByTestId(`children-${part}`).locator(".k-mark")).toBeVisible();
-      await expect(kids.getByTestId(`children-${part}`).locator(".k-kids-word")).toBeHidden();
-      await expect(kids.getByTestId(`children-${part}`)).toHaveAttribute("title", word);
+    expect(await wrap.innerText(), "the sidebar says no number of agents").not.toMatch(/\b\d+ agents?\b/);
+    // One form whatever the states: each is its dot and its words, on one line.
+    for (const [i, word] of ["1 failed", "1 working", "6 done"].entries()) {
+      await expect(parts.nth(i).locator(".k-mark")).toBeVisible();
+      await expect(parts.nth(i)).toHaveText(word);
     }
     await shoot(page, "session-list-01-agents-line");
-    expect((await toggle.boundingBox())!.height, "the agents line is one line").toBeLessThanOrEqual(30);
+    expect((await dock.boundingBox())!.height, "the agents line is one line").toBeLessThanOrEqual(30);
 
     // Opened: the rows of the ones at rest are read then, once, and every agent is in the tree.
     await toggle.click();
@@ -93,7 +89,7 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     await toggle.click();
     await expect(kids.getByTestId("child-row")).toHaveCount(0);
     await page.goto(`/s/${parent}`);
-    await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill(`Finished helper 1 ${tag}`);
     const found = page.locator('[role="option"][id^="palette-opt-t_"], [role="option"][id^="palette-opt-s_"]').filter({ hasText: `Finished helper 1 ${tag}` });
@@ -115,8 +111,7 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
       await r.fulfill({ json: all });
     });
     await page.goto(`/s/${parent}`);
-    await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
-    expect(await counts()).toEqual(trimmed);
+    await expect(dock).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
     await page.unroute("**/api/sessions");
 
     // At every desk width, the narrowest rail (232px at 1050) included: one line, nothing cut.
@@ -124,11 +119,9 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
       await page.setViewportSize({ width, height: 1040 });
       await page.evaluate((w) => { if (w) localStorage.setItem("keel.listW", String(w)); else localStorage.removeItem("keel.listW"); }, listW);
       await page.goto(`/s/${parent}`);
-      await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
-      const fit = () => toggle.evaluate((el) => {
-        const sum = el.getBoundingClientRect(), cut = [...el.querySelectorAll<HTMLElement>(".k-kids-part, .k-kids-total")].filter((e) => e.getClientRects().length).map((e) => e.getBoundingClientRect());
-        return { h: Math.round(sum.height), over: Math.max(0, ...cut.map((r) => Math.round(r.right - sum.right))) };
-      });
+      await expect(dock).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+      await expect(toggle).toBeVisible();
+      const fit = () => dock.evaluate((el) => { const sum = el.getBoundingClientRect(); return { h: Math.round(sum.height), over: Math.max(0, ...[...el.querySelectorAll<HTMLElement>("[data-testid=dock-agents-part]")].filter((e) => e.getBoundingClientRect().top < sum.bottom).map((e) => Math.round(e.getBoundingClientRect().right - sum.right))) }; });
       await expect.poll(async () => { const f = await fit(); return f.h <= 30 && f.over <= 0; }, { message: `the agents line at ${width}, list ${listW || "default"}: ${JSON.stringify(await fit())}` }).toBe(true);
       await shoot(page, `session-list-01-agents-line-${width}-${listW || "wide"}`);
     }

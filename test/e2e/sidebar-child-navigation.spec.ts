@@ -25,11 +25,11 @@ test("a finished parent stays in the sidebar while viewing its agent", async ({ 
     await page.goto(`/s/${parent}`);
     const row = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${parent}"]`);
     const kids = row.locator("xpath=..").getByTestId("session-children");
-    await expect(kids.getByTestId("children-toggle")).toContainText("1 waiting");
+    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", /1 waiting/);
     await page.getByTestId("list-arrange").click();
     await page.getByTestId("arrange-hide-done").click();
     await page.keyboard.press("Escape");
-    await kids.getByTestId("children-toggle").click();
+    await row.locator("xpath=..").getByTestId("children-toggle").click();
     const child = kids.getByTestId("child-session");
     await child.press("Enter");
     await expect(page.getByTestId("task-notice")).toBeVisible();

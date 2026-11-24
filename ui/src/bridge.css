@@ -4,21 +4,35 @@
    listed in styles.css); the text face sets everything else. Nothing moves
    unless work is running or they are needed. */
 
-/* ---------- The state mark: a shape as well as a color ---------- */
-.k-mark { display: inline-block; flex-shrink: 0; width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--st-done); }
-.k-mark[data-watch="need"] { border-radius: 1px; background: var(--st-need); transform: rotate(45deg) scale(0.86); }
-.k-mark[data-watch="fail"] { border-radius: 1px; background: var(--st-fail); }
-/* Declined is a failure under its own word, so its own mark: the failed one's square and red, empty (the model gave nothing). */
-.k-mark[data-watch="declined"] { border-radius: 1px; background: transparent; box-shadow: inset 0 0 0 2px var(--st-fail); }
+/* ---------- The state mark: one small dot ---------- */
+/* Its color is the state (tokens in styles.css, contrast checked in both themes); every mark keeps its word for a reader and
+   in its tooltip (Mark.tsx), so the color is never the only signal.
+   Working: blue with a soft halo that breathes slowly while motion is allowed (opacity and scale only, so it costs the
+   compositor and no layout; it stands still under reduced motion and while the page is hidden). It does not spin: a
+   ring that turns reads as a loader, and in the rail it stood still, as a ring with a gap that looked stuck.
+   Needs you: yellow. Failed: red. Done: green. Waiting on what it left going (its agents, a command in the
+   background): the blue dot inside a ring. Waiting on a timer or another thing that will wake it: a half-full ring. At
+   rest, not started or stopped: the quiet grey of old. */
+.k-mark { position: relative; display: inline-block; flex-shrink: 0; width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--dot-done); }
+.k-mark[data-watch="need"] { background: var(--dot-need); box-shadow: 0 0 0 1px var(--dot-need-edge); }
+.k-mark[data-watch="fail"] { background: var(--dot-fail); }
+/* Declined is a failure under its own word: red, and empty (the model gave nothing). */
+.k-mark[data-watch="declined"] { background: transparent; box-shadow: inset 0 0 0 2px var(--dot-fail); }
 .k-mark[data-watch="idle"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-idle); }
 /* Stopped: a hollow square. Waiting to resume: an open ring that does not turn. */
 .k-mark[data-watch="stop"] { border-radius: 2px; background: transparent; box-shadow: inset 0 0 0 2px var(--st-idle); }
 .k-mark[data-watch="resume"] { background: transparent; border: 2px solid var(--st-idle); border-right-color: transparent; }
-/* Waiting: a ring half full, still. Something else will wake it. */
-.k-mark[data-watch="wait"] { background: linear-gradient(to top, var(--st-wait) 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px var(--st-wait); }
-/* Working: a ring with a gap that turns. Only transform animates. */
-.k-mark[data-watch="work"] { background: transparent; border: 2px solid var(--st-work); border-top-color: transparent; animation: k-turn 1.1s linear infinite; }
-@keyframes k-turn { to { transform: rotate(1turn); } }
+.k-mark[data-watch="wait"] { background: linear-gradient(to top, var(--dot-work) 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px var(--dot-work); }
+.k-mark[data-watch="work"] { background: var(--dot-work); }
+.k-mark[data-watch="work"]::after { content: ""; position: absolute; inset: -45%; border-radius: 50%; pointer-events: none; will-change: opacity; background: radial-gradient(circle closest-side, transparent 52%, color-mix(in oklch, var(--dot-work) 55%, transparent) 64%, transparent 100%); animation: k-dot-breathe 3.4s ease-in-out infinite; }
+@keyframes k-dot-breathe { 0%, 100% { opacity: 0.3; transform: scale(0.92); } 50% { opacity: 1; transform: scale(1.08); } }
+@media (prefers-reduced-motion: reduce) { .k-mark[data-watch="work"]::after { animation: none; opacity: 0.7; } }
+/* A count's mark and an alert's are small and in a crowd (and inside lines that clip): the halo is not drawn there. */
+:is(.k-marks-head, .k-alert-icon, .k-tick, .k-sum, .k-sum-mark) .k-mark[data-watch="work"]::after { display: none; }
+/* Waiting on its agents or a command in the background: the work dot inside a ring. */
+.k-mark[data-bg] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dot-work); }
+.k-mark[data-bg]::before { content: ""; position: absolute; inset: 30%; border-radius: 50%; background: var(--dot-work); }
+.k-mark[data-bg]::after { display: none; }
 
 
 /* ---------- Shell ---------- */
@@ -164,8 +178,7 @@
   display: flex; justify-content: space-between; align-items: center; gap: 0.25rem; height: 1.25rem; padding: 0.25rem 0.5rem 0 0.5625rem;
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--faint);
 }
-.k-marks-head .k-mark { width: 0.4375rem; height: 0.4375rem; animation: none; }
-.k-marks-head .k-mark[data-watch="work"] { border-width: 1.5px; }
+.k-marks-head .k-mark { width: 0.4375rem; height: 0.4375rem; }
 .k-marks-head svg { width: 0.625rem; height: 0.625rem; }
 .k-marks[data-watch="need"] { background: color-mix(in oklch, var(--st-need) 9%, transparent); }
 .k-marks[data-watch="need"] .k-marks-head { color: var(--st-need-ink); }
@@ -178,7 +191,7 @@
 .k-tick .k-mark { width: 0.5rem; height: 0.5rem; }
 .k-tick-code { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.03em; color: var(--fg); }
 /* Finished and seen: the mark goes quiet. Unread ones keep a full mark. */
-.k-tick[data-watch="done"]:not([data-unread]):not([aria-current]) .k-mark { opacity: 0.45; transform: scale(0.8); }
+.k-tick[data-watch="done"]:not([data-unread]):not([aria-current]) .k-mark { opacity: 0.7; transform: scale(0.85); }
 .k-tick:is([data-watch="done"], [data-watch="idle"]):not([data-unread]):not([aria-current]):not(:hover) .k-tick-code { color: var(--muted); font-weight: 600; }
 /* A station on screen: a bracket on the rail's edge. */
 .k-tick[data-shown]::before { content: ""; position: absolute; left: -0.4375rem; top: 0.25rem; bottom: 0.25rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
@@ -306,9 +319,19 @@
    that changes moves no row under it. Two lines a row is the owner's choice
    (the Arrange menu): the state with why is then the second line, always
    there, and a row is as high with words in it as without. */
-.k-row { position: relative; display: flex; align-items: center; gap: 0.5625rem; height: var(--spacing-ctl-md); padding: 0 0.375rem 0 0.5625rem; border-radius: var(--radius-md); font-size: var(--text-ui); line-height: 1.25rem; color: var(--muted); user-select: none; }
+.k-row { position: relative; display: flex; align-items: center; gap: 0.5625rem; height: var(--spacing-ctl-md); padding: 0 1rem 0 0.5625rem; border-radius: var(--radius-md); font-size: var(--text-ui); line-height: 1.25rem; color: var(--muted); user-select: none; }
 .k-row-main { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; column-gap: 0.5rem; height: 1.25rem; overflow: hidden; }
 .k-row-end { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: 1.25rem; }
+/* News: a dot in the row's right gutter, the first line's height whatever the row's lines. White in the dark theme, the ink in the light one (--dot-unread). */
+.k-row-unread { position: absolute; right: 0.3125rem; top: 50%; width: 0.375rem; height: 0.375rem; margin-top: -0.1875rem; border-radius: 50%; background: var(--dot-unread); pointer-events: none; }
+.k-index[data-lines="two"] .k-row-unread { top: 0.875rem; }
+.k-rail[data-narrow] .k-row-unread { right: 0.125rem; }
+/* The chevron of a session that started agents: it opens their tree under the row. */
+.k-row .k-row-kids-toggle { display: grid; width: 1.125rem; }
+.k-row-kids-fold { transition: transform var(--dur-quick) var(--ease-out); }
+.k-row-kids-toggle[aria-expanded="true"] .k-row-kids-fold { transform: rotate(90deg); }
+.k-rail[data-narrow] .k-row-end:has(> .k-row-kids-toggle) { display: flex; }
+.k-rail[data-narrow] .k-row-end > :not(.k-row-kids-toggle) { display: none; }
 /* Two lines: the title over its line, the line as wide as the row (the time column is the first line's). */
 .k-index[data-lines="two"] .k-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem 1rem; column-gap: 0.5625rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
 .k-index[data-lines="two"] .k-row-main { display: contents; overflow: visible; }
@@ -341,8 +364,6 @@
    open row is in ink too, and the rest steps back. The row's end then holds one thing. */
 .k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); font-weight: 600; }
 .k-row[data-unread]:not([data-gone]):is([data-watch="done"], [data-watch="idle"], [data-watch="stop"]) .k-row-title { color: var(--fg); }
-/* Done: the mark is a small steel dot. Whether it is new is the title's to say. */
-.k-row[data-watch="done"]:not([aria-current]) > .k-mark { background: var(--st-idle); transform: scale(0.7); }
 /* A quiet row's time is in its tooltip where it says what the row above said (Sidebar.tsx, calm). */
 .k-row-time[data-calm] { display: none; }
 /* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
@@ -440,37 +461,9 @@
 .k-list-note { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); margin: 0 0.625rem 0.125rem; padding-left: 0.375rem; font-size: var(--text-caption); color: var(--faint); }
 /* A folded folder's head says that a session inside needs the owner or failed. */
 .k-head-calls { width: 0.5rem; height: 0.5rem; }
-/* The agents under a row: a line of counts (below), then, opened, a row for each. A row is the agent's mark, its title and its state word, in the faces and
+/* The agents under a row, once its chevron opens them: a row for each. A row is the agent's mark, its title and its state word, in the faces and
    inks of a session's row; where the row is too narrow for both, the title stays and the mark says the state. */
 .k-session-children { margin-left: 0.75rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
-/* One form whatever the states (an agents' line that turned from a sentence into figures, and wrapped, read as a
-   different thing each time): how many, then each state's mark and figure, what calls the owner first, in that state's
-   ink. The words are the line's name and each figure's tooltip. One line of a fixed height, never wrapped: a count
-   with no room on it goes to a line that is not shown, whole, the last ones first. How many are new has the room
-   the counts leave and goes whole where that is too little. */
-.k-kids-sum { display: flex; align-items: flex-start; column-gap: 0.4375rem; width: 100%; min-width: 0; height: 1.5rem; overflow: hidden; padding: 0 0.375rem; border-radius: var(--radius-md); white-space: nowrap; text-align: left; font-size: var(--text-caption); color: var(--faint); }
-.k-kids-counts { display: flex; flex-wrap: wrap; align-items: center; column-gap: 0.4375rem; row-gap: 0; flex: 0 1 auto; min-width: 0; height: 1.5rem; overflow: hidden; }
-.k-kids-sum:hover { color: var(--muted); }
-.k-kids-sum:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
-.k-kids-fold { width: 0.75rem; height: 0.75rem; margin-block: 0.375rem; flex-shrink: 0; transition: transform var(--dur-quick) var(--ease-out); }
-.k-kids-total { flex-shrink: 0; line-height: 1.5rem; }
-.k-kids-parts { display: contents; }
-.k-kids-part { display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0; min-height: 1.5rem; }
-.k-kids-extra { display: flex; flex-wrap: wrap; align-items: center; flex: 1 1 0; min-width: 0; height: 1.5rem; overflow: hidden; }
-/* (The first thing on a line never wraps, however little room: an empty first item lets the real ones go.) */
-.k-kids-extra::before { content: ""; width: 0; height: 1.5rem; }
-.k-kids-extra > * { display: inline-block; height: 1.5rem; line-height: 1.5rem; }
-.k-kids-extra > :not(:first-child) { margin-left: 0.4375rem; }
-.k-kids-part .k-mark { width: 0.5rem; height: 0.5rem; animation: none; }
-.k-kids-part .k-mark[data-watch="work"] { border-width: 1.5px; }
-.k-kids-n { font-weight: 500; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1; color: var(--muted); }
-.k-kids-total .k-kids-n { color: var(--muted); }
-.k-kids-label { font-size: var(--text-micro); }
-/* (The words stay in the page for the line's text; they are its name and tooltips, not shown.) */
-.k-kids-word { display: none; }
-.k-kids-part[data-watch="need"] .k-kids-n { color: var(--st-need-ink); }
-.k-kids-part:is([data-watch="fail"], [data-watch="declined"]) .k-kids-n { color: var(--st-fail-ink); }
-.k-kids-new { flex-shrink: 0; font-weight: 500; font-size: var(--text-micro); color: var(--accent-ink); }
 .k-child-row { position: relative; container: kid / inline-size; }
 /* Under an agent's row: what it is doing now, a step in from its mark. */
 .k-child-now { padding: 0 0.375rem 0.125rem 1.875rem; font-size: var(--text-micro); }
@@ -563,10 +556,6 @@
 .k-index > .k-machine-sep:first-child { padding-top: 0.125rem; border-top: 0; }
 /* What stands above the list (the steps without progress) keeps its height while the hand is on the list. */
 .k-rail-top { flex-shrink: 0; }
-/* In the rail a working mark stands still: a dozen turning rings beside the panes pull the eye
-   all day and cost style work every frame. The ring's gap, its colour and the clock that counts
-   say working. */
-.k-rail .k-mark[data-watch="work"] { animation: none; }
 
 /* The narrow list: with little room beside the panes a session is its mark and its title, cut
    with an ellipsis. The state is the mark; the card beside the row says the rest. */
@@ -593,14 +582,7 @@
 /* Its tabs keep their words whole: closer to the bar's edges, in the small size. */
 .k-rail[data-narrow] .k-list-tabs { margin-inline: 0.375rem; }
 .k-rail[data-narrow] .k-list-tabs > button { padding: 0 0.125rem; font-size: var(--text-micro); }
-/* The agents' line keeps its count and the mark of one that asks; the rest of its words are on the card and in the wider list. */
 .k-rail[data-narrow] .k-session-children { margin-left: 0.375rem; padding-left: 0.25rem; }
-.k-rail[data-narrow] .k-kids-sum { column-gap: 0.3125rem; padding-inline: 0.125rem; }
-.k-rail[data-narrow] .k-kids-counts { column-gap: 0.3125rem; }
-.k-rail[data-narrow] :is(.k-kids-label, .k-kids-fold) { display: none; }
-.k-rail[data-narrow] .k-kids-part::before { content: none; }
-/* The narrow list keeps the total and what calls the owner; the other counts are in the line's tooltip, as a row's state is on its card. */
-.k-rail[data-narrow] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) { display: none; }
 
 /* The note in the Arrange menu about a default that changed: read once. */
 .k-arrange-note { margin: 0.125rem 0.625rem 0.25rem; padding-bottom: 0.4375rem; border-bottom: 1px solid var(--line); font-size: var(--text-micro); line-height: 1.4; color: var(--muted); }
@@ -1318,15 +1300,14 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-tick-badges .k-snoozed-mark { display: block; width: 0.5625rem; height: 0.5625rem; color: var(--muted); }
 /* Agents a session started: small marks under its own, on the folded rail. */
 .k-tick-kids .k-session-children { display: flex; flex-direction: column; align-items: center; margin: 0; padding: 0; border: 0; }
-.k-tick-kids .k-session-children > button { display: none; }
 .k-tick-kids .k-child-session { width: 1.375rem; height: 0.75rem; padding: 0; font-size: 0; justify-content: center; gap: 0; }
 .k-tick-kids .k-child-session > * { display: none; }
 .k-tick-kids .k-child-session::before { content: ""; width: 0.3125rem; height: 0.3125rem; border-radius: 50%; background: var(--line-strong); }
 /* A folded rail has no room for an agent's word: its dot takes the state's color, and its name and word are its label. */
-.k-tick-kids .k-child-session[data-watch="need"]::before { background: var(--st-need); }
-.k-tick-kids .k-child-session:is([data-watch="fail"], [data-watch="declined"])::before { background: var(--st-fail); }
-.k-tick-kids .k-child-session[data-watch="work"]::before { background: var(--st-work); }
-.k-tick-kids .k-child-session[data-watch="wait"]::before { background: var(--st-wait); }
+.k-tick-kids .k-child-session[data-watch="need"]::before { background: var(--dot-need); }
+.k-tick-kids .k-child-session:is([data-watch="fail"], [data-watch="declined"])::before { background: var(--dot-fail); }
+.k-tick-kids .k-child-session[data-watch="work"]::before { background: var(--dot-work); }
+.k-tick-kids .k-child-session[data-watch="wait"]::before { background: var(--dot-work); }
 .k-tick-kids .k-child-row { display: flex; justify-content: center; }
 .k-tick-kids :is(.k-child-acts, .k-child-lane) { display: none; }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
@@ -1690,8 +1671,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 /* An alert's mark: a glyph in its state's color while unread, quiet once read. No box of its own. */
 .k-alert-icon { display: grid; place-items: center; flex-shrink: 0; width: 1rem; height: 1rem; color: var(--k-st); }
 /* It draws its state's mark (Mark.tsx), still: a list of finishes does not spin. Read, it steps back. */
-.k-alert-icon .k-mark { width: 0.5625rem; height: 0.5625rem; animation: none; }
-.k-alert-icon .k-mark[data-watch="work"] { border-width: 1.5px; }
+.k-alert-icon .k-mark { width: 0.5625rem; height: 0.5625rem; }
 .k-alert-icon[data-read] .k-mark { opacity: 0.45; }
 .k-inbox-count {
   min-width: 1rem; height: 1rem; padding: 0 0.3125rem; border-radius: 999px;

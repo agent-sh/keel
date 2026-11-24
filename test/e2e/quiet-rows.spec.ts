@@ -3,8 +3,8 @@ import { shoot } from "./shots.ts";
 
 // Feature: a session row says one state, and the bar above a session says its reason in words.
 // The row's mark is its state. The rows that call the owner (needs you, failed, declined) are in ink
-// and one step heavier; what is new at rest is in ink at the row's own weight (reading it moves
-// nothing) and says "New" to a reader, with no dot; the open row is in ink. The row's end is one
+// and one step heavier; what is new is in ink at the row's own weight (reading it moves
+// nothing), says "New" to a reader and has a dot at the row's right end (outside its end slot); the open row is in ink. The row's end is one
 // slot: who a row that calls the owner waits on (you, the failure's class, declined), else its
 // time where its bucket changes, read or not. The time and
 // the counts above the list are in the text face, quiet. The note that the
@@ -46,8 +46,9 @@ test("a row says one state, in one weight, and the line above the list is one qu
     await page.goto("/");
     await expect(row(page, fresh)).toHaveAttribute("data-unread", "true");
     await expect(row(page, seen)).not.toHaveAttribute("data-unread", "true");
-    // News is its title's ink at the weight of a read row: no dot, the row's end keeps its time, and a reader hears "New".
-    await expect(row(page, fresh).getByTestId("unread-dot")).toHaveCount(0);
+    // News is its title's ink at the weight of a read row, and a dot in the right gutter: the row's end keeps its time, and a reader hears "New".
+    await expect(row(page, fresh).getByTestId("row-unread")).toHaveCount(1);
+    await expect(row(page, seen).getByTestId("row-unread")).toHaveCount(0);
     expect(await style(page, fresh, ".k-row-title", "fontWeight"), "a row with news is heavier than a read one: reading it reflows").toBe(await style(page, seen, ".k-row-title", "fontWeight"));
     await expect(row(page, fresh).getByTestId("row-time")).toHaveCount(1);
     await expect(row(page, fresh).getByTestId("row-new"), "a reader is not told the row is new").toHaveText("New");

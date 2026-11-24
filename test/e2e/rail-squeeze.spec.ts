@@ -138,7 +138,7 @@ test("the session list fits at every width its edge can be dragged to", async ({
       await expect(page.getByTestId("session-list")).toHaveAttribute("data-lines", lines);
       await expect(side).toHaveAttribute("data-open", "true");
       await expect(row(need).getByTestId("row-state")).toHaveText("Needs you");
-      await expect(row(work).getByTestId("row-state")).toHaveText("Working · 2 agents");
+      await expect(row(work).getByTestId("row-state")).toHaveText(lines === "one" ? "Working" : "Working · 2 agents");
       await expect(row(fail).getByTestId("row-class")).toBeVisible();
       await expect(row(wait).getByTestId("row-time")).toContainText("in ");
       await expect(page.getByTestId("new-unsent-mark")).toHaveText("not sent");

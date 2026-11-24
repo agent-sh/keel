@@ -158,7 +158,7 @@ test("one report tells every session's state, failure, run time and spend, as th
       for (const r of o.sessions) await expect(list.locator(`[data-testid="session-row"][data-session="${r.id}"]`)).toHaveCount(1, { timeout: 500 });
     }).toPass({ timeout: 15_000 });
     for (const r of o.sessions) await expect(list.locator(`[data-testid="session-row"][data-session="${r.id}"]`), r.title).toHaveAttribute("data-watch", r.watch);
-    await expect(list.locator(`[data-testid="session-row"][data-session="${parent}"]`).getByTestId("row-state")).toHaveText("Working · 1 agent");
+    await expect(list.locator(`[data-testid="session-row"][data-session="${parent}"]`).getByTestId("row-state")).toHaveText("Working");
     expect(Object.fromEntries(["need", "work", "wait", "fail", "stop", "done", "idle"].map((w) => [w, o.sessions.filter((r) => r.watch === w).length]))).toEqual({ need: 2, work: 3, wait: 1, fail: 2, stop: 1, done: 9, idle: 2 });
     await shoot(page, "overview-01-twenty-sessions");
 

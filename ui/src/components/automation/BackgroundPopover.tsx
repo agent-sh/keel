@@ -48,7 +48,7 @@ function LoopRow({ l }: { l: LoopRecord }) {
 }
 
 // A session's background work, and how much of it runs now.
-function useBackground(sessionId: string) {
+export function useBackground(sessionId: string) {
   const allAgents = useAuto((s) => s.agents);
   const allWaits = useAuto((s) => s.waits);
   const allLoops = useAuto((s) => s.loops);
@@ -79,12 +79,6 @@ export function useBackgroundLive(sessionId: string) {
 // The session's background work: agents, waits and monitors, loops.
 export function BackgroundButton({ sessionId }: { sessionId: string }) {
   const { agents, waits, loops, live, counts } = useBackground(sessionId);
-  const sessions = useStore((s) => s.sessions);
-  const told = useToldStates();
-  // Live agents and the ones that ended lately or since the owner looked; "N earlier" opens the rest a page at a time.
-  const seen = useAgentsSeen();
-  const now = useNow(agents.length > 0);
-  const fold = useFold(agents.map((a) => a.depth), agents.map((a) => listedOnItsOwn(a, agentSaid(a, told[a.session_id]).watch, seen, now)), sessionId, "first");
   if (!agents.length && !waits.length && !loops.length) return null;
 
   return (
@@ -101,8 +95,24 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
         {live ? <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /> : <Activity className="size-3.5" />}
         {live ? counts : "Background"}
       </Popover.Trigger>
+      <BackgroundPopup sessionId={sessionId} agents={agents} waits={waits} loops={loops} />
+    </Popover.Root>
+  );
+}
+
+// The popup of the session's background work: agents (each opens its session, with Stop), waits, loops. The
+// button above opens it from the header, the agents line in the session's dock from above the box.
+type Background = ReturnType<typeof useBackground>;
+export function BackgroundPopup({ sessionId, agents, waits, loops, side }: Pick<Background, "agents" | "waits" | "loops"> & { sessionId: string; side?: "top" | "bottom" }) {
+  const sessions = useStore((s) => s.sessions);
+  const told = useToldStates();
+  // Live agents and the ones that ended lately or since the owner looked; "N earlier" opens the rest a page at a time.
+  const seen = useAgentsSeen();
+  const now = useNow(agents.length > 0);
+  const fold = useFold(agents.map((a) => a.depth), agents.map((a) => listedOnItsOwn(a, agentSaid(a, told[a.session_id]).watch, seen, now)), sessionId, "first");
+  return (
       <Popover.Portal>
-        <Popover.Positioner sideOffset={8} align="end" className="z-50 outline-none">
+        <Popover.Positioner sideOffset={8} align="end" side={side} className="z-50 outline-none">
           <Popover.Popup
             data-testid="background-popup"
             className={cn(
@@ -161,7 +171,6 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>
-    </Popover.Root>
   );
 }
 

@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test";
 import { stateOf, type SessionState, type Watch } from "./watch.ts";
 import { stateWord } from "../automation/state.ts";
-import { ALERT_GROUPS, COUNTERS, CUT_BY_RESTART, STATE_WORD, holdsWords, lastTold, agentState, agentWhy, alertGroup, alertWord, askAction, countName, doneAlert, stillRuns, countWord, heldWords, inBackground, queuedWord, stateAlone, stateLabel, stateWords, agentTally as tally, waitsOnOwner, wentWrongWord } from "./state-words.ts";
+import { backgroundOf, dotWord, ALERT_GROUPS, COUNTERS, CUT_BY_RESTART, STATE_WORD, holdsWords, lastTold, agentState, agentWhy, alertGroup, alertWord, askAction, countName, doneAlert, stillRuns, countWord, heldWords, inBackground, queuedWord, stateAlone, stateLabel, stateWords, agentTally as tally, waitsOnOwner, wentWrongWord } from "./state-words.ts";
 
 const st = (watch: Watch, more: Partial<SessionState> = {}): SessionState => ({ watch, agents: 0, ...more });
 
@@ -173,4 +173,18 @@ test("a head that stands for more than one state says each it holds, once", () =
   // A turn a restart cut that is no longer waiting: Stopped, with by what.
   expect(CUT_BY_RESTART).toBe("Stopped by a restart");
   expect(lastTold("Waiting", "Timer: check the deploy")).toBe("It last told: Waiting, Timer: check the deploy");
+});
+
+test("the dot says where a session only waits on what it left going", () => {
+  expect(backgroundOf(st("work", { why: "command" }))).toBe("command");
+  expect(backgroundOf(st("work", { why: "agents", agents: 2 }))).toBe("agents");
+  expect(backgroundOf(st("work", { agents: 2, parked: 1 }))).toBe("agents");
+  expect(backgroundOf(st("wait", { why: "agent" }))).toBe("agents");
+  // A turn that runs, agents or not, is plain work; so is a wait for a timer, and nothing at rest waits on anything.
+  expect(backgroundOf(st("work", { why: "model", agents: 2 }))).toBeUndefined();
+  expect(backgroundOf(st("work", { agents: 2, parked: 2 }))).toBeUndefined();
+  expect(backgroundOf(st("wait", { why: "timer" }))).toBeUndefined();
+  expect(backgroundOf(st("done"))).toBeUndefined();
+  expect([dotWord(st("work", { why: "command" })), dotWord(st("work", { agents: 2 })), dotWord(st("work", { why: "tool" })), dotWord(st("need", { why: "approval" })), dotWord(st("done"))])
+    .toEqual(["Command in background", "Waiting on agents", "Working", "Needs you", "Done"]);
 });

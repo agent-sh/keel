@@ -82,6 +82,17 @@
   --st-fail: oklch(0.55 0.2 27);
   --st-done: oklch(0.52 0.09 168);
   --st-idle: oklch(0.56 0.015 255); /* 3:1 on a hovered row of the rail */
+  /* The state dot (a row's mark, bridge.css): blue works and waits on what it left going, yellow needs the owner,
+     red failed or declined, green done. Each is 3:1 or more on the rail's grey (test/e2e/state-dots.spec.ts). Yellow
+     is too light to stand off the rail by its fill alone (about 2:1), so it has an edge of its own (a darker amber ring). */
+  --dot-work: oklch(0.56 0.19 255);
+  --dot-need: oklch(0.8 0.17 88);
+  --dot-need-edge: oklch(0.55 0.12 80);
+  --dot-fail: oklch(0.55 0.2 27);
+  --dot-done: oklch(0.5 0.13 150);
+  /* News is a "white" dot. On the light rail a white dot is invisible (1.3:1), so it is the ink, the one neutral that is
+     as far from the rail as white is in the dark theme (14:1 here, 18:1 there). */
+  --dot-unread: var(--fg);
   /* The ink band on pages, panels and dialogs. */
   --band: var(--fg);
 
@@ -188,6 +199,12 @@
   --st-fail: oklch(0.7 0.18 27);
   --st-done: oklch(0.74 0.09 168);
   --st-idle: oklch(0.55 0.015 255);
+  --dot-work: oklch(0.72 0.16 250);
+  --dot-need: oklch(0.85 0.16 95);
+  --dot-need-edge: var(--dot-need);
+  --dot-fail: oklch(0.7 0.18 27);
+  --dot-done: oklch(0.76 0.17 150);
+  --dot-unread: oklch(0.98 0 0);
   /* At night the band is steel, not a white bar across the screen. */
   --band: oklch(0.52 0.018 255);
 
@@ -819,6 +836,12 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 .k-docket-glyph { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
 .k-docket-line[data-running] .k-docket-glyph { color: var(--st-work); }
 .k-docket-n { flex-shrink: 0; font-weight: 600; color: var(--fg); }
+/* The agents' line: the word, then each state's dot and count in the vocabulary's words, what calls the owner first. It wraps nothing:
+   a count with no room goes whole, the last first (the line's name carries them all). */
+.k-agents-label { flex-shrink: 0; font-weight: 600; color: var(--fg); }
+.k-agents-parts { display: flex; flex: 1 1 0; min-width: 0; height: var(--spacing-ctl-md); align-items: center; column-gap: 0.75rem; overflow: hidden; flex-wrap: wrap; }
+.k-agents-part { display: inline-flex; align-items: center; gap: 0.3125rem; flex-shrink: 0; white-space: nowrap; }
+.k-agents-waits { flex-shrink: 0; white-space: nowrap; color: var(--faint); }
 /* The plan's share done: a hairline track, in ink. */
 .k-docket-track { position: relative; flex-shrink: 0; width: 4rem; height: 2px; margin-left: auto; border-radius: 1px; background: var(--line); overflow: hidden; }
 .k-docket-track > span { position: absolute; inset: 0 auto 0 0; background: var(--fg); transition: width var(--dur-settle) var(--ease-out); }

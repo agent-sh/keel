@@ -1,17 +1,17 @@
-import { Bell, BellOff, ChevronRight, Gauge, ListCollapse, Moon, Repeat } from "lucide-react";
+import { Bell, BellOff, Gauge, ListCollapse, Moon, Repeat } from "lucide-react";
 import type React from "react";
 import { useCap } from "../../lib/caps.ts";
 import { capTip, dollars } from "../../../../src/automation/cap-rules.ts";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { useAgentsOpen } from "../../lib/agents-open.ts";
 import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
 import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
-import { COUNTERS, NEW, agentTally, countName, wentWrongWord } from "../../../../src/core/state-words.ts";
+import { COUNTERS, wentWrongWord } from "../../../../src/core/state-words.ts";
 import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { AgentMark, AgentNow, agentSaid, IconButton, StopAgent } from "./bits.tsx";
 import { AgentLane } from "./Lane.tsx";
 import { scope } from "../../lib/store.ts";
-import { Mark } from "../Mark.tsx";
 import { useNeedCount, useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
 import { calls, useSettled } from "../../lib/settle.ts";
@@ -25,19 +25,17 @@ import { isCounted } from "../../../../src/core/agent-count.ts";
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
 const LoopsPanel = lazy(() => import("./LoopsPanel.tsx").then((m) => ({ default: m.LoopsPanel })));
 
-// Under a session row: the agents it started and theirs, as a tree (each
-// agent's own under it, indented a step a level), each with its state in the one
-// word every other surface uses for it (src/core/state-words.ts), and stop. Children
-// never appear in the top-level list and never count as unread on their own.
-// The summary is one line that never wraps: how many agents, then every state
-// with agents in it as its mark and its count, what needs the owner or failed
-// first and in words. Every agent is in exactly one count, so they add up to
-// the total; the whole sentence is the line's name and tooltip. The list is
-// folded to that line until the owner opens it; their choice is kept per session.
-const OPEN_KEY = "keel.agentsOpen";
-const openKept = (): Record<string, boolean> => { try { return JSON.parse(localStorage.getItem(OPEN_KEY) ?? "{}"); } catch { return {}; } };
-
+// Under a session row, once the owner opens it with the row's chevron (Sidebar.tsx, their choice is kept per
+// session: lib/agents-open.ts): the agents it started and theirs, as a tree (each agent's own under it,
+// indented a step a level), each with its state in the one word every other surface uses for it
+// (src/core/state-words.ts), and stop. Children never appear in the top-level list and never count as
+// unread on their own. How many agents work, wait, failed or are done is said in the session itself
+// (AgentsDock.tsx), not in a line under the row. Folded, nothing is drawn and nothing is computed.
 export function SessionChildren({ parentId, current }: { parentId: string; current: string | null }) {
+  return useAgentsOpen(parentId) ? <AgentTree parentId={parentId} current={current} /> : null;
+}
+
+function AgentTree({ parentId, current }: { parentId: string; current: string | null }) {
   const onPick = openSession;
   const all = useAuto((s) => s.agents);
   const sessions = useStore((s) => s.sessions);
@@ -57,8 +55,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const calling = (v: { kids: { id: string }[]; said: { watch: Watch }[] }) => v.said.map((x, i) => (calls(x.watch) ? `${v.kids[i]!.id}:${x.watch}` : "")).filter(Boolean).join(" ");
   const live = useMemo(() => ({ kids: liveKids, said: liveSaid }), [liveKids, liveSaid]);
   const { kids, said } = useSettled(`kids:${parentId}`, live, liveKids.map((k, i) => `${k.id}:${liveSaid[i]!.watch}:${liveSaid[i]!.title}`).join(" "), (was) => calling(live) !== calling(was));
-  const sum = useMemo(() => agentTally(said.map((x) => x.watch)), [said]);
-  const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
+  const expanded = true;
   // The rows whose lane is open: its five lines under it (./Lane.tsx).
   const [lanes, setLanes] = useState<ReadonlySet<string>>(() => new Set());
   const foldLane = (id: string) => setLanes((was) => { const n = new Set(was); if (!n.delete(id)) n.add(id); return n; });
@@ -79,47 +76,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   // While the tree's rows show and an agent of it works, what each is doing comes to this page (lib/scope.ts).
   const working = liveKids.some(isLive);
   useEffect(() => (expanded && working ? scope.feed(`tree:${parentId}`) /* the tree feed of src/server/scope.ts (treeFeed) */ : undefined), [expanded, working, parentId]);
-  const setOpen = (o: boolean) => {
-    setExpanded(o);
-    const m = openKept();
-    if (o) m[parentId] = true; else delete m[parentId];
-    localStorage.setItem(OPEN_KEY, JSON.stringify(m));
-  };
   if (!kids.length) return null;
-  // Folded, an agent that ended since the owner looked is said on the line.
-  const fresh = kids.filter((k) => endedUnseen(k, seen)).length;
   return (
     <div className="k-session-children" data-testid="session-children">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-label={sum.text}
-        title={sum.text}
-        data-testid="children-toggle"
-        onClick={() => setOpen(!expanded)}
-        className="k-kids-sum"
-      >
-        {/* One form whatever the states: how many, then each state's mark and figure, what calls the owner first. The
-            words are the line's name and each figure's tooltip. One line, never wrapped: a count with no room on it
-            goes whole, the last first. */}
-        <span className="k-kids-counts">
-        <ChevronRight className={cn("k-kids-fold", expanded && "rotate-90")} />
-        <span className="k-kids-total" data-testid="children-total"><b className="k-kids-n">{kids.length}</b><span className="k-kids-label"> agent{kids.length > 1 ? "s" : ""}</span></span>
-        <span className="k-kids-parts" data-testid="children-summary">
-          {sum.parts.map((p) => (
-            <span key={p.w} className="k-kids-part" data-watch={p.w} data-testid={p.w === "need" ? "children-asking" : `children-${p.w}`} data-count={p.n} title={p.text}>
-              <Mark w={p.w} /><b className="k-kids-n">{p.n}</b><span className="k-kids-word"> {countName(p.w, p.n)}</span>
-            </span>
-          ))}
-        </span>
-        </span>
-        {/* Not a count: how many ended since the owner looked, in the room the counts leave, gone whole where that is too little. */}
-        {!expanded && fresh > 0 && (
-          <span className="k-kids-extra">
-            <span className="k-kids-new" data-testid="children-fresh" title="Ended since you looked">{fresh} {NEW.toLowerCase()}</span>
-          </span>
-        )}
-      </button>
       {expanded && <EarlierRow n={fold.earlier} onMore={fold.more} />}
       {expanded && kids.map((a, i) => {
         if (!fold.show[i]) return null;

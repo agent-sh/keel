@@ -159,6 +159,24 @@ export function stateAlone(st: Stated): string {
   return st.watch === "work" && st.why === "command" ? cap(commandWhat(st)) : stateLabel(st);
 }
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
+// A session whose own turn is at rest and that only waits on what it left going: its agents at work, or a
+// command in the background. Nothing is asked of the owner. The row's dot has its own form for it (a ring
+// around the dot), and says so in the words below. The head and the counts keep their one word (Working
+// or Waiting): this is the kind of working or waiting the dot shows, not another state.
+export type Background = "agents" | "command";
+export function backgroundOf(st: Stated | undefined): Background | undefined {
+  if (!st) return undefined;
+  if (st.watch === "work") {
+    if (st.why === "command") return "command";
+    // The daemon names the agents when it knows what they do; with no turn running and no other reason the agents are all it works on.
+    if (st.why === "agents" || (!st.why && agentsWorking(st) > 0)) return "agents";
+  }
+  return st.watch === "wait" && st.why === "agent" ? "agents" : undefined;
+}
+export const WAITING_ON_AGENTS = "Waiting on agents";
+// What the dot says in its tooltip and to a reader: the state alone, except where it waits on its agents.
+export const dotWord = (st: Stated): string => (backgroundOf(st) === "agents" ? WAITING_ON_AGENTS : stateAlone(st));
 // What a group of sessions holds, where one head stands for more than one state (a band of the
 // folded list): the words of the states in it, each once. "Failed or declined", "Done or not
 // started", "Stopped or waiting to resume".

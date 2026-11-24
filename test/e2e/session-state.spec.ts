@@ -276,7 +276,7 @@ test("keel sessions, the page and keel__sessions_list report the same state", as
     await expect(row(page, asks)).toHaveAttribute("data-watch", "need");
     await expect(row(page, asks).getByTestId("row-state")).toHaveText("Needs you");
     await expect(row(page, parent)).toHaveAttribute("data-watch", "work");
-    await expect(row(page, parent).getByTestId("row-state")).toHaveText("Working · 1 agent");
+    await expect(row(page, parent).getByTestId("row-state")).toHaveText("Working");
 
     // The command line: the same words, and why.
     const cli = execFileSync("bun", ["src/main.ts", "sessions", "--url", baseURL!], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: process.env.KEEL_CONFIG_DIR ?? `${WS}/config` } }).split("\n");
@@ -484,13 +484,13 @@ test("an agent that asks the owner is marked as asking in the tree, on its card 
     // The parent needs the owner, and says which agent asks what.
     await expect(row(page, parent)).toHaveAttribute("data-watch", "need");
     await expect(row(page, parent).getByTestId("row-why")).toHaveText(/^Agent Ask about scope.*: Question: Should the check cover the staging cluster\?$/);
-    // The count under the row: one asks, one runs. Folded, the mark is the owner's.
+    // The count is in the session: one asks, one runs. The row says none, and its dot is the owner's.
     const kids = page.getByTestId("session-list").getByTestId("session-children");
-    await expect(kids.getByTestId("children-asking")).toHaveText("1 needs you");
-    await expect(kids.getByTestId("children-toggle")).toHaveAccessibleName("2 agents: 1 needs you, 1 working");
-    await expect(kids.getByTestId("children-toggle").locator('.k-mark[data-watch="need"]')).toBeVisible();
+    await expect(page.getByTestId("dock-agents-part").first()).toHaveText("1 needs you");
+    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", "2 agents: 1 needs you, 1 working");
+    await expect(row(page, parent).locator('.k-mark[data-watch="need"]')).toBeVisible();
     // The tree: the asking agent is marked, the running one is not.
-    await kids.getByTestId("children-toggle").click();
+    await row(page, parent).getByTestId("children-toggle").click();
     const asking = kids.locator('[data-testid="child-session"][data-asking]');
     await expect(asking).toHaveCount(1);
     await expect(asking).toContainText("Ask about scope");

@@ -20,6 +20,7 @@ import { openPanel } from "./SidePanel.tsx";
 
 // The tree review (land, send back or drop each area), the one action the work board offers for landing.
 const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
+import { AgentsDock, useAgentsTally } from "./automation/AgentsDock.tsx";
 
 const since = (t: number) => {
   const s = Math.max(0, Math.round((liveNow() - t) / 1000)); // stopped while the daemon is unreachable
@@ -142,14 +143,16 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
   const changed = useChanged(sessionId);
   const root = useStore((s) => rootOf((id) => s.sessions[id]?.parent_id, sessionId));
   const tree = useTreeMark(root);
+  const agents = useAgentsTally(sessionId);
   const active = !inPanel && plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled");
-  if (!active && !jobs.length && !changed && !tree) return null;
+  if (!active && !jobs.length && !changed && !tree && !agents) return null;
   const done = plan?.filter((p) => p.status === "completed").length ?? 0;
   const now = plan?.find((p) => p.status === "in_progress");
   return (
     // A quiet ledger over the box: a line a thing, set on the page, its words lined up with the box's.
     // Only the plan, opened, is a surface of its own (styles.css, .k-docket).
     <div className="k-docket" data-testid="session-dock">
+      {agents && <AgentsDock sessionId={sessionId} />}
       {active && plan && (
         <Collapsible.Root className="k-docket-plan group/plan">
           <Collapsible.Trigger className="k-docket-line" data-testid="dock-plan">

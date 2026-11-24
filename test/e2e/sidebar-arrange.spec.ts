@@ -112,19 +112,20 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
   await request.post(`/api/sessions/${parent}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn("script:long-tool"), spawn("Say ok.")])}` } });
   await page.goto(`/s/${b}`);
-  const kids = entry(parent).locator("xpath=..").getByTestId("session-children");
-  await expect(kids.getByTestId("children-toggle")).toContainText("2 agents", { timeout: 30_000 });
-  await expect(kids.getByTestId("children-toggle")).toHaveAttribute("aria-expanded", "false");
+  const wrap = entry(parent).locator("xpath=..");
+  const kids = wrap.getByTestId("session-children");
+  const toggle = wrap.getByTestId("children-toggle");
+  // The row has the chevron of its agents and says no number of them.
+  await expect(toggle).toHaveAttribute("aria-expanded", "false", { timeout: 30_000 });
   await expect(kids.getByTestId("child-session")).toHaveCount(0);
-  // What works is said: in words while the agents are in two states or fewer, else as its mark and figure.
-  await expect(kids.getByTestId("children-work")).toBeVisible({ timeout: 30_000 });
+  expect(await wrap.innerText()).not.toMatch(/\b\d+ agents?\b/);
   await shoot(page, "arrange-03-agents-folded");
-  await kids.getByTestId("children-toggle").click();
+  await toggle.click();
   await expect(kids.getByTestId("child-session")).toHaveCount(2);
   await shoot(page, "arrange-04-agents-open");
   await page.reload();
   await expect(kids.getByTestId("child-session")).toHaveCount(2); // their choice, kept
-  await kids.getByTestId("children-toggle").click();
+  await toggle.click();
   await expect(kids.getByTestId("child-session")).toHaveCount(0);
 
   // Filter: words of the title or the folder.

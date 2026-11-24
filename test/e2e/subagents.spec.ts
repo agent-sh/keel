@@ -26,10 +26,11 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   await expect(started).toContainText("Started 2 agents", { timeout: 60_000 });
   await started.click();
   await expect(page.getByTestId("agent-call")).toHaveCount(2);
-  // The agents under the session row are folded to a count until opened.
-  const kids = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${session.id}"]`).locator("xpath=..").getByTestId("session-children");
+  // The agents under the session row are folded until its chevron opens them.
+  const wrap = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${session.id}"]`).locator("xpath=..");
+  const kids = wrap.getByTestId("session-children");
   await expect(kids.getByTestId("child-session")).toHaveCount(0);
-  await kids.getByTestId("children-toggle").click();
+  await wrap.getByTestId("children-toggle").click();
   await expect(page.getByTestId("child-session")).toHaveCount(2);
   await expect(await inHead(page, "background-button")).toBeVisible();
   await shoot(page, "agents-01-started");
@@ -396,7 +397,7 @@ test("agents started together are one line, and the parent's row moves once for 
       const w = window as unknown as { __said: string[] };
       w.__said = [];
       const look = () => {
-        const kids = r.parentElement?.querySelector('[data-testid="children-toggle"]')?.getAttribute("aria-label") ?? "";
+        const kids = document.querySelector('[data-testid="dock-agents"]')?.getAttribute("aria-label") ?? "";
         const now = `${r.querySelector('[data-testid="row-state"]')?.textContent ?? ""}|${kids}`;
         if (kids && w.__said.at(-1) !== now) w.__said.push(now);
         requestAnimationFrame(look);
@@ -406,10 +407,10 @@ test("agents started together are one line, and the parent's row moves once for 
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([...lanes.map(hold), { name: "spawn_agent", input: { message: "Quick report\nscript:say Report: nothing to change.", isolation: "none" } }])}` } });
     const agents = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { status: string }[];
     await expect.poll(async () => (await agents()).map((a) => a.status).sort().join(" "), { timeout: 60_000 }).toBe("completed running running running running running");
-    const toggle = row.locator("xpath=..").getByTestId("children-toggle");
-    await expect(toggle).toHaveAccessibleName("6 agents: 5 working, 1 done", { timeout: 20_000 });
-    // One total: the row counts its working agents of every agent it started, the number its agents' line starts with.
-    await expect(row.getByTestId("row-state")).toHaveText("Working · 5 of 6 agents", { timeout: 20_000 });
+    const dock = page.getByTestId("dock-agents");
+    await expect(dock).toHaveAttribute("aria-label", "6 agents: 5 working, 1 done", { timeout: 20_000 });
+    // One total: the head counts its working agents of every agent it started, the number the session's own line starts with; the row says none.
+    await expect(row.getByTestId("row-state")).toHaveText("Working", { timeout: 20_000 });
     await expect(page.getByTestId("station-word")).toHaveText("Working · 5 of 6 agents");
     // The row and its line changed a few times for six agents (they came, one reported), not at each.
     const said = await page.evaluate(() => (window as unknown as { __said: string[] }).__said);
@@ -437,7 +438,7 @@ test("agents started together are one line, and the parent's row moves once for 
     // An agent that fails is on its parent's line at once, as soon as the page hears of it: it calls the owner.
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "Fetch the export\nscript:billing", isolation: "none" } }])}` } });
     await expect.poll(async () => (await agents()).some((a) => a.status === "failed"), { timeout: 60_000, intervals: [50] }).toBe(true);
-    await expect(toggle).toHaveAccessibleName(/1 failed/, { timeout: 1000 });
+    await expect(dock).toHaveAttribute("aria-label", /1 failed/, { timeout: 1000 });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${session.id}`);
     await expect(page.locator('[data-testid="work-step"][data-family="agents"]')).toBeVisible();
