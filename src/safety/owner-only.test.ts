@@ -401,6 +401,7 @@ test("an output option is judged as a redirect to the same path", () => {
     `git format-patch -o ${p} HEAD~1`, `git format-patch -o${p} HEAD~1`, `git format-patch --output-directory=${p} HEAD~1`, `git format-patch --output-directory ${p} HEAD~1`,
     `git archive -o ${p} HEAD`, `git archive --output=${p} HEAD`, `git bundle create ${p} HEAD`,
     `sort -o ${p} data.txt`, `sort -ro ${p} data.txt`, `sort --output=${p} data.txt`, `sort -o${p} data.txt`,
+    `sort --o=${p} data.txt`, `sort --out=${p} data.txt`, `sort --outp ${p} data.txt`, `sort --outpu=${p} data.txt`,
   ];
   for (const p of ["~/.ssh/authorized_keys", "/home/u/.bashrc", "$HOME/.zshrc", "/home/u/.config/keel-bun/mcp.json", "/home/u/state/keel.db", "/w/repo/.github/workflows/ci.yml", "/w/repo/out.txt", "/tmp/out.txt"]) {
     const want = verdicts(`echo x > ${p}`);
