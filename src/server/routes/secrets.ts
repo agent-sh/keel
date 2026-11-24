@@ -9,6 +9,7 @@ import { setConcealer } from "../../core/conceal.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { nameError, ordinaryValue, SHELL_FIELDS, StreamScan, vault, type Words } from "../../safety/secrets.ts";
 import { dropCallEnv, registerEnv, setCallEnv } from "../../tools/jobs.ts";
+import { extractShellApplyPatch } from "../../tools/v4a.ts";
 import { declareAsksOwner, registerShared } from "../../tools/registry.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -16,6 +17,16 @@ import { gate } from "./permissions.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
+
+// A call that writes files: an edit tool, or a command the tool applies itself as a patch
+// (Codex's exec_command with apply_patch, which no shell runs: a reference put in it would
+// be written as its own text). Only a command a shell runs is given a value.
+const writesFiles = (tool: Tool, input: any): boolean => {
+  if (tool.kind === "edit") return true;
+  if (!tool.appliesPatch) return false;
+  const cmd = input?.cmd ?? input?.command;
+  return typeof cmd === "string" && !!extractShellApplyPatch(cmd);
+};
 
 export type SecretRequest = { id: string; session_id: string; name: string; purpose?: string; created: number };
 type Waiting = SecretRequest & { resolve: (r: { given: true } | { given: false; reason?: string }) => void };
@@ -199,7 +210,7 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
     // placeholder would put its text in the file: refused too, saying how.
     beforeTool(s, call) {
       if (!call.input || typeof call.input !== "object" || call.ctx.dispatch) return;
-      if (call.tool.kind === "edit") {
+      if (writesFiles(call.tool, call.input)) {
         const { held, gone } = vault.placeholders(call.input, s.id);
         if (!held.length && !gone.length) return;
         return { deny: `${[...held, ...gone].join(", ")} stands for a secret; a file tool writes neither its value nor its text, so nothing was written. Where the file holds the value you read as the placeholder, change the text around it and leave that line out of your edit. To put a value in a file, use a shell command, where the placeholder stands for it: printf '%s\n' "NAME=<the placeholder>" >> .env.` };
@@ -212,7 +223,7 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
       return { deny: `${[...new Set(stuck)].join(", ")} stands inside a quoted heredoc (<<'EOF'), where nothing expands, so the command would get the placeholder text, not the secret; nothing ran. Use an unquoted heredoc (<<EOF, where it expands) or put the placeholder outside it, for example: printf '%s' <the placeholder> | your-command.` };
     },
     execInput(s, call) {
-      if (call.tool.kind !== "shell" || call.ctx.dispatch || call.tool.peer) return;
+      if (call.tool.kind !== "shell" || call.ctx.dispatch || call.tool.peer || writesFiles(call.tool, call.input)) return;
       const { value, used, env } = vault.reveal(call.input, s.id, SHELL_FIELDS);
       if (Object.keys(env).length) setCallEnv(s.id, call.id, env);
       if (used.length) return value;
