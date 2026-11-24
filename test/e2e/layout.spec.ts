@@ -817,3 +817,49 @@ test("a session placed in a chosen pane by keyboard", async ({ page, request }) 
     for (const id of [a, b, c, d]) await request.delete(`/api/sessions/${id}`);
   }
 });
+
+// Feature: every Settings section sits in one column centred beside the rail, under one title size, and the
+// rail keeps the groups the owner rarely needs folded until the section shown is in one.
+test("settings sections share one column and one title size, and the rail folds", async ({ page }) => {
+  await page.setViewportSize({ width: 2200, height: 1040 });
+  const titleSize = async (id: string) => {
+    await page.goto(`/settings/${id}`);
+    await expect(page.getByTestId("settings-title")).toBeVisible();
+    return page.evaluate(() => {
+      const title = document.querySelector<HTMLElement>("[data-testid=settings-title]")!;
+      const body = document.querySelector(".k-settings-body")!.getBoundingClientRect();
+      const scroll = document.querySelector(".k-settings-scroll")!.getBoundingClientRect();
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+      return { size: parseFloat(getComputedStyle(title).fontSize) / rem, left: body.left - scroll.left, right: scroll.right - body.right };
+    });
+  };
+  const sizes = new Set<number>();
+  for (const id of ["general", "network", "usage"]) {
+    const m = await titleSize(id);
+    sizes.add(m.size);
+    // Centred in the free space (a scrollbar's width at most apart).
+    expect(Math.abs(m.left - m.right), `${id} column centred`).toBeLessThanOrEqual(20);
+  }
+  // One title size, the type scale's title step (1.5rem).
+  expect([...sizes]).toEqual([1.5]);
+
+  // The rail: This computer and Advanced are folded at rest, open on their head, and open when the section is in them.
+  await page.goto("/settings/general");
+  const nav = page.getByRole("navigation", { name: "Settings sections" });
+  const head = (g: string) => nav.locator(`button[data-group="${g}"]`);
+  await expect(head("This computer")).toHaveAttribute("aria-expanded", "false");
+  await expect(head("Advanced")).toHaveAttribute("aria-expanded", "false");
+  await expect(nav.locator('button[data-section="health"]')).toHaveCount(0);
+  await expect(nav.locator('button[data-section="usage"]')).toBeVisible();
+  await head("This computer").click();
+  await expect(nav.locator('button[data-section="health"]')).toBeVisible();
+  await page.goto("/settings/telemetry");
+  await expect(head("Advanced")).toHaveAttribute("aria-expanded", "true");
+  await expect(nav.locator('button[data-section="telemetry"]')).toHaveAttribute("aria-current", "page");
+  // The rail stays where it is when the section scrolls: it is not part of the page's scroll.
+  const top = () => nav.evaluate((el) => el.getBoundingClientRect().top);
+  const before = await top();
+  await page.getByTestId("settings-scroll").evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  expect(await top()).toBe(before);
+  await shoot(page, "layout-16-settings-column");
+});

@@ -204,6 +204,9 @@ const ORDER = GROUPS.map(([g]) => g);
 // The rows and headings of each section, read from the source when the page is bundled.
 const FIND: Record<string, string[]> = settingsFind();
 const groupOf = (id?: string) => (id ? GROUP[id] ?? "Advanced" : "");
+// The groups the rail keeps folded at rest: what the owner rarely comes for. A group opens when the
+// section shown is in it, when it is opened by its head, and while a word is searched.
+const FOLDED = new Set(["This computer", "Advanced"]);
 // Sections of figures and lists use the width; forms keep a reading measure.
 const WIDE = new Set(["usage", "lessons", "routes", "network", "telemetry", "observability", "experiments", "resources", "storage", "leftovers", "health", "machines", "models", "mcp", "lsp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
 
@@ -242,10 +245,24 @@ export function Settings({ section }: { section: string }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const jump = useRef<HTMLButtonElement>(null);
+  const root = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const find = useRef<HTMLInputElement>(null);
   const sidebar = useUI((s) => s.sidebar);
   const all = settingsSections.all().sort((a, b) => ORDER.indexOf(groupOf(a.id)) - ORDER.indexOf(groupOf(b.id)) || (RANK[a.id] ?? 999) - (RANK[b.id] ?? 999) || (a.order ?? 50) - (b.order ?? 50));
+  // The grouped rail stands beside the section only on a wide page (there the bar that opens the list is not drawn);
+  // a narrow page's list is the whole list, so the folds are the wide rail's own.
+  const [railed, setRailed] = useState(false);
+  const [unfolded, setUnfolded] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const look = () => setRailed(!jump.current?.offsetParent);
+    look();
+    const ro = new ResizeObserver(look);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   // What sections draw at run time (an MCP server, a shortcut's command), read once a word is typed.
   const [live, setLive] = useState<Record<string, string[]>>({});
   const asked = useRef(false);
@@ -262,6 +279,8 @@ export function Settings({ section }: { section: string }) {
   const [missing, setMissing] = useState<string | null>(null);
   useEffect(() => setMissing(null), [section]);
   const cur = all.find((s) => s.id === section) ?? all[0]!;
+  const folds = railed && !q.trim();
+  const foldedGroup = (g: string) => folds && FOLDED.has(g) && !unfolded.has(g) && g !== groupOf(cur.id);
   const Body = cur.component;
   // The section shown has its row in view: on a direct link to a late one, and when the list opens.
   useEffect(() => { list.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: open ? "center" : "nearest" }); }, [cur.id, open]);
@@ -297,7 +316,7 @@ export function Settings({ section }: { section: string }) {
   };
 
   return (
-    <div className="k-settings flex min-h-0 flex-1 flex-col" data-testid="settings">
+    <div ref={root} className="k-settings flex min-h-0 flex-1 flex-col" data-testid="settings">
       <header className="k-page-head k-surface-head">
         {!sidebar && (
           <button type="button" aria-label="Show the sidebar" onClick={() => savePref("sidebar", true)} className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg md:hidden">
@@ -328,8 +347,23 @@ export function Settings({ section }: { section: string }) {
             <div ref={list} className="k-settings-nav" onKeyDown={listKey}>
               {shown.map((s, i) => (
                 <Fragment key={s.id}>
-                  {groupOf(s.id) !== groupOf(shown[i - 1]?.id) && <h3 className="k-settings-group k-label">{groupOf(s.id)}</h3>}
-                  <button
+                  {groupOf(s.id) !== groupOf(shown[i - 1]?.id) && (
+                    folds && FOLDED.has(groupOf(s.id)) ? (
+                      <h3 className="k-settings-group k-label">
+                        <button
+                          type="button"
+                          className="k-settings-fold"
+                          data-group={groupOf(s.id)}
+                          aria-expanded={!foldedGroup(groupOf(s.id))}
+                          onClick={() => setUnfolded((u) => { const n = new Set(u); n.has(groupOf(s.id)) ? n.delete(groupOf(s.id)) : n.add(groupOf(s.id)); return n; })}
+                        >
+                          {groupOf(s.id)}
+                          <ChevronDown className="k-settings-fold-mark" aria-hidden />
+                        </button>
+                      </h3>
+                    ) : <h3 className="k-settings-group k-label">{groupOf(s.id)}</h3>
+                  )}
+                  {!foldedGroup(groupOf(s.id)) && <button
                     type="button"
                     onClick={() => go(s.id)}
                     aria-current={s.id === cur.id ? "page" : undefined}
@@ -341,7 +375,7 @@ export function Settings({ section }: { section: string }) {
                   >
                     <span className={s.id === cur.id ? "text-accent" : "text-faint"}>{s.icon}</span>
                     {s.label}
-                  </button>
+                  </button>}
                   {hits(s.id).map((n) => (
                     <button key={n} type="button" className="k-settings-hit" data-testid="settings-hit" title={n} onClick={() => go(s.id, n)}>{n}</button>
                   ))}

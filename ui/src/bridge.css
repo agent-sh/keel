@@ -1407,6 +1407,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-settings-find:focus-within { border-color: transparent; box-shadow: 0 0 0 2px var(--ring); }
 .k-settings-nav { display: flex; flex-direction: column; gap: 1px; flex: 1; min-height: 0; overflow-y: auto; padding: 0 0.75rem 1rem; }
 .k-settings-group { padding: 0.875rem 0.625rem 0.25rem; }
+/* A group the wide rail folds at rest: its head is the button that opens it. */
+.k-settings-fold { display: flex; align-items: center; justify-content: space-between; width: 100%; border-radius: var(--radius-sm); color: inherit; text-align: left; }
+.k-settings-fold:hover { color: var(--fg); }
+.k-settings-fold-mark { width: 0.875rem; height: 0.875rem; transition: transform var(--dur-move) var(--ease-out); }
+.k-settings-fold[aria-expanded="false"] .k-settings-fold-mark { transform: rotate(-90deg); }
 .k-settings-nav > button { height: 2.5rem; border-radius: var(--radius-md); scroll-margin-block: 1rem; }
 .k-settings-nav > button[aria-current] > span { color: var(--fg); }
 /* A row a search found inside a section: named under it, a step in, in the quiet ink. */
@@ -1417,7 +1422,9 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 @keyframes k-found { 0%, 40% { background: var(--accent-soft); } 100% { background: transparent; } }
 .k-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .k-settings-rail[data-open] + .k-settings-scroll { display: none; }
-.k-settings-body { max-width: 52rem; padding: 1rem 1rem 1.5rem; }
+/* One column for every section, in the free space beside the rail: the reading width for forms, the full
+   width for tables and figures, each centred. The title is the column's first line, on the type scale. */
+.k-settings-body { max-width: 52rem; margin-inline: auto; padding: 1rem 1rem 1.5rem; }
 .k-settings-body[data-wide] { max-width: 92rem; }
 /* A line cut short with an ellipsis: a section's names, URLs and paths, a panel's file names. A phone writes it whole:
    no hover shows the rest, and a title is no way to read it on a touch screen. */
@@ -1449,7 +1456,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-settings-group:first-child { padding-top: 2px; }
   .k-settings-rail[data-open] + .k-settings-scroll { display: block; }
   .k-settings-body { padding: 2.5rem 3rem; }
-  .k-settings-body > h2 { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; font-size: var(--text-display); font-weight: 700; }
+  .k-settings-body > h2 { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
 }
 /* Cards are flat instrument panels; a row's label leads, its hint is quiet. */
 .k-card { border-radius: var(--radius-md); box-shadow: none; border-color: var(--line); }
