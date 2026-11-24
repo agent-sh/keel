@@ -381,7 +381,8 @@ test("a host a fetched page linked takes a plain GET of the addresses the page w
   callTool(s, "mcp__harness-web__webfetch", { url: "https://notes.example/a" }, "See https://kb.linked.example/guide and https://api.linked.example/v1");
   callTool(s, "Bash", { command: "curl -s https://notes.example/b" }, "More at https://mirror.linked.example/start?lang=en");
   expect((await decide(s, mcpFetch, { url: "https://kb.linked.example/guide" })).is).toBe("ran");
-  expect((await decide(s, fetchTool, fetchOf("https://mirror.linked.example/start?lang=en"))).is).toBe("ran");
+  // (An address with a query is data, even as a page wrote it: it is held for the owner, as the address a page names is.)
+  expect((await decide(s, fetchTool, fetchOf("https://mirror.linked.example/start?lang=en"))).is).toBe("card");
   expect((await decide(s, bash, { command: "curl -s https://api.linked.example/v1" })).is).toBe("ran");
   // Another page of a host only a page linked, or the linked page with another query, is not what the page wrote.
   for (const [tool, input] of [[mcpFetch, { url: "https://kb.linked.example/other" }], [fetchTool, fetchOf("https://mirror.linked.example/start?lang=de")], [bash, { command: "curl -s https://api.linked.example/v2" }]] as const) {
