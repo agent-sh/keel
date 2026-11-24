@@ -73,8 +73,15 @@ const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => 
 // no secret in the environment it was started with (src/safety/closed-env.ts).
 if (!g.__keelSignals) (await import("./core/relaunch.ts")).startClean();
 // The scripted daemon of a pictures run: the same ids and clock in every run (src/core/fixed-world.ts).
-if (process.env.KEEL_PICTURES_FIXED && process.env.KEEL_SCRIPTED_PROVIDER === "1" && values["state-dir"]) {
-  (await import("./core/fixed-world.ts")).fixWorld(Number(process.env.KEEL_PICTURES_FIXED), values["state-dir"]);
+// Only in a scratch folder no real daemon used, with no real provider to answer (src/core/fixed-world-gate.ts);
+// otherwise it starts real and says why. A hot reload keeps the world it had.
+const fixedAsked = process.env.KEEL_PICTURES_FIXED && process.env.KEEL_SCRIPTED_PROVIDER === "1" && values["state-dir"];
+if (fixedAsked && (globalThis as { __keelFixedWorld?: number }).__keelFixedWorld === undefined) {
+  const { fixedRefusal, realProviders } = await import("./core/fixed-world-gate.ts");
+  const dir = values["state-dir"]!;
+  const no = await fixedRefusal(dir, () => realProviders(dir));
+  if (no) console.error(`keel serve: KEEL_PICTURES_FIXED is set, but the ids and clock stay real: ${no}.`);
+  else (await import("./core/fixed-world.ts")).fixWorld(Number(process.env.KEEL_PICTURES_FIXED), dir);
 }
 const { startDaemon } = await import("./server/start.ts");
 // A daemon that could not start ends here, with what went wrong. Left alone it
