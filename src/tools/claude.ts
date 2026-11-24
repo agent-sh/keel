@@ -292,6 +292,7 @@ const Grep: Tool = {
 const WebFetch: Tool = {
   name: "WebFetch",
   readOnly: true,
+  inputOptional: ["prompt"], // a fetch with no question is read whole
   web: { fetches: (input) => [String(input?.url ?? "")], links: true, public: (input, own) => !own(String(input?.url ?? "")) },
   description:
     "Fetch a URL (http is upgraded to https) and answer prompt from the page: a long page is read by a smaller, faster " +

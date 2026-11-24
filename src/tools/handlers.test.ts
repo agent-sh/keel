@@ -14,7 +14,7 @@ function close(src: string, open: number): number {
   const stack: string[] = [];
   let prev = "";
   for (let i = open; i < src.length; i++) {
-    const c = src[i];
+    const c = src[i]!;
     if (c === "/" && src[i + 1] === "/") { i = src.indexOf("\n", i); if (i < 0) return -1; continue; }
     if (c === "/" && src[i + 1] === "*") { i = src.indexOf("*/", i) + 1; continue; }
     if (c === '"' || c === "'") {
@@ -39,13 +39,32 @@ function close(src: string, open: number): number {
   return -1;
 }
 
+// The source with its comments blanked (same length), so a quote in a comment opens no string.
+function uncommented(src: string): string {
+  const out = src.split("");
+  let prev = "";
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]!;
+    if (c === "/" && src[i + 1] === "/") { const e = src.indexOf("\n", i); const to = e < 0 ? src.length : e; for (let k = i; k < to; k++) out[k] = " "; i = to; continue; }
+    if (c === "/" && src[i + 1] === "*") { const e = src.indexOf("*/", i) + 2; for (let k = i; k < e; k++) if (src[k] !== "\n") out[k] = " "; i = e - 1; continue; }
+    if (c === '"' || c === "'") { i = stringEnd(src, i); prev = c; continue; }
+    if (c === "`") { i = templateEnd(src, i); prev = c; continue; }
+    if (c === "/" && /[(,=:[!&|?{};]/.test(prev || ";")) {
+      for (i++; i < src.length && src[i] !== "/" && src[i] !== "\n"; i++) { if (src[i] === "\\") i++; else if (src[i] === "[") while (i < src.length && src[i] !== "]" && src[i] !== "\n") { if (src[i] === "\\") i++; i++; } }
+      prev = "/"; continue;
+    }
+    if (!/\s/.test(c)) prev = c;
+  }
+  return out.join("");
+}
+
 // The members of an object literal's text, by key: `{ a: 1, b, async c() {}, ...d }` gives a, b, c and "...".
 function members(obj: string): Map<string, string> {
   const out = new Map<string, string>();
   let i = 1;
   const end = obj.length - 1;
   while (i < end) {
-    while (i < end && /[\s,]/.test(obj[i])) i++;
+    while (i < end && /[\s,]/.test(obj[i]!)) i++;
     if (i >= end) break;
     const start = i;
     // The member runs to the next comma outside any bracket.
@@ -62,9 +81,9 @@ function members(obj: string): Map<string, string> {
     const text = obj.slice(start, j).trim();
     i = j + 1;
     if (text.startsWith("...")) { out.set("...", text); continue; }
-    const m = /^(?:(?:async|get|set)\s+)?(?:\*\s*)?(["']?)([A-Za-z_$][\w$-]*)\1\s*([:(,]|$)/.exec(text);
+    const m = /^(?:(?:async|get|set)\s+)?(?:\*\s*)?(["']?)(-?[A-Za-z_$][\w$-]*)\1\s*([:(,]|$)/.exec(text);
     if (!m) continue;
-    const key = m[2];
+    const key = m[2]!;
     out.set(key, m[3] === ":" ? text.slice(text.indexOf(":") + 1).trim() : text);
   }
   return out;
@@ -72,7 +91,7 @@ function members(obj: string): Map<string, string> {
 const stringEnd = (s: string, i: number) => { const q = s[i]; for (i++; i < s.length && s[i] !== q; i++) if (s[i] === "\\") i++; return i; };
 const templateEnd = (s: string, i: number) => { for (i++; i < s.length && s[i] !== "`"; i++) { if (s[i] === "\\") i++; else if (s[i] === "$" && s[i + 1] === "{") i = close(s, i + 1); } return i; };
 
-const strings = (text: string | undefined) => [...(text ?? "").matchAll(/["']([^"'\n]+)["']/g)].map((m) => m[1]);
+const strings = (text: string | undefined) => [...(text ?? "").matchAll(/["']([^"'\n]+)["']/g)].map((m) => m[1]!);
 
 // Keys of a text like `{ a: .., "b": .., ...c }`, and whether it spreads something it cannot name.
 function keysOf(text: string): { keys: string[]; open: boolean } {
@@ -84,7 +103,7 @@ type Def = { file: string; name: string; props: string[]; open: boolean; require
 
 const root = new URL("../..", import.meta.url).pathname;
 const files = [...new Glob("src/**/*.ts").scanSync({ cwd: root })].filter((f) => !f.endsWith(".test.ts") && !f.endsWith(".d.ts")).sort();
-const texts = new Map(files.map((f) => [f, readFileSync(root + f, "utf8")]));
+const texts = new Map(files.map((f) => [f, uncommented(readFileSync(root + f, "utf8"))]));
 
 // A name at the top of a file: `const NAME = value`, the value's text.
 function constOf(src: string, name: string): string | undefined {
@@ -179,20 +198,31 @@ function reads(fn: string): { names: Set<string>; defaulted: Set<string>; passed
   // A name the parameter is copied to.
   for (let more = true; more;) {
     more = false;
-    for (const id of [...ids]) for (const m of fn.matchAll(new RegExp(`(?:const|let)\\s+([\\w$]+)\\s*(?::[^=]+)?=\\s*\\(?\\s*${id.replace("$", "\\$")}\\b(?!\\s*[.[(?])`, "g"))) if (!ids.has(m[1])) { ids.add(m[1]); more = true; }
+    for (const id of [...ids]) for (const m of fn.matchAll(new RegExp(`(?:const|let)\\s+([\\w$]+)\\s*(?::[^=]+)?=\\s*\\(?\\s*${id.replace("$", "\\$")}\\b(?!\\s*[.[(?])`, "g"))) if (!ids.has(m[1]!)) { ids.add(m[1]!); more = true; }
   }
   for (const id of ids) {
     const x = id.replace("$", "\\$");
-    for (const m of fn.matchAll(new RegExp(`\\(?\\b${x}\\b(?:\\s+as\\s+[^)]+\\))?\\s*\\??\\.([A-Za-z_$][\\w$]*)`, "g"))) if (!NOT_FIELDS.has(m[1])) names.add(m[1]);
-    for (const m of fn.matchAll(new RegExp(`\\b${x}\\s*\\??\\.?\\[\\s*["']([^"']+)["']\\s*\\]`, "g"))) names.add(m[1]);
-    for (const m of fn.matchAll(new RegExp(`["']([\\w$]+)["']\\s+in\\s+${x}\\b`, "g"))) names.add(m[1]);
-    for (const m of fn.matchAll(new RegExp(`\\{([^{}]*)\\}\\s*(?::[^=]+)?=\\s*${x}\\b`, "g"))) destructure(`{${m[1]}}`);
-    for (const m of fn.matchAll(new RegExp(`(?<![.\\w$])\\b${x}\\s*\\??\\.([A-Za-z_$][\\w$]*)\\s*(?:\\?\\?|\\|\\|)(?!=)`, "g"))) defaulted.add(m[1]);
+    for (const m of fn.matchAll(new RegExp(`\\(?\\b${x}\\b(?:\\s+as\\s+[^)]+\\))?\\s*\\??\\.([A-Za-z_$][\\w$]*)`, "g"))) if (!NOT_FIELDS.has(m[1]!)) names.add(m[1]!);
+    for (const m of fn.matchAll(new RegExp(`\\b${x}\\s*\\??\\.?\\[\\s*["']([^"']+)["']\\s*\\]`, "g"))) names.add(m[1]!);
+    for (const m of fn.matchAll(new RegExp(`["']([\\w$]+)["']\\s+in\\s+${x}\\b`, "g"))) names.add(m[1]!);
+    for (const m of fn.matchAll(new RegExp(`\\{([^{}]*)\\}\\s*(?::[^=]+)?=\\s*${x}\\b`, "g"))) destructure(`{${m[1]!}}`);
+    for (const m of fn.matchAll(new RegExp(`(?<![.\\w$])\\b${x}\\s*\\??\\.([A-Za-z_$][\\w$]*)\\s*(?:\\?\\?|\\|\\|)(?!=)\\s*(\\S{0,3})`, "g"))) {
+      // What a default shows: a field kept in a variable that is never tested (the run goes on with nothing), or a
+      // default that is a value (the run goes on with it). A field passed on as it is, with an empty default, is not
+      // told from one the callee refuses: that is for the test of the tool.
+      const line = fn.slice(fn.lastIndexOf("\n", m.index) + 1, m.index);
+      const v = /(?:const|let)\s+([\w$]+)(?:\s*:[^=]+)?\s*=\s*[^;]*$/.exec(line)?.[1];
+      // (`input.to ?? input.agent_id`: the other name, which the tool declares as an alias.)
+      if (m[2]!.startsWith(id.slice(0, 3))) continue;
+      const empty = /^(""|''|\[\]|\{\}|0\b|fal)/.test(m[2]!);
+      const tested = v && new RegExp(`!\\s*${v.replace("$", "\\$")}\\b|\\b${v.replace("$", "\\$")}\\.(?:trim|length)\\b|\\b${v.replace("$", "\\$")}\\s*(?:===|!==|==|!=)|if\\s*\\(\\s*${v.replace("$", "\\$")}\\b`).test(fn);
+      if (v ? !tested : !empty) defaulted.add(m[1]!);
+    }
     // Handed to another function by name.
     for (const m of fn.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\(([^()]*)\)/g)) {
-      const args = m[2].split(",").map((a) => a.trim().replace(/!$/, "").replace(/\s+as\s+.*$/, ""));
+      const args = m[2]!.split(",").map((a) => a.trim().replace(/!$/, "").replace(/\s+as\s+.*$/, ""));
       const at = args.indexOf(id);
-      if (at >= 0 && !/^(?:String|Number|Boolean|Object|Array|JSON|if|for|while|switch|typeof)$/.test(m[1])) passed.push({ helper: m[1], at });
+      if (at >= 0 && !/^(?:String|Number|Boolean|Object|Array|JSON|if|for|while|switch|typeof)$/.test(m[1]!)) passed.push({ helper: m[1]!, at });
     }
   }
   return { names, defaulted, passed };
@@ -222,7 +252,7 @@ function readsOf(d: Def): { names: Set<string>; defaulted: Set<string> } {
       if (!h || seen.has(p.helper)) continue;
       seen.add(p.helper);
       // The helper reads the argument at `at`: put it first for `reads`.
-      const params = /\(([^)]*)\)/.exec(h.slice(0, h.indexOf("{") + 1 || 400))?.[1].split(",").map((s) => s.trim()) ?? [];
+      const params = /\(([^)]*)\)/.exec(h.slice(0, h.indexOf("{") + 1 || 400))?.[1]?.split(",").map((s) => s.trim()) ?? [];
       const prm = params[p.at]?.replace(/[:=?].*$/, "").trim();
       if (!prm) continue;
       visit(`(${prm}) => ${h.slice(h.indexOf("{"))}`, depth + 1);
@@ -251,11 +281,21 @@ test("every field a closed tool's run reads is in its schema, its aliases or its
   expect(bad).toEqual([]);
 });
 
-test("every required field a tool's run defaults is declared optional", () => {
+// Required fields a run defaults and then fails on (an empty name, a missing query: the tool's own failure is no
+// better than the schema's answer), reviewed one by one. A new entry in the scan's result is a decision: declare
+// the field optional (`inputOptional`) where the run does without it, or list it here with what the run does.
+const FAILS_EMPTY: Record<string, string[]> = {
+  keel__send_files: ["agent_id"], mail__read: ["id"], mcp_call: ["tool"], keel__verdict: ["commit"], request_secret: ["name"],
+  Write: ["content"], Edit: ["old_string", "new_string"], WebFetch: ["url"], WebSearch: ["query"],
+  replace: ["old_string", "new_string"], write_todos: ["todos"], google_web_search: ["query"], ask_user: ["questions"],
+  websearch: ["query"], webfetch: ["url"],
+};
+
+test("every required field a tool's run defaults is declared optional or reviewed", () => {
   const bad: string[] = [];
   for (const d of defs) {
     const r = readsOf(d);
-    const loose = [...r.defaulted].filter((n) => d.required.includes(n) && !d.optional.includes(n));
+    const loose = [...r.defaulted].filter((n) => d.required.includes(n) && !d.optional.includes(n) && !FAILS_EMPTY[d.name]?.includes(n));
     if (loose.length) bad.push(`${d.name} (${d.file}) defaults required ${loose.join(", ")}`);
   }
   expect(bad).toEqual([]);

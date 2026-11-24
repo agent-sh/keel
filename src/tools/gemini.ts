@@ -217,6 +217,7 @@ const grep_search: Tool = {
 const list_directory: Tool = {
   name: "list_directory",
   readOnly: true,
+  inputOptional: ["dir_path"], // the run lists the working directory without it
   description: "Lists the names of files and subdirectories directly within a specified directory path.",
   input_schema: obj({
     dir_path: { type: "string", description: "The path to the directory to list" },

@@ -69,6 +69,9 @@ export function memoryTools(mem: () => Memory): Tool[] {
 
   const put: Tool = {
     name: "helper__memory_put",
+    // One record sent as the input itself (its fields beside no `records`) is read as a list of one.
+    inputOptional: ["records"],
+    inputAlso: ["key", "value", "kind", "aliases", "topics"],
     description: "Keep facts in your memory, one short fact per record under a stable key: the owner's preferences, decisions, people and how they relate, commitments with dates, accounts, and lookup data (ids to names). The same key replaces the record, so update instead of adding a near copy. Give aliases for every name it is asked by. Several records in one call. The owner sees and edits them. Never secrets.",
     input_schema: { type: "object", properties: { records: { type: "array", items: recordSchema } }, required: ["records"], additionalProperties: false },
     readOnly: true,

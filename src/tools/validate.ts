@@ -13,9 +13,11 @@
 // kind of each listed field's value. Nothing the tool accepts is refused:
 // the names a tool reads in a field's place (`inputAlias`) count as the field,
 // a null is a field not given, a number or a boolean is accepted where text
-// is asked for and a numeric string where a number is (the tools read them
-// with String and Number), and a required field the tool does without
-// (`inputOptional`) is not required. A schema this does not understand (no
+// is asked for, a numeric string where a number is (the tools read them
+// with String and Number) and "true" or "false" where a boolean is, and a required field the tool does without
+// (`inputOptional`) is not required. A session may carry an older schema than
+// the build's (`built`): what the build's own takes is not refused either. The
+// check runs after the owner's hooks, which may have filled a field in. A schema this does not understand (no
 // object with properties at its root, a root anyOf, oneOf, allOf, $ref or
 // patternProperties) is not checked, and neither is a property whose own
 // schema is a union or a reference.
@@ -27,6 +29,9 @@ type Schema = Record<string, any>;
 export type Checked = {
   name: string;
   input_schema?: unknown;
+  // The running build's own schema, when `input_schema` is an older one the session was sent (src/tools/pin.ts):
+  // what the build's run takes is what counts, so nothing the build's schema accepts is refused for the pinned one.
+  built?: Record<string, unknown>;
   // Names the tool reads in a field's place, by field: `{ file_path: ["path"] }`.
   inputAlias?: Record<string, string[]>;
   // Fields its schema requires that the tool does without.
@@ -45,7 +50,8 @@ type Plan = {
 };
 
 // By the schema object: a tool copied for a request (a deferred or pinned one) shares it.
-const plans = new WeakMap<object, Plan | null>();
+type Cached = { plan: Plan | null; built: unknown };
+const plans = new WeakMap<object, Cached>();
 
 const UNDERSTOOD_AWAY = ["anyOf", "oneOf", "allOf", "$ref", "not", "patternProperties", "if", "then", "else", "propertyNames"];
 
@@ -57,23 +63,37 @@ function compile(tool: Checked): Plan | null {
   if (s.type !== undefined && s.type !== "object") return null;
   if (!s.properties || typeof s.properties !== "object" || Array.isArray(s.properties)) return null;
   if (UNDERSTOOD_AWAY.some((k) => k in s)) return null;
+  const built = tool.built as Schema | undefined;
   const props = new Map<string, Schema>();
   for (const [k, v] of Object.entries(s.properties)) props.set(k, v && typeof v === "object" ? (v as Schema) : {});
+  let closed = s.additionalProperties === false;
+  let required: unknown[] = Array.isArray(s.required) ? s.required : [];
+  if (built && typeof built === "object") {
+    // The session's older definition against the build's: what the build takes, the older one may have said otherwise.
+    if (UNDERSTOOD_AWAY.some((k) => k in built) || !built.properties || typeof built.properties !== "object") return null;
+    // Known to the build is known; the build's own word on a property's kind and on what is required wins.
+    for (const [k, v] of Object.entries(built.properties)) props.set(k, v && typeof v === "object" ? (v as Schema) : {});
+    const builtRequired = new Set(Array.isArray(built.required) ? built.required : []);
+    required = required.filter((k) => builtRequired.has(k));
+    closed = closed && built.additionalProperties === false;
+  }
   const optional = new Set(tool.inputOptional ?? []);
-  const required = (Array.isArray(s.required) ? s.required : []).filter((k: unknown): k is string => typeof k === "string" && !optional.has(k));
   const alias = new Map<string, string>();
   for (const [field, names] of Object.entries(tool.inputAlias ?? {})) for (const n of names) alias.set(n, field);
-  return { sig: sigOf(tool), props, required, closed: s.additionalProperties === false, alias, also: new Set(tool.inputAlso) };
+  return {
+    sig: sigOf(tool), props, required: required.filter((k): k is string => typeof k === "string" && !optional.has(k)),
+    closed, alias, also: new Set(tool.inputAlso),
+  };
 }
 
 const planOf = (tool: Checked): Plan | null => {
   const key = tool.input_schema;
   if (!key || typeof key !== "object") return null;
   const had = plans.get(key);
-  if (had !== undefined && (had === null || had.sig === sigOf(tool))) return had;
-  const p = compile(tool);
-  plans.set(key, p);
-  return p;
+  if (had && had.built === tool.built && (had.plan === null || had.plan.sig === sigOf(tool))) return had.plan;
+  const plan = compile(tool);
+  plans.set(key, { plan, built: tool.built });
+  return plan;
 };
 
 const NUMERIC = /^\s*-?\d+(\.\d+)?\s*$/;
@@ -89,7 +109,8 @@ function wrongKind(schema: Schema, v: unknown): string | undefined {
     switch (x) {
       case "string": return typeof v === "string" || typeof v === "number" || typeof v === "boolean";
       case "number": case "integer": return (typeof v === "number" && Number.isFinite(v)) || (typeof v === "string" && NUMERIC.test(v));
-      case "boolean": return typeof v === "boolean";
+      // (The handlers read "true" and "false" as the booleans.)
+      case "boolean": return typeof v === "boolean" || v === "true" || v === "false";
       case "array": return Array.isArray(v);
       case "object": return !!v && typeof v === "object" && !Array.isArray(v);
       case "null": return v === null;

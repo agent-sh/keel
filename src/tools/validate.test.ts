@@ -3,6 +3,9 @@ import { expect, test } from "bun:test";
 import { claudeTools } from "./claude.ts";
 import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
+import { memoryTools } from "../helper/memtools.ts";
+import "../fleet/tools.ts";
+import { sharedTool } from "./registry.ts";
 import { inputProblem, type Checked } from "./validate.ts";
 
 const tool = (name: string, properties: Record<string, unknown>, required: string[] = [], more: Record<string, unknown> = {}, extra: Partial<Checked> = {}): Checked =>
@@ -54,7 +57,7 @@ test("a field the tool does not have is named with the closest one it has", () =
 test("a value of the wrong kind says what it must be", () => {
   expect(inputProblem(Bash, { command: ["ls"] })).toContain("`command` must be a string, not a list");
   expect(inputProblem(Bash, { command: "ls", timeout: "soon" })).toContain("`timeout` must be a number, not a string");
-  expect(inputProblem(Bash, { command: "ls", run_in_background: "false" })).toContain("`run_in_background` must be true or false, not a string");
+  expect(inputProblem(Bash, { command: "ls", run_in_background: "yes" })).toContain("`run_in_background` must be true or false, not a string");
   expect(inputProblem(Read, { file_path: "/a", offset: 1.5 })).toBeUndefined();
 });
 
@@ -118,4 +121,38 @@ test("every tool of every family takes the calls its own examples make", () => {
     [find(claudeTools, "TaskStop"), { shell_id: "1" }],
   ];
   for (const [t, input] of calls) expect(inputProblem(t, input)).toBeUndefined();
+});
+
+test("what the handlers take is not refused: the fields a tool does without or reads beside its schema", () => {
+  // A prompt-less fetch, a listing of the working folder, a flag of another harness, a lone memory record.
+  expect(inputProblem(find(claudeTools, "WebFetch"), { url: "https://example.com" })).toBeUndefined();
+  expect(inputProblem(find(geminiTools, "list_directory"), {})).toBeUndefined();
+  const send = sharedTool("keel__session_send") as unknown as Checked;
+  expect(inputProblem(send, { to: "a", text: "hi", wake: true })).toBeUndefined();
+  const put = memoryTools(() => ({}) as any).find((t) => t.name === "helper__memory_put") as unknown as Checked;
+  expect(inputProblem(put, { key: "pref.x", value: "y" })).toBeUndefined();
+  expect(inputProblem(put, { records: [{ key: "pref.x", value: "y" }] })).toBeUndefined();
+  expect(inputProblem(put, { key: "pref.x", other: 1 })).toContain("`other` is not a field");
+});
+
+test("a boolean may be sent as the words true and false, as the handlers read it", () => {
+  const t = tool("t", { on: { type: "boolean" } }, [], { additionalProperties: false });
+  expect(inputProblem(t, { on: "true" })).toBeUndefined();
+  expect(inputProblem(t, { on: "false" })).toBeUndefined();
+  expect(inputProblem(t, { on: "yes" })).toContain("`on`");
+});
+
+test("a pinned older schema never refuses what the build's own schema takes", () => {
+  const pinned = { type: "object", properties: { a: { type: "string" }, b: { type: "string" } }, required: ["a", "b"], additionalProperties: false };
+  const built = { type: "object", properties: { a: { type: "string" }, b: { type: "string" }, c: { type: "string" } }, required: ["a"], additionalProperties: false };
+  const old: Checked = { name: "t", input_schema: pinned };
+  const now: Checked = { name: "t", input_schema: pinned, built };
+  // A field only the build has is known; a field the build no longer requires is not required.
+  expect(inputProblem(old, { a: "x", c: "y" })).toContain("`c` is not a field");
+  expect(inputProblem(now, { a: "x", c: "y" })).toBeUndefined();
+  expect(inputProblem(old, { a: "x" })).toContain("`b` is missing");
+  expect(inputProblem(now, { a: "x" })).toBeUndefined();
+  // A field neither has is still named; a build that is open does not close.
+  expect(inputProblem(now, { a: "x", z: 1 })).toContain("`z` is not a field");
+  expect(inputProblem({ ...now, built: { ...built, additionalProperties: undefined } }, { a: "x", z: 1 })).toBeUndefined();
 });

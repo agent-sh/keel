@@ -140,6 +140,8 @@ const sessionsList: Tool = {
 const sessionSend: Tool = {
   name: "keel__session_send",
   inputAlias: { to: ["session", "id"], text: ["message"] },
+  // Another harness's flag, sent by models and ignored here: a call that sets it is a call to run, not to refuse.
+  inputAlso: ["wake"],
   description: "Send a message to another of the owner's sessions (an address from keel__sessions_list, a session id, or a part of its title naming one session). It reaches that session as another session's text, not the owner's. An idle session takes it as its next turn now; a working one after its current turn. notify_when_idle: one notice comes back here when that session has handled the message and is idle (or, with no text, when it is next idle); nothing to poll.",
   input_schema: {
     type: "object",

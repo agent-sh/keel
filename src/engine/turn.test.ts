@@ -839,7 +839,10 @@ test("a call with a missing or unknown field is answered from the schema and doe
     beforeTool: (_s: any, call: any) => { if (call.ctx.sessionId === s.id) gated.push(call.tool.name); return undefined; },
     toolRan: (session: any, call: any, _r: any, m: any) => { if (session.id === s.id) measured.push(`${call.tool.name}:${m.outcome}`); },
   } as any;
+  // The owner's hook that fills a field in (it runs before the check: the call it leaves is the one judged).
+  const fills = { prepareTool: (session: any, call: any) => (session.id === s.id && call.input.fill ? { input: { file_path: call.input.file_path, content: "filled" } } : undefined) } as any;
   registerHooks(mine);
+  registerHooks(fills);
   const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
   try {
     const call = (id: string, input: any) => (engine as any).runTool(s, tools, { type: "tool_use", id, name: "Write", input }, ctx);
@@ -855,7 +858,13 @@ test("a call with a missing or unknown field is answered from the schema and doe
     expect([b.is_error, b.content]).toEqual([undefined, "written"]);
     expect(ran).toEqual([{ path: "/a", content: "x" }]);
     expect(gated).toEqual(["Write"]);
+    // A hook that makes the call right rescues it.
+    const c = await call("c", { file_path: "/b", fill: true });
+    expect(c.is_error).toBeUndefined();
+    expect(c.content).toContain("written");
+    expect(ran[1]).toEqual({ file_path: "/b", content: "filled" });
   } finally {
+    allHooks().splice(allHooks().indexOf(fills), 1);
     allHooks().splice(allHooks().indexOf(mine), 1);
     store.db.close();
   }
