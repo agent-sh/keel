@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED, inHead } from "./shots.ts";
 
 // Feature: the model starts two background subagents in one step; they run as
 // child sessions shown under the parent, live; their reports come back to the
@@ -31,7 +31,7 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   await expect(kids.getByTestId("child-session")).toHaveCount(0);
   await kids.getByTestId("children-toggle").click();
   await expect(page.getByTestId("child-session")).toHaveCount(2);
-  await expect(page.getByTestId("background-button")).toBeVisible();
+  await expect(await inHead(page, "background-button")).toBeVisible();
   await shoot(page, "agents-01-started");
 
   await expect(page.getByTestId("agent-report")).toHaveCount(2, { timeout: 120_000 });
@@ -45,7 +45,7 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   await page.getByTestId("agent-report").first().click();
   await shoot(page, "agents-02-reported");
 
-  await page.getByTestId("background-button").click();
+  await (await inHead(page, "background-button")).click();
   await expect(page.getByTestId("bg-agent")).toHaveCount(2);
   await shoot(page, "agents-03-background");
   await page.keyboard.press("Escape");

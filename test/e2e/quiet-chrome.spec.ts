@@ -2,7 +2,7 @@ import { expect, test, type Locator } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, inHead } from "./shots.ts";
 
 // Feature: the shell shows a control where it is needed and keeps the rest out
 // of sight until it is pointed at or the keyboard reaches it. A control that
@@ -12,25 +12,30 @@ const opacity = (l: Locator) => l.evaluate((el) => Number(getComputedStyle(el).o
 // Opacity is eased (a short transition): poll until it settles.
 const settles = (l: Locator, to: number) => expect.poll(() => opacity(l)).toBe(to);
 
-test("a pane's head shows its tools when it is pointed at or focused", async ({ page, request }) => {
+test("a pane's head shows its tools at rest, quietly, and lifts them when it is pointed at or focused", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Quiet pane head" } })).json();
   await page.goto(`/s/${session.id}`);
   const head = page.getByTestId("station-head");
   const tools = head.locator(".k-station-tools");
-  await expect(head.getByTestId("station-close")).toBeAttached();
+  const close = head.getByTestId("station-close");
+  await expect(close).toBeAttached();
   // One pane: nowhere to move it, so no arrows.
   await expect(head.locator(".k-tool-move")).toHaveCount(0);
-  // Pointer away from the head: its tools are quiet.
+  // Pointer away from the head: its tools are there, in the faint ink of the page's quietest controls.
+  const ink = (v: string) => page.evaluate((name) => { const p = document.createElement("span"); p.style.color = `var(${name})`; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; }, v);
+  const color = () => close.evaluate((el) => getComputedStyle(el).color);
   await page.mouse.move(5, 900);
-  await settles(tools, 0);
+  await settles(tools, 1);
+  await expect.poll(color).toBe(await ink("--faint"));
   await shoot(page, "quiet-01-head");
-  await head.hover();
-  await settles(tools, 1);
+  // Pointed at, the head lifts them to the muted ink.
+  await head.hover({ position: { x: 20, y: 10 } });
+  await expect.poll(color).toBe(await ink("--muted"));
   await page.mouse.move(5, 900);
-  await settles(tools, 0);
-  // The keyboard reaches them as before, and they show while it is there.
+  await expect.poll(color).toBe(await ink("--faint"));
+  // The keyboard reaches them as before, and lifts them while it is there.
   await head.getByTestId("station-pin").focus();
-  await settles(tools, 1);
+  await expect.poll(color).toBe(await ink("--muted"));
 });
 
 test("the head says what the session cost, once, and opens Usage", async ({ page, request }) => {
@@ -38,7 +43,9 @@ test("the head says what the session cost, once, and opens Usage", async ({ page
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:say Done." } });
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.usage.output, { timeout: 30_000 }).toBeGreaterThan(0);
   await page.goto(`/s/${session.id}`);
-  const usage = page.getByTestId("session-header").getByTestId("session-usage");
+  // It is the first row of the session's menu (the bar rests with the mode, the panels and the menu).
+  await expect(page.getByTestId("session-header").getByTestId("session-usage")).toHaveCount(0);
+  const usage = await inHead(page, "session-usage");
   // One figure: the cost, no token counts beside it (they are in its title).
   await expect(usage).toHaveText(/^\$\d+\.\d+$/);
   await expect(usage).toHaveAttribute("title", /in \(\d+% cached\), .* out/);

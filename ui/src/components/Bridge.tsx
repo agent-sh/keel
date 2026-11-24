@@ -15,7 +15,7 @@
 // another pane, and a session dropped on a pane's middle lands in it. The helm can be focused to the full
 // width. On a phone the sessions are pages you swipe between, with a dock of
 // their marks along the bottom.
-import { ArrowLeft, ArrowRight, Bug, ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, PinOff, Plus, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bug, ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, Plus, X } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
@@ -111,11 +111,17 @@ function Tool({ label, onClick, children, testid, on, move }: { label: string; o
 const StationTools = memo(function StationTools({ id, helm, pinned, focus, panes }: { id: string; helm: boolean; pinned: boolean; focus: boolean; panes: number }) {
   return (
     <span className="k-station-tools">
-      {!focus && panes > 1 && <PaneMenu id={id} label="Move to a pane" testid="station-place" className="k-tool k-tool-move"><PanelsTopLeft /></PaneMenu>}
-      {/* With one pane there is nowhere to move it. */}
-      {!focus && panes > 1 && <Tool move label="Move left (Alt Shift [)" onClick={() => stations.move(id, -1)}><ChevronLeft /></Tool>}
-      {!focus && panes > 1 && <Tool move label="Move right (Alt Shift ])" onClick={() => stations.move(id, 1)}><ChevronRight /></Tool>}
-      <Tool label={pinned ? "Unpin from the top of the list (Alt P)" : "Pin to the top of the list (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(id, !pinned).catch(reportError)}>{pinned ? <PinOff /> : <Pin />}</Tool>
+      {/* With one pane there is nowhere to move it. These show under the pointer and the keys only, over the
+          end of what is before them: the keys and the list's menu move a pane too. */}
+      {!focus && panes > 1 && (
+        <span className="k-tool-moves">
+          <PaneMenu id={id} label="Move to a pane" testid="station-place" className="k-tool k-tool-move"><PanelsTopLeft /></PaneMenu>
+          <Tool move label="Move left (Alt Shift [)" onClick={() => stations.move(id, -1)}><ChevronLeft /></Tool>
+          <Tool move label="Move right (Alt Shift ])" onClick={() => stations.move(id, 1)}><ChevronRight /></Tool>
+        </span>
+      )}
+      {/* Pressed, the pin is the pane's own cue that its session is pinned: it shows at rest, as the others do. */}
+      <Tool label={pinned ? "Unpin from the top of the list (Alt P)" : "Pin to the top of the list (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(id, !pinned).catch(reportError)}><Pin className={pinned ? "fill-current" : undefined} /></Tool>
       <Tool label={focus ? "Show all panes (Alt Enter)" : "Focus this pane (Alt Enter)"} testid="station-focus" on={focus} onClick={() => { if (!helm) navigate({ name: "session", id }); stations.toggleFocus(); }}>{focus ? <Minimize2 /> : <Maximize2 />}</Tool>
       <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(id)}><X /></Tool>
     </span>
@@ -143,8 +149,8 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // whole reason is the head's tip.
   const cardTool = useSafety((x) => (w === "need" && st.why === "approval" ? x.approvals[st.child ?? s.id]?.[0]?.tool ?? "" : ""));
   const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : cardTool ? askBrief(st, cardTool) : st.text ? briefText(st, now) : "";
-  // The tools the helm keeps in view take room beside the title (bridge.css counts them); every pane shows them when its head is pointed at or focused, another pane over the header's end.
-  const tools = helm ? (!focus && panes > 1 ? 6 : 3) : 0;
+  // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
+  const tools = 3;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}
       style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
@@ -153,8 +159,6 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         {/* An agent's way up its tree, before its own title: the root and each agent between, each a link. */}
         {s.parent_id && <Crumbs s={s} />}
         <h2 className="k-station-title" data-testid="station-title" title={s.title}>{s.title || "New session"}</h2>
-        {/* Pinned, said while the tools are quiet (the pin tool is one of them). */}
-        {pinned && <Pin className="k-station-pinned" data-testid="station-pinned" role="img" aria-label="Pinned" />}
         {/* Another machine's session names it beside the title, at any width of the pane (the folder and model give way first). */}
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">

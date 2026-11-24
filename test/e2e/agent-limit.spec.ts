@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { openPanel, remoteHeaders, shoot } from "./shots.ts";
+import { openPanel, remoteHeaders, shoot, inHead } from "./shots.ts";
 
 // Feature: a session's agent slots count the agents that work. An agent that
 // waits on a wait of its own holds none; an agent asked for while every slot
@@ -81,7 +81,7 @@ test("agents that wait hold no slot, and one asked for or woken over the limit w
 
     // The panel says which work and which wait, and the session's slots line says it in numbers.
     await expect(page.getByTestId("agent-slots-said")).toHaveText("2 of 2 work, 4 wait on waits of their own, 2 in line for a slot");
-    await page.getByTestId("background-button").click();
+    await (await inHead(page, "background-button")).click();
     const row = (t: string) => page.getByTestId("bg-agent").filter({ hasText: t });
     await expect(row("Woken").getByTestId("bg-agent-state")).toHaveText(/free agent slot/);
     await expect(row("Later").getByTestId("bg-agent-state")).toHaveText(/free agent slot/);

@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from ".
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { exited, ownDaemon } from "./peer.ts";
-import { openPanel, shoot } from "./shots.ts";
+import { openPanel, shoot, inHead } from "./shots.ts";
 
 // Feature: one word per state on every surface. A coordinator with eight
 // agents, one in each state, reads the same on the agents' rows under it, on
@@ -107,7 +107,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(kids.getByTestId("child-session")).toHaveCount(8);
 
     // One word for one agent: its row in the tree, its card, the list of background work.
-    await station(page, coord).getByTestId("background-button").click();
+    await (await inHead(page, "background-button")).click();
     for (const l of LANES) {
       await expect(tree(l.title).getByTestId("child-state"), `tree: ${l.title}`).toHaveText(l.word);
       await expect(tree(l.title).getByTestId("child-title")).toHaveText(l.title);
@@ -298,8 +298,8 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(station(page, coord).getByTestId("agent-report").last()).toBeVisible();
     await reportsWhole("a phone");
     await shoot(page, "state-words-04-phone");
-    if (await page.getByTestId("background-button").isVisible()) {
-      await page.getByTestId("background-button").click();
+    {
+      await (await inHead(page, "background-button")).click();
       await expect(page.getByTestId("bg-agent").filter({ hasText: "Fetch the release notes" }).getByTestId("bg-agent-state")).toHaveText("Failed: billing");
       await shoot(page, "state-words-04-phone-background");
     }

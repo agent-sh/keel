@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { basename } from "node:path";
-import { ask, HAIKU, scriptBash, shoot } from "./shots.ts";
+import { ask, HAIKU, scriptBash, shoot, inHead } from "./shots.ts";
 
 // Feature: moving a session to another machine with its git state and back.
 // Its uncommitted change travels, the model works on it over there, and coming
@@ -34,7 +34,7 @@ test("fleet move: there with its git state, work there, back home", async ({ pag
 
   try {
     await page.goto(`/s/${s.id}`);
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     await page.locator('[data-testid="move-to"]').filter({ hasText: "devbox" }).click();
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
     await expect(page.getByTestId("move-progress")).toContainText("Last move");
@@ -55,7 +55,7 @@ test("fleet move: there with its git state, work there, back home", async ({ pag
     await expect(tool).toContainText("/.keel/worktrees/handoff-");
     expect(readFileSync(`${HOME_DIR}/a.txt`, "utf8")).toBe("one\ntwo\n"); // the folder it left is untouched
 
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     await page.locator('[data-testid="move-to"][data-machine="local"]').click();
     await expect(page.getByTestId("move-progress")).toContainText("devbox to", { timeout: 60_000 });
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done");
@@ -111,7 +111,7 @@ test("fleet move: from another machine a session only comes back here, and the p
   const to = (machine: string) => page.locator(`[data-testid="move-to"][data-machine="${machine}"]`);
   try {
     await page.goto(`/s/${s.id}`);
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     // At home the machines that answer are offered; the one that does not is marked and is no move.
     await expect(to(first.id)).toBeEnabled();
     await expect(to(third)).toBeEnabled();
@@ -178,7 +178,7 @@ test("fleet move: a working turn is said, and the move can wait for its end", as
     await page.getByTestId("composer").fill(scriptBash("for i in 1 2 3 4 5 6; do echo tick $i; sleep 1; done"));
     await page.getByTestId("composer").press("Enter");
     await expect(page.getByTestId("stop")).toBeVisible();
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     await expect(page.getByTestId("move-working")).toContainText("Moving now stops it");
     await expect(page.getByTestId("move-when-end")).toHaveAttribute("aria-checked", "true");
     await page.getByRole("radio", { name: "place only" }).click();
@@ -232,7 +232,7 @@ test("fleet move: a queue the owner held stays held after the move", async ({ pa
 
     await page.goto(`/s/${s.id}`);
     await expect(page.getByTestId("queue-held")).toBeVisible();
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     await page.getByRole("radio", { name: "place only" }).click();
     await page.locator(`[data-testid="move-to"][data-machine="${first.id}"]`).click();
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
@@ -293,7 +293,7 @@ test("fleet move: staged, unstaged and untracked changes arrive as they were", a
   const s = (await (await request.post("/api/sessions", { data: { workspace: home, title: "Staged and not", model } })).json()).session;
   try {
     await page.goto(`/s/${s.id}`);
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     await page.locator(`[data-testid="move-to"][data-machine="${first.id}"]`).click();
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
     const there = (await (await request.get(`/api/sessions/${s.id}`)).json()).session.workspace as string;
@@ -349,7 +349,7 @@ test("fleet move: the carry ref is the carried commit also when the machine alre
   try {
     // There and back once: the machine holds the ref of that move.
     await page.goto(`/s/${s.id}`);
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     await to(first.id).click();
     await expect(progress).toHaveAttribute("data-state", "done", { timeout: 60_000 });
     const there = (await (await request.get(`/api/sessions/${s.id}`)).json()).session.workspace as string;
@@ -430,7 +430,7 @@ test("fleet move: a daemon restart in the middle leaves the session on one side,
     await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
     await page.goto(`${d.url}/s/${sid}`);
     await expect(page.getByTestId("note").filter({ hasText: "The move to devbox was cut" })).toHaveCount(1);
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     const progress = page.getByTestId("move-progress");
     await expect(progress).toHaveAttribute("data-interrupted", "true");
     await expect(progress).toContainText("was cut by a restart");

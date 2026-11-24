@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
-import { ask, HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, shoot, SCRIPTED, inHead } from "./shots.ts";
 
 // Feature: zero-token waits. The model schedules a timer wait and a monitor;
 // the session is parked (no model calls) until they fire, then woken with the
@@ -23,7 +23,7 @@ test("waits and monitors wake the session", async ({ page, request }) => {
   ));
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
-  await page.getByTestId("background-button").click();
+  await (await inHead(page, "background-button")).click();
   await expect(page.getByTestId("bg-wait")).toContainText("Timer");
   // A timer fires at its time: it never says it gives up.
   await expect(page.getByTestId("bg-wait")).toContainText("fires on the next check");

@@ -49,6 +49,9 @@ export const queuedWord = (n: number) => `${n} ${QUEUED.toLowerCase()}`;
 export const NEW = "New";
 // Who a row that needs the owner waits on, where its time would be.
 export const WAITS_ON_YOU = "you";
+// What a failed row says in the same place: its class (failWord), how many of its agents failed, else this.
+export const FAILED_WORD = STATE_WORD.fail.toLowerCase();
+export const agentsFailedWord = (n: number) => `${n} ${FAILED_WORD}`;
 export const NEW_SINCE = "New since you looked";
 // In a conversation, on the rule above the first line the owner has not read: since when.
 export const newSinceAt = (hhmm: string) => `${NEW} since ${hhmm}`;

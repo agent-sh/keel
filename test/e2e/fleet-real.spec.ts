@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeSite } from "./fixtures/dev-site.ts";
-import { HAIKU, openPanel, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot, inHead } from "./shots.ts";
 
 // Feature: the fleet on real machines. Each machine named in KEEL_REAL_MACHINES
 // (names of enabled machines, reached over ssh, each running its own keel-bun
@@ -67,7 +67,7 @@ test("fleet on real machines: linked, a tool there, a move there and back, a ses
       const mv = (await (await request.post("/api/sessions", { data: { workspace: HOME_DIR, title: `Move to ${m.name}`, model: HAIKU } })).json()).session;
       made.push(mv.id);
       await page.goto(`/s/${mv.id}`);
-      await page.getByTestId("machine-chip").click();
+      await (await inHead(page, "machine-chip")).click();
       await page.locator(`[data-testid="move-to"][data-machine="${m.id}"]`).click();
       await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 120_000 });
       await page.keyboard.press("Escape");
@@ -80,7 +80,7 @@ test("fleet on real machines: linked, a tool there, a move there and back, a ses
       await t2.click();
       await expect(t2).toContainText("two");
       await expect(t2).toContainText(m.facts.os === "macos" ? "Darwin" : "Linux");
-      await page.getByTestId("machine-chip").click();
+      await (await inHead(page, "machine-chip")).click();
       await page.locator('[data-testid="move-to"][data-machine="local"]').click();
       await expect(page.getByTestId("move-progress")).toContainText(`${m.name} to`, { timeout: 120_000 });
       await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done");

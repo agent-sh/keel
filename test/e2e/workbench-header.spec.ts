@@ -263,8 +263,9 @@ test("the focus goes to the message box when a request or Stop goes away", async
 // A session that fills the toolbar: it runs in a worktree, has a loop in the
 // background and a second machine to move to, beside the actions every session has.
 const SECONDARY = ["machine-chip", "background-button", "worktree-chip", "permission-menu", "snooze-button", "header-action-export", "header-action-voice"];
-// The same tools, the one that stays in the row longest first, and what each opens.
-const RANKED = ["permission-menu", "worktree-chip", "machine-chip", "background-button", "snooze-button", "header-action-export", "header-action-voice"];
+// The tools that have a resting place in the row, the one that stays longest first. The rest are in
+// the session's menu at any width.
+const RANKED = ["permission-menu", "worktree-chip"];
 const OPENS: Record<string, string> = { "permission-menu": "mode-full-auto", "worktree-chip": "worktree-popup", "machine-chip": "move-popup", "background-button": "background-popup", "snooze-button": "snooze-menu" };
 async function crowded(request: import("@playwright/test").APIRequestContext, model: string) {
   const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `toolbar-${Date.now()}`);
@@ -297,7 +298,7 @@ async function reachable(page: Page, station: Locator) {
   const inRow: string[] = [], inMenu: string[] = [];
   for (const id of SECONDARY) ((await header.getByTestId(id).count()) ? inRow : inMenu).push(id);
   for (const id of inRow) await expect(header.getByTestId(id)).toBeInViewport({ ratio: 1 });
-  // The row keeps the highest ranks: nothing folded outranks a tool that stayed.
+  // The row keeps the highest ranks: nothing folded outranks a tool that stayed, and only a resting tool stays.
   expect([...inRow].sort((x, y) => RANKED.indexOf(x) - RANKED.indexOf(y))).toEqual(RANKED.slice(0, inRow.length));
   return { inRow, inMenu };
 }
@@ -313,7 +314,8 @@ test.describe("a crowded toolbar", () => {
     const errorsBefore = await errors();
     const { id, drop } = await crowded(request, model!.id);
     const station = page.getByTestId("station").and(page.locator(`[data-station="${id}"]`));
-    const more = station.getByRole("button", { name: "More actions" });
+    // One menu holds the folded tools and the session's actions.
+    const more = station.getByTestId("session-menu");
     const menu = page.getByTestId("header-more");
     try {
       // A phone, by touch.
@@ -324,8 +326,8 @@ test.describe("a crowded toolbar", () => {
       expect(phone.inMenu.length).toBeGreaterThan(0);
       await expect(more).toBeInViewport({ ratio: 1 });
       await shoot(page, "workbench-toolbar-390");
-      // The button says how many it holds, and that folded background work is running.
-      await expect(more).toHaveAccessibleName(/^\d+ more actions$/);
+      // The menu says that folded background work is running.
+      await expect(more).toHaveAccessibleName("Session actions");
       await expect(more.getByTestId("more-live")).toBeVisible();
       await more.tap();
       await expect(menu).toBeVisible();
@@ -424,11 +426,17 @@ test.describe("a crowded toolbar", () => {
       await expect(menu).toBeHidden();
       await expect(more).toBeFocused();
 
-      // A wide pane keeps three tools, the highest ranks, and the rest in the More menu by name; the session is named once.
+      // A wide pane keeps its resting tools, the mode and the worktree, and the rest in the menu by name; the session is named once.
       await page.setViewportSize({ width: 1920, height: 1040 });
       await expect(more).toBeVisible();
       const wide = await reachable(page, station);
-      expect([wide.inRow.length, wide.inMenu.length > 0]).toEqual([3, true]);
+      expect(wide.inRow).toEqual(RANKED);
+      await more.click();
+      await expect(menu).toBeVisible();
+      for (const t of wide.inMenu) await expect(menu.getByTestId(t)).toBeVisible();
+      await expect(menu.getByTestId("menu-rename")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(menu).toBeHidden();
       await expect(station.locator('[data-testid^="panel-toggle-"]')).toHaveCount(0);
       await expect(station.getByRole("heading", { name: "Crowded toolbar", level: 2 })).toBeVisible();
       await expect(station.locator(".k-station-line")).toBeHidden();

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { GitHubStandin, TOKEN } from "./fixtures/github-standin.ts";
 import { daemon, exited, ROOT } from "./own-daemon.ts";
-import { shoot } from "./shots.ts";
+import { shoot, inHead } from "./shots.ts";
 
 // Feature: a pull request gets a review from GitHub's events with no public
 // URL. The daemon polls a stand-in GitHub (conditional requests, the pace it
@@ -98,10 +98,8 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
 
     // The draft in its session, and the one button that posts it.
     await page.goto(`${d.url}/s/${r2.session_id}`);
-    // The header keeps three tools in its row; the rest are under "More" (a stowed action is opened from there).
-    const prAction = page.getByTestId("header-action-pr-review");
-    if (!(await prAction.isVisible())) await page.getByTestId("header-more-button").first().click();
-    await prAction.click();
+    // A feature's action is in the session's menu.
+    await (await inHead(page, "header-action-pr-review")).click();
     const panel = page.getByTestId("pr-review-panel");
     await expect(panel).toHaveAttribute("data-state", "draft");
     await expect(panel.getByTestId("pr-review-finding")).toHaveCount(1);

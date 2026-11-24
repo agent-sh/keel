@@ -1,8 +1,7 @@
 import { copyOrSay } from "../lib/copy.ts";
-import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, ChevronDown, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Trash2, X } from "lucide-react";
-import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
+import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Trash2, X } from "lucide-react";
+import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
 import { composing, runCommand } from "../lib/keys.ts";
@@ -19,7 +18,7 @@ import { openPanel, PanelsButton } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
 import { CapControl } from "./CapControl.tsx";
 import { useCap } from "../lib/caps.ts";
-import { iconButton, itemClass, popupClass } from "./ui.tsx";
+import { iconButton } from "./ui.tsx";
 
 // Popovers of the header load after the page (their Base UI parts are large).
 const PermissionMenu = lazy(() => import("./PermissionMenu.tsx").then((m) => ({ default: m.PermissionMenu })));
@@ -36,13 +35,14 @@ export function SidebarButton() {
   );
 }
 
-// The toolbar holds what fits, three tools at most. Session actions and the Panels chooser never
-// leave it; the chooser names the panels at hand at its top. The token counts give way first (the
-// turn footer has them). After them the tools of the
-// session move, lowest rank first, into the More menu: the same controls as a
-// labeled list. Nothing scrolls out of sight.
-type Tool = { id: string; label: string; rank: number; node: ReactNode; item?: (close: () => void) => ReactNode };
-const GIVE_WAY = ["usage"];
+// The toolbar rests with what the owner reads or reaches every few minutes: the permission mode (a
+// safety state), the worktree a session has (where its edits land), the Panels chooser and the session's
+// one menu. Everything else is in that menu, as the same controls in labeled rows over the session's
+// actions: the cost, background work (a dot on the menu while it runs; the head says what runs), the
+// machine (the head names another machine), snooze and the actions of features. A resting tool that has
+// no room folds there too, lowest rank first. Nothing scrolls out of sight, and nothing in the row
+// comes or goes with a turn, so the head beside it keeps its form.
+type Tool = { id: string; label: string; rank: number; rest?: boolean; node: ReactNode; item?: (close: () => void) => ReactNode };
 const TITLE_ROOM = 11; // rem the title's field keeps while it is renamed
 const ROW_TOOLS = 3; // the tools the row shows at most; the rest are in More
 // In the pane's one top bar the row is as wide as what it shows, and folds within this share of the
@@ -56,7 +56,6 @@ function useFit(tools: Tool[], reserve: number) {
   // A folded tool is measured in the list, where it may be styled a little
   // differently: its row width is the one it folded at, moved by what it gained or lost since.
   const folded = useRef<Record<string, { row: number; list: number }>>({});
-  const more = useRef(0);
   const [out, setOut] = useState<string[]>([]);
   const fit = useRef(() => {});
   fit.current = () => {
@@ -74,7 +73,6 @@ function useFit(tools: Tool[], reserve: number) {
       const w = Math.ceil(c.getBoundingClientRect().width);
       if (c.dataset.tool) { widths.current[c.dataset.tool] = w; delete folded.current[c.dataset.tool]; }
       else if (c.dataset.tools !== undefined) { room -= gap; for (const t of c.children as Iterable<HTMLElement>) measure(t); }
-      else if (c.dataset.more !== undefined) more.current = w || more.current;
       else if (c.dataset.flex !== undefined) room -= gap + Math.ceil(parseFloat(getComputedStyle(c).paddingLeft) + parseFloat(getComputedStyle(c).paddingRight));
       else if (w && getComputedStyle(c).position !== "absolute") room -= w + gap;
     };
@@ -98,15 +96,13 @@ function useFit(tools: Tool[], reserve: number) {
     }
     const cost = (id: string) => { const w = empty.has(id) ? 0 : widths.current[id] ?? 0; return w ? w + gap : 0; };
     const sum = (ids: string[]) => ids.reduce((n, id) => n + cost(id), 0);
-    const ranked = [...tools].sort((a, b) => b.rank - a.rank).map((t) => t.id);
-    const next: string[] = [];
-    for (let i = 0; i <= GIVE_WAY.length && sum([...GIVE_WAY.slice(i), ...ranked]) > room; i++) {
-      if (i < GIVE_WAY.length) { next.push(GIVE_WAY[i]!); continue; }
-      // Still too many: the row keeps the highest ranks beside the More button
-      // and stops at the first that does not fit, so nothing folded outranks one that stayed.
-      // A folded tool with nothing to show stays where it is and costs nothing.
-      let left = room - (more.current || 5 * root) - gap;
-      let full = false;
+    // What has no resting place is in the menu whatever the room.
+    const next: string[] = tools.filter((t) => !t.rest).map((t) => t.id);
+    const ranked = tools.filter((t) => t.rest).sort((a, b) => b.rank - a.rank).map((t) => t.id);
+    if (sum(ranked) > room) {
+      // Too many: the row keeps the highest ranks beside the menu and stops at the first that does
+      // not fit, so nothing folded outranks one that stayed. One with nothing to show costs nothing.
+      let left = room, full = false;
       for (const id of ranked) {
         const c = cost(id);
         if (empty.has(id) || (c && (full || c > left))) { full ||= !empty.has(id); next.push(id); } else left -= c;
@@ -150,10 +146,12 @@ function useFit(tools: Tool[], reserve: number) {
   return { head, list, out, later };
 }
 
-// The tools the row has no room for, as a labeled list behind one button.
-// They stay mounted while it is closed, so the button knows how many of them
-// the session has now (a tool with nothing to show takes no row).
-function MoreTools({ tools, live, list, changed }: { tools: Tool[]; live: boolean; list: { current: HTMLElement | null }; changed: () => void }) {
+// The session's one menu: the tools that rest elsewhere or have no room, as a labeled list of the
+// same controls, over the session's actions. The tools stay mounted while it is closed, so a folded
+// control opened from elsewhere (a command, a shortcut) opens the menu with it, and the row measures
+// what they would take back.
+type Act = { id: string; label: string; icon: ReactNode; run: () => void; danger?: boolean; disabled?: boolean; gap?: boolean };
+function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool[]; live: boolean; list: { current: HTMLElement | null }; changed: () => void; acts: Act[]; button: RefObject<HTMLButtonElement | null> }) {
   const [open, setOpen] = useState(false);
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const [n, setN] = useState(tools.length);
@@ -163,55 +161,63 @@ function MoreTools({ tools, live, list, changed }: { tools: Tool[]; live: boolea
     const read = () => { setN(el.querySelectorAll(".k-stow-slot:not(:empty), .k-stow-item").length); changed(); };
     read();
     const mo = new MutationObserver((recs) => {
-      // A folded control opened from elsewhere (a command, a shortcut) shows in its place: the menu opens with it.
       if (recs.some((r) => r.type === "attributes" && (r.target as Element).hasAttribute("data-popup-open") && (r.target as Element).closest(".k-stow-slot"))) setOpen(true);
       read();
     });
     mo.observe(el, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["data-popup-open"] });
     return () => { mo.disconnect(); list.current = null; };
   }, [el]);
-  // A press anywhere on a row reaches its control. A press inside the control,
-  // or in a popup it opened (React hands those up through the portal), is the control's own.
+  // An action closes the menu and gives the keys back to its button first: what it opens (a dialog, the
+  // title's field) is then what the keys go to, and the button is where they come back after.
+  const close = () => { button.current?.focus(); setOpen(false); };
   const reach = (e: MouseEvent<HTMLElement>) => {
     if (!e.currentTarget.contains(e.target as Node) || (e.target as HTMLElement).closest(".k-stow-slot")) return;
     e.currentTarget.querySelector<HTMLElement>(".k-stow-slot button")?.click();
   };
+  // Up and Down walk the actions, as in any menu; Tab walks every control of it.
+  const walk = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])')];
+    if (!items.length) return;
+    e.preventDefault();
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    const to = e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    items[i < 0 && e.key === "ArrowUp" ? items.length - 1 : i < 0 && e.key === "ArrowDown" ? 0 : to]!.focus();
+  };
   return (
-    <Popover.Root open={open && n > 0} onOpenChange={setOpen}>
-      <Popover.Trigger data-more="" hidden={!n} aria-label={`${n} more actions`} title="More actions" data-testid="header-more-button" className="k-head-more">
-        {live && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" data-testid="more-live" />}{n} more<ChevronDown />
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger ref={button} data-more="" aria-label="Session actions" title={live ? "Session actions. Background work runs: its list is here" : "Session actions"} data-testid="session-menu" className={cn(iconButton, "relative")}>
+        <Ellipsis className="size-4" />
+        {live && <span className="k-menu-live" data-testid="more-live" />}
       </Popover.Trigger>
       <Popover.Portal keepMounted>
         <Popover.Positioner data-stow="" sideOffset={6} align="end" className="z-50 outline-none">
           {/* Kept in the page while closed (it measures its rows), it is a dialog only while open: a closed one
               is not a second dialog under the one that is (the shortcut sheet). */}
-          <Popover.Popup className="k-stow" data-testid="header-more" aria-label="More actions" role={open && n > 0 ? "dialog" : "none"}>
-            <div ref={setEl}>
-              {tools.map((t) => t.item ? <div key={t.id} className="k-stow-act">{t.item(() => setOpen(false))}</div> : (
+          <Popover.Popup className="k-stow" data-testid="header-more" aria-label="Session actions" role={open ? "dialog" : "none"} finalFocus={button}>
+            <div ref={setEl} hidden={!n || undefined}>
+              {tools.map((t) => t.item ? <div key={t.id} className="k-stow-act">{t.item(close)}</div> : (
                 <div key={t.id} className="k-stow-row" role="group" aria-label={t.label} data-tool={t.id} onClick={reach}>
                   <span className="k-stow-label">{t.label}</span>
                   <span className="k-stow-slot">{t.node}</span>
                 </div>
               ))}
             </div>
+            <div role="menu" aria-label="Actions" className="k-stow-acts" onKeyDown={walk}>
+              {acts.map((a) => (
+                <Fragment key={a.id}>
+                  {a.gap && <div role="separator" className="k-stow-rule" />}
+                  <button type="button" role="menuitem" data-testid={a.id} disabled={a.disabled} data-danger={a.danger || undefined}
+                    className="k-stow-cmd" onClick={() => { close(); a.run(); }}>
+                    {a.icon}{a.label}
+                  </button>
+                </Fragment>
+              ))}
+            </div>
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>
     </Popover.Root>
-  );
-}
-
-// A phone's head holds no tools (bridge.css): the pane's pin and close are the first rows of the
-// session's menu there. (Read when the menu opens: the window may have crossed a phone's width since.)
-function PhoneItems({ session }: { session: Session }) {
-  if (!phone()) return null;
-  const pinned = isPinned(session);
-  return (
-    <>
-      <Menu.Item className={itemClass} data-testid="menu-pin" onClick={() => runCommand("station.pin")}>{pinned ? <PinOff /> : <Pin />} {pinned ? "Unpin from the top of the list" : "Pin to the top of the list"}</Menu.Item>
-      <Menu.Item className={itemClass} data-testid="menu-close" onClick={() => runCommand("station.close")}><X /> Close the session here</Menu.Item>
-      <Menu.Separator className="mx-1 my-1 h-px bg-line" />
-    </>
   );
 }
 
@@ -239,25 +245,69 @@ export function SessionHeader({ session }: { session: Session }) {
   // A cap that is set stays in the row (it is what the owner watches); the button that sets one folds first.
   const capped = !!useCap(session.id, !!session.settings.cap_usd || !!session.parent_id);
 
-  // In the row's order; the rank says which stays longest when the row is short.
+  // In the row's order; the rank says which stays longest when the row is short. `rest`: it has a place in
+  // the row (the rest are in the menu, in this order).
   const tools: Tool[] = [
+    { id: "permissions", label: "Permissions", rank: 6, rest: true, node: <Suspense fallback={null}><PermissionMenu sessionId={session.id} /></Suspense> },
+    { id: "worktree", label: "Worktree", rank: 5, rest: true, node: <Suspense fallback={null}><WorktreeChip session={session} /></Suspense> },
+    // What the session cost, one figure; the tokens behind it are in its title and the Usage panel it opens.
+    // The title is a tip under the pointer and the keyboard (lib/tips.ts), and steps aside while it shows: the
+    // counts are its description too (a hidden line: the button's text stays one figure), so a screen reader
+    // says them on focus.
+    ...(input_ + u.output > 0 ? [{ id: "usage", label: "Cost", rank: 0, node: <><button
+      type="button"
+      className="k-session-usage inline-flex h-7 shrink-0 items-center rounded-md px-2 text-caption tabular-nums text-muted hover:bg-hover hover:text-fg"
+      title={`${tokenWords}. Open Usage`}
+      aria-label={`${u.cost !== undefined ? `Cost ${fmtSessionCost(u.cost)}` : `${fmtTokens(input_ + u.output)} tokens`}. Open Usage`}
+      aria-describedby={usageId}
+      data-testid="session-usage"
+      onClick={() => openPanel("usage")}
+    >
+      {u.cost !== undefined ? <span data-testid="session-cost">{fmtSessionCost(u.cost)}</span> : `${fmtTokens(input_ + u.output)} tokens`}
+    </button><span id={usageId} hidden>{tokenWords}</span></> }] : []),
     { id: "cap", label: "Dollar cap", rank: capped ? 7 : 0, node: <CapControl session={session} /> },
-    { id: "machine", label: "Runs on", rank: 4, node: <MachineChip session={session} /> },
     { id: "background", label: "Background", rank: 3, node: <BackgroundButton sessionId={session.id} /> },
-    { id: "worktree", label: "Worktree", rank: 5, node: <Suspense fallback={null}><WorktreeChip session={session} /></Suspense> },
-    { id: "permissions", label: "Permissions", rank: 6, node: <Suspense fallback={null}><PermissionMenu sessionId={session.id} /></Suspense> },
+    { id: "machine", label: "Runs on", rank: 4, node: <MachineChip session={session} /> },
     ...(session.parent_id ? [] : [{ id: "snooze", label: "Snooze", rank: 2, node: <SessionSnoozeButton sessionId={session.id} /> }]),
     ...headerActions.all().filter((a) => !a.when || a.when(session)).map((a) => ({
       id: `action:${a.id}`,
       label: a.label,
       rank: 1,
       node: <button type="button" title={a.label} aria-label={a.label} data-testid={`header-action-${a.id}`} onClick={() => a.run(session)} className={iconButton}>{a.icon}</button>,
-      item: (close: () => void) => <button type="button" data-testid={`header-action-${a.id}`} onClick={() => { close(); a.run(session); }} className="k-stow-item">{a.label}</button>,
+      item: (close: () => void) => <button type="button" data-testid={`header-action-${a.id}`} onClick={() => { close(); a.run(session); }} className="k-stow-item">{a.icon}{a.label}</button>,
     })),
   ];
   const { head, list, out, later } = useFit(tools, editing ? TITLE_ROOM : 0);
   const folded = tools.filter((t) => out.includes(t.id));
   const live = useBackgroundLive(session.id) > 0 && out.includes("background");
+  // Its subagents' sessions go with it: the dialog says how many before anything is removed.
+  // (The list leaves out the ones at rest and counts them under the session it carries.)
+  const remove = async () => {
+    const all = Object.values(getState().sessions), left = getState().agentsLeft;
+    const below = (id: string): number => (left[id] ?? 0) + all.filter((x) => x.parent_id === id).reduce((n, x) => n + 1 + below(x.id), 0);
+    const kids = below(session.id);
+    const ok = await confirmAction({ title: "Delete this session?", body: `"${session.title || "New session"}" and its whole history are removed${kids ? `, with the sessions of its ${kids === 1 ? "subagent" : `${kids} subagents`}` : ""}. This cannot be undone; Archive keeps it.`, action: "Delete", danger: true });
+    if (ok) { actions.remove(session.id).catch(reportError); navigate({ name: "new" }); }
+  };
+  // A phone's head holds no tools (bridge.css): the pane's pin and close are the first rows of the menu there.
+  const pinned = isPinned(session);
+  const acts: Act[] = [
+    ...(phone() ? [
+      { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, run: () => runCommand("station.pin") },
+      { id: "menu-close", label: "Close the session here", icon: <X />, run: () => runCommand("station.close") },
+    ] : []),
+    { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: phone(), run: () => setEditing(true) },
+    { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },
+    { id: "menu-path", label: "Copy folder path", icon: <Copy />, run: () => void copyOrSay(session.workspace, menuButton.current) },
+    { id: "menu-new-here", label: "New session here", icon: <FolderPlus />, run: () => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); } },
+    // To come back to it: its row keeps its unread mark until the session is opened again.
+    ...(!session.parent_id && !session.machine ? [{ id: "menu-unread", label: "Mark unread", icon: <MailOpen />, run: () => void auto.unreadSession(session.id).catch(reportError) }] : []),
+    { id: "menu-fork", label: "Fork", icon: <GitBranch />, gap: true, disabled: !session.head, run: () => { if (session.head) actions.fork(session.id, session.head).then((f) => openPlaced(f.id, session.id), reportError); } },
+    session.archived
+      ? { id: "menu-restore", label: "Restore", icon: <ArchiveRestore />, gap: true, run: () => void actions.patch(session.id, { archived: false }).catch(reportError) }
+      : { id: "menu-archive", label: "Archive", icon: <Archive />, gap: true, run: () => void archive(session).catch(reportError) },
+    { id: "menu-delete", label: "Delete", icon: <Trash2 />, danger: true, run: () => void remove() },
+  ];
 
   return (
     <header ref={head} className="k-session-header relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line bg-bg/85 px-2 backdrop-blur-md md:px-4" data-testid="session-header">
@@ -297,74 +347,10 @@ export function SessionHeader({ session }: { session: Session }) {
         )}
       </div>
       <div data-tools="" className="k-head-tools">
-      {/* What the session cost, one figure; the tokens behind it are in its title and the Usage panel it opens.
-          The title is a tip under the pointer and the keyboard (lib/tips.ts), and steps aside while it shows: the
-          counts are its description too (a hidden line: the button's text stays one figure), so a screen reader
-          says them on focus. */}
-      {input_ + u.output > 0 && !out.includes("usage") && <><button
-        type="button"
-        data-tool="usage"
-        className="k-session-usage hidden h-7 shrink-0 items-center rounded-md px-2 text-caption tabular-nums text-faint hover:bg-hover hover:text-fg md:inline-flex"
-        title={`${tokenWords}. Open Usage`}
-        aria-label={`${u.cost !== undefined ? `Cost ${fmtSessionCost(u.cost)}` : `${fmtTokens(input_ + u.output)} tokens`}. Open Usage`}
-        aria-describedby={usageId}
-        data-testid="session-usage"
-        onClick={() => openPanel("usage")}
-      >
-        {u.cost !== undefined ? <span data-testid="session-cost">{fmtSessionCost(u.cost)}</span> : `${fmtTokens(input_ + u.output)} tokens`}
-      </button><span id={usageId} hidden>{tokenWords}</span></>}
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}
       </div>
-      {folded.length > 0 && <MoreTools tools={folded} live={live} list={list} changed={later} />}
       <PanelsButton session={session} />
-      <Menu.Root>
-        <Menu.Trigger ref={menuButton} aria-label="Session actions" data-testid="session-menu" className={iconButton}>
-          <Ellipsis className="size-4" />
-        </Menu.Trigger>
-        <Menu.Portal>
-          <Menu.Positioner sideOffset={6} align="end" className="z-50 outline-none">
-            <Menu.Popup className={cn(popupClass, "min-w-52")}>
-              <PhoneItems session={session} />
-              <Menu.Item className={itemClass} data-testid="menu-rename" onClick={() => setEditing(true)}><Pencil /> Rename</Menu.Item>
-              <Menu.Item className={itemClass} onClick={() => void copyOrSay(location.href, menuButton.current)}><Link2 /> Copy link</Menu.Item>
-              <Menu.Item className={itemClass} onClick={() => void copyOrSay(session.workspace, menuButton.current)}><Copy /> Copy folder path</Menu.Item>
-              <Menu.Item className={itemClass} onClick={() => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); }}><FolderPlus /> New session here</Menu.Item>
-              {/* To come back to it: its row keeps its unread mark until the session is opened again. */}
-              {!session.parent_id && !session.machine && <Menu.Item className={itemClass} data-testid="menu-unread" onClick={() => auto.unreadSession(session.id).catch(reportError)}><MailOpen /> Mark unread</Menu.Item>}
-              <Menu.Separator className="mx-1 my-1 h-px bg-line" />
-              <Menu.Item
-                className={itemClass}
-                data-testid="menu-fork"
-                disabled={!session.head}
-                onClick={() => session.head && actions.fork(session.id, session.head).then((f) => openPlaced(f.id, session.id), reportError)}
-              >
-                <GitBranch /> Fork
-              </Menu.Item>
-              <Menu.Separator className="mx-1 my-1 h-px bg-line" />
-              {session.archived ? (
-                <Menu.Item className={itemClass} data-testid="menu-restore" onClick={() => actions.patch(session.id, { archived: false }).catch(reportError)}><ArchiveRestore /> Restore</Menu.Item>
-              ) : (
-                <Menu.Item className={itemClass} data-testid="menu-archive" onClick={() => archive(session).catch(reportError)}><Archive /> Archive</Menu.Item>
-              )}
-              <Menu.Item
-                className={cn(itemClass, "text-danger [&>svg]:text-danger")}
-                data-testid="menu-delete"
-                onClick={async () => {
-                  // Its subagents' sessions go with it: the dialog says how many before anything is removed.
-                  // (The list leaves out the ones at rest and counts them under the session it carries.)
-                  const all = Object.values(getState().sessions), left = getState().agentsLeft;
-                  const below = (id: string): number => (left[id] ?? 0) + all.filter((x) => x.parent_id === id).reduce((n, x) => n + 1 + below(x.id), 0);
-                  const kids = below(session.id);
-                  const ok = await confirmAction({ title: "Delete this session?", body: `"${session.title || "New session"}" and its whole history are removed${kids ? `, with the sessions of its ${kids === 1 ? "subagent" : `${kids} subagents`}` : ""}. This cannot be undone; Archive keeps it.`, action: "Delete", danger: true });
-                  if (ok) { actions.remove(session.id).catch(reportError); navigate({ name: "new" }); }
-                }}
-              >
-                <Trash2 /> Delete
-              </Menu.Item>
-            </Menu.Popup>
-          </Menu.Positioner>
-        </Menu.Portal>
-      </Menu.Root>
+      <SessionMenu tools={folded} live={live} list={list} changed={later} acts={acts} button={menuButton} />
       {session.phase === "working" && <div className="k-wake-line" aria-hidden="true" data-testid="wake-line" />}
     </header>
   );

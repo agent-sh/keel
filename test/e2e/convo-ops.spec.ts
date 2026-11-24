@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, ask, endsAre, openPanel, shoot, choose } from "./shots.ts";
+import { HAIKU, ask, endsAre, openPanel, shoot, choose, inHead } from "./shots.ts";
 
 // Feature: conversation operations. A recap written on demand; summarize from
 // a prompt on (the prompt comes back to the message box) and everything up to
@@ -102,7 +102,9 @@ test("export, summarize and confirm dialogs fit a short window", async ({ page, 
     await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(n);
   }
   await page.goto(`/s/${session.id}`);
-  const exportButton = page.getByRole("button", { name: "Export or take it elsewhere" });
+  // Export is in the session's menu; its dialog gives the keys back to the menu's button.
+  const exportButton = { click: async () => (await inHead(page, "header-action-export")).click() };
+  const menuButton = page.getByTestId("session-menu");
   const summarizeButton = page.getByRole("button", { name: "Summarize from here" }).last();
   const exported = page.getByTestId("export-dialog");
   const summarize = page.getByTestId("summarize-dialog");
@@ -136,7 +138,7 @@ test("export, summarize and confirm dialogs fit a short window", async ({ page, 
   await shoot(page, "dialogs-01-export");
   await page.keyboard.press("Escape");
   await expect(exported).toBeHidden();
-  await expect(exportButton).toBeFocused();
+  await expect(menuButton).toBeFocused();
   await openSummarize();
   await fits(summarize, summarize.getByRole("button", { name: "Cancel" }), summarize.getByTestId("summarize-go"));
   await shoot(page, "dialogs-02-summarize");
@@ -181,7 +183,7 @@ test("export, summarize and confirm dialogs fit a short window", async ({ page, 
   await expect(exported.getByTestId("export-md")).toBeInViewport({ ratio: 1 });
   await page.keyboard.press("Escape");
   await expect(exported).toBeHidden();
-  await expect(exportButton).toBeFocused();
+  await expect(menuButton).toBeFocused();
 
   await openConfirm();
   const body = confirm.getByRole("paragraph");

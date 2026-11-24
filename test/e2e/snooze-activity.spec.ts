@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot, choose } from "./shots.ts";
+import { HAIKU, shoot, choose, inHead } from "./shots.ts";
 
 // Feature: snooze a session (its routine alerts go to the inbox read, a failed
 // turn or a card ends it, its time passing wakes it with one alert), snooze
@@ -12,10 +12,10 @@ test("alerts: snooze per session and global, activity list", async ({ page, requ
   await page.goto(`/s/${session.id}`);
 
   // Snooze the session for an hour from its header.
-  await page.getByTestId("snooze-button").click();
+  await (await inHead(page, "snooze-button")).click();
   await page.getByRole("menuitem", { name: "For 1 hour" }).click();
   await expect(page.getByTestId("snoozed-mark")).toBeVisible();
-  await page.getByTestId("snooze-button").click();
+  await (await inHead(page, "snooze-button")).click();
   await expect(page.getByTestId("snooze-state")).toContainText("Snoozed until");
   await shoot(page, "snooze-01-session-menu");
   await page.keyboard.press("Escape");

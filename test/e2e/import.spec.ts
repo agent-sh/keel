@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renam
 import { join } from "node:path";
 import type { APIRequestContext } from "./isolate.ts";
 import { emptyKeel } from "./peer.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, inHead } from "./shots.ts";
 
 // The Claude Code session gains a question and an answer.
 function growClaude(path: string, cwd: string, id: string) {
@@ -213,7 +213,7 @@ test("import and export", async ({ page, request }) => {
   expect((await refused.json()).error).toContain("incomplete export: expected");
   expect((await request.get(`/api/sessions/${id}/export?format=jsonl&include=tools`)).status()).toBe(400);
   await page.goto(`/s/${id}`);
-  await page.getByRole("button", { name: "Export or take it elsewhere" }).click();
+  await (await inHead(page, "header-action-export")).click();
   const dialog = page.getByTestId("export-dialog");
   await expect(dialog.getByTestId("export-origin")).toContainText("Imported from Claude Code");
   await dialog.getByTestId("export-claude").click();
@@ -333,7 +333,7 @@ test("a Keel file carries its attached files to an empty Keel", async ({ page, r
 
   // The dialog offers the files once; the switch changes what the Keel file link fetches.
   await page.goto(`/s/${session.id}`);
-  await page.getByRole("button", { name: "Export or take it elsewhere" }).click();
+  await (await inHead(page, "header-action-export")).click();
   const dialog = page.getByTestId("export-dialog");
   const link = dialog.getByTestId("export-jsonl");
   await expect(link).toHaveAttribute("href", `/api/sessions/${session.id}/export?format=jsonl`);
@@ -495,7 +495,7 @@ test("a whole-tree Keel file keeps both leaves and the branch shown", async ({ p
 
   // The dialog: the branch file by default, every branch behind a switch.
   await page.goto(`/s/${session.id}`);
-  await page.getByRole("button", { name: "Export or take it elsewhere" }).click();
+  await (await inHead(page, "header-action-export")).click();
   const dialog = page.getByTestId("export-dialog");
   const link = dialog.getByTestId("export-jsonl");
   await expect(link).toHaveAttribute("href", `/api/sessions/${session.id}/export?format=jsonl`);
@@ -644,7 +644,7 @@ test("the copied resume command changes to a folder with a space and a quote", a
   await say(request, session.id, "Name one harbour.");
 
   await page.goto(`/s/${session.id}`);
-  await page.getByRole("button", { name: "Export or take it elsewhere" }).click();
+  await (await inHead(page, "header-action-export")).click();
   const dialog = page.getByTestId("export-dialog");
   await dialog.getByTestId("export-claude").click();
   const command = (await dialog.getByTestId("export-command").textContent())!;
@@ -741,7 +741,7 @@ test("Update in a copy's Export dialog updates that copy", async ({ page, reques
   grow("And its colour?", "Yellow.");
 
   await page.goto(`/s/${older}`);
-  await page.getByRole("button", { name: "Export or take it elsewhere" }).click();
+  await (await inHead(page, "header-action-export")).click();
   const dialog = page.getByTestId("export-dialog");
   await expect(dialog.getByTestId("export-origin")).toContainText("the original has gone on since");
   await shoot(page, "import-10-update-this-copy");
@@ -759,7 +759,7 @@ test("Update in a copy's Export dialog updates that copy", async ({ page, reques
   grow("And its shape?", "Round.");
   const before = { older: await texts(older), newer: await texts(newer) };
   await page.reload();
-  await page.getByRole("button", { name: "Export or take it elsewhere" }).click();
+  await (await inHead(page, "header-action-export")).click();
   await expect(dialog.getByTestId("export-origin")).toContainText("and so has this copy here");
   await expect(dialog.getByTestId("export-update")).toHaveCount(0);
   await shoot(page, "import-11-update-not-offered");

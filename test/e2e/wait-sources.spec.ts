@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { HAIKU, shoot, SCRIPTED, inHead } from "./shots.ts";
 
 // Feature: waits on what lives outside the machine. A pull request's checks
 // (gh with the owner's login, so the gate asks first) wake the session once
@@ -48,7 +48,7 @@ test("pull request checks and a socket feed wake the session", async ({ page, re
   await shoot(page, "wait-sources-01-card");
   await card.getByTestId("allow-once").click();
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
-  await page.getByTestId("background-button").click();
+  await (await inHead(page, "background-button")).click();
   await expect(page.getByTestId("bg-wait")).toContainText(`Checks of ${repo}#${n + 1}`);
   await shoot(page, "wait-sources-02-parked");
   await page.keyboard.press("Escape");

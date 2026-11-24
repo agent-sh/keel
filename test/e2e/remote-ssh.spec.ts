@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { openPanel, shoot } from "./shots.ts";
+import { openPanel, shoot, inHead } from "./shots.ts";
 
 // Feature: ssh machines and remote sessions. A host of the ssh configuration
 // (KEEL_SSH_E2E_HOST) with its aliases as routes, reached and enabled with no
@@ -106,7 +106,7 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
     const mv = (await (await request.post("/api/sessions", { data: { workspace: LOCAL, title: "Moves to the ssh machine" } })).json()).session;
     moved = mv.id;
     await page.goto(`/s/${mv.id}`);
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     await page.locator(`[data-testid="move-to"][data-machine="${mid}"]`).click();
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 120_000 });
     await shoot(page, "remote-06-moved");
@@ -115,7 +115,7 @@ test("ssh machine: one per box, enabled, a remote session's tools and terminal r
     const ws = (await (await request.get(`/api/sessions/${mv.id}`)).json()).session.workspace;
     expect(there(`cat ${ws}/a.txt`)).toBe("one\ntwo\n");
     there(`echo three >> ${ws}/a.txt`);
-    await page.getByTestId("machine-chip").click();
+    await (await inHead(page, "machine-chip")).click();
     await page.locator('[data-testid="move-to"][data-machine="local"]').click();
     await expect.poll(() => readFileSync(`${LOCAL}/a.txt`, "utf8"), { timeout: 120_000 }).toBe("one\ntwo\nthree\n");
     await page.keyboard.press("Escape");

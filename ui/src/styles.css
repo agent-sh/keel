@@ -274,6 +274,8 @@
      one height, so what is under each starts on one line across the window. The band is the
      state's strip across a pane's top at rest (a state that calls the owner draws it thicker). */
   --spacing-bar: 3.5rem;
+  /* The row under a narrow pane's head: the helm's tools, another pane's preview line. */
+  --spacing-bar-sub: 2.375rem;
   --spacing-band: 0.3125rem;
 
   /* Instrument corners: three steps and a hairline, each a size a reader tells apart.

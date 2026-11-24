@@ -99,3 +99,13 @@ export async function tabInto(page: Page, group: Locator) {
   });
   await page.keyboard.press(back ? "Shift+Tab" : "Tab");
 }
+
+// A tool of the session's header that rests in its one menu (the cost, background work, the machine,
+// snooze, the features' actions): the menu is opened when the tool is not in view already.
+export async function inHead(page: Page, id: string): Promise<Locator> {
+  const tool = page.getByTestId(id);
+  if (await tool.isVisible()) return tool;
+  if (!(await page.getByTestId("header-more").isVisible())) await page.getByTestId("session-menu").first().click();
+  await tool.waitFor({ state: "visible" });
+  return tool;
+}
