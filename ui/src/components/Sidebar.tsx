@@ -331,7 +331,7 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
           ? <>
               {w === "fail" && <span className="sr-only">{STATE_WORD.fail}: </span>}
               <span className="k-row-time k-row-on group-hover:hidden group-focus-within:hidden" data-testid={w === "fail" ? "row-class" : "row-on"} data-on={w}
-                title={w === "need" && st.since ? `${STATE_WORD.need} since ${when(st.since)}` : `${STATE_WORD[w]} ${when(st.since ?? s.updated)}`}>{w === "need" && <span className="k-row-said">{STATE_WORD.need.slice(0, -WAITS_ON_YOU.length - 1)}</span>}{w === "need" && " "}{on}</span>
+                title={w === "need" && st.since ? `${STATE_WORD.need} since ${when(st.since)}` : `${STATE_WORD[w]} ${when(st.since ?? s.updated)}`}>{w === "need" && <span className="sr-only">{STATE_WORD.need.slice(0, -WAITS_ON_YOU.length - 1)}</span>}{w === "need" && " "}{on}</span>
             </>
           : timed(st)
           ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{rowClock(st, now)}</span>

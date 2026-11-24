@@ -114,7 +114,8 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await expect(kids.getByTestId("children-toggle")).toContainText("2 agents", { timeout: 30_000 });
   await expect(kids.getByTestId("children-toggle")).toHaveAttribute("aria-expanded", "false");
   await expect(kids.getByTestId("child-session")).toHaveCount(0);
-  await expect(kids.getByTestId("children-toggle").locator('.k-mark[data-watch="work"]')).toBeVisible({ timeout: 30_000 });
+  // What works is said: in words while the agents are in two states or fewer, else as its mark and figure.
+  await expect(kids.getByTestId("children-work")).toBeVisible({ timeout: 30_000 });
   await shoot(page, "arrange-03-agents-folded");
   await kids.getByTestId("children-toggle").click();
   await expect(kids.getByTestId("child-session")).toHaveCount(2);

@@ -413,8 +413,8 @@ test("a row says why once: what is asked of the owner, the step with its time, t
       const r = row(page, id);
       await expect(r).toHaveAttribute("data-watch", "need");
       await expect(r.getByTestId("row-state")).toHaveText("Needs you");
-      // Said once: no second "needs you" on the row.
-      expect((await r.innerText()).match(/needs you/gi)).toHaveLength(1);
+      // Said once: no second "needs you" on the row (its line's state word gives way to the word at its end).
+      expect((await r.innerText()).match(/needs\s+you/gi)?.length ?? 0).toBeLessThanOrEqual(1);
       await expect(r.getByTestId("needs-you")).toHaveCount(0);
       // Who it waits on stands in the time's place; the time is its tooltip.
       await expect(r.getByTestId("row-on")).toHaveText("Needs you");
