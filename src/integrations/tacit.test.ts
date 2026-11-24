@@ -282,7 +282,8 @@ esac
 // command names facts by words kwN: a prompt gets fact-kwN, a command
 // rule-kwN (a file named with kwN likewise), each `len` characters long.
 // `mode`: slow (nothing is answered for 8 s), slowtool (tool calls are not),
-// lagtool and latetool (a tool call is answered after 0.4 s and 1.3 s), slowstart and slowstart7
+// lagtool (a read, `echo kwN`, is answered as soon as its own result is stored: the test files `result-kwN`;
+// any other tool call after 0.4 s), latetool (a tool call is answered after 1.3 s), slowstart and slowstart7
 // (the start block takes 2.5 s and 7 s). A file `slow-once` naming a hook
 // makes the next call of that hook take 3 s, once. A name listed in `hidden`
 // is a fact the store does not hold yet. `toollag` seconds is what a tool
@@ -301,18 +302,38 @@ function standIn(dir: string) {
   set("mode", "ok"); set("len", 40); set("calls", ""); set("hidden", "");
   const bin = join(sd, "store.sh");
   writeFileSync(bin, `#!/bin/bash
+# No program is started but this one: a call that forks a dozen helpers is
+# scheduled a dozen times, and on a loaded machine that alone outlasts the
+# tool hook's wait (0.3 s at this speed).
 dir=${JSON.stringify(sd)}
-input=$(cat)
+IFS= read -r -d '' input
 hook=$2
-mode=$(cat "$dir/mode"); len=$(cat "$dir/len")
-sid=$(sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p' <<<"$input")
-src=$(sed -n 's/.*"source":"\\([^"]*\\)".*/\\1/p' <<<"$input")
+read -r mode < "$dir/mode"; read -r len < "$dir/len"
+sid=; src=
+re='"session_id":"([^"]*)"'; [[ $input =~ $re ]] && sid=\${BASH_REMATCH[1]}
+re='"source":"([^"]*)"'; [[ $input =~ $re ]] && src=\${BASH_REMATCH[1]}
 echo "$hook $sid $src" >> "$dir/calls"
-seen="$dir/seen-$sid"; touch "$seen"
-pad=$(head -c "$len" /dev/zero | tr '\\0' 'x')
+seen="$dir/seen-$sid"; : >> "$seen"
+printf -v pad '%*s' "$len" ''; pad=\${pad// /x}
+has() { local l; while IFS= read -r l || [[ -n $l ]]; do [[ $l == "$2" ]] && return 0; done < "$1"; return 1; }
+# The distinct kw words of a text, in version order (KW).
+num() { local k=\${1#kw}; if [[ -z $k ]]; then N=-1; else N=$((10#$k)); fi; }
+kws() {
+  KW=(); local s=$1 w v i j t b
+  while [[ $s =~ kw[0-9]* ]]; do
+    w=\${BASH_REMATCH[0]}; s=\${s#*"$w"}
+    for v in "\${KW[@]}"; do [[ $v == "$w" ]] && continue 2; done
+    KW+=("$w")
+  done
+  for ((i = 1; i < \${#KW[@]}; i++)); do
+    t=\${KW[i]}; num "$t"; b=$N
+    for ((j = i - 1; j >= 0; j--)); do num "\${KW[j]}"; ((N > b)) || break; KW[j + 1]=\${KW[j]}; done
+    KW[j + 1]=$t
+  done
+}
 out=""
-give() { grep -qx "$1" "$dir/hidden" && return; grep -qx "$1" "$seen" && return; echo "$1" >> "$seen"; out+="- $1: the text of $1 $pad\\n"; }
-if [ "$sid" != keel-probe ] && [ -f "$dir/slow-once" ] && [ "$(cat "$dir/slow-once")" = "$hook" ]; then rm -f "$dir/slow-once"; sleep ${sec(3)}; fi
+give() { has "$dir/hidden" "$1" && return; has "$seen" "$1" && return; echo "$1" >> "$seen"; out+="- $1: the text of $1 $pad\\n"; }
+if [ "$sid" != keel-probe ] && [ -f "$dir/slow-once" ]; then read -r once < "$dir/slow-once"; if [ "$once" = "$hook" ]; then rm -f "$dir/slow-once"; sleep ${sec(3)}; fi; fi
 case "$hook" in
   session-start)
     case "$mode" in slow) exec sleep ${sec(8)} ;; slowstart) sleep ${sec(2.5)} ;; slowstart7) sleep ${sec(7)} ;; esac
@@ -320,16 +341,26 @@ case "$hook" in
     give start-rule; printf '# store: standing rules\\n%b' "$out" ;;
   prompt)
     case "$mode" in slow) exec sleep ${sec(8)} ;; esac
-    q=$(sed -n 's/.*"prompt":"\\(.*\\)","transcript_path.*/\\1/p' <<<"$input")
-    for w in $(grep -o 'kw[0-9]*' <<<"$q" | sort -u -V); do give "fact-$w"; done
+    q=; re='"prompt":"(.*)","transcript_path'; [[ $input =~ $re ]] && q=\${BASH_REMATCH[1]}
+    kws "$q"
+    for w in "\${KW[@]}"; do give "fact-$w"; done
     [ -n "$out" ] && printf '# store: facts matching this request\\n%b' "$out" ;;
   pre-tool)
     [ -f "$dir/stale" ] && exit 0
-    case "$mode" in slow|slowtool) exec sleep ${sec(8)} ;; lagtool) sleep ${sec(0.4)} ;; latetool) sleep ${sec(1.3)} ;; esac
-    cmd=$(sed -n 's/.*"command":"\\([^"]*\\)".*/\\1/p' <<<"$input")
-    file=$(sed -n 's/.*"file_path":"\\([^"]*\\)".*/\\1/p' <<<"$input")
-    for w in $(grep -o 'kw[0-9]*' <<<"$cmd $file" | sort -u -V); do give "rule-$w"; done
-    [ -n "$out" ] && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"# store: before this step\\\\n%s"}}\\n' "$(printf '%s' "$out" | sed 's/\\\\n$//')" ;;
+    case "$mode" in slow|slowtool) exec sleep ${sec(8)} ;; esac
+    cmd=; file=; re='"command":"([^"]*)"'; [[ $input =~ $re ]] && cmd=\${BASH_REMATCH[1]}
+    re='"file_path":"([^"]*)"'; [[ $input =~ $re ]] && file=\${BASH_REMATCH[1]}
+    # A read answers after its own result is stored (the test files it as result-NAME): a lag counted from the
+    # call's start is over before a read that a loaded machine runs slowly has ended. (A request waits for the
+    # answer only as long as the hook's wait counts from the call's start: a read slower than that leaves its
+    # answer late and owed, which the tests that read allow.)
+    re='^echo (kw[0-9]+)$'
+    if [ "$mode" = lagtool ] && [[ $cmd =~ $re ]]; then for ((n = 0; n < 1000; n++)); do [ -f "$dir/result-\${BASH_REMATCH[1]}" ] && break; sleep 0.01; done
+    elif [ "$mode" = lagtool ]; then sleep ${sec(0.4)}; fi
+    [ "$mode" = latetool ] && sleep ${sec(1.3)}
+    kws "$cmd $file"
+    for w in "\${KW[@]}"; do give "rule-$w"; done
+    [ -n "$out" ] && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"# store: before this step\\\\n%s"}}\\n' "\${out%\\\\n}" ;;
 esac
 exit 0
 `, { mode: 0o755 });
@@ -386,6 +417,11 @@ function memoryWorld(dir: string, bin: string, rules?: { quietAfter: number; sam
   const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
   const tacit = new Tacit(store, bus, errors, bin, SPEED, rules);
   tacit.install();
+  // A stored tool result releases the store's answer for the read that made it (see the stand-in's lagtool).
+  bus.on((f) => {
+    if (f.t !== "event" || f.event.kind !== "tool_result") return;
+    for (const m of JSON.stringify(f.event.data.results).matchAll(/kw\d+/g)) writeFileSync(join(dir, "standin", `result-${m[0]}`), "");
+  });
   const session = () => {
     return store.createSession({ title: "Fixture", model: "p:m", workspace: dir }).id;
   };
@@ -409,6 +445,17 @@ function memoryWorld(dir: string, bin: string, rules?: { quietAfter: number; sam
 // earlier test files of a whole run, report into the same collector).
 const memoryError = (m: string) => m.includes("memory store");
 const until = async (what: () => boolean, ms = 15_000) => { const t = Date.now(); while (!what() && Date.now() - t < ms) await Bun.sleep(25); expect(what()).toBe(true); };
+// A probe is asked again only while calls of its kind are being made (a test below shows it stops with nobody
+// asking). How long a loaded machine takes between the last call of a test and the store's coming back is not
+// the test's to guess, so the test asks again itself: a call starts a probe that is not running, and a call
+// after a probe's start is what lets the next one be asked. Then the store answers.
+async function askAgain(w: ReturnType<typeof memoryWorld>, session: string, words: string[]) {
+  const probes = () => w.tacit.stats().processes.probes;
+  const p0 = probes();
+  await w.say(session, words[0]!);
+  await until(() => probes() > p0, 30_000);
+  await w.say(session, words[1]!);
+}
 const seq = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
 async function inWorld(name: string, run: (w: ReturnType<typeof memoryWorld>, st: ReturnType<typeof standIn>, dir: string) => Promise<void>, rules?: { quietAfter: number; sampleEvery: number }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", `memory-${name}-`));
@@ -544,6 +591,7 @@ test("a tool hook that hangs stops the waiting for tool hooks only, after two in
   expect(w.told(a)).toBe(1);
   expect(w.captured.filter((m) => m.includes("memory store"))).toHaveLength(1);
   // The store answers tool calls again: the probe finds out, with no prompt spent on it.
+  await askAgain(w, a, ["A kw12 tools=58", "A kw13 tools=59"]);
   st.set("mode", "ok");
   await until(() => !w.tacit.stats().out.tool);
   await w.say(a, "A kw6 tools=60");
@@ -631,6 +679,7 @@ test("a store that hangs: two waits, then an outage said once and no wait after;
   expect(p.max).toBeLessThanOrEqual(p.limit);
   expect(w.tacit.stats().out).toEqual({ ask: true, tool: true });
   // It answers again: the probe finds out, with no prompt spent on it.
+  await askAgain(w, s, ["more kw9 tools=9", "more kw10 tools=10"]);
   st.set("mode", "ok");
   await until(() => !w.tacit.stats().out.ask, 30_000);
   expect(w.tacit.stats().processes.probes).toBeGreaterThan(0);
