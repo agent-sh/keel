@@ -87,6 +87,17 @@ test("the tests a change touches: its own tests, the tests of its folders and th
   expect(treeReadsOf(walker, "src/conv.test.ts")).toEqual(["src", "ui/src"]);
   expect(testsFor(["ui/src/components/Panel.tsx"], ["src/conv.test.ts", "src/other.test.ts"], (p) => refsIn(p === "src/conv.test.ts" ? walker : "readdirSync(tmp)", p))).toEqual(["src/conv.test.ts"]);
   expect(treeReadsOf(`readdirSync(tmpdir())`, "src/x.test.ts")).toEqual([]);
+  // A listing counts when it lists a place of the tree: a path made from the test's own place (also through a name
+  // it was bound to), or what a helper is given. A test that lists a scratch folder of its own and only knows where
+  // it sits (to copy itself, to find a link) reads no tree: it is not picked for every change.
+  const scratch = `const HERE = join(import.meta.dir, "../..");\nconst home = join(root, "host");\nconst bare = readdirSync(join(home, ".cache")).find(isGit);\nlink(join(HERE, "node_modules"));\n`;
+  expect(treeReadsOf(scratch, "src/landing/pair.test.ts")).toEqual([]);
+  expect(treeReadsOf(`const ROOT = join(import.meta.dir, "..");\nconst SRC = join(ROOT, "src");\nreaddirSync(join(SRC, "core"));`, "src/c.test.ts")).toEqual(["src", "."]);
+  expect(treeReadsOf(`const ROOT = join(import.meta.dir, "..");\nfunction files(dir) { return readdirSync(dir); }`, "src/c.test.ts")).toEqual(["src", "."]);
+  // So a change far from such a test does not pick it, and a change beside it does.
+  const pairRefs = (p: string) => refsIn(p === "src/landing/pair.test.ts" ? scratch : "", p);
+  expect(testsFor(["src/engine/turn.ts"], ["src/landing/pair.test.ts"], pairRefs)).toEqual([]);
+  expect(testsFor(["src/landing/queue.ts"], ["src/landing/pair.test.ts"], pairRefs)).toEqual(["src/landing/pair.test.ts"]);
   expect(importsOf(`import a from "./a"; const b = require( '../b.js' ); import x from "pkg";`, "s/t.test.ts")).toEqual(["s/a", "b.js"]);
   // The order: a changed test and the ones still red, the changed file's own test, the tests that read the tree
   // under it, its folder's other tests, then the tests that import it, the nearest first.

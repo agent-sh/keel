@@ -31,7 +31,16 @@ const daemon = read(import.meta.dir, /\.ts$/);
 // templates and regular expressions are kept: a `//` inside one is not a
 // comment. A quote opens a string only when it closes on its line, so an
 // apostrophe in JSX text does not swallow what follows it.
+const blanked = new Map<string, string>();
 function code(text: string, css = false): string {
+  const key = `${css ? "css" : "ts"}\0${text}`;
+  const known = blanked.get(key);
+  if (known !== undefined) return known;
+  const made = withoutComments(text, css);
+  blanked.set(key, made);
+  return made;
+}
+function withoutComments(text: string, css: boolean): string {
   const out = text.split("");
   let i = 0;
   const blank = (to: number) => { for (; i < to; i++) if (out[i] !== "\n") out[i] = " "; };
@@ -46,7 +55,9 @@ function code(text: string, css = false): string {
   };
   // A slash opens a regular expression where a value may begin; it ends on its line.
   const regex = (from: number) => {
-    const before = text.slice(0, from).trimEnd();
+    let k = from;
+    while (k > 0 && /\s/.test(text[k - 1]!)) k--;
+    const before = text.slice(Math.max(0, k - 7), k);
     if (!/[(,=:[!&|?{;]$|\breturn$|^$/.test(before)) return -1;
     let set = false;
     for (let j = from + 1; j < text.length && text[j] !== "\n"; j++) {

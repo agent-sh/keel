@@ -86,15 +86,53 @@ export function names(spec: string, file: string): boolean {
 }
 
 // The folders a test reads the source tree under: a test that walks folders
-// (readdirSync, a glob's scan) from its own place (`import.meta.dir`,
+// (readdirSync, a Glob's scan) from its own place (`import.meta.dir`,
 // `__dirname`) reads every file below what it joins to it, and below its own
 // folder (a convention test that reads every source file imports none of them).
-// Paths from the top; none for a test that walks nothing of the tree.
-const WALKS = /\breaddir(?:Sync)?\s*\(|\.scan(?:Sync)?\s*\(|\bnew\s+(?:Bun\.)?Glob\s*\(/;
+// Paths from the top; none for a test that walks nothing of the tree. A folder
+// listing counts only when it lists a place of the tree: what a helper is given
+// (a bare name), or a path made from the test's own place. A test that lists a
+// scratch folder of its own, and merely knows where it sits, reads no tree: it
+// would be picked for every change, and a run that takes it takes the time of
+// what it builds.
+const SCANS = /\bnew\s+(?:Bun\.)?Glob\s*\(/;
+const LISTS = /\breaddir(?:Sync)?\s*\(/g;
 const HERE = /\b(?:import\.meta\.dir(?:name)?|__dirname)\b/;
 const JOINED = /\b(?:join|resolve)\(\s*(?:import\.meta\.dir(?:name)?|__dirname)((?:\s*,\s*["'][^"'\n]*["'])+)\s*\)/g;
+const BOUND = /\b(?:const|let|var)\s+(\w+)\s*(?::[^=\n]+)?=\s*([^;\n]*)/g;
+// The names a test makes from its own place (ROOT = join(import.meta.dir, ".."), then SRC = join(ROOT, "src")).
+function placeNames(text: string): Set<string> {
+  const names = new Set<string>();
+  const bound = [...text.matchAll(BOUND)].map((m) => [m[1]!, m[2]!] as const);
+  for (let more = true; more;) {
+    more = false;
+    for (const [n, expr] of bound) {
+      if (names.has(n)) continue;
+      if (HERE.test(expr) || [...names].some((p) => new RegExp(`\\b${p}\\b`).test(expr))) { names.add(n); more = true; }
+    }
+  }
+  return names;
+}
+// The text between the parenthesis that opens at `at` and its mate.
+function argsAt(text: string, at: number): string {
+  let depth = 1;
+  for (let i = at; i < text.length && i < at + 400; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")" && --depth === 0) return text.slice(at, i);
+  }
+  return text.slice(at, at + 400);
+}
+function walksTree(text: string): boolean {
+  if (SCANS.test(text)) return true;
+  const names = placeNames(text);
+  for (const m of text.matchAll(LISTS)) {
+    const arg = argsAt(text, m.index! + m[0].length).trim();
+    if (/^\w+$/.test(arg) || HERE.test(arg) || [...names].some((n) => new RegExp(`\\b${n}\\b`).test(arg))) return true;
+  }
+  return false;
+}
 export function treeReadsOf(text: string, from: string): string[] {
-  if (!WALKS.test(text) || !HERE.test(text)) return [];
+  if (!HERE.test(text) || !walksTree(text)) return [];
   const here = posix.dirname(from);
   const out = new Set([here]);
   for (const m of text.matchAll(JOINED)) {
