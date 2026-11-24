@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { daemon, exited, ROOT, sessionsFolder } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 import { pdf, png } from "./fixtures/files.ts";
+import { PUBLIC } from "./fixtures/local-names.ts";
 
 // Feature: a page fetch is decided by what the server says it is and by its bytes, not by the address. A PDF
 // served at /doc (no .pdf in the path) is read for its text, a PNG at /img comes as an image with its file,
@@ -19,9 +20,10 @@ const zip = Buffer.concat([Buffer.from("PK\x03\x04"), Buffer.from(Array.from({ l
 
 test("web fetch: a PDF without .pdf, an image and a zip come as text, an image and a file", async ({ page }) => {
   test.skip(spawnSync("pdftotext", ["-v"]).error !== undefined, "needs poppler-utils: a PDF is read through pdftotext");
-  const seen: string[] = [];
+  const seen: string[] = [], pinned: string[] = [];
   const web = createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
+    if (req.headers["x-pinned-to"]) pinned.push(String(req.headers["x-pinned-to"]));
     const file = (type: string, bytes: Buffer) => res.writeHead(200, { "content-type": type }).end(bytes);
     if (req.url === "/doc") return file("application/pdf", pdf);
     if (req.url === "/img") return file("image/png", png);
@@ -67,6 +69,8 @@ test("web fetch: a PDF without .pdf, an image and a zip come as text, an image a
     expect(readFileSync(/saved to (\S+)\]/.exec(words(file))![1]!).equals(zip)).toBe(true);
     // The server was asked for the three, and for each by the stand-in and again by Keel for the file's bytes.
     expect(seen.filter((s) => s === "GET /doc").length).toBeGreaterThanOrEqual(1);
+    // Keel's own requests went to the address the name resolved to, never to the server's local one.
+    expect(pinned).toEqual([PUBLIC, PUBLIC, PUBLIC]);
 
     // The transcript lists the three files, and each opens from its chip with its own bytes.
     for (const p of ["/doc", "/img", "/file"]) await page.getByRole("button", { name: `Fetched https://${HOST}${p}` }).click();

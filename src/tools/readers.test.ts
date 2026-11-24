@@ -1,5 +1,5 @@
 // The readers tool around a job: what it gathers before any reader runs.
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import type { ModelInfo } from "../providers/types.ts";
 import { AskReaders, gather } from "./readers.ts";
 import type { ToolContext } from "./types.ts";
 import { htmlToText, plainFetch } from "./web.ts";
+import { nameLocal } from "../../test/e2e/fixtures/local-names.ts";
 
 const DIR = mkdtempSync(join(tmpdir(), "keel-readers-"));
 afterAll(() => rmSync(DIR, { recursive: true, force: true }));
@@ -62,8 +63,13 @@ function pages() {
   });
   return { seen, server, url: (p: string) => `http://127.0.0.1:${server.port}${p}` };
 }
-// The tool's own fetch of a page, without the guard that keeps it off this machine.
-const local = (url: string, o: any, signal?: AbortSignal) => plainFetch(new URL(url), o, signal);
+// The tool's own fetch of a page. The guard keeps it off this machine, so the servers of these tests have a public
+// name (test/e2e/fixtures/local-names.ts) for the tool to fetch.
+const NAME = "pages.example.test";
+let unname = () => {};
+beforeAll(() => { unname = nameLocal(NAME); });
+afterAll(() => unname());
+const local = (url: string, o: any, signal?: AbortSignal) => plainFetch(new URL(url.replace("127.0.0.1", NAME)), o, signal);
 
 test("pages share the job's budget and are fetched a few at a time; a page that is cut or never fetched is named", async () => {
   const { seen, server, url } = pages();
@@ -178,7 +184,7 @@ test("a page of markup is charged for its text, not its markup: six fetched at o
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(docs, { headers: { "content-type": "text/html" } }) });
   try {
     const url = (p: string) => `http://127.0.0.1:${server.port}${p}`;
-    const one = await plainFetch(new URL(url("/one")), { spillDir: join(DIR, "spill"), whole: true });
+    const one = await local(url("/one"), { spillDir: join(DIR, "spill"), whole: true });
     expect(one.text).toContain("Paragraph 400 of the page");
     expect(one.text.length).toBeLessThan(30_000);
     const six = await gather({ urls: [1, 2, 3, 4, 5, 6].map((i) => url(`/p${i}`)) }, ctxOf(), { budget: 700_000, atOnce: 6, fetch: local });
@@ -206,7 +212,7 @@ test("pages are charged in the order named, whichever came back first, and a pag
   });
   try {
     const urls = ["/slow-1", "/page-2", "/page-3"].map((p) => `http://127.0.0.1:${server.port}${p}`);
-    const whole = (await plainFetch(new URL(urls[0]!), { spillDir: join(DIR, "spill"), whole: true })).text.length;
+    const whole = (await local(urls[0]!, { spillDir: join(DIR, "spill"), whole: true })).text.length;
     const { items, skipped } = await gather({ urls }, ctxOf(), { budget: whole * 2 + 1_000, atOnce: 3, fetch: local });
     // The first two named are whole; the third, which came back before the first, is the one cut.
     expect(items.map((m) => [m.label, m.text.length >= whole - 1])).toEqual([[urls[0], true], [urls[1], true], [urls[2], false]]);

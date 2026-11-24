@@ -99,7 +99,8 @@ export function bodyKind(declared: string | undefined, head: Uint8Array): { kind
   // A page that is called text and starts like a file format is that file.
   const mime = TEXTUAL.test(t) && sniffed ? sniffed : blobType(declared, head);
   if (mime === "application/pdf") return { kind: "pdf", mime };
-  if (INLINE_IMAGE.test(mime)) return { kind: "image", mime };
+  // An image is what its first bytes show: a page served as an image type is not one, and is never sent as one.
+  if (INLINE_IMAGE.test(mime)) return sniffed === mime ? { kind: "image", mime } : { kind: "binary", mime: sniffed ?? "application/octet-stream" };
   if (TEXTUAL.test(mime)) return { kind: "text", mime };
   // A type of a format we know, or of media, is binary; one we do not know (or no type) is what its bytes are.
   const known = mime in MIME_EXT || /^(audio|video|image|font)\//.test(mime);

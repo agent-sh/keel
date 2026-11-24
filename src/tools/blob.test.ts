@@ -105,6 +105,10 @@ test("a fetched body is told by its type and bytes, never by its address", () =>
   expect(kind("image/png", PDF)).toBe("pdf");
   // The formats Read shows are images; the others of image/ are saved files, and SVG is text.
   expect(kind("image/png", PNG)).toBe("image");
+  // A page, or any other file, served as an image type is not an image: it is a file, named by what its bytes are.
+  expect(kind("image/png", "<html><body>a page</body></html>")).toBe("binary");
+  expect(bodyKind("image/png", Buffer.from("<html>"))).toEqual({ kind: "binary", mime: "application/octet-stream" });
+  expect(bodyKind("image/jpeg", Buffer.from("PK\x03\x04rest"))).toEqual({ kind: "binary", mime: "application/zip" });
   expect(kind("application/octet-stream", PNG)).toBe("image");
   expect(kind("image/jpeg", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0]))).toBe("image");
   expect(kind("image/bmp", "BM\0\0\0\0\0\0")).toBe("binary");

@@ -15,6 +15,7 @@ import { READ_WHOLE_CHARS } from "../engine/reader.ts";
 import { chunks, readText } from "../core/proc.ts";
 import { privateHost } from "../core/hosts.ts";
 import { noteOutward } from "../safety/egress.ts";
+import { vettedFetch } from "./pinned.ts";
 import { endpointOf, requestBytes } from "../safety/egress-count.ts";
 import { homeDir } from "../core/paths";
 
@@ -166,7 +167,8 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     const last = typeof r.meta?.final_url === "string" ? endpointOf(r.meta.final_url) : null;
     if (last && last.host !== end.host) noteOutward({ via: "fetch helper (redirected)", host: last.host, port: last.port, bytes: null });
     // The program reads pages, not files: what it refuses by type is read here, by its type and bytes.
-    if (r.kind === "error" && r.error?.code === "UNSUPPORTED_CONTENT_TYPE") return plainFetch(u, o, signal);
+    // Only a read: a request that sends something or changes something is not made a second time by another path.
+    if (r.kind === "error" && r.error?.code === "UNSUPPORTED_CONTENT_TYPE" && /^(GET|HEAD)$/i.test(o.method ?? "GET") && !o.body) return plainFetch(u, o, signal, true);
     if (r.kind === "error") return { text: String(r.error?.message ?? JSON.stringify(r.error)), error: true };
     // The page itself, without the request echo: the model knows the URL. A
     // page with an error status comes as the echo and the raw markup: it gets
@@ -182,15 +184,26 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
   return plainFetch(u, o, signal);
 }
 
-// The built-in fetch of a page webFetch has let through.
-export async function plainFetch(u: URL, o: FetchOpts, signal?: AbortSignal): Promise<Fetched> {
-  const res = await fetch(u.href, {
+// The built-in fetch of a page webFetch has let through. The name is resolved
+// here and the request goes to an address that is on the public internet
+// (src/tools/pinned.ts), at every hop. `refused`: the fetch program refused
+// the page by its type, so this is the second request for it.
+export async function plainFetch(u: URL, o: FetchOpts, signal?: AbortSignal, refused = false): Promise<Fetched> {
+  const got = await vettedFetch(u, {
     method: o.method ?? "GET", body: o.body, redirect: "manual", signal: signal ?? AbortSignal.timeout(60_000),
     headers: { "user-agent": "Keel (coding agent)", accept: "text/markdown, text/html;q=0.9, */*;q=0.5", ...o.headers },
   });
+  if ("refused" in got) return { text: got.refused, error: true };
+  const res = got.res;
   if (res.status >= 300 && res.status < 400) {
     const to = new URL(res.headers.get("location") ?? "", u).href;
-    if (new URL(to).host !== u.host) return { text: `${u.href} redirects to another host: ${to}\nFetch that URL in a call of its own if it is needed.` };
+    if (new URL(to).host !== u.host) {
+      void res.body?.cancel().catch(() => {});
+      return { text: refused
+        ? `${u.href} is a file the fetch program does not read, and it is served after a redirect to another host: ${to}\nFetch that address in a call of its own to read or save the file.`
+        : `${u.href} redirects to another host: ${to}\nFetch that URL in a call of its own if it is needed.` };
+    }
+    void res.body?.cancel().catch(() => {});
     // Where it ended is said, as the fetch CLI says it: the page there is the page fetched.
     const r = await webFetch(to, o, signal);
     return /^Final URL: /.test(r.text) ? r : { ...r, text: `Final URL: ${to}\n\n${r.text}` };
