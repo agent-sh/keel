@@ -304,7 +304,9 @@ under `~/.cache/keel-work/bun/research/`.
   words. A target the owner typed, one the repository held before the session, one the model's own call named
   first, or one the owner allowed on a card is not held; a push to a remote the repository holds is not held
   even when a page named its forge's host. A session on another machine reads no repository there: a remote
-  it names by name (`git push origin`) is no target, a URL it spells is held as any other. The judge's input
+  it names by name (`git push origin`) is no target, a URL it spells is held as any other. In an unbounded
+  session a branch no sighting names is not held when it goes to a remote the repository holds, or when the
+  model made it here and it exists; one a page named is. The judge's input
   carries the same fact.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.

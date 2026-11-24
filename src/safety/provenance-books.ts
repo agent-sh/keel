@@ -101,6 +101,13 @@ export class Provenance {
     for (const h of maybe) mine.set(h.target.key, await repo.holds(h.target, own));
     // A push names its remote, and what a page named may be only the remote's host: the repository is asked about the remote too.
     for (const r of reaches) if (r.target.kind === "remote" && !mine.has(r.target.key)) mine.set(r.target.key, await repo.holds(r.target, own));
+    // A branch no sighting names (only: a book that could not keep what it read) is not what a page named when the push
+    // goes to a remote the repository holds, or when the model made it here and it exists. One a page named is held.
+    const ownRemote = reaches.some((r) => r.target.kind === "remote" && mine.get(r.target.key));
+    for (const h of maybe) {
+      if (h.target.kind !== "branch" || !h.origin.unread || mine.get(h.target.key)) continue;
+      if (ownRemote || (own.made.has(h.target.key) && (await repo.hasBranch(h.target.shown)))) mine.set(h.target.key, true);
+    }
     void now;
     return { hits: asked((t) => mine.get(t.key) ?? false), ids };
   }
@@ -144,13 +151,16 @@ class Repo {
   }
   // Whether the workspace held it before the session: a remote of the repository (not one the session added), a
   // branch it has (not one the session made), a host of its remotes, a mail address or host its files name.
+  async hasBranch(name: string): Promise<boolean> { return (await this.branchSet()).has(name); }
+  private async branchSet() {
+    return (this.branches ??= new Set(((await this.git("for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes")) ?? "").split("\n").flatMap((b) => [b, b.replace(/^[^/]+\//, "")]).filter(Boolean)));
+  }
   async holds(t: Target, book: ProvenanceBook): Promise<boolean> {
     const said = (s: string) => book.edited.some((c) => c.toLowerCase().includes(s.toLowerCase()));
     if (t.kind === "remote") return !!(await this.readRemotes()).get(hostOfRemote(t.key))?.includes(t.key) && !said(t.key.slice(7 + hostOfRemote(t.key).length + 1));
     if (t.kind === "branch") {
       if (book.made.has(t.key)) return false;
-      this.branches ??= new Set(((await this.git("for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes")) ?? "").split("\n").flatMap((b) => [b, b.replace(/^[^/]+\//, "")]).filter(Boolean));
-      return this.branches.has(t.shown);
+      return (await this.branchSet()).has(t.shown);
     }
     if (t.kind === "host" && (await this.readRemotes()).has(t.shown) && !said(t.shown)) return true;
     // A file the repository tracks names it (as of the last commit: what the session wrote since is not "before").
