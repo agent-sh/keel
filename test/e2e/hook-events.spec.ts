@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, endsAre, shoot } from "./shots.ts";
 
 const HOOK = join(import.meta.dirname, "fixtures/hook.sh");
 const scripted = HAIKU.startsWith("scripted:");
@@ -79,8 +79,8 @@ test("a hook changes a call's input and allows it", async ({ page, request }) =>
   await expect(card).toContainText("The model asked for: echo asked-by-model-high");
   await card.getByTestId("deny").click();
   await page.getByTestId("deny-send").click();
-  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 60_000 });
-  await expect(page.getByTestId("tool-call").nth(2).getByTestId("tool-asked")).toHaveText("echo asked-by-model-high");
+  await endsAre(page, 3, 60_000);
+  await expect(page.getByTestId("tool-call").last().getByTestId("tool-asked")).toHaveText("echo asked-by-model-high");
   expect(await results()).toContain("It did not run. The input that was judged:");
 });
 

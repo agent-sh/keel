@@ -551,7 +551,8 @@ test("a background agent is continued across restarts and its record matches wha
     const errs = (await call("/api/errors?resolved=0", undefined, "GET")).errors as any[];
     expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
     await page.goto(`${d.url}/s/${session.id}`);
-    await expect(page.getByTestId("agent-report")).toHaveCount(3, { timeout: 30_000 });
+    // (Three reports are counted in the events above; the page draws the newest.)
+    await expect(page.getByTestId("agent-report").last()).toBeVisible({ timeout: 30_000 });
     await shoot(page, "restart-04-agent-reports");
   } finally {
     d.proc.kill("SIGKILL");

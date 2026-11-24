@@ -1,4 +1,4 @@
-import type { APIRequestContext, Locator, Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
 export const SHOTS = process.env.KEEL_SHOTS ?? `${process.env.HOME}/.cache/keel-work/bun/shots`;
@@ -16,6 +16,24 @@ export async function shoot(page: Page, name: string) {
   }
   await page.evaluate(() => document.documentElement.classList.remove("theme-switch"));
 }
+
+// The turns of the session open in the page that have ended, counted in the session's events. The
+// transcript draws only the blocks near its view, so after a long reply the footers of the turns above
+// it are not in the page and counting `turn-end` elements comes up short. Use this wherever a spec
+// waits for a number of turns; check an element's own footer where the footer itself is the subject.
+export const turnEnds = async (page: Page): Promise<number> => {
+  // (By the page's own origin: a spec's daemon of its own is not the run's daemon.)
+  const at = new URL(page.url());
+  const events = (await (await page.request.get(`${at.origin}/api/sessions/${at.pathname.split("/").pop()}`)).json()).events as { kind: string }[];
+  return events.filter((e) => e.kind === "turn_end").length;
+};
+export const endsAre = async (page: Page, n: number, timeout = 30_000, atLeast = false) => {
+  // (`atLeast`: for a step after which the session goes on by itself, so the count may pass n between two looks.)
+  if (atLeast) await expect.poll(() => turnEnds(page), { timeout }).toBeGreaterThanOrEqual(n);
+  else await expect.poll(() => turnEnds(page), { timeout }).toBe(n);
+  // The newest footer is always drawn: the page has caught up with the count.
+  await expect(page.getByTestId("turn-end").last()).toBeVisible();
+};
 
 export const HAIKU = process.env.KEEL_TEST_MODEL ?? "bedrock:global.anthropic.claude-haiku-5-5";
 // A spec written for a real model also runs on the scripted stand-in

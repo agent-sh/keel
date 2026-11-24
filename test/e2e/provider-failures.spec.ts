@@ -2,7 +2,7 @@ import { expect, test, type Page } from "./isolate.ts";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { exited, ownDaemon } from "./peer.ts";
-import { shoot } from "./shots.ts";
+import { endsAre, shoot } from "./shots.ts";
 
 // Feature: what the owner sees when the provider fails or stops early. A real
 // model cannot be made to do these on demand, so the scripted stand-in
@@ -227,7 +227,7 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   // The retry is a model switch like the picker's: a warm cache worth less than the owner's amount to read again is not asked about.
   await expect(page.getByTestId("confirm")).toHaveCount(0);
   await expect(texts.last()).toHaveText("The backup model took the request.", { timeout: 15_000 });
-  await expect(page.getByTestId("turn-end")).toHaveCount(10);
+  await endsAre(page, 10, 5_000);
 
   // A new session for the window: a request too long compacts what came before
   // the prompt and goes on (the prompt itself is sent whole after the summary).

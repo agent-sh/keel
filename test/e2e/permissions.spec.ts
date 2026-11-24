@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ask, HAIKU, scriptBash, shoot } from "./shots.ts";
+import { ask, HAIKU, endsAre, scriptBash, shoot } from "./shots.ts";
 
 // Feature: the permission gate. A command that changes things asks; "always
 // allow" stores a grant that covers the next one; a grant is revoked from the
@@ -23,7 +23,6 @@ test("permission gate", async ({ page, request }) => {
     await page.getByTestId("composer").fill(text);
     await page.keyboard.press("Enter");
   };
-  const turns = () => page.getByTestId("turn-end");
 
   // 1. A command that writes asks first; the turn waits.
   await say(ask("Run exactly this Bash command and nothing else: touch alpha.txt. Then reply with one word: ok.", scriptBash("touch alpha.txt")));
@@ -41,12 +40,12 @@ test("permission gate", async ({ page, request }) => {
   await page.getByTestId("grant-always").click();
   await expect(card).toHaveCount(0);
   await expect(page.locator(`[data-testid="session-row"][data-session="${session.id}"]`).first()).not.toHaveAttribute("data-watch", "need");
-  await expect(turns()).toHaveCount(1, { timeout: 120_000 });
+  await endsAre(page, 1, 120_000);
   expect(existsSync(join(ws, "alpha.txt"))).toBe(true);
 
   // 3. The grant covers the next touch: no card.
   await say(ask("Run exactly this Bash command and nothing else: touch beta.txt. Then reply with one word: ok.", scriptBash("touch beta.txt")));
-  await expect(turns()).toHaveCount(2, { timeout: 120_000 });
+  await endsAre(page, 2, 120_000);
   await expect(card).toHaveCount(0);
   expect(existsSync(join(ws, "beta.txt"))).toBe(true);
 
@@ -74,7 +73,7 @@ test("permission gate", async ({ page, request }) => {
   await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
   await page.keyboard.press("Escape");
   await say(ask("Run exactly this Bash command once and nothing else: touch gamma.txt. If it fails, do not retry; reply with one word: refused.", scriptBash("touch gamma.txt")));
-  await expect(turns()).toHaveCount(3, { timeout: 120_000 });
+  await endsAre(page, 3, 120_000);
   await expect(card).toHaveCount(0);
   expect(existsSync(join(ws, "gamma.txt"))).toBe(false);
   // The call's row says it was refused, by which mode and why: not that it failed.
@@ -104,7 +103,7 @@ test("permission gate", async ({ page, request }) => {
   await page.getByTestId("deny-reason").fill("keep alpha, it is the fixture");
   await shoot(page, "perm-05-deny");
   await page.getByTestId("deny-send").click();
-  await expect(turns()).toHaveCount(4, { timeout: 120_000 });
+  await endsAre(page, 4, 120_000);
   // A stale answer after the denial is refused with how the card ended.
   const stale = await request.post(`/api/sessions/${session.id}/approvals/${pending[0].id}`, { data: { choice: "once" } });
   expect(stale.status()).toBe(409);
@@ -280,7 +279,7 @@ test("a write through a redirect on a group, a loop or nothing is never run as a
   await page.goto(`/s/${session.id}`);
   await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
   await run(["ls > /dev/null 2>&1; { pwd; }", "> bare.txt", "{ echo a; echo b; } > grouped.txt", "echo x >&copied.txt", "for f in a b; do echo $f; done > looped.txt"]);
-  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  await endsAre(page, 1, 60_000);
   // The last call's refusal reaches the model, and no file was written.
   const told = page.getByText(/Done with 5 calls\. Last result: This session is read-only: only read-only commands run/);
   await expect(told).toContainText("done > looped.txt");
@@ -298,7 +297,7 @@ test("a write through a redirect on a group, a loop or nothing is never run as a
   await shoot(page, "perm-11-redirect-asked");
   await card.getByTestId("allow-once").click();
   await expect.poll(() => existsSync(join(ws, "grouped.txt")), { timeout: 30_000 }).toBe(true);
-  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+  await endsAre(page, 2, 60_000);
   await request.delete(`/api/sessions/${session.id}`);
 });
 
@@ -320,7 +319,7 @@ test("everyday reads run unasked, and an expansion that asks names the form that
   await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
   await run(["command -v ls", "[[ -f a.txt ]] && seq 1 3 | tac", "f=a.txt; sort $f | paste - -", "sort -- $(ls)", "find . -type f -exec wc -l {} +"]);
   // No card: the turn ends on its own, with the last command's output.
-  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  await endsAre(page, 1, 60_000);
   await expect(page.getByTestId("approval")).toHaveCount(0);
   await expect(page.getByText(/Done with 5 calls\. Last result:/)).toContainText("a.txt");
   await shoot(page, "perm-12-reads-unasked");
@@ -331,7 +330,7 @@ test("everyday reads run unasked, and an expansion that asks names the form that
   await expect(card.getByTestId("approval-notice")).toContainText("put -- before it");
   await shoot(page, "perm-13-expansion-notice");
   await card.getByTestId("allow-once").click();
-  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+  await endsAre(page, 2, 60_000);
   await request.delete(`/api/sessions/${session.id}`);
 });
 
@@ -377,7 +376,7 @@ test("a command that can destroy or expose asks as high risk, and its near miss 
     await card.getByTestId("deny").click();
     await card.getByTestId("deny-send").click();
     await expect(card).toHaveCount(0);
-    await expect(page.getByTestId("turn-end")).toHaveCount(++turns, { timeout: 60_000 });
+    await endsAre(page, ++turns, 60_000);
   };
   await asked("rm -rf build", null, "perm-14-build-output-low");
   await asked("rm -rf kept", null);

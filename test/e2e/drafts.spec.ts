@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, endsAre, shoot } from "./shots.ts";
 
 // A 2x2 PNG, sent as is: the bytes the model gets must be these.
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGM4YaOh0XOHAUIBACUCBXmhkn0oAAAAAElFTkSuQmCC";
@@ -106,7 +106,7 @@ test("session draft", async ({ page, request }) => {
   await expect(row.locator("kbd")).toHaveText(["Ctrl", "Shift", "Enter"]);
   await shoot(page, "draft-02b-queue-key-in-sheet");
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 180_000 });
+  await endsAre(page, 4, 180_000);
   const users = (await (await request.get(`/api/sessions/${a}`)).json()).events.filter((e: any) => e.kind === "user");
   expect(users.at(-2).data.images?.[0]?.data).toBe(PNG);
   expect(users.at(-1).data.text).toBe("And a second thing for after.");
@@ -121,7 +121,7 @@ test("session draft", async ({ page, request }) => {
   // The queue key sends when there is nothing to queue behind.
   await page.keyboard.press("Control+Shift+Enter");
   await expect(box).toHaveValue("");
-  await expect(page.getByTestId("turn-end")).toHaveCount(5, { timeout: 60_000 });
+  await endsAre(page, 5, 60_000);
   expect(posts).toHaveLength(3);
   expect(JSON.parse(posts[2]!).mode ?? "send").toBe("send");
 

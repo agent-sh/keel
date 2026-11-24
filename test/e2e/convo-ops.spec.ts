@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, ask, openPanel, shoot, choose } from "./shots.ts";
+import { HAIKU, ask, endsAre, openPanel, shoot, choose } from "./shots.ts";
 
 // Feature: conversation operations. A recap written on demand; summarize from
 // a prompt on (the prompt comes back to the message box) and everything up to
@@ -23,7 +23,7 @@ test("recap, summarize a part, skill mode, the model's context tools", async ({ 
   const send = async (text: string, turns: number) => {
     await composer.fill(text);
     await composer.press("Enter");
-    await expect(page.getByTestId("turn-end")).toHaveCount(turns, { timeout: 90_000 });
+    await endsAre(page, turns, 90_000, true);
   };
   await send("Reply with only the word apple.", 1);
   await send("Reply with only the word banana.", 2);

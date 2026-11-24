@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { endsAre, shoot } from "./shots.ts";
 
 // Feature: the memory system's efficiency, where the owner looks. Settings >
 // Usage has one Memory panel: per recall path, how often memory was added to a
@@ -132,7 +132,7 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   expect(after.wait_ms - held.wait_ms).toBeLessThan(500);
 
   await page.goto(`/s/${session.id}`);
-  await expect(page.getByTestId("turn-end")).toHaveCount(6);
+  await endsAre(page, 6);
   await expect(page.getByText("Memory did not answer in time")).toHaveCount(1);
   await page.getByText("Memory did not answer in time").scrollIntoViewIfNeeded();
   await shoot(page, "memory-usage-03-not-answering");

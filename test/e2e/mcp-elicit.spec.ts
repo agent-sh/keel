@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { sessionsFolder, specEnv } from "./own-daemon.ts";
-import { shoot } from "./shots.ts";
+import { endsAre, shoot } from "./shots.ts";
 
 // Feature: an MCP server that asks the owner a question while it works on a
 // call (elicitation, form mode), or sends the owner to a page (URL mode), and
@@ -306,7 +306,7 @@ test("a server's questions are bounded, and none is shown in a session that did 
       await expect(words).toContainText(`Question ${i}: go on?`, { timeout: 30_000 });
       await card.getByTestId("question-decline").click();
     }
-    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+    await endsAre(page, 1, 30_000);
     expect((await k.results(id)).at(-1)).toBe("asker__forever was ended: asker went on asking after the owner declined 5 of its questions in this call. Its work may be half done: check before calling it again.");
     // The server went with its call: what it would have asked next reaches no later call (it is started again for the next one).
     await page.waitForTimeout(500);
@@ -322,7 +322,7 @@ test("a server's questions are bounded, and none is shown in a session that did 
     }
     await expect(words).toContainText("Question 6 of many");
     await card.getByTestId("question-decline").click();
-    await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 30_000 });
+    await endsAre(page, 2, 30_000);
     expect(k.answers().at(-1).answer).toEqual([...Array(5).fill("accept"), "decline", ...Array(6).fill("cancel")]);
     expect((await k.results(id)).at(-1)).toContain("[keel] asker asked more than 5 questions at once: one card is shown at a time, and no more than that wait behind it. It was answered as if the owner made no choice.");
 
@@ -333,7 +333,7 @@ test("a server's questions are bounded, and none is shown in a session that did 
       await card.getByTestId("question-option").filter({ hasText: "Yes" }).click();
       await card.getByTestId("question-submit").click();
     }
-    await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 30_000 });
+    await endsAre(page, 3, 30_000);
     expect((await k.results(id)).at(-1)).toBe("asker__forever was ended: asker asked more than 20 questions in this call. Its work may be half done: check before calling it again.");
 
     // A server of the newer protocol that asks again after every answer, and
@@ -344,13 +344,13 @@ test("a server's questions are bounded, and none is shown in a session that did 
       await expect(words).toContainText(`Round ${i}: go on?`, { timeout: 30_000 });
       await card.getByTestId("question-decline").click();
     }
-    await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 30_000 });
+    await endsAre(page, 4, 30_000);
     expect((await k.results(id)).at(-1)).toBe("modern__loop was ended: modern went on asking after the owner declined 5 of its questions in this call. Its work may be half done: check before calling it again.");
     await run(page, "modern__blind");
-    await expect(page.getByTestId("turn-end")).toHaveCount(5, { timeout: 30_000 });
+    await endsAre(page, 5, 30_000);
     expect((await k.results(id)).at(-1)).toContain("modern__blind was ended: modern asked the owner a form that cannot be answered: its field where is an object, which a form does not have. It asked 11 questions that could not be put to the owner.");
     await run(page, "modern__folders");
-    await expect(page.getByTestId("turn-end")).toHaveCount(6, { timeout: 30_000 });
+    await endsAre(page, 6, 30_000);
     expect((await k.results(id)).at(-1)).toBe("modern__folders was ended: modern asked for the session's folder more than 20 times in this call. Its work may be half done: check before calling it again.");
 
     // Two sessions with a call each on the one server: over stdio nothing names
@@ -444,7 +444,7 @@ test("a server's sampling request is the owner's to allow, and its reply the own
   try {
     const id = await k.session("A server asks for the model");
     const last = page.getByTestId("assistant-text").last();
-    const ends = (n: number) => expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 30_000 });
+    const ends = (n: number) => endsAre(page, n);
     const card = page.getByTestId("question");
     const words = card.getByTestId("question-message");
     await page.goto(`${k.at.d.url}/s/${id}`);
@@ -518,7 +518,7 @@ test("an MCP server sends the owner to a page, which only the owner's browser op
   try {
     const id = await k.session("A server sends the owner to a page");
     const last = page.getByTestId("assistant-text").last();
-    const ends = (n: number) => expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 30_000 });
+    const ends = (n: number) => endsAre(page, n);
     // The payment page, as the owner's browser would get it: only a request from the page's own tab reaches it.
     const paid: string[] = [];
     await page.context().route("https://pay.example.test/**", (r) => { paid.push(r.request().url()); return r.fulfill({ contentType: "text/html", body: "<title>Pay</title><p>Paid.</p>" }); });
@@ -631,7 +631,7 @@ test("a tool that runs as a task is followed to its result, asks through it, and
   try {
     const id = await k.session("Tools that run as tasks");
     const last = page.getByTestId("assistant-text").last();
-    const ends = (n: number) => expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 30_000 });
+    const ends = (n: number) => endsAre(page, n);
     const tasks = () => k.answers().filter((a) => a.task);
     await page.goto(`${k.at.d.url}/s/${id}`);
 

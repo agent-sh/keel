@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, ask, scriptBash, openPanel } from "./shots.ts";
+import { HAIKU, endsAre, shoot, ask, scriptBash, openPanel, turnEnds } from "./shots.ts";
 
 // Feature: the command sandbox. In auto-edits mode with the workspace-write
 // profile and the network off, a command runs without asking, can write the
@@ -31,7 +31,7 @@ test("command sandbox", async ({ page, request }) => {
   const cmd = `touch inside.txt; touch ${outside}; getent hosts example.com || echo no-network`;
   await page.getByTestId("composer").fill(ask(`Run exactly this one Bash command, once, and nothing else: ${cmd}\nThen reply with one word: done.`, scriptBash(cmd)));
   await page.keyboard.press("Enter");
-  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
+  await endsAre(page, 1, 120_000);
   await expect(page.getByTestId("approval")).toHaveCount(0);
 
   expect(existsSync(join(ws, "inside.txt"))).toBe(true);
@@ -84,7 +84,7 @@ test("a sandboxed session commits in its worktree", async ({ page, request }) =>
   await page.goto(`/s/${id}`);
   await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`);
   await page.keyboard.press("Enter");
-  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  await endsAre(page, 1, 60_000);
   await expect(page.getByTestId("approval")).toHaveCount(0);
 
   const tool = page.getByTestId("tool-call").first();
@@ -182,7 +182,7 @@ test("a sandboxed command reads none of the owner's secrets, and the owner opens
   const bash = async (command: string, n: number) => {
     await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`);
     await page.keyboard.press("Enter");
-    await expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 60_000 });
+    await endsAre(page, n, 60_000);
     return (await results()).at(-1)!;
   };
 
@@ -262,7 +262,7 @@ test("a sandboxed command reads none of the owner's secrets, and the owner opens
   await approval.getByTestId("deny").click();
   await page.getByTestId("deny-reason").fill("that is my key");
   await page.getByTestId("deny-send").click();
-  await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 60_000 });
+  await endsAre(page, 4, 60_000);
   expect((await results()).join("\n")).not.toContain(`PRIVATE-KEY-${stamp}`);
 });
 
@@ -305,14 +305,14 @@ test("a sandboxed command with the network on cannot reach the daemon's API", as
     await page.keyboard.press("Enter");
     // Where a mode asks for a command of this shape, the owner allows it: it fails all the same.
     n++;
-    await expect.poll(async () => (await page.getByTestId("turn-end").count()) >= n || (await page.getByTestId("approval").count()) > 0, { timeout: 60_000 }).toBe(true);
-    if ((await page.getByTestId("turn-end").count()) < n) {
+    await expect.poll(async () => (await turnEnds(page)) >= n || (await page.getByTestId("approval").count()) > 0, { timeout: 60_000 }).toBe(true);
+    if ((await turnEnds(page)) < n) {
       const card = page.getByTestId("approval").first();
       if (await card.getByTestId("approval-expand").count()) await card.getByTestId("approval-expand").click();
       await expect(card.getByTestId("allow-once")).not.toHaveAttribute("aria-disabled", "true");
       await card.getByTestId("allow-once").click();
     }
-    await expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 60_000 });
+    await endsAre(page, n, 60_000);
     const out = (await results()).at(-1)!;
     for (const [name] of acts) {
       expect([mode, out]).toEqual([mode, expect.stringContaining(`${name} straight: 000`)]);
@@ -352,7 +352,7 @@ test("the portal shows a dev server a sandboxed command runs", async ({ page, re
     await page.goto(`/s/${id}`);
     await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command: `python3 -m http.server ${port} --bind 127.0.0.1`, run_in_background: true } }])}`);
     await page.keyboard.press("Enter");
-    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+    await endsAre(page, 1, 60_000);
     // The port is the session's, though it is on no address of this machine.
     const ports = async () => ((await (await request.get(`/api/sessions/${id}/portal`)).json()).ports as any[]);
     await expect.poll(async () => (await ports()).map((p) => p.port), { timeout: 20_000 }).toContain(port);

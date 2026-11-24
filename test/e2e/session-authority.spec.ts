@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, SCRIPTED, ask, shoot } from "./shots.ts";
+import { HAIKU, SCRIPTED, ask, endsAre, shoot, turnEnds } from "./shots.ts";
 import { ROOT, daemon, exited, sessionsFolder } from "./own-daemon.ts";
 
 // A command a session runs is a process of the owner's account on loopback, but it is not the owner:
@@ -84,13 +84,13 @@ function probe(api: string, tokenFile: string, list: Route[], other: string): st
 async function run(page: Page, request: APIRequestContext, id: string, command: string, n: number): Promise<string> {
   await page.getByTestId("composer").fill(ask(`Run this command and end your turn: ${command}`, `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`));
   await page.keyboard.press("Enter");
-  await expect.poll(async () => (await page.getByTestId("turn-end").count()) >= n || (await page.getByTestId("approval").count()) > 0, { timeout: 60_000 }).toBe(true);
-  if ((await page.getByTestId("turn-end").count()) < n) {
+  await expect.poll(async () => (await turnEnds(page)) >= n || (await page.getByTestId("approval").count()) > 0, { timeout: 60_000 }).toBe(true);
+  if ((await turnEnds(page)) < n) {
     const card = page.getByTestId("approval").first();
     if (await card.getByTestId("approval-expand").count()) await card.getByTestId("approval-expand").click();
     await card.getByTestId("allow-once").click();
   }
-  await expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 60_000 });
+  await endsAre(page, n, 60_000);
   const events = (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
   return String(events.filter((e) => e.kind === "tool_result").at(-1)!.data.results[0].content);
 }
