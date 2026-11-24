@@ -13,6 +13,7 @@
 //   More     the "show all" line under a list cut short.
 //   Status   a status in a chip: one of six tones, a word of the vocabulary
 //            (src/core/state-words.ts) where it has one.
+//   Disclosure  more words behind one line.
 //   Empty    nothing to show, where the rows would be.
 //   Notice   what the page cannot do or see, with its tone.
 //   Table    a table that drops its minor columns when narrow and never scrolls the page.
@@ -47,7 +48,7 @@ export function Group({ title, count, hint, actions, children, bare, pad, testid
         <div className="k-set-head">
           <div>
             {title !== undefined && <div className="k-set-title"><h3>{title}</h3>{count !== undefined && <span className="k-set-count">{count}</span>}</div>}
-            {hint && <p className="k-set-hint">{hint}</p>}
+            {hint && <div className="k-set-hint">{hint}</div>}
           </div>
           {actions && <div className="k-set-actions">{actions}</div>}
         </div>
@@ -112,6 +113,16 @@ export function More({ children }: { children: ReactNode }) {
 export type Tone = "ok" | "warn" | "broken" | "new" | "info" | "quiet";
 export function Status({ tone = "quiet", children, title, testid, ...data }: { tone?: Tone; children: ReactNode; title?: string; testid?: string } & Data) {
   return <span className="k-set-status" data-tone={tone} title={title} data-testid={testid} {...data}>{children}</span>;
+}
+
+// More words behind one line: what a reader asks for, not what the page owes at first sight.
+export function Disclosure({ summary, children, testid }: { summary: ReactNode; children: ReactNode; testid?: string }) {
+  return (
+    <details className="k-set-disclosure" data-testid={testid}>
+      <summary>{summary}</summary>
+      <div>{children}</div>
+    </details>
+  );
 }
 
 export function Empty({ children, testid }: { children: ReactNode; testid?: string }) {

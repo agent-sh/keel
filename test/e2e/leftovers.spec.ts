@@ -90,6 +90,10 @@ test("an agent's processes stop when it ends; what its commands made is listed, 
     await expect(b.getByTestId("leftover-delete")).toBeDisabled();
     expect(git(repo, "worktree", "list")).not.toContain(wt);
     expect(git(repo, "branch", "--list", branch)).toContain(branch);
+    // Two branches found by one agent: the group says so once, its rows do not repeat it.
+    await expect(page.locator('[data-testid="leftover-branch"] [data-testid="leftover-by"]')).toHaveCount(0);
+    await expect(page.getByTestId("leftover-by")).toHaveCount(1);
+    await expect(page.getByTestId("leftover-by")).toContainText("Leftover maker");
     await shoot(page, "leftovers-02-removed");
 
     // Remove all: the branch with nothing of its own goes, the one with the commit stays.

@@ -42,7 +42,13 @@ test("telemetry: what you press, most used first, never a word typed", async ({ 
   const panel = page.getByTestId("telemetry-panel");
   await expect(panel.getByTestId("press-disclosure")).toContainText("Never a word you type");
   await expect(panel.getByTestId("press-disclosure")).toContainText("not sent");
-  await expect(panel.getByTestId("press-disclosure")).toContainText("plain keys, such as Enter to send, are not counted");
+  // The intro is two lines; how a press is counted is behind a disclosure of its own.
+  const how = panel.getByTestId("press-disclosure").locator("details", { hasText: "How it is counted" });
+  await expect(how.locator("summary")).toBeVisible();
+  await expect(how.getByText("plain keys, such as Enter to send, are not counted")).toBeHidden();
+  await how.locator("summary").click();
+  await expect(how.getByText("plain keys, such as Enter to send, are not counted")).toBeVisible();
+  await expect(panel.getByTestId("press-disclosure").locator(".k-set-hint > p")).toHaveCount(2);
   const view = panel.locator('[data-testid="press-view"][data-view="session"]');
   await expect(view).toBeVisible();
   const rows = view.getByTestId("press-row");

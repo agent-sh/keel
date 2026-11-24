@@ -51,6 +51,14 @@ function Who({ by }: { by?: By }) {
   );
 }
 
+// Who a whole group is known by, when it is one session for every row of two or more: said once under the group's
+// name, not on each row.
+function sameBy(rows: { by?: By }[]): By | undefined {
+  const first = rows[0]?.by;
+  return first && rows.length > 1 && rows.every((r) => r.by && r.by.session_id === first.session_id && r.by.how === first.how) ? first : undefined;
+}
+const ByLine = ({ by }: { by: By }) => <p className="mt-0.5">All of them: <Who by={by} /></p>;
+
 export function LeftoversPanel() {
   const [s, setS] = useState<Survey | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -87,6 +95,8 @@ export function LeftoversPanel() {
   };
 
   if (!s) return <Empty testid="leftovers-loading">Reading what sessions left behind.</Empty>;
+  const procBy = sameBy(s.processes.map((p) => ({ by: { session_id: p.session_id, title: p.title } })));
+  const treeBy = sameBy(s.worktrees), branchBy = sameBy(s.branches);
   const branches = all ? s.branches : s.branches.slice(0, SHOWN);
   // The whole list in one act: every worktree that can be removed and every branch that is all on its base, as shown.
   const trees = s.worktrees.filter((w) => w.removable), merged = s.branches.filter((b) => b.merged);
@@ -122,7 +132,10 @@ export function LeftoversPanel() {
           {allLabel}
         </button>} />
 
-      <Group title="Left running" count={s.processes.length} hint={`Commands of sessions whose processes still run after the command's call ended, from this daemon and the ones before it.${s.held?.at ? ` They hold ${mb(s.held.memory_bytes)}.` : ""} ${s.held ? `One whose session ended is stopped once it idles for ${Math.round(s.held.bounds.idle_ms / 60_000)} minutes; a build daemon (Gradle, Kotlin, Bazel, sccache) when its session ends or it builds nothing for ${Math.round(s.held.bounds.build_idle_ms / 60_000)}.` : ""} One with a terminal in it (tmux, script, an editor) or a process put in it from outside is kept until you stop it. Keep one to leave it running.${s.held?.others.scopes ? ` ${s.held.others.scopes} job ${s.held.others.scopes === 1 ? "scope" : "scopes"} of other Keel daemons (${mb(s.held.others.memory_bytes)}) are not this daemon's and are left alone.` : ""}`}>
+      <Group title="Left running" count={s.processes.length} hint={<>
+        <p>{`Commands of sessions whose processes still run after the command's call ended, from this daemon and the ones before it.${s.held?.at ? ` They hold ${mb(s.held.memory_bytes)}.` : ""} ${s.held ? `One whose session ended is stopped once it idles for ${Math.round(s.held.bounds.idle_ms / 60_000)} minutes; a build daemon (Gradle, Kotlin, Bazel, sccache) when its session ends or it builds nothing for ${Math.round(s.held.bounds.build_idle_ms / 60_000)}.` : ""} One with a terminal in it (tmux, script, an editor) or a process put in it from outside is kept until you stop it. Keep one to leave it running.${s.held?.others.scopes ? ` ${s.held.others.scopes} job ${s.held.others.scopes === 1 ? "scope" : "scopes"} of other Keel daemons (${mb(s.held.others.memory_bytes)}) are not this daemon's and are left alone.` : ""}`}</p>
+        {procBy && <ByLine by={{ session_id: s.processes[0]!.session_id, title: s.processes[0]!.title }} />}
+      </>}>
         {s.processes.length === 0 ? <Empty>Nothing is left running.</Empty> : (
           <List label="Left running">
             {s.processes.map((p) => (
@@ -137,7 +150,7 @@ export function LeftoversPanel() {
                   {p.agent && <Status tone={p.agent.status === "running" || p.agent.status === "waiting" ? "quiet" : "warn"}>agent {p.agent.status}</Status>}
                   <span className="w-14 text-right" data-testid="leftover-memory" title="Memory of its scope">{p.scope ? mb(p.scope.memory_bytes) : ""}</span>
                   <span className="text-faint" title={`pid ${p.pids.join(", ")}`}>pid {p.pids[0]}{p.pids.length > 1 ? ` +${p.pids.length - 1}` : ""}</span>
-                  <Who by={{ session_id: p.session_id, title: p.title }} />
+                  {!procBy && <Who by={{ session_id: p.session_id, title: p.title }} />}
                   {age(p.started)}
                 </>}
                 actions={<>
@@ -156,7 +169,10 @@ export function LeftoversPanel() {
         )}
       </Group>
 
-      <Group title="Worktrees" count={s.worktrees.length} hint="Worktrees of the repositories sessions work in that no live session works in now. One with nothing uncommitted can be removed: its branch and commits stay, and the ignored files in it go with it (you are told how many first).">
+      <Group title="Worktrees" count={s.worktrees.length} hint={<>
+        <p>Worktrees of the repositories sessions work in that no live session works in now. One with nothing uncommitted can be removed: its branch and commits stay, and the ignored files in it go with it (you are told how many first).</p>
+        {treeBy && <ByLine by={treeBy} />}
+      </>}>
         {s.worktrees.length === 0 ? <Empty>No worktree is left without a session.</Empty> : (
           <List label="Worktrees">
             {s.worktrees.map((w) => (
@@ -172,7 +188,7 @@ export function LeftoversPanel() {
                       </>}
                   </span>
                 </span>}
-                meta={<><Who by={w.by} />{age(w.made)}</>}
+                meta={<>{!treeBy && <Who by={w.by} />}{age(w.made)}</>}
                 actions={<button type="button" className="k-btn" data-testid="leftover-remove" aria-label={`Remove worktree ${w.path}`} disabled={busy !== null || !w.removable} title={w.removable ? undefined : `Kept: ${w.why}`}
                   onClick={() => act(`w:${w.path}`, { title: "Remove this worktree?", body: `${w.path}\n\nThe folder goes. ${w.branch ? `Branch ${w.branch} and its commits stay.` : "It is detached and holds no commit of its own."}${w.ignored?.length ? `\n\n${ignoredSay(w.ignored)}` : ""}`, action: "Remove", danger: true }, "/api/leftovers/worktree/remove", { repo: w.repo, path: w.path, head: w.head, ignored: w.ignored?.length ?? 0 }, "Removed.")}>
                   Remove
@@ -182,7 +198,10 @@ export function LeftoversPanel() {
         )}
       </Group>
 
-      <Group title="Branches" count={s.branches.length} hint="Branches no worktree has out and no live session holds, those with work not on the base first. One whose commits are all on the base can be deleted.">
+      <Group title="Branches" count={s.branches.length} hint={<>
+        <p>Branches no worktree has out and no live session holds, those with work not on the base first. One whose commits are all on the base can be deleted.</p>
+        {branchBy && <ByLine by={branchBy} />}
+      </>}>
         {s.branches.length === 0 ? <Empty>No branch is left without a session.</Empty> : (
           <List label="Branches" dense>
             {branches.map((b) => (
@@ -193,7 +212,7 @@ export function LeftoversPanel() {
                     : b.merged ? <span className="text-ok">all on {b.base}</span>
                     : <span className="text-fg">{b.ahead} {b.ahead === 1 ? "commit" : "commits"} not on {b.base}</span>}
                 </span>}
-                meta={<><Who by={b.by} />{age(b.at)}</>}
+                meta={<>{!branchBy && <Who by={b.by} />}{age(b.at)}</>}
                 actions={<button type="button" className="k-btn" data-testid="leftover-delete" aria-label={`Delete branch ${b.name}`} disabled={busy !== null || !b.merged} title={b.merged ? undefined : "Kept: it holds commits that are not on the base"}
                   onClick={() => act(`b:${b.name}`, { title: "Delete this branch?", body: `${b.name} in ${b.top}\n\nEvery commit of it is on ${b.base}: nothing is lost.`, action: "Delete", danger: true }, "/api/leftovers/branch/delete", { repo: b.repo, branch: b.name, sha: b.sha }, "Deleted.")}>
                   Delete

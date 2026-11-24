@@ -10,7 +10,7 @@ import { api, reportError } from "../lib/store.ts";
 import { clock, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { Segmented } from "./Settings.tsx";
-import { Empty, Group, Item, List, More, Page, SettingRow } from "./settings/kit.tsx";
+import { Disclosure, Empty, Group, Item, List, More, Page, SettingRow } from "./settings/kit.tsx";
 import { Stat, Stats } from "./Stat.tsx";
 
 type Report = PressReport & { record: boolean };
@@ -54,9 +54,13 @@ export default function PressesPanel() {
   return (
     <Page testid="telemetry-panel">
       <Group testid="press-disclosure" title="What this records" hint={<>
-        Keel notes which control you press: its name, the view, the session in view and the time. Never a word you type and never a value. A command run by its shortcut is counted as key:name; plain keys, such as Enter to send, are not counted. It is the same in the browser, the desktop app and the page on a phone.
-        It stays in this machine's own database. It is not sent to Keel's makers, a model provider or anyone else, and it is not part of the OTLP export. It is kept {r.kept_days} days, at most {r.row_cap.toLocaleString()} presses.
-        What you press most tells which controls earn their place.
+        <p>Keel notes which control you press: its name, the view, the session in view and the time. Never a word you type and never a value.</p>
+        <p>It stays in this machine's own database. It is not sent to Keel's makers, a model provider or anyone else.</p>
+        <Disclosure summary="How it is counted">
+          <p>A command run by its shortcut is counted as key:name; plain keys, such as Enter to send, are not counted. It is the same in the browser, the desktop app and the page on a phone.</p>
+          <p>It is not part of the OTLP export. It is kept {r.kept_days} days, at most {r.row_cap.toLocaleString()} presses.</p>
+          <p>What you press most tells which controls earn their place.</p>
+        </Disclosure>
       </>}>
         <SettingRow label="Recording" hint="Off: nothing new is noted. What was recorded stays until it ages out or you forget it.">
           <Segmented<"on" | "off"> label="Record what I press" value={r.record ? "on" : "off"} onChange={(v) => void record(v === "on")} options={[{ value: "on", label: "Record" }, { value: "off", label: "Do not record" }]} />
