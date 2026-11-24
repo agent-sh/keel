@@ -1,5 +1,5 @@
 import { type Wire, wireOf, wireScope } from "../providers/wiretap.ts";
-import { during } from "../admin/activity.ts";
+import { during, duringSync } from "../admin/activity.ts";
 import { outward } from "../safety/egress.ts";
 import { timed } from "../admin/stall.ts";
 import { heldFile } from "../core/store-files.ts";
@@ -2832,7 +2832,10 @@ export class Engine {
     this.setting.add(id);
     // (A session not in memory yet has its pages read off the loop first: store.warm.)
     // (And the bodies its first request is made from, which a session at rest gave back: warmContext.)
-    const ready = await this.store.warm(id, false).then(() => this.warmContext(id)).then(() => this.step(session, session.model))
+    // (Each part of a turn's start is a span of the activity record: a memory step names which.)
+    const ready = await during("turn", () => this.store.warm(id, false), "a turn's start: reading its session's rows")
+      .then(() => during("turn", () => this.warmContext(id), "a turn's start: reading the bodies of its context"))
+      .then(() => during("turn", () => this.step(session, session.model), "a turn's start: building its first step"))
       .finally(() => this.setting.delete(id))
       // A setup that fails after the stop has nothing left to say: the turn is closed.
       // One that fails while the daemon parks its turns is closed below.
@@ -3624,7 +3627,7 @@ export class Engine {
       // A session parked on a wait gets its cache plan again (its step is built for it: few wait).
       if (s && !this.running.has(id) && !this.held.has(id) && this.waitShape?.(id)) {
         let planned = false;
-        try { const st = await this.step(s, s.model); planned = !this.running.has(id) && this.planPark(this.store.session(id) ?? s, st); }
+        try { const st = await during("start", () => this.step(s, s.model), "idle compaction pass: building a parked session's step"); planned = !this.running.has(id) && this.planPark(this.store.session(id) ?? s, st); }
         catch (e) { this.errors.capture("provider", e, { session: id, at: "cache plan after a restart" }); }
         if (planned || s.parent_id) continue;
       }
@@ -3638,14 +3641,14 @@ export class Engine {
           // Its events are read: a session that is not in memory is brought in off the loop first
           // (this pass and the start's own pass over the same sessions run side by side).
           if (!this.store.isKept(id)) {
-            await this.store.warm(id, false);
+            await during("start", () => this.store.warm(id, false), "idle compaction pass: reading a session's rows");
             if (this.running.has(id) || this.store.session(id)?.head !== s.head) continue;
           }
           // And the bodies its count reads (its context from the last checkpoint on), off the loop too.
           const line = this.lineage(id);
-          await this.warmContext(id, line);
+          await during("start", () => this.warmContext(id, line), "idle compaction pass: reading a session's bodies");
           if (this.running.has(id) || this.store.session(id)?.head !== s.head) continue;
-          facts = this.readIdleFacts(s, provider.wire, info.id, line);
+          facts = duringSync("start", "idle compaction pass: counting a session's context", () => this.readIdleFacts(s, provider.wire, info.id, line));
           // One session's events were read: the loop is given back before the next.
           await new Promise<void>((r) => setImmediate(r));
           if (this.running.has(id) || this.store.session(id)?.head !== facts.head) continue;
@@ -4369,15 +4372,18 @@ export class Engine {
   // and its Continue. A session with an owner of its own (an agent's, through
   // the cutTurn hook) may say otherwise.
   async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
-    this.closeCut(openAtBoot);
+    // Each part is a span of the activity record: a memory step in the start names which part it was.
+    duringSync("start", "the start's recovery: closing the turns the last daemon left open", () => this.closeCut(openAtBoot));
     // Every module is up by now: the turns this start closed are told of
     // first, whoever goes on with them.
-    for (const [id, cut] of this.cutAtBoot) {
-      const s = this.store.session(id);
-      if (s) this.tellCut(s, cut);
-    }
-    this.rearmContinues();
-    this.startQueued(openAtBoot, waitModel);
+    duringSync("start", "the start's recovery: telling of the closed turns and arming the queued ones", () => {
+      for (const [id, cut] of this.cutAtBoot) {
+        const s = this.store.session(id);
+        if (s) this.tellCut(s, cut);
+      }
+      this.rearmContinues();
+      this.startQueued(openAtBoot, waitModel);
+    });
     return this.continueCut(waitModel);
   }
 
@@ -4526,7 +4532,7 @@ export class Engine {
     const sessions = this.store.cutSessions();
     await Promise.all(sessions.map(async (s) => {
       // Not in memory after a start: its pages are read off the loop first (store.warm).
-      await this.store.warm(s.id, false);
+      await during("start", () => this.store.warm(s.id, false), "the start's recovery: reading a cut session's rows");
       const line = this.lineage(s.id);
       const end = line.at(-1);
       if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;

@@ -12,6 +12,7 @@ import type { Store } from "../core/store.ts";
 import { storePath } from "../core/store-files.ts";
 import { tasks, type TaskName, type Tasks } from "./read-tasks.ts";
 import { begin, duringSync } from "../admin/activity.ts";
+import { labelText } from "../core/statement-label.ts";
 
 declare const __KEEL_READS_JS__: string | undefined;
 
@@ -47,6 +48,20 @@ const AHEAD_QUEUED_MS = 300;
 // a part of a session, a few thousand rows or a run of bodies, and a dozen sessions may ask at once.
 const ROWS_QUEUED_MS = 2_000;
 
+// A statement of `sql` is named by its label (src/core/statement-label.ts: no value of its text can be in it), so a
+// memory step or a stall says which statement it was among the many that share this one task. Each text is labelled once.
+const sqlNames = new Map<string, string>();
+export function sqlName(args: unknown): string {
+  const text = (args as { sql?: unknown } | undefined)?.sql;
+  if (typeof text !== "string") return "sql";
+  let n = sqlNames.get(text);
+  if (n === undefined) {
+    n = `sql ${labelText(text).slice(0, 120)}`;
+    if (sqlNames.size >= 1000) sqlNames.clear();
+    sqlNames.set(text, n);
+  }
+  return n;
+}
 export class Reads {
   private worker?: Worker;
   private waiting = new Map<number, Waiting>();
@@ -98,7 +113,7 @@ export class Reads {
     this.counts.thread++;
     clearTimeout(this.idle);
     // What the thread read, for the memory step or the stall that a report names (src/admin/activity.ts).
-    const end = begin("read", `read on the thread: ${name}`);
+    const end = begin("read", () => `read on the thread: ${name === "sql" ? sqlName(args) : name}`);
     return new Promise<Result<K>>((resolve, reject) => {
       const id = ++this.seq;
       const due = setTimeout(() => this.ended(w, `no answer in ${this.deadlineMs >= 1000 ? `${Math.round(this.deadlineMs / 1000)} s` : `${this.deadlineMs} ms`}`), this.deadlineMs);
@@ -110,7 +125,7 @@ export class Reads {
 
   private onLoop(name: TaskName, args: unknown): unknown {
     this.counts.loop++;
-    return duringSync("read", `read on the loop: ${name}`, () => (tasks[name] as (db: Store["db"], a: unknown) => unknown)(this.store.db, args));
+    return duringSync("read", () => `read on the loop: ${name === "sql" ? sqlName(args) : name}`, () => (tasks[name] as (db: Store["db"], a: unknown) => unknown)(this.store.db, args));
   }
 
   // The rows of one statement.

@@ -32,6 +32,7 @@ import { portHolder, waitForLeaving } from "../core/daemon-lock.ts";
 import { relayDiagnostics } from "./diagnostics.ts";
 import { beginLife, endLife, lifeListening, Restarts } from "../admin/life.ts";
 import { drainLine, exitLine, providersLine, say } from "../admin/daemon-log.ts";
+import { during as spanning } from "../admin/activity.ts";
 import { beginWatch, during, timed } from "../admin/stall.ts";
 import { newestTurn } from "../admin/marks.ts";
 import { originOf } from "../admin/timeline-rows.ts";
@@ -249,12 +250,13 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     // still starting (a plugin) is waited for, up to a minute.
     // The recovery reads the branch of every session before its first await,
     // while the daemon already listens: timed, so a stall it makes is named.
-    void timed(() => "the start's recovery read every session's branch", () => during("the start's recovery", engine.recover(store.bootWorking, async (model) => {
+    // (Also a span of the activity record, with its parts inside engine.recover: a memory step names which.)
+    void timed(() => "the start's recovery read every session's branch", () => spanning("start", () => during("the start's recovery", engine.recover(store.bootWorking, async (model) => {
       for (let i = 0; ; i++) {
         try { await providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
         await Bun.sleep(5_000);
       }
-    }))).catch((e) => errors.capture("server", e, { at: "recover" }))
+    })), "the start's recovery")).catch((e) => errors.capture("server", e, { at: "recover" }))
       // Every cut turn is decided: one that nobody settled went on by other means when its session has a newer turn.
       .then(() => restarts?.finish((id, cut) => wentOn(store, engine, id, cut.turn_event)))
       .catch((e) => errors.capture("server", e, { at: "restart record" }));
@@ -269,21 +271,21 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     // A store from before the index of its events' rows has it built now, with the daemon answering (index-build.ts).
     const indexed = store.indexOwed
       // (Begun once the caller has said that the daemon listens: its lines follow that one.)
-      ? during("building the index of the events' rows", new Promise((r) => setTimeout(r, 0)).then(() => buildBareIndex(store, readsOf(store), checkpointer))).catch((e) => void errors.capture("server", e, { at: "building the index of the events' rows" }))
+      ? spanning("start", () => during("building the index of the events' rows", new Promise((r) => setTimeout(r, 0)).then(() => buildBareIndex(store, readsOf(store), checkpointer))), "building the index of the events' rows").catch((e) => void errors.capture("server", e, { at: "building the index of the events' rows" }))
       : undefined;
-    void during("the start's pass bringing the rows of sessions used in the last hour into memory", (async () => {
+    void spanning("start", () => during("the start's pass bringing the rows of sessions used in the last hour into memory", (async () => {
       // (After that build: without the index a session's rows are read with their bodies.)
       await indexed;
       const recent = store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE archived = 0 AND updated >= ? ORDER BY updated DESC LIMIT 200").all(Date.now() - 3_600_000);
       for (const { id } of recent) {
         const kept = store.keptEvents();
         if (kept.bytes > kept.budget / 2) break;
-        await store.warm(id, false);
+        await spanning("start", () => store.warm(id, false), "the start's warm pass: a session's rows");
         await new Promise((r) => setImmediate(r));
       }
-    })()).catch((e) => errors.capture("server", e, { at: "warming recent sessions" }));
+    })()), "the start's warm pass over the sessions used in the last hour").catch((e) => errors.capture("server", e, { at: "warming recent sessions" }));
     // It reads the context of every session used in the last hour, an await a session.
-    void providers.models().then(() => during("the start's pass over the sessions used in the last hour (idle compaction)", engine.resumeIdle())).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
+    void providers.models().then(() => spanning("start", () => during("the start's pass over the sessions used in the last hour (idle compaction)", engine.resumeIdle()), "the start's idle compaction pass")).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
   }
   const stop = async (drainMs = 0) => {
     stopDiagnostics?.();

@@ -215,3 +215,24 @@ self.onmessage = (ev) => {
   await broken.readAhead(ahead, [s.id]);
   expect(broken.counts).toEqual({ thread: 1, loop: 1 });
 }, 30_000);
+
+// A memory step or a stall names the statement a read ran, not only the task they share: each statement by its
+// label, which holds no value of its text.
+test("a read of a statement is named by the statement's label, with no value in it", async () => {
+  const { ran } = await import("../admin/activity.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-reads-name-"));
+  dirs.push(dir);
+  const store = new Store(dir);
+  const thread = new Reads(store, true);
+  try {
+    const from = Date.now() - 1;
+    const slow = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000000) SELECT count(*) AS n FROM c WHERE n <> 'planted-secret-value'";
+    await thread.sql(slow);
+    const names = ran(from, Date.now() + 5).filter((r) => r.kind === "read").map((r) => r.label);
+    expect(names.some((n) => n.startsWith("read on the thread: sql WITH RECURSIVE ?(n) AS (SELECT ?"))).toBe(true);
+    expect(names.join("\n")).not.toContain("planted-secret-value");
+    expect(names).not.toContain("read on the thread: sql");
+  } finally {
+    thread.close();
+  }
+});
