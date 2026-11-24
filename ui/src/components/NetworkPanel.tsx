@@ -49,6 +49,7 @@ export function NetworkPanel() {
         {off
           ? `${r.sandbox.available ? "Sessions run their commands unconfined by default" : `The sandbox is not available on this machine${r.sandbox.reason ? ` (${r.sandbox.reason})` : ""}`}, so a command connects by itself (curl, git, a package manager, a script) and Keel never sees it. Only what Keel itself sends is listed.`
           : "A sandboxed command reaches the network only through Keel's proxy, so its connections are here. A session with its sandbox turned off connects by itself and is not."}
+        {!off && filterSaid(r.sandbox) && ` ${filterSaid(r.sandbox)!.words}`}
         {" "}Nor are an MCP server that runs as a program on this machine, or the further connections of a web tool's helper program beyond the address it reports.
       </Notice>
 
