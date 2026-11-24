@@ -30,7 +30,7 @@ function HealthRow({ r }: { r: Row }) {
   const m = MARK[r.level];
   const Icon = m.icon;
   return (
-    <Item testid="health-row" data-level={r.level} data-group={r.group} data-row={r.id} wrap
+    <Item testid="health-row" data-level={r.level} data-group={r.group} data-row={r.id}
       lead={<Icon className={cn("size-4 shrink-0", m.tone)} aria-label={LEVEL_WORD[r.level]} />}
       name={<span className={r.level === "ok" ? "font-normal text-muted" : undefined} data-testid="health-title">{r.title}</span>}
       sub={(r.detail || (r.level !== "ok" && (r.fix || r.path)) || r.how) && <>

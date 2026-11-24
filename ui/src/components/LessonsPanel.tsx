@@ -94,7 +94,7 @@ function InUse({ l, busy, act }: { l: Lesson; busy: boolean; act: (f: () => Prom
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(l.text);
   return (
-    <Item testid="lesson-live" data-lesson={l.id} data-state={l.state} wrap
+    <Item testid="lesson-live" data-lesson={l.id} data-state={l.state}
       name={editing
         ? <textarea className="k-field h-auto min-h-[3.5rem] w-full resize-y py-1.5 font-normal leading-snug" value={text} maxLength={600} onChange={(e) => setText(e.target.value)} data-testid="lesson-edit-text" />
         : <span className="font-normal leading-snug" data-testid="lesson-words">{l.text}</span>}
@@ -207,7 +207,7 @@ export function LessonsPanel() {
       {gone.length > 0 && (
         <Folded title={`${plural(gone.length, "lesson")} dropped`} testid="lessons-dropped">
           {gone.map((l) => (
-            <Item key={l.id} testid="lesson-dropped" data-lesson={l.id} wrap name={<span className="font-normal leading-snug">{l.text}</span>}
+            <Item key={l.id} testid="lesson-dropped" data-lesson={l.id} name={<span className="font-normal leading-snug">{l.text}</span>}
               sub={<span className="text-muted">{l.repo_name}, {sourceWords(l)}{l.ended ? `, dropped ${ago(l.ended)}` : ""}{l.outcome ? `. Its trial: ${armLine(l.outcome)}. ${l.outcome.text}` : ""}</span>}
               actions={<button type="button" className="k-btn" disabled={busy} onClick={() => act(() => acceptLesson(l.id, l.text))}>Accept again</button>} />
           ))}

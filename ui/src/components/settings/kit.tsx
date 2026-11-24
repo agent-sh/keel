@@ -74,24 +74,24 @@ export function SettingRow({ label, hint, children }: { label: string; hint?: Re
 
 // `dense`: many short rows (figures, names) in a tighter row.
 export function List({ children, testid, label, dense }: { children: ReactNode; testid?: string; label?: string; dense?: boolean }) {
-  return <div className="k-set-list" role="list" aria-label={label} data-dense={dense || undefined} data-testid={testid}>{children}</div>;
+  return <ul className="k-set-list" aria-label={label} data-dense={dense || undefined} data-testid={testid}>{children}</ul>;
 }
 
 // `name` is the item's own words; `sub` its second line; `meta` its figures (each a span);
 // `status` a <Status>; `actions` its buttons. `open` marks the item whose detail is shown.
-// `clip` keeps the second line to one line, its whole words in its title; `wrap` lets the name wrap
-// (a sentence, not a name a reader tells apart by its end).
-export function Item({ lead, name, mono, wrap, title, sub, clip, meta, status, actions, open, onOpen, children, testid, className, ...data }: {
-  lead?: ReactNode; name: ReactNode; mono?: boolean; wrap?: boolean; title?: string; sub?: ReactNode; clip?: boolean; meta?: ReactNode; status?: ReactNode; actions?: ReactNode;
+// `clip` keeps the second line to one line, its whole words in its title. The name is always whole:
+// names alike in their first characters (paths, branches, controls) are told apart by their end.
+export function Item({ lead, name, mono, title, sub, clip, meta, status, actions, open, onOpen, children, testid, className, ...data }: {
+  lead?: ReactNode; name: ReactNode; mono?: boolean; title?: string; sub?: ReactNode; clip?: boolean; meta?: ReactNode; status?: ReactNode; actions?: ReactNode;
   open?: boolean; onOpen?: () => void; children?: ReactNode; testid?: string; className?: string;
 } & Data) {
   return (
-    <div className={cn("k-set-item", className)} role="listitem" data-lead={lead !== undefined || undefined} data-open={open || undefined} data-testid={testid} {...data}>
+    <li className={cn("k-set-item", className)} data-lead={lead !== undefined || undefined} data-open={open || undefined} data-testid={testid} {...data}>
       {lead !== undefined && <span className="k-set-lead">{lead}</span>}
       <div className="k-set-main">
         {onOpen
-          ? <button type="button" className="k-set-name k-link max-w-full text-left hover:underline" data-mono={mono || undefined} title={title} aria-expanded={!!open} onClick={onOpen}>{name}</button>
-          : <span className="k-set-name" data-mono={mono || undefined} data-wrap={wrap || undefined} title={title}>{name}</span>}
+          ? <button type="button" className={cn("k-set-name k-link max-w-full text-left hover:underline", mono && "font-mono")} data-mono={mono || undefined} title={title} aria-expanded={!!open} onClick={onOpen}>{name}</button>
+          : <span className={cn("k-set-name", mono && "font-mono")} data-mono={mono || undefined} title={title}>{name}</span>}
         {sub && <div className="k-set-sub" data-clip={clip || undefined} title={clip && typeof sub === "string" ? sub : undefined}>{sub}</div>}
       </div>
       <div className="k-set-meta">{meta}</div>
@@ -99,12 +99,12 @@ export function Item({ lead, name, mono, wrap, title, sub, clip, meta, status, a
       <div className="k-set-act">{actions}</div>
       {/* The detail of an open item is part of it: a row of its own across the item. */}
       {open && children !== undefined && <div className="k-set-detail">{children}</div>}
-    </div>
+    </li>
   );
 }
 
 export function More({ children }: { children: ReactNode }) {
-  return <div className="k-set-more">{children}</div>;
+  return <li className="k-set-more">{children}</li>;
 }
 
 export type Tone = "ok" | "warn" | "broken" | "new" | "info" | "quiet";
