@@ -43,10 +43,11 @@ function world() {
   const kid = store.createSession({ model: "m", workspace: tree, title: "kid" });
   try { store.db.exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT"); } catch { /* already there */ }
   store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(s.id, kid.id);
-  const io: Io = { worktree: () => ({ path: tree, branch: "feat", state: "active" }), send: async () => "sent", inbox() {}, running: () => false, pending: () => false, error(e) { throw e; } };
+  const live = { running: false, pending: false };
+  const io: Io = { worktree: () => ({ path: tree, branch: "feat", state: "active" }), send: async () => "sent", inbox() {}, running: () => live.running, pending: () => live.pending, error(e) { throw e; } };
   const make = () => new Steward(store, new Bus(), io);
   const watch = (o: Partial<Watch> = {}): Watch => ({ session_id: s.id, repo: "o/r", number: 3, url: "u", branch: "feat", state: "fixing", stay: false, bots: [], started: 1, updated: 1, expires: Date.now() + WATCH_MS, seen: [], told: [], tries: 1, pushes: 0, turns: 1, ignored: 0, errors: 0, fixing: { why: ["checks"], head: "h", since: 1, key: "k", seq: 5 }, ...o });
-  return { store, s, kid, make, watch };
+  return { store, s, kid, make, watch, live };
 }
 
 test("what a watch turn may do is read from the stored watch: a restart, an agent of the turn, and its end", () => {
@@ -86,4 +87,35 @@ test("the remote a push goes to is read from its address", () => {
   for (const u of ["git@github.com:O/R.git", "https://github.com/o/r", "https://user:tok@github.com/o/r.git/", "ssh://git@github.com/o/r.git"]) expect(repoOfUrl(u), u).toBe("o/r");
   expect(repoOfUrl("git@github.com:evil/r.git")).toBe("evil/r");
   expect(repoOfUrl("/srv/git/r.git")).toBe("git/r");
+});
+
+test("a watch the owner turned off while its words waited does not hold the session's later turns to its lane", () => {
+  const ev = (id: string, seq: number, kind: string, data: Record<string, unknown>) => ({ seq, session_id: id, kind, data, ts: 1 }) as any;
+  // The words never came (nothing queued): the first turn that ends frees the session, the owner's own turns included.
+  {
+    const { s, make, watch, live } = world();
+    const st = make();
+    (st as any).save(watch({ fixing: { why: ["checks"], head: "h", since: 1, key: "k" } }));
+    live.running = true; // the owner's turn works when the watch is turned off
+    st.stop(s.id);
+    expect(st.guardOf(s.id)).toBeDefined();
+    st.onEvent(ev(s.id, 10, "turn_end", { reason: "end_turn" }));
+    expect(st.get(s.id)?.fixing).toBeUndefined();
+    expect(st.guardOf(s.id)).toBeUndefined();
+  }
+  // The words wait in the queue: the guard stays through the turn that ends first, and ends with the words' own turn.
+  {
+    const { s, make, watch, live } = world();
+    const st = make();
+    (st as any).save(watch({ fixing: { why: ["checks"], head: "h", since: 1, key: "k" } }));
+    live.running = true; live.pending = true;
+    st.stop(s.id);
+    st.onEvent(ev(s.id, 10, "turn_end", { reason: "end_turn" }));
+    expect(st.guardOf(s.id)).toBeDefined();
+    st.onEvent(ev(s.id, 11, "user", { text: "[harness] PR Steward", kind: "steward" }));
+    expect(st.get(s.id)?.fixing?.seq).toBe(11);
+    live.pending = false;
+    st.onEvent(ev(s.id, 12, "turn_end", { reason: "end_turn" }));
+    expect(st.guardOf(s.id)).toBeUndefined();
+  }
 });

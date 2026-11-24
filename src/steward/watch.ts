@@ -294,12 +294,20 @@ export class Steward {
   onEvent(e: StoredEvent) {
     if (e.kind === "user" && e.data?.kind === "steward") {
       const w = this.get(e.session_id);
-      if (w?.state === "fixing" && w.fixing && w.fixing.seq === undefined) { w.fixing.seq = e.seq; this.save(w); }
+      // A watch the owner turned off while its words waited still has them: the turn they start is the watch's, and its end
+      // (below) frees the session.
+      if (w && (w.state === "fixing" || w.state === "ended") && w.fixing && !w.fixing.ended && w.fixing.seq === undefined) { w.fixing.seq = e.seq; this.save(w); }
       return;
     }
     if (e.kind !== "turn_end") return;
     const w = this.get(e.session_id);
-    if (w?.state === "ended" && w.fixing && w.fixing.seq !== undefined && e.seq > w.fixing.seq && String(e.data?.reason ?? "") !== "restart") { w.fixing = undefined; this.save(w); return; }
+    if (w?.state === "ended" && w.fixing && String(e.data?.reason ?? "") !== "restart") {
+      if (w.fixing.seq !== undefined && e.seq > w.fixing.seq) { w.fixing = undefined; this.save(w); return; }
+      // The words were never stored (the watch ended while they waited behind a turn): the turn that ends now is not
+      // theirs. Nothing queued means they are not coming; if something is queued they may be, and the guard stays until
+      // their turn ends.
+      if (w.fixing.seq === undefined && !this.io.pending(w.session_id)) { w.fixing = undefined; this.save(w); return; }
+    }
     const fx = w?.fixing;
     if (!w || w.state !== "fixing" || !fx || fx.ended || fx.seq === undefined || e.seq <= fx.seq) return;
     const reason = String(e.data?.reason ?? "");

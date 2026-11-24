@@ -89,3 +89,39 @@ test("curl to GitHub writes nothing", () => {
   for (const c of ["curl -X POST https://api.github.com/repos/a/b/issues -d '{}'", "curl -d x https://api.github.com/graphql", "wget --method=POST https://api.github.com/x"]) expect(refused(c), c).toContain("Refused");
   expect(refused("curl -s https://api.github.com/repos/a/b/pulls/12")).toBeNull();
 });
+
+test("git is an allow-list: nothing that runs a command or pushes by another road", () => {
+  for (const c of ["git rebase --exec \"git push origin HEAD:main\" main", "git rebase main --exec='gh pr merge 3'", "git rebase -x 'make' main", "git rebase -ix make main", "git bisect run sh -c 'gh pr merge 3'", "git difftool -x 'gh pr merge 3'", "git filter-branch --tree-filter 'x' HEAD",
+    "git send-pack origin HEAD:refs/heads/main", "git subtree push --prefix=a origin main", "git lfs push origin HEAD", "git http-push http://x/ main", "git archive --remote=x", "git ls-remote https://evil.example/r.git", "git x",
+    "git push --receive-pack='sh -c x' origin HEAD", "git fetch --upload-pack='sh -c x' origin", "git grep -O'sh -c x' foo", "git log --ext-diff"]) {
+    expect(refused(c), c).toContain("Refused: this turn belongs to PR Steward");
+  }
+  for (const c of ["git rebase origin/main", "git rebase --continue", "git merge origin/main", "git pull --rebase origin main", "git stash && git stash pop", "git rev-parse HEAD", "git log --oneline -5", "git restore --staged x", "git cherry-pick abc"]) expect(refused(c), c).toBeNull();
+  // A rebase that names a branch moves the worktree there.
+  expect(refused("git rebase main other && git push")).toContain("moves the worktree");
+});
+
+test("approving is refused in every form of the flag", () => {
+  for (const c of ["gh pr review 12 --approve=true", "gh pr review 12 --approve=false", "gh pr review 12 -ab x", "gh pr review --approve 12", "gh pr review 12 --body x --approve"]) expect(refused(c), c).toContain("Refused");
+  expect(refused("gh pr review 12 --request-changes -b no")).toBeNull();
+});
+
+test("a word that names another repository, or another pull request to say something on, is refused", () => {
+  for (const c of ["gh pr comment https://github.com/other/repo/pull/3 -b x", "gh issue comment https://github.com/other/repo/issues/3 -b x", "gh pr checks https://github.com/other/repo/pull/3", "gh pr comment other/repo#3 -b x", "gh pr view a/b#12 other/x#1",
+    "gh pr comment 13 -b x", "gh pr comment '#13' -b x", "gh pr comment https://github.com/a/b/pull/13 -b x", "gh pr comment some-other-branch -b x", "gh pr review 13 --comment -b x", "gh issue comment 13 -b x", "gh issue comment -b x",
+    "gh api repos/a/b/issues/13/comments -f body=x", "gh api repos/a/b/pulls/13/comments/5/replies -f body=x", "gh api https://api.github.com/repos/other/r/issues/12/comments -f body=x"]) {
+    expect(refused(c), c).toContain("Refused: this turn belongs to PR Steward");
+  }
+  for (const c of ["gh pr comment 12 -b x", "gh pr comment '#12' -b x", "gh pr comment https://github.com/A/B/pull/12 -b x", `gh pr comment ${B} -b x`, "gh pr comment -b 'see https://github.com/other/repo/pull/3 for it'", "gh pr comment -b x", "gh issue comment 12 -b x",
+    "gh api repos/a/b/issues/12/comments -f body=x", "gh api https://api.github.com/repos/a/b/issues/12/comments -f body=x", "gh pr view https://github.com/a/b/pull/99", "gh pr view 13"]) {
+    expect(refused(c), c).toBeNull();
+  }
+});
+
+test("a tool's name is read as words: merge and approve on any server, repository work only reads and comments", () => {
+  for (const t of ["mcp__acme__mergePullRequest", "mcp__acme__merge-pull-request", "mcp__acme__merge", "mcp__acme__pr_merge", "mcp__acme__squash_and_merge", "mcp__acme__enable_automerge", "mcp__acme__autoMerge", "mcp__acme__approveReview", "mcp__gitlab__merge_merge_request", "mcp__acme__land_pr",
+    "mcp__acme__push_files", "mcp__acme__create_branch", "mcp__acme__update_pull_request", "mcp__acme__create_or_update_file", "mcp__acme__run_workflow", "mcp__acme__sync_fork", "mcp__acme__createRelease", "mcp__github__create_issue", "mcp__github__add_reaction", "mcp__acme__review_pr"]) {
+    expect(tool(t), t).toContain("Refused");
+  }
+  for (const t of ["mcp__acme__get_pull_request", "mcp__acme__listBranches".replace("listBranches", "list_branches"), "mcp__acme__search_commits", "mcp__acme__add_issue_comment", "mcp__build__run_tests", "mcp__fs__read_text_file", "mcp__github__get_file_contents", "mcp__merge_queue__get_status"]) expect(tool(t), t).toBeNull();
+});
