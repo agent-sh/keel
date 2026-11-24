@@ -160,7 +160,8 @@ for (const size of SIZES) {
         // Each fact says all it knows: "older head" and the commit a stale verdict spoke of are not cut off.
         await expect(board.getByTestId("board-review").filter({ hasText: "refused" })).toContainText("older head");
         const values = board.locator('[data-testid^="board-"] > span:nth-child(2) > span:last-child');
-        await expect(values).toHaveCount(12);
+        // Three facts a card: a tile with nothing to say (no live check) is left out (UX-S106).
+        await expect(values).toHaveCount(9);
         const cut = await values.evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth).map((e) => e.textContent));
         expect(cut, "facts cut off").toEqual([]);
         for (const fact of await board.getByTestId("board-review").all()) expect((await fact.boundingBox())!.x + (await fact.boundingBox())!.width, "a fact stays inside the page").toBeLessThanOrEqual(size.width);
