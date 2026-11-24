@@ -6,7 +6,8 @@ import { shoot } from "./shots.ts";
 // 40rem pane and up), its head and the session's tools are one bar, and panes side by side end on
 // one line. The head in the bar is one line or two: the title whole with the reason beside it,
 // else the title over the state and its reason, which then have the head's width. Nothing is drawn at the pane's edge where it meets the rail: a
-// pinned session's head once wore an ink tab there, a short white line in the dark theme.
+// pinned session's head once wore an ink tab there, a short white line in the dark theme; then the violet outline of a pane
+// that needs the owner, the red edge of a failed or declined head and the ink rule over the pane worked in stood there.
 
 // What lies at a point, top first: the classes of each element whose own background is the ink.
 const inkAt = (page: Page, x: number, y: number) => page.evaluate(([px, py]) => {
@@ -17,6 +18,78 @@ const inkAt = (page: Page, x: number, y: number) => page.evaluate(([px, py]) => 
   probe.remove();
   return document.elementsFromPoint(px!, py!).filter((el) => getComputedStyle(el).backgroundColor === ink).map((el) => el.className || el.tagName);
 }, [x, y]);
+
+// The colours drawn in a box of the page, as the screen shows them: how many differ from its middle pixel's,
+// and where the first such pixel is. A box that is one plain paper has none.
+const strayIn = async (page: Page, clip: { x: number; y: number; width: number; height: number }) => {
+  const png = await page.screenshot({ clip });
+  return page.evaluate(async (b64) => {
+    const img = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = new OffscreenCanvas(img.width, img.height), g = c.getContext("2d")!;
+    g.drawImage(img, 0, 0);
+    const d = g.getImageData(0, 0, img.width, img.height).data;
+    const at = (x: number, y: number) => { const i = (y * img.width + x) * 4; return `${d[i]},${d[i + 1]},${d[i + 2]}`; };
+    const paper = at(img.width >> 1, img.height >> 1);
+    let n = 0, first = "";
+    for (let y = 0; y < img.height; y++) for (let x = 0; x < img.width; x++) if (at(x, y) !== paper) { n++; first ||= `${at(x, y)} at ${x},${y} on ${paper}`; }
+    return { n, first };
+  }, png.toString("base64"));
+};
+
+// Where a pane meets the rail, from under the pane's band to its bar's hairline, the pane's first
+// sixteen pixels are its head's paper: no outline, edge, rule or gap, in either theme.
+const edgeClean = async (page: Page, pane: ReturnType<Page["getByTestId"]>, what: string) => {
+  const p = (await pane.boundingBox())!, band = (await pane.locator(":scope > .k-band").boundingBox())!, head = (await pane.getByTestId("station-head").boundingBox())!;
+  for (const theme of ["light", "dark"] as const) {
+    await page.evaluate((t) => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.toggle("dark", t === "dark"); }, theme);
+    await page.waitForTimeout(60);
+    const top = Math.ceil(band.y + band.height), bottom = Math.floor(head.y + head.height) - 2;
+    const got = await strayIn(page, { x: Math.round(p.x), y: top, width: 16, height: bottom - top });
+    expect(got.n, `${what}, ${theme}: a line at the pane's edge where it meets the rail (${got.first})`).toBe(0);
+  }
+  await page.evaluate(() => document.documentElement.classList.remove("theme-switch", "dark"));
+};
+
+test("nothing is drawn where a pane meets the rail, in a state that calls the owner and in the pane worked in", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string; provider: string }[];
+  const model = models.find((m) => m.id === "scripted:stand-in")?.id;
+  test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
+  const made: string[] = [];
+  const make = async (title: string, text: string, mode = "full-auto") => {
+    const { session } = await (await request.post("/api/sessions", { data: { model, title } })).json();
+    made.push(session.id);
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode } });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
+    return session.id as string;
+  };
+  try {
+    const need = await make("Waits on an approval at the edge", `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo edge > top-edge-need.txt" } }])}`, "ask");
+    const fail = await make("Fails at the edge", "script:billing");
+    const declined = await make("Declined at the edge", "script:refuse");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    for (const [id, w] of [[need, "need"], [fail, "fail"], [declined, "declined"]] as const) {
+      await page.goto(`/s/${id}`);
+      const pane = page.getByTestId("station").and(page.locator(`[data-station="${id}"]`));
+      await expect(pane).toHaveAttribute("data-watch", w, { timeout: 30_000 });
+      await page.mouse.move(1000, 700);
+      await edgeClean(page, pane, `a pane that is ${w}`);
+    }
+    // Two panes: the one worked in is the first, against the rail.
+    await page.goto(`/s/${fail}`);
+    await page.getByTestId("panes-2").click();
+    const helm = page.getByTestId("bridge").locator(':scope > [data-slot="0"]');
+    await expect(page.getByTestId("bridge").locator(':scope > [data-slot="1"]')).toBeVisible();
+    // (The new pane takes the keys; a press in the first gives them back.)
+    await helm.getByTestId("transcript").click({ position: { x: 40, y: 200 } });
+    await expect(helm).toHaveAttribute("data-helm", /.*/);
+    await page.mouse.move(1000, 700);
+    await edgeClean(page, helm, "the pane worked in, beside another");
+    await shoot(page, "top-edge-05-edge-two-panes");
+    await page.getByTestId("panes-1").click();
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`).catch(() => {});
+  }
+});
 
 test("the rail and a pinned pane meet in one clean top edge, the head and its tools one bar", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string; provider: string }[];

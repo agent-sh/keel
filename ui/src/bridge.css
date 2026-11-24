@@ -627,11 +627,11 @@
 .k-station[data-helm] { --k-head-bg: var(--raised); }
 .k-station[data-watch="need"]:not([data-helm]) { --k-head-bg: color-mix(in oklch, var(--st-need) 7%, var(--bg)); }
 .k-station[data-helm][data-watch="need"] { --k-head-bg: color-mix(in oklch, var(--st-need) 7%, var(--raised)); }
-/* The pane worked in, among several: an ink rule under its band, the width of the pane,
-   on its lighter paper. It lies over the pane (nothing moves when the helm does). The
-   other panes keep their text as it is and lose only the rule. */
+/* The pane worked in, among several: its lighter paper, its tools in its bar and its title in
+   ink; the other panes' titles step back to the muted ink. No rule or edge is drawn across a
+   pane's top or down its side: one there met the rail as a short light line in the dark theme. */
 @media (min-width: 768px) {
-  .k-stations:not([data-count="1"]) .k-station[data-helm]::before { content: ""; position: absolute; z-index: 4; top: var(--k-band-h); left: 0; right: 0; height: 2px; background: var(--fg); pointer-events: none; }
+  .k-stations:not([data-count="1"]) .k-station:not([data-helm]) .k-station-title { color: var(--muted); }
 }
 /* A pane's views. The session it holds fills the pane. What lies over it for now (a look,
    the start page) is drawn on top, and what is under stays laid out as it was, out of
@@ -783,11 +783,10 @@ html[data-resizing] iframe { pointer-events: none; }
 /* The header's working line: the same breath, in opacity. */
 .k-wake-line { position: absolute; inset: auto 0 -1px; height: 2px; pointer-events: none; background: var(--brass); animation: k-breathe-o 3.2s ease-in-out infinite; }
 @keyframes k-breathe-o { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-/* Needs you: the station is outlined in violet and its head is tinted. Still, no blinking. */
-.k-station[data-watch="need"] { box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-need) 50%, transparent); }
+/* Needs you: the thicker violet band and a tinted head. Still, no blinking. Failed: the thicker red
+   band. Neither draws at the pane's edges: an outline or an edge there stood beside the rail's own
+   hairline as a second, lighter line (top-edge.spec.ts). */
 .k-station[data-watch="need"] .k-station-head { background: color-mix(in oklch, var(--st-need) 7%, transparent); }
-/* Failed: a red band and a red edge down the head. */
-.k-station[data-watch="fail"] .k-station-head { box-shadow: inset 3px 0 0 var(--st-fail); }
 
 /* At least the top bar's height under the band, whatever the band's: its hairline is on the line where the rail's brand row ends. */
 .k-station-head { position: relative; display: flex; flex-direction: column; justify-content: center; min-height: calc(var(--spacing-bar) - var(--k-band-h)); padding: 0.75rem 1.125rem 0.6875rem 1.375rem; border-bottom: 1px solid var(--line); flex-shrink: 0; }
@@ -1712,7 +1711,6 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-station[data-watch="declined"] .k-station-word { color: var(--st-fail-ink); }
 .k-rail-card[data-watch="declined"] { border-left-color: var(--st-fail); }
 .k-station[data-watch="declined"] .k-band { background-color: var(--st-fail); }
-.k-station[data-watch="declined"] .k-station-head { box-shadow: inset 3px 0 0 var(--st-fail); }
 :is(.k-alert-icon, .k-inbox-count)[data-watch="declined"] { --k-st: var(--st-fail); }
 
 /* ---------- Tables ---------- */
