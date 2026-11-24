@@ -498,10 +498,11 @@ function Status({ sessionId }: { sessionId: string }) {
   // A provider that cannot be reached is waited for, with no count and no countdown: since when, and what the transport said.
   if (st.unreachable) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-raised px-3 py-2 text-ui" data-testid="provider-wait">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-lg border border-warn/40 bg-raised px-3 py-2 text-ui" data-testid="provider-wait">
         <span className="size-1.5 shrink-0 rounded-full bg-warn animate-pulse-dot" />
-        <span className="shrink-0 text-fg">{unreachableSince(hhmm(st.unreachable))}</span>
-        <span className="min-w-0 flex-1 truncate text-faint" title={st.message}>{st.message}</span>
+        {/* The words wrap whole on a narrow page; the transport's message takes what is left, or a line of its own. */}
+        <span className="min-w-0 max-w-[calc(100%-1rem)] text-fg" data-testid="provider-wait-since">{unreachableSince(hhmm(st.unreachable))}</span>
+        <span className="min-w-[8rem] flex-1 truncate text-faint" title={st.message}>{st.message}</span>
       </div>
     );
   }

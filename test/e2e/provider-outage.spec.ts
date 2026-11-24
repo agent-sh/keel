@@ -61,6 +61,13 @@ test("a turn started while the provider cannot be reached waits and completes wh
   await expect(row.getByTestId("row-state")).toHaveText("Waiting");
   await expect(row.locator('[data-testid="row-why"][data-why="unreachable"]')).toContainText(SINCE);
   await shoot(page, "outage-01-turn-waits");
+  // On a phone the line wraps whole: no word of it runs past the page edge or is cut.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const since = page.getByTestId("provider-wait-since");
+  await expect(since).toBeVisible();
+  await expect.poll(async () => since.evaluate((el) => { const r = el.getBoundingClientRect(); return { inside: r.left >= 0 && r.right <= innerWidth, whole: el.scrollWidth <= el.clientWidth }; })).toEqual({ inside: true, whole: true });
+  await shoot(page, "outage-01b-turn-waits-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
   // The state every reader gets, and the timeline.
   expect(await stateOf(request, id)).toMatchObject({ watch: "wait", why: "unreachable", text: "The provider cannot be reached" });
   const timeline = await (await request.get(`/api/sessions/${id}/timeline?format=text`)).text();
