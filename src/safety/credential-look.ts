@@ -20,7 +20,7 @@ export const WALK_NAMES = 20;
 const STANDS_MS = 60_000;
 const DIRS_AT_ONCE = 16, FILES_AT_ONCE = 32;
 
-type Kept = { at: number; found: Found[]; stamps: Map<string, number> };
+type Kept = { at: number; found: Found[]; stamps: Map<string, string> };
 const kept = new Map<string, Kept>();
 const running = new Map<string, Promise<Found[]>>();
 
@@ -32,13 +32,21 @@ async function pool<T>(items: T[], width: number, run: (item: T) => Promise<void
   await Promise.all(Array.from({ length: Math.min(width, items.length) }, async () => { while (next < items.length) await run(items[next++]!); }));
 }
 
-// Whether every folder the answer was made from has the time it had then.
+// What a folder is known by: its modification time and its change time (a file or a link made in it moves both; a
+// restored modification time, which any owner of the folder can set, leaves the change time moved), or why it could
+// not be looked at (a folder that is missing or closed when the look is made is known by that, and any change of it
+// is a change).
+async function stampOf(dir: string): Promise<string> {
+  try { const st = await lstat(dir); return `${st.mtimeMs}:${st.ctimeMs}`; } catch (e) { return `none:${(e as NodeJS.ErrnoException).code ?? "?"}`; }
+}
+
+// Whether every folder the answer was made from is as it was then.
 async function unchanged(k: Kept): Promise<boolean> {
   if (performance.now() - k.at > STANDS_MS) return false;
   let same = true;
   await pool([...k.stamps], FILES_AT_ONCE, async ([dir, at]) => {
     if (!same) return;
-    try { if ((await lstat(dir)).mtimeMs !== at) same = false; } catch { same = false; }
+    if ((await stampOf(dir)) !== at) same = false;
   });
   return same;
 }
@@ -64,27 +72,27 @@ export function lookUnder(folder: string, is: Classifier, o: { scope?: string; m
   return run;
 }
 
-async function walk(folder: string, is: Classifier, ms: number, limit: number): Promise<{ found: Found[]; stamps: Map<string, number>; late: boolean }> {
+async function walk(folder: string, is: Classifier, ms: number, limit: number): Promise<{ found: Found[]; stamps: Map<string, string>; late: boolean }> {
   const began = performance.now();
   const end = began + ms;
   const names = new Map<string, Found>();
-  const stamps = new Map<string, number>();
-  let seen = 0, late = false;
-  for (let level = [folder]; level.length && seen < limit && names.size < WALK_NAMES && !late; ) {
+  const stamps = new Map<string, string>();
+  let seen = 0, late = false, capped = false;
+  let level = [folder];
+  while (level.length && seen < limit && names.size < WALK_NAMES && !late) {
     const next: string[] = [];
     await pool(level, DIRS_AT_ONCE, async (d) => {
-      if (late || seen >= limit) return;
+      if (late) return;
+      if (seen >= limit) { capped = true; return; }
       if (performance.now() > end) { late = true; return; }
       let entries;
-      try {
-        // (The time first: a folder that changes while it is read is read again at the next search.)
-        const st = await lstat(d);
-        entries = await readdir(d, { withFileTypes: true });
-        stamps.set(d, st.mtimeMs);
-      } catch { return; }
+      // (The stamp first: a folder that changes while it is read is read again at the next search. A folder that
+      // cannot be read keeps its stamp, so it is read again when it changes, a mode change included.)
+      stamps.set(d, await stampOf(d));
+      try { entries = await readdir(d, { withFileTypes: true }); } catch { return; }
       const files: string[] = [];
       for (const e of entries) {
-        if (seen++ >= limit) break;
+        if (seen++ >= limit) { capped = true; break; }
         const p = join(d, e.name);
         if (e.isDirectory()) { if (!NOT_ENTERED.has(e.name)) next.push(p); continue; }
         if (e.isSymbolicLink()) { if (is.link(p)) names.set(p, { path: p, foreign: true }); else if (is.by(p)) names.set(p, { path: p }); continue; }
@@ -101,8 +109,12 @@ async function walk(folder: string, is: Classifier, ms: number, limit: number): 
     });
     level = next;
   }
+  // A look that stopped at its limit with folders or entries not read does not know what they hold (unless it found
+  // enough to hold the search already): the folder is unread, as when its time is out. That answer is kept.
+  const cut = !late && names.size < WALK_NAMES && (capped || (seen >= limit && level.length > 0));
   const took = Math.round(performance.now() - began);
   const found = [...names.values()].sort((a, b) => (a.path < b.path ? -1 : 1));
   if (late) found.push({ path: folder, unread: true, why: `the look took ${took} ms of its ${ms} ms and had read ${Math.min(seen, limit)} entries` });
+  if (cut) found.push({ path: folder, unread: true, why: `the look read its limit of ${limit} entries in ${took} ms and the folder holds more` });
   return { found, stamps, late };
 }

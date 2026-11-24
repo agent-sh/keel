@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -126,4 +126,50 @@ test("the gate answers a search of a folder it looks through off the loop, and r
     expect(JSON.stringify(held)).toContain(".env");
     expect(JSON.stringify(held)).not.toContain("could not be looked through");
   } finally { clearInterval(busy); }
+});
+
+test("a kept look is not trusted when a folder's modification time was put back, or a folder that could not be read changed", async () => {
+  forgetLooks();
+  const h = folderOf(60);
+  const is = slow(h);
+  const top = join(h, "p");
+  expect(await lookUnder(top, is, { scope: "f" })).toEqual([]);
+  // A file made in a folder, and the folder's modification time put back: its change time still moved.
+  const dir = join(top, "d5"), was = statSync(dir);
+  writeFileSync(join(dir, ".env"), "TOKEN=x\n");
+  utimesSync(dir, was.atime, was.mtime);
+  expect((await lookUnder(top, is, { scope: "f" })).map((f: Found) => f.path)).toEqual([join(dir, ".env")]);
+  // A folder that is missing at the first look, and made later.
+  const later = join(h, "later");
+  expect(await lookUnder(later, is, { scope: "f" })).toEqual([]);
+  mkdirSync(later);
+  writeFileSync(join(later, ".env"), "TOKEN=x\n");
+  expect((await lookUnder(later, is, { scope: "f" })).map((f: Found) => f.path)).toEqual([join(later, ".env")]);
+  // A folder that is closed at the first look, and opened later.
+  if (process.getuid?.() !== 0) {
+    const closed = join(top, "d6");
+    chmodSync(closed, 0o000);
+    try {
+      expect((await lookUnder(top, is, { scope: "g" })).map((f: Found) => f.path)).toEqual([join(dir, ".env")]);
+      writeFileSync(join(dir, ".env"), "TOKEN=y\n");
+    } finally { chmodSync(closed, 0o755); }
+    writeFileSync(join(closed, "id_rsa"), "k\n");
+    expect((await lookUnder(top, is, { scope: "g" })).map((f: Found) => f.path)).toContain(join(closed, "id_rsa"));
+  }
+});
+
+test("a look that stops at its entry limit with folders unread says so, and the answer is kept", async () => {
+  forgetLooks();
+  const h = folderOf(200);
+  const counts = { by: 0 };
+  const is = slow(h, counts);
+  const found = await lookUnder(join(h, "p"), is, { scope: "h", entries: 100 });
+  expect(found).toHaveLength(1);
+  expect(found[0]).toMatchObject({ path: join(h, "p"), unread: true });
+  expect(found[0]!.why).toContain("limit of 100 entries");
+  const made = counts.by;
+  expect(await lookUnder(join(h, "p"), is, { scope: "h", entries: 100 })).toEqual(found);
+  expect(counts.by).toBe(made);
+  // The same folder within its limit is complete.
+  expect(await lookUnder(join(h, "p"), is, { scope: "i", entries: 300 })).toEqual([]);
 });
