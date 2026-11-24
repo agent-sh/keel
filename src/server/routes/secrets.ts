@@ -179,7 +179,8 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
   vault.on((ev) => {
     if (ev.type === "found") bus.emit({ t: "feature", name: "secret", session_id: ev.session_id, data: { found: ev.secret } });
     else if (ev.type === "changed") for (const s of ev.secret.sessions) bus.emit({ t: "feature", name: "secret", session_id: s, data: { changed: ev.secret } });
-    else if (ev.type === "forgotten") bus.emit({ t: "feature", name: "secret", data: { forgotten: ev.id } });
+    // One frame for each session that held it: a frame that names no session is not relayed to another machine.
+    else if (ev.type === "forgotten") for (const s of ev.sessions) bus.emit({ t: "feature", name: "secret", session_id: s, data: { forgotten: ev.id } });
     // A value given elsewhere (a plugin's setting) that ordinary text holds: told once, in the Errors panel.
     // (A card asks before it gives one: the route below.)
     else deps.errors?.capture("server", new Error(`A secret (${ev.secret.kind}, ${ev.secret.placeholder}) ${ev.secret.ordinary}, so ordinary text holds it: Keel hides it as a whole word in what tools print and leaves it as it is in the model's words. Change it where it was given if that is wrong.`), { secret: ev.secret.id, kind: "ordinary secret" });

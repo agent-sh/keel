@@ -438,6 +438,18 @@ test("a secret that is an ordinary word is warned of once", () => {
   expect(told.length).toBe(1);
 });
 
+// A forgotten secret says which sessions held it, so a frame can name them (a frame that names no session
+// is not relayed to another machine, src/core/outside.ts).
+test("forgetting a secret tells the sessions that held it", () => {
+  const v = new Vault();
+  const told: unknown[] = [];
+  v.on((ev) => { if (ev.type === "forgotten") told.push(ev); });
+  const id = v.add(GH, "token", "card", "s1", undefined, { given: true }).id;
+  v.add(GH, "token", "card", "s2", undefined, { given: true });
+  expect(v.forget(id)).toBe(true);
+  expect(told).toEqual([{ type: "forgotten", id, sessions: ["s1", "s2"] }]);
+});
+
 test("a piece of a known key is the key, cut; a short piece or an ordinary word is not", () => {
   const key = "sk-live-9f8e7d6c5b4a39281706";
   const v = new Vault();

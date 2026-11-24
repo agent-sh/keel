@@ -202,7 +202,7 @@ export const nameError = (name: string): string | null =>
 
 // "ordinary": a value given to Keel (a card, a plugin's setting) is ordinary
 // text (SecretMeta.ordinary says why), told once per value.
-type Listener = (ev: { type: "found"; session_id: string; secret: SecretMeta } | { type: "changed"; secret: SecretMeta } | { type: "forgotten"; id: string } | { type: "ordinary"; secret: SecretMeta }) => void;
+type Listener = (ev: { type: "found"; session_id: string; secret: SecretMeta } | { type: "changed"; secret: SecretMeta } | { type: "forgotten"; id: string; sessions: string[] } | { type: "ordinary"; secret: SecretMeta }) => void;
 
 // A shell script with each placeholder replaced by a reference to the
 // variable `name` returns, quoted for where it stands: bare text and $( )
@@ -393,7 +393,7 @@ export class Vault {
     if (!e) return false;
     this.byId.delete(id);
     this.byValue.delete(e.value);
-    this.tell({ type: "forgotten", id });
+    this.tell({ type: "forgotten", id, sessions: [...e.sessions] });
     return true;
   }
 

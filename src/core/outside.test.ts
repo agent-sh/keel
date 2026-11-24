@@ -60,6 +60,27 @@ test("a relay to another machine carries no session, state or frame of an outsid
   }
 });
 
+// The trust panel and the secrets cards of a far session refresh from frames that name the session: one that
+// names none stays home, so the emits name the sessions they concern (routes/trust.ts, routes/secrets.ts).
+test("a trust or secret frame goes to another machine when it names a session of Keel's own, and not otherwise", () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-outside-peers-"));
+  try {
+    const store = new Store(dir);
+    store.migrate("CREATE TABLE alerts (id TEXT PRIMARY KEY, session_id TEXT);");
+    const mine = store.createSession({ title: "mine", model: "m", workspace: dir });
+    const out = store.updateSession(store.createSession({ title: "elsewhere", model: "m", workspace: dir }).id, { outside: { harness: "claude", source_id: "x", state: "working", since: 1, files: 0, failures: 0 } });
+    const shared = forPeers(store.db);
+    for (const [name, data] of [["trust", { cwd: dir }], ["secret", { forgotten: "id1" }]] as const) {
+      expect(shared.relay({ t: "feature", name, session_id: mine.id, data })).toEqual({ t: "feature", name, session_id: mine.id, data });
+      expect(shared.relay({ t: "feature", name, session_id: out.id, data })).toBeNull();
+      expect(shared.relay({ t: "feature", name, data })).toBeNull();
+    }
+    store.db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---- the sets of sessions: a session another harness runs is in none unless its caller asks.
 
 import { readFileSync } from "node:fs";

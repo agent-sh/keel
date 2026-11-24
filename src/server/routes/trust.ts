@@ -113,6 +113,18 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw Object.assign(new Error(`not a directory: ${cwd}`), { status: 400 });
     return cwd;
   };
+  // The sessions whose folder is in the same repository (or the same folder, outside one) as `cwd`: the ones
+  // whose Trust panel shows the files that were just trusted.
+  const sessionsIn = (cwd: string): string[] => {
+    const home = (dir: string) => rootOf(dir) ?? dir;
+    const here = home(cwd);
+    const homes = new Map<string, string>();
+    return store.sessions().filter((s) => {
+      let h = homes.get(s.workspace);
+      if (h === undefined) homes.set(s.workspace, (h = home(s.workspace)));
+      return h === here;
+    }).map((s) => s.id);
+  };
   const view = (cwd: string) => {
     const files = trust.files(cwd).map((f) => ({ ...f, rel: relative(f.root, f.path) || f.path }));
     return { root: rootOf(cwd), new_files: trust.newFiles(), files };
@@ -137,7 +149,9 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
         const list = Array.isArray(b.files) ? b.files : b.path ? [{ path: b.path, sha256: b.sha256 }] : [];
         if (!list.length) return bad("name the files to trust, each with the sha256 you were shown");
         for (const f of list) trust.trust(cwd, String(f.path), String(f.sha256 ?? ""));
-        bus.emit({ t: "feature", name: "trust", data: { cwd } });
+        // One frame for each session in that repository: a frame that names no session is not relayed to
+        // another machine (src/core/outside.ts), and its panel reads the session's own id.
+        for (const id of sessionsIn(cwd)) bus.emit({ t: "feature", name: "trust", session_id: id, data: { cwd } });
         return json(view(cwd));
       })(),
     },
