@@ -5,6 +5,11 @@
 // (momentum, a hook, the harness, a restart). The one list for the engine and the page.
 export const OWNER_ORIGINS: ReadonlySet<unknown> = new Set([undefined, "steer", "queued", "voice", "cli"]);
 
+// Marks a prompt of the owner's may carry and still be theirs: `ask`, a question asked from the
+// helper's row on a phone (src/helper/ask.ts). An input with any other mark is the harness's.
+const OWNER_MARKS: ReadonlySet<string> = new Set(["ask"]);
+export const ownersMeta = (m: Record<string, unknown> | null | undefined): boolean => !m || Object.keys(m).every((k) => OWNER_MARKS.has(k));
+
 // A stored prompt's data is the owner's own words.
 export const ownerPrompt = (d: { kind?: unknown; origin?: unknown } | undefined): boolean => !!d && !d.kind && OWNER_ORIGINS.has(d.origin);
 

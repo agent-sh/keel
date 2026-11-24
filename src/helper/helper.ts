@@ -27,6 +27,9 @@ import { Memory } from "./memory.ts";
 import { digestLines, digestZone, levelOfAlert, nextWakeAt, spike, type DigestEvent, type Level } from "./policy.ts";
 import { recallLine, type MemoryRecord } from "./records.ts";
 import { memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
+import * as perm from "../server/routes/permissions.ts";
+import { pendingQuestions } from "../tools/interact.ts";
+import { ASK_LINE, askRefusal, answerOf, type Answer, type AskFrom } from "./ask.ts";
 
 export type HelperSettings = {
   on: boolean;
@@ -147,6 +150,47 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     this.save({ ...(p.mail_every_min !== undefined ? { mail_every_min: n(p.mail_every_min, "mail_every_min") } : {}), ...(p.wake_gap_min !== undefined ? { wake_gap_min: n(p.wake_gap_min, "wake_gap_min") } : {}) });
     this.start();
     this.emit();
+  }
+
+  // --- a question from a phone (ask.ts) ---------------------------------------
+
+  // The owner's question from the helper row: their words, stored in the helper's conversation as
+  // their prompt (a steer when its turn runs), marked as an ask. A helper that is off is turned on,
+  // as opening it on the desk does. `key`: the sender's id for the question, stored once.
+  // The id names the stored prompt, or the queued row it waits as (`q:<row>`).
+  async ask(text: string, from: AskFrom, key?: string): Promise<{ id: string; chat_id: string } | { duplicate: true; chat_id: string }> {
+    const words = text.trim();
+    if (!words) throw Object.assign(new Error("the question is empty"), { status: 400 });
+    if (!this.state().on || !this.session()) await this.setOn(true);
+    const s = this.session();
+    if (!s) throw Object.assign(new Error("the helper could not be started"), { status: 409 });
+    const r = this.deps.engine.send(s.id, words, { meta: { ask: from }, ...(key ? { key: `ask:${key}` } : {}) });
+    if (r.duplicate) return { duplicate: true, chat_id: s.id };
+    return { id: r.event ? r.event.id : `q:${r.queued!.id}`, chat_id: s.id };
+  }
+
+  // The answer to an ask, read from the helper's conversation: undefined when there is no such ask.
+  async answer(id: string): Promise<(Answer & { id: string; chat_id: string; waits: Record<string, number> }) | undefined> {
+    const s = this.session();
+    if (!s) return undefined;
+    const { store, engine } = this.deps;
+    await store.warm(s.id);
+    const line = store.lineage(s.id);
+    // A queued question is found by its row once it was delivered.
+    const ev = id.startsWith("q:") ? line.find((e) => e.kind === "user" && e.data.queue_id === id.slice(2)) : line.find((e) => e.id === id);
+    if (!ev) {
+      if (id.startsWith("q:") && store.queueItem(id.slice(2))?.session_id === s.id) return { id, chat_id: s.id, state: "waiting", question: store.queueItem(id.slice(2))!.text, text: "", read: [], looked: [], ts: Date.now(), waits: {} };
+      return undefined;
+    }
+    const a = answerOf(line, ev.id, store.sessions(), engine.isRunning(s.id))!;
+    // What each session it read waits on the owner for now: its approvals and questions, its agents' too.
+    const approvals = perm.gate?.approvals({ pending: true }) ?? [];
+    const waits: Record<string, number> = {};
+    for (const r of a.read) {
+      const ids = [r.id, ...store.descendants(r.id)];
+      waits[r.id] = approvals.filter((x) => ids.includes(x.session_id)).length + ids.reduce((n, x) => n + pendingQuestions(x).length, 0);
+    }
+    return { ...a, id, chat_id: s.id, waits };
   }
 
   // --- memory ----------------------------------------------------------------
@@ -275,7 +319,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
 
   // The note a helper prompt gets: events not told yet, and the remembered
   // items it calls up that the context has not seen since its last summary.
-  private note(s: Session, events: readonly StoredEvent[], prompt: string): { text: string; recalled: MemoryRecord[]; hints: string[]; repeats: number; told: DigestEvent[] } | null {
+  private note(s: Session, events: readonly StoredEvent[], prompt: string, asked = false): { text: string; recalled: MemoryRecord[]; hints: string[]; repeats: number; told: DigestEvent[] } | null {
     const at = checkpointAt(events).at;
     // A record a note already carried is not sent again while it is as that
     // note had it. One changed since (by the owner, or by a tool) is: its new
@@ -296,6 +340,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     const items = found.records;
     const hints = found.hints.filter((h) => !hinted.has(h));
     const parts: string[] = [];
+    if (asked) parts.push(ASK_LINE);
     if (told.length) parts.push(`<digest>\nEvents since you last heard (${digestZone()}):\n${digestLines(told, DIGEST_LINES, this.title)}\n</digest>`);
     if (items.length || hints.length) parts.push(`<remembered>\nFrom your memory (key: value; context, not the owner's words):\n${[...items.map(recallLine), ...hints.map((h) => `- more in memory: ${h}`)].join("\n")}\n</remembered>`);
     if (!parts.length) return null;
@@ -318,7 +363,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
         if (last?.kind !== "user" || h.done.has(last.id)) return req;
         h.done.add(last.id);
         const began = performance.now();
-        const n = h.note(s, events, String(last.data.text ?? ""));
+        const n = h.note(s, events, String(last.data.text ?? ""), typeof last.data.ask === "string");
         const waitMs = performance.now() - began;
         const remembered = n ? /<remembered>\n[\s\S]*<\/remembered>/.exec(n.text)?.[0] : undefined;
         // Measured without content: what the block adds, and (at the turn's end) whether the reply named it.
@@ -329,12 +374,15 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
         h.markFed(n.told);
         const recalled = n.recalled.map((r) => r.key);
         if (recalled.length) h.records.touch(recalled);
-        const hooks = [n.told.length && "digest", (recalled.length || n.hints.length) && "remembered"].filter(Boolean);
+        const hooks = [n.told.length && "digest", (recalled.length || n.hints.length) && "remembered", typeof last.data.ask === "string" && "ask"].filter(Boolean);
         const ev = h.deps.store.append(s.id, "note", { text: n.text, model: true, memory: { source: "helper", hooks }, helper: { recall: recalled, hints: n.hints, events: n.told.length } });
         h.deps.bus.emit({ t: "event", event: ev });
         return { ...req, messages: toMessages(h.deps.store.lineage(s.id)) };
       },
     });
+    // The turn of a question asked on a phone only reads (ask.ts).
+    perm.gate?.toolLimits.set("helper-ask", (s) => (s.settings.helper ? (tool) => askRefusal(this.deps.store.lineage(s.id), tool) : undefined));
+    this.off.push(() => perm.gate?.toolLimits.delete("helper-ask"));
     this.off.push(this.deps.bus.on((f) => {
       try {
         if (f.t === "feature" && f.name === "automation" && f.data?.kind === "alert") this.onAlert(f.data.data as alerts.Alert);

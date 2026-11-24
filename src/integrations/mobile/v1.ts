@@ -1,6 +1,7 @@
 // Hermes Mobile API v1: the routes the phone app calls. Every route but health
 // and pair needs the device's bearer token and a request signature; approvals
 // and revoking another device also need the approval key's signature.
+import { askId } from "../../helper/ask.ts";
 import { holdStream } from "../../server/streams.ts";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename as baseName, isAbsolute, resolve as resolvePath } from "node:path";
@@ -104,6 +105,15 @@ export function helperOf(h: Helper) {
   return {
     on: v.on, chat_id: v.session_id, memory: h.records.index.size,
     events: v.events.slice(-HELPER_EVENTS).reverse().map((e) => ({ id: e.id, ts: secs(e.ts), chat_id: e.session_id, title: e.title, body: e.body })),
+  };
+}
+// An answer of the helper to a question from the app's helper row (src/helper/ask.ts), as the app shows it:
+// its words, the sessions it read with what each waits on the owner for (an approval or a question: the
+// row offers Answer there, else Open), and what else it looked at.
+export function helperAnswerOf(a: NonNullable<Awaited<ReturnType<Helper["answer"]>>>) {
+  return {
+    id: a.id, chat_id: a.chat_id, state: a.state, question: a.question, text: a.text, ts: secs(a.ts), looked: a.looked,
+    read: a.read.map((r) => ({ chat_id: r.id, title: r.title || "(untitled)", waits: a.waits[r.id] ?? 0 })),
   };
 }
 // How many records the whole memory sends at a time, the newest first, as many as a find answers
@@ -1553,6 +1563,30 @@ export function mobileApi(ctx: MobileCtx) {
         await h.setOn(b.on);
         return json(helperOf(h));
       })),
+    },
+    // A question from the helper row, spoken (the phone's own recognizer: words, never audio) or typed.
+    // Its turn only reads; what the answer offers the owner does with a tap, through the routes above.
+    "/v1/helper/ask": {
+      POST: signed(withBody(async (_r, _d, b) => {
+        const h = ctx.helper?.();
+        if (!h) return err("this daemon runs no helper", 409);
+        if (typeof b.text !== "string" || !b.text.trim()) return err("give text: the question", 400);
+        if (b.client_id !== undefined && (typeof b.client_id !== "string" || !b.client_id || b.client_id.length > 100)) return err("client_id is a string of at most 100 characters", 400);
+        try {
+          const r = await h.ask(b.text, "phone", b.client_id);
+          return json("duplicate" in r ? { id: null, chat_id: r.chat_id, duplicate: true } : r);
+        } catch (e: any) {
+          return err(e?.message ?? String(e), e?.status ?? 500);
+        }
+      })),
+    },
+    "/v1/helper/ask/:id": {
+      GET: signed(async (req) => {
+        const h = ctx.helper?.();
+        if (!h) return err("this daemon runs no helper", 409);
+        const a = await h.answer(askId(String(req.params.id)));
+        return a ? json(helperAnswerOf(a)) : err("no such question", 404);
+      }),
     },
     "/v1/helper/memory": {
       GET: signed((req) => {

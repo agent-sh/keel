@@ -1079,6 +1079,31 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-home-act[data-nudge] { opacity: 1; outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge var(--dur-settle) var(--ease-out); }
 .k-home-act-lead { box-shadow: none; background: var(--accent); color: var(--accent-fg); }
 .k-home-act-lead:hover:not(:disabled) { background: var(--accent-hover); }
+/* The helper row, first on a phone's home (HelperAsk.tsx): one field with its mark and one button, and the answer under it. */
+.k-ask { margin-bottom: 1.5rem; }
+.k-ask-row { display: flex; align-items: center; gap: 0.5rem; height: 2.75rem; padding: 0 0.25rem 0 0.75rem; border-radius: var(--radius-md); background: var(--raised); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line); }
+.k-ask-row:focus-within { box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line-strong); }
+.k-ask-mark { width: 1rem; height: 1rem; flex-shrink: 0; color: var(--accent-ink); }
+.k-ask-field { min-width: 0; flex: 1; height: 100%; background: transparent; font-size: var(--text-ui); color: var(--fg); outline: none; }
+.k-ask-field::placeholder { color: var(--faint); }
+.k-ask-btn { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; flex-shrink: 0; border-radius: var(--radius-md); color: var(--muted); }
+.k-ask-btn svg { width: 1.125rem; height: 1.125rem; }
+.k-ask-btn:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.k-ask-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.k-ask-btn:disabled { opacity: 0.4; }
+.k-ask-btn-send:not(:disabled) { background: var(--accent); color: var(--accent-fg); }
+.k-ask-btn-send:hover:not(:disabled) { background: var(--accent-hover); color: var(--accent-fg); }
+.k-ask-note { margin-top: 0.375rem; padding-left: 0.75rem; font-size: var(--text-caption); color: var(--muted); }
+.k-ask-answer { margin-top: 0.5rem; padding: 0.625rem 0.75rem 0.75rem; border-left: 2px solid var(--accent); background: var(--sunken); border-radius: 0 var(--radius-md) var(--radius-md) 0; }
+.k-ask-q { display: flex; align-items: center; gap: 0.5rem; font-size: var(--text-caption); color: var(--muted); }
+.k-ask-x { display: grid; place-items: center; width: 1.5rem; height: 1.5rem; flex-shrink: 0; margin-right: -0.375rem; border-radius: var(--radius-sm); color: var(--faint); }
+.k-ask-x svg { width: 0.875rem; height: 0.875rem; }
+.k-ask-x:hover { background: var(--hover); color: var(--fg); }
+.k-ask-wait { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; font-size: var(--text-ui); color: var(--muted); }
+.k-ask-text { margin-top: 0.375rem; color: var(--fg); }
+.k-ask-text .prose-keel { font-size: var(--text-base); line-height: 1.55; }
+.k-ask-read { margin-top: 0.5rem; font-size: var(--text-micro); color: var(--faint); }
+.k-ask-acts { flex-wrap: wrap; justify-content: flex-start; margin-top: 0.625rem; margin-left: 0; }
 .k-home-act[data-quiet] { padding: 0 0.375rem; box-shadow: none; color: var(--muted); }
 .k-home-row-note { margin-top: 0.25rem; padding-left: 1.75rem; font-size: var(--text-caption); line-height: 1.4; color: var(--warn-ink); }
 .k-home-more { margin-top: 0.5rem; font-size: var(--text-caption); color: var(--accent-ink); text-align: left; }

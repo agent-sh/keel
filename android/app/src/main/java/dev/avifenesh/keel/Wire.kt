@@ -69,6 +69,9 @@ object Wire {
             })
         }
 
+    /** A question for the helper from its row (POST /v1/helper/ask): the words, under the phone's id for them. */
+    fun askBody(text: String, clientId: String): JSONObject = JSONObject().put("text", text).put("client_id", clientId)
+
     /** Where a file goes up (POST, its bytes as the body): its name and the type the phone gives it. */
     fun uploadPath(name: String, mime: String): String = "/v1/upload?name=${enc(name.ifBlank { "file" })}&mime=${enc(mime.ifBlank { "application/octet-stream" })}"
 
@@ -624,6 +627,36 @@ data class HelperView(val on: Boolean, val chatId: String?, val memory: Int, val
             o.optBoolean("on"), o.str("chat_id").ifBlank { null }, o.optInt("memory"),
             o.optJSONArray("events")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
                 .map { HelperEvent(it.str("id"), it.optDouble("ts", 0.0), it.str("chat_id").ifBlank { null }, it.str("title"), it.str("body")) },
+        )
+    }
+}
+
+/** POST /v1/helper/ask: the question's id (null when the same question was taken already) and the helper's chat. */
+data class HelperAsked(val id: String?, val chatId: String, val duplicate: Boolean) {
+    companion object {
+        fun of(o: JSONObject) = HelperAsked(o.str("id").ifBlank { null }, o.str("chat_id"), o.optBoolean("duplicate"))
+    }
+}
+
+/** A session the helper's answer read, and how many requests of it wait for the owner. */
+data class HelperRead(val chatId: String, val title: String, val waits: Int)
+
+/**
+ * GET /v1/helper/ask/<id>: the helper's answer to a question from its row. `state`: waiting, working,
+ * done, failed or stopped. `looked`: what else it read (sessions: the list, activity, mail, calendar, memory).
+ */
+data class HelperAnswer(
+    val id: String, val chatId: String, val state: String, val question: String, val text: String,
+    val ts: Double, val looked: List<String>, val read: List<HelperRead>,
+) {
+    /** The helper still works on it: the row asks again. */
+    val pending: Boolean get() = state == "waiting" || state == "working"
+
+    companion object {
+        fun of(o: JSONObject) = HelperAnswer(
+            o.str("id"), o.str("chat_id"), o.str("state"), o.str("question"), o.str("text"), o.optDouble("ts", 0.0), strings(o.optJSONArray("looked")),
+            o.optJSONArray("read")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+                .map { HelperRead(it.str("chat_id"), it.str("title"), it.optInt("waits")) },
         )
     }
 }

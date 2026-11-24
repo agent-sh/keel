@@ -67,6 +67,8 @@ class ContractTest {
             assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"), files)))
         }
         // A new session as the start sheet sends it, and with nothing chosen.
+        // A question for the helper from its row.
+        for (q in examples("helper_ask")) assertEquals(canon(q), canon(Wire.askBody(q.getString("text"), q.getString("client_id"))))
         for (n in examples("new_chat")) assertEquals(canon(n), canon(NewChat(n.optString("model"), n.optString("workspace"), n.optString("machine"), n.optString("text")).body()))
         // The upload the example names is the answer the daemon gave for it.
         val up = Upload.of(examples("upload").first())
@@ -128,6 +130,9 @@ class ContractTest {
         "search_hit" to { o -> SearchResult.of(JSONObject().put("hits", JSONArray().put(o))).hits.toString() },
         "helper" to { o -> HelperView.of(o).toString() },
         "helper_event" to { o -> HelperView.of(JSONObject().put("events", JSONArray().put(o))).events.toString() },
+        "helper_asked" to { o -> HelperAsked.of(o).toString() },
+        "helper_answer" to { o -> HelperAnswer.of(o).toString() },
+        "helper_read" to { o -> HelperAnswer.of(JSONObject().put("read", JSONArray().put(o))).read.toString() },
         "memory" to { o -> MemoryList.of(o).toString() },
         "memory_record" to { o -> MemoryList.of(JSONObject().put("items", JSONArray().put(o))).items.toString() },
         "errors" to { o -> ErrorList.of(o).toString() },
@@ -176,7 +181,7 @@ class ContractTest {
     @Test fun theAppReadsEveryFieldOfTheContractUnderItsName() {
         // Every shape the daemon sends has a reader here; `send` and `answer` are what the app sends.
         // `send`, `answer` and `upload_ref` (the uploads a send names) are what the app sends.
-        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload_ref", "new_chat"), reads.keys)
+        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload_ref", "new_chat", "helper_ask"), reads.keys)
         for ((shape, read) in reads) for (path in fields.getJSONObject(shape).keys()) {
             // Without the field, the app must make something else of at least one example that has it.
             val read1 = examples(shape).any { ex -> has(ex, path) && read(copy(ex)) != read(without(ex, path)) }

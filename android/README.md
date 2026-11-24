@@ -70,6 +70,18 @@ Approve: each change asks starts it in ask (the one a phone with no screen
 lock offers). Keep planning opens a box for what to change and sends the plan
 back with it. A plan's notification opens the session; it allows nothing.
 
+## The helper row
+
+The first row of Sessions asks the helper across your sessions. Hold the
+microphone and speak, let go to ask; or type and send. The phone's own
+recognizer hears you on the device (`SpeechRecognizer.createOnDeviceSpeechRecognizer`);
+only the words go to the daemon (`POST /v1/helper/ask`), never audio. A phone
+without an on-device recognizer gets the typed row. The question is yours in the
+helper's conversation; its turn only reads, so nothing changes until you tap.
+The answer shows as text with the sessions it read named, and offers Answer on
+a session that waits for you (it opens the request there), Open on the others,
+and Go on with the helper. The page shows the same row first on a phone.
+
 ## While you were away
 
 The top of the session list tells what happened while the owner was away

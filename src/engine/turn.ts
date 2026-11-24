@@ -14,7 +14,7 @@ import { errorScope, type ErrorTracker } from "../core/errors.ts";
 import { diskFull, refusedWrite, type Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
-import { ownerPrompt } from "../core/owner.ts";
+import { ownerPrompt, ownersMeta } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
@@ -1175,16 +1175,16 @@ export class Engine {
       return { queued: q, steer: q.steer };
     }
     // Input that is not the owner's (a report, a wake) never releases a held queue.
-    if (!opts.meta) this.release(id);
+    if (ownersMeta(opts.meta)) this.release(id);
     // A prompt that arrives before a cut turn was continued: the model is told of the cut first.
     this.acceptRestart(id);
     // The owner's prompt after one that could not be sent takes its place (see unanswered).
-    const stale = opts.meta ? undefined : this.unanswered(id);
+    const stale = ownersMeta(opts.meta) ? this.unanswered(id) : undefined;
     const ev = this.accept(id, { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta }, stale ? stale.parent : undefined);
     // The title comes from the owner's first words, not from a timer's or a report's envelope.
     // A prompt of only attachments (no words) is named by its files, or Image.
     const files = (opts.images ?? []).filter((b: any) => b?.type === "attachment").map((b: any) => String(b.name));
-    if (!opts.meta) this.titleFrom(id, text || (files.length ? files.join(", ") : opts.images?.length ? "Image" : ""));
+    if (ownersMeta(opts.meta)) this.titleFrom(id, text || (files.length ? files.join(", ") : opts.images?.length ? "Image" : ""));
     this.start(id);
     this.emitQueue(id);
     return { event: ev };
@@ -1276,7 +1276,7 @@ export class Engine {
   // told by whoever knows it (the inputDropped hook). The owner's own queued
   // prompts name none and are not this method's.
   drop(rows: QueueItem[], why: "archived" | "removed") {
-    const gone = rows.filter((q) => q.meta && this.store.dequeue(q.id));
+    const gone = rows.filter((q) => !ownersMeta(q.meta) && this.store.dequeue(q.id));
     if (!gone.length) return;
     for (const id of new Set(gone.map((q) => q.session_id))) this.emitQueue(id);
     this.dropped(gone, why);
@@ -2739,7 +2739,7 @@ export class Engine {
         // The owner's own words (a steer with no meta) release a held queue, as
         // a prompt typed while idle does: the turn they joined may be one a wait
         // or a loop started in a session the owner had stopped.
-        for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: !q.meta })) this.emitQueue(id);
+        for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: ownersMeta(q.meta) })) this.emitQueue(id);
         session = this.store.session(id)!;
         // A model or effort chosen while the turn runs takes effect at its next request: the
         // owner's, or an inline skill's for the rest of the turn (turnWant). A turn that went on on

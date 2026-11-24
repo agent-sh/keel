@@ -137,7 +137,7 @@ fun sessionRows(chats: Map<String, Chat>, cards: Map<String, dev.avifenesh.keel.
 
 /** The list: what needs the owner first, then what works, then the rest, pinned first. */
 @Composable
-fun SessionList(rows: List<Row3>, now: Double, away: dev.avifenesh.keel.Away? = null, onSeen: () -> Unit = {}) {
+fun SessionList(rows: List<Row3>, now: Double, away: dev.avifenesh.keel.Away? = null, onSeen: () -> Unit = {}, askRow: Boolean = true) {
     val k = k()
     // The owner's helper is one conversation that never ends: first, above the sessions, whatever its state.
     val helper = rows.filter { it.chat.helper }
@@ -148,8 +148,10 @@ fun SessionList(rows: List<Row3>, now: Double, away: dev.avifenesh.keel.Away? = 
     // The digest arrives after the list: a list keeps its place by the row it shows, which would leave the
     // digest above the screen. At the top, it comes into view.
     val state = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(away?.span) { if (away != null && state.firstVisibleItemIndex <= 1) state.scrollToItem(0) }
+    LaunchedEffect(away?.span) { if (away != null && state.firstVisibleItemIndex <= 2) state.scrollToItem(0) }
     LazyColumn(Modifier.fillMaxSize(), state = state) {
+        // First: the helper row, to ask across the sessions by voice or typed (Ask.kt).
+        if (askRow) item(key = "ask") { HelperRow() }
         if (away != null) item(key = "away") { AwayCard(away, onOpen = { Ui.open(it) }, onSeen = onSeen) }
         fun section(label: String, list: List<Row3>, color: androidx.compose.ui.graphics.Color, counted: Boolean = true) {
             if (list.isEmpty()) return

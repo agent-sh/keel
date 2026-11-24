@@ -58,7 +58,9 @@ export const prReviewRoutes: RouteModule = (deps: Deps) => {
   // screen, a wiki reach the web or the owner's devices, and what they return
   // could be posted), no other session, machine or schedule.
   const allowed = () => new Set([...familyToolNames(), "AskReaders", "ask_readers"]);
-  gate?.toolLimits.set("pr-reviews", (s) => (reviewOf(s.id) ? (tool) => allowed().has(tool) : undefined));
+  gate?.toolLimits.set("pr-reviews", (s) => (reviewOf(s.id)
+    ? (tool) => (allowed().has(tool.name) ? undefined : `Refused: this session reviews another person's code and uses only its model's own reading tools (files, search, its sandboxed shell); ${tool.name} is not one of them.`)
+    : undefined));
   // Its checkout's git folder is in Keel's state: shown read-only in its sandbox, so git works there.
   gate?.readMore.set("pr-reviews", (s) => { const r = reviewOf(s.id); return r ? [w.mirrorOf(r)] : []; });
   if (!runMode.client) {

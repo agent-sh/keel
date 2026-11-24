@@ -477,6 +477,30 @@
    "title": "string",
    "body": "string"
   },
+  "helper_ask": {
+   "text": "string",
+   "client_id": "string"
+  },
+  "helper_asked": {
+   "id": "string|null",
+   "chat_id": "string",
+   "duplicate": "boolean?"
+  },
+  "helper_answer": {
+   "id": "string",
+   "chat_id": "string",
+   "state": "string",
+   "question": "string",
+   "text": "string",
+   "ts": "number",
+   "looked": "array",
+   "read": "array"
+  },
+  "helper_read": {
+   "chat_id": "string",
+   "title": "string",
+   "waits": "number"
+  },
   "memory": {
    "items": "array",
    "total": "number"
@@ -2942,6 +2966,69 @@
     "chat_id": null,
     "title": "Mail from Dana Levi",
     "body": "The contract is signed; she asks for the invoice by Friday."
+   }
+  ],
+  "helper_ask": [
+   {
+    "text": "What is going on with the build?",
+    "client_id": "ask-1795195100-1"
+   }
+  ],
+  "helper_asked": [
+   {
+    "id": "ev-ask-1",
+    "chat_id": "s-helper"
+   },
+   {
+    "id": "q:qu-2",
+    "chat_id": "s-helper"
+   },
+   {
+    "id": null,
+    "chat_id": "s-helper",
+    "duplicate": true
+   }
+  ],
+  "helper_answer": [
+   {
+    "id": "ev-ask-1",
+    "chat_id": "s-helper",
+    "state": "done",
+    "question": "What is going on with the build?",
+    "text": "The build failed on a provider refusal (HTTP 402). Deploy waits for your approval.",
+    "ts": 1795195100.0,
+    "looked": [
+     "sessions"
+    ],
+    "read": [
+     {
+      "chat_id": "s-1",
+      "title": "Fix the build",
+      "waits": 0
+     },
+     {
+      "chat_id": "s-2",
+      "title": "Deploy",
+      "waits": 1
+     }
+    ]
+   },
+   {
+    "id": "q:qu-2",
+    "chat_id": "s-helper",
+    "state": "waiting",
+    "question": "Anything for me?",
+    "text": "",
+    "ts": 1795195200.0,
+    "looked": [],
+    "read": []
+   }
+  ],
+  "helper_read": [
+   {
+    "chat_id": "s-2",
+    "title": "Deploy",
+    "waits": 1
    }
   ],
   "memory": [

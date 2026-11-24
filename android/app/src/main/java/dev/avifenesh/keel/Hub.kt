@@ -246,5 +246,8 @@ object Hub {
     suspend fun setHelper(on: Boolean): HelperView = HelperView.of(Api.patch("/v1/helper", JSONObject().put("on", on)))
     suspend fun memory(q: String = ""): MemoryList = MemoryList.of(Api.get("/v1/helper/memory${if (q.isBlank()) "" else "?q=${Wire.enc(q)}"}"))
     suspend fun forget(key: String) { Api.delete("/v1/helper/memory/${Uri.encode(key)}") }
+    /** A question for the helper from its row, and its answer read back (src/helper/ask.ts on the daemon). */
+    suspend fun ask(text: String, clientId: String): HelperAsked = HelperAsked.of(Api.post("/v1/helper/ask", Wire.askBody(text, clientId)))
+    suspend fun answer(id: String): HelperAnswer = HelperAnswer.of(Api.get("/v1/helper/ask/${Uri.encode(id)}"))
     suspend fun usage(chat: String): String = usageLine(Api.get("/v1/chats/${Uri.encode(chat)}/usage"))
 }

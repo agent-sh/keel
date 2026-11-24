@@ -3,9 +3,12 @@
 //   GET  /api/helper                 on, session, mail source, recent events
 //   PUT  /api/helper                 { on?, mail_every_min?, wake_gap_min? }
 //   POST /api/helper/check           look at new mail now
+//   POST /api/helper/ask             { text, key? } a question from the helper row on a phone: { id, chat_id }
+//   GET  /api/helper/ask/:id         its answer: state, words, the sessions it read and what each waits on
 //   GET  /api/helper/memory          the memory's records (?q= finds keys by alias, topic, prefix or words)
 //   POST /api/helper/memory          { key?, value, kind?, aliases?, topics? } added by the owner
 //   PATCH/DELETE /api/helper/memory/:key  (PATCH may carry a new key)
+import { askId } from "../../helper/ask.ts";
 import { Helper } from "../../helper/helper.ts";
 import { paramKey } from "../../helper/memory.ts";
 import { bindHelperTools } from "../../helper/tools.ts";
@@ -33,6 +36,25 @@ export const helperRoutes: RouteModule = (deps) => {
       },
     },
     "/api/helper/check": { POST: async () => json(await h.runMailCheck()) },
+    "/api/helper/ask": {
+      POST: async (req: Request) => {
+        const b = (await req.json().catch(() => ({}))) as any;
+        if (typeof b.text !== "string" || !b.text.trim()) return json({ error: "give text: the question" }, 400);
+        if (b.key !== undefined && (typeof b.key !== "string" || !b.key || b.key.length > 100)) return json({ error: "key is a string of at most 100 characters" }, 400);
+        try {
+          return json(await h.ask(b.text, "page", b.key));
+        } catch (e: any) {
+          return json({ error: e?.message ?? String(e) }, e?.status ?? 500);
+        }
+      },
+    },
+    "/api/helper/ask/:id": {
+      GET: async (req: any) => {
+        const a = await h.answer(askId(String(req.params.id)));
+        if (!a) return json({ error: "no such question" }, 404);
+        return json({ ...a, read: a.read.map((r) => ({ id: r.id, title: r.title || "(untitled)", waits: a.waits[r.id] ?? 0 })), waits: undefined });
+      },
+    },
     "/api/helper/memory": {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams.get("q")?.trim();

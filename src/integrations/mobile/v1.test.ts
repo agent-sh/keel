@@ -49,12 +49,15 @@ const sent: any[] = [];
 // The engine's send, as far as the phone API sees it: a prompt starts a turn,
 // joins a running one (steer) or waits in the queue.
 let sendBreaks = false;
+const asked = new Set<string>();
 const engine = {
   isRunning: (id: string) => running.has(id),
   send: (id: string, text: string, opts: any) => {
     sent.push({ id, text, opts });
     const images = opts.images?.length ? opts.images : undefined;
-    const r = running.has(id) || opts.mode === "queue" ? (() => { const q = store.enqueue(id, text, opts.mode !== "queue", images); return { queued: q, steer: q.steer }; })() : { event: store.append(id, "user", { text, images }) };
+    // A question for the helper is stored once under its sender's key, with its mark, as the engine does.
+    if (opts.key?.startsWith("ask:")) { if (asked.has(`${id} ${opts.key}`)) return { duplicate: true }; asked.add(`${id} ${opts.key}`); }
+    const r = running.has(id) || opts.mode === "queue" ? (() => { const q = store.enqueue(id, text, opts.mode !== "queue", images, opts.meta); return { queued: q, steer: q.steer }; })() : { event: store.append(id, "user", { text, images, ...opts.meta }) };
     if (sendBreaks) throw new Error("the daemon stopped here");
     return r;
   },
@@ -95,7 +98,7 @@ const hooksAtStart = allHooks().length;
 afterAll(() => { helper?.stop(); allHooks().length = hooksAtStart; });
 const noMail = { id: "none", label: "No mail", available: () => false, account: () => undefined, can: { modify: false, send: false, calendar: false } } as unknown as MailSource;
 const helperOn = async () => {
-  helper ??= new Helper({ store, bus, providers, workspace: dir, errors: { capture() {} } } as any, noMail);
+  helper ??= new Helper({ store, bus, engine, providers, workspace: dir, errors: { capture() {} } } as any, noMail);
   helper.configure({ mail_every_min: 0 });
   await helper.setOn(true);
   return helper;
@@ -1240,7 +1243,7 @@ describe("the wire contract", () => {
     sync: [["chats", "chat"], ["messages", "message"], ["approvals", "card"], ["working", "working_row"], ["drafts", "draft"], ["reset", "reset"]],
     message: [["meta.steps", "step"], ["meta.attachments", "attachment"]], send: [["attachments", "upload_ref"]], card: [["questions", "question"], ["answers", "picked"]],
     page: [["messages", "message"]], receipt: [["message", "message"]], resolved: [["approval", "card"]],
-    pulse: [["approvals", "card"], ["live_sessions", "pulse_session"]], helper: [["events", "helper_event"]], memory: [["items", "memory_record"]], usage: [["session", "usage_session"]], created: [["chat", "chat"]],
+    pulse: [["approvals", "card"], ["live_sessions", "pulse_session"]], helper: [["events", "helper_event"]], helper_answer: [["read", "helper_read"]], memory: [["items", "memory_record"]], usage: [["session", "usage_session"]], created: [["chat", "chat"]],
     hello: [["sync", "sync"]], message_frame: [["message", "message"], ["chat", "chat"]], chat_frame: [["chat", "chat"]],
     chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
     changes: [["turns", "change_turn"], ["session", "file_change"]], change_turn: [["files", "file_change"]],
@@ -1338,6 +1341,13 @@ describe("the wire contract", () => {
     take("sync", (await call("GET", "/v1/sync?since=0")).body);
     take("helper", (await call("GET", "/v1/helper")).body);
     take("memory", (await call("GET", "/v1/helper/memory")).body);
+    // A question from the helper row, asked twice under one id, and its answer: the session it read, named.
+    const ask = (await call("POST", "/v1/helper/ask", wire.examples.helper_ask[0])).body;
+    take("helper_asked", ask);
+    take("helper_asked", (await call("POST", "/v1/helper/ask", wire.examples.helper_ask[0])).body);
+    store.append(h.session()!.id, "assistant", { blocks: [{ type: "text", text: "Fix the build failed: the provider refused." }, { type: "tool_use", id: "t-ask", name: "helper__session_read", input: { session: s.id } }, { type: "tool_use", id: "t-ask2", name: "helper__sessions", input: {} }] });
+    store.append(h.session()!.id, "turn_end", { reason: "done" });
+    take("helper_answer", (await call("GET", `/v1/helper/ask/${ask.id}`)).body);
     store.db.query("DELETE FROM agents WHERE id = 'ag-contract'").run();
     take("page", (await call("GET", `/v1/chats/${s.id}/messages?paged=1&limit=3`)).body);
     take("receipt", (await call("POST", `/v1/chats/${parent.id}/messages`, { ...wire.examples.send[0], client_id: "contract-receipt" })).body);
@@ -1470,7 +1480,7 @@ describe("the wire contract", () => {
 
     expect(bad).toEqual([]);
     // Every field the app reads was sent at least once here, so a renamed optional field fails too.
-    const sent = Object.entries(fields).filter(([shape]) => !["send", "answer", "upload_ref", "new_chat"].includes(shape)).flatMap(([shape, f]) => Object.keys(f).map((k) => `${shape}.${k}`));
+    const sent = Object.entries(fields).filter(([shape]) => !["send", "answer", "upload_ref", "new_chat", "helper_ask"].includes(shape)).flatMap(([shape, f]) => Object.keys(f).map((k) => `${shape}.${k}`));
     expect(sent.filter((k) => !seen.has(k))).toEqual([]);
     expect(q.answer()).toEqual({ build: { picked: ["Debug"] }, checks: { picked: ["Unit"], other: "by hand" } });
   });

@@ -1374,9 +1374,11 @@ export class Gate {
 
   // Features that hold some sessions to a few tools (a review of another
   // person's pull request: its model's own reading tools, nothing that reaches
-  // an MCP server, another session, a machine or a device). An answer is the
-  // tools the session may call; nothing: no limit. Keyed by the feature.
-  readonly toolLimits = new Map<string, (session: Session) => ((tool: string) => boolean) | undefined>();
+  // an MCP server, another session, a machine or a device; the helper's turn
+  // for a question asked on a phone: reads only). An answer says of each tool
+  // why it does not run (the refusal the model gets), or nothing when it runs;
+  // no answer: no limit. Keyed by the feature.
+  readonly toolLimits = new Map<string, (session: Session) => ((tool: { name: string; readOnly: boolean }) => string | undefined) | undefined>();
   // Features that show a session more of Keel's own state, read-only, in its
   // sandbox (a review's checkout reads its git folder there).
   readonly readMore = new Map<string, (session: Session) => string[]>();
@@ -1407,8 +1409,8 @@ export class Gate {
   // judged, never a field of the input.
   async beforeTool(session: Session, call: ToolCall): Promise<ToolGate> {
     for (const [, limit] of this.toolLimits) {
-      const only = limit(session);
-      if (only && !only(call.tool.name)) return { deny: `Refused: this session reviews another person's code and uses only its model's own reading tools (files, search, its sandboxed shell); ${call.tool.name} is not one of them.` };
+      const refused = limit(session)?.(call.tool);
+      if (refused) return { deny: refused };
     }
     if (!this.perm(session.id).network) {
       const web = webRefusal(call.tool.name, call.input);

@@ -12,6 +12,8 @@ import { FirstSteps, SetupProviders } from "./Onboarding.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
+import { usePhoneWidth } from "../lib/list-hold.ts";
+import { HelperAsk } from "./HelperAsk.tsx";
 import { WatchHeadline, WatchLists, openWaiting, useAttended } from "./HomeWatch.tsx";
 import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
 import { MachineBlocked, MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
@@ -62,6 +64,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
   const attended = useAttended();
   const rail = useRail();
   const listed = useWidth() >= 768 && rail.list;
+  const phone = usePhoneWidth();
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !attended.has(s.id)).sort((a, b) => b.updated - a.updated), [sessions, attended]);
   const watches = useWatches(live);
   // The six newest, and any failed session older than those: a red mark in the list has its row here, whatever its age.
@@ -98,6 +101,8 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
       <div className="@container flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
         <div className={cn("k-home mt-auto grid w-full max-w-[46rem] grid-cols-1 pb-[8vh] pt-6 md:mb-auto md:pb-8 md:pt-0", beside ? "md:mt-5" : "md:mt-[9vh] @[74rem]:max-w-[88rem] @[74rem]:grid-cols-[minmax(0,46rem)_minmax(0,1fr)] @[74rem]:gap-x-14")}>
         <div className="min-w-0" data-testid="home-start">
+          {/* On a phone the helper comes first: ask it across the sessions, by voice or typed. */}
+          {phone && <HelperAsk />}
           <WatchHeadline />
           {beside && !autoThere && <WatchLists className="min-w-0" />}
           <h2 className={cn("k-pane-empty-word mb-2.5", beside ? "mt-8" : "mt-5")}>Start a session{machine && <span>{autoThere ? `on ${place!.machine}, in its granted directory` : sshMachine ? `on ${sshMachine.name}` : machine !== "auto" ? `on ${pickedName ?? "the machine you picked"}, in its granted directory` : ""}</span>}</h2>

@@ -1,3 +1,4 @@
+import { ownersMeta } from "./owner.ts";
 import { keyShaped, keyShapedDeep } from "./conceal.ts";
 import { BARE_INDEX_SQL, bareBy, hasBareIndex, INDEX_NOW_ROWS } from "./bare-index.ts";
 import { Database } from "bun:sqlite";
@@ -962,7 +963,7 @@ export class Store {
   queueGone?: (rows: QueueItem[], session: Session) => void;
 
   deleteSession(id: string) {
-    const unread = this.queueGone ? this.queue(id).filter((q) => q.meta) : [];
+    const unread = this.queueGone ? this.queue(id).filter((q) => !ownersMeta(q.meta)) : [];
     const session = unread.length ? this.session(id) : undefined;
     this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
     this.forget(id);
