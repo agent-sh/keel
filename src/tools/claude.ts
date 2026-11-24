@@ -107,6 +107,7 @@ const TaskStop: Tool = {
 const Read: Tool = {
   name: "Read",
   readOnly: true,
+  inputAlias: { file_path: ["path"] },
   // It pages the file itself (READ_CHARS a page, the range the model asked
   // for, more only with allow_large and room for it): a cut middle with a
   // copy of the file in the spill would serve worse than the next page.
@@ -136,6 +137,7 @@ const Read: Tool = {
 const Write: Tool = {
   name: "Write",
   readOnly: false,
+  inputAlias: { file_path: ["path"] },
   kind: "edit",
   description:
     "Create a file or overwrite one with the full content given, creating parent directories. Overwriting an " +
@@ -161,6 +163,7 @@ const Write: Tool = {
 const Edit: Tool = {
   name: "Edit",
   readOnly: false,
+  inputAlias: { file_path: ["path"] },
   kind: "edit",
   description:
     "Replace an exact string in a file. old_string must match the file exactly (whitespace and indentation " +
@@ -185,6 +188,8 @@ const Edit: Tool = {
 const NotebookEdit: Tool = {
   name: "NotebookEdit",
   readOnly: false,
+  inputAlias: { notebook_path: ["path"] },
+  inputOptional: ["new_source"], // a delete reads no source
   kind: "edit",
   description:
     "Replace, insert or delete one cell of a Jupyter notebook. cell_id is the id shown by Read. insert adds after " +

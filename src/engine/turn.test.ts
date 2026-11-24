@@ -814,6 +814,53 @@ test("a call named by case or by another harness's name runs as the offered tool
   }
 });
 
+// A call whose input is not the tool's is answered from the tool's schema before any gate, hook or run: the
+// line names what is wrong and the right field, the tool never runs, and the call is a failed one in the tools table.
+test("a call with a missing or unknown field is answered from the schema and does not run", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const { allHooks, registerHooks } = await import("./hooks.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "invalid-"));
+  const store = new Store(dir);
+  const s = store.createSession({ title: "Fixture", model: "x:y", workspace: dir });
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  const ran: unknown[] = [];
+  const gated: string[] = [];
+  const measured: string[] = [];
+  const tools = [{
+    name: "Write", description: "", readOnly: false, inputAlias: { file_path: ["path"] },
+    input_schema: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"], additionalProperties: false },
+    run: async (input: any) => (ran.push(input), { content: "written" }),
+  }] as any;
+  const mine = {
+    beforeTool: (_s: any, call: any) => { if (call.ctx.sessionId === s.id) gated.push(call.tool.name); return undefined; },
+    toolRan: (session: any, call: any, _r: any, m: any) => { if (session.id === s.id) measured.push(`${call.tool.name}:${m.outcome}`); },
+  } as any;
+  registerHooks(mine);
+  const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
+  try {
+    const call = (id: string, input: any) => (engine as any).runTool(s, tools, { type: "tool_use", id, name: "Write", input }, ctx);
+    const a = await call("a", { file_path: "/a", contents: "x" });
+    expect(a.is_error).toBe(true);
+    expect(a.content).toContain("the required field `content` is missing; `contents` is not a field of Write (did you mean `content`?)");
+    expect(a.content).toContain("Its fields: file_path (required), content (required).");
+    expect(ran).toEqual([]);
+    expect(gated).toEqual([]);
+    expect(measured).toEqual(["Write:error"]);
+    // The name a tool reads in a field's place is the field: the call runs.
+    const b = await call("b", { path: "/a", content: "x" });
+    expect([b.is_error, b.content]).toEqual([undefined, "written"]);
+    expect(ran).toEqual([{ path: "/a", content: "x" }]);
+    expect(gated).toEqual(["Write"]);
+  } finally {
+    allHooks().splice(allHooks().indexOf(mine), 1);
+    store.db.close();
+  }
+});
+
 // What a gate adds to a call's process environment (an agent's guard settings) ends with the call, also when the
 // call starts no process: a tool that ran no command, one that threw, a later gate's refusal. It is the session's:
 // another session's call of the same id neither gets it nor loses its own.

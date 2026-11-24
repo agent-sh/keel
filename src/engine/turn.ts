@@ -35,6 +35,7 @@ import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { closestNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
 import { answers, callPaths, stoppedWaiting, unansweredText } from "../tools/fs-bound.ts";
+import { inputProblem } from "../tools/validate.ts";
 import { isDeferError, keepReferenced, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
 import { allHooks, cacheBreaks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
@@ -3063,6 +3064,17 @@ export class Engine {
         if ("deny" in g) return denied(g.deny);
         if (g.input !== undefined) { call.hook = { ...call.hook, from: call.hook?.from ?? call.input }; call.input = g.input; }
         if (g.allow !== undefined) call.hook = { ...call.hook, allowed: g.allow };
+      }
+      // A call whose input is not the tool's (a field missing, one it does not have, a value of the wrong kind) is
+      // answered with what is wrong and the fields the tool has, before any gate sees it, any path is asked about and it runs. It
+      // is judged after the owner's hooks: one that fills a field in has made the call right. The call is a
+      // failed one like any other: it has its span and its row in the tools table.
+      const invalid = inputProblem(tool, call.input);
+      if (invalid) {
+        const bad: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: invalid, is_error: true };
+        this.measure(session.id, (h) => h.toolRan?.(session, call, bad, { ms: 0, outcome: "error" }));
+        this.verdicts.set(bad, "failed");
+        return told(bad);
       }
       // (A hook may have named other paths.)
       { const no = await answering(call.input); if (no) return no; }

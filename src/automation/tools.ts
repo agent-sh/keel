@@ -104,6 +104,7 @@ async function onMachine(input: any, prompt: unknown) {
 
 const Agent: Tool = {
   name: "Agent",
+  inputOptional: ["description"], // the agent is titled from its task without one
   urgent: "lost-agent-successor", // a lost agent is started again by itself (src/automation/successor.ts): the parent must not start it by hand
   resultCap: agents.RESULT_CAP, // a report is cut to this by the agents' own code, never in its middle by the engine's smaller cap
   families: CLAUDE,
@@ -199,6 +200,7 @@ function whenRead(r: agents.MessageSent): string {
 
 const SendMessage: Tool = {
   name: "SendMessage",
+  inputAlias: { to: ["agent_id"] },
   urgent: "follow-up-start", // it messages the other agents of its tree; a message to a finished agent may start its work fresh (src/engine/follow-up.ts)
   families: CLAUDE,
   readOnly: true,
@@ -244,6 +246,7 @@ export function extendTaskStop() {
 
 const spawn_agent: Tool = {
   name: "spawn_agent",
+  inputAlias: { message: ["prompt"] },
   urgent: "lost-agent-successor", // a lost agent is started again by itself (src/automation/successor.ts): the parent must not start it by hand
   families: OTHERS,
   readOnly: true,
@@ -526,8 +529,8 @@ const cronRun = (input: any, ctx: ToolContext) => guard(() => {
 });
 const cronDesc = "Schedule a prompt to run in this session on a cron schedule or an interval, between turns (a busy session runs it when its turn ends). Recurring tasks expire after 30 days; recurring: false fires once.";
 
-const CronCreate: Tool = { name: "CronCreate", urgent: "loop-30-days", families: CLAUDE, readOnly: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
-const schedule_create: Tool = { name: "schedule_create", urgent: "loop-30-days", families: OTHERS, readOnly: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
+const CronCreate: Tool = { name: "CronCreate", inputAlias: { cron: ["schedule"] }, urgent: "loop-30-days", families: CLAUDE, readOnly: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
+const schedule_create: Tool = { name: "schedule_create", inputAlias: { cron: ["schedule"] }, urgent: "loop-30-days", families: OTHERS, readOnly: true, description: cronDesc, input_schema: cronSchema, run: cronRun };
 
 const listRun = (_: any, ctx: ToolContext) => guard(() => {
   const ls = loops.list(ctx.sessionId);
@@ -567,11 +570,11 @@ const notifyRun = (input: any, ctx: ToolContext) => guard(() => {
 });
 const notifyDesc = "Alert the owner when something needs them or a long job is done and they may be away: one short line. It does not wait for an answer. Do not use it for routine progress.";
 const PushNotification: Tool = {
-  name: "PushNotification", families: CLAUDE, readOnly: true, description: notifyDesc,
+  name: "PushNotification", inputAlias: { message: ["text"] }, families: CLAUDE, readOnly: true, description: notifyDesc,
   input_schema: { type: "object", properties: { message: { type: "string", description: "The notification text, one short line" } }, required: ["message"] }, run: notifyRun,
 };
 const notify: Tool = {
-  name: "notify", families: OTHERS, readOnly: true, description: notifyDesc,
+  name: "notify", inputAlias: { text: ["message"] }, families: OTHERS, readOnly: true, description: notifyDesc,
   input_schema: { type: "object", properties: { text: { type: "string", description: "The notification text, one short line" } }, required: ["text"] }, run: notifyRun,
 };
 

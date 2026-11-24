@@ -146,6 +146,7 @@ const write_stdin: Tool = {
 
 export const applyPatchTool: Tool = {
   name: "apply_patch",
+  inputAlias: { input: ["patch"] },
   readOnly: false,
   kind: "edit",
   cwdOf: shellCwd,

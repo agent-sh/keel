@@ -62,6 +62,7 @@ const run_shell_command: Tool = {
 
 const read_file: Tool = {
   name: "read_file",
+  inputAlias: { file_path: ["path"] },
   readOnly: true,
   resultCap: Infinity, // it pages the file itself, as Read does
   description: "Reads and returns the content of a specified file. Use start_line and end_line for targeted reads of long files. Handles text, images and PDF files.",
@@ -110,6 +111,7 @@ const read_file: Tool = {
 
 const write_file: Tool = {
   name: "write_file",
+  inputAlias: { file_path: ["path"] },
   readOnly: false,
   kind: "edit",
   description: "Writes the complete content to a file, automatically creating missing parent directories. Overwrites existing files. Best for new or small files; use 'replace' for targeted edits.",
@@ -131,6 +133,8 @@ const write_file: Tool = {
 
 const replace: Tool = {
   name: "replace",
+  inputAlias: { file_path: ["path"] },
+  inputOptional: ["instruction"], // the run reads no instruction
   readOnly: false,
   kind: "edit",
   description:

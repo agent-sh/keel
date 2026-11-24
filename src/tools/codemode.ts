@@ -301,6 +301,7 @@ export function runCodeTool(rec: CodeRecorder): Tool {
       additionalProperties: false,
     },
     readOnly: false,
+    inputAlso: ["sandbox_permissions"], // read by the gate: an escalation asked for gets the card of a shell command's
     cwdOf: (ctx) => ctx.cwd,
     // The gate judges the program as the command it is; one that asks to run
     // outside the sandbox gets the card a shell command's escalation gets.

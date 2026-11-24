@@ -97,6 +97,14 @@ export type Tool = ToolSpec & {
   // each mark a tool change two places and merge clean.
   urgent?: string;
   kind?: ToolKind;
+  // The names its run reads in a field's place, by field (`{ file_path: ["path"] }`): a call is checked against
+  // the input schema before it runs (src/tools/validate.ts), and these count as the field. Declare every name
+  // the run reads that the schema does not list: a call is never refused for a name the tool accepts.
+  inputAlias?: Record<string, string[]>;
+  // Names it accepts that its schema does not list and that stand for no field (read by its gate, say).
+  inputAlso?: string[];
+  // Fields the schema requires that the run does without (an unused field of another harness's shape).
+  inputOptional?: string[];
   // A shell tool whose shell reports each command it runs to the check ledger
   // when asked (ctx.checkRun, src/tools/shell.ts): a check behind a wait, or
   // with commands after it, is known to have started and by its own status.
