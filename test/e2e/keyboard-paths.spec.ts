@@ -351,3 +351,75 @@ test("a key and the palette reach what waits on the owner, the inbox and the err
 
   for (const id of [quiet, asks, picks]) await request.delete(`/api/sessions/${id}`);
 });
+
+// Feature: Ctrl Tab opens a switcher of the last six sessions this page showed, most recent first, each with its
+// state mark. Tab again goes down it, Ctrl Shift Tab up, letting go of Ctrl opens the selected one, and Esc leaves
+// it with nothing opened. The recency is the page's own (its storage), not the daemon's. Next and previous session
+// keep the list's order.
+test("Ctrl Tab switches between the sessions visited last, most recent first", async ({ page, request }) => {
+  await scripted(request);
+  const tag = Date.now().toString(36);
+  const names = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"].map((n) => `${n} ${tag}`);
+  const ids: string[] = [];
+  for (const n of names) ids.push(await create(request, n));
+  // The page shows them in this order: Alpha first, Golf last (so Alpha is the seventh, left out).
+  for (const id of ids) await page.goto(`/s/${id}`);
+  const goto = (i: number) => new RegExp(`/s/${ids[i]}$`);
+  const switcher = page.getByTestId("switcher");
+  const rows = switcher.getByTestId("switcher-row");
+  const titles = () => rows.getByTestId("switcher-title").allTextContents();
+  await expect(page).toHaveURL(goto(6));
+  await page.getByTestId("composer").click();
+
+  // Six rows, the one on screen first, the one before it selected; each has its state mark.
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  await expect(switcher).toBeVisible();
+  expect(await titles()).toEqual([6, 5, 4, 3, 2, 1].map((i) => names[i]));
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(rows.nth(0)).toHaveAttribute("aria-selected", "false");
+  for (let i = 0; i < 6; i++) await expect(rows.nth(i).locator("[data-watch]")).toHaveCount(1);
+  await shoot(page, "recent-switcher");
+  for (const [w, h] of [[1366, 768], [390, 844]] as const) {
+    await page.setViewportSize({ width: w, height: h });
+    await expect(switcher).toBeVisible();
+    await shoot(page, `recent-switcher-${w}`);
+  }
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  // Tab goes down, Shift Tab up.
+  await page.keyboard.press("Tab");
+  await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Tab");
+  await expect(rows.nth(3)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Shift+Tab");
+  await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
+  // Esc leaves it: nothing opens, and Esc stops nothing else.
+  await page.keyboard.press("Escape");
+  await expect(switcher).toHaveCount(0);
+  await page.keyboard.up("Control");
+  await expect(page).toHaveURL(goto(6));
+
+  // Letting go of Ctrl opens the selected one (the third row: Echo), and it is now first of the list.
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.up("Control");
+  await expect(switcher).toHaveCount(0);
+  await expect(page).toHaveURL(goto(4));
+  // A quick Ctrl Tab goes back to the one before: Golf.
+  await page.keyboard.press("Control+Tab");
+  await expect(page).toHaveURL(goto(6));
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  expect(await titles()).toEqual([6, 4, 5, 3, 2, 1].map((i) => names[i]));
+  await page.keyboard.press("Escape");
+  await page.keyboard.up("Control");
+
+  // Kept by the page: a reload reads the same order, from its storage.
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("keel.recentSessions") ?? "[]").slice(0, 3))).toEqual([ids[6], ids[4], ids[5]]);
+  // Next and previous session keep the list's own order: Golf is the newest, Ctrl Shift ] goes on from it.
+  const before = page.url();
+  await page.keyboard.press("Control+Shift+BracketRight");
+  await expect(page).not.toHaveURL(before);
+});

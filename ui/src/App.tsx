@@ -23,6 +23,9 @@ import "./lib/surfaces-ui.ts";
 import "./lib/rulings.ts";
 import "./lib/lessons.ts";
 import { installKeymap } from "./lib/keys.ts";
+import { installSwitcher } from "./lib/switcher.ts";
+import { Switcher } from "./components/Switcher.tsx";
+import "./lib/recent.ts";
 import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
 import { focusApproval } from "./lib/automation.ts";
@@ -82,6 +85,7 @@ export function App() {
     for (const l of loads) l.catch(reportError);
     setBootLoad(Promise.all(loads));
     connect();
+    installSwitcher();
     return installKeymap();
   }, []);
   useEffect(() => { if (route.name !== "session") setBaseTitle(route.name === "settings" ? "Settings - Keel" : route.name === "customize" ? "Customize - Keel" : "Keel"); }, [route]);
@@ -200,6 +204,7 @@ function Overlays() {
       <OnFirstOpen open={palette}><Palette /></OnFirstOpen>
       <OnFirstOpen open={shortcuts}><ShortcutSheet /></OnFirstOpen>
       <OnFirstOpen open={errors}><ErrorsPanel open={errors} onOpenChange={(o) => setUI({ errors: o })} /></OnFirstOpen>
+      <Switcher />
       <UpdateNotice />
     </>
   );
