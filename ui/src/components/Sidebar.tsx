@@ -39,7 +39,7 @@ import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where
 import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
 import { useLink } from "./Stale.tsx";
 import { useReach } from "../lib/reach.ts";
-import { useAuto } from "../lib/automation.ts";
+import { auto, useAuto } from "../lib/automation.ts";
 import { briefText, failWord, folderOf, Mark, modelOf, ROW_BEAT, rowClock, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { DRAG, dragSession, PaneCount } from "./Panes.tsx";
@@ -398,6 +398,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           onMove={pinnedNow().length > 1 ? move : undefined}
           onBeside={() => openBeside(s.id)}
           onArchive={() => { listActed(s.id); archive(s, !restore).catch(reportError); }}
+          // The same mark the row's dot reads (the command and the session menu set it too): kept until the session is opened again.
+          onUnread={!unread && !s.machine && !s.parent_id ? () => { listActed(s.id); auto.unreadSession(s.id).catch(reportError); } : undefined}
           session={s.machine ? undefined : { id: s.id, folder: s.settings.folder_id ?? null }}
         />
       )}

@@ -3,7 +3,7 @@
 // folders, archive; a pinned row can be moved among the pinned. A session is filed from here in
 // whatever way the list is grouped: no switch to "By my folders" and no drag.
 import { Menu } from "@base-ui/react/menu";
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronRight, Columns2, FolderInput, FolderMinus, FolderPlus, Pin, PinOff } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronRight, Columns2, FolderInput, FolderMinus, FolderPlus, MailOpen, Pin, PinOff } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import { folders, getFolders, loadFolders, tree, useFolders } from "../lib/folders.ts";
 import { listActed } from "../lib/list-hold.ts";
@@ -12,9 +12,11 @@ import { Kbd } from "./Kbd.tsx";
 import { itemClass, popupClass } from "./ui.tsx";
 
 export type RowMenuAt = { x: number; y: number };
-export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, session }: {
+export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, onUnread, session }: {
   at: RowMenuAt; onClose: () => void; pinned: boolean; archived: boolean; beside: boolean;
   onPin: () => void; onMove?: (by: -1 | 1) => void; onBeside: () => void; onArchive: () => void;
+  // Set where the row can be marked unread (a row that is read, of a session of this machine's own, not an agent's).
+  onUnread?: () => void;
   session?: { id: string; folder?: string | null };
 }) {
   // The owner's folders are read when a menu first needs them (a list grouped another way has not).
@@ -31,11 +33,13 @@ export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, 
     <Menu.Root open onOpenChange={(o) => { if (!o) onClose(); }} modal={false}>
       <Menu.Portal>
         <Menu.Positioner anchor={anchor} side="bottom" align="start" sideOffset={2} className="z-50 outline-none">
-          <Menu.Popup className={`${popupClass} min-w-48`} data-testid="row-menu">
+          {/* (The menu is drawn in a portal but stands under its row in the tree: a press in it must not open the session as a press on the row does.) */}
+          <Menu.Popup className={`${popupClass} min-w-48`} data-testid="row-menu" onClick={(e) => e.stopPropagation()}>
             {!archived && item("row-menu-pin", pinned ? <PinOff /> : <Pin />, pinned ? "Unpin" : "Pin to the top", onPin)}
             {pinned && onMove && item("row-menu-up", <ArrowUp />, "Move up", () => onMove(-1), "alt+arrowup")}
             {pinned && onMove && item("row-menu-down", <ArrowDown />, "Move down", () => onMove(1), "alt+arrowdown")}
             {beside && item("row-menu-beside", <Columns2 />, "Open beside", onBeside)}
+            {onUnread && !archived && item("row-menu-unread", <MailOpen />, "Mark as unread", onUnread)}
             {session && !archived && <MoveTo id={session.id} at={session.folder ?? null} />}
             {item("row-menu-archive", archived ? <ArchiveRestore /> : <Archive />, archived ? "Restore" : "Archive", onArchive)}
           </Menu.Popup>
@@ -72,7 +76,7 @@ function MoveTo({ id, at }: { id: string; at: string | null }) {
       </Menu.SubmenuTrigger>
       <Menu.Portal>
         <Menu.Positioner side="right" align="start" sideOffset={2} className="z-50 outline-none">
-          <Menu.Popup className={`${popupClass} min-w-44 max-w-72`} data-testid="row-menu-folders">
+          <Menu.Popup className={`${popupClass} min-w-44 max-w-72`} data-testid="row-menu-folders" onClick={(e) => e.stopPropagation()}>
             {tree(list).flatMap(({ folder, kids }) => [one(folder.id, folder.name, false), ...kids.map((k) => one(k.id, k.name, true))])}
             {list.length > 0 && <Menu.Separator className="mx-1 my-1 h-px bg-line" />}
             {at && (
