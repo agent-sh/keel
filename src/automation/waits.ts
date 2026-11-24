@@ -565,13 +565,14 @@ function processRefusal(spec: any, cwd: string, o: { elsewhere?: boolean; job?: 
 // cost a step, and the next call was this one). `process` with pid 0 or 1 (or none) and a few seconds' timeout
 // is a pause; with the path of the output of the session's own background command, or its id as writer, it is
 // that command's end. Nothing else is reframed: a real pid, another kind, and a call that says nothing of
-// what it waits for stay as they are (a pid given with another kind is ignored by `normalize`).
+// what it waits for stay as they are (a pid given with another kind is ignored by `normalize`). A call with no
+// process, path, writer or seconds waits for the end of the session's one running background command, when it has one (`only`).
 // `job`: the background command of the session a path is the output of (its id); `log`: the output file of one
-// by its id. Neither is given for a session whose commands run elsewhere.
+// by its id; `only`: the id of the session's one running background command. Neither is given for a session whose commands run elsewhere.
 export function reframe(
   input: any,
   cwd: string,
-  o: { job?: (path: string) => string | undefined; log?: (id: string) => string | undefined } = {},
+  o: { job?: (path: string) => string | undefined; log?: (id: string) => string | undefined; only?: () => string | undefined } = {},
 ): { input: any; said: string } | undefined {
   const spec = input?.spec && typeof input.spec === "object" ? input.spec : input;
   if (spec?.kind !== "process") return undefined;
@@ -591,6 +592,10 @@ export function reframe(
     log = o.log?.(w);
     if (!log) return undefined;
     id = w;
+  } else if (!(Number(spec.seconds ?? spec.timeout_seconds) > 0)) {
+    // No process, no path, no pause: the one background command that is still running is what it waits for.
+    id = o.only?.();
+    log = id ? o.log?.(id) : undefined;
   }
   if (id && log) {
     return {

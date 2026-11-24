@@ -414,7 +414,7 @@ const waitSchema = {
     writer: { type: "string", description: "file, log: the ID of your background command that writes the file, when its command line does not name it: its end without the condition ends the wait" },
     url: { type: "string", description: "http: the URL to probe" },
     status: { type: "number", description: "http: the status to wait for (default any 2xx or 3xx)" },
-    pid: { type: "number", description: "process only (ignored with any other kind): the id of a running process, a number above 1, as `echo $!` prints it, to wait until it ends. A background command's ID is not a pid: its end wakes you by itself" },
+    pid: { type: "number", description: "process only (ignored with any other kind): the id of a running process, a number above 1, as `echo $!` prints it, to wait until it ends. A background command's ID is not a pid: its end wakes you by itself (a process wait with no pid waits for the end of your one running background command)" },
     repo: { type: "string", description: "pr_checks: the GitHub repository, owner/name" },
     pr_number: { type: "number", description: "pr_checks: wait until every check of this pull request has finished (or it is merged or closed); the result names the failed checks" },
     timeout_seconds: { type: "number", description: "Give up after this long (default 600, timers use their own time)" },
@@ -475,7 +475,7 @@ const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard
   // The background command of this session a path is the output of (logDir in src/tools/shell.ts), by its id.
   const job = (path: string) => (dirname(path) === join(ctx.spillDir, "jobs") && existsSync(path) ? basename(path).replace(/\.log$/, "") : undefined);
   // A process wait that names no process, as the wait it meant (a pause, or the end of the session's own command).
-  const meant = waits.reframe(input, ctx.cwd, elsewhere ? {} : { job, log: (id) => jobsOf(ctx.sessionId).find((j) => j.id === id)?.log });
+  const meant = waits.reframe(input, ctx.cwd, elsewhere ? {} : { job, log: (id) => jobsOf(ctx.sessionId).find((j) => j.id === id)?.log, only: () => { const live = jobsOf(ctx.sessionId).filter((j) => j.background && running(j)); return live.length === 1 ? live[0]!.id : undefined; } });
   const asked = meant?.input ?? input;
   const spec = waits.normalize(asked, ctx.cwd, { elsewhere, job });
   if (waits.isMonitor(spec.kind)) return fail("Use the monitor tool for a command's output or a socket.");
@@ -523,8 +523,8 @@ const waitTarget = (name: string) => async (input: any) => {
   if (kind === "file" || kind === "log" || (!kind && typeof spec?.path === "string")) return { name, readOnly: true, input };
   return null;
 };
-const WaitFor: Tool = { name: "WaitFor", urgent: "wait-unfit-process-reframed", families: CLAUDE, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("Monitor"), target: waitTarget("WaitFor") };
-const wait_for: Tool = { name: "wait_for", urgent: "wait-unfit-process-reframed", families: OTHERS, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("monitor"), target: waitTarget("wait_for") };
+const WaitFor: Tool = { name: "WaitFor", urgent: "wait-process-sole-command", families: CLAUDE, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("Monitor"), target: waitTarget("WaitFor") };
+const wait_for: Tool = { name: "wait_for", urgent: "wait-process-sole-command", families: OTHERS, readOnly: false, kind: "own", description: waitDesc, input_schema: waitSchema, run: waitRun("monitor"), target: waitTarget("wait_for") };
 
 const cancel_wait: Tool = {
   name: "cancel_wait",

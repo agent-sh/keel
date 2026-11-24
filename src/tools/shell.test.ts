@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeTools } from "./claude.ts";
 import { geminiTools } from "./gemini.ts";
@@ -67,4 +67,22 @@ test("the shell's folder is tracked under a state folder of any name", async () 
   const b = await bash.run({ command: "pwd" }, ctx);
   expect(b.content).toContain(join(root, "work", "sub"));
   rmSync(base, { recursive: true });
+});
+
+// A file the session printed whole or made with its own command is one it knows: Write replaces it at once.
+test("Write replaces at once a file a Bash command printed whole or made", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "shell-"));
+  const ctx: any = { sessionId: "seen", cwd: root, spillDir: join(root, "spill"), signal: new AbortController().signal, seen: new Map() };
+  const bash = claudeTools.find((t) => t.name === "Bash")!, write = claudeTools.find((t) => t.name === "Write")!;
+  writeFileSync(join(root, "read.txt"), "one\ntwo\n");
+  await bash.run({ command: "cat read.txt" }, ctx);
+  await bash.run({ command: "printf made > made.txt" }, ctx);
+  for (const name of ["read.txt", "made.txt"]) {
+    const w = await write.run({ file_path: join(root, name), content: "new\n" }, ctx);
+    expect(w.is_error).toBeFalsy();
+    expect(readFileSync(join(root, name), "utf8")).toBe("new\n");
+  }
+  writeFileSync(join(root, "unseen.txt"), "x\n");
+  const w = await write.run({ file_path: join(root, "unseen.txt"), content: "new\n" }, ctx);
+  expect(JSON.stringify(w.content)).toContain("was not read in this session");
 });

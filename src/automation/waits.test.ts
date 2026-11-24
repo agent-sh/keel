@@ -87,6 +87,11 @@ test("reframe turns a process wait with no process into the wait it meant", () =
   expect(byPath.input).toMatchObject({ kind: "file", path: join(dir, "jobs", "b1run.log.exit"), writer: "b1run", timeout_seconds: 900 });
   const byWriter = waits.reframe({ kind: "process", writer: "b1run" }, dir, { job, log })!;
   expect(byWriter.input).toMatchObject({ kind: "file", path: join(dir, "jobs", "b1run.log.exit"), writer: "b1run" });
+  // No process, no path and no pause: the one running background command is what it waits for.
+  const sole = waits.reframe({ kind: "process", pid: 1 }, dir, { job, log, only: () => "b1run" })!;
+  expect(sole.input).toMatchObject({ kind: "file", path: join(dir, "jobs", "b1run.log.exit"), writer: "b1run" });
+  expect(waits.reframe({ kind: "process" }, dir, { job, log, only: () => undefined })).toBeUndefined();
+  expect(waits.reframe({ kind: "process", pid: 0, timeout_seconds: 5 }, dir, { job, log, only: () => "b1run" })!.input).toMatchObject({ kind: "timer", seconds: 5 });
   // What it cannot answer stays for the refusal: a real pid, another kind, no seconds, an unknown command.
   expect(waits.reframe({ kind: "process", pid: 4242, timeout_seconds: 5 }, dir)).toBeUndefined();
   expect(waits.reframe({ kind: "timer", pid: 1, seconds: 5 }, dir)).toBeUndefined();
