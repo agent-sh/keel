@@ -104,6 +104,10 @@ export function remoteTarget(host: string, path: string, pathq?: string): Target
 // The host a remote's key names.
 export const hostOfRemote = (key: string): string => key.slice(7, key.indexOf("/", 7));
 
+// What of the authority an address spells beyond its host (a user, a password, a port that is not a scheme's own),
+// kept in front of its path so that it is never the same address as one without.
+const viaOf = (user: string, port: string | undefined): string => `${user}${port && port !== "80" && port !== "443" ? `:${port}` : ""}`;
+
 // The targets a URL names: its host, and the remote it is when it reads as one (a `.git` path, the ssh and git
 // schemes, a forge's repository).
 function urlTargets(raw: string): Target[] {
@@ -112,7 +116,8 @@ function urlTargets(raw: string): Target[] {
   const scheme = u.protocol.slice(0, -1).toLowerCase();
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
   if (!validHost(host, true)) return [];
-  const pathq = pathqOf(u.pathname, u.search);
+  // A user name, a password or a port of its own is part of the address: a listing of the host without them does not cover it.
+  const pathq = viaOf(u.username || u.password ? `${u.username}:${u.password}@` : "", u.port) + pathqOf(u.pathname, u.search);
   const out = [hostTarget(host, pathq)];
   const segs = u.pathname.split("/").filter(Boolean);
   const dotGit = /\.git$/i.test(u.pathname);
@@ -253,11 +258,11 @@ export function wholeTargets(word: string, remote = false): Target[] {
   const user = /^[\w.+-]{1,64}@([a-z0-9][a-z0-9.-]*)$/i.exec(w);
   if (user && validHost(user[1]!.toLowerCase().replace(/\.$/, ""), true)) return [hostTarget(user[1]!.toLowerCase().replace(/\.$/, "")), ...(/@[^@]+\.[a-z]{2,24}$/i.test(w) ? [emailTarget(w)] : [])];
   // A host alone, with a port or a path, a trailing dot, an IPv4 or an IPv6 literal.
-  const six = /^(\[[0-9a-f:.]+\])(?::\d{1,5})?(?:([/?#].*))?$/i.exec(w);
-  const bare = six ?? /^((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}|(?:\d{1,3}\.){3}\d{1,3})\.?(?::\d{1,5})?(?:([/?#].*))?$/i.exec(w);
+  const six = /^(\[[0-9a-f:.]+\])(?::(\d{1,5}))?(?:([/?#].*))?$/i.exec(w);
+  const bare = six ?? /^((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}|(?:\d{1,3}\.){3}\d{1,3})\.?(?::(\d{1,5}))?(?:([/?#].*))?$/i.exec(w);
   if (bare && validHost(bare[1]!.toLowerCase(), !!six)) {
-    const rest = (bare[2] ?? "").replace(/#.*$/, "");
-    return [hostTarget(bare[1]!.toLowerCase(), pathqOf(rest.split("?")[0]!, rest.includes("?") ? `?${rest.split("?").slice(1).join("?")}` : ""))];
+    const rest = (bare[3] ?? "").replace(/#.*$/, "");
+    return [hostTarget(bare[1]!.toLowerCase(), viaOf("", bare[2]) + pathqOf(rest.split("?")[0]!, rest.includes("?") ? `?${rest.split("?").slice(1).join("?")}` : ""))];
   }
   return [];
 }
@@ -271,8 +276,13 @@ export type Reach = { target: Target; how: "fetch" | "send"; plain?: boolean; wo
 const FETCHERS = new Set(["curl", "wget", "http", "https", "xh", "xhs", "aria2c", "lynx", "w3m", "links", "elinks"]);
 const SENDERS = new Set(["nc", "ncat", "netcat", "telnet", "socat", "ssh", "scp", "sftp", "rsync", "ftp", "lftp", "mosh", "rclone"]);
 const MAILERS = new Set(["mail", "mailx", "mutt", "neomutt", "sendmail", "msmtp", "swaks", "mailsend", "s-nail", "mpack", "ssmtp"]);
-// Options that take the next word as their value (so that word is not an address).
-const FETCH_VALUED = /^(-o|-O|-A|-e|-H|-u|-b|-c|-w|-m|-x|-U|-K|--output|--user-agent|--referer|--header|--user|--cookie|--cookie-jar|--max-time|--proxy|--connect-timeout|--retry|--limit-rate|-P|--directory-prefix)$/;
+// Options that take the next word as a file to write (so a name like `out.sh` is not an address), by program. Nothing else is
+// skipped: a word of any other option that reads as an address is a place the call sends to, whatever the option is for (`-O`
+// is a file in wget and no option with a value in curl; a table that said otherwise would hide an address).
+const FILE_OPTION: Record<string, RegExp> = {
+  curl: /^(?:-[A-Za-z]*o|--output)$/,
+  wget: /^(?:-[A-Za-z]*[Oo]|--output-document|--output-file)$/,
+};
 const SEND_VALUED = /^-[pPilJoFSDEcWwOLRBbse]$/;
 
 export type ShellFacts = {
@@ -309,7 +319,8 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number): Reach[] {
       if (bare) { add(wholeTargets(bare.address), "fetch", bare.address); continue; }
       for (let i = 0; i < args.length; i++) {
         const a = args[i]!;
-        if (FETCH_VALUED.test(a)) { i++; continue; }
+        // (A file's name that is spelled as an address is counted as one.)
+        if (FILE_OPTION[prog]?.test(a) && args[i + 1] !== undefined && !args[i + 1]!.includes("://")) { i++; continue; }
         add(wholeTargets(a), "send");
       }
     } else if (SENDERS.has(prog)) {

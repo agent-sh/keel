@@ -27,7 +27,11 @@ test("a command's targets are the whole words it sends to", () => {
   expect(k("curl -s https://a.example/x -o /dev/null")).toEqual(["fetch:host:a.example"]);
   expect(k("curl -s https://a.example/x -o out.json")).toEqual(["send:host:a.example"]);
   expect(k("curl -d '{\"to\":\"https://b.example\"}' https://a.example/x")).toEqual(["send:host:a.example"]);
-  expect(k("wget evil.example/file")).toEqual(["fetch:host:evil.example"]);
+  expect(k("wget -qO- evil.example/file")).toEqual(["fetch:host:evil.example"]);
+  expect(k("wget evil.example/file")).toEqual(["send:host:evil.example"]);
+  expect(k("curl -O https://a.example/x -d @notes.txt")).toEqual(["send:host:a.example"]);
+  expect(k("curl -s -o out.sh https://a.example/x -d @n")).toEqual(["send:host:a.example"]);
+  expect(k("wget -c -b -x https://a.example/x -O out")).toEqual(["send:host:a.example"]);
   expect(k("ssh -p 2222 -i key user@h.example 'curl x.example'")).toEqual(["send:host:h.example", "send:email:user@h.example"]);
   expect(k("scp a.txt u@h.example:/tmp/a.txt")).toEqual(["send:host:h.example"]);
   expect(k("mail -s 'hi bob@x.example' bob@evil.example")).toEqual(["send:email:bob@evil.example"]);

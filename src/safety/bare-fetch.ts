@@ -11,7 +11,8 @@ const ADDRESS = /^(?:https?:\/\/)?[A-Za-z0-9](?:[A-Za-z0-9.-]*)(?::\d{1,5})?(?:[
 const NUMBER = /^\d{1,5}(?:\.\d{1,3})?$/;
 // What a timeout or a retry count may be: the largest a read has a reason for.
 const CAP: Record<string, number> = { "-m": 600, "--max-time": 600, "--connect-timeout": 600, "--retry": 10, "-T": 600, "--timeout": 600, "-t": 10, "--tries": 10 };
-const within = (opt: string, v: string): boolean => NUMBER.test(v) && Number(v) <= (CAP[opt] ?? 600);
+// (Zero is no limit in these options, so it is not one.)
+const within = (opt: string, v: string): boolean => NUMBER.test(v) && Number(v) > 0 && Number(v) <= (CAP[opt] ?? 600);
 // The only places a read may write its page: the shell's standard output (`-`) and the bin.
 const SINKS = new Set(["-", "/dev/null"]);
 
@@ -32,6 +33,8 @@ function filter(q: Simple): boolean {
   if (q.unknown || q.redirects || q.heredoc || q.nested || q.flow || q.splits || q.dyn?.length || q.inputs?.length) return false;
   const run = unwrap(q.words);
   if (run.set.length || run.fed || run.deep || !run.words.length) return false;
+  // A program named by a path is whatever that file is, not the tool of that name.
+  if (run.words[0]!.includes("/")) return false;
   const prog = baseName(run.words[0]!);
   const args = run.words.slice(1);
   if (prog === "sed") return args.length === 2 && args[0] === "-n" && SED_SCRIPT.test(args[1]!);
@@ -56,9 +59,11 @@ export function bareFetch(p: Simple, prog: string, rest: Simple[] = []): { addre
   const run = unwrap(p.words);
   if (run.set.length || run.fed || run.deep) return undefined;
   const words = run.words;
-  if (!words.length || baseName(words[0]!) !== prog || (prog !== "curl" && prog !== "wget")) return undefined;
+  if (!words.length || words[0]!.includes("/") || baseName(words[0]!) !== prog || (prog !== "curl" && prog !== "wget")) return undefined;
   const args = words.slice(1);
   let address: string | undefined;
+  // wget saves a page in the folder unless it is told where to put it.
+  let sink = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a.startsWith("-") && a !== "-") {
@@ -68,21 +73,23 @@ export function bareFetch(p: Simple, prog: string, rest: Simple[] = []): { addre
         if (CURL_NUMBER.has(a)) { const v = args[++i]; if (v === undefined || !within(a, v)) return undefined; continue; }
         return undefined;
       }
-      if (WGET_LONG.has(a)) continue;
+      if (WGET_LONG.has(a)) { if (a === "--spider") sink = true; continue; }
       const out = /^-(?:[qS]*)O(.*)$/.exec(a);
       if (out && !a.startsWith("--")) {
+        sink = true;
         if (out[1] === "-") continue;
         if (out[1]) { if (!SINKS.has(out[1])) return undefined; continue; }
         const v = args[++i];
         if (v === undefined || !SINKS.has(v)) return undefined;
         continue;
       }
-      if (WGET_FILE.has(a)) { const v = args[++i]; if (v === undefined || !SINKS.has(v)) return undefined; continue; }
+      if (WGET_FILE.has(a)) { sink = true; const v = args[++i]; if (v === undefined || !SINKS.has(v)) return undefined; continue; }
       if (WGET_NUMBER.has(a)) { const v = args[++i]; if (v === undefined || !within(a, v)) return undefined; continue; }
       return undefined;
     }
     if (address !== undefined || !ADDRESS.test(a) || a.length > 2048) return undefined;
     address = a;
   }
+  if (prog === "wget" && !sink) return undefined;
   return address ? { address } : undefined;
 }

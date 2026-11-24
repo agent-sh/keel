@@ -776,6 +776,15 @@ export class Vault {
     return false;
   }
 
+  // Whether `text` is a part of a known value: a key's piece of six characters or more, an ordinary value's of eight. A
+  // pattern a model writes into a call that is a piece of a secret is the secret, cut.
+  partOfValue(text: string): boolean {
+    for (const e of this.byValue.values()) {
+      if (text.length >= (e.plain ? 8 : 6) && e.value.includes(text)) return true;
+    }
+    return false;
+  }
+
   // Named secrets of the session, for the environment of its commands.
   env(sessionId: string): Record<string, string> {
     const env: Record<string, string> = {};

@@ -33,7 +33,7 @@ import { artifactsDir, atCwd, contains, realOf, homeDir } from "../core/paths.ts
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
-import { AddressBook, addressOf, dataIn, groupOf, sendShown, textCarries, wholeOf, type WebUse } from "./addresses.ts";
+import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { accountContext, childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
@@ -453,7 +453,8 @@ export class Gate {
   // Whether a text the model wrote into a call copies the session's text or a secret (addresses.ts `textCarries`).
   private async copiesSession(session: Session, texts: string[]): Promise<boolean> {
     const web = await this.seen(session);
-    return texts.some((t) => web.copies(t));
+    // Each text, and the entries of a list read as one (a value cut over its entries is one value).
+    return texts.some((t) => web.copies(t)) || (texts.length > 1 && (web.copies(texts.join("")) || web.copies(texts.join(" "))));
   }
 
   // The addresses among `addresses` that the session has not seen and that carry data of the session (src/safety/addresses.ts
@@ -463,6 +464,9 @@ export class Gate {
     const tally = new Map<string, number>();
     const held = new Map<string, string>();
     for (const a of addresses) {
+      // A user name or password in an address is data whether or not the host was seen.
+      const userinfo = (() => { try { const u = new URL(a.trim()); return !!(u.username || u.password); } catch { return false; } })();
+      if (userinfo) { held.set(a, "a user name or password"); continue; }
       if (web.has(a)) continue;
       const host = groupOf(addressOf(a) ?? a) ?? "";
       const earlier = tally.get(host) ?? 0;
@@ -505,7 +509,7 @@ export class Gate {
     const secret = (text: string) => placeholdersIn(text).length > 0 || detect(text).length > 0 || vault.holdsValue(text);
     return {
       has: (address) => books.some((b) => b.has(address)),
-      copies: (text) => textCarries(text, (f) => books.some((b) => b.inResults(f)), secret),
+      copies: (text) => textCarries(text, (f) => books.some((b) => b.inResults(f)), secret) || vault.partOfValue(text) || vault.partOfValue(decoded(text)),
       // `earlier`: the unseen addresses on its registered domain that the call being judged fetches before it.
       carries: (address, earlier = 0) => timed(() => "reading an unseen address for the data it carries", () =>
         dataIn(address, (f) => books.some((b) => b.inResults(f)), secret, earlier + books.reduce((n, b) => n + b.unseenOn(address), 0), (host, path) => { const owner = books.some((b) => b.ownsHost(host)); return books.reduce((n, b) => Math.max(n, b.listed(host, path, owner)), 0); })),

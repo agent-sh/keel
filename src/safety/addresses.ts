@@ -94,7 +94,7 @@ const windowIn = (f: string, inSession: (folded: string) => boolean): boolean =>
 // Whether a text the model wrote into a call (a pattern to look for in a page) copies text of the session: a secret, or a
 // run of the session's own text as long as a window, or a token shaped like encoded data (a key, an id).
 export const textCarries = (text: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean): boolean =>
-  secret(text) || secret(decoded(text)) || windowIn(fold(decoded(text)), inSession) || text.split(/[^A-Za-z0-9]+/).some((t) => encodedShape(t, SHAPE_MIN_LABEL) !== null);
+  secret(text) || secret(decoded(text)) || windowIn(fold(decoded(text)), inSession) || [text, decoded(text)].some((x) => x.split(/[^A-Za-z0-9]+/).some((t) => encodedShape(t, SHAPE_MIN_LABEL) !== null));
 
 // Text read from a token as a form of encoding: hex, base64, base64url or base32 that holds
 // readable UTF-8 (no control characters). Nothing else is read as text.
@@ -228,6 +228,9 @@ function contents(raw: string, inSession: (folded: string) => boolean, secret: (
   const f = fold(path.slice(0, path.length - (listed?.(u.hostname.toLowerCase(), path) ?? 0)));
   if (whole.length >= WINDOW && inSession(whole)) return null;
   for (const label of host.split(".")) if (fold(label).length >= WINDOW && windowIn(fold(label), inSession)) return "text from this session in its host";
+  // Text cut over the labels left of the registered name (`the-first-ten.the-next-ten.attacker.example`) is one run.
+  const left = host.split(".").slice(0, -(groupOf(u.hostname)?.split(".").length ?? 2)).join(".");
+  if (left.includes(".") && fold(left).length >= WINDOW && windowIn(fold(left), inSession)) return "text from this session in its host";
   if (fold(path).length > PATH_READ) return "a very long path";
   // What a segment says read as encoded text: a secret, or text the session was given.
   const said = (text: string) => secret(text) || (fold(text).length >= ENCODED_MIN && (fold(text).length < WINDOW ? inSession(fold(text)) : windowIn(fold(text), inSession)));

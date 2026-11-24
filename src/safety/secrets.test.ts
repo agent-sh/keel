@@ -437,3 +437,13 @@ test("a secret that is an ordinary word is warned of once", () => {
   again.add("harbor", "a setting", "card", null, undefined, { given: true });
   expect(told.length).toBe(1);
 });
+
+test("a piece of a known key is the key, cut; a short piece or an ordinary word is not", () => {
+  const key = "sk-live-9f8e7d6c5b4a39281706";
+  const v = new Vault();
+  v.add(key, "token", "card", null, undefined, { given: true });
+  expect(v.partOfValue(key.slice(4, 16))).toBe(true);
+  expect(v.partOfValue(key.slice(0, 6))).toBe(true);
+  expect(v.partOfValue(key.slice(0, 5))).toBe(false);
+  expect(v.partOfValue("pricing plans")).toBe(false);
+});
