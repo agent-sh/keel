@@ -103,18 +103,21 @@ let cpuMs = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1
 // watcher saw a call of the daemon's own take the time.
 // The watcher is told a section began: the loop cannot beat until it ends,
 // so one that goes on is sampled from its first moments.
-export function timed<T>(label: () => string, f: () => T): T {
+// `own`: a pass the daemon makes by its own clock (a sampler, a sweep). It is watched the same way, but
+// it is not work: it neither brings the idle tick forward nor counts the daemon as working for the
+// next few seconds, which an idle daemon would otherwise do again every time one of them came due.
+export function timed<T>(label: () => string, f: () => T, own = false): T {
   const t0 = performance.now();
   const c0 = cpuMs();
   const st = state();
-  st.wake?.();
+  if (!own) st.wake?.();
   if (st.depth++ === 0) beat(st, 0);
   try {
     return f();
   } finally {
     const now = performance.now();
     const ms = now - t0;
-    st.touched = now;
+    if (!own) st.touched = now;
     if (--st.depth === 0) beat(st, Math.max(0, st.due - now));
     if (ms >= NOTED_MS) {
       const busy = cpuMs() - c0 >= ms * 0.5;

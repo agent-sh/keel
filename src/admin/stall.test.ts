@@ -208,6 +208,31 @@ test("work that begins while the timer waits out its idle second brings the next
   }
 });
 
+test("a pass the daemon makes by its own clock does not count as work: an idle daemon stays idle, and a request's section does count", () => {
+  const { m, clock, pass } = monitor();
+  const cells = new Int32Array(new SharedArrayBuffer(8));
+  shareBeat(cells);
+  const allow = () => Atomics.load(cells, 0) & ALLOW_MASK;
+  try {
+    clock.working = false;
+    pass(10_000);
+    m.start();
+    expect(m.working()).toBe(false);
+    expect(allow()).toBe(IDLE_ALLOW);
+    // A sampler's pass: timed as ever, and a stall in it is still named, but the daemon is not working afterwards.
+    timed(() => "sampling what the daemon's processes use", () => pass(60), true);
+    expect(m.working()).toBe(false);
+    expect(m.period()).toBe(1000);
+    // A request's section is work: the daemon works for the next seconds, and the tick comes at the short period.
+    timed(() => "answering GET /api/daemon", () => pass(60));
+    expect(m.working()).toBe(true);
+    expect(m.period()).toBe(100);
+  } finally {
+    m.stop();
+    dropBeat(cells);
+  }
+});
+
 test("the loop tells its watcher when it will beat next, and at once when a section holds it", () => {
   const { m, pass, clock } = monitor();
   const cells = new Int32Array(new SharedArrayBuffer(8));

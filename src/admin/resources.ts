@@ -194,7 +194,7 @@ export class Resources {
   private schedule(ms: number) {
     clearTimeout(this.timer);
     // (Read from /proc for every process under the daemon: named, should it ever hold the loop.)
-    this.timer = setTimeout(() => { try { timed(() => `sampling what the daemon's ${this.procs.length} processes use`, () => this.sample()); } finally { this.schedule(this.busy.size ? ACTIVE_MS : IDLE_MS); } }, ms);
+    this.timer = setTimeout(() => { try { timed(() => `sampling what the daemon's ${this.procs.length} processes use`, () => this.sample(), true); } finally { this.schedule(this.busy.size ? ACTIVE_MS : IDLE_MS); } }, ms);
     (this.timer as any).unref?.();
   }
 

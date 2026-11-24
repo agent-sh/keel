@@ -123,7 +123,7 @@ export async function pass(c: Ctx, o: { dry?: boolean; jobs?: Job[]; now?: numbe
   marks ??= c.loadIdle?.() ?? new Map();
   const next = new Map<string, rules.IdleMark>();
   // Ports and their clients: read once for all of them (sync reads of /proc, a few small files a job).
-  const ports = timed(() => "leftover scopes: ports", () => portsOf(new Map(mine.map((r) => [r.j.id, [...r.procs.keys()]]))));
+  const ports = timed(() => "leftover scopes: ports", () => portsOf(new Map(mine.map((r) => [r.j.id, [...r.procs.keys()]]))), true);
   for (const { j, cpu, mem, procs, reapers } of mine) {
     if (cpu === undefined || !procs.size) continue;
     const cg = j.cgroup!;
@@ -142,7 +142,7 @@ export async function pass(c: Ctx, o: { dry?: boolean; jobs?: Job[]; now?: numbe
     }
     const jp = (ports.get(j.id) ?? []).map((x) => x.port);
     const pids = [...procs.keys()];
-    const clients = jp.reduce((n, port) => n + timed(() => "leftover scopes: clients", () => clientsOf(pids, port)), 0);
+    const clients = jp.reduce((n, port) => n + timed(() => "leftover scopes: clients", () => clientsOf(pids, port), true), 0);
     const attached = rules.attachedWhy([...procs].map(([pid, p]) => ({ pid, parent: p.parent, start: p.start, tty: p.tty, pty: !!p.pty })), { pid: j.pid, start: j.boot }, reapers);
     const facts: rules.ScopeFacts = {
       ended: c.endedOf(j.sessionId), keep: keeps.has(j.id), owner: j.by === "owner", self: scopeHoldsSelf(j), shared, attached, clients, ports: jp,
