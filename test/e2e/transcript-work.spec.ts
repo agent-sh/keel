@@ -1047,7 +1047,8 @@ test("on a phone a reply's row is one line, the token counts a tap away", async 
     await page.goto(`/s/${session.id}`);
     const foot = page.locator(".k-turn-foot").last();
     await page.getByTestId("assistant-text").last().hover();
-    await expect(foot.getByTestId("copy-reply")).toBeVisible();
+    // On a phone the reply's actions are one menu in its row (UX-M55); Copy is in it.
+    await expect(foot.getByTestId("message-menu")).toBeVisible();
     // One line: the row is as tall as one of its buttons, and nothing in it leaves the screen.
     const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
     const box = (await foot.boundingBox())!;

@@ -70,7 +70,8 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
 
   // Type is larger by default: what is read and what is glanced at.
   expect(await rootPx()).toBe(17);
-  expect(await fontPx('[data-testid="transcript"] .prose-keel')).toBeGreaterThanOrEqual(18);
+  // A reply is set at the body size, the size of the message box (UX-S116).
+  expect(await fontPx('[data-testid="transcript"] .prose-keel')).toBe(await fontPx('[data-testid="composer"]'));
   expect(await fontPx('[data-testid="session-row"] .k-row-title')).toBeGreaterThanOrEqual(14);
   expect(await fontPx('[data-testid="composer"]')).toBeGreaterThanOrEqual(15);
 

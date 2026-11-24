@@ -35,8 +35,9 @@ for (const size of SIZES) {
           const title = await pane.getByTestId("station-title").boundingBox();
           const word = await pane.getByTestId("station-word").boundingBox();
           expect(bar!.height, "the bar is one row, not a head over a row of tools").toBeLessThan(scale === 1 ? 4.5 * rem : size.height / 6);
-          // (At a larger text size the row folds what has no room into the session's menu.)
-          for (const id of scale === 1 ? ["show-sidebar", "permission-menu", "panel-menu", "session-menu"] : ["session-menu"]) {
+          // (At a larger text size the row folds what has no room into the session's menu. The permission mode lives in
+          // the message box's row, UX-S73.)
+          for (const id of scale === 1 ? ["show-sidebar", "panel-menu", "session-menu"] : ["session-menu"]) {
             const b = (await pane.getByTestId(id).first().boundingBox())!;
             expect(b, id).toBeTruthy();
             expect(b.y >= bar!.y - 1 && b.y + b.height <= bar!.y + bar!.height + 1, `${id} is in the bar`).toBe(true);
