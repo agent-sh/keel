@@ -58,8 +58,47 @@ export function whereOf(range: Range): string | null {
   }
   const region = at.closest<HTMLElement>("[data-quote-from]");
   if (!region) return null;
+  // A selection across blocks (a reply and a tool call, two replies) names each of them.
+  const inside = [...region.querySelectorAll<HTMLElement>("[data-quote-from]")].filter((r) => range.intersectsNode(r));
+  if (inside.length) return joinNames(inside.map((r) => r.dataset.quoteFrom!));
   if (region.dataset.quoteOut && at.closest(".k-out")) return region.dataset.quoteOut;
   return region.dataset.quoteFrom ?? null;
+}
+
+// "the reply", "the reply and the Bash call", "your message, the reply and the Bash call": each place once,
+// in the order it stands. More than three is the conversation as a whole.
+export function joinNames(names: string[]): string {
+  const each = [...new Set(names)];
+  if (each.length > 3) return "the conversation";
+  return each.length < 2 ? (each[0] ?? "") : `${each.slice(0, -1).join(", ")} and ${each.at(-1)}`;
+}
+
+// A message of the owner's as it is shown: the lines that quote (a run of lines behind `>`, from the
+// start, after an "On <where>:" line, or after a blank line; not inside a code fence) are set apart
+// from the words around them. Display only: the text itself is never changed.
+export type Part = { quote: boolean; text: string };
+export function quoteParts(text: string): Part[] {
+  const lines = text.split("\n");
+  const parts: Part[] = [];
+  let fence = false, prev: string | null = null;
+  const put = (quote: boolean, l: string) => {
+    const last = parts.at(-1);
+    if (last && last.quote === quote) last.text += `\n${l}`;
+    else parts.push({ quote, text: l });
+  };
+  for (const l of lines) {
+    if (/^\s*(```|~~~)/.test(l)) fence = !fence;
+    const q = !fence && /^>/.test(l) && (prev === null || !prev.trim() || /^On [^\n]+:$/.test(prev) || parts.at(-1)?.quote === true);
+    put(q, q ? l.replace(/^> ?/, "") : l);
+    prev = l;
+  }
+  // The lines that join a quote to the words around it (blank ones) are the gap the page draws.
+  parts.forEach((p, i) => {
+    if (p.quote) return;
+    if (parts[i - 1]?.quote) p.text = p.text.replace(/^\n+/, "");
+    if (parts[i + 1]?.quote) p.text = p.text.replace(/\n+$/, "");
+  });
+  return parts.filter((p) => p.quote || p.text !== "");
 }
 
 // A selection made by a triple click, or dragged past the end of a block, ends at the start of the

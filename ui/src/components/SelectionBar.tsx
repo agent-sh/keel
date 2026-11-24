@@ -14,17 +14,20 @@ import { popupClass } from "./ui.tsx";
 const TOUCH = matchMedia("(hover: none) and (pointer: coarse)");
 const KEYS = { quote: "alt+q", comment: "alt+c" } as const;
 
-type Pick = { text: string; where: string; range: Range; rect: DOMRect };
+// `ends`: where the words begin and end on the screen (their first and last line).
+type Ends = { first: DOMRect; last: DOMRect };
+type Pick = { text: string; where: string; range: Range; ends: Ends };
 // The bar that holds a selection now, for the keys.
 let active: { ask: (kind: "quote" | "comment") => void } | null = null;
 registerCommand(
-  { id: "selection.quote", label: "Quote the selection in the message box", group: "Selection", keys: KEYS.quote, when: () => !!active, run: () => active?.ask("quote") },
-  { id: "selection.comment", label: "Comment on the selection", group: "Selection", keys: KEYS.comment, when: () => !!active, run: () => active?.ask("comment") },
+  { id: "selection.quote", label: "Quote the selection in the message box", group: "Selection", where: "with a selection", keys: KEYS.quote, when: () => !!active, run: () => active?.ask("quote") },
+  { id: "selection.comment", label: "Comment on the selection", group: "Selection", where: "with a selection", keys: KEYS.comment, when: () => !!active, run: () => active?.ask("comment") },
 );
 
-const rectOf = (r: Range): DOMRect => {
-  const list = r.getClientRects();
-  return list.length ? list[list.length - 1]! : r.getBoundingClientRect();
+const endsOf = (r: Range): Ends => {
+  const list = [...r.getClientRects()].filter((q) => q.width > 0 && q.height > 0);
+  const all = r.getBoundingClientRect();
+  return { first: list[0] ?? all, last: list[list.length - 1] ?? all };
 };
 
 export const SelectionBar = memo(function SelectionBar({ sid, root, working }: { sid: string; root: { current: HTMLElement | null }; working: boolean }) {
@@ -67,8 +70,8 @@ export const SelectionBar = memo(function SelectionBar({ sid, root, working }: {
       const where = range && at && el?.contains(at) && !at.closest(".k-compose, input, textarea, [contenteditable], [data-selbar]") && text.trim() ? whereOf(range) : null;
       if (!range || !where) return setPick((p) => (p ? null : p));
       const copy = range.cloneRange();
-      const rect = rectOf(copy);
-      setPick((p) => (p && p.text === text && p.where === where && p.rect.top === rect.top && p.rect.left === rect.left ? p : { text, where, range: copy, rect }));
+      const ends = endsOf(copy);
+      setPick((p) => (p && p.text === text && p.where === where && p.ends.first.top === ends.first.top && p.ends.first.left === ends.first.left && p.ends.last.bottom === ends.last.bottom ? p : { text, where, range: copy, ends }));
     };
     const later = () => { clearTimeout(timer); timer = setTimeout(read, 150); };
     const onDown = (e: PointerEvent) => {
@@ -89,6 +92,13 @@ export const SelectionBar = memo(function SelectionBar({ sid, root, working }: {
     };
   }, []);
 
+  // Escape puts the offer away and leaves the words selected as they are (and does not stop the turn).
+  useEffect(() => {
+    if (!pick || commenting) return;
+    const f = (e: KeyboardEvent) => { if (e.key === "Escape" && !composing(e)) { e.preventDefault(); e.stopPropagation(); setPick(null); } };
+    addEventListener("keydown", f, true);
+    return () => removeEventListener("keydown", f, true);
+  }, [!pick, commenting]);
   // The keys act on the bar that holds a selection.
   useEffect(() => {
     if (!pick) return;
@@ -104,19 +114,22 @@ export const SelectionBar = memo(function SelectionBar({ sid, root, working }: {
     return () => void CSS.highlights.delete("keel-quote");
   }, [commenting, pick?.range]);
 
-  // Placed over the end of the selection, or under it on a phone or a narrow window (the system's own bar is above).
+  // Placed above the first line of the words, or under the last one when there is no room above (on a phone
+  // or a narrow window: under them first, the system's own bar is above). Never over the words themselves.
   const place = () => {
     const el = bar.current;
     if (!el || !pick) return;
-    // (The range is followed while its words are there; the rectangle read at the start when they are not.)
-    const rect = pick.range.collapsed ? pick.rect : rectOf(pick.range);
+    // (The range is followed while its words are there; the rectangles read at the start when they are not.)
+    const { first, last } = pick.range.collapsed ? pick.ends : endsOf(pick.range);
     const em = parseFloat(getComputedStyle(el).fontSize) || 16;
     const w = el.offsetWidth, h = el.offsetHeight, gap = 0.5 * em;
-    const left = Math.min(Math.max(rect.left + rect.width / 2 - w / 2, gap), innerWidth - w - gap);
-    const above = !TOUCH.matches && innerWidth >= 768 && rect.top - h - gap >= gap;
-    const top = above ? rect.top - h - gap : Math.min(rect.bottom + gap, innerHeight - h - gap);
+    const roomAbove = first.top - h - gap >= gap, roomBelow = last.bottom + h + 2 * gap <= innerHeight;
+    const above = !TOUCH.matches && innerWidth >= 768 ? roomAbove || !roomBelow : roomAbove && !roomBelow;
+    const at = above ? first : last;
+    const left = Math.min(Math.max(at.left + at.width / 2 - w / 2, gap), innerWidth - w - gap);
+    const top = above ? first.top - h - gap : last.bottom + gap;
     el.style.left = `${left}px`;
-    el.style.top = `${Math.max(top, gap)}px`;
+    el.style.top = `${Math.min(Math.max(top, gap), Math.max(innerHeight - h - gap, gap))}px`;
   };
   useLayoutEffect(place, [pick, commenting, working]);
   useEffect(() => {

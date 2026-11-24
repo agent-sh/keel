@@ -3,6 +3,7 @@ import { CopyButton } from "./CopyButton.tsx";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { quoteParts } from "../lib/quote.ts";
 import { flushSync } from "react-dom";
 import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolUseBlock } from "../../../src/core/types.ts";
@@ -165,6 +166,8 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
 function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEvent[] }) {
   const text: string = e.data.text ?? "";
   const long = text.length > 1400 || text.split("\n").length > 18;
+  // (What the words quote is set apart as it is shown: the text kept and sent is the owner's own.)
+  const parts = useMemo(() => quoteParts(text), [text]);
   const [shownAll, setFull] = useKept(`full:${sid}:${e.id}`);
   const full = !!shownAll;
   // `keys`: opened by Up in the message box, where the keyboard goes back when the edit ends.
@@ -199,7 +202,7 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
       >
         {text && (
           <>
-            <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{text}</div>
+            <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{parts.map((p, i) => p.quote ? <blockquote key={i} data-testid="user-quote" className="my-1.5 border-l-2 border-line-strong pl-3 text-muted">{p.text}</blockquote> : <Fragment key={i}>{p.text}</Fragment>)}</div>
             {long && (
               <button type="button" onClick={() => setFull(!full)} className="k-link mt-1 text-caption font-medium text-accent-ink hover:underline">
                 {full ? "Show less" : "Show all"}
