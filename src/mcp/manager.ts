@@ -1946,6 +1946,15 @@ export class McpManager {
   add(name: string, config: McpServerConfig): string | null {
     const bad = validate(name, config);
     if (bad) return bad;
+    // A synced copy the owner edits: the names the source does not list are the owner's.
+    if (config.sync) {
+      const hit = readSources(this.workspace, []).find((s) => s.source === config.sync!.source && s.name === config.sync!.name);
+      if (hit) {
+        const own = (config.env_vars ?? []).filter((v) => !(hit.config.env_vars ?? []).includes(v));
+        config = { ...config };
+        if (own.length) config.owner_env_vars = own; else delete config.owner_env_vars;
+      }
+    }
     this.save({ ...this.cfg.servers, [name]: config });
     this.ownerAdded.add(name);
     if (this.entries.get(name)?.plugin) this.movePlugin(name);
@@ -2549,11 +2558,15 @@ export class McpManager {
       // A source file that failed to read says nothing about its servers.
       if (!hit) { if (!failed.length) this.gone.add(name); continue; }
       this.gone.delete(name);
-      // The variables a server is passed are the source's and the owner's both: a name the owner
-      // added in Keel (env_vars) stays when the source changes, and is no change of the source.
-      const vars = [...new Set([...(c.env_vars ?? []), ...(hit.config.env_vars ?? [])])];
+      // The variables a server is passed are the source's and the owner's both. The source's list is taken fresh
+      // at each sync; the names the owner added in Keel are kept apart (owner_env_vars) and stay. A copy made before
+      // that field existed cannot tell them apart: a name the source does not list now is taken as the owner's.
+      const fromSource = hit.config.env_vars ?? [];
+      const own = c.owner_env_vars ?? (c.env_vars ?? []).filter((v) => !fromSource.includes(v));
+      const vars = [...new Set([...fromSource, ...own])];
       const next: McpServerConfig = { ...sourced(hit.config), sync: c.sync };
       if (vars.length) next.env_vars = vars; else delete next.env_vars;
+      if (own.length) next.owner_env_vars = own;
       if (canon(sourced(c)) === canon(sourced(next))) continue;
       if (c.enabled === false) next.enabled = false;
       if (c.read_tools) next.read_tools = c.read_tools;

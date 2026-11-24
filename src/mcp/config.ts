@@ -16,6 +16,7 @@ export type McpServerConfig = {
   args?: string[];
   env?: Record<string, string>;
   env_vars?: string[];                 // names passed through from keel's env
+  owner_env_vars?: string[];           // of a synced copy: the names the owner added in Keel (the rest of env_vars is the source's, taken fresh at each sync)
   cwd?: string;
   url?: string;
   headers?: Record<string, string>;
@@ -141,6 +142,7 @@ function normalize(c: any): McpServerConfig {
   if (Array.isArray(c.args)) out.args = c.args.map(String);
   if (c.env && typeof c.env === "object") out.env = c.env;
   if (Array.isArray(c.env_vars)) out.env_vars = c.env_vars.map(String);
+  if (Array.isArray(c.owner_env_vars)) out.owner_env_vars = c.owner_env_vars.map(String);
   if (c.cwd) out.cwd = String(c.cwd);
   if (c.url) out.url = String(c.url);
   if (c.headers && typeof c.headers === "object") out.headers = c.headers;

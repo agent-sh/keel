@@ -219,6 +219,36 @@ test("a server kept in step with another agent's config keeps the variables the 
   }
 });
 
+test("a variable the source drops is dropped from a synced copy; the names the owner added stay", () => {
+  const home = join(dir, "sync-drop-home"), conf = join(dir, "sync-drop-mcp.json");
+  mkdirSync(home, { recursive: true });
+  const before = process.env.KEEL_IMPORT_HOME;
+  process.env.KEEL_IMPORT_HOME = home;
+  try {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    const put = (vars: string[]) => writeFileSync(join(home, ".codex", "config.toml"), `[mcp_servers.src]\ncommand = "sleep"\nargs = ["1000"]\nenv_vars = ${JSON.stringify(vars)}\n`);
+    put(["FROM_SOURCE", "DROPPED_LATER"]);
+    writeFileSync(conf, JSON.stringify({ servers: { mine: { command: "sleep", args: ["1000"], enabled: false, env_vars: ["FROM_SOURCE", "DROPPED_LATER", "OWNER_NAMED"], owner_env_vars: ["OWNER_NAMED"], sync: { source: "codex", name: "src" } } } }));
+    const m = new McpManager(sink, join(dir, "state-sync-drop"), "/", conf);
+    managers.push(m);
+    m.start();
+    const row = () => JSON.parse(readFileSync(conf, "utf8")).servers.mine;
+    expect(m.syncSources()).toEqual([]);
+    put(["FROM_SOURCE", "ADDED_BY_SOURCE"]);
+    expect(m.syncSources().map((r) => r.name)).toEqual(["mine"]);
+    expect(row().env_vars).toEqual(["FROM_SOURCE", "ADDED_BY_SOURCE", "OWNER_NAMED"]);
+    expect(row().owner_env_vars).toEqual(["OWNER_NAMED"]);
+    // A name the owner adds by editing the copy in Keel is kept apart from the source's.
+    expect(m.add("mine", { ...row(), env_vars: [...row().env_vars, "ANOTHER"] })).toBeNull();
+    expect(row().owner_env_vars).toEqual(["OWNER_NAMED", "ANOTHER"]);
+    put([]);
+    m.syncSources();
+    expect(row().env_vars).toEqual(["OWNER_NAMED", "ANOTHER"]);
+  } finally {
+    if (before === undefined) delete process.env.KEEL_IMPORT_HOME; else process.env.KEEL_IMPORT_HOME = before;
+  }
+});
+
 test("a server that drops its requiresUserInteraction flag is held, and the tool is still asked about on every call", async () => {
   rmSync(flip, { force: true });
   const m = manager(join(dir, "state-guard"), ["--guard"]);
