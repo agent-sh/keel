@@ -57,7 +57,7 @@ const SCHEMA_MAX = 64_000;
 export const MUST_NOT = "The MCP specification says a server must not ask for passwords, API keys, access tokens or payment details in a form like this one.";
 const SECRET_WORDS = new Set([
   "password", "passwd", "pwd", "passphrase", "passcode", "secret", "token", "apikey", "credential", "cvv", "cvc", "pin", "otp", "totp", "mfa", "2fa", "tfa",
-  "ssn", "iban", "bearer", "jwt", "cookie", "pat", "cred", "mnemonic",
+  "ssn", "iban", "bearer", "jwt", "cookie", "pat", "cred", "mnemonic", "auth",
   // The same word in a few more languages (a form is written in the owner's).
   "passwort", "kennwort", "contrasena", "clave", "senha", "motdepasse", "wachtwoord", "haslo", "parola",
 ]);
