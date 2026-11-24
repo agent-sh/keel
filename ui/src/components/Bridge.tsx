@@ -122,8 +122,10 @@ const StationTools = memo(function StationTools({ id, helm, pinned, focus, panes
       )}
       {/* Pressed, the pin is the pane's own cue that its session is pinned: it shows at rest, as the others do. */}
       <Tool label={pinned ? "Unpin from the top of the list (Alt P)" : "Pin to the top of the list (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(id, !pinned).catch(reportError)}><Pin className={pinned ? "fill-current" : undefined} /></Tool>
-      <Tool label={focus ? "Show all panes (Alt Enter)" : "Focus this pane (Alt Enter)"} testid="station-focus" on={focus} onClick={() => { if (!helm) navigate({ name: "session", id }); stations.toggleFocus(); }}>{focus ? <Minimize2 /> : <Maximize2 />}</Tool>
-      <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(id)}><X /></Tool>
+      {panes > 1 && <>
+        <Tool label={focus ? "Show all panes (Alt Enter)" : "Focus this pane (Alt Enter)"} testid="station-focus" on={focus} onClick={() => { if (!helm) navigate({ name: "session", id }); stations.toggleFocus(); }}>{focus ? <Minimize2 /> : <Maximize2 />}</Tool>
+        <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(id)}><X /></Tool>
+      </>}
     </span>
   );
 });
@@ -151,8 +153,9 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : cardTool ? askBrief(st, cardTool) : st.text ? briefText(st, now) : "";
   // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
   // Alone there is nothing for them to do that the session's menu and the keys do not (focus changes nothing,
-  // a close only empties the pane): they rest only where there are panes to choose between.
-  const tools = panes > 1 ? 3 : 0;
+  // a close only empties the pane): they rest only where there are panes to choose between. A pinned session
+  // alone keeps its pressed pin, the one cue in the pane that it is pinned.
+  const tools = panes > 1 ? 3 : pinned ? 1 : 0;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}
       style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
@@ -173,7 +176,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         <span className="k-station-meta" title={s.workspace}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>
         </span>
-        {panes > 1 && <StationTools id={s.id} helm={helm} pinned={pinned} focus={focus} panes={panes} />}
+        {(panes > 1 || pinned) && <StationTools id={s.id} helm={helm} pinned={pinned} focus={focus} panes={panes} />}
         </div>
       </div>
       {!helm && <p className="k-station-line truncate">{line || " "}</p>}

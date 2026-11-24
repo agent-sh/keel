@@ -168,6 +168,15 @@ test("a pane alone has no tools at rest, its menu has them; beside another pane 
       await expect(page.getByTestId("menu-close")).toBeVisible();
       if (width !== 1920) await shoot(page, `rest-bar-05-alone-${width}`);
       await page.keyboard.press("Escape");
+      // Pinned and alone, the head keeps the pressed pin and nothing else: it is the pane's one cue that the session is pinned.
+      await request.patch(`/api/sessions/${a}`, { data: { pinned: true } });
+      await expect(head.getByTestId("station-pin")).toBeVisible();
+      await expect(head.getByTestId("station-pin")).toHaveAttribute("aria-pressed", "true");
+      for (const id of ["station-focus", "station-close"]) await expect(head.getByTestId(id)).toHaveCount(0);
+      await page.mouse.move(width / 2, 800);
+      await shoot(page, `rest-bar-06-alone-pinned-${width}`);
+      await request.patch(`/api/sessions/${a}`, { data: { pinned: false } });
+      await expect(head.locator(".k-station-tools")).toHaveCount(0);
       // Beside another pane they rest in each head, and the menu has no second copy.
       await page.getByTestId("panes-2").click();
       const second = page.getByTestId("bridge").locator(':scope > [data-slot="1"]');
