@@ -770,8 +770,9 @@ test("an agent's wake names its other waits; its waits on a writer it was told e
   waits.cancel(timer.id);
   // Its command ended in the turn (its call's result said so): a wait on its file is spent.
   const out = join(dir, "kid.out");
-  const job = startJob({ sessionId: kid.id, command: `echo partial > ${out}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
+  // (The wait is set before its writer starts: a writer that ended before a wait was set is not its writer.)
   const spent = waits.create(kid.id, waits.normalize({ kind: "log", path: out, match: "PASSED" }, dir), { timeout_seconds: 600 });
+  const job = startJob({ sessionId: kid.id, command: `echo partial > ${out}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
   const runs = startJob({ sessionId: kid.id, command: `sleep 5 > ${join(dir, "kid.run")}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
   const live = waits.create(kid.id, waits.normalize({ kind: "file", path: join(dir, "kid.run"), contains: "x" }, dir), { timeout_seconds: 600 });
   await waitJob(job, 5000);
