@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { pumpLines } from "../core/proc.ts";
-import { AcpConnection, LINE_MAX } from "./rpc.ts";
+import { AcpConnection, LINE_MAX, responseId } from "./rpc.ts";
 
 const pipe = (...parts: string[]) => new ReadableStream<Uint8Array>({ start(c) { for (const p of parts) c.enqueue(new TextEncoder().encode(p)); c.close(); } });
 
@@ -34,4 +34,37 @@ process.stdout.write(big + "\\n" + JSON.stringify({ jsonrpc: "2.0", method: "ses
   expect(seen).toEqual([{ ok: 1 }]);
   expect(sizes).toHaveLength(1);
   expect(sizes[0]).toBeGreaterThan(LINE_MAX);
+});
+
+test("the id of a response is read from the head of a line before it is dropped, and nothing else is guessed", () => {
+  expect(responseId('{"jsonrpc":"2.0","id":7,"result":{"x":"zzzz')).toBe(7);
+  expect(responseId('{"id": 12, "jsonrpc": "2.0", "error": {"code":1')).toBe(12);
+  expect(responseId('{"jsonrpc":"2.0","id":7,"method":"fs/read_text_file","params":{"p":"z')).toBeUndefined();
+  expect(responseId('{"jsonrpc":"2.0","method":"session/update","id":7,"params":{"x":"z')).toBeUndefined();
+  expect(responseId('{"jsonrpc":"2.0","result":{"x":"zzzz')).toBeUndefined();
+  expect(responseId('{"result":{"x":"z"},"id":7}')).toBeUndefined();
+  expect(responseId('{"jsonrpc":"2.0","id":"abc","result":{"x":"z')).toBeUndefined();
+  expect(responseId('{"jsonrpc":"2.0","id":123')).toBeUndefined();
+  expect(responseId("")).toBeUndefined();
+});
+
+test("a response over the limit fails the request it answers at once, and a line with no readable id fails nothing", async () => {
+  const code = `process.stdin.on("data", (d) => {
+  for (const l of String(d).split("\\n").filter(Boolean)) {
+    const m = JSON.parse(l);
+    if (m.id === 1) process.stdout.write('{"jsonrpc":"2.0","id":1,"result":{"pad":"' + "z".repeat(${LINE_MAX + 10}) + '"}}\\n');
+    if (m.id === 2) process.stdout.write('{"result":{"pad":"' + "z".repeat(${LINE_MAX + 10}) + '"},"id":2,"jsonrpc":"2.0"}\\n');
+    if (m.id === 3) process.stdout.write('{"jsonrpc":"2.0","id":3,"result":"ok"}\\n');
+  }
+});`;
+  const logs: string[] = [];
+  const c = new AcpConnection([process.execPath, "-e", code], { cwd: "/" }, (m) => logs.push(m));
+  const r1 = c.request("a", {});
+  await expect(r1).rejects.toThrow(/more than the \d+ Keel reads/);
+  const r2 = c.request("b", {});
+  const raced = await Promise.race([r2.then(() => "answered", () => "failed"), Bun.sleep(500).then(() => "waiting")]);
+  expect(raced).toBe("waiting");
+  expect(logs.some((l) => l.includes("dropped") && !l.includes("answered request"))).toBe(true);
+  expect(await c.request("c", {})).toBe("ok");
+  c.close();
 });

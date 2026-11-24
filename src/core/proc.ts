@@ -74,8 +74,9 @@ export async function readText(pipe: Pipe, where?: string): Promise<string> {
 
 // Lines as they come (the last one without its newline at the end). With `limit`, a line longer than `limit.max`
 // characters is never held or handed on: what comes of it is dropped up to its newline, and `limit.over` is told
-// its length once (a program that writes one without a newline cannot make this process hold it).
-export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: string, limit?: { max: number; over: (chars: number) => void }): Promise<void> {
+// its length once (a program that writes one without a newline cannot make this process hold it), with the first
+// `limit.head` characters of it (none by default), so a caller can tell what the line was.
+export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: string, limit?: { max: number; over: (chars: number, head: string) => void; head?: number }): Promise<void> {
   let buf = "";
   if (!limit) {
     return pumpText(pipe, (t) => {
@@ -84,20 +85,22 @@ export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: strin
     }, where).then(() => { if (buf) onLine(buf); });
   }
   const { max, over } = limit;
+  const headMax = limit.head ?? 0;
   let skipped = 0; // characters of the line being dropped, 0 when none is
+  let head = ""; // the first characters of the line being dropped
   return pumpText(pipe, (t) => {
     let from = 0;
     for (let i; (i = t.indexOf("\n", from)) >= 0; from = i + 1) {
-      if (skipped) { over(skipped + i - from); skipped = 0; continue; }
+      if (skipped) { over(skipped + i - from, head); skipped = 0; head = ""; continue; }
       const line = buf + t.slice(from, i);
       buf = "";
-      if (line.length > max) over(line.length); else onLine(line);
+      if (line.length > max) over(line.length, line.slice(0, headMax)); else onLine(line);
     }
     const rest = from ? t.slice(from) : t;
     if (skipped) skipped += rest.length;
-    else if (buf.length + rest.length > max) { skipped = buf.length + rest.length; buf = ""; }
+    else if (buf.length + rest.length > max) { head = (buf + rest.slice(0, headMax)).slice(0, headMax); skipped = buf.length + rest.length; buf = ""; }
     else buf += rest;
-  }, where).then(() => { if (skipped) over(skipped); else if (buf) onLine(buf); });
+  }, where).then(() => { if (skipped) over(skipped, head); else if (buf) onLine(buf); });
 }
 
 // stdout, stderr and the exit code of a spawned process, read together.
