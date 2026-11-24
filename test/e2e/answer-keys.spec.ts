@@ -305,7 +305,10 @@ test("a question docks above the message box and is answered from the keyboard",
   await expect(card).toHaveAttribute("data-state", "open");
   // Docked: in the region above the message box, where approvals wait, and one line in the conversation.
   await expect(page.getByTestId("transcript").getByTestId("question")).toHaveCount(0);
-  await expect(page.getByTestId("transcript").getByTestId("question-asked")).toContainText("Which color should I use?");
+  // The card holds the question: the line says only that it waits.
+  await expect(card).toContainText("Which color should I use?");
+  await expect(page.getByTestId("transcript").getByTestId("question-asked")).toHaveText("Asks");
+  await expect(page.getByTestId("transcript").getByTestId("question-asked").getByRole("img", { name: "needs you: an answer" })).toBeVisible();
   // It takes the keyboard as it opens: on the card, not on an answer. It says what the keys do now,
   // and draws no number while a number does not answer (one typed here goes on to the message box).
   await expect(card).toBeFocused();

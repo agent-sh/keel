@@ -109,6 +109,8 @@ button.k-heard-line:hover { color: var(--fg); }
 .k-line-state[data-tone="warn"] { color: var(--warn-ink); }
 .k-line-state[data-tone="own"] { color: var(--fg); }
 .k-line-state:is([data-tone="idle"], [data-tone="note"]) { color: var(--muted); font-weight: 400; }
+/* A call whose card is open: the line is its verb and this diamond, in the owner's color. */
+.k-line-wait { display: inline-block; width: 0.5rem; height: 0.5rem; margin-right: 0.25rem; vertical-align: 0.0625rem; background: var(--st-need-ink); transform: rotate(45deg) scale(0.85); }
 /* A mark's few words may take a second row in a narrow pane; a state word never breaks. */
 .k-line-mark { white-space: normal; }
 /* How many: never given up for room, at any width. */

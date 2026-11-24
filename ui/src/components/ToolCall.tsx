@@ -33,6 +33,7 @@ import { CodeCall } from "./CodeCall.tsx";
 import { ReadersCall } from "./ReadersCall.tsx";
 import { McpApp, type AppShown } from "./McpApp.tsx";
 import { AskedUnder, QuestionCard } from "./QuestionCard.tsx";
+import { WaitMark } from "./WaitMark.tsx";
 import { Copyable, CopyButton } from "./CopyButton.tsx";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
 import { splitDiagnostics, type ResultDiagnostics } from "../lib/tools.ts";
@@ -271,7 +272,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
         <span className="k-line-text" data-wrap={isMarked ? "" : undefined}>
           <span className="k-line-verb">{ledger ? "Not run" : verb}</span>{" "}
           {ledger && <><span className="k-line-state" data-tone="idle" data-testid="call-ledger" title="It passed on these same files before: the answer is from the check ledger.">passed before, same files</span>{" "}</>}
-          {state === "waiting" && <><span className="k-line-state" data-tone="need" data-testid="call-state">{NEEDS_APPROVAL}</span>{" "}</>}
+          {state === "waiting" && <><WaitMark words={NEEDS_APPROVAL} testid="call-state" />{" "}</>}
           {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{noSuchTool(result) ? "no such tool" : shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
           {state === "denied" && <><span className="k-line-state" data-tone="own" data-testid="call-state">denied by you</span>{" "}</>}
           {state === "refused" && <><span className="k-line-state" data-tone="warn" data-testid="tool-refused">{turned?.by === "Hook" ? "blocked by a hook" : "refused"}</span>{" "}</>}
@@ -282,7 +283,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {!quiet && marks.filter((m) => m.kind !== "denied").map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
           {hook?.input !== undefined && <><span className="k-line-state k-line-mark" data-tone="warn" data-testid="tool-rewritten">changed by a hook</span>{" "}</>}
           {hook?.allowed !== undefined && hook.input === undefined && <><span className="k-line-state k-line-mark" data-tone="warn" title="A hook of yours allowed it without asking you.">allowed by a hook</span>{" "}</>}
-          <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{what}</span>
+          {/* While its approval card is open the card carries what is asked: the line says only that it waits. */}
+          {state !== "waiting" && <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{what}</span>}
         </span>
         <span className="k-line-end">
           {(more > 0 || (plan && plan.length > 0) || (change && changed) || nested.length > 0 || shell.background || shell.session) && <Apart />}

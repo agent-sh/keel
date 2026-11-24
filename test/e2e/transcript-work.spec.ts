@@ -517,13 +517,22 @@ test("a call waiting for approval says so, closed, and asks for no output", asyn
   // Not running: it has not started. The line says what it waits for in the owner's color, and stays closed.
   await expect(call).toHaveAttribute("data-state", "waiting");
   await expect(call.locator(".k-line-verb")).toHaveText("Run");
-  await expect(call.getByTestId("call-state")).toHaveText("needs you: an approval");
   await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "false");
   await expect(call.getByTestId("terminal")).toHaveCount(0);
   await expect(page.locator('.k-step[data-state="need"]')).toHaveCount(1);
   await page.waitForTimeout(2500);
   expect(logs).toEqual([]);
   await shoot(page, "work-13-waiting-approval");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await shoot(page, "work-13-waiting-approval-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  // The approval card carries the command: the line is the tool's name and a mark that it waits, said once.
+  await expect(call.getByTestId("call-state")).toHaveAttribute("aria-label", "needs you: an approval");
+  await expect(call.getByTestId("call-state")).toHaveText("");
+  await expect(call.locator(".k-line-what")).toHaveCount(0);
+  await expect(call.locator(".k-line-text")).toContainText("Run");
+  await expect(call.locator(".k-line-text")).not.toContainText("rm -rf");
+  await expect(page.getByTestId("approval")).toContainText("rm -rf build-out");
   // Allowed, it runs and ends as any command.
   await page.getByTestId("approval").getByRole("button", { name: /Allow once/i }).click();
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });

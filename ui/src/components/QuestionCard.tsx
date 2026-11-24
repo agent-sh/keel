@@ -24,6 +24,7 @@ import { ExternalLink, MessageCircleQuestion } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Under } from "./ToolCall.tsx";
 import { CALL_STOPPED, NEEDS_ANSWER } from "../lib/work.ts";
+import { WaitMark } from "./WaitMark.tsx";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import type { Asked, AskedLink, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
@@ -126,9 +127,8 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
         <div className="k-line">
           <span className="k-line-text">
             <span className="k-line-verb">Asks</span>{" "}
-            <span className="k-line-state" data-tone="need">{NEEDS_ANSWER}</span>{" "}
-            <span className="k-line-what" data-words="">{first?.question ?? ""}</span>
-            {qs.length > 1 && <>{" "}<span className="k-line-rest">+{qs.length - 1}</span></>}
+            {/* Its card is above the message box and holds the question: the line says only that it waits. */}
+            <WaitMark words={NEEDS_ANSWER} />
           </span>
         </div>
       </div>
@@ -299,8 +299,7 @@ export function AskedUnder({ use, sessionId, children }: { use: ToolUseBlock; se
       {asked && <div className="k-line" data-testid="question-asked">
         <span className="k-line-text">
           <span className="k-line-verb">Asks</span>{" "}
-          <span className="k-line-state" data-tone="need">{NEEDS_ANSWER}</span>{" "}
-          <span className="k-line-what" data-words="">MCP server {asked.from}: {asked.message || "a question"}</span>
+          <WaitMark words={NEEDS_ANSWER} />
         </span>
       </div>}
     </>
