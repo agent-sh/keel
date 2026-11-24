@@ -9,6 +9,7 @@ import { ago, cn } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { fmtMetric } from "../lib/metric.ts";
 import { fmtPct, Panel } from "./UsagePanel.tsx";
+import { Empty, Group, Page, Status, type Tone } from "./settings/kit.tsx";
 
 export { fmtMetric };
 
@@ -38,9 +39,6 @@ type Report = {
 };
 type List = { experiments: Experiment[]; templates: Template[]; metrics: Record<Metric, MetricInfo> };
 
-const btn = "inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-ui font-medium disabled:opacity-50";
-const primaryBtn = cn(btn, "bg-accent text-accent-fg hover:bg-accent-hover");
-const quietBtn = cn(btn, "border border-line bg-raised text-fg hover:bg-hover");
 const field = "k-field";
 
 // The estimate, with its interval under it. `of`: the arm's units; when
@@ -71,9 +69,9 @@ function armDiff(a: Arm) {
   return parts.join(", ") || "current configuration";
 }
 
-const STATE_TONE: Record<Experiment["state"], string> = { draft: "text-muted bg-sunken", running: "text-accent bg-accent-soft", stopped: "text-faint bg-sunken" };
+const STATE_TONE: Record<Experiment["state"], Tone> = { draft: "quiet", running: "info", stopped: "quiet" };
 function StateChip({ e }: { e: Experiment }) {
-  return <span data-testid="experiment-state" className={cn("rounded-sm px-1.5 py-0.5 text-micro font-medium uppercase tracking-wide", STATE_TONE[e.state])}>{e.state}</span>;
+  return <Status testid="experiment-state" tone={STATE_TONE[e.state]}>{e.state}</Status>;
 }
 
 export function ExperimentsPanel() {
@@ -82,23 +80,19 @@ export function ExperimentsPanel() {
   const [creating, setCreating] = useState<boolean | null>(null);
   const load = useCallback(() => api<List>("/api/experiments").then(setList).catch(reportError), []);
   useEffect(() => { void load(); const t = setInterval(load, 5_000); return () => clearInterval(t); }, [load]);
-  if (!list) return <div className="text-ui text-faint">Reading the experiments.</div>;
+  if (!list) return <Empty>Reading the experiments.</Empty>;
   const current = list.experiments.find((e) => e.id === open) ?? list.experiments[0];
   const showForm = creating ?? !list.experiments.length;
   return (
-    <div className="flex flex-col gap-4" data-testid="experiments-panel">
-      <div className="flex items-start gap-4">
-        <p className="max-w-3xl flex-1 text-ui text-muted">
-          An experiment proves a change with numbers before it ships. Offline, its arms run over a fixed task set with repetitions; live, new sessions are split between the arms and a guard that gets worse stops it. When it ends it says which arm won, and the other arm's path is removed.
-        </p>
-        <button type="button" className={showForm ? quietBtn : primaryBtn} onClick={() => setCreating(!showForm)} data-testid="experiment-new">
+    <Page testid="experiments-panel">
+      <Group hint="An experiment proves a change with numbers before it ships. Offline, its arms run over a fixed task set with repetitions; live, new sessions are split between the arms and a guard that gets worse stops it. When it ends it says which arm won, and the other arm's path is removed."
+        actions={<button type="button" className="k-btn k-btn-lg" data-ink={showForm ? undefined : ""} onClick={() => setCreating(!showForm)} data-testid="experiment-new">
           {showForm ? <><X className="size-4" />Close</> : <><Plus className="size-4" />New experiment</>}
-        </button>
-      </div>
+        </button>} />
       {showForm && <Create templates={list.templates} metrics={list.metrics} onMade={(e) => { setOpen(e.id); setCreating(false); void load(); }} />}
-      <div className="grid grid-cols-[18rem_minmax(0,1fr)] gap-4">
+      <div className="grid gap-4 @min-[48rem]/settings:grid-cols-[18rem_minmax(0,1fr)]">
         <nav className="flex flex-col gap-1" aria-label="Experiments" data-testid="experiment-list">
-          {!list.experiments.length && <p className="k-empty px-2 py-3">No experiments yet. Start from a template above.</p>}
+          {!list.experiments.length && <Empty>No experiments yet. Start from a template above.</Empty>}
           {list.experiments.map((e) => (
             <button key={e.id} type="button" onClick={() => setOpen(e.id)} data-testid="experiment-item"
               className={cn("flex flex-col gap-1 rounded-md border px-3 py-2 text-left", current?.id === e.id ? "border-line-strong bg-raised shadow-1" : "border-transparent hover:bg-hover")}>
@@ -109,7 +103,7 @@ export function ExperimentsPanel() {
         </nav>
         {current ? <Detail key={current.id} id={current.id} metrics={list.metrics} onChange={() => void load()} /> : <div />}
       </div>
-    </div>
+    </Page>
   );
 }
 
@@ -140,7 +134,7 @@ function Create({ templates, metrics, onMade }: { templates: Template[]; metrics
   };
   return (
     <Panel title="New experiment" hint={t ? `${t.mode} template` : undefined} testid="experiment-create">
-      <div className="grid grid-cols-[14rem_minmax(0,1fr)] gap-x-4 gap-y-3 text-ui">
+      <div className="grid grid-cols-1 gap-x-4 gap-y-3 text-ui @min-[40rem]/settings:grid-cols-[14rem_minmax(0,1fr)]">
         <label className="self-center text-muted" htmlFor="exp-template">Template</label>
         <div><Select value={tpl} onChange={(e) => pick(e.target.value)} aria-label="Template" data-testid="experiment-template">{templates.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}</Select></div>
         <label className="self-center text-muted" htmlFor="exp-name">Name</label>
@@ -153,7 +147,7 @@ function Create({ templates, metrics, onMade }: { templates: Template[]; metrics
         <div><Select value={primary} onChange={(e) => setPrimary(e.target.value)} aria-label="Primary metric">{Object.entries(metrics).map(([k, m]) => <option key={k} value={k}>{m.label} ({m.better} is better)</option>)}</Select></div>
       </div>
       <div className="mt-4 flex items-center gap-3">
-        <button type="button" className={primaryBtn} onClick={make} disabled={busy || !name.trim()} data-testid="experiment-make"><FlaskConical className="size-4" />Create</button>
+        <button type="button" className="k-btn k-btn-lg" data-ink="" onClick={make} disabled={busy || !name.trim()} data-testid="experiment-make"><FlaskConical className="size-4" />Create</button>
         {error && <span className="text-caption text-danger" role="alert">{error}</span>}
       </div>
     </Panel>
@@ -165,7 +159,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => api<{ experiment: Experiment; report: Report }>(`/api/experiments/${id}`).then(setD).catch(reportError), [id]);
   useEffect(() => { void load(); const t = setInterval(load, 5_000); return () => clearInterval(t); }, [load]);
-  if (!d) return <div className="text-ui text-faint">Reading the report.</div>;
+  if (!d) return <Empty>Reading the report.</Empty>;
   const { experiment: e, report: r } = d;
   const act = (path: string, method = "POST") => api(`/api/experiments/${e.id}${path}`, { method }).then(() => { setError(null); void load(); onChange(); }).catch((x) => setError((x as Error).message));
   const control = e.arms[0]!.name;
@@ -176,32 +170,26 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
   const runCmd = `bun scripts/bench/run.ts --experiment ${e.id} --daemon ${location.origin}${e.stop.model ? "" : " --model <id>"}${e.stop.tasks?.length ? "" : " --tasks <ids>"}`;
   return (
     <div className="flex min-w-0 flex-col gap-4" data-testid="experiment-detail">
-      <section className="rounded-lg border border-line bg-raised p-4 shadow-1">
-        <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2"><h3 className="truncate text-base font-medium">{e.name}</h3><StateChip e={e} /><span className="text-caption text-faint">{e.mode}</span></div>
-            <p className="mt-1 text-ui text-muted">{e.hypothesis}</p>
-          </div>
-          <div className="flex shrink-0 gap-2">
-            {e.state === "draft" && <button type="button" className={primaryBtn} onClick={() => act("/start")} data-testid="experiment-start"><Play className="size-4" />Start</button>}
-            {e.state === "running" && <button type="button" className={quietBtn} onClick={() => act("/stop")} data-testid="experiment-stop"><Square className="size-4" />Stop and decide</button>}
-            {e.state !== "running" && <button type="button" className={quietBtn} onClick={() => act("", "DELETE")} aria-label="Delete" title="Delete"><Trash2 className="size-4" /></button>}
-          </div>
-        </div>
-        {error && <p className="mt-2 text-caption text-danger" role="alert">{error}</p>}
-        <dl className="mt-3 grid grid-cols-[9rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-caption">
+      <Group title={e.name} count={<span className="inline-flex items-center gap-2"><StateChip e={e} />{e.mode}</span>} hint={e.hypothesis} pad
+        actions={<>
+          {e.state === "draft" && <button type="button" className="k-btn k-btn-lg" data-ink="" onClick={() => act("/start")} data-testid="experiment-start"><Play className="size-4" />Start</button>}
+          {e.state === "running" && <button type="button" className="k-btn k-btn-lg" onClick={() => act("/stop")} data-testid="experiment-stop"><Square className="size-4" />Stop and decide</button>}
+          {e.state !== "running" && <button type="button" className="k-btn k-btn-lg" onClick={() => act("", "DELETE")} aria-label="Delete" title="Delete"><Trash2 className="size-4" /></button>}
+        </>}>
+        {error && <p className="mb-2 text-caption text-danger" role="alert">{error}</p>}
+        <dl className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-caption">
           <dt className="text-faint">Judged by</dt><dd>{metrics[e.primary]?.label} ({metrics[e.primary]?.better} is better)</dd>
           <dt className="text-faint">Guards</dt><dd data-testid="experiment-guard-list">{e.guards.length ? `stop on evidence of any worsening of ${e.guards.map((g) => `${metrics[g.metric]?.label} (tuned to find ${g.relative ? `${Math.round(g.mde * 100)}%` : metrics[g.metric]!.unit === "share" ? `${Math.round(g.mde * 100)} points` : fmtMetric(metrics[g.metric]!.unit, g.mde)} fastest)`).join("; ")}` : "none"}</dd>
           <dt className="text-faint">Stop rule</dt><dd>{e.mode === "live" ? `a guard regression (sequential evidence, at most ${Number((alpha * 100).toFixed(2))}% false stops over all guards, arms and looks)${e.stop.sessions_per_arm ? `, or ${e.stop.sessions_per_arm} session families per arm, where the winner is read` : ", or the owner (no sample size is set, so no winner is named)"}` : `${e.stop.reps ?? 3} repetitions per task and arm`}</dd>
           {e.mode === "offline" && <><dt className="text-faint">Run it</dt><dd><code className="block w-fit max-w-full select-all break-all rounded-sm bg-sunken px-1.5 py-0.5 font-mono text-micro" data-testid="experiment-command">{runCmd}</code></dd></>}
           {e.stop_reason && <><dt className="text-faint">Stopped</dt><dd data-testid="experiment-stop-reason">{e.stop_reason}{e.stopped_ms ? `, ${ago(e.stopped_ms)}` : ""}</dd></>}
         </dl>
-      </section>
+      </Group>
 
       <Verdict d={e.decision ?? r.decision} final={!!e.decision} />
 
       <Panel title="Arms" hint={`${r.final_ms ? "final, frozen when it stopped; " : ""}each arm against ${control}; unit: ${r.unit}; 95% BCa bootstrap intervals`} testid="experiment-report">
-        <div className="-mx-4 overflow-x-auto">
+        <div className="k-scroll-x">
           <table className="w-full text-ui">
             <thead>
               <tr className="border-b border-line text-caption text-faint">
@@ -215,7 +203,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
                 const info = metrics[m]!;
                 return (
                   <tr key={m} className="border-b border-line/60 last:border-0" data-testid={`metric-${m}`}>
-                    <td className="whitespace-nowrap px-4 py-1.5">{info.label}{m === e.primary && <span className="ml-2 rounded-sm bg-accent-soft px-1 text-micro text-accent">primary</span>}</td>
+                    <td className="whitespace-nowrap px-4 py-1.5">{info.label}{m === e.primary && <span className="ml-2"><Status tone="info">primary</Status></span>}</td>
                     {r.arms.map((a) => <td key={a.arm} className="px-4 py-1.5 text-right tabular-nums text-muted">{iv(info.unit, a.metrics[m], false, a.units)}</td>)}
                     {e.arms.slice(1).map((a) => {
                       const f = r.effects.find((x) => x.arm === a.name && x.metric === m);
@@ -226,7 +214,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
                               {r.judged === false
                                 ? <span className="text-micro text-faint" data-testid="effect-open">not judged yet</span>
                                 : f.diff.significant
-                                  ? <span className={cn("rounded-sm px-1 text-micro font-medium", f.better ? "bg-sunken text-ok" : "bg-danger-soft text-danger")}>{f.better ? "better" : "worse"}</span>
+                                  ? <Status tone={f.better ? "ok" : "broken"}>{f.better ? "better" : "worse"}</Status>
                                   : <span className="text-micro text-faint">no difference</span>}
                               {iv(info.unit, f.diff, true)}
                             </span>
@@ -274,18 +262,12 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
 }
 
 function Verdict({ d, final }: { d: Decision; final: boolean }) {
-  const tone = d.verdict === "regression" ? "border-danger/40 bg-danger-soft" : d.verdict === "won" ? "border-ok/40" : "border-line";
   return (
-    <section className={cn("rounded-lg border bg-raised p-4 shadow-1", tone)} data-testid="experiment-decision">
-      <div className="flex items-baseline gap-2">
-        <h3 className="text-base font-medium">{final ? "Decision" : "Where it stands"}</h3>
-        <span className={cn("text-caption font-medium", d.verdict === "regression" ? "text-danger" : d.verdict === "won" ? "text-ok" : "text-muted")}>
-          {d.verdict === "won" ? `${d.winner} wins` : d.verdict === "regression" ? "regression" : "inconclusive"}
-        </span>
-      </div>
-      <p className="mt-1 text-ui">{d.text}</p>
+    <Group testid="experiment-decision" title={final ? "Decision" : "Where it stands"} pad
+      count={<Status tone={d.verdict === "regression" ? "broken" : d.verdict === "won" ? "ok" : "quiet"}>{d.verdict === "won" ? `${d.winner} wins` : d.verdict === "regression" ? "regression" : "inconclusive"}</Status>}>
+      <p className="text-ui">{d.text}</p>
       <p className="mt-1 text-ui text-muted">{d.remove}</p>
-    </section>
+    </Group>
   );
 }
 
