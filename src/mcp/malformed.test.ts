@@ -30,4 +30,11 @@ test("a malformed reply fails the call within a second, naming the server and th
   const str = await run("stringid");
   expect(str.r.is_error).toBeFalsy();
   expect(String(str.r.content)).toContain("fine");
-});
+  // A null error beside a result is a result.
+  const nul = await run("nullerror");
+  expect(nul.r.is_error).toBeFalsy();
+  expect(String(nul.r.content)).toContain("fine");
+  // A padded id is no call's: the call waits out its time and fails, never taking another's answer.
+  const pad = await run("paddedid");
+  expect(pad.r.is_error).toBe(true);
+}, 10_000);

@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // A stdio MCP server whose tools answer wrongly: noresult sends an id and nothing else, baderror an error that
-// is not an object, stringid the right result with the id as a string. Tool ok answers as it should.
-const names = ["ok", "noresult", "baderror", "stringid"];
+// is not an object, stringid the right result with the id as a string, nullerror a result beside "error": null,
+// paddedid the right result with a zero-padded id (another call's). Tool ok answers as it should.
+const names = ["ok", "noresult", "baderror", "stringid", "nullerror", "paddedid"];
 const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 function handle(m: any) {
   if (m.id === undefined) return;
@@ -14,6 +15,8 @@ function handle(m: any) {
     case "noresult": return send({ id: m.id });
     case "baderror": return send({ jsonrpc: "2.0", id: m.id, error: "boom" });
     case "stringid": return send({ jsonrpc: "2.0", id: String(m.id), result: text });
+    case "nullerror": return send({ jsonrpc: "2.0", id: m.id, result: text, error: null });
+    case "paddedid": return send({ jsonrpc: "2.0", id: "0" + String(m.id), result: text });
     default: return reply(text);
   }
 }
