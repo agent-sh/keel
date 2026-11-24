@@ -1973,7 +1973,7 @@ export function onTurnEnd(sessionId: string, reason: string, decided = false) {
   if (reason === "restart" && !stopping.has(a.id)) return;
   // Its file and log waits whose writer ended, as it was told in this turn, can bring it nothing new:
   // they would wake it after its report only to say what it knows (src/automation/waits.ts dropSpent).
-  if (!stopping.has(a.id)) waits.dropSpent(sessionId);
+  if (!stopping.has(a.id)) { waits.dropSpent(sessionId); waits.dropFallbacks(sessionId); }
   const { engine } = D();
   // (A turn of the owner's own message is about to start in its place: a prompt edited or sent now on its page.)
   if (engine.isRunning(sessionId) || engine.startsNext?.(sessionId) || hasPending(sessionId) || redirecting.has(a.id)) return;

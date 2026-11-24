@@ -893,3 +893,35 @@ test("an agent's turn end keeps a fired wait's wake and a wait that holds alread
   expect([status(mine.id), status(owners.id)]).toEqual(["cancelled", "active"]);
   waits.cancel(owners.id);
 });
+
+// A model sets a timer beside a condition wait as a fallback, writes its report on the condition's wake, and
+// was woken again by the timer: a turn that reads its whole context to say nothing.
+test("an agent's turn end drops the fallback timer of the wait that woke it, and only that", async () => {
+  const kid = store.createSession({ model: "m", workspace: dir, title: "kid3" });
+  if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE");
+  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(s.id, kid.id);
+  const p = join(dir, "kid3.log");
+  writeFileSync(p, "");
+  const watch = waits.create(kid.id, waits.normalize({ kind: "log", path: p, match: "^DONE$" }, dir), { timeout_seconds: 600 });
+  const fallback = waits.create(kid.id, waits.normalize({ kind: "timer", seconds: 900 }, dir), { note: "fallback" });
+  const owners = waits.create(kid.id, waits.normalize({ kind: "timer", seconds: 900 }, dir), { by: "owner" });
+  // Set long before: not this wait's fallback.
+  const later = waits.create(kid.id, waits.normalize({ kind: "timer", seconds: 900 }, dir), { note: "later" });
+  store.db.query("UPDATE waits SET created = created - 600000 WHERE id = ?").run(later.id);
+  appendFileSync(p, "DONE\n");
+  await waits.tick();
+  expect(status(watch.id)).toBe("fired");
+  await until(() => store.events(kid.id).some((e) => e.kind === "user" && String(e.data.text).includes(`<wait_fired id="${watch.id}"`)));
+  // Nothing was ended while it set a wait of its own in the turn.
+  await Bun.sleep(5); // (a wait made in the turn is made after the wake was stored)
+  const own = waits.create(kid.id, waits.normalize({ kind: "timer", seconds: 900 }, dir), { note: "its own" });
+  expect(waits.dropFallbacks(kid.id)).toEqual([]);
+  waits.cancel(own.id);
+  expect(waits.dropFallbacks(kid.id)).toEqual([fallback.id]);
+  expect([status(fallback.id), status(owners.id), status(later.id)]).toEqual(["cancelled", "active", "active"]);
+  expect(waits.get(fallback.id)!.outcome).toContain(`set beside wait ${watch.id}, which fired`);
+  // A turn a timer started has no condition wait to back up.
+  expect(waits.dropFallbacks(kid.id)).toEqual([]);
+  waits.cancel(owners.id);
+  waits.cancel(later.id);
+});

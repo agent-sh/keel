@@ -1295,6 +1295,38 @@ export function dropSpent(sessionId: string): string[] {
   return out;
 }
 
+// How close in time a timer was set to the wait it backs up, for it to be that wait's fallback.
+const FALLBACK_MS = 60_000;
+
+// At the end of an agent's turn that a fired wait started: the timers set beside that wait as its fallback
+// (models set one with every condition wait) can bring nothing new once the wait fired and the agent, told
+// what else was still set, set nothing after it. Left set, the timer wakes the agent after its report, and
+// the one-step turn reads its whole context again, often cold. Only a timer set within a minute of the wait
+// that fired, before this turn began, by the agent: a wait the agent set in this turn, a timer set at another
+// time and everything the owner set stay. Each is cancelled and says so. Returns their ids.
+export function dropFallbacks(sessionId: string): string[] {
+  let opened: { ts: number; ids: string[] } | undefined;
+  for (const e of D().store.back(sessionId)) {
+    if (e.kind !== "user") continue;
+    const d = e.data as { kind?: string; wait_id?: string; outcome?: string; parts?: { kind?: string; wait_id?: string; outcome?: string }[] };
+    const ids = [d, ...(Array.isArray(d.parts) ? d.parts : [])].filter((m) => m?.kind === "wait" && m.outcome === "fired" && m.wait_id).map((m) => String(m.wait_id));
+    opened = { ts: e.ts, ids };
+    break;
+  }
+  if (!opened?.ids.length) return [];
+  const fired = opened.ids.map(get).filter((w): w is WaitRecord => !!w && w.kind !== "timer" && w.by !== "owner");
+  if (!fired.length) return [];
+  const mine = list(sessionId, 0).filter((w) => w.status === "active" && w.by !== "owner");
+  if (mine.some((w) => w.created > opened!.ts)) return []; // it set a wait in this turn: it means to wait
+  const out: string[] = [];
+  for (const w of mine) {
+    if (w.kind !== "timer") continue;
+    const by = fired.find((f) => Math.abs(w.created - f.created) <= FALLBACK_MS);
+    if (by && settle(w.id, "cancelled", `Cancelled at the end of the agent's turn: it was set beside wait ${by.id}, which fired, and the agent set no wait after it, so this one could only wake it after its report.`, false)) out.push(w.id);
+  }
+  return out;
+}
+
 // Whether a file or log wait's condition holds now (its probe, which for a log does not pass a matching line).
 function holds(w: WaitRecord): boolean {
   if (live.get(w.id)?.probing) return true; // a probe is out: its answer decides
