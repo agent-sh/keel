@@ -105,3 +105,18 @@ test("the day's spend is the sum of the ledger's rows", () => {
   telemetry.spendChanged();
   expect(telemetry.spend().day.usd).toBeCloseTo(sum, 12);
 });
+
+test("a judge's request is counted in the session's total and does not move it in the list", async () => {
+  const s = session("Judge keeps its place");
+  const before = store.session(s.id)!;
+  // A later clock, so a moved session would show it.
+  await Bun.sleep(5);
+  const judge = makeJudge(store, providers, () => MODEL);
+  await judge({ session: before, tool: "Write", kind: "write", summary: "judge-allow.txt", input: {} });
+  const after = store.session(s.id)!;
+  const r = rows(s.id);
+  expect(r.length).toBe(1);
+  expect([after.usage.input, after.usage.cache_read]).toEqual([r[0]!.input, r[0]!.cache_read]);
+  expect(after.usage.input + after.usage.cache_read).toBeGreaterThan(0);
+  expect(after.updated).toBe(before.updated);
+});

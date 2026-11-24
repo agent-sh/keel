@@ -221,7 +221,7 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
           continue;
         }
         const r = await askJudge(providers, id, p, `judge-${a.session.id}`, Math.min(JUDGE_TIMEOUT_MS, left), store.session(a.session.id) ?? a.session);
-        store.addUsage(a.session.id, r.usage);
+        store.addUsage(a.session.id, r.usage, { keepPlace: true });
         if (!r.v) { tried.push(`${r.info.name} gave no allow or deny`); continue; }
         const risk = ["low", "medium", "high", "critical"].includes(r.v.risk) ? r.v.risk : "unknown";
         if (a.mode === "auto" && (risk === "unknown" || typeof r.v.reason !== "string" || !r.v.reason.trim())) {
@@ -232,7 +232,7 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
       } catch (e) {
         // A request cut by its time limit or broken mid-stream was billed for what its stream reported.
         const spent = reportedUsage(e);
-        if (spent) store.addUsage(a.session.id, spent);
+        if (spent) store.addUsage(a.session.id, spent, { keepPlace: true });
         tried.push((e as Error).name === "TimeoutError" ? `${id} did not answer within ${Math.round(JUDGE_TIMEOUT_MS / 1000)} seconds` : `${id}: ${(e as Error).message.slice(0, 200)}`);
       }
     }
