@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileFindings } from "./health-file-rules.ts";
-import { scanFiles } from "./health-files.ts";
+import { READ_MAX, readHead, scanFiles } from "./health-files.ts";
 
 test("a skill, command or agent file: what is lost is said, what is fine says nothing", () => {
   // Skills and commands.
@@ -91,4 +91,49 @@ test("the walk: broken files by folder, a hidden name, a repository agent that t
     expect(r.truncated).toBe(false);
     expect(scanFiles({ folders: [{ dir: join(root, "own/skills"), kind: "skill", layer: "personal" }], plugins: [], builtins: [], max: 1 }).truncated).toBe(true);
   } finally { rmSync(join(root), { recursive: true, force: true }); }
+});
+
+test("a file is read up to READ_MAX bytes, never whole", () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-health-head-"));
+  try {
+    const big = join(root, "big.md");
+    writeFileSync(big, "a".repeat(READ_MAX + 5000));
+    const h = readHead(big);
+    expect(h.size).toBe(READ_MAX + 5000);
+    expect(h.text.length).toBe(READ_MAX);
+    expect(readHead(big, 10).text).toBe("aaaaaaaaaa");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the walk mirrors what the skill list leaves out: another harness's skill and a skill the trust pin holds back take no name", () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-health-mirror-"));
+  try {
+    const put = (path: string, text: string) => { mkdirSync(join(root, path, ".."), { recursive: true }); writeFileSync(join(root, path), text); };
+    // A personal skill that drives another harness's product is not offered, so it holds no name...
+    put("own/skills/cdx/SKILL.md", "---\nname: same\ndescription: Use the Codex CLI to do it.\n---\nx");
+    // ...so a repository's skill of that name is the one offered.
+    put("proj/skills/real/SKILL.md", "---\nname: same\ndescription: the repository's\n---\nx");
+    // A folder the owner chose keeps every skill it holds.
+    put("chosen/c1/SKILL.md", "---\nname: other\ndescription: Use the Codex CLI.\n---\nx");
+    put("proj/skills/other/SKILL.md", "---\nname: other\ndescription: the repository's\n---\nx");
+    // A repository's skill the trust pin holds back says so, and takes no name.
+    put("proj/skills/held/SKILL.md", "---\nname: held\ndescription: waits\n---\nx");
+    put("own/skills/held2/SKILL.md", "---\nname: held\ndescription: the owner's\n---\nx");
+    const r = scanFiles({
+      folders: [
+        { dir: join(root, "own/skills"), kind: "skill", layer: "personal" },
+        { dir: join(root, "chosen"), kind: "skill", layer: "personal", chosen: true },
+        { dir: join(root, "proj/skills"), kind: "skill", layer: "project" },
+      ],
+      plugins: [], builtins: [],
+      held: [{ path: join(root, "proj/skills/held"), why: "it is new in this repository, and waits for the owner to trust it." }],
+    });
+    const shadow = r.findings.filter((f) => f.group === "settings");
+    // "same": no warning (the foreign one took nothing). "other": the chosen folder's skill is first, the repository's is hidden.
+    expect(shadow.some((f) => f.name === "same")).toBe(false);
+    expect(shadow.find((f) => f.name === "other")).toMatchObject({ why: expect.stringContaining("never offered") });
+    // "held": the pinned skill says why it does not load; it does not hide behind or in front of the owner's.
+    expect(shadow.find((f) => f.path.endsWith("held/SKILL.md"))).toMatchObject({ level: "warning", why: expect.stringContaining("it does not load: it is new in this repository") });
+    expect(shadow.filter((f) => f.name === "held" && /never offered/.test(f.why))).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

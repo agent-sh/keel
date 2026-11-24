@@ -80,6 +80,14 @@ export class CodexProvider implements Provider {
     return existsSync(this.file) && !!this.read()?.tokens?.access_token;
   }
 
+  // The stored sign-in as it is on disk, with nothing asked or renewed: when its access token ends, and whether
+  // a refresh token is there to renew it. Null when not signed in.
+  stored(): { expires_at_ms?: number; refreshable: boolean } | null {
+    const t = this.read()?.tokens;
+    if (!t?.access_token) return null;
+    return { expires_at_ms: jwtExpiryMs(t.access_token), refreshable: !!t.refresh_token };
+  }
+
   identity() {
     return fingerprint(this.id, this.broker.identity?.replace(/\/$/, "") ?? this.base, this.read()?.tokens?.account_id);
   }

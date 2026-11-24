@@ -1680,12 +1680,14 @@ is never printed and never on a command line.
 `keel doctor` and Settings > Health list what is wrong with an installation in
 one list, from `GET /api/health/check` (`?cwd=DIR` adds that folder's own
 skills, commands, agents and hooks). It runs when asked, never on a timer, and
-changes and spends nothing. Each row is well, a warning or broken, says how to
+changes none of your files or settings and spends no tokens. Each row is well, a warning or broken, says how to
 fix it in a line and where (a file, and the Settings section). The checks:
 
 - Skill, command, agent and plugin files that are not loaded, or load with part
   of what they say lost (a front matter that never closes, no front matter in
-  an agent file, a plugin whose folder or listed file is gone), and the owner's
+  an agent file, a plugin whose folder or listed file is gone; a repository's skill held back
+  by the trust pin says so, and a skill of another harness's own product takes
+  no name), and the owner's
   JSON config files that do not parse.
 - Hook files with a problem, a matcher that matches no tool and no value of its
   event, and a matcher on an event that takes none.
@@ -1698,8 +1700,11 @@ fix it in a line and where (a file, and the Settings section). The checks:
   for commands.
 - Each available provider, by its model listing (a read that spends no tokens;
   a provider that answers locally, or an endpoint with no listing, is named as
-  not checked, never asked for an answer), with an account problem it already
-  knows (billing, sign-in).
+  not checked, never asked for an answer; an endpoint is asked with no
+  fallback, so a dead address is broken even when models are set by hand).
+  Codex and Grok are not asked: their listing can renew a sign-in and rewrite
+  its file, so they are read from the stored sign-in (valid until, renewable).
+  Each row also carries an account problem Keel already knows (billing, sign-in).
 - MCP servers that fail to start, wait for a sign-in or hold changed tools.
 - A telemetry exporter that is on with no endpoint.
 - The disk under the state folder: broken under 1 GB free (the database's log

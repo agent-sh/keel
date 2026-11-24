@@ -1,21 +1,24 @@
 // The health check: one list of what is wrong with this installation, from the
 // pieces Keel already has (the hook parser, the sandbox probe, the MCP manager's
-// states, the provider listings, the settings, the config files). Read-only: it
-// changes nothing and spends nothing. Each check runs on its own, bounded in
+// states, the provider listings, the settings, the config files). It changes none
+// of the owner's files or settings and asks for nothing that costs tokens (the
+// words are CHECK_NOTE in health-rows.ts). Each check runs on its own, bounded in
 // time: a check that does not finish says so as a row and the rest still
 // answer. File walks run on the read thread; the rest wait on a process or the
 // network, never on the loop.
-import { statfsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statfsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "../core/store.ts";
 import { readText } from "../core/proc.ts";
 import type { Providers } from "../providers/registry.ts";
 import { EndpointProvider } from "../providers/endpoint.ts";
+import { CodexProvider } from "../providers/codex.ts";
+import { XaiProvider } from "../providers/xai.ts";
 import { configDir } from "../providers/config.ts";
 import { readsOf } from "../server/reads.ts";
 import { Hooks, namesOf } from "../integrations/hooks.ts";
 import { toolFacts } from "../tools/registry.ts";
-import { carriedPlugins, commandRoots, skillRoots, skillsConfig } from "../tools/skills.ts";
+import { carriedPlugins, commandRoots, skillFilter, skillRoots, skillsConfig } from "../tools/skills.ts";
 import { agentFolders, builtinAgentNames } from "../automation/agents.ts";
 import { installedUnits } from "../plugins/registry.ts";
 import { configPath } from "../mcp/config.ts";
@@ -24,7 +27,7 @@ import { refusedConfigs } from "../core/named-config.ts";
 import { settings, settingsUnreadable } from "./settings.ts";
 import { ERROR_TYPES } from "../server/routes/hooks.ts";
 import { gate } from "../server/routes/permissions.ts";
-import type { FilesAsk, FilesResult } from "./health-files.ts";
+import type { FilesAsk, FilesResult, HeldFile } from "./health-files.ts";
 import { countsOf, ordered, type HealthReport, type Row } from "./health-rows.ts";
 import { diskRow, hookRows, layerRows, layersOk, mcpRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts, type ProviderFacts } from "./health-rules.ts";
 
@@ -50,6 +53,27 @@ export async function bounded(name: string, group: Row["group"], ms: number, run
 
 // ---- the files ---------------------------------------------------------------
 
+// The repository's skills and commands the trust pin holds back (src/tools/skills.ts asks the same filter),
+// by the folder of a skill and the file of a command. The pin lives on the loop, so it is asked here; a
+// repository holds a handful of them.
+const HELD_MAX = 200;
+function heldBack(cwd: string): HeldFile[] {
+  const out: HeldFile[] = [];
+  if (!skillFilter.allow) return out;
+  const names = (dir: string) => { try { return readdirSync(dir).sort(); } catch { return []; } };
+  const ask = (held: string) => {
+    if (out.length >= HELD_MAX || skillFilter.allow!(held)) return;
+    out.push({ path: held, why: skillFilter.held?.(held) ?? "the owner has not trusted it" });
+  };
+  for (const r of skillRoots(cwd).filter((x) => x.scope !== "personal")) {
+    for (const n of names(r.dir)) if (!n.startsWith(".") && n !== "synced" && existsSync(join(r.dir, n, "SKILL.md"))) ask(join(r.dir, n));
+  }
+  for (const r of commandRoots(cwd).filter((x) => x.scope !== "personal")) {
+    for (const n of names(r.dir)) if (n.endsWith(".md") && !n.startsWith(".")) ask(join(r.dir, n));
+  }
+  return out;
+}
+
 function filesAsk(cwd: string): FilesAsk {
   const cfg = skillsConfig();
   const units = installedUnits().filter((u) => u.enabled);
@@ -58,7 +82,7 @@ function filesAsk(cwd: string): FilesAsk {
   const folders: FilesAsk["folders"] = [
     // The order the readers take them (src/tools/skills.ts discoverSkills): the owner's folders, the ones he added, plugins, then the repository's.
     ...skills.filter((r) => r.scope === "personal").map((r) => ({ dir: r.dir, kind: "skill" as const, layer: "personal" })),
-    ...(cfg.roots ?? []).filter((r) => typeof r?.dir === "string").map((r) => ({ dir: r.dir, kind: "skill" as const, layer: "personal", nested: !!r.nested, exclude: r.exclude })),
+    ...(cfg.roots ?? []).filter((r) => typeof r?.dir === "string").map((r) => ({ dir: r.dir, kind: "skill" as const, layer: "personal", nested: !!r.nested, exclude: r.exclude, chosen: true })),
     ...carried.map((p) => ({ dir: join(p.dir, "skills"), kind: "skill" as const, layer: "plugin", prefix: `${p.name}:` })),
     ...skills.filter((r) => r.scope !== "personal").map((r) => ({ dir: r.dir, kind: "skill" as const, layer: "project" })),
     ...commandRoots(cwd).map((r) => ({ dir: r.dir, kind: "command" as const, layer: r.scope === "personal" ? "personal" : "project" })),
@@ -74,7 +98,7 @@ function filesAsk(cwd: string): FilesAsk {
       ...u.agents.map((a) => ({ kind: "agent" as const, file: a.file, name: a.name })),
     ],
   }));
-  return { folders, plugins, builtins: builtinAgentNames(), json: [join(configDir(), "skills.json"), join(configDir(), "plugins.json"), configPath()] };
+  return { folders, plugins, held: heldBack(cwd), builtins: builtinAgentNames(), json: [join(configDir(), "skills.json"), join(configDir(), "plugins.json"), configPath()] };
 }
 
 const SECTION: Record<string, string> = { skill: "skills", command: "commands", agent: "agents", "codex agent": "agents", plugin: "plugins", config: "mcp" };
@@ -154,27 +178,40 @@ async function sandbox(): Promise<Row[]> {
 
 // ---- providers -------------------------------------------------------------------
 
-async function providers(reg: Providers): Promise<Row[]> {
-  const facts = await Promise.all(reg.all().filter((p) => p.available()).map(async (p): Promise<ProviderFacts> => {
+export async function providerFacts(reg: Pick<Providers, "all" | "problem">): Promise<ProviderFacts[]> {
+  return Promise.all(reg.all().filter((p) => p.available()).map(async (p): Promise<ProviderFacts> => {
     const known = reg.problem(p.id);
     const base = { id: p.id, label: p.label ?? p.id, problem: known && { kind: known.kind, message: known.message, source: known.source } };
     // An agent of another program and the scripted stand-in have nothing to reach; an endpoint with no listing
     // would need a request that costs tokens, which this check never sends.
     if (p.id === "acp" || p.id === "scripted") return { ...base, how: "no call made", result: { skipped: "answers locally: there is nothing to reach" } };
     if (p instanceof EndpointProvider && p.cfg.listing === false) return { ...base, how: "no call made", result: { skipped: "this endpoint has no model listing, and the only other check would be a request that spends tokens" } };
-    const how = "asked for its model listing, a read that spends no tokens";
+    // A listing from these two can renew the sign-in and rewrite its file (and Grok's can move its surface), which a
+    // check that changes nothing must not do: they are read from the stored sign-in, and the first turn that needs
+    // a token renews it as it always did.
+    if (p instanceof CodexProvider || p instanceof XaiProvider) {
+      const how = "read from the stored sign-in; no call made, because asking for the model listing can renew the token and rewrite the sign-in file";
+      const st = p.stored();
+      return st ? { ...base, how, result: { signedIn: { until: st.expires_at_ms, refreshable: st.refreshable, now: Date.now() } } } : { ...base, how, result: { error: "not signed in" } };
+    }
+    const how = p instanceof EndpointProvider
+      ? "asked the server for its model listing, a read that spends no tokens"
+      : "asked for its model listing, a read that spends no tokens";
     const t0 = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const r = await Promise.race([p.list(), new Promise<"late">((ok) => { timer = setTimeout(() => ok("late"), PROVIDER_MS); })]);
+      // An endpoint's own `list` falls back to the models the configuration names when the read fails: asked strictly here.
+      const r = await Promise.race([p instanceof EndpointProvider ? p.listStrict() : p.list(), new Promise<"late">((ok) => { timer = setTimeout(() => ok("late"), PROVIDER_MS); })]);
       if (r === "late") return { ...base, how, result: { timedOut: PROVIDER_MS } };
       return { ...base, how, result: { ms: Date.now() - t0, models: r.length } };
     } catch (e) {
-      return { ...base, how, result: { error: (e as Error).message.slice(0, 300) } };
+      const byHand = p instanceof EndpointProvider ? p.cfg.models?.length : undefined;
+      return { ...base, how, result: { error: (e as Error).message.slice(0, 300), status: (e as { status?: number }).status, ...(byHand ? { byHand } : {}) } };
     } finally { clearTimeout(timer); }
   }));
-  return providerRows(facts);
 }
+
+const providers = async (reg: Providers): Promise<Row[]> => providerRows(await providerFacts(reg));
 
 // ---- MCP servers --------------------------------------------------------------------
 

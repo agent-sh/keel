@@ -1,6 +1,8 @@
 // GET /api/health/check[?cwd=DIR]: the health check (src/admin/health.ts), run
-// when asked, never on a timer. Read-only and free: a provider is asked for
-// its model listing, never for an answer. `cwd`: the folder whose skills,
+// when asked, never on a timer. It changes none of the owner's files or
+// settings and spends no tokens: a provider is asked for its model listing, never
+// for an answer (Codex and Grok, whose listing can renew a sign-in, are read from
+// the stored sign-in). `cwd`: the folder whose skills,
 // commands, agents and hooks are read beside the owner's (the daemon's own
 // working folder by default). `keel doctor` and Settings > Health ask here.
 import { runHealth } from "../../admin/health.ts";

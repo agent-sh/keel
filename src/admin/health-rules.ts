@@ -172,7 +172,10 @@ export type ProviderFacts = {
   // What the check did: a listing call, or nothing (with why).
   how: string;
   // The answer: how long it took and how many models it listed, or what failed, or the time it took to give up.
-  result: { ms: number; models: number } | { error: string } | { timedOut: number } | { skipped: string };
+  // `error`: what failed; `byHand` is the number of models the configuration names (a listing that fails then
+  // leaves the endpoint offering those), `status` the HTTP status when there was one.
+  // `signedIn`: a sign-in read from its file, never asked: it ends at `until`, `refreshable`: a refresh token is stored.
+  result: { ms: number; models: number } | { error: string; status?: number; byHand?: number } | { timedOut: number } | { skipped: string } | { signedIn: { until?: number; refreshable: boolean; now: number } };
   // A known account problem from an earlier listing or turn.
   problem?: { kind: string; message: string; source: string };
 };
@@ -184,7 +187,21 @@ export function providerRows(list: ProviderFacts[]): Row[] {
     const base = { id: `provider:${p.id}`, group: "providers" as Group, link, how: p.how };
     const r = p.result;
     if ("skipped" in r) { rows.push({ ...base, level: "ok", title: `${p.label}: not checked`, detail: r.skipped }); continue; }
-    if ("error" in r) { rows.push({ ...base, level: "broken", title: `${p.label} does not answer its listing`, detail: r.error, fix: /\b(401|403)\b|key|auth|sign|credential|token/i.test(r.error) ? "check the key or sign in again in Settings > Providers" : "check the address and your network, then read the listing again in Settings > Models" }); continue; }
+    if ("signedIn" in r) {
+      const { until, refreshable, now } = r.signedIn;
+      const at = until === undefined ? "" : new Date(until).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+      if (p.problem) rows.push({ ...base, level: "broken", title: `${p.label}: ${p.problem.kind} problem`, detail: p.problem.message, fix: p.problem.kind === "billing" ? "add credit or change the plan with the provider" : "sign in again in Settings > Providers", });
+      else if (until !== undefined && until <= now && !refreshable) rows.push({ ...base, level: "broken", title: `${p.label}: the sign-in ended at ${at} and cannot be renewed`, fix: "sign in again in Settings > Providers" });
+      else if (until !== undefined && until <= now) rows.push({ ...base, level: "ok", title: `${p.label}: signed in`, detail: `the access token ended at ${at}; it is renewed when a turn next needs it (this check does not renew it)` });
+      else rows.push({ ...base, level: "ok", title: `${p.label}: signed in`, detail: at ? `the access token is valid until ${at}${refreshable ? ", and renews itself after that" : ""}` : "the stored sign-in has no end date" });
+      continue;
+    }
+    if ("error" in r) {
+      // An endpoint that names models by hand still offers them when its listing has no route: a warning. One that
+      // cannot be reached at all offers models that cannot answer: broken.
+      if (r.byHand && (r.status === 404 || r.status === 405 || r.status === 501)) { rows.push({ ...base, level: "warning", title: `${p.label}: its listing failed, the ${r.byHand} ${r.byHand === 1 ? "model" : "models"} set by hand are offered`, detail: r.error, fix: "take out the models set by hand if the server has a listing, or leave them if it has none" }); continue; }
+      rows.push({ ...base, level: "broken", title: `${p.label} does not answer its listing`, detail: r.error, fix: /\b(401|403)\b|key|auth|sign|credential|token/i.test(r.error) ? "check the key or sign in again in Settings > Providers" : "check the address and your network, then read the listing again in Settings > Models" }); continue;
+    }
     if ("timedOut" in r) { rows.push({ ...base, level: "warning", title: `${p.label} did not answer in ${Math.round(r.timedOut / 1000)} s`, fix: "check your network; a provider that is only slow shows up again here", }); continue; }
     if (p.problem) { rows.push({ ...base, level: "broken", title: `${p.label}: ${p.problem.kind} problem`, detail: p.problem.message, fix: p.problem.kind === "billing" ? "add credit or change the plan with the provider" : "sign in again or replace the key in Settings > Providers" }); continue; }
     rows.push({ ...base, level: "ok", title: `${p.label} answers`, detail: `${r.models} ${r.models === 1 ? "model" : "models"} listed in ${r.ms} ms` });

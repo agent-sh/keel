@@ -68,6 +68,11 @@ const MARK: Record<Level, string> = { ok: "ok     ", warning: "warning", broken:
 
 // The report as text, a group at a time. Rows that are well are one line each;
 // a row that is not shows what is wrong, how to fix it and where.
+// What the check does, in the words every view of it uses. It changes none of the owner's files or settings and
+// asks for no answer a provider charges for; it does make requests (a model listing per provider), and it leaves
+// out the two providers whose listing can renew a sign-in.
+export const CHECK_NOTE = "This check changes none of your files or settings and spends no tokens. It asks each provider for its model listing, a free read over the network, except Codex and Grok, whose listing can renew a sign-in: those are read from the stored sign-in.";
+
 export function healthText(report: HealthReport, { all = true }: { all?: boolean } = {}): string {
   const out: string[] = [];
   for (const g of GROUPS) {
@@ -86,6 +91,7 @@ export function healthText(report: HealthReport, { all = true }: { all?: boolean
     out.push("");
   }
   const c = report.counts;
+  out.push(CHECK_NOTE);
   out.push(`${c.broken} broken, ${c.warning} warning${c.warning === 1 ? "" : "s"}, ${c.ok} ok (${report.took_ms < 1000 ? `${report.took_ms} ms` : `${(report.took_ms / 1000).toFixed(1)} s`})`);
   return out.join("\n");
 }

@@ -172,6 +172,14 @@ export class EndpointProvider implements Provider {
     });
   }
 
+  // The listing as the server answers it, with no fallback: `list` offers the models the configuration names when
+  // the listing cannot be read, which would make a closed port look like an answer. A failed read throws.
+  async listStrict(): Promise<ListedModel[]> {
+    const a = await this.auth();
+    const first = await getJson(this.label, this.listUrl, a.headers, a.secrets);
+    return this.list(first);
+  }
+
   // `first`: the listing's first page when the caller read it already (the
   // connection test keeps what a failed read says), so it is not asked for twice.
   async list(first?: any): Promise<ListedModel[]> {

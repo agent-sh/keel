@@ -116,7 +116,12 @@ const subscribe = (f: () => void) => {
   subs.add(f);
   return () => void subs.delete(f);
 };
+// The session the page was showing before it went to another page (Settings): what a page that reads "the
+// folder the owner works in" takes it from. Cleared when no session was left.
+let left: string | undefined;
+export const sessionLeft = () => left;
 export function setUI(patch: Partial<UIState>) {
+  if (patch.route && patch.route.name !== "session") left = state.route.name === "session" ? state.route.id : left;
   state = { ...state, ...patch };
   subs.forEach((f) => f());
 }

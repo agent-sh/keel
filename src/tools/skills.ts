@@ -9,6 +9,8 @@ import { writeOwnFile } from "../core/ownfile.ts";
 import { registerHooks, type SystemBlock } from "../engine/hooks.ts";
 import { enabledUnits, unitOf } from "../plugins/registry.ts";
 import { fillContent } from "../plugins/options.ts";
+import { foreignSkill, frontmatter, skillDescription } from "./skill-text.ts";
+export { foreignSkill, frontmatter };
 import { valuesOf } from "../plugins/settings.ts";
 import { claudeAllow } from "../integrations/port-permissions.ts";
 import type { RuleKind } from "../safety/policy.ts";
@@ -99,34 +101,6 @@ export function pluginDir(p: PluginRef): { name: string; dir: string } | null {
 }
 export const carriedPlugins = () => (skillsConfig().plugins ?? []).map(pluginDir).filter((x): x is { name: string; dir: string } => !!x);
 
-// Small YAML subset: scalars, quoted strings, [a, b] and "- a" lists, | and > blocks.
-export function frontmatter(text: string): { data: Record<string, any>; body: string } {
-  if (!text.startsWith("---")) return { data: {}, body: text };
-  const end = text.indexOf("\n---", 3);
-  if (end === -1) return { data: {}, body: text };
-  const lines = text.slice(text.indexOf("\n") + 1, end).split("\n");
-  const body = text.slice(text.indexOf("\n", end + 1) + 1);
-  const data: Record<string, any> = {};
-  const unq = (v: string) => v.replace(/^(["'])([\s\S]*)\1$/, "$2");
-  for (let i = 0; i < lines.length; i++) {
-    const m = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(lines[i]!);
-    if (!m) continue;
-    const [, key, raw] = m as unknown as [string, string, string];
-    if (/^[|>][-+]?$/.test(raw)) {
-      const block: string[] = [];
-      while (i + 1 < lines.length && (/^\s/.test(lines[i + 1]!) || lines[i + 1] === "")) block.push(lines[++i]!.trim());
-      data[key] = raw.startsWith(">") ? block.join(" ").trim() : block.join("\n").trim();
-    } else if (raw === "") {
-      const items: string[] = [];
-      while (i + 1 < lines.length && /^\s*-\s+/.test(lines[i + 1]!)) items.push(unq(lines[++i]!.replace(/^\s*-\s+/, "").trim()));
-      data[key] = items.length ? items : "";
-    } else if (/^\[.*\]$/.test(raw)) data[key] = raw.slice(1, -1).split(",").map((s) => unq(s.trim())).filter(Boolean);
-    else if (raw === "true" || raw === "false") data[key] = raw === "true";
-    else data[key] = unq(raw.trim());
-  }
-  return { data, body };
-}
-
 function gitRoot(dir: string): string | null {
   for (let d = dir; ; d = dirname(d)) {
     if (existsSync(join(d, ".git"))) return d;
@@ -183,16 +157,6 @@ export function mayGrant(skill: Skill): boolean {
   return !!skillFilter.ownerTrusted?.(skill.kind === "command" ? skill.file : skill.dir);
 }
 
-// Other harnesses install their built-in skills into the shared personal
-// folders (~/.agents/skills): skills that drive that harness's own product,
-// settings or tools, which Keel cannot run. A personal skill is left out when
-// its name or description names such a product, or its body uses that
-// harness's own config folder or tool names. Project skills always load.
-const FOREIGN_TITLE = /\b(codex|cursor|bugbot)\b/i;
-const FOREIGN_BODY = /(^|[\s"'`(~/])\.(cursor|codex)\/|\bcursor-[a-z]+-[a-z_-]+|<\/?cursor-[a-z]/m;
-export const foreignSkill = (name: string, description: string, body: string) =>
-  FOREIGN_TITLE.test(`${name} ${description}`) || FOREIGN_BODY.test(body);
-
 // Command files, the older form of a skill Claude Code still reads
 // (<folder>/<name>.md, the same frontmatter): the owner's, then the
 // project's from the working directory up to the repository root.
@@ -245,8 +209,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
     const { data, body } = frontmatter(text);
     const name = prefix + String((kind === "skill" && data.name) || fallback);
     if (out.has(name) || /[<>​]/.test(name)) return;
-    const desc = [data.description || body.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "") || "", data.when_to_use || ""]
-      .filter(Boolean).join(" ").slice(0, 1536);
+    const desc = skillDescription(data, body);
     // A folder the owner chose (another harness's skills, a plugin) keeps every skill it holds.
     if (scope === "personal" && !chosen && foreignSkill(name, desc, body)) return;
     const args = Array.isArray(data.arguments) ? data.arguments : typeof data.arguments === "string" ? data.arguments.split(/\s+/).filter(Boolean) : [];

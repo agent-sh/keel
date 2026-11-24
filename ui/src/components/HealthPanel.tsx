@@ -5,10 +5,10 @@
 // Settings section where it is fixed.
 import { ArrowUpRight, CircleAlert, CircleCheck, RotateCw, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, reportError } from "../lib/store.ts";
-import { navigate } from "../lib/ui.ts";
+import { api, reportError, useStore } from "../lib/store.ts";
+import { navigate, sessionLeft, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
-import { GROUPS, GROUP_NAMES, SECTION_NAMES, type HealthReport, type Level, type Row } from "../../../src/admin/health-rows.ts";
+import { CHECK_NOTE, GROUPS, GROUP_NAMES, SECTION_NAMES, type HealthReport, type Level, type Row } from "../../../src/admin/health-rows.ts";
 import { Card } from "./Settings.tsx";
 
 const MARK: Record<Level, { icon: typeof CircleCheck; tone: string; word: string }> = {
@@ -53,13 +53,34 @@ function HealthRow({ r }: { r: Row }) {
 
 export function HealthPanel() {
   const [report, setReport] = useState<HealthReport | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The folder the owner works in: the session he came from, else the folder the start box uses; the daemon's own when neither.
+  const folder = useStore((s) => (sessionLeft() && s.sessions[sessionLeft()!]?.workspace) || "");
+  const chosen = useUI((s) => s.newWorkspace);
+  const cwd = folder || chosen;
   const run = useCallback(() => {
     setBusy(true);
-    api<HealthReport>("/api/health/check").then(setReport).catch(reportError).finally(() => setBusy(false));
-  }, []);
+    setFailed(null);
+    api<HealthReport>(`/api/health/check${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`)
+      .then(setReport)
+      .catch((e) => { setFailed(e instanceof Error ? e.message : String(e)); reportError(e); })
+      .finally(() => setBusy(false));
+  }, [cwd]);
   useEffect(run, [run]);
-  if (!report) return <div className="text-ui text-faint" data-testid="health-wait">Checking.</div>;
+  if (!report) {
+    return failed === null
+      ? <div className="text-ui text-faint" data-testid="health-wait">Checking.</div>
+      : (
+        <div className="flex flex-col gap-3" data-testid="health-failed">
+          <div className="text-base text-danger">The health check did not answer: {failed}</div>
+          <button type="button" disabled={busy} className="k-btn k-btn-lg self-start" data-testid="health-again" onClick={run}>
+            <RotateCw className={cn("size-3.5", busy && "animate-spin")} aria-hidden />
+            {busy ? "Checking" : "Try again"}
+          </button>
+        </div>
+      );
+  }
   const c = report.counts;
   return (
     <div className="flex flex-col gap-5" data-testid="health-panel" data-state={busy ? "checking" : "done"}>
@@ -68,13 +89,15 @@ export function HealthPanel() {
           <Tally level="broken" n={c.broken} />
           <Tally level="warning" n={c.warning} />
           <Tally level="ok" n={c.ok} />
-          <span className="text-caption text-faint">Checked in {report.took_ms < 1000 ? `${report.took_ms} ms` : `${(report.took_ms / 1000).toFixed(1)} s`}. Nothing was changed or paid for.</span>
+          <span className="text-caption text-faint">Checked in {report.took_ms < 1000 ? `${report.took_ms} ms` : `${(report.took_ms / 1000).toFixed(1)} s`}.</span>
           <button type="button" disabled={busy} className="k-btn k-btn-lg ml-auto" data-testid="health-again" onClick={run}>
             <RotateCw className={cn("size-3.5", busy && "animate-spin")} aria-hidden />
             {busy ? "Checking" : "Check again"}
           </button>
         </div>
       </Card>
+      {failed !== null && <div className="text-ui text-danger" data-testid="health-failed">The last check did not answer: {failed}. These rows are from the one before.</div>}
+      <div className="text-caption text-faint" data-testid="health-note">{CHECK_NOTE}</div>
       {GROUPS.map((g) => {
         const rows = report.rows.filter((r) => r.group === g);
         if (!rows.length) return null;

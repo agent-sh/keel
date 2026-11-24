@@ -5,9 +5,10 @@
 // holds the loop. The folders come from the daemon in the order its readers
 // walk them (src/tools/skills.ts, src/automation/agents.ts); nothing here
 // writes, and nothing runs what a file says.
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { closeSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { readPlugin } from "../plugins/manifest.ts";
+import { foreignSkill, frontmatter, skillDescription } from "../tools/skill-text.ts";
 import { fileFindings, type FileKind } from "./health-file-rules.ts";
 import type { Level } from "./health-rows.ts";
 
@@ -21,13 +22,20 @@ export type Folder = {
   exclude?: string[];
   // A plugin's names come with its prefix: `<plugin>:<name>`.
   prefix?: string;
+  // A folder the owner chose (another harness's skills): every skill it holds is offered, none is taken for
+  // another harness's own (src/tools/skills.ts).
+  chosen?: boolean;
 };
+// A repository's skill or command the trust pin holds back: it is not offered, and says why.
+export type HeldFile = { path: string; why: string };
 export type PluginAsk = { id: string; dir: string; files: { kind: FileKind; file: string; name: string }[] };
 export type FilesAsk = {
   folders: Folder[];
   plugins: PluginAsk[];
   // Names of the agents Keel brings itself: a repository's file never takes one.
   builtins: string[];
+  // What the trust pin holds back, by the file the skill or command is in.
+  held?: HeldFile[];
   // The owner's JSON config files: each, when it is there, must be a JSON object.
   json?: string[];
   // The most files read in one check.
@@ -47,7 +55,7 @@ export type FileFinding = {
 export type FilesResult = { findings: FileFinding[]; counts: Record<"skill" | "command" | "agent" | "plugin" | "config", number>; truncated: boolean };
 
 const MAX_FILES = 5000;
-const READ_MAX = 1_000_000;
+export const READ_MAX = 1_000_000;
 const list = (dir: string): string[] => { try { return readdirSync(dir).sort(); } catch { return []; } };
 const isFile = (p: string) => { try { return statSync(p).isFile(); } catch { return false; } };
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
@@ -59,7 +67,23 @@ const nameOf = (text: string): string | undefined => {
   return m?.[1]?.trim().replace(/^(["'])([\s\S]*)\1$/, "$2") || undefined;
 };
 
-type Item = { kind: FileKind; file: string; layer: string; fallback: string; prefix: string };
+// A file's size and its first `max` bytes: a file larger than that is never read whole.
+export function readHead(file: string, max = READ_MAX): { text: string; size: number } {
+  const size = statSync(file).size;
+  const fd = openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(Math.min(size, max));
+    let got = 0;
+    while (got < buf.length) {
+      const n = readSync(fd, buf, got, buf.length - got, got);
+      if (n <= 0) break;
+      got += n;
+    }
+    return { text: buf.subarray(0, got).toString("utf8"), size };
+  } finally { closeSync(fd); }
+}
+
+type Item = { kind: FileKind; file: string; layer: string; fallback: string; prefix: string; chosen: boolean };
 
 // The files a folder holds, in the order the readers take them.
 function itemsOf(f: Folder): Item[] {
@@ -71,14 +95,14 @@ function itemsOf(f: Folder): Item[] {
       for (const n of list(dir)) {
         if (n.startsWith(".") || n === "synced" || skip.has(n)) continue;
         const d = join(dir, n);
-        if (isFile(join(d, "SKILL.md"))) out.push({ kind: "skill", file: join(d, "SKILL.md"), layer: f.layer, fallback: n, prefix });
+        if (isFile(join(d, "SKILL.md"))) out.push({ kind: "skill", file: join(d, "SKILL.md"), layer: f.layer, fallback: n, prefix, chosen: !!f.chosen });
         else if (f.nested && depth < 3) walk(d, depth + 1);
       }
     };
     walk(f.dir, 0);
   } else {
     const ext = f.kind === "codex agent" ? ".toml" : ".md";
-    for (const n of list(f.dir)) if (n.endsWith(ext) && !n.startsWith(".")) out.push({ kind: f.kind, file: join(f.dir, n), layer: f.layer, fallback: n.slice(0, -ext.length), prefix });
+    for (const n of list(f.dir)) if (n.endsWith(ext) && !n.startsWith(".")) out.push({ kind: f.kind, file: join(f.dir, n), layer: f.layer, fallback: n.slice(0, -ext.length), prefix, chosen: !!f.chosen });
   }
   return out;
 }
@@ -90,13 +114,11 @@ export function scanFiles(ask: FilesAsk): FilesResult {
   let read = 0, truncated = false;
   const text = (file: string): { text: string; size: number } | { error: string } => {
     try {
-      const size = statSync(file).size;
-      const t = readFileSync(file, "utf8");
-      return { text: size > READ_MAX ? t.slice(0, READ_MAX) : t, size };
+      return readHead(file);
     } catch (e) { return { error: (e as Error).message }; }
   };
   // Check one file; returns the name it goes by.
-  const check = (it: { kind: FileKind; file: string; layer: string; fallback: string; prefix: string }): string | undefined => {
+  const check = (it: Item): { name: string; foreign: boolean } | undefined => {
     if (read >= max) { truncated = true; return undefined; }
     read++;
     const t = text(it.file);
@@ -107,27 +129,44 @@ export function scanFiles(ask: FilesAsk): FilesResult {
     counts[it.kind === "codex agent" ? "agent" : it.kind]++;
     const name = it.prefix + ((it.kind === "skill" || it.kind === "agent" ? nameOf(t.text) : undefined) ?? it.fallback);
     for (const f of fileFindings(it.kind, t.text, t.size)) findings.push({ group: "files", level: f.level, kind: it.kind, path: it.file, name, layer: it.layer, why: f.why, fix: f.fix });
-    return name;
+    // A personal skill or command that drives another harness's own product is left out of the list (foreignSkill).
+    let foreign = false;
+    if (it.layer === "personal" && !it.chosen && (it.kind === "skill" || it.kind === "command")) {
+      const { data, body } = frontmatter(t.text);
+      foreign = foreignSkill(name, skillDescription(data, body), body);
+    }
+    return { name, foreign };
   };
 
   // Skills and commands: a name is taken by the first file that holds it (a skill before a command).
   const taken = new Map<string, string>();
   const seenReal = new Set<string>();
+  const holds = new Map((ask.held ?? []).map((h) => [h.path, h.why]));
   const agents: { name: string; file: string; layer: string; r: string }[] = [];
   for (const folder of ask.folders) {
     for (const it of itemsOf(folder)) {
       const r = real(it.file);
       if (it.kind === "skill" || it.kind === "command") {
         if (seenReal.has(r)) continue;
+        // A repository's skill the trust pin holds back is not offered and takes no name; it says why instead.
+        const hold = it.layer === "project" ? holds.get(it.kind === "skill" ? dirname(it.file) : it.file) : undefined;
+        if (hold !== undefined) {
+          seenReal.add(r);
+          findings.push({ group: "settings", level: "warning", kind: it.kind, path: it.file, name: it.fallback, layer: it.layer, why: `it does not load: ${hold.replace(/\.$/, "")}`, fix: "open the session's Trust panel and trust it, or delete it" });
+          continue;
+        }
         seenReal.add(r);
-        const name = check(it);
-        if (!name) continue;
+        const checked = check(it);
+        if (!checked) continue;
+        const { name, foreign } = checked;
+        if (foreign) continue;
         const first = taken.get(name);
         if (first) findings.push({ group: "settings", level: "warning", kind: it.kind, path: it.file, name, layer: it.layer, why: `${name} is never offered: ${first} has the same name and is read first`, fix: "rename or delete one of the two" });
         else taken.set(name, it.file);
       } else {
-        const name = check(it);
-        if (!name) continue;
+        const checked = check(it);
+        if (!checked) continue;
+        const { name } = checked;
         if (it.layer === "project" && ask.builtins.includes(name)) {
           findings.push({ group: "settings", level: "warning", kind: it.kind, path: it.file, name, layer: it.layer, why: `${name} is ignored: a repository's file never takes the name of an agent Keel brings itself`, fix: "give the agent another name" });
           continue;
@@ -171,7 +210,7 @@ export function scanFiles(ask: FilesAsk): FilesResult {
     }
     for (const f of p.files) {
       if (!isFile(f.file)) { findings.push({ group: "files", level: "broken", kind: f.kind, path: f.file, name: `${p.id}:${f.name}`, layer: "plugin", why: "the plugin lists this file and it is gone", fix: "update the plugin, or remove it and install it again" }); continue; }
-      check({ kind: f.kind, file: f.file, layer: "plugin", fallback: f.name, prefix: `${p.id}:` });
+      check({ kind: f.kind, file: f.file, layer: "plugin", fallback: f.name, prefix: `${p.id}:`, chosen: true });
     }
   }
   return { findings, counts, truncated };

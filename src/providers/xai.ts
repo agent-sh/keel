@@ -98,6 +98,12 @@ export class XaiProvider implements Provider {
     return !!this.grant();
   }
 
+  // The stored sign-in, with nothing asked or renewed (a listing may renew it, or move its surface).
+  stored(): { expires_at_ms?: number; refreshable: boolean } | null {
+    const g = this.grant();
+    return g ? { expires_at_ms: g.expires_at_ms, refreshable: !!g.refresh_token && !g.refresh_lost } : null;
+  }
+
   // The signed-in account (the id token's subject), not the rotating tokens.
   identity() {
     const g = this.grant();

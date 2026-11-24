@@ -6,7 +6,7 @@ import { shoot } from "./shots.ts";
 // Feature: Settings > Health, the page behind `keel doctor`. One list of what is wrong:
 // a skill file whose front matter never closes and a hook matcher that matches no tool are
 // broken rows, each with its fix and a button to the section that fixes it; what is well is
-// listed too. The check is read-only: a provider is asked for its listing, never for an answer.
+// listed too. The check changes none of the owner's files and spends no tokens: a provider is asked for its listing, never for an answer.
 // Runs on a scratch daemon: the spec writes its owner hooks file and a skill into its config folder.
 test("health: a broken skill and a dead hook matcher are rows with their fix and a link", async ({ page, request }) => {
   const info = await (await request.get("/api/hooks")).json();
@@ -28,6 +28,7 @@ test("health: a broken skill and a dead hook matcher are rows with their fix and
     await page.goto("/settings/health");
     const panel = page.getByTestId("health-panel");
     await expect(panel).toHaveAttribute("data-state", "done");
+    await expect(page.getByTestId("health-note")).toContainText("changes none of your files or settings and spends no tokens");
     const broken = page.locator('[data-testid="health-row"][data-level="broken"]');
     const torn = broken.filter({ hasText: "torn-skill" });
     await expect(torn).toHaveCount(1);
@@ -69,4 +70,24 @@ test("health: a broken skill and a dead hook matcher are rows with their fix and
     if (was === undefined) rmSync(hooks, { force: true });
     else writeFileSync(hooks, was);
   }
+});
+
+// A check that cannot be read is an error with a way to ask again, never "Checking." for good; and the check
+// reads the folder the owner works in (the start box's folder here), not only the daemon's own.
+test("health: a failed check shows its error and asks again; the owner's folder goes with the ask", async ({ page }) => {
+  const asked: string[] = [];
+  let failing = true;
+  await page.addInitScript(() => localStorage.setItem("keel.newWorkspace", JSON.stringify("/tmp/health-folder")));
+  await page.route("**/api/health/check*", (route) => {
+    asked.push(route.request().url());
+    return failing ? route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "the check broke" }) }) : route.continue();
+  });
+  await page.goto("/settings/health");
+  await expect(page.getByTestId("health-failed")).toBeVisible();
+  await expect(page.getByTestId("health-wait")).toHaveCount(0);
+  failing = false;
+  await page.getByTestId("health-again").click();
+  await expect(page.getByTestId("health-panel")).toHaveAttribute("data-state", "done");
+  expect(asked.length).toBe(2);
+  expect(asked.every((u) => new URL(u).searchParams.get("cwd") === "/tmp/health-folder")).toBe(true);
 });
