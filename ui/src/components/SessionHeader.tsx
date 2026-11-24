@@ -33,7 +33,7 @@ export function SidebarButton() {
   // Desktop has the rail; a phone opens the list from here.
   if (sidebar || !phone()) return null;
   return (
-    <button type="button" aria-label="Show the sidebar" title="Show the sidebar (Ctrl B)" data-testid="show-sidebar" onClick={() => savePref("sidebar", true)} className={iconButton}>
+    <button type="button" aria-label="Show the sidebar" title="Show the sidebar (Ctrl B)" data-testid="show-sidebar" onClick={() => savePref("sidebar", true)} className={cn(iconButton, "k-list-button")}>
       <MenuIcon className="size-4" />
     </button>
   );
@@ -262,7 +262,8 @@ function LaterPill({ id }: { id: string }) {
   );
 }
 
-export function SessionHeader({ session }: { session: Session }) {
+// `bar`: the pane's top bar holds the list's button itself (a phone's one row: the button, the title and state, the tools).
+export function SessionHeader({ session, bar }: { session: Session; bar?: boolean }) {
   const menuButton = useRef<HTMLButtonElement>(null); // where a menu item's failed copy is said
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(session.title);
@@ -374,7 +375,7 @@ export function SessionHeader({ session }: { session: Session }) {
 
   return (
     <header ref={head} className="k-session-header relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line bg-bg/85 px-2 backdrop-blur-md md:px-4" data-testid="session-header">
-      <SidebarButton />
+      {!bar && <SidebarButton />}
       <div data-flex="" className="flex min-w-0 flex-1 items-center gap-2.5 pl-1">
         {editing ? (
           <input

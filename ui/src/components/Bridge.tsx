@@ -43,7 +43,7 @@ import { PaneMap } from "./PaneMap.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
 import { briefText, elapsed, failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
-import { SessionHeader } from "./SessionHeader.tsx";
+import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
 import { Crumbs } from "./Crumbs.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
 import { Kbd } from "./Kbd.tsx";
@@ -333,7 +333,7 @@ function Swap({ session, slot, covered }: { session: string; slot: number; cover
 
 // The pane's top bar: its head and, in the pane worked in, the session's tools. Where the pane is
 // wide the two are one bar of one height (bridge.css, .k-top); narrower, the tools are a row under it.
-const head = (x: Session, on: boolean) => <div className="k-top"><div className="k-top-in"><StationHead s={x} helm={on} pinned={isPinned(x)} />{on && <SessionHeader session={x} />}</div></div>;
+const head = (x: Session, on: boolean) => <div className="k-top"><div className="k-top-in">{on && <SidebarButton />}<StationHead s={x} helm={on} pinned={isPinned(x)} />{on && <SessionHeader session={x} bar />}</div></div>;
 
 // One session's view in a pane: the pane's own, or a look over it (`back` leads out of that).
 // The same component in both places, so a look that is kept goes on as the pane's session

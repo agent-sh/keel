@@ -11,6 +11,14 @@ import { reportError } from "../lib/store.ts";
 import { tipNow } from "../lib/tips.ts";
 import { cn } from "../lib/utils.ts";
 
+// A copy with no button of its own (a menu's row): the same copy, announced as the button's is, a failure said and reported once.
+export function copyWords(text: string | (() => string | Promise<string>)): Promise<void> {
+  return (shellCopying(), Promise.resolve(typeof text === "function" ? text() : text)).then(copyText).then(
+    () => announce("Copied"),
+    (err) => { announce(`${COPY_FAILED}: the browser refused the clipboard.`, "alert"); reportError(err, { kind: "clipboard" }); },
+  );
+}
+
 // `icon`: its glyph when two copy buttons stand side by side (a file's content, a file's path).
 export function CopyButton({ text, label = "Copy", testid = "copy", className, icon }: { text: string | (() => string | Promise<string>); label?: string; testid?: string; className?: string; icon?: React.ReactNode }) {
   const [state, setState] = useState<"idle" | "done" | "failed">("idle");

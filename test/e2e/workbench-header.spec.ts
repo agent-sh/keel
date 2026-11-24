@@ -63,7 +63,7 @@ test("a narrow running composer keeps Stop and Send on screen", async ({ page, r
   const { session } = await (await request.post("/api/sessions", { data: { title: "Narrow composer", model: model!.id } })).json();
   try {
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
-    await page.setViewportSize({ width: 390, height: 844 });
+    await page.setViewportSize({ width: 390, height: 540 });
     await page.goto(`/s/${session.id}`);
     // A phone keeps other sessions as pages beside this one: every control is read in its own pane.
     const pane = page.getByTestId("station").and(page.locator(`[data-station="${session.id}"]`));
@@ -111,7 +111,7 @@ test("a small window keeps the message box on screen under a full stack", async 
       localStorage.setItem("keel.textScale", "1.5");
       localStorage.setItem(key!, value!);
     }, [`keel.sends.${id}`, JSON.stringify(kept)]);
-    await page.setViewportSize({ width: 390, height: 600 });
+    await page.setViewportSize({ width: 390, height: 540 });
     await page.goto(`/s/${id}`);
     const pane = page.getByTestId("station").and(page.locator(`[data-station="${id}"]`));
     const box = pane.getByTestId("composer");
@@ -209,7 +209,7 @@ test("a small window keeps the message box on screen under a full stack", async 
     await expect(box).toHaveValue(draft);
     await controls();
     await shoot(page, "composer-stack-1920");
-    await page.setViewportSize({ width: 390, height: 600 });
+    await page.setViewportSize({ width: 390, height: 540 });
     await expect(box).toHaveValue(draft);
     await controls();
 
@@ -324,7 +324,7 @@ test.describe("a crowded toolbar", () => {
     const menu = page.getByTestId("header-more");
     try {
       // A phone, by touch.
-      await page.setViewportSize({ width: 390, height: 844 });
+      await page.setViewportSize({ width: 390, height: 540 });
       await page.goto(`/s/${id}`);
       await expect(station.getByTestId("composer")).toBeVisible();
       const phone = await reachable(page, station);

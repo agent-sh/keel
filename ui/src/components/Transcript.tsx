@@ -1,6 +1,9 @@
 import { Popover } from "@base-ui/react/popover";
-import { CopyButton } from "./CopyButton.tsx";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
+import { CopyButton, copyWords } from "./CopyButton.tsx";
+import { usePhoneWidth } from "../lib/list-hold.ts";
+import { itemClass, popupClass } from "./ui.tsx";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Ellipsis, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { quoteParts } from "../lib/quote.ts";
@@ -115,6 +118,45 @@ function Extra({ on, e }: { on: "user" | "assistant"; e: StoredEvent }) {
   );
 }
 
+// On a phone a message's actions are one button at its edge and a menu of them by name: six icons in a
+// row took a row of the page for each message. `lead`: the actions of the message itself (copy, edit,
+// answer again); the registered ones follow, as `Extra` draws them.
+type Lead = { id: string; label: string; icon: ReactNode; testid: string; run: () => void };
+function MessageMenu({ on, e, lead }: { on: "user" | "assistant"; e: StoredEvent; lead: Lead[] }) {
+  return (
+    <Menu.Root modal={false}>
+      <Menu.Trigger aria-label="Message actions" title="Message actions" data-testid="message-menu" className="k-msg-menu grid size-7 shrink-0 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg data-popup-open:bg-hover data-popup-open:text-fg">
+        <Ellipsis className="size-3.5" />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner side="bottom" align="end" sideOffset={2} className="z-50 outline-none">
+          <Menu.Popup className={`${popupClass} min-w-52`} data-testid="message-menu-popup"><MessageRows on={on} e={e} lead={lead} /></Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
+  );
+}
+// (Drawn only while the menu is open: a row of the page never reads the turn's state for it.)
+function MessageRows({ on, e, lead }: { on: "user" | "assistant"; e: StoredEvent; lead: Lead[] }) {
+  useSyncExternalStore(rowActions.subscribe, rowActions.version);
+  const store = useContext(TailContext);
+  const working = useTail(isWorking);
+  const s = store.get().session;
+  const row = (id: string, testid: string, icon: ReactNode, label: string, run: () => void) => (
+    <Menu.Item key={id} className={itemClass} data-testid={testid} onClick={run}>
+      <span className="grid w-3.5 shrink-0 place-items-center [&>svg]:size-3.5">{icon}</span>
+      <span className="min-w-0 flex-1">{label}</span>
+    </Menu.Item>
+  );
+  return (
+    <>
+      {lead.map((l) => row(l.id, l.testid, l.icon, l.label, l.run))}
+      {rowActions.all().filter((a) => a.on === on && (!a.when || a.when(e, s)) && !(a.idle && working)).map((a) =>
+        row(a.id, `rowaction-${a.id}`, typeof a.icon === "function" ? a.icon(e, s) : a.icon, a.label, () => a.run(e, getState().sessions[s.id] ?? s)))}
+    </>
+  );
+}
+
 // Attachments in the order they were sent (the order the model reads them),
 // files and images interleaved, so "the second one" means one thing.
 function Images({ blocks }: { blocks: PromptBlock[] }) {
@@ -180,6 +222,7 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
     setEditing("keys");
   }, [asked]);
   const at = vs.findIndex((v) => v.id === e.id);
+  const narrow = usePhoneWidth();
   // Only a prompt with versions shows the turn's state (its arrows wait for the turn).
   const working = useTail((t) => vs.length > 1 && isWorking(t));
   const origin: string | undefined = e.data.origin;
@@ -193,6 +236,8 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
   if (editing) return <EditPrompt e={e} sid={sid} back={editing === "keys"} onDone={() => setEditing(false)} />;
   return (
     <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id} data-quote-from="your message">
+      <div className={narrow ? "flex items-start gap-0.5" : "contents"}>
+      <div className={narrow ? "min-w-0 flex-1" : "contents"}>
       <OwnerWords
         className="k-user-words"
         label={origin === "steer" ? <span className="k-label" data-testid="origin-steer">Steered into the turn</span>
@@ -211,12 +256,18 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
           </>
         )}
       </OwnerWords>
-      <div className="-mt-0.5 flex h-6 items-center">
-        <span className="flex items-center opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 max-md:opacity-100">
+      </div>
+      {narrow && <MessageMenu on="user" e={e} lead={[
+        { id: "copy", testid: "copy-message", label: "Copy the message", icon: <Copy />, run: () => void copyWords(text) },
+        { id: "edit", testid: "edit-message", label: "Edit and send as a new version", icon: <Pencil />, run: () => setEditing("click") },
+      ]} />}
+      </div>
+      <div className={cn("-mt-0.5 flex items-center", narrow ? "empty:hidden" : "h-6")}>
+        {!narrow && <span className="flex items-center opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 max-md:opacity-100">
           <CopyButton text={() => text} label="Copy the message" testid="copy-message" className="size-7" />
           <ActionButton label="Edit and send as a new version" testid="edit-message" onClick={() => setEditing("click")}><Pencil className="size-3.5" /></ActionButton>
           <Extra on="user" e={e} />
-        </span>
+        </span>}
         {vs.length > 1 && (
           <span className="flex items-center text-caption tabular-nums text-faint" data-testid="branch-nav">
             <button type="button" aria-label="Previous version" title="Previous version" disabled={at <= 0 || working} onClick={() => pick(at - 1)} className="grid size-7 place-items-center rounded-sm hover:bg-hover hover:text-fg disabled:opacity-40">
@@ -553,6 +604,7 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
   // The turn's state shows on the last footer (its actions) and on a restart chip.
   const working = useTail((t) => (last || notes.some((n) => n.kind === "user")) && isWorking(t));
   const tailOf = useContext(TailContext);
+  const narrow = usePhoneWidth();
   const u = e.data.usage;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
@@ -567,6 +619,10 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
   const goOn = useAgentCount(ownStop ? sid : undefined);
   return (
     <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
+      {narrow ? (!(boxed && !reply.length) || reply.length > 0 || partial || (prompt && last && !working)) && <MessageMenu on="assistant" e={e} lead={[
+        ...(reply.length > 0 || partial ? [{ id: "copy", testid: "copy-reply", label: "Copy the reply", icon: <Copy />, run: () => void copyWords(() => (partial ? actions.reply(sid, { before: e.seq, head: tailOf.get().other }) : reply.join("\n\n"))) }] : []),
+        ...(prompt && last && !working ? [{ id: "retry", testid: "retry", label: "Answer again (a new version; this one stays a branch)", icon: <RotateCcw />, run: () => void actions.edit(sid, prompt.id, prompt.data.text).catch(reportError) }] : []),
+      ]} /> : <>
       {(reply.length > 0 || partial) && <CopyButton text={() => (partial ? actions.reply(sid, { before: e.seq, head: tailOf.get().other }) : reply.join("\n\n"))} label="Copy the reply" testid="copy-reply" className="size-7" />}
       {prompt && last && !working ? (
         <ActionButton label="Answer again (a new version; this one stays a branch)" testid="retry" onClick={() => actions.edit(sid, prompt.id, prompt.data.text).catch(reportError)}>
@@ -574,6 +630,7 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
         </ActionButton>
       ) : prompt ? <span className="size-7 shrink-0" aria-hidden="true" /> /* its place, kept: the rest of the row does not move when a turn starts or ends */ : null}
       {!(boxed && !reply.length) && <Extra on="assistant" e={e} />}
+      </>}
       <TurnNotes notes={notes} working={working} />
       <span className="k-turn-end ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
         {REASONS[e.data.reason] && (waits

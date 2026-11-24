@@ -343,8 +343,13 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* A pane too narrow for the table (four panes, a phone): what was said stands above what was done, and a
    line's words wrap from the pane's own edge. */
 @container reading (max-width: 36rem) {
+  /* What was said stays beside what was done where both fit one line (a few words and a call's row);
+     else the call's row goes under the words, over the pane's whole width. */
   .k-work[data-said] { display: flex; }
-  .k-work[data-said] > .k-step { display: block; }
+  .k-work[data-said] > .k-step { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 0.25rem; }
+  .k-work[data-said] > .k-step > :where(.k-aside, .k-step-lead) { flex: 1 1 100%; }
+  .k-work[data-said] > .k-step > .k-said { flex: 0 0 auto; max-width: 100%; }
+  .k-work[data-said] > .k-step > .k-did { flex: 1 1 8rem; }
   /* A call's own line takes a second row there before its words are cut: how it stands is never cut. */
   .k-line-text:not([data-wrap]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
   .k-under-what[data-code] { -webkit-line-clamp: 5; }
