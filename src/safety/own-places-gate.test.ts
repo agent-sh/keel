@@ -93,6 +93,7 @@ test("only the owner's own prompts name a folder as the owner's, and an imported
 });
 
 // A session's own `git worktree add`, as its stored calls show it, is a folder of its own to the judge.
+const later = (ms: number) => new Promise((r) => setTimeout(r, ms));
 test("a worktree the session's own call added is its own for the judge, and nothing the call did not make is", async () => {
   const w = world();
   const s = w.session([{ text: "Fix the bug." }], null);
@@ -102,19 +103,34 @@ test("a worktree the session's own call added is its own for the judge, and noth
     writeFileSync(join(dir, ".git"), `gitdir: ${w.repo}/.git/worktrees/${name}\n`);
     return dir;
   };
-  const call = (id: string, command: string, out: string, error = false) => {
+  // `made`: what the call does while it runs (the folder it adds is born between its two stored events).
+  const call = (id: string, command: string, out: string, made?: () => void, error = false) => {
     w.store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id, name: "Bash", input: { command } }] });
+    made?.();
     w.store.append(s.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: id, content: out, ...(error ? { is_error: true } : {}) }] });
   };
-  const made = linked("made"), failed = linked("failed"), plain = join(w.root, "scratch-wt", "plain"), given = linked("given"), early = linked("early");
+  // Folders that were there before any call below: the owner's worktrees, a failed add's, a plain folder.
+  const owners = linked("owners"), failed = linked("failed"), plain = join(w.root, "scratch-wt", "plain"), given = linked("given");
   mkdirSync(plain, { recursive: true });
-  call("c1", `cd ${w.repo} && git worktree add -q -b lane-made ${made} main`, "");
-  call("c2", `git -C ${w.repo} worktree add ${failed} main`, "Exit code 128\nfatal: '/x' already exists");
+  const made = join(w.root, "scratch-wt", "made");
+  await later(250);
+  call("c1", `cd ${w.repo} && git worktree add -q -b lane-made ${made} main`, "", () => linked("made"));
+  call("c2", `git -C ${w.repo} worktree add ${failed} main`, "Exit code 128\nfatal: '/x' already exists", undefined, true);
   call("c3", `git -C ${w.repo} worktree add ${plain} main`, "");
   // A path the line builds as it runs is not read.
   call("c4", `git -C ${w.repo} worktree add "$(mktemp -d)" main`, "");
   // A call that is only text in an argument.
   call("c5", `echo 'git worktree add ${given}'`, "");
+  // Calls that ended well and made nothing: the folder was the owner's, there before.
+  call("f1", `true || git worktree add ${owners}`, "");
+  call("f2", `grep -q zzz a.txt && git worktree add ${owners}`, "");
+  call("f3", `if false; then git worktree add ${owners}; fi`, "");
+  call("f4", `git worktree add ${owners} 2>/dev/null || true`, "");
+  call("f5", `[ -d ${owners} ] || git -C ${w.repo} worktree add ${owners}`, "");
+  // The gpt family's shell: a failing exit and a command still running show nothing made.
+  call("f6", `git -C ${w.repo} worktree add ${owners} main`, "Chunk ID: a1\nWall time: 0.1 seconds\nProcess exited with code 128\nOutput:\nx");
+  call("f7", `git -C ${w.repo} worktree add ${owners} main`, "Chunk ID: a1\nWall time: 1.0 seconds\nProcess running with session ID 3\nOutput:\n");
+  call("f8", `git -C ${w.repo} worktree add ${owners} main`, "Command did not complete within its 120s timeout and was moved to the background with ID: b1.");
   const ask = async (who: Session, dir: string) => {
     w.asked.length = 0;
     await w.check(who, bash, { command: `rm -rf ${dir}/src` });
@@ -125,14 +141,21 @@ test("a worktree the session's own call added is its own for the judge, and noth
   expect(own).toContain("`git worktree add`");
   // (It adds nothing the session may write: the places the sandbox and a parent's gifts read stay as they were.)
   expect((await w.g.places(s)).some((p) => p.path === made)).toBe(false);
-  for (const dir of [failed, plain, given, early]) expect(await ask(s, dir)).not.toContain(`${dir}:`);
+  for (const dir of [owners, failed, plain, given]) expect(await ask(s, dir)).not.toContain(`${dir}:`);
   // Another session's call does not make a folder this one's.
   const other = w.session([{ text: "Other." }], null);
   expect(await ask(other, made)).not.toContain(`${made}:`);
   // A worktree made, then replaced by a folder that is no linked worktree.
-  call("c6", `git -C ${w.repo} worktree add ${early} main`, "");
+  const early = join(w.root, "scratch-wt", "swapped");
+  call("c6", `git -C ${w.repo} worktree add ${early} main`, "", () => linked("swapped"));
   rmSync(join(early, ".git"));
   mkdirSync(join(early, ".git"));
   w.g.forgetPlaces(s.id);
   expect(await ask(s, early)).not.toContain(`${early}:`);
+  // A worktree the call made, removed and made again by someone else after the call ended, is not the call's.
+  rmSync(made, { recursive: true });
+  await later(250);
+  linked("made");
+  w.g.forgetPlaces(s.id);
+  expect(await ask(s, made)).not.toContain(`${made}:`);
 });

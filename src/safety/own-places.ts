@@ -28,7 +28,7 @@ const SAID: Record<PlaceFrom, string> = {
   parent: "named as this session's own in the task or a message its parent session gave it",
   owner: "named as this session's own in the owner's message",
   writes: "given to this agent to write by its parent session (its spawn's writes, or a yes to its question)",
-  made: "a git worktree this session added itself (its own `git worktree add` ran and ended well)",
+  made: "a git worktree this session added itself (its own `git worktree add` ran, and the folder was born while it ran)",
 };
 
 // The words that name a folder as the reader's own, right before the path: "Scratch dir PATH", "scratch folder:
@@ -121,7 +121,7 @@ function globHolds(g: string, p: string): boolean {
 export function ownFacts(places: OwnPlace[]): string {
   if (!places.length) return "";
   const lines = places.map((x) => `- ${x.path}: ${SAID[x.from]}`);
-  // (A worktree its own call added is read from a call Keel ran and ended well, and the folder on disk, not from what the agent says of it.)
+  // (A worktree its own call added is read from a call Keel ran and ended well, the folder's birth within the call, and the folder on disk, not from what the agent says of it.)
   const said = places.some((x) => x.from === "made") ? "nothing the agent wrote, read or fetched adds to this list but a worktree its own call made" : "nothing the agent wrote, read or fetched adds to this list";
   return `Folders that are this session's own, from Keel's records (${said}):\n${lines.join("\n")}`;
 }

@@ -13,7 +13,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
-import { endedWell, worktreesAdded } from "./made-places.ts";
+import { bornDuring, endedWell, worktreesAdded } from "./made-places.ts";
 import { fitsAsPlace, namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
 import { lookRepo, readRepo, repoContext } from "./repofacts.ts";
 import { accountNames } from "./account-settings.ts";
@@ -740,21 +740,23 @@ export class Gate {
     try {
       let since = 0;
       try { since = this.store.db.query<{ synced_ms: number }, [string]>("SELECT synced_ms FROM import_links WHERE session_id = ?").get(session.id)?.synced_ms ?? 0; } catch {} // nothing was imported here
-      const calls = await this.readSql("SELECT e.seq AS seq, json_extract(j.value, '$.id') AS id, COALESCE(json_extract(j.value, '$.input.command'), json_extract(j.value, '$.input.cmd')) AS cmd FROM events e, json_each(e.data, '$.blocks') j WHERE e.session_id = ? AND e.kind = 'assistant' AND e.ts > ? AND e.data LIKE '%worktree%add%' AND json_extract(j.value, '$.type') = 'tool_use' AND cmd LIKE '%worktree%add%' ORDER BY e.seq DESC LIMIT 100", [session.id, since]) as { seq: number; id: string; cmd: unknown }[];
+      const calls = await this.readSql("SELECT e.seq AS seq, e.ts AS ts, json_extract(j.value, '$.id') AS id, COALESCE(json_extract(j.value, '$.input.command'), json_extract(j.value, '$.input.cmd')) AS cmd FROM events e, json_each(e.data, '$.blocks') j WHERE e.session_id = ? AND e.kind = 'assistant' AND e.ts > ? AND e.data LIKE '%worktree%add%' AND json_extract(j.value, '$.type') = 'tool_use' AND cmd LIKE '%worktree%add%' ORDER BY e.seq DESC LIMIT 100", [session.id, since]) as { seq: number; id: string; cmd: unknown; ts: number }[];
       const asked = calls.filter((c) => typeof c.id === "string" && typeof c.cmd === "string");
       if (asked.length) {
-        const results = await this.readSql(`SELECT json_extract(j.value, '$.tool_use_id') AS id, substr(json_extract(j.value, '$.content'), 1, 4000) AS out, json_extract(j.value, '$.is_error') AS err FROM events e, json_each(e.data, '$.results') j WHERE e.session_id = ? AND e.kind = 'tool_result' AND e.seq > ? AND json_extract(j.value, '$.tool_use_id') IN (${asked.map(() => "?").join(",")})`, [session.id, Math.min(...asked.map((c) => c.seq)), ...asked.map((c) => c.id)]) as { id: string; out: unknown; err: unknown }[];
-        const ended = new Set(results.filter((r) => endedWell(typeof r.out === "string" ? r.out : "", r.err === 1 || r.err === true)).map((r) => r.id));
+        const results = await this.readSql(`SELECT json_extract(j.value, '$.tool_use_id') AS id, e.ts AS ts, substr(json_extract(j.value, '$.content'), 1, 4000) AS out, json_extract(j.value, '$.is_error') AS err FROM events e, json_each(e.data, '$.results') j WHERE e.session_id = ? AND e.kind = 'tool_result' AND e.seq > ? AND json_extract(j.value, '$.tool_use_id') IN (${asked.map(() => "?").join(",")})`, [session.id, Math.min(...asked.map((c) => c.seq)), ...asked.map((c) => c.id)]) as { id: string; ts: number; out: unknown; err: unknown }[];
+        // (When each call ended, as its result was stored: the worktree must have been born between the two.)
+        const ended = new Map(results.filter((r) => endedWell(typeof r.out === "string" ? r.out : "", r.err === 1 || r.err === true)).map((r) => [r.id, r.ts]));
         const home = realOf(homeDir());
         const keel = ownFolders();
         for (const c of asked) {
-          if (!ended.has(c.id)) continue;
+          const to = ended.get(c.id);
+          if (to === undefined) continue;
           for (const p of worktreesAdded(c.cmd as string, session.workspace, homeDir())) {
             const real = realOf(p);
             // (Through a link, or in a folder no scratch can be: not a place. One of Keel's own folders never is.)
             if (real !== resolve(p) || !fitsAsPlace(real, home) || list.some((x) => x.path === real)) continue;
             if (keel.some((k) => contains(k, real) || contains(real, k))) continue;
-            if (!await linkedWorktree(real)) continue;
+            if (!await linkedWorktree(real) || !bornDuring(real, c.ts, to)) continue;
             list.push({ path: real, from: "made" });
           }
         }

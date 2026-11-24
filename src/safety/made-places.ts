@@ -3,7 +3,8 @@
 // is in it is the session's own work. This is a fact of the session's records, not of what the agent says of a
 // folder: the call must have run and ended without a failure, and the gate checks the folder is a linked worktree
 // now. Pure here: the gate reads the events and the disk.
-import { resolve } from "node:path";
+import { statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { gitCall, located } from "./autonomy.ts";
 import { splitCommand } from "./shell.ts";
 
@@ -58,8 +59,27 @@ export function worktreesAdded(command: string, cwd: string, home: string): stri
 }
 
 // Whether a stored result shows the call ended without a failure: a command that exits with a status says so
-// first, and git says why it refused. One failure anywhere drops the call: a line that adds several worktrees and
-// fails somewhere is not known to have made any.
+// first (Claude's and Gemini's shells mark it an error; the gpt family's says "Process exited with code N"), and git
+// says why it refused. A result of a command still running (moved to the background, a session to read on) shows
+// nothing of what it did. One failure anywhere drops the call: a line that adds several worktrees and fails
+// somewhere is not known to have made any.
 export function endedWell(output: string, isError?: boolean): boolean {
-  return !isError && !/^Exit code \d+/.test(output) && !/\bfatal:/.test(output);
+  if (isError || /^Exit code \d+/.test(output) || /\bfatal:/.test(output)) return false;
+  if (/^Process exited with code (?!0\b)/m.test(output) || /^Process running with session ID/m.test(output)) return false;
+  return !/^Command (did not complete within|running in background|moved to the background)/.test(output);
+}
+
+// Exit status 0 does not show a call made anything: `true || git worktree add P`, a `grep -q x f && ...`, a
+// `... 2>/dev/null || true` on a folder that was there before all end well. What shows it made the worktree is
+// that the folder's own `.git` file was born while the call ran: from when the call was stored to when its result
+// was, a few milliseconds either way for the clocks. A worktree removed and made again later by someone else is
+// born after the result, so it is not the call's. A file system with no birth time says nothing, so nothing counts.
+// (Before: the kernel stamps files with a clock a few milliseconds behind the call's own. After: the stored time is
+// cut to the millisecond.)
+const BORN_BEFORE_MS = 50, BORN_AFTER_MS = 5;
+export function bornDuring(dir: string, from: number, to: number): boolean {
+  try {
+    const b = statSync(join(dir, ".git")).birthtimeMs;
+    return b > 0 && b >= from - BORN_BEFORE_MS && b <= to + BORN_AFTER_MS;
+  } catch { return false; }
 }
