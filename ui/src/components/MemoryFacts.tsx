@@ -356,7 +356,7 @@ export function UnusedView({ since, session, sessions, onSession, onOpen, onGone
         <>
           {!r.available && <p className="text-caption text-muted" data-testid="memory-absent">{ABSENT}</p>}
           <section>
-            <h4 className="text-ui font-medium" data-testid="memory-unused-title">Notes given, never named afterwards (rough){unused.length ? <span className="font-normal text-faint">, {plural(unused.length, "fact")}, the most given first</span> : null}</h4>
+            <h4 className="text-ui font-medium" data-testid="memory-unused-title">Notes given, never named afterwards (rough){unused.length ? <span className="font-normal text-faint">, {plural(unused.length, "note")}, the most given first</span> : null}</h4>
             <p className="mb-1 mt-0.5 max-w-[46rem] text-caption text-muted" data-testid="memory-unused-caveat">{ROUGH}</p>
             {unused.length ? <FactList facts={unused} id="u" onOpen={onOpen} under={under} testid="memory-unused-list" />
               : <p className="k-empty mt-2" data-testid="memory-unused-none">{r.facts.length ? "Every fact given in this range was named at least once afterwards." : "Nothing was given in this range."}</p>}

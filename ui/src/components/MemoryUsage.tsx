@@ -51,7 +51,7 @@ const HINT: Record<MemoryTab, string> = {
   usage: "what recall added to turns, and an estimate of whether they used it; counts only, no content",
   given: "what a session was told to remember, moment by moment, and what each fact cost",
   search: "the store's own search; a fact opens with its source and date",
-  unused: "facts given and never named afterwards (a rough signal), and what memory costs",
+  unused: "notes given and never named afterwards (a rough signal), rules followed or broken, and what memory costs",
 };
 const PANEL = "memory-view";
 const PHONE = "(max-width: 767px)";
