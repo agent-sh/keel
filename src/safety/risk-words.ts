@@ -134,6 +134,8 @@ export function unwrap(words: string[]): Run {
       const a = words[i]!;
       if (a === "--") { i++; break; }
       if (prog === "env" && ASSIGN.test(a)) { set.push(a); continue; }
+      // A lone dash is env's own -i.
+      if (prog === "env" && a === "-") continue;
       if (!a.startsWith("-") || a === "-") break;
       if (prog === "systemd-run" && /^--on-/.test(a)) timed = true;
       if (valued?.test(a)) i++;

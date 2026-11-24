@@ -437,8 +437,26 @@ function envRefused(assigned: string[], dir: string | null, home: string, s: Sha
 // What an agent is told when a command starts without the environment (env -i): its own words, not the paragraph
 // about other checkouts' branches.
 export const ENV_I = "starts it without the environment Keel gives the command (env -i)";
+// A word for a copy into a command line: as it is when the shell reads it as one plain word, else in single quotes.
+const shellWord = (w: string) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(w) ? w : `'${w.replaceAll("'", `'\\''`)}'`);
 export const envIMessage = (s: Shared) =>
-  `Refused: env -i drops the git settings Keel gives every command, which hold an agent to its own branch (${s.branch}), and the rules cannot read what the command then runs. Keep the environment instead: \`env NAME=value cmd\` adds a variable and \`env -u NAME cmd\` removes one. A scratch daemon needs no empty environment: \`env -u NAME ... bash scripts/dev.sh PORT\` drops what it must not inherit (provider keys, DBUS_SESSION_BUS_ADDRESS), and the KEEL_* settings scripts/dev.sh reads (KEEL_DEV_DIR, KEEL_SCRIPTED_PROVIDER, KEEL_DEFAULT_MODEL, KEEL_KEYRING_SERVICE, KEEL_DESKTOP_NOTIFY) go in as \`env NAME=value\`. The one way to keep env -i is to give back the whole settings in the same command: ${sessionSettings(s).join(" ")}`;
+  `Refused: env -i (or env -) drops the git settings Keel gives every command, which hold an agent to its own branch (${s.branch}), and the rules cannot read what the command then runs (a shell, git, a script, an interpreter such as python3 -c or node -e). Keep the environment instead: \`env NAME=value cmd\` adds a variable and \`env -u NAME cmd\` removes one. A scratch daemon needs no empty environment: \`env -u NAME ... bash scripts/dev.sh PORT\` drops what it must not inherit (provider keys, DBUS_SESSION_BUS_ADDRESS), and the KEEL_* settings scripts/dev.sh reads (KEEL_DEV_DIR, KEEL_SCRIPTED_PROVIDER, KEEL_DEFAULT_MODEL, KEEL_KEYRING_SERVICE, KEEL_DESKTOP_NOTIFY) go in as \`env NAME=value\`. The one way to keep env -i is to give back the whole settings in the same command, each as one word: ${sessionSettings(s).map(shellWord).join(" ")}`;
+// A word of env's, or the program's, that the shell fills in: env -i may hide in it.
+export const ENV_UNREAD = "starts env or a program through a word the rules cannot read:";
+const shown = (w: string) => (w.length > 60 ? `${w.slice(0, 57)}...` : w);
+export const envUnreadMessage = (why: string) =>
+  `Refused: the command ${why}. A variable or a substitution there can be \`-i\`, or env itself, and env -i drops the git settings Keel gives every command, which hold an agent to its own branch. Write the program and env's options out as words (\`env NAME=value cmd\`; a path may start with $HOME), and keep a value that needs an expansion as the value of a named assignment (\`env NAME=$VALUE cmd\`).`;
+// A program word the shell fills in only with a variable that names a known folder, then a written-out path.
+const KNOWN_PATH = /^(?:\$\{?(?:HOME|PWD|OLDPWD|TMPDIR|USER)\}?|~)\/[^$`]*$/;
+// What an option of env does: -i, --ignore-environment or a lone dash clear the environment (also inside a cluster,
+// -vi); -S splits a string into more words; an option with its own value (-u, -C) ends a cluster.
+function envOption(w: string): "clear" | "split" | undefined {
+  if (w === "-" || w === "--ignore-environment") return "clear";
+  if (w.startsWith("--split-string")) return "split";
+  if (/^--/.test(w) || !/^-[A-Za-z0-9]+$/.test(w)) return /^-[A-Za-z0-9]*S/.test(w) ? "split" : undefined;
+  for (const c of w.slice(1)) { if (c === "i") return "clear"; if (c === "S") return "split"; if ("uCPa".includes(c)) return undefined; }
+  return undefined;
+}
 
 // Programs that write the files they name: each, and which of its words are the files.
 const WRITES: Record<string, "all" | "last" | "inplace"> = {
@@ -521,14 +539,26 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
     if (!words.length) continue;
     const prog = name(words[0]);
     if (prog === "unset" && words.some((w) => /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(w))) return "unsets the git settings Keel gives the command";
-    // `env -i` and `env -u GIT_CONFIG_COUNT` take away what Keel gives the command; `env -C DIR` moves it.
+    // A program the shell names with an expansion (`$X -i ...`, `$(which env)`) may be env, or anything: it is not read.
+    if (!KNOWN_PATH.test(words[0]!) && /[$`]/.test(words[0]!)) return `${ENV_UNREAD} the program word ${shown(words[0]!)}`;
+    // `env -i` and `env -u GIT_CONFIG_COUNT` take away what Keel gives the command; `env -C DIR` moves it. Any program
+    // that starts without the settings may run git (an interpreter, a script of the worktree), so each is refused
+    // unless the command gives the whole settings back. A word of env's own the shell fills in is not read: it may be -i.
+    const whole = sessionSettings(s).every((a) => run.set.includes(a));
     let dir = dirs[i] ?? null;
     for (let k = 0, wrap = ""; k < run.at; k++) {
       const w = part.words[k]!;
-      if (!w.startsWith("-")) { if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) wrap = name(w); continue; }
+      const assign = /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
+      if (wrap === "env" && !assign && /[$`]/.test(w)) return `${ENV_UNREAD} the word ${shown(w)} among env's options`;
+      if (!w.startsWith("-")) { if (!assign) wrap = name(w); continue; }
       if (wrap !== "env" && wrap !== "sudo") continue;
-      if (wrap === "env" && /^(-i|--ignore-environment|-)$/.test(w) && (prog === "git" || SHELLS.test(prog)) && !sessionSettings(s).every((a) => run.set.includes(a))) return ENV_I;
+      if (wrap === "env") {
+        const o = envOption(w);
+        if (o === "split") return `${ENV_UNREAD} env's -S string (${shown(w)}), which env splits into more words`;
+        if (o === "clear" && !whole) return ENV_I;
+      }
       const unsetName = w === "-u" || w === "--unset" ? part.words[++k] : /^(--unset=|-u)(.+)$/.exec(w)?.[2];
+      if (wrap === "env" && unsetName && /[$`]/.test(unsetName)) return `${ENV_UNREAD} the name ${shown(unsetName)} that env -u removes`;
       if (unsetName && /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(unsetName)) return "unsets the git settings Keel gives the command";
       const to = (wrap === "env" && (w === "-C" || w === "--chdir")) || (wrap === "sudo" && (w === "-D" || w === "--chdir")) ? part.words[++k] : /^(--chdir=|-C)(.+)$/.exec(w)?.[2];
       if (to !== undefined) dir = pathOf(dir, to, home);
@@ -598,5 +628,6 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
 // What the agent is told: what the command would do, and the way its work lands instead.
 export function sharedMessage(why: string, s: Shared, what = "the command"): string {
   if (why === ENV_I) return envIMessage(s);
+  if (why.startsWith(ENV_UNREAD)) return envUnreadMessage(why);
   return `Refused: ${what} ${why}. This worktree shares the repository's branches with its other checkouts (the owner's and other agents'), so an agent here changes its own branch (${s.branch}) and the branches it makes itself only: commit there, and reset or rebase it as you need. A branch reaches ${s.base ?? "its base"} through Keel's landing queue (keel__landing_queue), which rebases it, runs the repository's checks and lands it. Leave the other branches as they are, even to undo a mistake, and say in your report what you wanted done.`;
 }

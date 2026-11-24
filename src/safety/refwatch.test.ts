@@ -177,7 +177,7 @@ test("env -i is refused with its own words, and allowed only where the command g
     expect(why(`env -i PATH=/usr/bin ${all} GIT_CONFIG_COUNT=1 git commit -m x`)).not.toBeNull();
     // The words: what is wrong, the way that keeps the environment, and the settings to give back; not the other paragraph.
     const said = sharedMessage(ENV_I, s);
-    expect(said).toContain("env -i drops the git settings");
+    expect(said).toContain("drops the git settings");
     expect(said).toContain("env -u NAME");
     expect(said).toContain("scripts/dev.sh");
     expect(said).toContain(all);
@@ -186,6 +186,54 @@ test("env -i is refused with its own words, and allowed only where the command g
     // Without env -i nothing changed: the recipe that keeps the environment is allowed, and a settings of its own is refused.
     expect(why("env -u DBUS_SESSION_BUS_ADDRESS KEEL_DEV_DIR=/y bash scripts/dev.sh 48201")).toBeNull();
     expect(why("GIT_CONFIG_COUNT=1 git status")).toContain("GIT_CONFIG_COUNT");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The same refusal where the words around env are not plain: a lone dash is env -i, a word the shell fills in before
+// env's options or program cannot be read, and env -i with a program the rules cannot read (an interpreter) can run
+// git with none of the settings. (Each case moved main before the fix.)
+test("env -i is refused through a lone dash, through words the rules cannot read, and for a program they cannot read", async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { realOf } = await import("../core/paths.ts");
+  const { checkoutsOf } = await import("./refwatch.ts");
+  const { sessionSettings, sharedMessage, sharedRefusal } = await import("./shared-branches.ts");
+  const dir = realOf(mkdtempSync(join(process.env.TMPDIR ?? ".", "envu s-")));
+  const git = (cwd: string, ...args: string[]) => {
+    const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { cwd, env: { PATH: process.env.PATH!, HOME: dir, GIT_CONFIG_NOSYSTEM: "1" } });
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+  };
+  try {
+    const main = join(dir, "main"), agent = join(dir, "agent");
+    git(dir, "init", "-q", main);
+    writeFileSync(join(main, "a"), "a\n");
+    git(main, "add", "a");
+    git(main, "commit", "-qm", "a");
+    git(main, "worktree", "add", "-q", "-b", "keel/x", agent);
+    const s = checkoutsOf(agent, "keel/x", "main")!;
+    const why = (c: string) => sharedRefusal(c, agent, dir, s);
+    const U = "git update-ref refs/heads/main keel/x";
+    const P = "PATH=/usr/bin";
+    const ENV_I = "starts it without the environment Keel gives the command (env -i)";
+    // A lone dash is -i (env's own manual): in front of a shell, git or any program, with an option cluster or -S too.
+    for (const c of [`env - ${P} bash -c '${U}'`, `env - ${P} ${U}`, `env - ${P} git status`, `env -vi ${P} bash -c '${U}'`, `env -0i ${P} sh -c 'env -u X git status'`, `env -i -- ${P} bash -c '${U}'`]) expect([c, why(c)]).toEqual([c, ENV_I]);
+    // The program of env -i is any the rules cannot read.
+    for (const c of [`env -i ${P} python3 -c 'import os;os.system("${U}")'`, `env - ${P} node -e 'require("child_process").execSync("${U}")'`, `env -i ${P} perl -e 'system("${U}")'`, `env -i ${P} ./run.sh`, `env -i ${P} /usr/bin/python3 -c 'pass'`]) expect([c, why(c)]).toEqual([c, ENV_I]);
+    // Words the shell fills in before env's program or options, and a program word that is one: refused for an agent here.
+    for (const c of [`S=${P}; env -i $S bash -c '${U}'`, `env -i $S bash -c '${U}'`, `env -i "$S" bash -c '${U}'`, `env -i $(echo ${P}) bash -c '${U}'`, 'env -i ${S} git status', `S=${P}; env $S -i bash -c '${U}'`, `X=-i; env $X bash -c '${U}'`, `X=-i; env $X ${U}`, `X=env; $X -i ${P} ${U}`, `env -i ${P} $CMD`, "env -`echo i` bash -c 'git status'", "env -${X} git status", `env -u $V ${U}`, `env -S'-i ${P}' bash -c '${U}'`, `$(command -v env) -i ${P} bash -c '${U}'`, "$CMD", "\"$PROG\" --version"]) expect([c, why(c)]).not.toBeNull();
+    for (const c of [`env - ${P} bash -c '${U}'`, `env -i $S bash -c '${U}'`, `X=env; $X -i ${P} ${U}`]) expect(why(c)).not.toContain("which this worktree did not make");
+    // What stays allowed: assignments with a name written out (their value may be expanded), a program with a
+    // path through a variable, the recipe that keeps the environment, and the whole settings given back.
+    const all = sessionSettings(s).map((a) => `'${a}'`).join(" ");
+    for (const c of ["env KEEL_DEV_DIR=$HOME/x bash scripts/dev.sh 48201", "env -u DBUS_SESSION_BUS_ADDRESS FOO=\"$X\" ls", "$HOME/.bun/bin/bun test", "\"$HOME/bin/tool\" --help", "env -C . git status", `env -i ${P} ${all} python3 -c 'pass'`, `env - ${P} ${all} git status`]) expect([c, why(c)]).toEqual([c, null]);
+    // The settings in the message survive a copy: a value with a space or a quote is one word of the shell.
+    const said = sharedMessage(ENV_I, s);
+    const tail = said.slice(said.lastIndexOf("each as one word: ") + "each as one word: ".length);
+    const words = Bun.spawnSync(["bash", "-c", `printf '%s\\n' ${tail}`]).stdout.toString().trimEnd().split("\n");
+    expect(words).toEqual(sessionSettings(s));
+    expect(sessionSettings(s).some((a) => a.includes(" "))).toBe(true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
