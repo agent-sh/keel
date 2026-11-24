@@ -4,6 +4,8 @@
 // pass). Once a minute each one is measured (its memory, its processor time, the build daemons in it) and
 // decided (leftover-rules.ts, scopeFate): a scope whose session ended is stopped once idle, a build daemon
 // whose command ended is stopped when its session ends or once idle, and a scope the owner keeps stays.
+// A command no cgroup holds (its process group and session do) that an ended agent's end kept for another
+// process's connection to its port is looked at on the same pass (looseOnes) and stopped once none is left.
 // Each stop is one line in its session's failures scope, said once across restarts. How long each scope and
 // build daemon has been idle is kept in the store, so a restart goes on counting. What is held is listed in
 // Settings > Leftovers and counted in Settings > Resources.
@@ -16,7 +18,7 @@
 import { readFile, readdir, readlink } from "node:fs/promises";
 import { clientsOf, portsOf } from "../fleet/portal.ts";
 import { timed } from "../admin/stall.ts";
-import { adoptScopes, allJobs, jobLive, ownStart, scopeEnvs, scopeHoldsSelf, scopeWhy, stateIdOf, stopJob, type Job } from "../tools/jobs.ts";
+import { adoptScopes, allJobs, jobLive, ownStart, processesOf, scopeEnvs, scopeHoldsSelf, scopeWhy, stateIdOf, stopJob, type Job } from "../tools/jobs.ts";
 import * as rules from "./leftover-rules.ts";
 
 export const PASS_MS = 60_000;
@@ -157,7 +159,45 @@ export async function pass(c: Ctx, o: { dry?: boolean; jobs?: Job[]; now?: numbe
   const othersMem = await Promise.all(others.others.map((cg) => num(`${cg}/memory.current`)));
   held = { scopes: out.length, memory_bytes: out.reduce((n, d) => n + d.view.memory_bytes, 0), others: { scopes: others.others.length, memory_bytes: othersMem.reduce((a, b) => a + b, 0) }, at: now, bounds: BOUNDS };
   if (!o.dry) for (const d of out) await act(c, d).catch(() => {});
+  if (!o.dry && !o.jobs) await looseOnes(c).catch(() => {});
   return out;
+}
+
+// What an ended agent's commands left that no cgroup holds (their process group and session do): at the agent's
+// end such a process is kept while another process is connected to its port (leftovers.settle), and nothing
+// looked at it again. The pass looks again: once no client is left it is stopped, like the end would have
+// stopped it. Only an agent's own commands (its end settled them), never the owner's or one the owner keeps.
+// It is stopped on the second pass in a row that finds no client, not the first: a client that reconnects within
+// the minute (a dev server's tab that reloads, a poller) is not lost. A command found with no process is never
+// scanned for again: nothing is left to fork one.
+const quiet = new Map<string, number>();
+const empty = new Set<string>();
+export async function looseOnes(c: Ctx, o: { jobs?: Job[] } = {}): Promise<string[]> {
+  const keeps = c.keeps();
+  const ended = new Map<string, string | undefined>();
+  const agentEnded = (sid: string) => { if (!ended.has(sid)) { const e = c.endedOf(sid); ended.set(sid, e?.startsWith("its agent") ? e : undefined); } return ended.get(sid); };
+  const list = (o.jobs ?? allJobs()).filter((j) => j.contain !== "cgroup" && j.by !== "owner" && !keeps.has(j.id) && !tried.has(`${j.id}:loose`) && !empty.has(j.id) && agentEnded(j.sessionId));
+  if (!list.length) return [];
+  const found = await processesOf(list);
+  const all = new Map<string, number[]>();
+  for (const j of list) all.set(j.sessionId, [...(all.get(j.sessionId) ?? []), ...(found.get(j.id) ?? []).map((p) => p.pid)]);
+  const stopped: string[] = [];
+  for (const j of list) {
+    const pids = (found.get(j.id) ?? []).map((p) => p.pid);
+    if (!pids.length) { empty.add(j.id); quiet.delete(j.id); continue; }
+    const ports = (portsOf(new Map([[j.id, pids]])).get(j.id) ?? []).map((p) => p.port);
+    const clients = ports.reduce((n, p) => n + clientsOf(pids, p, all.get(j.sessionId)), 0);
+    const fate = rules.processFate({ job: j.id, command: j.description || j.command, pids, ports, clients });
+    if (fate.act === "keep") { quiet.delete(j.id); continue; }
+    const key = `${j.id}:loose`;
+    if ((quiet.get(j.id) ?? 0) < 1) { quiet.set(j.id, 1); continue; }
+    quiet.delete(j.id);
+    tried.add(key);
+    const left = await stopJob(j, `was stopped: ${agentEnded(j.sessionId)}, and no process is connected to its port any more`);
+    c.tell(j.sessionId, `Stopped what ${what(j)} left running: ${agentEnded(j.sessionId)}, and no process is connected to its port any more.${left.length ? ` Process ${left.join(", ")} of it still runs.` : ""}`, key);
+    stopped.push(j.id);
+  }
+  return stopped;
 }
 
 const mb = (b: number) => `${Math.round(b / 1048576)} MB`;

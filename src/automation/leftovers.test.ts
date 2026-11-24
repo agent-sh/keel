@@ -417,6 +417,30 @@ test("without a cgroup: commands past the kept count, a child that left the sess
   expectSettled(r);
 }, 120_000);
 
+test("a server kept at the agent's end for another process's connection is looked at again, and stopped once the connection is gone", () => {
+  const env: Record<string, string | undefined> = { ...process.env };
+  delete env.DBUS_SESSION_BUS_ADDRESS;
+  delete env.XDG_RUNTIME_DIR;
+  const dir = join(root, "later");
+  mkdirSync(dir, { recursive: true });
+  const out = execFileSync(process.execPath, [join(import.meta.dir, "leftovers-later-run.ts"), dir], { env: env as NodeJS.ProcessEnv, encoding: "utf8", timeout: 90_000 });
+  const r = JSON.parse(out.trim().split("\n").at(-1)!);
+  sweep(r.tag);
+  expect(r.contain).toBe("group");
+  expect(r.line).toContain("left running `the agent's server`");
+  expect(r.keptAtEnd).toBe(true);
+  // While the connection lasts the pass leaves it; the first pass without a client waits (it may come back);
+  // the second stops it and tells the agent's parent once.
+  expect(r.withClient).toEqual([]);
+  expect(r.aliveWithClient).toBe(true);
+  expect(r.first).toEqual([]);
+  expect(r.aliveFirst).toBe(true);
+  expect(r.later).toHaveLength(1);
+  expect(r.aliveAfter).toBe(false);
+  expect(r.told).toHaveLength(1);
+  expect(r.told[0]).toContain("no process is connected to its port any more");
+}, 120_000);
+
 test("in the daemon's own environment (a cgroup scope where the user manager gives one): the same commands all stop", () => {
   const r = run("own", 0, { ...process.env });
   expectSettled(r);
