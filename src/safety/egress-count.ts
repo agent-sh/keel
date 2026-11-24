@@ -127,6 +127,11 @@ export function plainWhy(text: string): string {
     })
     .replace(/(?<![\w.@-])[^\s@'"/:]+@([A-Za-z0-9.-]+):(?!\/\/)[^\s'"]*/g, "$1")
     .replace(/(?<![\w/.-])((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d{1,5})?)\/[^\s'"]*/g, "$1")
+    // (An address with no scheme: an IPv6 literal, an IPv4 one or a bare name with a port, then a path;
+    // the short ssh forms [v6]:path and host:/path.)
+    .replace(/(?<![\w/.-])(\[[0-9A-Fa-f:.]+\](?::\d{1,5})?|(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?|[A-Za-z][A-Za-z0-9-]*:\d{1,5})\/[^\s'"]*/g, "$1")
+    .replace(/(?<![\w.@-])[^\s@'"/:]+@(\[[0-9A-Fa-f:.]+\]):[^\s'"]*/g, "$1")
+    .replace(/(?<![\w/.-])((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}):\/[^\s'"]*/g, "$1")
     .replace(/\?[^\s'"]*=[^\s'"]*/g, "")
     .trim();
 }

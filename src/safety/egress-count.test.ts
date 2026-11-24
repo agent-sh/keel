@@ -77,6 +77,13 @@ test("a row's reason keeps no address: no user, path or query, and the short ssh
   expect(plainWhy("fatal: unable to access 'https://git.example/some/path.git?x=SECRET/': Could not resolve host: git.example"))
     .toBe("fatal: unable to access 'https://git.example': Could not resolve host: git.example");
   expect(plainWhy("Unable to connect: https://user:tok@api.example.com:8443/v1/x?key=abc")).toBe("Unable to connect: https://api.example.com");
+  // Addresses with no scheme keep their host and port only.
+  expect(plainWhy("connect to [2001:db8::1]:8443/secret/path?token=SECRET failed")).toBe("connect to [2001:db8::1]:8443 failed");
+  expect(plainWhy("10.0.0.5:9000/secret/path?x=1")).toBe("10.0.0.5:9000");
+  expect(plainWhy("ECONNREFUSED 127.0.0.1:1/secret")).toBe("ECONNREFUSED 127.0.0.1:1");
+  expect(plainWhy("localhost:8080/secret/path")).toBe("localhost:8080");
+  expect(plainWhy("git@[2001:db8::1]:owner/secret.git")).toBe("[2001:db8::1]");
+  expect(plainWhy("host.example.com:/srv/secret")).toBe("host.example.com");
   expect(plainWhy("fatal: Could not read from remote repository git@code.example:org/private.git")).toBe("fatal: Could not read from remote repository code.example");
   expect(plainWhy("GET api.example.com/v1/search?q=secret failed")).toBe("GET api.example.com failed");
   expect(plainWhy("upstream ws://[::1]:8080/path?a=b closed")).toBe("upstream ws://[::1] closed");
