@@ -186,7 +186,8 @@ test("the reading line holds when content above it grows", async ({ page, reques
   }
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${session.id}`);
-  const replies = page.getByTestId("assistant-text");
+  // (A reply far from the view is held as a box with its words, not drawn: lib/window.ts. It is a reply all the same.)
+  const replies = page.locator('[data-testid="transcript"] :is(.row-cv[data-event-id]:has([data-testid="assistant-text"]), .k-hold [data-kind="assistant"])');
   await expect(replies).toHaveCount(6);
   // Read the fourth reply: scroll it to the middle, away from the end.
   await replies.nth(3).evaluate((el) => {
@@ -195,6 +196,9 @@ test("the reading line holds when content above it grows", async ({ page, reques
   });
   await page.mouse.wheel(0, -40);
   await expect(page.getByTestId("jump-latest")).toBeVisible();
+  // The view has drawn the replies it came to.
+  await expect(replies.nth(3).getByTestId("assistant-text")).toBeVisible();
+  await expect(replies.nth(2).getByTestId("assistant-text")).toBeVisible();
   const top = () => replies.nth(3).evaluate((el) => el.getBoundingClientRect().top);
   const before = await top();
   // Something in the reply above, on screen over the line being read, grows by 320 px.
