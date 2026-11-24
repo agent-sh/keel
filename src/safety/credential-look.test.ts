@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
@@ -95,13 +95,13 @@ test("a credential file inside still holds the search, and a look that runs out 
   const held = await run();
   expect(held?.hits.map((x) => x.path)).toEqual([join(h, "p/d3/.env")]);
   expect(held?.hits[0]?.unread).toBeUndefined();
-  // No time at all: the folder is unread, with how it ended and what to do.
+  // No time at all: the folder is unread, with how far the look got and what to do.
   const late = await lookUnder(join(h, "p"), slow(h), { scope: "e", ms: -1 });
   expect(late).toHaveLength(1);
   expect(late[0]).toMatchObject({ path: join(h, "p"), unread: true });
-  expect(late[0]!.why).toMatch(/took \d+ ms of its -1 ms and had read \d+ entries/);
+  expect(late[0]!.why).toMatch(/\d+ entries read so far in 1 part, \d+ folders still to read; this part took \d+ ms of its -1 ms and ran out of time/);
   const refused = shellCredentialReads(grep, join(h, "p"), h, () => null, undefined, { named: () => late });
-  expect(refused?.what).toMatch(/could not be looked through in time.*\(the look took .*\)\. Search a smaller folder/);
+  expect(refused?.what).toMatch(/too big to be looked through.*entries read so far.*Search it again/);
 });
 
 test("the gate answers a search of a folder it looks through off the loop, and refuses one that holds a credential file", async () => {
@@ -158,18 +158,66 @@ test("a kept look is not trusted when a folder's modification time was put back,
   }
 });
 
-test("a look that stops at its entry limit with folders unread says so, and the answer is kept", async () => {
+test("a look that stops at its entry limit with folders unread goes on at the next search, and the answer is kept when it is done", async () => {
   forgetLooks();
   const h = folderOf(200);
   const counts = { by: 0 };
   const is = slow(h, counts);
-  const found = await lookUnder(join(h, "p"), is, { scope: "h", entries: 100 });
-  expect(found).toHaveLength(1);
-  expect(found[0]).toMatchObject({ path: join(h, "p"), unread: true });
-  expect(found[0]!.why).toContain("limit of 100 entries");
+  const o = { scope: "h", entries: 100 };
+  const first = await lookUnder(join(h, "p"), is, o);
+  expect(first).toHaveLength(1);
+  expect(first[0]).toMatchObject({ path: join(h, "p"), unread: true, resumes: true });
+  expect(first[0]!.why).toContain("in 1 part");
+  const seenFirst = counts.by;
+  // The next search reads the rest, not the folder again from its start.
+  const second = await lookUnder(join(h, "p"), is, o);
+  expect(second[0]).toMatchObject({ unread: true, resumes: true });
+  expect(second[0]!.why).toContain("in 2 parts");
+  expect(await lookUnder(join(h, "p"), is, o)).toEqual([]);
+  // (Each file is classified once: 200 files, with the folders they are in read once each.)
+  expect(counts.by).toBe(200);
+  expect(seenFirst).toBeLessThan(200);
   const made = counts.by;
-  expect(await lookUnder(join(h, "p"), is, { scope: "h", entries: 100 })).toEqual(found);
+  expect(await lookUnder(join(h, "p"), is, o)).toEqual([]);
   expect(counts.by).toBe(made);
-  // The same folder within its limit is complete.
-  expect(await lookUnder(join(h, "p"), is, { scope: "i", entries: 300 })).toEqual([]);
 });
+
+// A folder of 50,000 entries: more than one look reads (20,000 entries), so it is read over successive searches.
+function bigFolder() {
+  const h = realpathSync(mkdtempSync(join(tmpdir(), "keel-look-big-")));
+  for (let d = 0; d < 50; d++) {
+    const dir = join(h, "w", `d${d}`);
+    mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < 999; i++) writeFileSync(join(dir, `f${i}.ts`), "");
+  }
+  return h;
+}
+test("a folder of 50,000 entries is looked through over successive searches, then answered at once; a key added in a part already read is caught", async () => {
+  forgetLooks();
+  const h = bigFolder();
+  const counts = { by: 0 };
+  const classified = new Map<string, number>();
+  const is: Classifier = { by: (p) => { counts.by++; classified.set(dirname(p), (classified.get(dirname(p)) ?? 0) + 1); return credentialAt(p, { home: h }); }, link: () => null };
+  const top = join(h, "w");
+  let key = "";
+  const asks: Found[][] = [];
+  for (let i = 0; i < 6 && (i === 0 || asks.at(-1)!.some((f) => f.unread)); i++) {
+    asks.push(await lookUnder(top, is, { scope: "big" }));
+    // Between the first and the second part, a key is made in a folder the first part has already read.
+    if (i === 0) {
+      expect(asks[0]!.at(-1)).toMatchObject({ unread: true, resumes: true });
+      const readDir = [...classified].find(([, n]) => n === 999)![0];
+      key = join(readDir, "server.key");
+      writeFileSync(key, "k\n");
+      const later = new Date(Date.now() + 5000);
+      utimesSync(readDir, later, later);
+    }
+  }
+  // Two or three looks finish it, and the key is found.
+  expect(asks.length).toBeGreaterThanOrEqual(2);
+  expect(asks.length).toBeLessThanOrEqual(4);
+  expect(asks.at(-1)!.map((f) => f.path)).toEqual([key]);
+  const made = counts.by;
+  expect(await lookUnder(top, is, { scope: "big" })).toEqual(asks.at(-1)!);
+  expect(counts.by).toBe(made);
+}, 60_000);

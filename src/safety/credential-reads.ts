@@ -104,7 +104,7 @@ const EXPANDED_MAX = 500;
 // A file a look found: `foreign` when it is a link to one of the owner's credentials, not a file named like one.
 // `unread`: the look of this folder did not finish in its time (a very slow disk): what it holds is not known.
 // `why`: how the look of an unread folder ended (how long it took, how much it had read).
-export type Found = { path: string; foreign?: true; unread?: true; why?: string };
+export type Found = { path: string; foreign?: true; unread?: true; why?: string; resumes?: true };
 export type DiskLook = { named?: (folder: string) => (string | Found)[]; // the files under a folder that hold credentials (by their names, by where they are, by being a link to one), as full paths
    expand?: (pattern: string, dir: string) => string[];
    own?: () => string[] }; // Keel's own folders (state, config), as named and where they land
@@ -191,7 +191,11 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
       // (A look that ran out of time says so: the command asks, as for a file that holds credentials. It is never taken as a look that found none.)
       if (unread.length) {
         const why = unread.find((f) => f.why)?.why;
-        const what = `${where}, which could not be looked through in time for files that hold credentials${why ? ` (${why})` : ""}. Search a smaller folder (a subfolder of it), or name the files you need`;
+        // (A look made in parts is asked for again, not narrowed: the next search goes on from where it stopped.)
+        const going = unread.some((f) => f.resumes);
+        const what = going
+          ? `${where}, which is too big to be looked through for files that hold credentials in one search (${why}). Search it again, or search a smaller folder (a subfolder of it), or name the files you need`
+          : `${where}, which could not be looked through in time for files that hold credentials${why ? ` (${why})` : ""}. Search a smaller folder (a subfolder of it), or name the files you need`;
         for (const f of unread) hits.push({ path: f.path, what, by, unread: true });
         first ??= { what, by };
         hit = true;
