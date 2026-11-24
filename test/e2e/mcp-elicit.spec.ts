@@ -92,7 +92,9 @@ test("an MCP server's question is a card the owner answers, declines or leaves",
   try {
     const id = await k.session("A server asks");
     const last = page.getByTestId("assistant-text").last();
-    const ends = (n: number) => expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 30_000 });
+    // Counted in the session's events: the page draws only the blocks near its view, so a turn far
+    // above it has no footer in the page.
+    const ends = (n: number) => expect.poll(async () => ((await k.call(`/api/sessions/${id}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(n);
     await page.goto(`${k.at.d.url}/s/${id}`);
 
     // 1. The card: the server by name, its words as text, the fields of its schema.
