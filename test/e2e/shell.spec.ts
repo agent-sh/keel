@@ -206,7 +206,11 @@ test("shell: the page says the daemon is away unless the app's title bar does, i
     // The list's count of what needs the owner is as old as its rows: it pales with them.
     const need = page.getByTestId("sum-need");
     await expect(need).toBeVisible();
-    await expect.poll(() => need.locator(".k-mark").evaluate((m) => Number(getComputedStyle(m).opacity))).toBeLessThan(0.5);
+    // The counts carry no marks since the rows' marks say each state: the count's words pale to the muted ink.
+    const inkOf = (sel: string) => need.locator(sel).evaluate((el) => getComputedStyle(el).color);
+    const muted = await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--muted)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; });
+    await expect.poll(() => inkOf(".k-sum-n")).toBe(muted);
+    await expect.poll(() => inkOf(".k-sum-word")).toBe(muted);
     await shoot(page, "shell-05-app-says-not-running");
     // The app sees the daemon back while the page is still cut off: the page says so again.
     await tell(page, { daemon: "up" });
