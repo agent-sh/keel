@@ -21,6 +21,8 @@ import { Delta, hookOf, ToolCall } from "./ToolCall.tsx";
 import { isLive, useAuto } from "../lib/automation.ts";
 import { useToldStates } from "../lib/watch.ts";
 import { agentSaid } from "./automation/bits.tsx";
+import { AgentLines } from "./automation/AgentLines.tsx";
+import { treeLines } from "../lib/agent-lines.ts";
 import { countWord } from "../../../src/core/state-words.ts";
 
 export function Thinking({ text, live }: { text: string; live?: boolean }) {
@@ -188,6 +190,7 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
         <div className="k-did">
           {card ? thoughts.length > 0 && <div className="k-step-lead"><Thoughts items={thoughts} /></div> : leadHeld}
           <ToolCall use={c.use} result={c.result} sessionId={sid} cwd={cwd} event={c.event} auto lead={!card && thoughts.length ? <Thoughts items={thoughts} /> : undefined} />
+          {step.family === "agents" && <BelowOne callId={c.id} sid={sid} />}
         </div>
       </div>
     );
@@ -264,7 +267,12 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
   const s = summarize(step, { ...live, agents: stands, own });
   const running = calls.some((c) => { const a = byCall.get(c.id); return a ? isLive(a) : !c.result; });
   const words: ReturnType<typeof stateWords> = [...(asking ? [{ text: countWord("need", asking), tone: "need" as const }] : []), ...(failed ? [{ text: countWord("fail", failed), tone: "fail" as const }] : []), ...agentWords(calls, stands, live)];
-  const under = [...calling, ...apart];
+  // The agents that started, in the step's order: while any of them or an agent below them works, each has a line
+  // under the step (./automation/AgentLines.tsx), the ones that call the owner too.
+  const from = useMemo(() => calls.flatMap((c) => { const a = byCall.get(c.id); return a && stands.get(c.id) === "started" ? [a] : []; }), [calls, byCall, stands]);
+  const lines = useMemo(() => treeLines(Object.values(agents), from, told), [agents, from, told]);
+  const shown = lines.some((l) => isLive(l.agent));
+  const under = shown ? apart : [...calling, ...apart];
   const edge = asking ? "need" : failed ? "error" : running ? "running" : words.some((w) => w.tone === "fail") ? "error" : words.some((w) => w.tone === "warn") ? "warn" : "ok";
   return (
     <div className="k-step" data-events={events} data-state={edge}>
@@ -274,6 +282,7 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
             <StepLine s={s} words={words} />
             <span className="k-line-end">{running && <span className="k-line-run" aria-hidden="true" />}</span>
           </Collapsible.Trigger>
+          {shown && <AgentLines from={from} sid={sid} />}
           {!open && under.length > 0 && (
             <div className="k-step-calls" data-testid="step-peek">
               {under.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
@@ -288,6 +297,13 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
       </div>
     </div>
   );
+}
+
+// Under the card of a step that started one agent: a line for each agent below it while one of them works.
+function BelowOne({ callId, sid }: { callId: string; sid: string }) {
+  const a = useAuto((x) => Object.values(x.agents).find((r) => r.parent_id === sid && r.call_id === callId));
+  const from = useMemo(() => (a ? [a] : []), [a]);
+  return a ? <AgentLines from={from} sid={sid} below /> : null;
 }
 
 // A run of tool calls: one rail. Shift with a click or a key on a step's line opens or closes every step of the run.

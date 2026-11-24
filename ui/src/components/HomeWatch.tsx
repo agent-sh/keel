@@ -40,11 +40,11 @@ import { agentFailNews, failedAgentOf, pickRows, rowKind, rowLine, sayMore, watc
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
 import { actions, getState, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow } from "../../../src/core/state-words.ts";
+import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow, stateWords } from "../../../src/core/state-words.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { usePress } from "./ApprovalCard.tsx";
-import { Mark, folderOf } from "./Mark.tsx";
+import { Mark, folderOf, stateClock, tickOf, timed, useNow } from "./Mark.tsx";
 
 const MOST = { attention: 6, working: 4 };
 
@@ -134,7 +134,8 @@ function useFact(s: Session, st: SessionState): Fact {
   const asked = st.watch === "need" && st.why === "approval";
   const approval = useSafety((x) => (asked ? x.approvals[st.child ?? s.id]?.[0] : undefined));
   return {
-    approval, kind: rowKind(st, approval?.kind), line: rowLine(st),
+    // (A session that works only through its agents says how many.)
+    approval, kind: rowKind(st, approval?.kind), line: rowLine(st) || (st.watch === "work" ? stateWords(st).what : ""),
     whole: asked && !st.child ? wholeCommand(approval, !!s.machine) : null,
     risk: approval?.risk === "high" ? (approval.why ? `High risk: ${approval.why}` : "High risk") : undefined,
   };
@@ -236,12 +237,15 @@ function Row({ s, st, lead, stands, onAnswer, room }: { s: Session; st: SessionS
     }
   };
   const here = w === "need" && f.whole !== null && !note?.review;
+  // A session at work or waiting says how long its step has run (or when its wait is due), as its head does.
+  const going = (w === "work" || w === "wait") && timed(st) && !st.offline;
+  const now = useNow(going, tickOf(st));
   return (
     <div className="k-home-row" data-testid="home-session" data-watch={w} data-session={s.id} style={room ? { minHeight: room } : undefined}>
       <button type="button" className="k-home-row-main" data-testid="home-open" onClick={open}>
         <span className={cn("k-home-row-mark", st.offline && "opacity-45 grayscale [&_.k-mark]:[animation-play-state:paused]")}><Mark w={w} /></span>
         <span dir="auto" className="k-home-row-title">{s.title || "New session"}</span>
-        <span className="k-home-row-meta"><span className="k-pane-empty-in">{folderOf(s)}</span><span className="k-pane-empty-time tabular-nums" data-testid={st.as_of ? "home-asof" : undefined} title={st.offline ? "Its machine does not answer: this is the last it told" : when(s.updated)}>{st.as_of ? `${st.offline ? `${OFFLINE}, ` : ""}${asOf(clock(st.as_of))}` : st.offline ? OFFLINE : ago(s.updated)}</span></span>
+        <span className="k-home-row-meta"><span className="k-pane-empty-in">{folderOf(s)}</span><span className="k-pane-empty-time tabular-nums" data-testid={st.as_of ? "home-asof" : undefined} title={st.offline ? "Its machine does not answer: this is the last it told" : when(s.updated)}>{st.as_of ? `${st.offline ? `${OFFLINE}, ` : ""}${asOf(clock(st.as_of))}` : st.offline ? OFFLINE : going ? <span data-testid="home-clock">{stateClock(st, now, true)}</span> : ago(s.updated)}</span></span>
       </button>
       <div className="k-home-row-what">
         <span className="k-home-row-word" data-testid="home-kind">{f.kind}</span>
@@ -353,8 +357,7 @@ function List({ title, rows, most, testid, className, counted }: { title: string
   );
 }
 
-// What needs the owner. On a phone, which has no rail beside the page, the
-// sessions at work are listed too.
+// What needs the owner, then the sessions at work, each with its step and how long it has run.
 // What finished since the owner last looked: the sessions with a finish not read yet, counted, a press
 // from the Inbox that lists them. With the lists, not the headline: a finish that comes moves no start box;
 // under the rows that need the owner, so it moves none of those either (one answered there often finishes).
@@ -381,7 +384,7 @@ export function WatchLists({ className }: { className?: string }) {
       <List title={STATE_WORD.need} rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" counted />
       {/* Under what needs the owner: a finish that comes while they answer moves no row they are pressing. */}
       <Finished />
-      <List title={working.every((r) => r.w === "work") ? STATE_WORD.work : `${STATE_WORD.work} and ${STATE_WORD.wait.toLowerCase()}`} rows={working} most={MOST.working} testid="home-working" className="k-home-sec md:hidden" />
+      <List title={working.every((r) => r.w === "work") ? STATE_WORD.work : `${STATE_WORD.work} and ${STATE_WORD.wait.toLowerCase()}`} rows={working} most={MOST.working} testid="home-working" className="k-home-sec" />
     </div>
   );
 }

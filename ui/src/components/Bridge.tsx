@@ -46,6 +46,7 @@ import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
 import { briefText, elapsed, failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
 import { SessionHeader } from "./SessionHeader.tsx";
+import { Crumbs } from "./Crumbs.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { WatchHeadline, WatchLists, useAttended, useHome } from "./HomeWatch.tsx";
@@ -149,6 +150,8 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
       style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
       {/* The title first, in the width it needs. The state and its reason beside it when they fit, else on the line under it. */}
       <div className="k-station-row k-station-identity">
+        {/* An agent's way up its tree, before its own title: the root and each agent between, each a link. */}
+        {s.parent_id && <Crumbs s={s} />}
         <h2 className="k-station-title" data-testid="station-title" title={s.title}>{s.title || "New session"}</h2>
         {/* Pinned, said while the tools are quiet (the pin tool is one of them). */}
         {pinned && <Pin className="k-station-pinned" data-testid="station-pinned" role="img" aria-label="Pinned" />}

@@ -79,9 +79,9 @@ test("home: the sessions' state, what needs you, and a place to start", async ({
     await expect(row(page, failed.id).getByTestId("home-see")).toHaveText("Open");
     // One action leads the screen.
     await expect(page.locator(".k-home-act-lead")).toHaveCount(1);
-    // A finished session is not there; on a desk the rail lists the working ones, so the page does not.
+    // A finished session is not there; a working one is listed under what needs the owner, with its step.
     await expect(row(page, done.id)).toHaveCount(0);
-    await expect(row(page, works.id)).toBeHidden();
+    await expect(page.getByTestId("home-working").locator(`[data-session="${works.id}"]`)).toHaveAttribute("data-watch", "work");
     expect(fetched.filter((id) => [done.id, failed.id, asks.id, works.id].includes(id))).toEqual([]);
 
     // The place to start is on screen with them, and does not move when the lists change.

@@ -356,7 +356,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
             {/* (The word is the one its row under the session and the list of background work say.) */}
             {agent && st && (
               <span className={st.watch === "done" ? "sr-only" : "k-line-state"} data-tone={asking ? "need" : failedAgent ? "fail" : "idle"} data-testid="agent-call-status" data-watch={st.watch} data-asking={asking || undefined} title={st.title}>
-                <span data-testid="agent-call-state">{st.phrase}</span>{aside ? ", in background" : ""}{why ? <span className="sr-only"> · {why}</span> : null}
+                <span data-testid="agent-call-state">{st.phrase}</span>{aside && st.state.why !== "command" ? ", in background" : ""}{why ? <span className="sr-only"> · {why}</span> : null}
               </span>
             )}
             {/* A call that started no agent the page knows of says how it ended, by its result's own words. */}

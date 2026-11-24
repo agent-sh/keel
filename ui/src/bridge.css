@@ -824,6 +824,28 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-head { --k-tools-w: calc(min(var(--k-tools, 0), 3) * (var(--spacing-ctl-md) + 1px)); --k-state-room: 8rem; }
 .k-station-rest:has(.k-station-why) { --k-state-room: 16rem; }
 .k-station-identity { flex-wrap: wrap; column-gap: 0.625rem; row-gap: 0.125rem; }
+/* An agent's way up its tree, before its title: quiet links, each whole in its tip. In a wide head the whole
+   way up; narrower, the root and one link up to the agent that started this one; narrower still, one mark
+   that goes to the root. The title, the state and its reason keep the room they had. */
+.k-station-crumbs { display: flex; flex: 0 1 auto; align-items: center; min-width: 1.25rem; overflow: hidden; margin-right: -0.25rem; font-size: var(--text-caption); }
+.k-station-crumb-step { display: flex; flex: 0 1 auto; align-items: center; gap: 0.25rem; min-width: 0; padding-right: 0.25rem; }
+.k-station-crumb-step[data-more] { display: none; flex-shrink: 0; }
+.k-station-crumb { flex: 0 1 auto; min-width: 2.5rem; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0.25rem; border-radius: var(--radius-sm); color: var(--muted); text-decoration: none; }
+.k-station-crumb-step[data-more] .k-station-crumb { min-width: 0; }
+.k-station-crumb:hover, .k-station-crumb-mark:hover { background: var(--hover); color: var(--fg); }
+.k-station-crumb:hover { text-decoration: underline; text-underline-offset: 0.1875rem; }
+.k-station-crumb:focus-visible, .k-station-crumb-mark:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.k-station-crumb-sep { flex-shrink: 0; width: 0.75rem; height: 0.75rem; color: var(--faint); }
+.k-station-crumb-mark { display: none; flex-shrink: 0; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: var(--radius-sm); color: var(--muted); }
+.k-station-crumb-mark > svg { width: 0.875rem; height: 0.875rem; }
+@container k-head (max-width: 64rem) {
+  .k-station-crumb-step[data-mid] { display: none; }
+  .k-station-crumb-step[data-more] { display: flex; }
+}
+@container k-head (max-width: 48rem) {
+  .k-station-crumbs .k-station-crumb-step { display: none; }
+  .k-station-crumb-mark { display: grid; }
+}
 .k-station-identity .k-station-title { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; margin: 0; white-space: nowrap; text-overflow: ellipsis; }
 .k-station-rest { flex: 1 1 calc(var(--k-state-room) + var(--k-tools-w)); min-width: 0; display: flex; align-items: center; gap: 0.625rem; min-height: 1.625rem; }
 .k-station-identity .k-station-state { display: flex; align-items: center; gap: 0.4375rem; flex: 0 1 auto; min-width: 0; }
