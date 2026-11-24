@@ -40,7 +40,7 @@ function Fact({ name, tone, value, title, testid, state }: { name: string; tone:
   return (
     <div className="flex min-w-0 flex-col gap-0.5 rounded-md bg-sunken px-2 py-1.5" data-testid={testid} data-state={state} title={title}>
       <span className="k-label">{name}</span>
-      <span className="flex min-w-0 items-center gap-1 text-caption text-fg"><Mark tone={tone} /><span className="min-w-0 truncate">{value}</span></span>
+      <span className="flex min-w-0 items-start gap-1 text-caption text-fg"><span className="mt-0.5 flex h-[1em] items-center"><Mark tone={tone} /></span><span className="min-w-0 [overflow-wrap:anywhere]" data-testid="board-fact-value">{value}</span></span>
     </div>
   );
 }
@@ -137,7 +137,7 @@ function Quote({ by, how, title, line, below, testid }: { by: string; how: strin
   return (
     <blockquote className="k-quote text-caption text-muted" data-testid={testid}>
       <span className="block text-micro text-faint" data-testid={testid === "board-verdict" ? "board-reviewer" : undefined}>
-        {how === "panel" ? "The Review panel" : agent ? <button type="button" className="hover:text-accent" onClick={() => openSession(agent.session_id)}>Reviewer {title}</button> : `Reviewer ${title}`} wrote:
+        {how === "panel" ? "The Review panel" : agent ? <button type="button" className="text-left hover:text-accent" onClick={() => openSession(agent.session_id)}>Reviewer {title}</button> : `Reviewer ${title}`} wrote:
       </span>
       <span className="line-clamp-2">{line}</span>
     </blockquote>

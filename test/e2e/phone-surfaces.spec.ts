@@ -102,5 +102,47 @@ for (const size of SIZES) {
       await noSideScroll(page);
       await shoot(page, `phone-surfaces-02-telemetry-${size.width}`);
     });
+    test("the work board's facts and a reviewer's words are whole on a card", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Phone board");
+      try {
+        const head = "b3166396dd37cfd55fb0fd54b7bafd8f0457e17c";
+        const review = (verdict: string, extra: Record<string, unknown> = {}) => ({ by: "222222222222", title: "Reviewer of the second lane", how: "verdict", state: "completed", verdict, source: "verdict", line: "LAND: no, it breaks the build of the other lane", tip: head, of: head, current: true, at: Date.now(), ...extra });
+        const row = (n: number, extra: Record<string, unknown>) => ({
+          id: `${n}`.repeat(12), session_id: `s-${n}`, parent_id: id, depth: 1, title: `Lane ${n}`, type: "general-purpose", model: STAND_IN, state: "completed", created: Date.now(), ended: Date.now(), machine: null,
+          branch: `keel/lane-${n}`, repo: "/r", base: "main", head, ahead: 1, behind: 0, worktree: "here",
+          checks: { state: "known", passed: ["notes"], failed: [], notRun: [] }, reviews: [], queue: null, live: null, work: null,
+          landed: { state: "no", missing: 1 }, review: null, ...extra,
+        });
+        const rows = [
+          row(1, { review: review("approved") }),
+          row(2, { parent_id: "s-1", depth: 2, review: review("stale", { of: "1234567890abcdef" }) }),
+          // Three cards in, where the card is narrowest.
+          row(3, { parent_id: "s-2", depth: 3, review: review("refused", { current: false, was: "approved" }) }),
+        ];
+        await page.route(`**/api/sessions/${id}/board*`, (route) => route.fulfill({ json: { session_id: id, rows, total: rows.length, repos: [{ repo: "/r", base: "main", base_tip: head, deploys: [] }], at: Date.now(), took_ms: 3 } }));
+        await page.goto(`/s/${id}`);
+        await page.getByTestId("panel-menu").first().tap();
+        await page.getByTestId("panel-pick-board").tap();
+        const board = page.getByTestId("work-board");
+        await expect(board.getByTestId("board-row")).toHaveCount(3);
+        // Each fact says all it knows: "older head" and the commit a stale verdict spoke of are not cut off.
+        await expect(board.getByTestId("board-review").filter({ hasText: "refused" })).toContainText("older head");
+        const values = board.locator('[data-testid^="board-"] > span:nth-child(2) > span:last-child');
+        await expect(values).toHaveCount(12);
+        const cut = await values.evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth).map((e) => e.textContent));
+        expect(cut, "facts cut off").toEqual([]);
+        for (const fact of await board.getByTestId("board-review").all()) expect((await fact.boundingBox())!.x + (await fact.boundingBox())!.width, "a fact stays inside the page").toBeLessThanOrEqual(size.width);
+        // The reviewer's name under a card reads from the card's edge like the words under it.
+        const name = board.getByTestId("board-reviewer").first().locator("button");
+        await expect(name).toBeVisible();
+        expect(await name.evaluate((el) => getComputedStyle(el).textAlign)).toMatch(/^(left|start)$/);
+        await noSideScroll(page);
+        expect(await small(board), "every control of the board is a finger's target").toEqual([]);
+        await shoot(page, `phone-surfaces-03-board-${size.width}`);
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }
