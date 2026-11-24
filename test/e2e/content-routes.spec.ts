@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { daemon, exited, ROOT, sessionsFolder } from "./own-daemon.ts";
-import { shoot } from "./shots.ts";
+import { scrollsSideways, shoot } from "./shots.ts";
 
 // Feature: a folder's content stays on the providers the owner allowed for it.
 // Settings > Content routes names the providers per folder (and for every other
@@ -155,6 +155,12 @@ test("content routes: a folder's calls go only to its allowed providers, and the
     expect((await api("/api/content-routes")).crossing).toBe(0);
     await seen.scrollIntoViewIfNeeded();
     await shoot(page, "content-routes-02-page");
+    // A phone: the table fits its box, and what it dropped is listed under each row.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(seen.locator(`[data-testid="seen-folder"][data-folder="${A}"] dl`).first()).toContainText("Purpose");
+    expect(await scrollsSideways(seen)).toEqual([]);
+    await shoot(page, "content-routes-02-narrow");
+    await page.setViewportSize({ width: 1280, height: 720 });
     await page.getByTestId("route-instead").locator("summary").click();
     await page.getByTestId("route-scope").locator("summary").click();
     await expect(page.getByTestId("route-scope")).toContainText("parent folder of a named one");

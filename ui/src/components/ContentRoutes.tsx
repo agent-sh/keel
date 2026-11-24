@@ -10,19 +10,16 @@ import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { PathText } from "./PathText.tsx";
-import { Card, SettingRow } from "./Settings.tsx";
+import { Cell, Disclosure, Empty, Group, Page, Row, SettingRow, Table, type Col } from "./settings/kit.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
 type Rule = { default: string[] | null; folders: Record<string, string[]> };
 type Report = Seen & { since_ms: number; rule: Rule };
 
-const th = "px-4 py-1.5 font-normal whitespace-nowrap";
-const td = "px-4 py-1.5 tabular-nums whitespace-nowrap";
-
 // One toggle per provider; `any` adds the choice of no limit (the default's null).
 function Providers({ value, ids, label, onChange, any }: { value: string[] | null; ids: { id: string; label: string }[]; label: string; onChange: (v: string[] | null) => void; any?: boolean }) {
   return (
-    <div role="group" aria-label={label} className="flex max-w-[36rem] flex-wrap justify-end gap-1.5" data-testid="route-providers">
+    <div role="group" aria-label={label} className="flex max-w-[36rem] flex-wrap gap-1.5 sm:justify-end" data-testid="route-providers">
       {any && (
         <button type="button" role="checkbox" aria-checked={value === null} className="k-chip-pick" onClick={() => onChange(null)} data-testid="route-any">
           <span className="k-chip-pick-name">Any provider</span>
@@ -71,100 +68,76 @@ export function ContentRoutes() {
     save({ folders: { [f]: rule.default ?? (report?.providers ?? []).filter((p) => p.available).map((p) => p.id) } }).then(() => setFolder(""));
   };
   const folders = Object.entries(rule.folders).sort(([a], [b]) => a.localeCompare(b));
+  const C: Record<string, Col> = { session: { head: "Session", grow: true }, purpose: { head: "Purpose", minor: true }, provider: { head: "Provider", minor: true }, calls: { head: "Calls", end: true }, outside: { head: "Outside the rule", end: true } };
   return (
-    <div className="flex flex-col gap-6" data-testid="content-routes">
-      <Card>
+    <Page testid="content-routes">
+      <Group title="Providers per folder" hint="Which providers may see the content of the sessions in a folder, and the agents they start.">
         <SettingRow label="Every other folder" hint="The providers that may see the content of sessions in a folder not named below. Any provider: nothing is held back.">
           <Providers any value={rule.default} ids={ids} label="Providers for every other folder" onChange={(v) => save({ default: v })} />
         </SettingRow>
         {folders.map(([path, providers]) => (
-          <div key={path} className="k-setting flex flex-col gap-3 border-b border-line py-4 last:border-0 sm:flex-row sm:items-center sm:gap-8" data-testid="route-folder" data-name={path}>
-            <div className="min-w-0 flex-1">
-              <div className="flex"><PathText path={path} className="font-mono text-ui font-medium" /></div>
-              <div className="mt-0.5 text-ui text-muted">Its sessions, and the agents they start, send content to {allowedWords(providers)} only.</div>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
+          <SettingRow key={path} testid="route-folder" data-name={path} label={<span className="flex"><PathText path={path} className="font-mono text-ui font-medium" /></span>}
+            hint={`Its sessions, and the agents they start, send content to ${allowedWords(providers)} only.`}>
+            <div className="flex items-center gap-2">
               <Providers value={providers} ids={ids} label={`Providers for ${path}`} onChange={(v) => save({ folders: { [path]: v ?? [] } })} />
               <button type="button" className="grid size-7 place-items-center rounded-sm text-muted hover:bg-hover hover:text-fg" aria-label={`Remove ${path}`} onClick={() => save({ folders: { [path]: null } })}>
                 <X className="size-3.5" />
               </button>
             </div>
-          </div>
+          </SettingRow>
         ))}
         <SettingRow label="Add a folder" hint="A folder covers the folders under it; the deepest one named decides.">
           <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); add(); }}>
-            <input className="k-field w-72 font-mono" placeholder="/path/to/folder or ~/folder" value={folder} onChange={(e) => setFolder(e.target.value)} aria-label="Folder" data-testid="route-folder-path" />
+            <input className="k-field w-72 max-w-full font-mono" placeholder="/path/to/folder or ~/folder" value={folder} onChange={(e) => setFolder(e.target.value)} aria-label="Folder" data-testid="route-folder-path" />
             <button type="submit" className="k-btn k-btn-lg" disabled={!folder.trim()}>Add</button>
           </form>
         </SettingRow>
-      </Card>
+      </Group>
 
-
-      <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid="content-seen">
-        <div className="mb-3 flex items-center gap-3">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-base font-medium">Who saw what</h3>
-            <div className="text-ui text-muted" data-testid="content-seen-total">
-              {seen ? <>{seen.calls.toLocaleString()} model call{seen.calls === 1 ? "" : "s"} in the last 30 days{seen.crossing ? <>, <span className="text-danger">{seen.crossing.toLocaleString()} outside today's rule</span></> : ", none outside today's rule"}.</> : "Reading the ledger."}
-            </div>
-          </div>
-          <button type="button" className="k-btn" onClick={() => void load()} disabled={busy}><RefreshCw className={cn(busy && "animate-spin")} />Refresh</button>
-        </div>
-        {seen && !seen.folders.length && <p className="k-empty">No model calls in the last 30 days.</p>}
+      <Group testid="content-seen" title="Who saw what" bare
+        hint={<span data-testid="content-seen-total">{seen ? <>{seen.calls.toLocaleString()} model call{seen.calls === 1 ? "" : "s"} in the last 30 days{seen.crossing ? <>, <span className="text-danger">{seen.crossing.toLocaleString()} outside today's rule</span></> : ", none outside today's rule"}.</> : "Reading the ledger."}</span>}
+        actions={<button type="button" className="k-btn" onClick={() => void load()} disabled={busy}><RefreshCw className={cn(busy && "animate-spin")} />Refresh</button>}>
+        {seen && !seen.folders.length && <Group><Empty>No model calls in the last 30 days.</Empty></Group>}
         {seen?.folders.map((f) => (
-          <div key={f.folder || "none"} className="border-t border-line pt-3 pb-2" data-testid="seen-folder" data-folder={f.folder}>
-            <div className="mb-1 flex flex-wrap items-baseline gap-x-3">
-              <span className="flex min-w-0 flex-1">{f.folder ? <PathText path={f.folder} className="font-mono text-ui font-medium" /> : <span className="text-ui text-muted">A removed session</span>}</span>
-              <span className="text-caption text-faint">allowed: {allowedWords(f.allowed)}{f.by && f.by !== f.folder ? ` (by ${f.by})` : ""}</span>
-            </div>
-            <div className="-mx-4 overflow-x-auto">
-              <table className="w-full text-ui">
-                <thead>
-                  <tr className="border-b border-line text-left text-caption text-faint">
-                    <th className={th}>Session</th><th className={th}>Purpose</th><th className={th}>Provider</th><th className={cn(th, "text-right")}>Calls</th><th className={cn(th, "text-right")}>Outside the rule</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {f.sessions.flatMap((s) => s.rows.map((r, i) => (
-                    <tr key={`${s.id}-${r.purpose}-${r.provider}`} className="border-b border-line/60 last:border-0" data-testid="seen-row" data-crossing={r.crossing ? "" : undefined} data-purpose={r.purpose} data-provider={r.provider}>
-                      <td className={cn(td, "max-w-72")}>
-                        {i === 0 && (
-                          <button type="button" className="k-link block max-w-full truncate text-left text-accent hover:underline" onClick={() => navigate({ name: "session", id: s.id })}>
-                            {sessions[s.id]?.title || s.title || s.id.slice(-12)}{s.agents ? <span className="text-faint"> and {s.agents} agent{s.agents === 1 ? "" : "s"}</span> : null}
-                          </button>
-                        )}
-                      </td>
-                      <td className={cn(td, "text-muted")}>{r.purpose}</td>
-                      <td className={cn(td, r.crossing ? "text-danger" : "text-muted")}>{labels[r.provider] ?? r.provider}</td>
-                      <td className={cn(td, "text-right")}>{r.calls.toLocaleString()}</td>
-                      <td className={cn(td, "text-right", r.crossing ? "font-medium text-danger" : "text-faint")}>{r.crossing ? r.crossing.toLocaleString() : "none"}</td>
-                    </tr>
-                  )))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <Group key={f.folder || "none"} testid="seen-folder" data-folder={f.folder}
+            title={f.folder ? <PathText path={f.folder} className="font-mono text-ui font-medium" /> : <span className="text-ui text-muted">A removed session</span>}
+            hint={`allowed: ${allowedWords(f.allowed)}${f.by && f.by !== f.folder ? ` (by ${f.by})` : ""}`}>
+            <Table cols={Object.values(C)} label={`Content seen from ${f.folder || "removed sessions"}`}>
+              {f.sessions.flatMap((s) => s.rows.map((r, i) => (
+                <Row key={`${s.id}-${r.purpose}-${r.provider}`} testid="seen-row" data-crossing={r.crossing ? "" : undefined} data-purpose={r.purpose} data-provider={r.provider}
+                  name={i === 0 ? (
+                    <button type="button" className="k-link max-w-full truncate text-left text-accent hover:underline" onClick={() => navigate({ name: "session", id: s.id })}>
+                      {sessions[s.id]?.title || s.title || s.id.slice(-12)}{s.agents ? <span className="text-faint"> and {s.agents} agent{s.agents === 1 ? "" : "s"}</span> : null}
+                    </button>
+                  ) : null}>
+                  <Cell col={C.purpose!} className="text-muted">{r.purpose}</Cell>
+                  <Cell col={C.provider!} className={r.crossing ? "text-danger" : "text-muted"}>{labels[r.provider] ?? r.provider}</Cell>
+                  <Cell col={C.calls!}>{r.calls.toLocaleString()}</Cell>
+                  <Cell col={C.outside!} className={r.crossing ? "font-medium text-danger" : "text-faint"}>{r.crossing ? r.crossing.toLocaleString() : "none"}</Cell>
+                </Row>
+              )))}
+            </Table>
+          </Group>
         ))}
-      </section>
+      </Group>
 
-      <details className="rounded-lg border border-line bg-raised px-5 py-3 shadow-1" data-testid="route-instead">
-        <summary className="cursor-pointer text-base font-medium">When a call would cross</summary>
-        <p className="mt-1 text-ui text-muted">It is not sent, and the session's failures say so once, with the purpose and the provider. Then, by purpose:</p>
-        <dl className="mt-2 grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1 text-ui">
-          {(Object.keys(INSTEAD) as RoutePurpose[]).map((p) => <div key={p} className="contents"><dt className="font-medium">{p}</dt><dd className="text-muted">{INSTEAD[p]}</dd></div>)}
-        </dl>
-      </details>
-
-      <details className="rounded-lg border border-line bg-raised px-5 py-3 shadow-1" data-testid="route-scope">
-        <summary className="cursor-pointer text-base font-medium">What a folder's rule covers</summary>
-        <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 text-ui text-muted">
-          <li>Sessions opened in the folder or a folder under it, and every agent they start.</li>
-          <li>A session in a worktree made from the folder, the agents' worktrees included: it counts as the folder it was made from.</li>
-          <li>A folder reached through a link is its real folder: the rule holds either way it is written.</li>
-          <li>Not a session opened in a parent folder of a named one: it follows the parent's rule, or the one for every other folder, even when it reads files inside the named folder.</li>
-          <li>Not a session on another machine of the fleet: it follows that machine's own rule.</li>
-        </ul>
-      </details>
-    </div>
+      <Group title="How a rule works" bare>
+        <Disclosure testid="route-instead" summary="When a call would cross">
+          <p>It is not sent, and the session's failures say so once, with the purpose and the provider. Then, by purpose:</p>
+          <dl className="grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1">
+            {(Object.keys(INSTEAD) as RoutePurpose[]).map((p) => <div key={p} className="contents"><dt className="font-medium">{p}</dt><dd className="text-muted">{INSTEAD[p]}</dd></div>)}
+          </dl>
+        </Disclosure>
+        <Disclosure testid="route-scope" summary="What a folder's rule covers">
+          <ul className="flex list-disc flex-col gap-1 pl-5">
+            <li>Sessions opened in the folder or a folder under it, and every agent they start.</li>
+            <li>A session in a worktree made from the folder, the agents' worktrees included: it counts as the folder it was made from.</li>
+            <li>A folder reached through a link is its real folder: the rule holds either way it is written.</li>
+            <li>Not a session opened in a parent folder of a named one: it follows the parent's rule, or the one for every other folder, even when it reads files inside the named folder.</li>
+            <li>Not a session on another machine of the fleet: it follows that machine's own rule.</li>
+          </ul>
+        </Disclosure>
+      </Group>
+    </Page>
   );
 }

@@ -8,6 +8,7 @@ import { api, failed, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { Stat, Stats } from "./Stat.tsx";
+import { Cell, Disclosure, Group, Page, Row, Table, type Col } from "./settings/kit.tsx";
 import { fmtMs } from "./UsagePanel.tsx";
 
 type Pattern = { pattern: string; cores: number; memory_mb: number };
@@ -20,8 +21,6 @@ export type HeavyView = {
   quiet_freed?: number;
 };
 
-const th = "px-4 py-1.5 font-normal whitespace-nowrap";
-const td = "px-4 py-1.5 tabular-nums whitespace-nowrap";
 const WHO: Record<string, string> = { owner: "you", session: "session", agent: "agent" };
 const gb = (mb: number) => `${(mb / 1024).toFixed(mb < 10_240 ? 1 : 0)} GB`;
 const ghost = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50 [&>svg]:size-3.5";
@@ -32,47 +31,42 @@ export function HeavyPool({ v }: { v: HeavyView }) {
   const mine = v.held.filter((h) => h.who === "owner").length;
   const theirs = v.held.length - mine;
   const rows = [...v.held.map((h) => ({ ...h, state: "running" as const, place: 0 })), ...v.line.map((l) => ({ ...l, state: "waiting" as const }))];
+  const C: Record<string, Col> = { command: { head: "Command", grow: true }, session: { head: "Session" }, state: { head: "State" }, cores: { head: "Cores", end: true, minor: true }, ms: { head: "For", end: true, minor: true } };
   return (
-    <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid="heavy-pool">
-      <h3 className="mb-1 text-base font-medium">Heavy commands</h3>
-      <p className="mb-3 text-caption text-faint">
-        Test suites, builds and browsers take a slot of one pool before they start. With none free, the call waits in line and spends nothing.
-        Commands you type in a terminal pane never wait. A command your own session's model runs goes before an agent's in line, but can still wait for agents' commands that already run.
-        A watcher or a server left up (--watch, serve, dev) takes no slot, and a command that has gone quiet while others wait gives its slot back.
-      </p>
-      <Stats>
-        <Stat testid="heavy-slots" label="Slots in use" value={`${theirs} of ${v.room.slots}`} sub={mine ? `and ${mine} of yours, which never wait${mine === 1 ? "s" : ""}` : v.config.slots ? "a fixed number" : "sized from the machine and each command's cost"} />
-        <Stat testid="heavy-line" label="In line" value={v.line.length} sub={v.line.length ? v.room.why : v.quiet_freed ? `nobody in line; ${v.quiet_freed} quiet ${v.quiet_freed === 1 ? "command" : "commands"} gave a slot back` : "nobody in line"} />
-        <Stat label="Busy cores" value={`${v.room.busy.toFixed(1)} of ${v.room.limit.toFixed(1)}`} sub={`${v.machine.cores} cores, load ${v.machine.load1.toFixed(1)}`} />
-        <Stat label="Free memory" value={gb(v.machine.mem_available_mb)} sub={`keeps ${gb(v.config.free_mb)} free`} />
-      </Stats>
+    <Page testid="heavy-pool">
+      <Group title="Heavy commands" bare hint={<>
+        <p>Test suites, builds and browsers take a slot of one pool before they start. With none free, the call waits in line and spends nothing.</p>
+        <Disclosure summary="Who waits and who does not">
+          <p>Commands you type in a terminal pane never wait. A command your own session's model runs goes before an agent's in line, but can still wait for agents' commands that already run.</p>
+          <p>A watcher or a server left up (--watch, serve, dev) takes no slot, and a command that has gone quiet while others wait gives its slot back.</p>
+        </Disclosure>
+      </>}>
+        <Stats>
+          <Stat testid="heavy-slots" label="Slots in use" value={`${theirs} of ${v.room.slots}`} sub={mine ? `and ${mine} of yours, which never wait${mine === 1 ? "s" : ""}` : v.config.slots ? "a fixed number" : "sized from the machine and each command's cost"} />
+          <Stat testid="heavy-line" label="In line" value={v.line.length} sub={v.line.length ? v.room.why : v.quiet_freed ? `nobody in line; ${v.quiet_freed} quiet ${v.quiet_freed === 1 ? "command" : "commands"} gave a slot back` : "nobody in line"} />
+          <Stat label="Busy cores" value={`${v.room.busy.toFixed(1)} of ${v.room.limit.toFixed(1)}`} sub={`${v.machine.cores} cores, load ${v.machine.load1.toFixed(1)}`} />
+          <Stat label="Free memory" value={gb(v.machine.mem_available_mb)} sub={`keeps ${gb(v.config.free_mb)} free`} />
+        </Stats>
+      </Group>
       {rows.length > 0 && (
-        <div className="-mx-4 mt-3 overflow-x-auto">
-          <table className="w-full text-ui">
-            <thead>
-              <tr className="border-b border-line text-left text-caption text-faint">
-                <th className={th}>Command</th><th className={th}>Session</th><th className={th}>State</th><th className={cn(th, "text-right")}>Cores</th><th className={cn(th, "text-right")}>For</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={`${r.state}-${r.session_id}-${i}`} className="border-b border-line/60 last:border-0" data-testid={`heavy-${r.state}`}>
-                  <td className={cn(td, "max-w-96")}><div className="truncate font-mono text-caption" title={r.command}>{r.command}</div></td>
-                  <td className={cn(td, "max-w-60")}>
-                    <button type="button" onClick={() => navigate({ name: "session", id: r.session_id })} className="k-link truncate text-accent hover:underline">{title(r.session_id)}</button>
-                    <span className="ml-1.5 text-caption text-faint">{WHO[r.who] ?? r.who}</span>
-                  </td>
-                  <td className={cn(td, r.state === "waiting" ? "text-warn" : "text-muted")}>{r.state === "running" ? "has a slot" : `in line, place ${r.place}`}</td>
-                  <td className={cn(td, "text-right text-muted")}>{r.cores}</td>
-                  <td className={cn(td, "text-right text-muted")}>{fmtMs(r.ms)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Group title="In the pool" count={rows.length}>
+          <Table cols={Object.values(C)} label="Heavy commands">
+            {rows.map((r, i) => (
+              <Row key={`${r.state}-${r.session_id}-${i}`} testid={`heavy-${r.state}`} title={r.command} name={<span className="font-mono text-caption">{r.command}</span>}>
+                <Cell col={C.session!}>
+                  <button type="button" onClick={() => navigate({ name: "session", id: r.session_id })} className="k-link max-w-60 truncate align-bottom text-accent hover:underline">{title(r.session_id)}</button>
+                  <span className="ml-1.5 text-caption text-faint">{WHO[r.who] ?? r.who}</span>
+                </Cell>
+                <Cell col={C.state!} className={r.state === "waiting" ? "text-warn" : "text-muted"}>{r.state === "running" ? "has a slot" : `in line, place ${r.place}`}</Cell>
+                <Cell col={C.cores!} className="text-muted">{r.cores}</Cell>
+                <Cell col={C.ms!} className="text-muted">{fmtMs(r.ms)}</Cell>
+              </Row>
+            ))}
+          </Table>
+        </Group>
       )}
       <Patterns patterns={v.config.patterns.map((p) => (typeof p === "string" ? { pattern: p, cores: v.config.cost.cores, memory_mb: v.config.cost.memory_mb } : p))} slots={v.config.slots} />
-    </section>
+    </Page>
   );
 }
 
@@ -109,10 +103,8 @@ function Patterns({ patterns, slots }: { patterns: Pattern[]; slots: number | nu
   };
   const cell = "k-field h-7 py-0 text-caption";
   return (
-    <div className="mt-4 border-t border-line pt-4" data-testid="heavy-patterns">
-      <div className="text-ui font-medium">Heavy patterns</div>
-      <p className="mt-0.5 text-caption text-muted">A regular expression a row, matched from the start of each command (wrappers such as env, nice and timeout taken off), and what the command is counted at: its peak cores and memory. A command run over ssh is not counted here.</p>
-      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_5rem_6rem_2rem] items-center gap-x-2 gap-y-1.5">
+    <Group testid="heavy-patterns" title="Heavy patterns" pad hint="A regular expression a row, matched from the start of each command (wrappers such as env, nice and timeout taken off), and what the command is counted at: its peak cores and memory. A command run over ssh is not counted here.">
+      <div className="grid grid-cols-[minmax(0,1fr)_3.5rem_4.5rem_2rem] items-center gap-x-2 gap-y-1.5">
         <span className="text-caption text-faint">Pattern</span><span className="text-caption text-faint">Cores</span><span className="text-caption text-faint">Memory (GB)</span><span />
         {rows.map((r, i) => (
           <div key={i} className="contents" data-testid="heavy-pattern">
@@ -126,12 +118,14 @@ function Patterns({ patterns, slots }: { patterns: Pattern[]; slots: number | nu
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <button type="button" className={ghost} data-testid="heavy-add" onClick={() => setRows((x) => [...x, { pattern: "", cores: "3", gb: "1" }])}><Plus />Add a pattern</button>
         <span className="flex-1" />
-        <label htmlFor="heavy-fixed" className="text-ui text-muted">Slots</label>
-        <input id="heavy-fixed" data-testid="heavy-fixed" inputMode="numeric" placeholder="from the machine" className="k-field w-40" value={fixed} onChange={(e) => setFixed(e.target.value.replace(/[^0-9]/g, ""))} />
+        <span className="flex items-center gap-2">
+          <label htmlFor="heavy-fixed" className="text-ui text-muted">Slots</label>
+          <input id="heavy-fixed" data-testid="heavy-fixed" inputMode="numeric" placeholder="from the machine" className="k-field w-40" value={fixed} onChange={(e) => setFixed(e.target.value.replace(/[^0-9]/g, ""))} />
+        </span>
         <button type="button" className="k-btn" data-ink="" disabled={busy} onClick={save} data-testid="heavy-save">{busy ? "Saving" : "Save"}</button>
         {msg && <span className={cn("text-caption", msg.ok ? "text-muted" : "text-danger")} data-testid="heavy-msg">{msg.text}</span>}
       </div>
-    </div>
+    </Group>
   );
 }
 

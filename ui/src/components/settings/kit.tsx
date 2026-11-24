@@ -63,9 +63,9 @@ export function Card({ children }: { children: ReactNode }) {
   return <div className="k-card rounded-lg border border-line bg-raised px-5 shadow-1">{children}</div>;
 }
 
-export function SettingRow({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+export function SettingRow({ label, hint, children, testid, ...data }: { label: ReactNode; testid?: string; hint?: ReactNode; children: ReactNode } & Data) {
   return (
-    <div className="k-setting flex flex-col gap-3 border-b border-line py-4 last:border-0 sm:flex-row sm:items-center sm:gap-8">
+    <div data-testid={testid} {...data} className="k-setting flex flex-col gap-3 border-b border-line py-4 last:border-0 sm:flex-row sm:items-center sm:gap-8">
       <div className="min-w-0 flex-1">
         <div className="text-base font-medium">{label}</div>
         {hint && <div className="mt-0.5 text-ui text-muted">{hint}</div>}
@@ -161,8 +161,9 @@ export function Cell({ col, children, title, className }: CellProps) {
 }
 
 // A row of a Table. `name` fills the first column; with `onOpen` it is a button (aria-expanded) and a
-// click anywhere else on the row opens it too. `children` are the cells after the first, in column order.
-// Open, the row has an area of its own across the table: first the figures of the columns a narrow box
+// click anywhere else on the row opens it too. A row with no `onOpen` has nothing to open: the figures its
+// narrow box dropped are listed under it, always. `children` are the cells after the first, in column order.
+// Open (or, with no `onOpen`, always), the row has an area of its own across the table: first the figures of the columns a narrow box
 // dropped (each with its head), then `detail`. `after` sits beside the name, outside its button.
 export function Row({ name, after, title, open, onOpen, detail, detailTestid, children, testid, ...data }: {
   name: ReactNode; after?: ReactNode; title?: string; open?: boolean; onOpen?: () => void; detail?: ReactNode; detailTestid?: string;
@@ -177,10 +178,11 @@ export function Row({ name, after, title, open, onOpen, detail, detailTestid, ch
     const hit = (e.target as Element).closest("a, button, input, select, textarea");
     if (!hit || hit.hasAttribute("data-set-opener")) onOpen?.();
   };
-  const area = !!open && (dropped.length > 0 || detail !== undefined);
+  // A row that opens shows its area open; a row that does not has nothing to open, so its area is always there.
+  const area = (onOpen ? !!open : true) && (dropped.length > 0 || detail !== undefined);
   return (
     <Fragment>
-      <tr data-act={onOpen ? "" : undefined} data-open={open || undefined} onClick={onOpen ? click : undefined} data-testid={testid} {...data}>
+      <tr data-act={onOpen ? "" : undefined} data-open={open || undefined} data-fig={(area && !onOpen) || undefined} onClick={onOpen ? click : undefined} data-testid={testid} {...data}>
         <Cell col={first} title={title}>
           {onOpen
             ? <button type="button" data-set-opener="" className="k-link max-w-full truncate text-left hover:underline" aria-expanded={!!open}>{name}</button>
@@ -190,7 +192,7 @@ export function Row({ name, after, title, open, onOpen, detail, detailTestid, ch
         {children}
       </tr>
       {area && (
-        <tr className="k-set-open" data-open="" data-bare={detail === undefined || undefined} data-testid={detailTestid}>
+        <tr className="k-set-open" data-open={onOpen ? "" : undefined} data-bare={detail === undefined || undefined} data-testid={detailTestid}>
           <td colSpan={Math.max(cols.length, 1)}>
             {dropped.length > 0 && (
               <dl className="k-set-dropped">

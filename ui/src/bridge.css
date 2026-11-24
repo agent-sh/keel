@@ -1560,9 +1560,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-dropped dt { color: var(--faint); }
 .k-set-dropped dd { color: var(--muted); overflow-wrap: anywhere; }
 .k-set-table tr.k-set-open[data-bare] { display: none; }
+.k-set-table tr.k-set-open:not([data-open]) > td { padding-top: 0; }
 @container set-box (max-width: 52rem) {
   .k-set-table [data-minor] { display: none; }
   .k-set-dropped { display: grid; }
+  .k-set-table tr[data-fig] > td { border-bottom: 0; }
 }
 /* A phone's box: the name column keeps room to be read. */
 @container set-box (max-width: 30rem) {

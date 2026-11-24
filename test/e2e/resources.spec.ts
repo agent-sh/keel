@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { HAIKU, ask, shoot } from "./shots.ts";
+import { HAIKU, ask, scrollsSideways, shoot } from "./shots.ts";
 
 // Feature: Settings > Resources shows the daemon and the processes it started,
 // a command a session's tool runs in the background is booked to that session,
@@ -41,6 +41,13 @@ test("resources view", async ({ page, request }) => {
   await shoot(page, "resources-01");
   await panel.getByTestId("resources-processes").scrollIntoViewIfNeeded();
   await shoot(page, "resources-02-processes");
+  // A phone: the tables fit their boxes, and what they dropped is listed under each row.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(panel.getByTestId("resources-processes").locator("dl").first()).toContainText("Threads");
+  expect(await scrollsSideways(panel.getByTestId("resources-processes"))).toEqual([]);
+  expect(await scrollsSideways(panel.getByTestId("resources-sessions"))).toEqual([]);
+  await shoot(page, "resources-03-narrow");
+  await page.setViewportSize({ width: 1280, height: 720 });
 
   // Deleting the session stops its commands.
   await request.delete(`/api/sessions/${s.id}`);

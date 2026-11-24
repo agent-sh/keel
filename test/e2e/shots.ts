@@ -116,3 +116,12 @@ export async function leaveHead(page: Page) {
   for (let i = 0; i < 3 && (await menu.isVisible()); i++) await page.keyboard.press("Escape");
   await menu.waitFor({ state: "hidden" });
 }
+
+// The elements of a locator's subtree that scroll sideways inside their own box (a table wider than its
+// box): a phone's page shows no figure behind a scroll bar.
+export async function scrollsSideways(root: Locator): Promise<string[]> {
+  return root.evaluate((el) => [el, ...el.querySelectorAll("*")].filter((e) => {
+    const o = getComputedStyle(e).overflowX;
+    return (o === "auto" || o === "scroll") && e.scrollWidth > e.clientWidth + 1;
+  }).map((e) => `${e.tagName.toLowerCase()}.${e.className}`));
+}

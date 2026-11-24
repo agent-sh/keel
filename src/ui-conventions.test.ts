@@ -476,12 +476,12 @@ function shared(list: Src[]): string[] {
 // rule holds for the modules a section imports too (not the dialogs and menus that float over the page).
 // The modules not moved yet are named in NOT_ON_KIT, each with what it still draws; the list only shrinks.
 const NOT_ON_KIT = [
-  "components/ContentRoutes.tsx", "components/ElsewherePanel.tsx", "components/LogsSettings.tsx",
+  "components/ElsewherePanel.tsx", "components/LogsSettings.tsx",
   "components/PhonePanel.tsx", "components/PortPanel.tsx", "components/PrReviews.tsx",
-  "components/HeavyPool.tsx", "components/HelperPanel.tsx", "components/MemoryFacts.tsx",
+  "components/HelperPanel.tsx", "components/MemoryFacts.tsx",
   "components/MemoryUsage.tsx", "components/NewModels.tsx", "components/ProviderModels.tsx", "components/ResumeFrom.tsx", "components/TakeOver.tsx",
   "components/surfaces/PluginUnits.tsx",
-  "components/ProvidersPanel.tsx", "components/ResourcesPanel.tsx", "components/SafetySettings.tsx", "components/Settings.tsx",
+  "components/ProvidersPanel.tsx", "components/SafetySettings.tsx", "components/Settings.tsx",
 ];
 // The module each registered section shows: a lazy import's file, a component imported by name, or the file that registers it.
 function sectionFiles(list: Src[]): string[] {

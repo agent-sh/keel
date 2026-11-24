@@ -3,11 +3,11 @@
 import { useEffect, useState } from "react";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { cn } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { Stat, Stats } from "./Stat.tsx";
 import { fmtMs } from "./UsagePanel.tsx";
 import { HeavyPool, type HeavyView } from "./HeavyPool.tsx";
+import { Cell, Empty, Group, Notice, Page, Row, Table, type Col } from "./settings/kit.tsx";
 
 export const fmtBytes = (b: number | null | undefined) => {
   if (b == null) return "none";
@@ -31,9 +31,6 @@ type Report = {
   history: { ts_ms: number; cpu_percent: number; daemon_cpu_percent: number; rss_bytes: number; daemon_rss_bytes: number; processes: number }[];
   heavy?: HeavyView; // absent from a daemon before the heavy-command pool
 };
-
-const th = "px-4 py-1.5 font-normal whitespace-nowrap";
-const td = "px-4 py-1.5 tabular-nums whitespace-nowrap";
 
 export function ResourcesPanel() {
   const [r, setR] = useState<Report | null>(null);
@@ -61,7 +58,7 @@ export function ResourcesPanel() {
     document.addEventListener("visibilitychange", load);
     return () => { live = false; clearInterval(iv); document.removeEventListener("visibilitychange", load); };
   }, []);
-  if (!r) return <div className="text-ui text-faint">Measuring.</div>;
+  if (!r) return <Empty>Measuring.</Empty>;
   const d = r.daemon;
   const span = r.history.length > 1 ? r.history.at(-1)!.ts_ms - r.history[0]!.ts_ms : 60_000;
   const bucket = Math.max(60_000, r.interval_ms);
@@ -76,11 +73,11 @@ export function ResourcesPanel() {
   const sw = d.swap;
   const swapped = sw?.process_bytes || (sw?.own ? sw.unit_bytes : 0) || 0;
 
+  const P: Record<string, Col> = { name: { head: "Process", grow: true }, kind: { head: "Kind", minor: true }, mem: { head: "Memory", end: true }, cpu: { head: "CPU", end: true }, time: { head: "CPU time", end: true, minor: true }, threads: { head: "Threads", end: true, minor: true } };
+  const S: Record<string, Col> = { session: { head: "Session", grow: true }, running: { head: "Running", end: true, minor: true }, mem: { head: "Memory", end: true }, time: { head: "CPU time", end: true, minor: true }, procs: { head: "Processes", end: true, minor: true } };
+
   return (
-    <div className="flex flex-col gap-4" data-testid="resources-panel">
-      <div className="text-caption text-faint">
-        Read from /proc every {Math.round(r.interval_ms / 1000)} s. CPU is of one core; memory is resident.
-      </div>
+    <Page testid="resources-panel" intro={`Read from /proc every ${Math.round(r.interval_ms / 1000)} s. CPU is of one core; memory is resident.`}>
       <Stats>
         <Stat testid="tile-memory" label="Memory, all" value={fmtBytes(r.totals.rss_bytes)} sub={`${r.totals.processes} processes, ${r.totals.threads} threads`} />
         <Stat label="Daemon" value={fmtBytes(d.rss_bytes)} sub={d.growth.per_hour_bytes == null ? `peak ${fmtBytes(d.peak_rss_bytes)}` : `${d.growth.per_hour_bytes >= 0 ? "+" : "-"}${fmtBytes(Math.abs(d.growth.per_hour_bytes))} an hour`} />
@@ -93,102 +90,74 @@ export function ResourcesPanel() {
         <Stat testid="tile-disk" label="Disk free" value={r.disk ? fmtBytes(r.disk.free_bytes) : "unknown"} sub={r.disk ? `of ${fmtBytes(r.disk.total_bytes)} under the state folder` : undefined} />
       </Stats>
       {swapped > 0 && (
-        <p className="text-ui text-warn" data-testid="resources-swap">
+        <Notice tone="warn" testid="resources-swap">
           {fmtBytes(swapped)} of the daemon{sw?.process_bytes ? "" : `'s unit${sw?.unit ? ` (${sw.unit})` : ""}`} is in swap. A page there is read back from the disk when it is next used, and every session waits meanwhile.
           {sw?.own
             ? sw.unit_limit_bytes === 0 ? "" : ` To keep it out, add MemorySwapMax=0 under [Service] of the unit (systemctl --user edit ${sw.unit}) and restart it.`
             : ` It was started from a terminal${sw?.unit ? ` (it runs in ${sw.unit})` : ""}, where nothing keeps it out of swap: a service unit with MemorySwapMax=0 does.`}
-        </p>
+        </Notice>
       )}
 
       {r.heavy && <HeavyPool v={r.heavy} />}
 
-      <section className="rounded-lg border border-line bg-raised p-4 shadow-1">
-        <h3 className="mb-3 text-base font-medium">Memory <span className="text-caption font-normal text-faint">last hour</span></h3>
+      <Group title="Memory" hint="Last hour." pad>
         <TimeChart
           label="Memory over the last hour"
           data={points.map(([t, h]) => ({ t, values: [h.rss_bytes, h.daemon_rss_bytes] }))}
           series={[{ label: "All processes", color: "var(--series-1)" }, { label: "Daemon", color: "var(--series-2)" }]}
           bucket={bucket} since={since} until={Date.now()} format={fmtBytes} height={160} unit={1024 * 1024}
         />
-      </section>
-      <section className="rounded-lg border border-line bg-raised p-4 shadow-1">
-        <h3 className="mb-3 text-base font-medium">CPU <span className="text-caption font-normal text-faint">percent of one core, {span > 0 ? "last hour" : ""}</span></h3>
+      </Group>
+      <Group title="CPU" hint={`Percent of one core${span > 0 ? ", last hour" : ""}.`} pad>
         <TimeChart
           label="CPU over the last hour"
           data={points.map(([t, h]) => ({ t, values: [h.cpu_percent, h.daemon_cpu_percent] }))}
           series={[{ label: "All processes", color: "var(--series-1)" }, { label: "Daemon", color: "var(--series-2)" }]}
           bucket={bucket} since={since} until={Date.now()} format={fmtCpu} height={160}
         />
-      </section>
+      </Group>
 
-      <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid="resources-processes">
-        <h3 className="mb-3 text-base font-medium">Processes</h3>
-        <div className="-mx-4 overflow-x-auto">
-          <table className="w-full text-ui">
-            <thead>
-              <tr className="border-b border-line text-left text-caption text-faint">
-                <th className={th}>Process</th><th className={th}>Kind</th><th className={cn(th, "text-right")}>Memory</th><th className={cn(th, "text-right")}>CPU</th><th className={cn(th, "text-right")}>CPU time</th><th className={cn(th, "text-right")}>Threads</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-b border-line/60">
-                <td className={td}><span className="font-medium">keel</span> <span className="text-faint">daemon, pid {d.pid}</span></td>
-                <td className={cn(td, "text-muted")}>daemon</td>
-                <td className={cn(td, "text-right")}>{fmtBytes(d.rss_bytes)}</td>
-                <td className={cn(td, "text-right text-muted")}>{fmtCpu(d.cpu_percent)}</td>
-                <td className={cn(td, "text-right text-muted")}>{fmtMs(d.cpu_user_ms + d.cpu_system_ms)}</td>
-                <td className={cn(td, "text-right text-muted")}>{d.threads}</td>
-              </tr>
-              {r.processes.map((p) => (
-                <tr key={p.pid} className="border-b border-line/60 last:border-0" data-testid="process-row">
-                  <td className={cn(td, "max-w-60")}>
-                    <div className="truncate font-mono text-caption" title={p.command}>{p.label}</div>
-                    {p.session_id && (
-                      <button type="button" onClick={() => navigate({ name: "session", id: p.session_id! })} className="k-link truncate text-caption text-accent hover:underline">
-                        {title(p.session_id)}
-                      </button>
-                    )}
-                  </td>
-                  <td className={cn(td, "text-muted")}>{p.kind}</td>
-                  <td className={cn(td, "text-right")}>{fmtBytes(p.rss_bytes)}</td>
-                  <td className={cn(td, "text-right text-muted")}>{fmtCpu(p.cpu_percent)}</td>
-                  <td className={cn(td, "text-right text-muted")}>{fmtMs(p.cpu_user_ms + p.cpu_system_ms)}</td>
-                  <td className={cn(td, "text-right text-muted")}>{p.threads}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <Group testid="resources-processes" title="Processes">
+        <Table cols={Object.values(P)} label="Processes">
+          <Row name={<span className="font-medium">keel</span>} after={<span className="ml-1.5 text-faint">daemon, pid {d.pid}</span>}>
+            <Cell col={P.kind!} className="text-muted">daemon</Cell>
+            <Cell col={P.mem!}>{fmtBytes(d.rss_bytes)}</Cell>
+            <Cell col={P.cpu!} className="text-muted">{fmtCpu(d.cpu_percent)}</Cell>
+            <Cell col={P.time!} className="text-muted">{fmtMs(d.cpu_user_ms + d.cpu_system_ms)}</Cell>
+            <Cell col={P.threads!} className="text-muted">{d.threads}</Cell>
+          </Row>
+          {r.processes.map((p) => (
+            <Row key={p.pid} testid="process-row" title={p.command}
+              name={<span className="font-mono text-caption">{p.label}</span>}
+              after={p.session_id && (
+                <button type="button" onClick={() => navigate({ name: "session", id: p.session_id! })} className="k-link ml-2 max-w-full truncate text-caption text-accent hover:underline">
+                  {title(p.session_id)}
+                </button>
+              )}>
+              <Cell col={P.kind!} className="text-muted">{p.kind}</Cell>
+              <Cell col={P.mem!}>{fmtBytes(p.rss_bytes)}</Cell>
+              <Cell col={P.cpu!} className="text-muted">{fmtCpu(p.cpu_percent)}</Cell>
+              <Cell col={P.time!} className="text-muted">{fmtMs(p.cpu_user_ms + p.cpu_system_ms)}</Cell>
+              <Cell col={P.threads!} className="text-muted">{p.threads}</Cell>
+            </Row>
+          ))}
+        </Table>
+      </Group>
 
       {r.sessions.length > 0 && (
-        <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid="resources-sessions">
-          <h3 className="mb-3 text-base font-medium">By session <span className="text-caption font-normal text-faint">commands the session's tools started, ended ones included</span></h3>
-          <div className="-mx-4 overflow-x-auto">
-            <table className="w-full text-ui">
-              <thead>
-                <tr className="border-b border-line text-left text-caption text-faint">
-                  <th className={th}>Session</th><th className={cn(th, "text-right")}>Running</th><th className={cn(th, "text-right")}>Memory</th><th className={cn(th, "text-right")}>CPU time</th><th className={cn(th, "text-right")}>Processes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {r.sessions.map((s) => (
-                  <tr key={s.session_id} className="border-b border-line/60 last:border-0">
-                    <td className={cn(td, "max-w-80 truncate")}>
-                      <button type="button" onClick={() => navigate({ name: "session", id: s.session_id })} className="k-link truncate hover:underline">{title(s.session_id)}</button>
-                    </td>
-                    <td className={cn(td, "text-right text-muted")}>{s.processes}</td>
-                    <td className={cn(td, "text-right")}>{fmtBytes(s.rss_bytes)}</td>
-                    <td className={cn(td, "text-right text-muted")}>{fmtMs(s.total.cpu_user_ms + s.total.cpu_system_ms)}</td>
-                    <td className={cn(td, "text-right text-muted")}>{s.total.processes}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <Group testid="resources-sessions" title="By session" hint="Commands the session's tools started, ended ones included.">
+          <Table cols={Object.values(S)} label="By session">
+            {r.sessions.map((s) => (
+              <Row key={s.session_id} name={<button type="button" onClick={() => navigate({ name: "session", id: s.session_id })} className="k-link max-w-full truncate hover:underline">{title(s.session_id)}</button>}>
+                <Cell col={S.running!} className="text-muted">{s.processes}</Cell>
+                <Cell col={S.mem!}>{fmtBytes(s.rss_bytes)}</Cell>
+                <Cell col={S.time!} className="text-muted">{fmtMs(s.total.cpu_user_ms + s.total.cpu_system_ms)}</Cell>
+                <Cell col={S.procs!} className="text-muted">{s.total.processes}</Cell>
+              </Row>
+            ))}
+          </Table>
+        </Group>
       )}
-    </div>
+    </Page>
   );
 }
