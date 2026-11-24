@@ -7,7 +7,7 @@ import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
 import { abs, editFile, editShown, globFiles, guardOverwrite, hold, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
-import { answerText, ask, type Question } from "./interact.ts";
+import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
@@ -307,9 +307,10 @@ const ask_user: Tool = {
     const qs: Question[] = (input.questions ?? []).map((q: any, i: number) => ({
       id: String(i), ...q, options: q.type === "yesno" ? [{ label: "Yes" }, { label: "No" }] : q.options ?? [],
     }));
-    const a = await ask(ctx);
-    if (!a) return fail("The user did not answer; the turn was interrupted.");
-    return { ...ok(JSON.stringify({ answers: Object.fromEntries(qs.map((q) => [q.id, answerText(a[q.id] ?? { picked: [] })])) })), shown: { answers: a } };
+    const g = await ask(ctx, qs);
+    if (!g) return fail("The user did not answer; the turn was interrupted.");
+    const a = g.answers;
+    return { ...ok(ruledText(g, JSON.stringify({ answers: Object.fromEntries(qs.map((q) => [q.id, answerText(a[q.id] ?? { picked: [] })])) }))), shown: shownOf(g) };
   },
 };
 

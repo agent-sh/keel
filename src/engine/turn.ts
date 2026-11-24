@@ -1066,27 +1066,35 @@ export class Engine {
   // the successor's model last. Counted on the session `id`. Undefined when no
   // model gave a brief that holds (each failure is captured once).
   async reword(id: string, model: string, task: string, signal: AbortSignal): Promise<{ text: string; model: string } | undefined> {
-    const prompt = rewordPrompt(task);
-    const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(model).then((r) => r.info)]);
+    const cur = await this.providers.resolve(model).then((r) => r.info);
     const out = Math.min(READER_OUTPUT, Math.ceil((task.length * 2) / bytesPerToken(cur.id)) + 256);
-    const choices = this.allowedModels(id, "reader", readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + out, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels()));
+    return this.small(id, model, { system: REWORD_SYSTEM, prompt: rewordPrompt(task), out, signal, at: "successor reword", holds: (text) => rewordHolds(task, text) });
+  }
+
+  // One request with no tools, through the owner's small models in order (the
+  // readers' choices: src/engine/reader.ts), the model `model` last, each at its
+  // lowest effort. Counted on the session `id`. The first answer that `holds`
+  // is taken; undefined when none did (each failure is captured once, under `at`).
+  async small(id: string, model: string, o: { system: string; prompt: string; out: number; signal: AbortSignal; at: string; holds: (text: string) => boolean }): Promise<{ text: string; model: string } | undefined> {
+    const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(model).then((r) => r.info)]);
+    const choices = this.allowedModels(id, "reader", readerChoices(models, cur, Math.ceil(o.prompt.length / bytesPerToken(cur.id)) + o.out, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels()));
     const s = this.store.session(id);
     if (!s) return undefined;
     for (const m of choices) {
-      if (signal.aborted) return undefined;
+      if (o.signal.aborted) return undefined;
       // (A route out of credit or signed out would refuse at once.)
       if (this.providers.shut(m.id)) continue;
       try {
         const { provider, info } = await this.providers.resolve(m.id);
         const effort = ["none", "minimal", "low"].find((e) => info.efforts.includes(e));
-        const st: Step = { provider, info: { ...info, output: Math.min(info.output || out, out) }, tools: [], system: REWORD_SYSTEM, systemSplit: 0, effort };
-        const res = await this.call(id, st, [{ role: "user", content: [{ type: "text", text: prompt }] }], signal, new Map(), s, true, "reader");
+        const st: Step = { provider, info: { ...info, output: Math.min(info.output || o.out, o.out) }, tools: [], system: o.system, systemSplit: 0, effort };
+        const res = await this.call(id, st, [{ role: "user", content: [{ type: "text", text: o.prompt }] }], o.signal, new Map(), s, true, "reader");
         this.store.addUsage(id, res.usage);
         const text = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-        if (res.stop === "refusal" || res.stop === "max_tokens" || !rewordHolds(task, text)) continue;
+        if (res.stop === "refusal" || res.stop === "max_tokens" || !o.holds(text)) continue;
         return { text, model: info.id };
       } catch (e) {
-        if (!signal.aborted) this.errors.capture("provider", e, { session: id, at: "successor reword", model: m.id });
+        if (!o.signal.aborted) this.errors.capture("provider", e, { session: id, at: o.at, model: m.id });
       }
     }
     return undefined;

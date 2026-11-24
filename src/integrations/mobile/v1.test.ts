@@ -873,7 +873,7 @@ describe("questions", () => {
     const input = { questions: [{ id: "build", question: "Build type?", options: [{ label: "Debug" }, { label: "Release" }] }, { id: "checks", question: "Which checks?", options: [{ label: "Unit" }, { label: "Integration" }] }] };
     store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "call-q", name: "AskUserQuestion", input }] });
     let got: any;
-    ask({ callId: "call-q", sessionId: s.id, signal: new AbortController().signal } as any).then((a) => (got = a));
+    ask({ callId: "call-q", sessionId: s.id, signal: new AbortController().signal } as any).then((a) => (got = a?.answers));
     for (let i = 0; i < 45; i++) store.append(s.id, "note", { text: "later" });
     const card = (await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.find((a: any) => a.id === `q-${s.id}.call-q`);
     expect(card.command).toBe("Build type?\nWhich checks?");
@@ -972,7 +972,7 @@ describe("questions", () => {
     const got: Record<string, any> = {};
     for (const s of [a, b]) {
       store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "call-1-0", name: "AskUserQuestion", input: one }] });
-      ask({ callId: "call-1-0", sessionId: s.id, signal: new AbortController().signal } as any).then((x) => (got[s.id] = x));
+      ask({ callId: "call-1-0", sessionId: s.id, signal: new AbortController().signal } as any).then((x) => (got[s.id] = x?.answers));
     }
     const ids = (await call("GET", "/v1/sync?since=0")).body.approvals.filter((c: any) => c.kind === "question" && c.id.endsWith(".call-1-0") && c.state === "pending").map((c: any) => c.id);
     expect(ids.sort()).toEqual([`q-${a.id}.call-1-0`, `q-${b.id}.call-1-0`].sort());
@@ -1261,7 +1261,7 @@ describe("the wire contract", () => {
   const asks = (sid: string, callId: string) => {
     const e = store.append(sid, "assistant", { blocks: [{ type: "tool_use", id: callId, name: "AskUserQuestion", input: QUESTIONS }] });
     let got: any;
-    ask({ callId, sessionId: sid, signal: new AbortController().signal } as any).then((a) => (got = a));
+    ask({ callId, sessionId: sid, signal: new AbortController().signal } as any).then((a) => (got = a?.answers));
     return { event: e, answer: () => got };
   };
 

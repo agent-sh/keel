@@ -33,6 +33,8 @@ import { composing } from "../lib/keys.ts";
 import { actions, failed, getState, useStore } from "../lib/store.ts";
 import { askedQuestions, questions, resultText, siteOf, type UiQuestion } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
+import { justOnce, keepRuling, useOfferMark, type Scope } from "../lib/rulings.ts";
+import { Seg } from "./Seg.tsx";
 
 type Picked = Record<string, string[]>;
 // Unsent answers, per session and call: they outlive the card (a pane
@@ -112,7 +114,10 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
   const answered = !!result && !result.is_error;
   const open = useStore((s) => !result && !!sessionId && !!s.questionCalls[sessionId]?.includes(use.id));
   // What the owner answered, by question (stored with the result); older records have only the result text.
-  const given = (result as (ToolResultBlock & { shown?: { answers?: Record<string, { picked: string[]; other?: string }> } }) | undefined)?.shown?.answers;
+  // `ruling`: a standing ruling answered it, with no card. `offer`: the owner answered it, and can keep the answer.
+  const shown = (result as (ToolResultBlock & { shown?: Shown }) | undefined)?.shown;
+  const given = shown?.answers;
+  const ruled = shown?.ruling;
   const first = qs[0];
   if (open) {
     return (
@@ -139,9 +144,11 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
           <span className="k-line-what" data-words="">{first?.question ?? ""}</span>
           {qs.length > 1 && <>{" "}<span className="k-line-rest">+{qs.length - 1}</span></>}
           {said && <>{" "}<span className="k-line-answer" data-testid="question-line-answer">{said}</span></>}
+          {ruled && <>{" "}<span className="k-line-state" data-tone="idle" data-testid="question-ruled">from your standing ruling</span></>}
         </span>
         <span className="k-line-end" />
       </Collapsible.Trigger>
+      {answered && shown?.offer && !ruled && sessionId && <RulingOffer sessionId={sessionId} callId={use.id} offer={shown.offer} />}
       <Collapsible.Panel className="k-tool-panel overflow-hidden">
       {/* The record, in the rail's own rows: what was asked with what it offered (what was chosen marked), and what the owner said. */}
       <div className="k-under k-question-record">
@@ -159,16 +166,54 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
               )}
             </Under>
             {given && (
-              <Under name="You" testid="question-answer">
+              <Under name={ruled ? "Ruling" : "You"} testid="question-answer">
                 {[...(given[q.id]?.picked ?? []), ...(given[q.id]?.other?.trim() ? [given[q.id]!.other!.trim()] : [])].join(", ") || "no answer"}
               </Under>
             )}
           </Fragment>
         ))}
+        {ruled && <Under name="Kept" testid="question-ruling">{`For questions like it ${inScope(ruled)}. You did not see this question; revoke the ruling in Settings > Rulings.`}</Under>}
         {result && !given && <Under name={result.is_error && !stopKind(result.content) ? STATE_WORD.fail : "Result"} tone={result.is_error && !stopKind(result.content) ? "fail" : undefined} testid="question-result">{resultText(result)}</Under>}
       </div>
       </Collapsible.Panel>
     </Collapsible.Root>
+  );
+}
+
+type Shown = { answers?: Record<string, { picked: string[]; other?: string }>; ruling?: { id: string; scope: Scope; name: string; words: string[] }; offer?: { scopes: { scope: Scope; name: string }[] } };
+const SCOPE_WORD: Record<Scope, string> = { tree: "This tree", repo: "Repository", everywhere: "Everywhere" };
+const inScope = (s: { scope: Scope; name: string }) => (s.scope === "everywhere" ? "everywhere" : s.scope === "tree" ? "in this tree of agents" : `in ${s.name}`);
+
+// One line under an answer the owner gave: keep it for questions like it (a
+// standing ruling, src/automation/rulings.ts), in a scope the question was
+// asked in, or say it was just this once. Once kept, the line says where.
+function RulingOffer({ sessionId, callId, offer }: { sessionId: string; callId: string; offer: NonNullable<Shown["offer"]> }) {
+  const mark = useOfferMark(sessionId, callId, true);
+  const scopes = offer.scopes;
+  const [scope, setScope] = useState<Scope>(() => scopes.find((s) => s.scope === "repo")?.scope ?? scopes[0]?.scope ?? "tree");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  if (!mark || mark.state === "one-off" || !scopes.length) return null;
+  if (mark.state === "kept") {
+    const gone = !!mark.rulings?.length && mark.rulings.every((r) => r.revoked);
+    const at = scopes.find((s) => s.scope === mark.scope) ?? { scope: mark.scope ?? "tree", name: mark.name ?? "" };
+    return <div className="k-ruling-offer" data-testid="ruling-offer" data-state={gone ? "revoked" : "kept"}><span className="k-ruling-words">{gone ? "Its ruling was revoked." : `Kept for questions like it ${inScope(at)}.`}</span></div>;
+  }
+  const chosen = scopes.find((s) => s.scope === scope) ?? scopes[0]!;
+  const act = async (f: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    try { await f(); } catch (e) { setErr(failed(e, { at: "RulingOffer" })); } finally { setBusy(false); }
+  };
+  return (
+    <div className="k-ruling-offer" data-testid="ruling-offer" data-state="open">
+      <span className="k-ruling-words">Keep this for questions like it <span className="k-ruling-scope" data-testid="ruling-scope-name">{inScope(chosen)}</span>?</span>
+      {scopes.length > 1 && <Seg label="Where the ruling holds" testid="ruling-scope" value={scope} onChange={setScope} options={scopes.map((s) => ({ value: s.scope, label: SCOPE_WORD[s.scope], title: s.scope === "everywhere" ? "Every agent" : s.name, testid: `ruling-scope-${s.scope}` }))} />}
+      <button type="button" className="k-btn" data-ink="" disabled={busy} data-testid="ruling-keep" onClick={() => act(() => keepRuling(sessionId, callId, scope))}>Keep</button>
+      <button type="button" className="k-btn" data-quiet="" disabled={busy} data-testid="ruling-once" onClick={() => act(() => justOnce(sessionId, callId))}>Just this once</button>
+      {err && <span className="k-ruling-err" role="alert">{err}</span>}
+    </div>
   );
 }
 

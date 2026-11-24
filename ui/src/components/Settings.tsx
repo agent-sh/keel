@@ -202,7 +202,7 @@ settingsSections.add(
 // rest. A section another lane adds falls in by id, else under Advanced.
 const GROUPS: [string, string[]][] = [
   ["Basics", ["general", "models", "providers", "safety", "routes", "network", "alerts", "usage", "keyboard"]],
-  ["Customize", ["instructions", "skills", "commands", "agents", "plugins", "hooks", "mcp", "lsp", "port"]],
+  ["Customize", ["instructions", "rulings", "skills", "commands", "agents", "plugins", "hooks", "mcp", "lsp", "port"]],
   ["Connections", ["machines", "phone", "integrations", "pull-requests", "elsewhere", "acp-agents", "helper"]],
   ["This computer", ["resources", "storage", "leftovers", "logs", "daemon"]],
   ["Advanced", ["telemetry", "observability", "experiments", "about"]],

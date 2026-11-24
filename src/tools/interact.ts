@@ -34,8 +34,46 @@ export const closedQuestions = (sinceMs: number) => closed.filter((q) => q.at >=
 // How the last question of a call ended, while this daemon remembers it.
 export const closedHow = (sessionId: string, callId: string): QuestionEnd | undefined => closed.findLast((q) => q.session_id === sessionId && q.call_id === callId)?.how;
 
+// Standing rulings (src/automation/rulings.ts) join here: `before` may answer
+// the model's own questions from a ruling the owner kept, with no card;
+// `after` takes the owner's answer from a card and says what keeping it as a
+// ruling would cover (the offer the card shows under the answer). A server's
+// question and a permission card never reach either.
+// `ruled`: the ruling named in the call's result, and what the page shows of it.
+export type Ruled = { note: string; shown: { id: string; scope: string; name: string; words: string[] } };
+export type Offer = { scopes: { scope: string; name: string }[] };
+// `before` answers at once when it can tell at once (no ruling is in scope: the
+// card is registered in the same step, as it always was), and with a promise
+// when a ruling must be read first.
+type Ruling = { answers: Answers; ruled: Ruled };
+export const standing: {
+  before?: (ctx: ToolContext, qs: Question[]) => Ruling | Promise<Ruling | undefined> | undefined;
+  after?: (ctx: ToolContext, qs: Question[], answers: Answers) => Offer | undefined;
+} = {};
+export type Got = { answers: Answers; ruled?: Ruled; offer?: Offer };
+
 // The model's own question: the card reads it from the call's input.
-export const ask = (ctx: ToolContext) => askFor(ctx) as Promise<Answers | null>;
+// `qs`: its questions, as the tool read them from its input.
+export function ask(ctx: ToolContext, qs: Question[] = []): Promise<Got | null> {
+  if (ctx.signal.aborted) return Promise.resolve(null);
+  let r: ReturnType<NonNullable<typeof standing.before>>;
+  // (A ruling that cannot be read is no answer: the owner is asked.)
+  try { r = qs.length ? standing.before?.(ctx, qs) : undefined; } catch { r = undefined; }
+  if (!r) return card(ctx, qs);
+  if (!(r instanceof Promise)) return Promise.resolve(r);
+  return r.catch(() => undefined).then((x) => x ?? (ctx.signal.aborted ? null : card(ctx, qs)));
+}
+async function card(ctx: ToolContext, qs: Question[]): Promise<Got | null> {
+  const answers = (await askFor(ctx)) as Answers | null;
+  if (!answers) return null;
+  let offer: Offer | undefined;
+  try { offer = standing.after?.(ctx, qs, answers); } catch {} // (No offer is no loss: the answer stands.)
+  return { answers, ...(offer ? { offer } : {}) };
+}
+// What a tool stores with its result for the page: the answers, and the ruling or the offer.
+export const shownOf = (g: Got) => ({ answers: g.answers, ...(g.ruled ? { ruling: g.ruled.shown } : {}), ...(g.offer ? { offer: g.offer } : {}) });
+// The result text with the ruling named first, when one answered.
+export const ruledText = (g: Got, text: string) => (g.ruled ? `${g.ruled.note}\n\n${text}` : text);
 
 // `asked`: a question the call's input does not hold (a server asked it while
 // the call ran). The card shows it from the registry, and the owner can

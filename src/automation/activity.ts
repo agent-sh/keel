@@ -8,11 +8,12 @@ export { saidOf };
 // sessions, newest first. One row per happening (an alert, a turn's end, an
 // agent started or settled, a loop run or a run that did not happen, a wait
 // that fired, an approval answered, a keep-awake hold, a snooze, a daemon
-// restart with the turns it cut, a correction sent to the memory store). Kept 30 days:
+// restart with the turns it cut, a correction sent to the memory store, a standing
+// ruling kept, used or revoked: src/automation/rulings.ts). Kept 30 days:
 // older rows are never listed, and an hourly sweep deletes them.
 
-export type ActivityKind = "alert" | "turn" | "agent" | "loop" | "wait" | "approval" | "awake" | "snooze" | "daemon" | "memory";
-export const ACTIVITY_KINDS: ActivityKind[] = ["alert", "turn", "agent", "loop", "wait", "approval", "awake", "snooze", "daemon", "memory"];
+export type ActivityKind = "alert" | "turn" | "agent" | "loop" | "wait" | "approval" | "awake" | "snooze" | "daemon" | "memory" | "ruling";
+export const ACTIVITY_KINDS: ActivityKind[] = ["alert", "turn", "agent", "loop", "wait", "approval", "awake", "snooze", "daemon", "memory", "ruling"];
 // `turn_event`: the turn_start event of the turn it happened in, in the session
 // it is listed under (absent between turns), so the row opens that turn's receipt.
 // `said`: on a turn's row, what the alert its end raised said (one row a turn). `more`: on the last row shown of a

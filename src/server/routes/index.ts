@@ -71,6 +71,7 @@ import { shellRoutes } from "./shell.ts";
 import { checkRoutes } from "./checks.ts";
 import { egressRoutes } from "./egress.ts";
 import { pressRoutes } from "./presses.ts";
+import { rulingRoutes } from "../../automation/rulings.ts";
 
 // Each feature module adds one line here.
 // Each is listed under its name: a built binary's functions lose theirs, and a start says by name which module took its time (src/core/start-trace.ts).
@@ -116,6 +117,7 @@ const modules: Record<string, RouteModule> = {
   adminRoutes,
   observeRoutes, // after admin: it reads the settings admin loads
   automationRoutes,
+  rulingRoutes, // after automation: a ruling's use is a row of the activity list
   integrationRoutes,
   helperRoutes, // after integrations: its note for a prompt follows the tacit memory note
   driveRoutes,

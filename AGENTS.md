@@ -189,6 +189,19 @@ under `~/.cache/keel-work/bun/research/`.
   a page on this machine is no row. The rows wait with the side writes and are
   kept `retention.egress_days` (30 by default); the day's report
   (Settings > Network) runs on the read thread.
+- An answer the owner gives on a model's question card can be kept as a
+  standing ruling for questions like it, in the asking session's tree, its
+  repository or everywhere (`src/automation/rulings.ts`). A later agent of that
+  scope that asks the same thing is answered from it with no card: in the same
+  words (only case, spacing and a trailing `?!.` aside) with the same options,
+  else by a small model of the owner's chain that reads the words, never by the
+  id the asking model gave the question; a near-miss (a negation, another
+  target, another time) is another question (`src/automation/ruling-match.ts`,
+  pure). The answer names the ruling and
+  quotes the owner's words, rides as the call's result (never a prompt edit),
+  and is a row of the session's timeline; Settings > Rulings lists and revokes
+  them. A permission card, a server's question and an answer marked just this
+  once never reach a ruling.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

@@ -7,7 +7,7 @@ import { atCwd, realOf } from "../core/paths.ts";
 import { heldFile } from "../core/store-files.ts";
 import { hold } from "./files.ts";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
-import { ask, type Question } from "./interact.ts";
+import { ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { cleanTerm, findJob, hasUnread, running, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
 import { ABORTED_TEXT, startHeld, takeFor, waitedLine } from "./heavy.ts";
 import { goneCwd, logDir, shellCwd } from "./shell.ts";
@@ -196,13 +196,14 @@ const request_user_input: Tool = {
   async run(input, ctx) {
     const qs: Question[] = input.questions ?? [];
     if (!qs.length || qs.some((q) => !q.options?.length)) return fail("request_user_input requires non-empty options for every question");
-    const a = await ask(ctx);
-    if (!a) return fail("request_user_input was interrupted before the user answered");
+    const g = await ask(ctx, qs);
+    if (!g) return fail("request_user_input was interrupted before the user answered");
+    const a = g.answers;
     const answers = Object.fromEntries(qs.map((q, i) => {
       const x = a[q.id] ?? a[String(i)] ?? { picked: [] };
       return [q.id, { answers: [...x.picked, ...(x.other?.trim() ? [`user_note: ${x.other.trim()}`] : [])] }];
     }));
-    return { ...ok(JSON.stringify({ answers })), shown: { answers: a } };
+    return { ...ok(ruledText(g, JSON.stringify({ answers }))), shown: shownOf(g) };
   },
 };
 

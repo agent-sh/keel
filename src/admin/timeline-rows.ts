@@ -367,6 +367,15 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
     if (a.sub === "limit") return row("limit", d.cls ? `${limitWord(d.cls)}${typeof d.until === "number" ? `: wait until ${localTime(d.until).slice(0, 5)}` : ""}` : "A usage limit is close", { sub: "close" });
     return null;
   }
+  // A standing ruling (src/automation/rulings.ts): kept from an answer here, used for a question asked here, revoked.
+  if (a.kind === "ruling") {
+    const id = str(d.ruling_id)?.slice(-8);
+    const where = d.scope === "everywhere" ? "everywhere" : d.scope === "repo" ? "for its repository" : "for its tree of agents";
+    if (a.sub === "used") return row("question", `Answered a question from standing ruling ${id ?? ""} (kept ${where}), with no card`, {}, { call_id: str(d.call_id) });
+    if (a.sub === "kept") return row("question", `The owner kept an answer as standing ruling ${id ?? ""}, ${where}`, {}, { call_id: str(d.call_id) });
+    if (a.sub === "revoked") return row("question", `The owner revoked standing ruling ${id ?? ""}`);
+    return null;
+  }
   if (a.kind === "turn" && a.sub === "goal") {
     const m = /^Goal (set|cleared|paused)|^Goal (check|verification): ([a-z ]+)\./.exec(a.text);
     if (!m) return null;

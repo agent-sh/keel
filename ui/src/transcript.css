@@ -360,3 +360,10 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 @media (hover: none) { .k-findbar-btn { width: 2.5rem; height: 2.5rem; } }
 ::highlight(keel-find) { background-color: var(--find-hit); }
 ::highlight(keel-find-now) { background-color: var(--find-now); color: var(--find-now-fg); }
+/* Under an answer the owner gave: keep it as a standing ruling for questions like it, in a scope, or not.
+   One row in the rail's indent, wrapping on a narrow pane; once kept, the row says where in quiet words. */
+.k-ruling-offer { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.625rem; margin: 0.125rem 0 0.375rem; padding-left: var(--k-verb, 4.25rem); font-size: var(--text-caption); color: var(--muted); }
+.k-ruling-offer .k-btn { height: var(--spacing-ctl-sm); }
+.k-ruling-scope { font-weight: 500; color: var(--fg); }
+.k-ruling-offer[data-state="revoked"] { color: var(--faint); }
+.k-ruling-err { color: var(--danger-ink); }

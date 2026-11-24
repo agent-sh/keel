@@ -1,4 +1,4 @@
-import { Bell, Bot, Brain, Coffee, Hand, Moon, Power, ReceiptText, Repeat, Search, Timer, TriangleAlert, Workflow } from "lucide-react";
+import { Bell, Bot, Brain, Coffee, Gavel, Hand, Moon, Power, ReceiptText, Repeat, Search, Timer, TriangleAlert, Workflow } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { activityTarget, auto, openSession, placeName, useAuto, type Activity, type Alert } from "../../lib/automation.ts";
 import { onInboxView, takeInboxView } from "../../lib/inbox-view.ts";
@@ -21,6 +21,7 @@ const KIND: Record<Activity["kind"], { label: string; icon: typeof Bell }> = {
   snooze: { label: "Snooze", icon: Moon },
   daemon: { label: "Daemon", icon: Power },
   memory: { label: "Memory", icon: Brain },
+  ruling: { label: "Rulings", icon: Gavel },
 };
 const KINDS = Object.keys(KIND) as Activity["kind"][];
 // The alerts a turn's end raises: each is on its turn's row (src/automation/activity.ts).

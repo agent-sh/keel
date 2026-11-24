@@ -3,7 +3,7 @@
 import { realOf } from "../core/paths.ts";
 import { heldWrite } from "../core/store-files.ts";
 import { abs, editFile, editShown, globFiles, guardOverwrite, hold, mtime, readFile, ripgrep, writeFile } from "./files.ts";
-import { answerText, ask, type Question } from "./interact.ts";
+import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
@@ -361,10 +361,11 @@ const AskUserQuestion: Tool = {
   async run(input, ctx) {
     const qs: Question[] = (input.questions ?? []).map((q: any, i: number) => ({ id: String(i), ...q }));
     if (!qs.length) return fail("questions is empty.");
-    const a = await ask(ctx);
-    if (!a) return fail("The owner did not answer; the turn was interrupted.");
+    const g = await ask(ctx, qs);
+    if (!g) return fail("The owner did not answer; the turn was interrupted.");
+    const a = g.answers;
     const pairs = qs.map((q) => `"${q.question}"="${answerText(a[q.id] ?? { picked: [] })}"`).join(", ");
-    return { ...ok(`User has answered your questions: ${pairs}. You can now continue with the user's answers in mind.`), shown: { answers: a } };
+    return { ...ok(ruledText(g, `User has answered your questions: ${pairs}. You can now continue with the user's answers in mind.`)), shown: shownOf(g) };
   },
 };
 

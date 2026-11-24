@@ -34,8 +34,9 @@ const ROWS_IX = `events_rows_${createHash("sha256").update(ROWS).digest("hex").s
 // The model's replies by position: a turn's steps are counted off the index.
 const STEPS_IX = "events_steps";
 // The activity rows the timeline tells: a session's thousands of turn ends are not read to find its agents.
-const TOLD = "(kind IN ('agent', 'wait', 'loop', 'approval') OR (kind = 'turn' AND sub = 'goal') OR (kind = 'alert' AND sub IN ('approval', 'question', 'limit')))";
-const TOLD_IX = "activity_told";
+const TOLD = "(kind IN ('agent', 'wait', 'loop', 'approval', 'ruling') OR (kind = 'turn' AND sub = 'goal') OR (kind = 'alert' AND sub IN ('approval', 'question', 'limit')))";
+// Named by what it holds, as the rows index is: a build that tells other rows makes its own and drops the other.
+const TOLD_IX = `activity_told_${createHash("sha256").update(TOLD).digest("hex").slice(0, 8)}`;
 const SCHEMA = `
 DROP INDEX IF EXISTS events_marks;
 ${TURN_SCHEMA}
@@ -139,7 +140,10 @@ export class Timeline {
     if (this.has.has(name)) return true;
     const there = !!this.store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
     if (!there) return false;
-    if (name === "activity") this.store.migrate(`CREATE INDEX IF NOT EXISTS ${TOLD_IX} ON activity(session_id, ts, id) WHERE ${TOLD}`);
+    if (name === "activity") {
+      this.store.migrate(`CREATE INDEX IF NOT EXISTS ${TOLD_IX} ON activity(session_id, ts, id) WHERE ${TOLD}`);
+      for (const { name: ix } of this.store.db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'activity' AND (name = 'activity_told' OR name LIKE 'activity!_told!_%' ESCAPE '!') AND name <> ?").all(TOLD_IX)) this.store.migrate(`DROP INDEX IF EXISTS ${ix}`);
+    }
     this.has.add(name);
     return true;
   }
