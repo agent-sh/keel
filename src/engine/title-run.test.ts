@@ -14,7 +14,11 @@ import { PromptStore } from "./prompt-store.ts";
 import { Engine } from "./turn.ts";
 
 const dirs: string[] = [];
-afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+afterAll(async () => {
+  // (A test loaded a folder's settings: the file's place goes back to the process's own before it is removed.)
+  (await import("../admin/settings.ts")).loadSettings(process.env.KEEL_STATE_DIR!, () => {});
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
 
 const model = (name: string, input: number) => ({ id: `p:${name}`, provider: "p", model: name, name, family: "other", context: 100_000, output: 4_000, efforts: [], billing: "per_token", price: { input, output: input * 5 } });
 const BIG = model("big", 10), SMALL = model("small", 1);

@@ -43,7 +43,11 @@ const withPins = (f: (pins: BuildPins, store: Store, session: ReturnType<Store["
   try {
     const store = new Store(root);
     f(new BuildPins(store), store, store.createSession({ model: "p:m", workspace: "/" }));
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    // (A test that loaded this folder's settings leaves the file's place back at the process's own.)
+    loadSettings(process.env.KEEL_STATE_DIR!, () => {});
+    rmSync(root, { recursive: true, force: true });
+  }
 };
 const never = () => undefined;
 const at = { model: "p:m", native: false, own: "[[],[]]" };
