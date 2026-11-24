@@ -41,9 +41,12 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
     deliver(sessionId, first.text, first.meta, { coalesceMs: 300, onSent: first.onSent, refresh: () => now() });
   };
   // A check runs where the session's own commands run: inside its sandbox when it has one.
-  const confineFor = (argv: string[], sessionId: string | null, folder: string) => {
+  // `shown`: folders outside the tree it may read (the base's packages linked into a pair's tree), read-only.
+  const confineFor = (argv: string[], sessionId: string | null, folder: string, shown: string[] = []) => {
     const p = sessionId ? gate?.perm(sessionId) : undefined;
-    return p && p.sandbox !== "off" ? confine(argv, p, folder, undefined, readOptsFor(sandboxScope(folder))) : argv;
+    if (!p || p.sandbox === "off") return argv;
+    const read = readOptsFor(sandboxScope(folder));
+    return confine(argv, p, folder, undefined, shown.length ? { ...read, own: [...(read.own ?? []), ...shown] } : read);
   };
   const q = new LandingQueue(store, ov, {
     changed: (ids) => { for (const id of ids) bus.emit({ t: "feature", name: "landing", session_id: id, data: { changed: true } }); },

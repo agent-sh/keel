@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Check } from "../checks/named.ts";
-import { commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, nearHunks, pairKey, pairTests, PAIR_TESTS, relatedPairs, testMatcher, verdictOf, type Side } from "./pairs.ts";
+import { commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, nearHunks, pairKey, pairTests, PAIR_TESTS, relatedPairs, setupLineOf, brokenText, testMatcher, verdictOf, type Side } from "./pairs.ts";
 
 const check = (name: string, o: Partial<Check> = {}): Check => ({ name, run: name === "unit" ? "bun test" : `run-${name}`, args: false, dir: ".", cache: true, tree: { kind: "work" }, drop: [], inputs: [], ...o });
 
@@ -148,5 +148,22 @@ describe("the result", () => {
     const both = [{ check: "unit", exit: 1, names: ["stamp > keeps bots"] }];
     expect(verdictOf(T, { a: both, b: both })).toEqual({ state: "broken", checks: [{ name: "unit", branch: "both" }] });
     expect(verdictOf(T, { a: [{ check: "unit", exit: 2, names: [] }], b: [{ check: "unit", exit: 2, names: [] }] }).state).toBe("broken");
+  });
+});
+
+describe("a run that could not start is the setup's, not a red base", () => {
+  test("a missing package, type file or program is named by its first line; a path of the tree's own is not", () => {
+    expect(setupLineOf("$ bunx tsc --noEmit -p .\nerror TS2688: Cannot find type definition file for 'bun'.\n  The file is in the program")).toBe("error TS2688: Cannot find type definition file for 'bun'.");
+    expect(setupLineOf("$ bun test\nerror: Cannot find module '@simplewebauthn/server' from '/s/src/x.ts'\nerror: Cannot find module 'other'")).toBe("error: Cannot find module '@simplewebauthn/server' from '/s/src/x.ts'");
+    expect(setupLineOf("bash: tsc: command not found", 127)).toBe("bash: tsc: command not found");
+    expect(setupLineOf("$ run\nsomething odd", 127)).toBe("something odd");
+    expect(setupLineOf("error: Cannot find module './gone.ts' from '/s/src/x.ts'")).toBeUndefined();
+    expect(setupLineOf("1 fail\nexpect(received).toBe(expected)")).toBeUndefined();
+  });
+  test("the owner is told it is the setup's, with the line, and that the next pair is tried", () => {
+    const t = brokenText({ repo: "/r", base: "main", baseTip: "a".repeat(40), checks: ["typecheck", "unit"], missing: "error: Cannot find module 'x'" });
+    expect(t).toContain("typecheck, unit could not run where the pairs run: error: Cannot find module 'x'");
+    expect(t).toContain("not a red base");
+    expect(t).not.toContain("checked again until");
   });
 });

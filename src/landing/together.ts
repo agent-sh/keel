@@ -30,9 +30,11 @@ import { closeSync, mkdirSync, openSync, rmSync, writeSync } from "node:fs";
 import { homeDir } from "../core/paths.ts";
 import { join } from "node:path";
 import { registerSettings, settings } from "../admin/settings.ts";
+import { packagesFor, readsIn, INSTALL_MS } from "../checks/before-run.ts";
 import { failedNames } from "../checks/counts.ts";
 import { inputsOf, keyOf, onTree, record, repoOf, settingFor } from "../checks/ledger.ts";
 import { overlay, parseChecks, readChecks, type Check } from "../checks/named.ts";
+import { release } from "../checks/package-cache.ts";
 import { flakyOn } from "../checks/words.ts";
 import { git } from "../core/git.ts";
 import { readText } from "../core/proc.ts";
@@ -40,7 +42,7 @@ import type { Store } from "../core/store.ts";
 import { pool } from "../tools/heavy.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import type { Overlaps } from "../worktree/overlap-scan.ts";
-import { brokenText, commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, IMPORT_PATHS, pairKey, pairTests, redText, relatedPairs, testMatcher, verdictOf, type Graph, type Related, type Res, type Side, type Verdict } from "./pairs.ts";
+import { brokenText, commandOf, due, fastChecks, graphOf, hubsOf, hunksOf, IMPORT_PATHS, pairKey, pairTests, redText, relatedPairs, setupLineOf, testMatcher, verdictOf, type Graph, type Related, type Res, type Side, type Verdict } from "./pairs.ts";
 import { readTail } from "./queue.ts";
 import { importLines, readTree } from "./repo-map.ts";
 import { readLand } from "./rules.ts";
@@ -91,10 +93,13 @@ export type TogetherDeps = {
   broken: (message: string) => void;
   // Who a session is for a note: its agent's id and title, when it is an agent's.
   agentOf: (sessionId: string) => { id: string; title: string } | undefined;
-  confine: (argv: string[], sessionId: string | null, folder: string) => string[];
+  // `shown`: folders outside the folder that the command may read (the base's packages linked into it), read-only.
+  confine: (argv: string[], sessionId: string | null, folder: string, shown?: string[]) => string[];
   env: (sessionId: string | null) => Record<string, string>;
 };
 
+// What the error of a pair starts with when its checks lacked something the tree is given.
+const MISSING = "setup missing: ";
 const NO_EDIT = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" };
 const KEEL_IDENT = { GIT_AUTHOR_NAME: "Keel", GIT_AUTHOR_EMAIL: "keel@localhost", GIT_COMMITTER_NAME: "Keel", GIT_COMMITTER_EMAIL: "keel@localhost" };
 // A finished pair is kept two weeks (as the landing queue keeps its entries), the newest KEEP_ROWS.
@@ -115,7 +120,8 @@ process.on("exit", () => { for (const g of groups) killGroup(g); });
 // repository is held until its base or this changes.
 type Job = { id: string; repo: string; base: string; baseTip: string; rules: string; a: Side; b: Side; rel: Related; who: string | null; checks: Check[]; setup?: string; timeoutMs: number };
 type Step = { check: Check; command: string };
-type Ran = Res & { ms: number; answered?: true; log?: string };
+// (`text`: the end of the output, where a host's run has no log file here.)
+type Ran = Res & { ms: number; answered?: true; log?: string; text?: string };
 
 export class Together {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -223,8 +229,9 @@ export class Together {
     // A repository whose pairs were broken here (red on both sides alone, or a setup that fails) is not
     // checked again until its base or what it names for the pairs changes: each pair would cost three runs
     // and say the same.
-    const last = this.store.db.query<{ state: string; base_tip: string | null; rules: string | null }, [string]>("SELECT state, base_tip, rules FROM pair_checks WHERE repo = ? AND state NOT IN ('running', 'error') ORDER BY COALESCE(ended, started) DESC LIMIT 1").get(repo);
-    if (last?.state === "broken" && last.base_tip === baseTip && last.rules === print) return;
+    const last = this.store.db.query<{ state: string; base_tip: string | null; rules: string | null; error: string | null }, [string]>("SELECT state, base_tip, rules, error FROM pair_checks WHERE repo = ? AND state NOT IN ('running', 'error') ORDER BY COALESCE(ended, started) DESC LIMIT 1").get(repo);
+    // (What the checks lacked, packages or programs, is not the base's: the next pair is tried, it costs the runs that fail at once.)
+    if (last?.state === "broken" && last.base_tip === baseTip && last.rules === print && !last.error?.startsWith(MISSING)) return;
     const unit = checks.find((c) => c.tests);
     const isTest = testMatcher(unit?.tests);
     const branches = [...new Set(clean.flatMap((r) => [r.a, r.b]))];
@@ -421,7 +428,13 @@ export class Together {
       // A side red alone is named by its branch.
       const said = v.state === "own" ? v.checks.map((c) => ({ name: c.name, branch: c.branch === "a" ? j.a.branch : c.branch === "b" ? j.b.branch : "both" })) : "checks" in v ? v.checks : [];
       set({ state: v.state, checks: JSON.stringify(said), runs: JSON.stringify(all.map((x) => ({ on: x.on, ran: x.ran.map((r) => ({ check: r.check, exit: r.exit, ms: r.ms, names: r.names.slice(0, 20), ...(r.answered ? { answered: true } : {}), ...(r.log ? { log: r.log } : {}) })) }))), place: runner.place, ended: Date.now() });
-      if (v.state === "broken") this.tellBroken(j, k, brokenText({ repo: j.repo, base: j.base, baseTip: j.baseTip, checks: v.checks.map((c) => c.name), setup: j.setup }));
+      if (v.state === "broken") {
+        // Red alone on both sides because the checks could not start (a package, a type file, a program is not there):
+        // the setup's, said with its first line; else the base or the setup is red.
+        const missing = all.filter((x) => x.on !== "together").flatMap((x) => x.ran).filter((r) => r.exit !== 0).map((r) => setupLineOf(r.text ?? (r.log ? readTail(r.log) : ""), r.exit)).find(Boolean);
+        if (missing) set({ error: `${MISSING}${missing}`.slice(0, 400) });
+        this.tellBroken(j, k, brokenText({ repo: j.repo, base: j.base, baseTip: j.baseTip, checks: v.checks.map((c) => c.name), setup: j.setup, ...(missing ? { missing } : {}) }));
+      }
       if (v.state === "red") {
         this.stats.red++;
         // (Told only of heads that are still the branches': an answer of a head that moved on is the board's, not news.)
@@ -505,7 +518,7 @@ async function merges(dir: string, j: Job): Promise<{ together: string; a: strin
   const head = async () => (await sg(["rev-parse", "HEAD"])).out.trim();
   const on = async (tips: { branch: string; tip: string }[]): Promise<string | { error: string }> => {
     await sg(["checkout", "-q", "--detach", "--force", j.baseTip]);
-    await sg(["clean", "-q", "-fd"]);
+    await sg(["clean", "-q", "-fd", "-e", "node_modules"]);
     for (const t of tips) {
       const r = await sg(["-c", "merge.ff=false", "merge", "--no-ff", "--no-edit", "-q", "-m", `Check ${t.branch} together`, t.tip], ident);
       if (r.code !== 0) { await sg(["merge", "--abort"]); return { error: `${tips.map((x) => x.branch).join(" and ")} do not merge on ${j.base}: ${(r.err || r.out).trim().split("\n").at(-1)?.slice(0, 200)}` }; }
@@ -533,7 +546,11 @@ class LocalRunner implements Runner {
   private made = false;
   private logs: string;
   private id = newId();
-  constructor(private store: Store, private j: Job, private d: TogetherDeps) {
+  private held: string[] = [];
+  // The packages linked into the tree from outside it, shown to a confined command read-only.
+  private shown: string[] = [];
+  // `packages`: the base's installed packages are given to the scratch tree (not where the checks run elsewhere).
+  constructor(private store: Store, private j: Job, private d: TogetherDeps, private packages = true) {
     this.dir = join(store.stateDir, "pairs", "wt", hashOf(j.repo), this.id);
     this.logs = join(store.stateDir, "pairs", "logs");
   }
@@ -547,15 +564,40 @@ class LocalRunner implements Runner {
     if (this.j.setup) {
       const s = await this.sh(this.j.setup, this.dir, "setup");
       if (s.exit !== 0) return { error: `the repository's setup (land.setup) failed here: exit ${s.exit ?? "stopped"}`, setup: true };
+    } else if (this.packages) {
+      const bad = await this.provide();
+      if (bad) return { error: bad, setup: true };
     }
     const m = await merges(this.dir, this.j);
     if ("error" in m) return m;
     return { ...m, tree: await treeFiles(this.dir, m.together) };
   }
+  // A repository that names no land.setup gets the base's installed packages as a fails-before run does
+  // (src/checks/before-run.ts packagesFor): linked from its main checkout when that holds them from the same
+  // lockfile, else from the cache of installs, else installed here once. Undefined when they are there or not
+  // needed; else why the install failed (the setup's failure, told as such).
+  private async provide(): Promise<string | undefined> {
+    const top = this.j.repo;
+    const common = repoOf(this.dir)?.common ?? top;
+    const env = this.d.env(this.j.who);
+    // (A link is made only where the session's own sandbox reads what it points at; else the cache's, or an install.)
+    const readable = (p: string) => readsIn((argv) => this.d.confine(argv, this.j.who, this.dir, this.shown), p, this.dir);
+    for (const dir of new Set(this.j.checks.map((c) => c.dir))) {
+      if (dir === "*") continue;
+      const got = await packagesFor({ scratch: this.dir, checkDir: dir, sources: [top], path: env.PATH ?? process.env.PATH ?? "", common, again: false, readable, how: "pairs" }, async (cwd, command) => {
+        const r = await this.sh(command, cwd, "install", INSTALL_MS);
+        return { exit: r.exit, why: r.exit === null ? "it ran past its limit and was stopped" : "" };
+      });
+      if (got.held) this.held.push(got.held);
+      for (const p of got.shown ?? []) if (!this.shown.includes(p)) this.shown.push(p);
+      if (got.failed) return `the base's packages could not be installed here: ${got.why}`;
+    }
+    return undefined;
+  }
   async run(commit: string, steps: Step[]): Promise<Ran[]> {
     const sg = (args: string[]) => git(this.dir, args, { env: NO_EDIT, timeout: 300_000 });
     await sg(["checkout", "-q", "--detach", "--force", commit]);
-    await sg(["clean", "-q", "-fd"]);
+    await sg(["clean", "-q", "-fd", "-e", "node_modules"]);
     const tree = (await git(this.dir, ["rev-parse", `${commit}^{tree}`], { read: true })).out.trim();
     const at = repoOf(this.dir);
     const out: Ran[] = [];
@@ -575,11 +617,12 @@ class LocalRunner implements Runner {
     return out;
   }
   async done() {
+    for (const k of this.held) release(k);
     if (this.made) await worktreeGit(this.j.repo, ["worktree", "remove", "--force", this.dir], { ok: true });
     rmSync(this.dir, { recursive: true, force: true });
   }
   // A command in a process group of its own, niced (and its disk use too where ionice is), after a slot of the heavy pool.
-  private async sh(command: string, cwd: string, name: string): Promise<{ exit: number | null; log: string }> {
+  private async sh(command: string, cwd: string, name: string, limitMs = this.j.timeoutMs): Promise<{ exit: number | null; log: string }> {
     const log = join(this.logs, `${this.id}-${name.replace(/[^\w.-]/g, "_")}-${Date.now().toString(36)}.log`);
     const slot = await pool.take({ session: this.j.who ?? "pairs", who: "agent", command });
     const fd = openSync(log, "w");
@@ -587,13 +630,13 @@ class LocalRunner implements Runner {
     try {
       writeSync(fd, `$ ${command}\n`);
       const low = ["nice", "-n", "10", ...(Bun.which("ionice") ? ["ionice", "-c2", "-n7"] : [])];
-      const argv = this.d.confine([...low, "bash", "-c", command], this.j.who, cwd);
+      const argv = this.d.confine([...low, "bash", "-c", command], this.j.who, cwd, this.shown);
       // What the landing queue gives its commands (queue.ts sh): the repository, for a setup that links from it.
       const p = Bun.spawn(argv, { cwd, env: { ...this.d.env(this.j.who), KEEL_LAND_REPO: this.j.repo, KEEL_PAIR: "1", CI: "1" }, stdin: "ignore", stdout: fd, stderr: fd, detached: true });
       pid = p.pid;
       groups.add(pid);
       let late = false;
-      const timer = setTimeout(() => { late = true; killGroup(pid); }, this.j.timeoutMs);
+      const timer = setTimeout(() => { late = true; killGroup(pid); }, limitMs);
       const code = await p.exited;
       clearTimeout(timer);
       killGroup(pid);
@@ -635,7 +678,7 @@ class HostRunner implements Runner {
     this.place = cfg.host!;
     this.bare = `${cfg.host_dir}/${hashOf(j.repo)}.git`;
     // The merges are made here, with no setup (nothing runs here).
-    this.local = new LocalRunner(store, { ...j, setup: undefined }, { error: () => {}, changed: () => {}, tell: () => {}, broken: () => {}, agentOf: () => undefined, confine: (a) => a, env: () => ({}) });
+    this.local = new LocalRunner(store, { ...j, setup: undefined }, { error: () => {}, changed: () => {}, tell: () => {}, broken: () => {}, agentOf: () => undefined, confine: (a) => a, env: () => ({}) }, false);
   }
   private pushed: string[] = [];
   async build(): Promise<Built> {
@@ -678,7 +721,7 @@ class HostRunner implements Runner {
     if (setupFail) throw Object.assign(new Error(`the setup on ${this.cfg.host} (together.host_setup, else land.setup) failed: exit ${setupFail[1]}`), { setup: true });
     for (const m of text.matchAll(/^@@keel-pair (\d+) (\d+)\n([\s\S]*?)^@@keel-pair-end \1$/gm)) {
       const i = Number(m[1]), exit = Number(m[2]);
-      if (out[i]) { out[i]!.exit = exit === 124 || exit === 137 ? null : exit; out[i]!.names = exit === 0 ? [] : failedNames(m[3]!); }
+      if (out[i]) { out[i]!.exit = exit === 124 || exit === 137 ? null : exit; out[i]!.names = exit === 0 ? [] : failedNames(m[3]!); out[i]!.text = m[3]; }
     }
     for (const r of out) r.ms = Date.now() - t0;
     return out;

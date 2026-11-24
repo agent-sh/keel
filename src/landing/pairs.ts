@@ -305,8 +305,29 @@ export function redText(p: { a: { branch: string; tip: string }; b: { branch: st
   return `${fails} fails with ${p.a.branch}@${short(p.a.tip)} + ${p.b.branch}@${short(p.b.tip)} on ${p.base}@${short(p.baseTip)}, twice; each passes alone.`;
 }
 
-// What a broken pair says to the owner, once until the repository's pairs pass again.
-export function brokenText(p: { repo: string; base: string; baseTip: string; checks: string[]; setup?: string; why?: string }): string {
+// What says a run could not start for want of something the tree is given, not that the base is red: a
+// package that is not installed (a bare module name, a type package, a program the check calls) or a
+// command the shell does not find. A path of the tree's own that does not resolve is a real failure and
+// matches none. Returns the first such line of the output (the words of the run's own), else undefined.
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
+const SETUP_LINE = [
+  /Cannot find (?:module|package) ['"][^'"./][^'"]*['"]/, // a bare specifier: an installed package
+  /Cannot find type definition file for ['"]?[\w@./-]+/,
+  /(?:command not found|: not found$|Executable not found in \$PATH|Script not found|No such file or directory.*node_modules|error: could not determine executable)/i,
+];
+export function setupLineOf(out: string, exit?: number | null): string | undefined {
+  const lines = out.replace(ANSI, "").replace(/\r/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const hit = lines.find((l) => !l.startsWith("$ ") && SETUP_LINE.some((re) => re.test(l)));
+  if (hit) return hit.slice(0, 200);
+  if (exit === 127) return (lines.filter((l) => !l.startsWith("$ ")).at(-1) ?? "the command was not found (exit 127)").slice(0, 200);
+  return undefined;
+}
+
+// What a broken pair says to the owner, once until the repository's pairs pass again. `missing`: the first
+// line of what the run lacks (setupLineOf): the checks could not start where the pairs run, which is the
+// setup's, not a red base.
+export function brokenText(p: { repo: string; base: string; baseTip: string; checks: string[]; setup?: string; why?: string; missing?: string }): string {
+  if (p.missing) return `Pair checks of ${p.repo} on ${p.base}@${short(p.baseTip)}: ${list(p.checks)} could not run where the pairs run: ${p.missing}. This is the setup's (the packages or programs the checks read are not there), not a red base${p.setup ? ` (land.setup: ${p.setup.slice(0, 160)})` : ""}. The next pair is tried again.`;
   const what = p.why ?? `${list(p.checks)} fail${p.checks.length === 1 ? "s" : ""} on each branch alone`;
   return `Pair checks of ${p.repo} on ${p.base}@${short(p.baseTip)}: ${what}, so the base or the setup is red where the pairs run${p.setup ? ` (land.setup: ${p.setup.slice(0, 160)})` : ""}. No pair of this repository is checked again until its base or its checks change.`;
 }

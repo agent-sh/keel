@@ -319,7 +319,7 @@ export const INSTALL_MS = 600_000;
 // `failed`: the install key whose install failed (the check's files do not run); `shown`: folders out of the
 // checkout the run reads them from; `held`: the cache entry the run holds until its end; `note`: what the
 // report's line says of them (installed for this run only).
-type Packages = BasePackages & { modules?: string; failed?: string; shown?: string[]; held?: string; note?: string };
+export type Packages = BasePackages & { modules?: string; failed?: string; shown?: string[]; held?: string; note?: string };
 const bytesOf = async (p: string): Promise<Uint8Array | null> => { try { return await Bun.file(p).bytes(); } catch { return null; } };
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && Buffer.from(a).equals(Buffer.from(b));
 
@@ -332,8 +332,8 @@ const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && Buf
 // while (cache.FAILED_MS), unless `again` (the owner's Run again). Never an install through a link: it would
 // rewrite the source's packages under whoever uses them.
 // `how`: how the install runs (in which sandbox profile, with the network or not), which its failure is known by.
-type PkgIn = { scratch: string; checkDir: string; sources: string[]; path: string; common: string; again: boolean; how: string; readable?: (p: string) => Promise<boolean> };
-async function packagesFor(o: PkgIn, install: (cwd: string, command: string) => Promise<Partial<FileResult>>): Promise<Packages> {
+export type PkgIn = { scratch: string; checkDir: string; sources: string[]; path: string; common: string; again: boolean; how: string; readable?: (p: string) => Promise<boolean> };
+export async function packagesFor(o: PkgIn, install: (cwd: string, command: string) => Promise<Partial<FileResult>>): Promise<Packages> {
   const { scratch, checkDir } = o;
   const texts: string[] = [];
   const parts = checkDir === "." ? [] : checkDir.split("/").filter(Boolean);
@@ -406,7 +406,7 @@ const failedWhy = (why: string, at?: number) => clipWhy(`the base's install fail
 const FAILED_WHY_MAX = 320;
 
 // Whether the session's own sandbox (`wrap`, for the scratch checkout) shows a folder's entries.
-async function readsIn(wrap: (argv: string[]) => string[], p: string, cwd: string): Promise<boolean> {
+export async function readsIn(wrap: (argv: string[]) => string[], p: string, cwd: string): Promise<boolean> {
   try {
     const c = Bun.spawn(wrap(["/bin/sh", "-c", '[ -n "$(ls -A "$1" 2>/dev/null | head -n 1)" ]', "probe", p]), { cwd, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const t = setTimeout(() => c.kill("SIGKILL"), 30_000);
