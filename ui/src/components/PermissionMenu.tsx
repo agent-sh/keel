@@ -4,6 +4,7 @@ import { Switch } from "@base-ui/react/switch";
 import { ChevronDown, Shield, ShieldCheck, ShieldOff, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { safety, useSafety, type ModeGroup, type ModeInfo, type SessionPerm } from "../lib/safety.ts";
+import { filterSaid } from "../lib/seccomp.ts";
 import { reportError } from "../lib/store.ts";
 import { useUI } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -32,6 +33,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
   const modes = useSafety((s) => s.modes);
   const groups = useSafety((s) => s.modeGroups);
   const sandbox = useSafety((s) => s.sandbox);
+  const filter = filterSaid(sandbox);
   const [grantsOpen, setGrantsOpen] = useState(false);
   // /permissions with no mode opens this menu.
   const [open, setOpen] = useState(false);
@@ -142,6 +144,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                 <p className="mt-1.5 text-caption leading-snug text-muted">
                   {sandbox && !sandbox.available ? sandbox.reason : PROFILES.find((p) => p.id === perm.sandbox)!.hint + (perm.sandbox === "off" ? "." : ", in bubblewrap.")}
                 </p>
+                {filter && <p className={cn("mt-1 text-caption leading-snug", filter.on ? "text-faint" : "text-warn")} data-testid="sandbox-filter">{filter.words}</p>}
                 {/* With the sandbox off the switch is dimmed; its name stays readable, quiet. */}
                 <label className="mt-2 flex items-center justify-between">
                   <span className={cn("text-ui", perm.sandbox === "off" && "text-faint")}>Network in the sandbox</span>

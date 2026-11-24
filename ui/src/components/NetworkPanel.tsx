@@ -4,12 +4,13 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import type { EgressReport } from "../../../src/safety/egress-report.ts";
 import { every } from "../lib/clock.ts";
+import { filterSaid } from "../lib/seccomp.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { clock, cn, fmtSize, when } from "../lib/utils.ts";
 import { Stat, Stats } from "./Stat.tsx";
 
-type Report = EgressReport & { sandbox: { available: boolean; default: string; reason?: string } };
+type Report = EgressReport & { sandbox: { available: boolean; default: string; reason?: string; seccomp?: boolean; seccompReason?: string } };
 
 const th = "px-4 py-1.5 font-normal whitespace-nowrap";
 const td = "px-4 py-1.5 tabular-nums whitespace-nowrap";
@@ -51,6 +52,7 @@ export function NetworkPanel() {
           {off
             ? `${r.sandbox.available ? "Sessions run their commands unconfined by default" : `The sandbox is not available on this machine${r.sandbox.reason ? ` (${r.sandbox.reason})` : ""}`}, so a command connects by itself (curl, git, a package manager, a script) and Keel never sees it. Only what Keel itself sends is listed.`
             : "A sandboxed command reaches the network only through Keel's proxy, so its connections are here. A session with its sandbox turned off connects by itself and is not."}
+          {!off && filterSaid(r.sandbox) && ` ${filterSaid(r.sandbox)!.words}`}
           {" "}Nor are an MCP server that runs as a program on this machine, or the further connections of a web tool's helper program beyond the address it reports.
         </p>
       </section>

@@ -61,7 +61,9 @@ export const egressRoutes: RouteModule = ({ store }) => {
         const report = await readsOf(store).run("egress.report", { since, ...(until !== undefined ? { until } : {}), ...(q.get("session_id") ? { session: q.get("session_id")! } : {}), ...(recent !== undefined ? { recent } : {}) });
         const sb = sandboxStatus();
         const by = gate?.defaultSandbox() ?? "off";
-        return json({ ...report, sandbox: { available: sb.available, default: sb.available ? by : "off", ...(sb.available ? {} : { reason: sb.reason }) } });
+        // (The syscall filter's state, once the sandbox reports one: src/safety/sandbox.ts.)
+        const f = sb as { seccomp?: boolean; seccompReason?: string };
+        return json({ ...report, sandbox: { available: sb.available, default: sb.available ? by : "off", ...(sb.available ? {} : { reason: sb.reason }), ...(sb.available && typeof f.seccomp === "boolean" ? { seccomp: f.seccomp, ...(f.seccompReason ? { seccompReason: f.seccompReason } : {}) } : {}) } });
       },
     },
   };

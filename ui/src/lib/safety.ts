@@ -8,7 +8,7 @@ import { api, newer, onFeature, readAtOpen, reportError } from "./store.ts";
 export type { Approval, Rule, SessionPerm, Suggest };
 export type ModeInfo = { id: SessionPerm["mode"]; name: string; description: string; group?: string; summary?: string };
 export type ModeGroup = { id: string; name: string };
-export type SandboxInfo = { available: boolean; reason?: string };
+export type SandboxInfo = { available: boolean; reason?: string; seccomp?: boolean; seccompReason?: string };
 
 type State = {
   approvals: Record<string, Approval[]>; // open cards per session
