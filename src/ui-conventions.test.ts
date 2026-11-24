@@ -585,7 +585,7 @@ const TEST_ID_PARTS: Record<string, string[]> = {
   "components/PermissionMenu.tsx": ["m.id", "p.id"], "components/ProviderModels.tsx": ["k"], "components/QuestionCard.tsx": ["s.scope"],
   "components/ResumeFrom.tsx": ["v"], "components/SessionHeader.tsx": ["a.id"],
   "components/SessionPanel.tsx": ["x.id"], "components/SessionUsage.tsx": ["k"],
-  "components/Settings.tsx": ["Math.round(v * 100)"], "components/Sidebar.tsx": ["c.kind"],
+  "components/Settings.tsx": ["Math.round(v * 100)"], "components/Sidebar.tsx": ["c.kind", "w"],
   "components/SidePanel.tsx": ["p.id"], "components/surfaces/kit.tsx": ["a.id", "kind", "v"],
   "components/surfaces/PluginUnits.tsx": ["testid"], "components/TerminalPanel.tsx": ["f"],
   "components/TimelinePanel.tsx": ['v || "all"'], "components/Transcript.tsx": ["a.id"],

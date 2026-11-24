@@ -60,7 +60,7 @@ export function AccountsCard() {
                   <li key={c.namespace} className="flex items-center gap-2 text-ui">
                     <span className="shrink-0 font-mono">{c.namespace}</span>
                     <span className="min-w-0 flex-1 truncate text-caption text-faint">{c.why}</span>
-                    <button type="button" data-testid={`accounts-take-${c.namespace}`} className="k-btn" onClick={() => add(c.namespace).catch(reportError)}>Mine</button>
+                    <button type="button" data-testid="accounts-take" data-namespace={c.namespace} className="k-btn" onClick={() => add(c.namespace).catch(reportError)}>Mine</button>
                   </li>
                 ))}
               </ul>

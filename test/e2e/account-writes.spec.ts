@@ -32,9 +32,9 @@ test("a push beyond the owner's namespaces is his to allow, in every mode", asyn
   await card.getByTestId("accounts-look").click();
   await expect(card.getByTestId("accounts-found")).toContainText("127.0.0.1/them");
   await expect(card.getByTestId("accounts-found")).toContainText("127.0.0.1/me");
-  await card.getByTestId("accounts-take-127.0.0.1/me").click();
+  await card.locator('[data-testid="accounts-take"][data-namespace="127.0.0.1/me"]').click();
   await expect(card.getByTestId("accounts-list")).toContainText("127.0.0.1/me");
-  await expect(card.getByTestId("accounts-take-127.0.0.1/me")).toHaveCount(0);
+  await expect(card.locator('[data-testid="accounts-take"][data-namespace="127.0.0.1/me"]')).toHaveCount(0);
   await card.getByTestId("accounts-input").fill("npm:@me");
   await card.getByTestId("accounts-add").click();
   await expect(card.getByTestId("accounts-list")).toContainText("npm:@me");
