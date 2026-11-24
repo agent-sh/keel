@@ -25,13 +25,15 @@ type Pending = {
   // where, what the run is known by and the inputs it names.
   atEnd?: { tree: Match["tree"]; command: string; inputs: string[] };
 };
-// Calls on their way to run checks (one call may run several), by call id; owner's runs by job id;
-// recorded runs by call id.
+// Calls on their way to run checks (one call may run several), by session and call id (a call id is only
+// its session's own: two sessions' calls may carry the same one); owner's runs by job id; recorded runs by
+// session and call id.
 type Stored = { run: Run; repo: Repo; why?: string };
 const pending = new Map<string, Pending[]>();
 const owners = new Map<string, Promise<Pending | undefined>>();
 const recorded = new Map<string, Promise<Stored[]>>();
 const MAP_MAX = 512;
+const slot = (sessionId: string, callId: string) => `${sessionId}\n${callId}`;
 const capped = <K, V>(m: Map<K, V> | Set<K>) => { while (m.size > MAP_MAX) m.delete(m.keys().next().value as K); };
 
 // The command a shell call runs, as written.
@@ -112,9 +114,9 @@ export async function beforeCall(s: Session, call: ToolCall): Promise<ToolGate> 
     ps.push({ ...base, repo: t.repo, command: t.command, tree: t.tree, head: t.head, inputs, ...(t.why ? { why: t.why } : {}) });
   }
   if (!ps.length) return;
-  pending.set(call.id, ps);
+  pending.set(slot(s.id, call.id), ps);
   capped(pending);
-  owe(call.id, ps);
+  owe(slot(s.id, call.id), ps);
   return traced ? { ctx: { checkRun: true } } : undefined;
 }
 
@@ -200,11 +202,12 @@ export function jobStarted(job: Job) {
 export function jobDone(job: Job) {
   // (One a restart cut is in the store: its job was taken back by this daemon.)
   // (A row an earlier daemon owed holds one run, not a list.)
-  const got = job.callId ? pending.get(job.callId) ?? owed<Pending | Pending[]>(job.callId) : undefined;
+  const at = job.callId ? slot(job.sessionId, job.callId) : undefined;
+  const got = at ? pending.get(at) ?? owed<Pending | Pending[]>(at) : undefined;
   if (got) {
-    pending.delete(job.callId!);
-    owed(job.callId!); // (its row in the store goes too)
-    recorded.set(job.callId!, Promise.all((Array.isArray(got) ? got : [got]).map((p) => store(p, job).catch(() => undefined))).then((rs) => rs.filter((r): r is Stored => !!r)));
+    pending.delete(at!);
+    owed(at!); // (its row in the store goes too)
+    recorded.set(at!, Promise.all((Array.isArray(got) ? got : [got]).map((p) => store(p, job).catch(() => undefined))).then((rs) => rs.filter((r): r is Stored => !!r)));
     capped(recorded);
     return;
   }
@@ -230,10 +233,10 @@ export async function baseFor(run: Run, repo: Repo): Promise<string | undefined>
   return baseWords(baseState(base.history, onTrees(keyOf(run.dir, run.command), base.history.map((h) => h.tree))), base.name);
 }
 
-export async function afterCall(_s: Session, call: ToolCall, result: ToolResultBlock) {
-  const got = recorded.get(call.id);
+export async function afterCall(s: Session, call: ToolCall, result: ToolResultBlock) {
+  const got = recorded.get(slot(s.id, call.id));
   if (!got) return;
-  recorded.delete(call.id);
+  recorded.delete(slot(s.id, call.id));
   const notes: string[] = [];
   for (const r of await got) {
     const note = r.why ? `Check ledger: ${r.run.name} was recorded with no tree: ${r.why}, so no later run is answered from it.` : await noteFor(r.run, r.repo);
@@ -246,6 +249,7 @@ export async function afterCall(_s: Session, call: ToolCall, result: ToolResultB
 }
 
 // A call that failed before its command ran leaves nothing waiting.
-export function dropCall(id: string) {
-  if (!recorded.has(id)) { pending.delete(id); owed(id); }
+export function dropCall(sessionId: string, id: string) {
+  const at = slot(sessionId, id);
+  if (!recorded.has(at)) { pending.delete(at); owed(at); }
 }

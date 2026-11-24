@@ -86,7 +86,7 @@ export const checkRoutes: RouteModule = ({ store, errors, bus, engine }) => {
     },
     stepDone: (s) => { try { besideStep(s); } catch (e) { errors.capture("server", e, { at: "checks beside after a step", session: s.id }); } },
     turnEnd: (s) => { try { besideTurn(s); } catch (e) { errors.capture("server", e, { at: "checks beside after a turn", session: s.id }); } },
-    toolFailed: (_s, call) => dropCall(call.id),
+    toolFailed: (s, call) => dropCall(s.id, call.id),
     // The repository's checks, named to its sessions: run as written, a check is answered from the ledger.
     sessionSystem: (s) => {
       const repo = repoOf(s.workspace);
