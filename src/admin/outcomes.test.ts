@@ -138,3 +138,21 @@ test("a turn's end reads rows without an id by its time range, and the next turn
     expect(seen.filter((q) => /FROM events WHERE session_id = \? AND kind = 'turn_start'/.test(q))).toHaveLength(1);
   } finally { close(); }
 });
+
+test("a turn's tokens and its cost are summed over the same rows: a cut or failed attempt shows both", () => {
+  const { store, close } = fixture();
+  try {
+    const a = id(1);
+    const s = store.createWithEvents({ model: "p:m", workspace: "/" }, [
+      { id: id(10), kind: "user", data: { text: "one" }, ts: T },
+      { id: a, kind: "turn_start", data: { model: "p:m" }, ts: T },
+      { id: id(11), kind: "turn_end", data: { reason: "interrupted", usage: {} }, ts: T + 5 },
+    ]);
+    const call = store.db.query("INSERT INTO telemetry_calls (session_id, ts, model, input, output, cache_read, cost, outcome, purpose, turn_event, attempt) VALUES (?, ?, 'p:m', ?, ?, ?, ?, ?, ?, ?, 1)");
+    call.run(s.id, T, 100, 7, 50, 0.5, "interrupted", "turn", a);
+    call.run(s.id, T + 1, 20, 3, 0, 0.25, "error", "turn", a);
+    call.run(s.id, T + 2, 10, 1, 0, 0.125, "ok", "judge", a);
+    new Outcomes(store);
+    expect(turnRows(store)[a]).toMatchObject({ requests: 3, input: 130, output: 11, cache_read: 50, cost: 0.875 });
+  } finally { close(); }
+});

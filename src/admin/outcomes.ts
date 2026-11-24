@@ -185,7 +185,7 @@ export class Outcomes {
     const tools: { tool: string; is_error: number }[] = rowsOf("telemetry_tools", "r.id, r.ts, r.tool, r.is_error");
     const ok = calls.filter((c) => c.outcome === "ok");
     const turnCalls = ok.filter((c) => (c.purpose ?? "turn") === "turn");
-    const sum = (k: string) => ok.reduce((n, c) => n + (c[k] ?? 0), 0);
+    const sum = (k: string) => calls.reduce((n, c) => n + (c[k] ?? 0), 0);
     const priced = calls.every((c) => !c.unpriced);
     const usage = end.data?.usage ?? {};
     const cost = calls.length ? (priced ? calls.reduce((n, c) => n + (c.cost ?? 0), 0) : null) : typeof usage.cost === "number" ? usage.cost : null;
