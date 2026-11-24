@@ -4,6 +4,7 @@
 import * as agents from "../../automation/agents.ts";
 import { readsOf } from "../reads.ts";
 import { inOrder } from "../../board/tree.ts";
+import { wouldConflict } from "../../board/would-conflict.ts";
 import { backText, TreeReview, type TreeView } from "../../board/tree-review.ts";
 import type { ParsedDiff } from "../../board/tree.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -57,7 +58,7 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
   };
 
   // What the owner's decision on an area does, and the words it is recorded with.
-  async function decide(root: string, v: TreeView, key: string, action: string, note: string, only: string[] | undefined, subset?: string[]): Promise<{ status: number; body: unknown }> {
+  async function decide(root: string, v: TreeView, key: string, action: string, note: string, only: string[] | undefined, subset?: string[], confirmed = false): Promise<{ status: number; body: unknown }> {
     const area = v.areas.find((a) => a.key === key);
     if (!area || !v.repo) return { status: 404, body: { error: "no such area in this tree's review (read it again)" } };
     const all = area.branches.map((b) => ({ branch: b, head: area.marks[b]! }));
@@ -100,6 +101,10 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
     const wanted = subset?.length ? new Set(subset) : null;
     const branches = inOrder(v.order, area.branches.filter((b) => !blocked.has(b) && (!wanted || wanted.has(b))));
     if (!branches.length) return { status: 409, body: { error: `nothing to land: ${[...blocked].map(([b, why]) => `${b}: ${why}`).join("; ")}` } };
+    // Branches that would conflict when landed are queued only when the owner confirmed it (the page asks in a
+    // dialog first): a request that names no branches, or names one of them, is refused until it says so.
+    const risky = wouldConflict(v, branches);
+    if (risky.length && !confirmed) return { status: 409, body: { error: `${risky.join(", ")} would conflict when landing: confirm landing it, or land the others only`, would_conflict: risky, needs_confirm: true } };
     const r = await q.add(v.repo, branches, null);
     const outcome = [
       r.queued.length ? `Queued in this order: ${r.queued.map((e) => `${e.branch} (${e.id})`).join(", ")}.` : "",
@@ -142,7 +147,7 @@ export const treeReviewRoutes: RouteModule = (deps: Deps) => {
         try {
           const v = await tr.view(req.params.id, { fresh: true, repo: typeof body?.repo === "string" ? body.repo : undefined });
           const subset = Array.isArray(body?.branches) ? body.branches.filter((x: unknown) => typeof x === "string") : undefined;
-          const r = await decide(req.params.id, v, key, action, note, only, subset);
+          const r = await decide(req.params.id, v, key, action, note, only, subset, body?.confirmed === true);
           return json({ ...(r.body as object), view: r.status === 200 ? await tr.view(req.params.id, { repo: v.repo ?? undefined }) : undefined }, r.status);
         } catch (e) {
           errors.capture("server", e, { at: "tree review decide", session: req.params.id });

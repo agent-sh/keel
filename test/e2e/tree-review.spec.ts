@@ -306,6 +306,18 @@ test("the tree review lands the branches that do not conflict, and asks before i
   await expect(sure).toHaveCount(0);
   expect(await entries()).toEqual([]);
 
+  // The server holds the same line: a decision that would queue the branch that conflicts, with no branches named, an
+  // empty list or the whole set, is refused until it says the owner confirmed it.
+  const view = (await (await request.get(`/api/sessions/${coord}/tree-review?fresh=1`)).json()) as any;
+  const area = view.areas[0].key as string;
+  const decide = (data: object) => request.post(`/api/sessions/${coord}/tree-review/decide`, { data: { area, action: "land", ...data } });
+  for (const data of [{}, { branches: [] }, { branches: [big.branch, small.branch, own.branch] }]) {
+    const r = await decide(data);
+    expect(r.status()).toBe(409);
+    expect(await r.json()).toMatchObject({ needs_confirm: true, would_conflict: [small.branch] });
+  }
+  expect(await entries()).toEqual([]);
+
   // The main button queues the two that do not conflict, and the one that would stays out of the queue.
   await dlg.getByTestId("tree-land").click();
   await expect(dlg.getByTestId("tree-said")).toContainText("Queued in this order");

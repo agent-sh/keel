@@ -165,7 +165,7 @@ const decided = (a: TreeArea) => {
   return acts.length === 1 ? acts[0]! : acts.length ? "mixed" : "none";
 };
 
-function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeView; lanes: Lanes; onDecide: (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[]) => Promise<boolean>; busy: boolean }) {
+function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeView; lanes: Lanes; onDecide: (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[], confirmed?: boolean) => Promise<boolean>; busy: boolean }) {
   const [back, setBack] = useState(false);
   const [note, setNote] = useState("");
   const agentsHere = view.branches.filter((b) => a.branches.includes(b.branch));
@@ -193,7 +193,7 @@ function AreaHead({ a, view, lanes, onDecide, busy }: { a: TreeArea; view: TreeV
       body: `${risky.map(short).join(", ")} would conflict when landing: ${risky.length === 1 ? "its agent rebases it" : "their agents rebase them"} onto the branch that lands first.`,
       action: `Land all ${a.order.length}`,
     }))) return;
-    await onDecide("land");
+    await onDecide("land", undefined, undefined, undefined, risky.length > 0);
   };
   return (
     <div className="flex flex-col gap-2 border-b border-line px-4 py-3" data-testid="tree-area-head">
@@ -445,13 +445,13 @@ export function TreeReviewDialog({ session, onClose }: { session: Session; onClo
   }, [session.id, at, view]);
   const lanes: Lanes = useMemo(() => new Map((view?.branches ?? []).map((b, i) => [b.branch, i])), [view]);
   const area = view?.areas.find((a) => a.key === at) ?? null;
-  const onDecide = async (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[]) => {
+  const onDecide = async (action: "land" | "back" | "drop" | "undo", note?: string, agents?: string[], branches?: string[], confirmed?: boolean) => {
     if (!area) return false;
     setBusy(true);
     setErr("");
     setSaid("");
     try {
-      const r = await decide(session.id, { area: area.key, action, note, agents, branches, repo: view?.repo });
+      const r = await decide(session.id, { area: area.key, action, note, agents, branches, confirmed, repo: view?.repo });
       if (r.view) setView(r.view);
       setSaid(r.outcome ?? "");
       return true;
