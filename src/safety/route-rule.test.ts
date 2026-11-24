@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allowedFor, allowedOnly, allows, checkRule, crossingText, EMPTY_RULE, firstAllowed, folderEntry, type RouteRule } from "./route-rule.ts";
+import { allowedFor, allowedOnly, allows, checkRule, crossingText, EMPTY_RULE, firstAllowed, folderEntry, originOf, type RouteRule } from "./route-rule.ts";
 import { seenBy } from "./route-seen.ts";
 
 const HOME = "/home/o";
@@ -86,4 +86,43 @@ test("the ledger's rows by folder and root session, agents folded in, crossings 
   expect(client).toMatchObject({ allowed: ["vertex"], by: "~/work/client", crossing: 1 });
   // With no rule nothing crosses.
   expect(seenBy(rows, sessions, EMPTY_RULE, HOME).crossing).toBe(0);
+});
+
+test("a worktree session holds its repository's folder, at the same place under it", () => {
+  const wt = { repo_root: "/home/o/work/client", path: "/state/worktrees/client-abc123" };
+  expect(originOf("/state/worktrees/client-abc123", wt)).toBe("/home/o/work/client");
+  expect(originOf("/state/worktrees/client-abc123/pkg/a/", wt)).toBe("/home/o/work/client/pkg/a");
+  // Moved back to the main checkout, or a folder that only starts the same: its own folder.
+  expect(originOf("/home/o/work/client/pkg", wt)).toBe("/home/o/work/client/pkg");
+  expect(originOf("/state/worktrees/client-abc1234", wt)).toBe("/state/worktrees/client-abc1234");
+  expect(originOf("/x", undefined)).toBe("/x");
+});
+
+test("folders are compared as spelled: a link and its real path are one folder", () => {
+  const links: Record<string, string> = { "/home/o/link": "/home/o/work/client" };
+  const spell = (p: string) => Object.entries(links).reduce((v, [l, r]) => (v === l || v.startsWith(`${l}/`) ? r + v.slice(l.length) : v), p);
+  expect(folderEntry(rule, "/home/o/link/app", HOME)).toEqual({ providers: ["bedrock"], by: "default" });
+  expect(folderEntry(rule, "/home/o/link/app", HOME, spell)).toEqual({ providers: ["vertex"], by: "~/work/client" });
+  // A rule written through the link holds the real folder too.
+  const viaLink: RouteRule = { default: null, folders: { "~/link": ["vertex"] } };
+  expect(allowedFor(viaLink, ["/home/o/work/client/app"], HOME, spell)?.providers).toEqual(["vertex"]);
+});
+
+test("the ledger holds a worktree session to its repository's folder, an agent's whose parent is gone too", () => {
+  const sessions = [
+    // The owner's own session in a worktree of Keel's, made from the client folder.
+    { id: "w1", workspace: "/state/worktrees/client-aaa", parent_id: null, title: "Client wt", wt_root: "/home/o/work/client", wt_path: "/state/worktrees/client-aaa" },
+    // An agent of a removed session, in its own worktree of the client repository.
+    { id: "k2", workspace: "/state/worktrees/client-bbb/sub", parent_id: "removed", title: "Orphan agent", wt_root: "/home/o/work/client", wt_path: "/state/worktrees/client-bbb" },
+  ];
+  const rows = [
+    { session_id: "w1", purpose: "turn", provider: "bedrock", calls: 4, last_ms: 1 },
+    { session_id: "w1", purpose: "turn", provider: "vertex", calls: 2, last_ms: 2 },
+    { session_id: "k2", purpose: "reader", provider: "bedrock", calls: 3, last_ms: 3 },
+  ];
+  const s = seenBy(rows, sessions, rule, HOME);
+  // Read by their worktree folders they would fall to the default (bedrock) and count 2 crossing.
+  expect(s.crossing).toBe(4 + 3);
+  expect(s.folders.map((f) => f.folder).sort()).toEqual(["/home/o/work/client", "/home/o/work/client/sub"]);
+  expect(s.folders.find((f) => f.folder === "/home/o/work/client")).toMatchObject({ allowed: ["vertex"], crossing: 4 });
 });

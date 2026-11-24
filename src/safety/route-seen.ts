@@ -2,18 +2,23 @@
 // rows: the pure part of GET /api/content-routes. An agent's calls are its
 // root session's (the content it read is the root's), counted with the
 // agents that made them, and each call is held against the rule as it stands
-// now, with the folders of the session that made it.
-import { allowedFor, allows, folderEntry, type RouteRule } from "./route-rule.ts";
+// now, with the folders of the session that made it (a worktree session's
+// being its repository's, as the rule reads them: originOf).
+import { allowedFor, allows, folderEntry, originOf, type RouteRule, type Spell } from "./route-rule.ts";
 
 export type SeenRow = { session_id: string; purpose: string; provider: string; calls: number; last_ms: number };
-export type SeenSession = { id: string; workspace: string; parent_id: string | null; title: string };
+// `wt_root`, `wt_path`: the session's worktree of Keel's (its repository's root and its own path), if any.
+export type SeenSession = { id: string; workspace: string; parent_id: string | null; title: string; wt_root?: string | null; wt_path?: string | null };
 export type SeenCall = { purpose: string; provider: string; calls: number; crossing: number; last_ms: number };
 export type SeenRoot = { id: string; title: string; agents: number; calls: number; crossing: number; rows: SeenCall[] };
 export type SeenFolder = { folder: string; allowed: string[] | null; by: string | null; calls: number; crossing: number; providers: Record<string, number>; sessions: SeenRoot[] };
 export type Seen = { calls: number; crossing: number; folders: SeenFolder[] };
 
-export function seenBy(rows: readonly SeenRow[], sessions: readonly SeenSession[], rule: RouteRule, home: string): Seen {
-  const byId = new Map(sessions.map((s) => [s.id, s]));
+export function seenBy(rows: readonly SeenRow[], sessions: readonly SeenSession[], rule: RouteRule, home: string, spell: Spell = (p) => p): Seen {
+  // Each folder spelled once (spell may ask the disk).
+  const spelled = new Map<string, string>();
+  const sp: Spell = (p) => { let v = spelled.get(p); if (v === undefined) spelled.set(p, (v = spell(p))); return v; };
+  const byId = new Map(sessions.map((s) => [s.id, { ...s, workspace: s.workspace ? originOf(s.workspace, s.wt_root && s.wt_path ? { repo_root: s.wt_root, path: s.wt_path } : null) : s.workspace }]));
   const chain = (id: string) => {
     const out: SeenSession[] = [];
     for (let s = byId.get(id), i = 0; s && i < 32; s = s.parent_id ? byId.get(s.parent_id) : undefined, i++) out.push(s);
@@ -25,13 +30,13 @@ export function seenBy(rows: readonly SeenRow[], sessions: readonly SeenSession[
   for (const r of rows) {
     const line = chain(r.session_id);
     const root = line.at(-1) ?? { id: r.session_id, workspace: "", parent_id: null, title: "(removed)" };
-    const allowed = allowedFor(rule, [...new Set(line.map((s) => s.workspace).filter(Boolean))], home);
+    const allowed = allowedFor(rule, [...new Set(line.map((s) => s.workspace).filter(Boolean))], home, sp);
     const out = allows(allowed, r.provider) ? 0 : r.calls;
     calls += r.calls;
     crossing += out;
     let f = folders.get(root.workspace);
     if (!f) {
-      const e = root.workspace ? folderEntry(rule, root.workspace, home) : null;
+      const e = root.workspace ? folderEntry(rule, root.workspace, home, sp) : null;
       f = { folder: root.workspace, allowed: e?.providers ?? null, by: e?.by ?? null, calls: 0, crossing: 0, providers: {}, sessions: [] };
       folders.set(root.workspace, f);
     }

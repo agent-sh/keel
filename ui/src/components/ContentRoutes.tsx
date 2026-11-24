@@ -154,6 +154,17 @@ export function ContentRoutes() {
           {(Object.keys(INSTEAD) as RoutePurpose[]).map((p) => <div key={p} className="contents"><dt className="font-medium">{p}</dt><dd className="text-muted">{INSTEAD[p]}</dd></div>)}
         </dl>
       </details>
+
+      <details className="rounded-lg border border-line bg-raised px-5 py-3 shadow-1" data-testid="route-scope">
+        <summary className="cursor-pointer text-base font-medium">What a folder's rule covers</summary>
+        <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 text-ui text-muted">
+          <li>Sessions opened in the folder or a folder under it, and every agent they start.</li>
+          <li>A session in a worktree made from the folder, the agents' worktrees included: it counts as the folder it was made from.</li>
+          <li>A folder reached through a link is its real folder: the rule holds either way it is written.</li>
+          <li>Not a session opened in a parent folder of a named one: it follows the parent's rule, or the one for every other folder, even when it reads files inside the named folder.</li>
+          <li>Not a session on another machine of the fleet: it follows that machine's own rule.</li>
+        </ul>
+      </details>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { folderUse, inUse as folderInUse } from "../inuse.ts";
 import { GitError, Worktrees } from "../../worktree/manager.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { fitted } from "../../engine/image-fit.ts";
+import { crossingIn, routeOfFolder } from "../../safety/content-routes.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -54,7 +55,11 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         if (!existsSync(workspace) || !statSync(workspace).isDirectory()) return bad(`not a directory: ${workspace}`);
         const model = b.model || (await providers.defaultModel());
         if (!model) return bad("no model is available: no provider has credentials", 409);
-        try { await providers.resolve(model); } catch (e) { return bad(`${(e as Error).message}: pick another model`, 409); }
+        let made;
+        try { made = await providers.resolve(model); } catch (e) { return bad(`${(e as Error).message}: pick another model`, 409); }
+        // The worktree holds the folder's content: the folder's rule decides, as for a plain session.
+        const cross = crossingIn(routeOfFolder(workspace), "turn", made.info.id, made.provider.id);
+        if (cross) return bad(`provider ${cross.provider} is not allowed for this folder (allowed: ${cross.allowed.join(", ") || "none"}): pick a model of an allowed provider`, 409);
         const title = String(b.title || b.text || "").split("\n")[0]!.slice(0, 80);
         const s = store.createSession({ model, workspace, title });
         try {
