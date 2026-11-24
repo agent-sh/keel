@@ -40,6 +40,13 @@ test("the reason names the branch and says it is not this worktree's", () => {
   expect(refused("git branch -m main x")).toContain("which another checkout has out");
 });
 
+test("a rebase of another branch says the form that is allowed", () => {
+  for (const line of ["git rebase main keel/agent-2", "git rebase --onto main old-work release/1.0"]) {
+    const why = refused(line)!;
+    expect(why).toContain("rebase your own branch: git rebase <upstream> while on keel/me, with no branch argument, or git rebase --onto <new> <old> without a third argument");
+  }
+});
+
 test("its own branch, the branches it makes and ordinary work are not refused", () => {
   for (const line of [
     "git commit -qm x",

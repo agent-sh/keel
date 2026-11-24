@@ -358,7 +358,7 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
   }
   if (sub === "rebase") {
     const p = operands(args, /^(--onto|-s|--strategy|-X|--strategy-option|-x|--exec|-C|--whitespace)$/);
-    return p[1] !== undefined && named(p[1]) ? `rebases ${what(p[1])}` : null;
+    return p[1] !== undefined && named(p[1]) ? `rebases ${what(p[1])} (rebase your own branch: git rebase <upstream> while on ${s.branch}, with no branch argument, or git rebase --onto <new> <old> without a third argument)` : null;
   }
   if (sub === "subtree") {
     const split = valuesOf(args, ["--branch"], "-b").find(named);
