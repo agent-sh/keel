@@ -42,22 +42,19 @@ test("a dollar cap: set in the header, told at 80 percent, stops new work at 100
     const a = (await agent())!;
     // Its last step says whose cap it was, and its parent is told what ended it.
     expect(await users(a.session_id)).toContain('The dollar cap of \\"Capped tree\\", the session above you, is reached');
-    await expect.poll(async () => (await users(id)).includes("the dollar cap of the session above it was reached"), { timeout: 60_000 }).toBe(true);
-    // The session's own turn that took the report ends at the cap too, with its own last step.
-    await expect.poll(() => idle(id), { timeout: 60_000 }).toBe(true);
-    expect(await users(id)).toContain("The dollar cap of this session is reached");
-    expect((await events(id)).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("budget");
-
     // The owner has an alert for it, worded as a cap and not as a provider's limit.
-    const { alerts } = await (await request.get("/api/alerts")).json();
-    expect(alerts.some((x: any) => x.session_id === id && x.kind === "limit" && x.data?.cls === "cap")).toBe(true);
+    await expect.poll(async () => ((await (await request.get("/api/alerts")).json()).alerts as any[]).some((x) => x.session_id === id && x.kind === "limit" && x.data?.cls === "cap"), { timeout: 60_000 }).toBe(true);
+    // The agent's report waits for a raise: it starts no turn of the session, which spent nothing more.
+    expect(await users(id)).not.toContain("the dollar cap of the session above it was reached");
+    expect(await idle(id)).toBe(true);
 
-    // The 80 percent was told once, with the spend and the forecast, in the session's failures list.
+    // The 80 percent was told once, with the spend and the forecast, in the session's failures list;
+    // and that what waits for a raise is told once too.
     const { failures } = await (await request.get(`/api/errors?session=${id}`)).json();
-    const told = failures.filter((g: any) => g.kind === "budget");
+    const told = failures.filter((g: any) => g.kind === "budget" && g.cls === "80%");
     expect(told).toHaveLength(1);
-    expect(told[0].cls).toBe("80%");
     expect(told[0].count).toBe(1);
+    expect(failures.filter((g: any) => g.kind === "budget" && g.cls === "held").map((g: any) => g.count)).toEqual([1]);
     expect(told[0].sample).toMatch(/of the \$0\.01 cap \(\d+ percent\); at the last ten minutes' rate of \$[\d.]+ an hour it is \$[\d.]+ in an hour/);
 
     // What the page shows: the cap is reached, the rate and the hour's forecast stand beside it.
@@ -76,6 +73,14 @@ test("a dollar cap: set in the header, told at 80 percent, stops new work at 100
     await expect(page.getByTestId("cap-forecast")).toBeVisible();
     await shoot(page, "cap-01-reached");
 
+    // The owner's own message past the cap runs its turn whole, with a note that the cap is reached.
+    const before = (await events(id)).filter((e) => e.kind === "turn_end").length;
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say the owner speaks past the cap" } });
+    await expect.poll(async () => (await events(id)).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBeGreaterThan(before);
+    expect((await events(id)).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+    expect(await users(id)).toContain("The owner wrote to you, so this turn goes on");
+    expect(await users(id)).not.toContain("the dollar cap of the session above it was reached");
+
     // One press raises it: doubled, past the spend, and the work goes on.
     await page.getByTestId("cap-raise").click();
     await expect(chip).toHaveAttribute("data-level", "ok");
@@ -83,9 +88,9 @@ test("a dollar cap: set in the header, told at 80 percent, stops new work at 100
     await expect(page.getByTestId("cap-reached")).toHaveCount(0);
     await shoot(page, "cap-02-raised");
     await page.keyboard.press("Escape");
-    await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say still working" } });
-    await expect.poll(async () => (await events(id)).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBeGreaterThan(2);
-    expect((await events(id)).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+    // What waited goes on by itself: the agent's report reaches the session.
+    await expect.poll(async () => (await users(id)).includes("the dollar cap of the session above it was reached"), { timeout: 60_000 }).toBe(true);
+    await expect.poll(() => idle(id), { timeout: 60_000 }).toBe(true);
   } finally {
     await request.delete(`/api/sessions/${id}`);
   }

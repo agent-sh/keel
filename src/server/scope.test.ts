@@ -26,6 +26,8 @@ test("a session's stream goes to the sockets that named it; what a list needs go
   expect(topics({ t: "feature", name: "automation", data: { kind: "activity", data: { session_id: "s1" } } })).toEqual(["f:activity", EVERY, "s:s1"]);
   expect(topics({ t: "feature", name: "artifacts", session_id: "s1", data: {} })).toEqual(["f:artifacts", EVERY, "s:s1"]);
   expect(topics({ t: "feature", name: "awake", data: {} })).toEqual(["f:awake", EVERY]);
+  // The dollar caps' figures: the rows and headers that show a capped session name the feed, no other socket hears them.
+  expect(topics({ t: "feature", name: "caps", data: { caps: [] } })).toEqual(["f:caps", EVERY]);
   // A row and a queue are decided apart (the gate, the last queue told).
   // (A row is not on the topic of every stream: a socket that hears them all is on the topic of every row.)
   expect(route({ t: "session", session: row() })).toMatchObject({ topics: ["s:s1", ROWS], row: { key: "s1", gone: false } });

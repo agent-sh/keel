@@ -1891,7 +1891,7 @@ function ancestorsOf(a: AgentRecord): AgentRecord[] {
 // Asked before each model step of any session (the engine's budget hook): the harness's words for
 // the last step of an agent whose budget is spent, or whose ancestor's is (an agent's dollars count
 // its whole tree, and the time and steps of an agent above it bound what its agents may still do).
-export function budgetSpent(sessionId: string): string | undefined {
+export function budgetSpent(sessionId: string, byOwner: () => boolean = () => false): ReturnType<typeof caps.closing> | string | undefined {
   const a = byChild(sessionId);
   if (!a || isEnded(a)) return undefined;
   for (const x of [a, ...ancestorsOf(a)]) {
@@ -1903,7 +1903,7 @@ export function budgetSpent(sessionId: string): string | undefined {
     if (k) return closingText(x.budget, u, k, x === a ? undefined : x.title);
   }
   // The session at the top may carry a dollar cap for its whole tree.
-  return caps.closing(rootSession(sessionId), true);
+  return caps.closing(rootSession(sessionId), true, byOwner);
 }
 // An agent's dollar budget set, changed or cleared by the owner from its header (the rest of its budget stays).
 export function setUsd(sessionId: string, usd: number | null): AgentRecord | undefined {
@@ -2461,6 +2461,8 @@ export async function send(id: string, message: string, interrupt = false, key?:
   let release: (() => void) | undefined;
   let ready: (() => void) | undefined;
   if (isEnded(a)) {
+    // New work for a finished agent starts an agent as a spawn does: not past a reached dollar cap.
+    { const capped = caps.refusal(rootSession(a.parent_id)); if (capped) throw Object.assign(new Error(capped), { status: 409 }); }
     needSlot(a.parent_id);
     release = reserve(rootSession(a.parent_id));
     restarting.set(id, new Promise<void>((r) => (ready = r)));

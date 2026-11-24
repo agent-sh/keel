@@ -214,7 +214,7 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
   const waitingSend = useWaitingSend(s.id);
   const queued = useQueued(s.id, QUEUES.includes(w) && !restore);
   // Its dollar cap, when it has one: the share spent and the rate of the last ten minutes (lib/caps.ts).
-  const cap = useCap(s.id);
+  const cap = useCap(s.id, !!s.settings.cap_usd);
   // When its machine last told of it (the state says so once the daemon serves it; until then, its last change).
   const toldAt = (st as { as_of?: number }).as_of ?? s.updated;
   const shown = useStations((x) => x.shown.includes(s.id));

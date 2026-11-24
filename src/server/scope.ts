@@ -19,7 +19,7 @@ export const ROWS = "rows";
 export const LIST_ROWS = "rows:list";
 export const sessionTopic = (id: string) => `s:${id}`;
 // Frames one view reads, across sessions: the Activity list, a project's files, the daemon panel.
-export const FEEDS = ["activity", "artifacts", "awake"] as const;
+export const FEEDS = ["activity", "artifacts", "awake", "caps"] as const;
 export const feedTopic = (name: string) => `f:${name}`;
 // A feed of one tree of agents: their "now" lines (src/automation/now.ts), named by the tree's root
 // while a view shows the tree's rows (the sidebar's tree under a session).
@@ -74,8 +74,9 @@ export function route(f: Frame): Route {
       // The daemon's incidents (src/automation/incidents.ts): the band at the top of every page reads
       // them, so every socket. A frame only when one changed, with the open ones and what cleared since.
       if (f.name === "incidents") return { topics: [ALL] };
-      // The dollar caps' figures (src/automation/caps.ts): the list's rows and the header read them, a frame only when one changed.
-      if (f.name === "caps") return { topics: [ALL] };
+      // The dollar caps' figures (src/automation/caps.ts): the rows and headers that show a capped session read
+      // them (a feed they name while they are up), a frame only when one changed.
+      if (f.name === "caps") return { topics: [feedTopic("caps"), EVERY] };
       // What the agents of one tree are doing now: to the views of the sessions that started them
       // (their agent lines) and to a view of the tree's rows, never to every socket.
       if (f.name === "agents_now" && f.session_id) {

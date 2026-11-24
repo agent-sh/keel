@@ -190,7 +190,7 @@ function init(deps: Deps) {
     closingOver: (id) => flush(id),
     turnStart: (s) => agents.onTurnStart(s.id),
     // An agent whose budget is spent writes its report in one more step (src/automation/budget.ts).
-    budget: (s) => (s.parent_id ? agents.budgetSpent(s.id) : caps.closing(s.id, false)),
+    budget: (s, byOwner) => (s.parent_id ? agents.budgetSpent(s.id, byOwner) : caps.closing(s.id, false, byOwner)),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
     turnEnd: (s, reason) => {

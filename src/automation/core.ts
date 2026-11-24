@@ -189,6 +189,8 @@ function inputRoom(model: string): number {
 
 // Whether an input may start a turn of this session now (set by agents.ts).
 // `inLine`: the agent of this session waits in line for a slot of its parent.
+// Whether a reached dollar cap holds what is not the owner's own words (src/automation/caps.ts).
+export const capGate: { held?: (sessionId: string) => boolean } = {};
 export const slotGate: { admit?: (sessionId: string) => boolean; inLine?: (sessionId: string) => boolean } = {};
 
 export function flush(sessionId: string) {
@@ -202,6 +204,8 @@ export function flush(sessionId: string) {
   // Nor does an agent that waits while every slot of its parent works: its
   // input stays owed here, and it goes first when a slot frees (agents.admit).
   if (slotGate.admit && !slotGate.admit(sessionId)) return;
+  // Nor does a session whose dollar cap is reached: what waits here goes when the owner raises it.
+  if (capGate.held?.(sessionId)) return;
   pending.delete(sessionId);
   // What waited to settle goes now, with the rest.
   if (settling.delete(sessionId)) { clearTimeout(timers.get(sessionId)); timers.delete(sessionId); }

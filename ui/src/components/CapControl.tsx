@@ -16,7 +16,7 @@ const TONE = { ok: "text-muted", warn: "text-warn", spent: "text-danger" } as co
 const BAR = { ok: "bg-accent", warn: "bg-warn", spent: "bg-danger" } as const;
 
 export function CapControl({ session }: { session: Session }) {
-  const cap = useCap(session.id);
+  const cap = useCap(session.id, !!session.settings.cap_usd || !!session.parent_id);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const run = (f: () => Promise<unknown>) => { setBusy(true); f().catch(reportError).finally(() => setBusy(false)); };
@@ -54,7 +54,8 @@ export function CapControl({ session }: { session: Session }) {
                 <div className="flex justify-between text-caption tabular-nums"><span className="text-muted">Spent</span><span data-testid="cap-spent">{dollars(cap.spent)} of {dollars(cap.usd)} ({Math.floor(cap.pct * 100)}%)</span></div>
                 <div className="flex justify-between text-caption tabular-nums"><span className="text-muted">Rate, last 10 minutes</span><span data-testid="cap-burn">{cap.burn_hour > 0 ? `${dollars(cap.burn_hour)} an hour` : "none"}</span></div>
                 <div className="flex justify-between text-caption tabular-nums"><span className="text-muted">Spent in an hour at that rate</span><span data-testid="cap-forecast">{dollars(cap.forecast_hour)}</span></div>
-                {cap.level === "spent" && <div className="rounded-md border border-danger/40 bg-danger/5 px-2 py-1.5 text-caption text-fg" data-testid="cap-reached">Reached. New steps and new agents wait until the cap is raised; a step that runs finishes.</div>}
+                {cap.unpriced > 0 && <div className="text-caption text-muted" data-testid="cap-unpriced">{cap.unpriced} call{cap.unpriced === 1 ? "" : "s"} ran on a model with no listed price: not counted in these dollars.</div>}
+                {cap.level === "spent" && <div className="rounded-md border border-danger/40 bg-danger/5 px-2 py-1.5 text-caption text-fg" data-testid="cap-reached">Reached. New steps, loops, wakes, reports and new agents wait until the cap is raised; a step that runs finishes. Your own messages still run.</div>}
                 {cap.level === "warn" && <div className="text-caption text-warn" data-testid="cap-near">Past 80 percent of the cap.</div>}
               </div>
             )}

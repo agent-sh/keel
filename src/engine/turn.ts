@@ -30,7 +30,7 @@ import { shutWords } from "../providers/account.ts";
 import { EFFORT_LADDER, type ModelInfo, type Price, type Provider, type ProviderRequest, type ProviderResult } from "../providers/types.ts";
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
-import { AGENT_BUDGET_SPENT, APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
+import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { closestNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
@@ -871,6 +871,18 @@ export class Engine {
   // do not rebuild the tree; the array is shared and read-only.
   lineage(id: string): readonly StoredEvent[] {
     return this.store.lineage(id);
+  }
+
+  // The turn that runs was started, or steered into, by the owner's own words (not a loop, a wake,
+  // a report or an agent): read back from the end to the last turn's end.
+  byOwner(id: string): boolean {
+    const line = this.lineage(id);
+    for (let i = line.length - 1; i >= 0; i--) {
+      const e = line[i]!;
+      if (e.kind === "turn_end") return false;
+      if (e.kind === "user" && ownerPrompt(e.data)) return true;
+    }
+    return false;
   }
 
   // Stop the running turn: the model stream and running tools are cut, and
@@ -2506,6 +2518,9 @@ export class Engine {
     // A budget a hook keeps for the session (an agent's) is spent: this step is its last, a report in
     // words with no call run, and the turn ends "budget" after it.
     let closing = false;
+    // The closing step is a dollar cap's, and the cap's note was told in this turn.
+    let closingCap = false;
+    let capNoted = false;
     // What the turn's end says it took: the replies the model gave, its tool
     // results, those of calls that ran and failed (what telemetry and the
     // trace count too), and those of calls a gate denied. A call the turn's
@@ -2619,10 +2634,16 @@ export class Engine {
         // more step, in words, then the turn ends. Asked before each step, so a turn a wake starts
         // after the budget ran out gets only that step.
         if (!closing) for (const h of allHooks()) {
-          const said = h.budget?.(session);
+          const said = h.budget?.(session, () => this.byOwner(id));
           if (!said) continue;
+          const o = typeof said === "string" ? { text: said } : said;
+          if (o.note) {
+            if (!capNoted) { capNoted = true; this.append(id, "user", { text: o.text, origin: "harness" }); }
+            continue;
+          }
           closing = true;
-          this.append(id, "user", { text: said, origin: "harness" });
+          closingCap = !!o.cap;
+          this.append(id, "user", { text: o.text, origin: "harness" });
           break;
         }
         steps++;
@@ -2791,7 +2812,7 @@ export class Engine {
           const sentWith = () => toMessages(this.lineage(id).filter((e) => e.seq < stored.seq));
           const planned = uses.length && !spent ? this.cachePlans.tool(id, st, events, sentWith, this.toolShape(id, uses), sentAt, u) : undefined;
           try {
-          await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? AGENT_BUDGET_SPENT : BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
+          await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? (closingCap ? CAP_SPENT : AGENT_BUDGET_SPENT) : BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
           } finally { planned?.(); }
           if (cut) await settleNow(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });

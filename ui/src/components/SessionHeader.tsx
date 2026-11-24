@@ -237,7 +237,7 @@ export function SessionHeader({ session }: { session: Session }) {
   const usageId = useId();
   const folder = session.workspace.split("/").pop();
   // A cap that is set stays in the row (it is what the owner watches); the button that sets one folds first.
-  const capped = !!useCap(session.id);
+  const capped = !!useCap(session.id, !!session.settings.cap_usd || !!session.parent_id);
 
   // In the row's order; the rank says which stays longest when the row is short.
   const tools: Tool[] = [

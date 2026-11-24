@@ -282,12 +282,19 @@ under `~/.cache/keel-work/bun/research/`.
 - A session carries a dollar cap for itself and everything it starts (`cap_usd` from `cap_from` in its
   settings; an agent's own dollar budget is the same cap over its task: `src/automation/caps.ts`, the pure
   rules in `cap-rules.ts`). Its row and header show the share spent and the rate of the last ten minutes
-  with the hour's forecast from it (one `caps` frame when a figure changed). The pulse reads them off the
-  loop, one statement a cap on the ledger's session index, every ten seconds while any cap is set; the gate
-  before a step reads only when a cap is above the session. At 80 percent the owner (a top session's own
-  failures list) or the parent (an agent) is told once with the spend and the forecast, again for a raised
-  cap; at 100 percent the next step is the report, no agent starts, a goal pauses, and one press (doubling,
-  `POST /api/sessions/:id/cap`) lets the work go on.
+  with the hour's forecast from it (one `caps` frame when a figure changed, a feed the views that show a
+  capped session name). The pulse reads them off the loop, one statement a cap on the ledger's session
+  index, every ten seconds while any cap is set, and puts its exact figure under the gate's running sum.
+  The gate before a step (and a spawn, and the hold below) reads that sum: the ledger rows after the last
+  one it read, so its cost does not grow with the tree. A call with no price when it ran is counted at the
+  model's listed price now; the popup says when calls on a model with none ran. At 80 percent the owner (a
+  top session's own failures list) or the parent (an agent) is told once with the spend and the forecast,
+  again for a raised cap. At 100 percent a running step finishes and then: the agents below get the report
+  step, no agent starts (a spawn, or new work for a finished agent, is refused), a goal pauses, and what is
+  not the owner's own words (a loop run, a timer wake, an agent's report) waits in the session's queue, told
+  once with an alert, until the cap is raised. The owner's own message runs its turn whole, with a note that
+  the cap is reached and what was spent (`Engine.byOwner`). One press (doubling,
+  `POST /api/sessions/:id/cap`) lets the rest go on.
 - A session's agent slots are its tree's and count the agents that work. An
   agent that waits on a wait of its own holds none. Its wake, and an agent
   asked for while every slot works, wait in line as owed and take the next

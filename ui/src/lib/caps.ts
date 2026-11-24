@@ -1,9 +1,9 @@
 // The dollar caps as the page last heard them (src/automation/caps.ts): read when the socket opens,
 // then from the `caps` frames, which carry every cap whole whenever a figure changed. A session
 // without a cap is not in the list.
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import type { CapRow } from "../../../src/automation/cap-rules.ts";
-import { api, onFeature, readAtOpen } from "./store.ts";
+import { api, onFeature, readAtOpen, scope } from "./store.ts";
 
 let now = new Map<string, CapRow>();
 const subs = new Set<() => void>();
@@ -27,10 +27,15 @@ function bind() {
 
 const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 
-// The cap on a session, if it has one.
-export function useCap(id: string): CapRow | undefined {
+// The cap on a session, if it has one. `shows`: this view can show a cap (the session carries one, or it is
+// an agent's): while it does, the page hears the caps' frames (a feed, src/server/scope.ts); a view that
+// shows no capped session hears none.
+export function useCap(id: string, shows = true): CapRow | undefined {
   bind();
-  return useSyncExternalStore(subscribe, () => now.get(id));
+  const cap = useSyncExternalStore(subscribe, () => now.get(id));
+  const hear = shows || !!cap;
+  useEffect(() => (hear ? scope.feed("caps") : undefined), [hear]);
+  return cap;
 }
 
 const put = (id: string, init: RequestInit) => api<{ cap: CapRow | null }>(`/api/sessions/${id}/cap`, init).then((r) => {

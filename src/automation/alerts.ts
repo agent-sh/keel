@@ -1279,6 +1279,12 @@ const LIMIT = /rate.?limit|usage limit|quota|too many requests|\b429\b|overloade
 // Keyed by the module, so a hot reload replaces its entry.
 export const ownSessionEnd = new Map<string, (sessionId: string) => boolean>();
 
+// The session's dollar cap is reached: the owner is told it waits for a raise (src/automation/caps.ts).
+export function capReached(sessionId: string, body = "The session reached its dollar cap. Raise it to go on.") {
+  const s = D().store.session(sessionId);
+  if (s && !s.archived) raise("limit", sessionId, `${limitWord("cap")}: ${s.title || "Session"}`, body, { cls: "cap" });
+}
+
 export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: boolean; loopRun: boolean; more: boolean }) {
   if (opts.subagent || opts.more) return;
   for (const own of ownSessionEnd.values()) if (own(sessionId)) return;
@@ -1312,7 +1318,7 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
     return;
   }
   // The session's dollar cap is reached: new work waits until the owner raises it (src/automation/caps.ts).
-  if (reason === "budget") { raise("limit", sessionId, `${limitWord("cap")}: ${title}`, "The session reached its dollar cap. Raise it to go on.", { cls: "cap" }); return; }
+  if (reason === "budget") { capReached(sessionId); return; }
   if (reason === "interrupted" || opts.loopRun) return;
   // A question that expired unanswered in this turn, with none answered after
   // it: the owner still owes that decision, so the turn is not filed as finished.

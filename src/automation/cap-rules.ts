@@ -29,7 +29,9 @@ export type CapView = {
 };
 
 // One cap as the daemon tells it: `id` is the session it sits on, `at` when it was read.
-export type CapRow = CapView & { id: string; kind: "session" | "agent"; from: number; at: number };
+// `unpriced`: calls in the tree's spend whose model has no listed price (a plan, a local model): they add no
+// dollars, and the popup says so. A call with no price when it ran is counted at the model's listed price now.
+export type CapRow = CapView & { id: string; kind: "session" | "agent"; from: number; at: number; unpriced: number };
 
 export const levelOf = (spent: number, usd: number): CapLevel => (spent >= usd ? "spent" : spent >= usd * WARN_AT ? "warn" : "ok");
 
@@ -83,3 +85,13 @@ export const capClosing = (usd: number, spent: number, above?: string) =>
 // The notice that rides a session's failures list (the kind "budget", the cause `80%`).
 export const WARN_CLS = "80%";
 export const warnMessage = (v: CapView, who?: string) => `${who ? `${who}: ` : ""}${capLine(v)}`;
+
+// The note a turn carries once while the owner's own message runs it past a reached cap: the owner chose
+// to spend, so the steps go on; what they must know is that the cap is reached and nothing else starts.
+export const capOwnerNote = (usd: number, spent: number) =>
+  `[harness] The dollar cap of this session is reached (${dollars(usd)}; spent ${dollars(spent)}). The owner wrote to you, so this turn goes on at their cost. No agent starts until the cap is raised, and the agents you started stop at their next step.`;
+
+// What the owner is told once when a reached cap holds the inputs that are not theirs.
+export const HELD_CLS = "held";
+export const capHeldMessage = (usd: number, spent: number) =>
+  `The dollar cap (${dollars(usd)}) is reached with ${dollars(spent)} spent: loops, timer wakes, agent reports and goal checks for this session wait until the cap is raised. Your own messages still run.`;

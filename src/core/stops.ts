@@ -58,7 +58,9 @@ export const CUT_CALL = "Not run: this call was cut at the output limit, so its 
 export const BUDGET_SPENT = "Not run: the step budget of this turn is spent.";
 // A call of the step an agent's spent budget leaves for its report.
 export const AGENT_BUDGET_SPENT = "Not run: the agent's budget is spent; this step is for its report.";
-const NOT_RUN: Record<string, string> = { [CUT_CALL]: "cut at the output limit", [BUDGET_SPENT]: "the step budget was spent", [AGENT_BUDGET_SPENT]: "the agent's budget was spent" };
+// A call of the step a session's reached dollar cap leaves for its report (src/automation/caps.ts).
+export const CAP_SPENT = "Not run: the dollar cap is reached; this step is for the report.";
+const NOT_RUN: Record<string, string> = { [CUT_CALL]: "cut at the output limit", [BUDGET_SPENT]: "the step budget was spent", [AGENT_BUDGET_SPENT]: "the agent's budget was spent", [CAP_SPENT]: "the dollar cap was reached" };
 // Why the call was not run, in a few words, or nothing when it is not such a call.
 export const notRun = (content: unknown): string | undefined => (typeof content === "string" ? NOT_RUN[content] : undefined);
 
