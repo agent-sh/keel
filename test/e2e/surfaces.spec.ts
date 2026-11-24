@@ -90,11 +90,16 @@ test("the panels at hand are named at the top of the Panels chooser", async ({ p
   // No shortcut beside it: the row holds the session's tools, More and the chooser.
   await expect(header.locator('[data-testid^="panel-toggle-"]')).toHaveCount(0);
 
-  // Nothing used yet: nothing is at hand, every panel is in its group.
+  // Nothing used yet: the five most sessions need are at hand, in this order, and every other panel is
+  // one list under More. No name is listed twice, and the setup panel is named for what it is.
   await menu.click();
   const picker = page.getByTestId("panel-picker");
   await expect(picker.getByTestId("panel-pick-files")).toBeVisible();
-  await expect(picker.getByTestId("panels-at-hand")).toHaveCount(0);
+  await expect(picker.locator(".k-picker-group")).toHaveText(["At hand", "More"]);
+  await expect(picker.getByTestId("panels-at-hand").locator('[data-testid^="panel-pick-"]')).toHaveText([/^Review/, /^Work board/, /^Changes/, /^Files/, /^Terminal/]);
+  const names = await picker.locator('[data-testid^="panel-pick-"] > span:first-of-type').allTextContents();
+  expect(names.filter((n, i) => names.indexOf(n) !== i), "a panel name listed twice").toEqual([]);
+  expect(names).toContain("Session settings");
   // Picked once, a panel is at hand: at the top, named, with its glyph, marked while it is open.
   await picker.getByTestId("panel-pick-files").click();
   await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "files");

@@ -54,10 +54,10 @@ test("modes and panels are grouped and say what they do", async ({ page, request
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.keyboard.press("Escape");
 
-    // Panels: every one in a named group, with what it is beside its name.
+    // Panels: the five at hand and the rest under More, with what each is beside its name.
     await page.getByTestId("panel-menu").click();
     const picker = page.getByTestId("panel-picker");
-    await expect(picker.locator(".k-picker-group")).toHaveText(["Work", "History", "Setup", "Beside"]);
+    await expect(picker.locator(".k-picker-group")).toHaveText(["At hand", "More"]);
     expect(await picker.locator(".k-picker-group").first().evaluate((el) => { const c = getComputedStyle(el); return [true, c.fontFamily, c.fontSize, c.fontWeight].join("|"); })).toBe(modeHead);
     const picks = picker.locator('[data-testid^="panel-pick-"]');
     for (const p of await picks.all()) await expect(p.getByTestId("panel-hint")).not.toBeEmpty();

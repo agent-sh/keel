@@ -29,7 +29,8 @@ panels.add(
   },
   {
     id: "branches",
-    label: "Branches",
+    label: "Landing",
+    hint: "live branches: conflicts and the queue",
     icon: <GitMerge className="size-4" />,
     order: 35,
     component: lazy(() => import("../components/BranchesPanel.tsx").then((m) => ({ default: m.BranchesPanel }))),
@@ -81,7 +82,7 @@ registerCommand(
   { id: "panel-changes", label: "Changes panel: diffs, rewind and revert", group: "View", keys: "mod+shift+d", inInput: true, words: "checkpoint undo rewind revert diff", when: inSession, run: () => toggle("changes") },
   { id: "panel-trust", label: "Trust panel: repository files, hooks and quarantine", group: "View", words: "trust hooks quarantine agents instructions skills", when: inSession, run: () => toggle("trust") },
   { id: "panel-review", label: "Review the branch", group: "View", words: "pull request comment worktree", when: inSession, run: () => toggle("review") },
-  { id: "panel-branches", label: "Branches: which live branches would conflict", group: "View", words: "overlap conflict merge worktree landing rebase", when: inSession, run: () => toggle("branches") },
+  { id: "panel-branches", label: "Landing: which live branches would conflict", group: "View", words: "overlap conflict merge worktree landing rebase", when: inSession, run: () => toggle("branches") },
 );
 
 const current = () => {

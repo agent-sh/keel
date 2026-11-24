@@ -60,11 +60,13 @@ export function openPanel(id: string | null) {
   savePref("panel", id);
 }
 
-const AT_HAND = 3;
-// The panels at hand: the kept ones first, then by use; the open panel is always there. A panel
-// never used or kept is not at hand: its group lists it.
+// The five panels most sessions need, in the order they start at hand; use and keeping move others in.
+const HAND_FIRST = ["review", "board", "changes", "files", "terminal"];
+const AT_HAND = HAND_FIRST.length;
+// The panels at hand: the kept ones first, then by use, then the five a new owner starts with; the open
+// panel is always there. Every other panel is under More.
 function atHand(list: Panel[], open: string | null): Panel[] {
-  const rank = (p: Panel) => (kept.includes(p.id) ? 1e6 : 0) + (use[p.id] ?? 0);
+  const rank = (p: Panel) => (kept.includes(p.id) ? 1e6 : 0) + (use[p.id] ?? 0) + (HAND_FIRST.includes(p.id) ? (AT_HAND - HAND_FIRST.indexOf(p.id)) / 100 : 0);
   const top = list.filter((p) => rank(p) > 0).sort((a, b) => rank(b) - rank(a) || (a.order ?? 50) - (b.order ?? 50)).slice(0, Math.max(AT_HAND, kept.length));
   const cur = list.find((p) => p.id === open);
   if (cur && !top.includes(cur)) top.push(cur);
@@ -97,7 +99,10 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
     const place = (p: Panel) => (GROUPS.includes(groupOf(p)) ? groupOf(p) : "More"); // a group the picker does not know is listed under More
     // Before a search, the panels at hand head the list, each once.
     const hand = w ? [] : atHand(list, open);
-    return [{ g: "At hand", items: hand }, ...GROUPS.map((g) => ({ g, items: hits.filter((p) => place(p) === g && !hand.includes(p)) }))].filter((x) => x.items.length);
+    // A search lists its matches by group; at rest the rest of the panels are one list under More, in their groups' order.
+    if (w) return [{ g: "At hand", items: [] as Panel[] }, ...GROUPS.map((g) => ({ g, items: hits.filter((p) => place(p) === g) }))].filter((x) => x.items.length);
+    const rest = GROUPS.flatMap((g) => hits.filter((p) => place(p) === g && !hand.includes(p)));
+    return [{ g: "At hand", items: hand }, { g: "More", items: rest }].filter((x) => x.items.length);
   }, [list, q, open, ver]);
   // Picking shows the panel; it never closes one (the X and the header toggles do).
   const pick = (id: string) => { openPanel(id); setShow(false); setQ(""); };

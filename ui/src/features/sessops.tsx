@@ -10,7 +10,7 @@ import { getUI, savePref } from "../lib/ui.ts";
 
 panels.add({
   id: "session",
-  label: "Session",
+  label: "Session settings",
   icon: <Bookmark className="size-4" />,
   order: 44,
   component: lazy(() => import("../components/SessionPanel.tsx").then((m) => ({ default: m.SessionPanel }))),
