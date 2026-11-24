@@ -28,7 +28,8 @@
 //
 // Pure: the gate reads the checkouts from the disk (refwatch.ts checkoutsOf).
 import { isAbsolute, join, resolve } from "node:path";
-import { PAD } from "./ref-guard.ts";
+import { SHELL_GIT_SETTINGS } from "../core/git.ts";
+import { guardEnv, PAD } from "./ref-guard.ts";
 import { laid } from "./risk.ts";
 import { name, redirected, SHELLS, type Run } from "./risk-words.ts";
 import { isReadOnly, splitCommand, type Simple } from "./shell.ts";
@@ -410,8 +411,19 @@ function bodiesOf(g: Git): string[] {
 // The setting of git's config through the environment that a command makes: the pairs Keel gives every command are
 // numbered (GIT_CONFIG_COUNT), and one set over them takes theirs away.
 const GIT_ENV = /^(GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+|GIT_CONFIG_PARAMETERS|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY)=(.*)$/s;
+// The settings the daemon gives a command of this agent: Keel's pairs, then the guard's (the ones that hold its git
+// to its own branch), read from the guard as the gate asks for it. A command that starts without the environment
+// (env -i) is allowed only when it gives all of them back, each as given, so what it sets is what it would have had.
+export function sessionSettings(s: Shared): string[] {
+  const guard = guardEnv(s, { ...process.env, GIT_CONFIG_COUNT: SHELL_GIT_SETTINGS[0]!.slice("GIT_CONFIG_COUNT=".length) });
+  const pairs = Object.entries(guard).map(([k, v]) => `${k}=${v}`);
+  return pairs.length ? [...SHELL_GIT_SETTINGS.slice(1), ...pairs] : [...SHELL_GIT_SETTINGS];
+}
 function envRefused(assigned: string[], dir: string | null, home: string, s: Shared): string | null {
+  const given = sessionSettings(s);
+  const whole = given.every((a) => assigned.includes(a));
   for (const w of assigned) {
+    if (whole && given.includes(w)) continue;
     const m = GIT_ENV.exec(w);
     if (!m) continue;
     if (m[1] === "GIT_INDEX_FILE" || m[1] === "GIT_OBJECT_DIRECTORY") { const at = pathOf(dir, m[2]!, home); const what = at === null ? null : gitStoreOf(at, s); if (what) return `points git at ${what} (${m[1]})`; continue; }
@@ -421,6 +433,12 @@ function envRefused(assigned: string[], dir: string | null, home: string, s: Sha
   }
   return null;
 }
+
+// What an agent is told when a command starts without the environment (env -i): its own words, not the paragraph
+// about other checkouts' branches.
+export const ENV_I = "starts it without the environment Keel gives the command (env -i)";
+export const envIMessage = (s: Shared) =>
+  `Refused: env -i drops the git settings Keel gives every command, which hold an agent to its own branch (${s.branch}), and the rules cannot read what the command then runs. Keep the environment instead: \`env NAME=value cmd\` adds a variable and \`env -u NAME cmd\` removes one. A scratch daemon needs no empty environment: \`env -u NAME ... bash scripts/dev.sh PORT\` drops what it must not inherit (provider keys, DBUS_SESSION_BUS_ADDRESS), and the KEEL_* settings scripts/dev.sh reads (KEEL_DEV_DIR, KEEL_SCRIPTED_PROVIDER, KEEL_DEFAULT_MODEL, KEEL_KEYRING_SERVICE, KEEL_DESKTOP_NOTIFY) go in as \`env NAME=value\`. The one way to keep env -i is to give back the whole settings in the same command: ${sessionSettings(s).join(" ")}`;
 
 // Programs that write the files they name: each, and which of its words are the files.
 const WRITES: Record<string, "all" | "last" | "inplace"> = {
@@ -509,7 +527,7 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
       const w = part.words[k]!;
       if (!w.startsWith("-")) { if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) wrap = name(w); continue; }
       if (wrap !== "env" && wrap !== "sudo") continue;
-      if (wrap === "env" && /^(-i|--ignore-environment|-)$/.test(w) && (prog === "git" || SHELLS.test(prog))) return "starts it without the environment Keel gives the command (env -i)";
+      if (wrap === "env" && /^(-i|--ignore-environment|-)$/.test(w) && (prog === "git" || SHELLS.test(prog)) && !sessionSettings(s).every((a) => run.set.includes(a))) return ENV_I;
       const unsetName = w === "-u" || w === "--unset" ? part.words[++k] : /^(--unset=|-u)(.+)$/.exec(w)?.[2];
       if (unsetName && /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(unsetName)) return "unsets the git settings Keel gives the command";
       const to = (wrap === "env" && (w === "-C" || w === "--chdir")) || (wrap === "sudo" && (w === "-D" || w === "--chdir")) ? part.words[++k] : /^(--chdir=|-C)(.+)$/.exec(w)?.[2];
@@ -579,5 +597,6 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
 
 // What the agent is told: what the command would do, and the way its work lands instead.
 export function sharedMessage(why: string, s: Shared, what = "the command"): string {
+  if (why === ENV_I) return envIMessage(s);
   return `Refused: ${what} ${why}. This worktree shares the repository's branches with its other checkouts (the owner's and other agents'), so an agent here changes its own branch (${s.branch}) and the branches it makes itself only: commit there, and reset or rebase it as you need. A branch reaches ${s.base ?? "its base"} through Keel's landing queue (keel__landing_queue), which rebases it, runs the repository's checks and lands it. Leave the other branches as they are, even to undo a mistake, and say in your report what you wanted done.`;
 }

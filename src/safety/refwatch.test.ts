@@ -132,3 +132,61 @@ test("the checkouts a worktree shares its branches with are read from the reposi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A command that starts without the environment (env -i) drops the git settings Keel gives, the guard's among them.
+// It is refused with words of its own unless it gives the whole settings back in the command itself: no script is
+// trusted to do it (the agent writes the scripts of its worktree).
+test("env -i is refused with its own words, and allowed only where the command gives back the whole settings", async () => {
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { realOf } = await import("../core/paths.ts");
+  const { SHELL_GIT_SETTINGS } = await import("../core/git.ts");
+  const { checkoutsOf } = await import("./refwatch.ts");
+  const { sessionSettings, sharedMessage, sharedRefusal } = await import("./shared-branches.ts");
+  const dir = realOf(mkdtempSync(join(process.env.TMPDIR ?? ".", "envi-")));
+  const git = (cwd: string, ...args: string[]) => {
+    const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { cwd, env: { PATH: process.env.PATH!, HOME: dir, GIT_CONFIG_NOSYSTEM: "1" } });
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+  };
+  try {
+    const main = join(dir, "main"), agent = join(dir, "agent");
+    git(dir, "init", "-q", main);
+    writeFileSync(join(main, "a"), "a\n");
+    git(main, "add", "a");
+    git(main, "commit", "-qm", "a");
+    git(main, "worktree", "add", "-q", "-b", "keel/x", agent);
+    const s = checkoutsOf(agent, "keel/x", "main")!;
+    // Scripts of the worktree that name the settings file (in code or in a comment): none is trusted.
+    mkdirSync(join(agent, "scripts"));
+    writeFileSync(join(agent, "scripts/good.sh"), '#!/usr/bin/env bash\n. "$(dirname "${BASH_SOURCE[0]}")/git-env.sh"\nexec true\n');
+    writeFileSync(join(agent, "scripts/comment.sh"), "# git-env.sh\ngit update-ref refs/heads/main keel/x\n");
+    const why = (c: string) => sharedRefusal(c, agent, dir, s);
+    const ENV_I = "starts it without the environment Keel gives the command (env -i)";
+    for (const c of ["env -i git commit -m x", "env -i bash -c 'git status'", "env -i PATH=/usr/bin HOME=/x bash scripts/good.sh 48201", "env -i sh ./scripts/good.sh", "env -i PATH=/usr/bin bash scripts/comment.sh", "env -i bash scripts/missing.sh"]) expect([c, why(c)]).toEqual([c, ENV_I]);
+    // The settings the daemon gives this agent: Keel's pairs and the guard's, as the guard makes them.
+    const given = sessionSettings(s);
+    expect(given.length).toBeGreaterThan(SHELL_GIT_SETTINGS.length - 1);
+    expect(given.some((a) => a.includes(`includeIf.gitdir:${s.common}`))).toBe(true);
+    const all = given.join(" ");
+    expect(why(`env -i PATH=/usr/bin ${all} git commit -m x`)).toBeNull();
+    expect(why(`env -i PATH=/usr/bin ${all} bash scripts/good.sh 48201`)).toBeNull();
+    // Keel's own pairs alone leave the guard out: refused, as is any changed or missing pair.
+    expect(why(`env -i PATH=/usr/bin ${SHELL_GIT_SETTINGS.join(" ")} git commit -m x`)).not.toBeNull();
+    expect(why(`env -i PATH=/usr/bin ${all.replace("core.hooksPath", "core.pager")} git commit -m x`)).not.toBeNull();
+    expect(why(`env -i PATH=/usr/bin ${given.slice(1).join(" ")} git commit -m x`)).not.toBeNull();
+    expect(why(`env -i PATH=/usr/bin ${all} GIT_CONFIG_COUNT=1 git commit -m x`)).not.toBeNull();
+    // The words: what is wrong, the way that keeps the environment, and the settings to give back; not the other paragraph.
+    const said = sharedMessage(ENV_I, s);
+    expect(said).toContain("env -i drops the git settings");
+    expect(said).toContain("env -u NAME");
+    expect(said).toContain("scripts/dev.sh");
+    expect(said).toContain(all);
+    expect(said).not.toContain("git-env.sh");
+    expect(said).not.toContain("keel__landing_queue");
+    // Without env -i nothing changed: the recipe that keeps the environment is allowed, and a settings of its own is refused.
+    expect(why("env -u DBUS_SESSION_BUS_ADDRESS KEEL_DEV_DIR=/y bash scripts/dev.sh 48201")).toBeNull();
+    expect(why("GIT_CONFIG_COUNT=1 git status")).toContain("GIT_CONFIG_COUNT");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -468,7 +468,10 @@ const SHELL_KEYS = KEYS.filter(([k]) => k !== "protocol.file.allow");
 // of FETCH_KEYS. A machine of an older build never sets it: nothing is fetched there.
 const SHELL_FETCH: [string, string][] = [...FETCH_KEYS, ["protocol.file.allow", "user"]];
 export const GIT_SHELL_FETCH = `if [ -n "\${KEEL_GIT_FETCH:-}" ]; then unset GIT_NO_LAZY_FETCH; export GIT_CONFIG_COUNT=${SHELL_KEYS.length + SHELL_FETCH.length} ${SHELL_FETCH.map(([k, v], i) => `GIT_CONFIG_KEY_${SHELL_KEYS.length + i}=${k} GIT_CONFIG_VALUE_${SHELL_KEYS.length + i}=${v}`).join(" ")}; fi\n`;
-export const GIT_SHELL_ENV = `export GIT_NO_LAZY_FETCH=1 GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true GIT_CONFIG_COUNT=${SHELL_KEYS.length} ${SHELL_KEYS.map(([k, v], i) => `GIT_CONFIG_KEY_${i}=${k} GIT_CONFIG_VALUE_${i}=${v}`).join(" ")}`;
+// The settings of GIT_SHELL_ENV as assignments: what a command that starts without the environment (env -i) gives
+// back (src/safety/shared-branches.ts reads them).
+export const SHELL_GIT_SETTINGS: readonly string[] = [`GIT_CONFIG_COUNT=${SHELL_KEYS.length}`, ...SHELL_KEYS.flatMap(([k, v], i) => [`GIT_CONFIG_KEY_${i}=${k}`, `GIT_CONFIG_VALUE_${i}=${v}`])];
+export const GIT_SHELL_ENV = `export GIT_NO_LAZY_FETCH=1 GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true ${SHELL_GIT_SETTINGS.join(" ")}`;
 
 // git's options that come before the subcommand, with the ones that take a value.
 const TAKES_VALUE = new Set(["-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "--super-prefix", "--attr-source"]);

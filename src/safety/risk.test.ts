@@ -552,7 +552,7 @@ test("an agent in a managed worktree is refused the other ways of moving a share
     "git config alias.x 'update-ref refs/heads/main HEAD'", "git -c alias.x='!git branch -f main' x", "git config --global alias.y '!sh x'",
     "env -C /m git reset --hard", "timeout 5 env --chdir=/m git reset --hard", "git -c core.worktree=/m reset --hard",
     "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.worktree GIT_CONFIG_VALUE_0=/m git reset --hard", "GIT_CONFIG_PARAMETERS=\"'core.worktree'='/m'\" git reset --hard",
-    "git -c core.hooksPath=/dev/null commit -m x", "unset GIT_CONFIG_COUNT", "env -u GIT_CONFIG_COUNT git commit -m x", "env -i git commit -m x",
+    "git -c core.hooksPath=/dev/null commit -m x", "unset GIT_CONFIG_COUNT", "env -u GIT_CONFIG_COUNT git commit -m x",
     "git -c core.fsmonitor='git branch -f main HEAD' status", "git config core.pager 'git update-ref refs/heads/main HEAD'",
     "git push .git HEAD:main", "git push /m/.git HEAD:main", "git push --repo /m HEAD:main", "git push --repo=. HEAD:main", "git push loc HEAD:main", "git push \"$PWD/.git\" HEAD:main",
     "git push file:///m HEAD:main", "git remote add here /m", "git remote set-url origin /m/.git", "git subtree push --prefix=a . main",
