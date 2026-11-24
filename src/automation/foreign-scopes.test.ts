@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claimState } from "../core/claim.ts";
@@ -58,6 +58,18 @@ const fakeScope = (dir: string, name: string, pids: number[]) => {
 };
 const spawnWith = (env: Record<string, string>) => Bun.spawn(["sleep", "30"], { env: { PATH: process.env.PATH ?? "/usr/bin", ...env }, stdout: "ignore", stderr: "ignore" });
 
+/** Until a spawned child has exec'd, /proc shows the test process's own environment: wait for its own command line. */
+const execd = async (pids: number[]) => {
+  for (const pid of pids) {
+    for (let i = 0; i < 400; i++) {
+      let cmd = "";
+      try { cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8"); } catch {}
+      if (cmd.startsWith("sleep\0")) break;
+      await Bun.sleep(5);
+    }
+  }
+};
+
 test("a scope that holds this daemon or a process above it is marked, and never stopped", async () => {
   const dir = mkdtempSync(join(tmpdir(), "keel-foreign-"));
   const mine = fakeScope(dir, "keel-job-b1-abcdef.scope", [process.pid]);
@@ -97,6 +109,7 @@ test("the marks a stop is checked against are read from every process of the sco
   const dir = mkdtempSync(join(tmpdir(), "keel-foreign-"));
   const procs = Array.from({ length: 20 }, (_, i) => spawnWith({ KEEL_JOB: i === 19 ? "b9.900" : "b1.100" }));
   try {
+    await execd(procs.map((p) => p.pid));
     const scope = fakeScope(dir, "keel-job-b1-abcdef.scope", procs.map((p) => p.pid));
     const seen = await look(scope);
     expect(seen?.marks).toEqual(["b1.100", "b9.900"]);
