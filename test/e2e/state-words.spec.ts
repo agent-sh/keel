@@ -163,7 +163,9 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     // and the pill beside it says the five still out in the agents' line's words (three work, two wait).
     await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working · 3 of 8 agents");
     await expect(station(page, coord).getByTestId("station-word")).toHaveText("Working · 3 of 8 agents");
-    await expect(station(page, coord).getByTestId("background-button")).toHaveText("3 working, 2 waiting");
+    // (The background list rests in the session menu since the bar holds one menu.)
+    await expect(await inHead(page, "background-button")).toHaveText("3 working, 2 waiting");
+    await leaveHead(page);
 
     // An agent that ends while neither it nor its parent is on screen is marked on its row until one of them is.
     await row(page, elsewhere).click();
@@ -642,7 +644,9 @@ test("one status a session: every surface counts working and waiting alike, and 
     await page.goto(`/s/${lead}`);
     await expect(row(page, lead).getByTestId("row-state")).toHaveText("Working · 1 agent");
     await expect(station(page, lead).getByTestId("station-word")).toHaveText("Working · 1 agent");
-    await expect(station(page, lead).getByTestId("background-button")).toHaveText("1 working");
+    // (The background list rests in the session menu since the bar holds one menu.)
+    await expect(await inHead(page, "background-button")).toHaveText("1 working");
+    await leaveHead(page);
     await expect(row(page, lead).locator("xpath=..").getByTestId("children-toggle")).toHaveAttribute("aria-label", "1 agent: 1 working");
     await openPanel(page, "board");
     await expect(page.getByTestId("board-row").getByTestId("board-state")).toHaveText("working");
