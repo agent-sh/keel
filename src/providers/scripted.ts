@@ -31,6 +31,7 @@
 //   script:outage-count              how many requests and listings the last
 //                                    outage refused
 //   script:outage-end                the provider is back now
+//   script:overloaded                the first two requests answer 529 overloaded
 //   script:overloaded <ms> [on <provider id>]
 //                                    every request of the provider answers 529 overloaded
 //                                    for <ms> from this prompt's first request on (in
@@ -497,7 +498,11 @@ export class ScriptedProvider implements Provider {
       case "outage":
         return reply("Answered after the outage.");
       case "overloaded":
-        return reply("Answered after the overload.");
+        // With a time, the overload above is the failure and this is the answer after it.
+        if (over) return reply("Answered after the overload.");
+        // Without one, the first two requests are overloaded and the third is answered.
+        if (attempt < 2) throw new ProviderError("overloaded", "Scripted: 529 overloaded", 529);
+        return reply("Answered after the overload passed.");
       case "outage-end":
         return reply("The provider is back.");
       case "outage-mid": {
@@ -691,9 +696,6 @@ export class ScriptedProvider implements Provider {
       case "rate-limit":
         if (attempt === 0) throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 4 s", 429, 4_000);
         return reply("Answered after the rate limit passed.");
-      case "overloaded":
-        if (attempt < 2) throw new ProviderError("overloaded", "Scripted: 529 overloaded", 529);
-        return reply("Answered after the overload passed.");
       case "overloaded-burst":
         // A burst longer than the counted retries, in the two forms one provider says it in (a
         // stream's exception and an HTTP 503), each asking for a short wait so the spec is quick.
