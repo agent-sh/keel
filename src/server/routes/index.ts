@@ -69,6 +69,7 @@ import { acpRoutes } from "./acp.ts";
 import { helperRoutes } from "./helper.ts";
 import { experimentRoutes } from "./experiments.ts";
 import { modelTrialRoutes } from "./model-trials.ts";
+import { settingTrialRoutes } from "./setting-trials.ts";
 import { timelineRoutes } from "./timeline.ts";
 import { hoursRoutes } from "./hours.ts";
 import { overviewRoutes } from "./overview.ts";
@@ -164,6 +165,7 @@ const modules: Record<string, RouteModule> = {
   experimentRoutes, // after telemetry: a turn's row reads the calls telemetry wrote
   lessonRoutes, // after experiments: a lesson's trial is one of them
   modelTrialRoutes, // after experiments: a trial is one
+  settingTrialRoutes, // after experiments: a trial of a setting is one too
   timelineRoutes, // reads what the others record: events, activity, errors, telemetry
   hoursRoutes, // where a tree's hours went: reads the spans, turns, agents and waits the others record
   overviewRoutes, // every session's state, failure and spend as one answer

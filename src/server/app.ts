@@ -452,6 +452,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             if (body.settings.speed && info && !speedOffer(info, settings.speed)) return bad(`${info.name} has no ${settings.speed} speed on ${info.provider}`);
             if (settings.compact_at !== undefined && !(Number(settings.compact_at) > 0)) return bad("compact_at must be a number of tokens above 0");
             if (settings.compact_by_price !== undefined && typeof settings.compact_by_price !== "boolean") return bad("compact_by_price is true or false");
+            if (settings.compact_share !== undefined && !(typeof settings.compact_share === "number" && settings.compact_share > 0 && settings.compact_share <= 1)) return bad("compact_share is a share of the window above 0 and at most 1");
+            if (settings.cache_plan !== undefined && typeof settings.cache_plan !== "boolean") return bad("cache_plan is true or false");
             if (settings.read_runs !== undefined && settings.read_runs !== "batch" && settings.read_runs !== "reader") return bad("read_runs is batch or reader");
           }
           const mine = [...patchers.values()].filter((p) => p.fields.some((f) => body[f] !== undefined));

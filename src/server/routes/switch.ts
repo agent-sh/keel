@@ -6,7 +6,7 @@
 import { settings, registerSettings } from "../../admin/settings.ts";
 import { switchWarning } from "../../engine/cachewarn.ts";
 import { ASK_USD_DEFAULT, asksFirst } from "../../engine/switch-rule.ts";
-import { COMPACT_SHARE, contextTokens } from "../../engine/compact.ts";
+import { contextTokens } from "../../engine/compact.ts";
 import type { RouteModule } from "../app.ts";
 import { carrySettings, resolveSwitchModel, switchCompactionBlock } from "../switch.ts";
 
@@ -35,7 +35,7 @@ export const switchRoutes: RouteModule = ({ store, engine, providers }) => ({
       // next request summarizes first (on that model), so the picker says so
       // and offers to compact on the model in use instead.
       const used = contextTokens(lineage, to.id).used;
-      const compactAt = s.settings.compact_at ?? Math.floor(to.context * COMPACT_SHARE);
+      const compactAt = engine.limitOf(s, to.context);
       const fit = { used, window: to.context, compact_at: compactAt, over: used >= compactAt };
       const w = switchWarning({
         lineage, now: Date.now(), to, toEffort: effort,

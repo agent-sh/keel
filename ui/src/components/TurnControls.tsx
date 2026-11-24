@@ -204,6 +204,7 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
   const models = useStore((s) => s.models);
   const [info, setInfo] = useState<ContextInfo | null>(null);
   const [open, setOpen] = useState(false);
+  useEffect(() => setInfo(null), [sessionId]);
   const [focus, setFocus] = useState("");
   const [busy, setBusy] = useState<"" | "compact" | "clear" | "build">("");
   const [build, setBuild] = useState<BuildState | null>(null);
@@ -246,7 +247,8 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
   if (!session) return null;
   // No model row (the listing lacks it): counts and actions stay, without a share.
   const share = window_ ? Math.min(1, used / window_) : 0;
-  const limit = session.settings.compact_at ?? (window_ ? Math.floor(window_ * COMPACT_SHARE) : 0);
+  // (An agent's window share may be a trial's or the owner's default for agents: the daemon says where it compacts once it was asked.)
+  const limit = info?.compacts_at_tokens ?? session.settings.compact_at ?? (window_ ? Math.floor(window_ * (session.settings.compact_share ?? COMPACT_SHARE)) : 0);
   // What the ring and its number show: how close the context is to where it
   // compacts. That is its share of the window when the line is the usual share
   // of it; with a line the owner set, the context is as full at that line as

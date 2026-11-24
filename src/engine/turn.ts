@@ -54,6 +54,7 @@ import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
 import { cacheState, capsuleText, decideFollowUp, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
 import { anchorsOf, TRAIL_BYTES } from "./trail.ts";
+import { cachePlanOn, compactLimit } from "./agent-defaults.ts";
 import { priceCompaction, residual, type PriceVerdict, type Residual } from "./price-compact.ts";
 import { PriceFacts } from "./price-facts.ts";
 import type { WaitShape } from "./cache-plan.ts";
@@ -1799,7 +1800,7 @@ export class Engine {
       output += e.data.usage.output ?? 0;
     }
     const context = u.input + u.cache_read + u.cache_write;
-    const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
+    const limit = this.limitOf(session, st.info.context);
     const cap = inlineCap({
       context, price: st.info.price, steps: Math.max(1, steps), room: Math.max(0, limit - context),
       growth: steps > 1 ? Math.max(0, context - first) / (steps - 1) : 0, output: steps ? output / steps : u.output, bytes: bytesPerToken(st.info.id),
@@ -2228,7 +2229,7 @@ export class Engine {
     const ranOn: string = events.findLast((e) => e.kind === "assistant" && e.data.usage)?.data.model ?? st.info.id;
     const wire = (model: string) => this.providers.get(model.slice(0, model.indexOf(":")))?.wire ?? "anthropic_messages";
     const lost = switchWarning({ lineage: events, now, to: info, toEffort: effort, from: this.providers.cachedModel(ranOn), toWire: wire(info.id), fromWire: wire(ranOn) });
-    const limit = session.settings.compact_at ?? Math.floor(to.info.context * COMPACT_SHARE);
+    const limit = this.limitOf(session, to.info.context);
     const askUsd = Number(ownerSettings().model_switch?.ask_usd);
     const move = judgeMove({ warning: lost.warning, over: this.whole(events, to) >= limit, askUsd: Number.isFinite(askUsd) && askUsd >= 0 ? askUsd : ASK_USD_DEFAULT }, info.name);
     if (!move.ok) return skip(move.why);
@@ -3039,7 +3040,7 @@ export class Engine {
         // (A history not counted yet is counted here in slices: the counts below then read what is kept.)
         await countPaced(this.lineage(id), st.info.id);
         let events = this.lineage(id);
-        const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
+        const limit = this.limitOf(session, st.info.context);
         let mark: ReturnType<typeof followUpMark>;
         let priced: ReturnType<Engine["priced"]>;
         const used = this.used(events, st);
@@ -3223,7 +3224,7 @@ export class Engine {
           // A step that runs past the cache's lifetime keeps it by its plan.
           // (Its history as the next request projects it: the notes this request's hooks stored are in it.)
           const sentWith = () => toMessages(this.lineage(id).filter((e) => e.seq < stored.seq));
-          const planned = uses.length && !spent ? this.cachePlans.tool(id, st, events, sentWith, this.toolShape(id, uses), sentAt, u) : undefined;
+          const planned = uses.length && !spent && cachePlanOn(session, (sid) => this.store.session(sid)) ? this.cachePlans.tool(id, st, events, sentWith, this.toolShape(id, uses), sentAt, u) : undefined;
           try {
           await batch(uses.map((u, index) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? (closingCap ? CAP_SPENT : AGENT_BUDGET_SPENT) : BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, { ...ctx, reply: { seq: stored.seq, index } }))).then(settle(u))));
           } finally { planned?.(); }
@@ -3269,7 +3270,7 @@ export class Engine {
       // Between turns, a context past the preparing share gets its summary ready.
       if (!signal.aborted) {
         const events = this.lineage(id);
-        const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
+        const limit = this.limitOf(session, st.info.context);
         if (this.used(events, st) >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
         this.scheduleIdle(id, st);
       }
@@ -3687,10 +3688,12 @@ export class Engine {
   private planPark(session: Session, st: Step, step: () => Promise<Step> = async () => st): boolean {
     // A session the owner (or another stop) holds starts nothing, and nothing is sent for it.
     if (this.held.has(session.id)) return false;
+    // An agent whose tree runs without a cache plan (the owner's setting, or a trial's arm) lets its cache lapse.
+    if (!cachePlanOn(session, (id) => this.store.session(id))) return false;
     const shape = this.waitShape?.(session.id);
     if (!shape) return false;
     const events = this.lineage(session.id);
-    const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
+    const limit = this.limitOf(session, st.info.context);
     const used = this.used(events, st);
     // Its wake compacts anyway, from a summary that holds: a warm cache would serve nothing.
     if (used >= limit) {
@@ -3744,7 +3747,7 @@ export class Engine {
     const id = session.id;
     clearTimeout(this.idleTimers.get(id));
     this.idleTimers.delete(id);
-    const due = idleDue(facts, session.settings.compact_at ?? Math.floor(context * COMPACT_SHARE), Date.now());
+    const due = idleDue(facts, this.limitOf(session, context), Date.now());
     if (due === undefined) return;
     const t = setTimeout(async () => {
       this.idleTimers.delete(id);
@@ -3819,6 +3822,10 @@ export class Engine {
   // compacts anyway. Undefined when it cannot be priced.
   private readonly priceFacts = new PriceFacts(() => this.store.priceFactsOff, (e) => this.errors.capture("server", e, { at: "reading the ledger for compaction by price" }));
   private agentKinds = new Map<string, string | undefined>();
+  // The context size the session compacts at (src/engine/agent-defaults.ts): its owner's ceiling, else its window share.
+  limitOf(session: Session, context: number): number {
+    return compactLimit(session, context, (id) => this.store.session(id));
+  }
   private priceOn(session: Session): boolean {
     if (!session.parent_id) return false;
     for (let s: Session | undefined = session, up = 0; s && up < 32; s = s.parent_id ? this.store.session(s.parent_id) : undefined, up++) {
@@ -3899,7 +3906,7 @@ export class Engine {
     const info = st?.info ?? this.providers.current().find((m) => m.id === session.model);
     // A model not listed now: its window is unknown here, and the turn that reaches its line decides.
     if (!info) return true;
-    return preparedFits(events, data, info.id, session.settings.compact_at ?? Math.floor(info.context * COMPACT_SHARE));
+    return preparedFits(events, data, info.id, this.limitOf(session, info.context));
   }
 
   private preparationHolds(id: string, covered: string, data?: { statements_done?: string[] }): boolean {

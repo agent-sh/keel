@@ -40,7 +40,11 @@ export const experimentRoutes: RouteModule = ({ store, errors }) => {
   // The hourly regression check; a reload replaces the last one's timer.
   const g = globalThis as { __keelRegressionTimer?: ReturnType<typeof setInterval> };
   if (g.__keelRegressionTimer) clearInterval(g.__keelRegressionTimer);
-  g.__keelRegressionTimer = setInterval(() => { try { o.regressions(); } catch (e) { errors.capture("server", e, { at: "regression check" }); } }, HOUR);
+  g.__keelRegressionTimer = setInterval(() => {
+    try { o.regressions(); } catch (e) { errors.capture("server", e, { at: "regression check" }); }
+    // A trial's time limit comes even when no turn ends (nothing else looks at the running experiment then).
+    try { x.check(""); } catch (e) { errors.capture("server", e, { at: "experiment time limit" }); }
+  }, HOUR);
   g.__keelRegressionTimer.unref?.();
 
   const run = async <T>(f: () => T | Promise<T>, status: number | ((v: T) => number) = 200) => {

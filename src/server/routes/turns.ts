@@ -2,7 +2,7 @@
 // (branch switch), fork.
 import { ownersMeta } from "../../core/owner.ts";
 import { leafOf, lineage } from "../../core/tree.ts";
-import { bytesPerToken, checkpointAt, contextTokens, COMPACT_SHARE, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
+import { bytesPerToken, checkpointAt, contextTokens, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
 import { resolveAttachments } from "../../engine/attachments.ts";
 import { RetryTooLong } from "../../engine/retry.ts";
 import { toMessages } from "../../engine/turn.ts";
@@ -157,7 +157,7 @@ export const turnRoutes: RouteModule = (deps) => {
           measured_tokens: t.measured,
           estimated_tokens: t.estimated,
           last_usage: t.last ?? null,
-          compacts_at_tokens: s.settings.compact_at ?? Math.floor(window * COMPACT_SHARE),
+          compacts_at_tokens: engine.limitOf(s, window),
           zones: Object.entries(zones).map(([key, bytes]) => ({ key, bytes, estimated_tokens: Math.round(bytes / bytesPerToken(s.model)) })),
           usage_total: s.usage,
         });

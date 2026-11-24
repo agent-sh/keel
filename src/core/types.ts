@@ -162,6 +162,10 @@ export type SessionSettings = {
   // An agent compacts when the steps it is expected to take would read more than a summary costs (src/engine/price-compact.ts):
   // true or false for its whole tree, set on a session at the top (a trial's arm sets it there); absent = by the window only.
   compact_by_price?: boolean;
+  // The share of the model's window an agent compacts at, and whether its waits get a cache plan: for the agent's
+  // whole tree, set on its first agent (a trial's arm, src/admin/setting-trials.ts); absent = the owner's `agents` setting.
+  compact_share?: number;
+  cache_plan?: boolean;
   // An agent told at a run of read-only steps what each step costs and what else there is (src/engine/read-run.ts):
   // "batch" (parallel reads) or "reader" (that, and an Explore agent on the reader model), for its whole tree, set at the top (a trial's arm).
   read_runs?: "batch" | "reader";

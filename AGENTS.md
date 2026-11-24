@@ -536,6 +536,15 @@ under `~/.cache/keel-work/bun/research/`.
   (`foreignFirst`), as a notice row that counts toward no spike of failures (`isNotice`), and every such scope is
   listed in Settings > Leftovers with what it holds (`src/automation/foreign-scopes.ts`), where the owner stops it:
   the act names the marks it was listed with and is refused when they changed.
+- A setting with a cost effect is tried before it is kept (`src/admin/setting-trials.ts`, Settings > Usage > Trials):
+  half of the new agent trees (the unit is the agent a top-level session starts, with everything under it) are
+  assigned the other value at their start, by the one assignment of live experiments (`src/admin/experiments.ts`);
+  the card reads the one report (`src/admin/experiment-report.ts`, computed on the read thread while a trial runs):
+  what a turn and a tree cost, failures and time, with intervals. A tree's figures are read once it is settled, over the
+  first trees of each arm in assignment order, so the arm that finishes first is not the sample. The trial's size
+  and time come from the rate new trees start at; it ends when its sample is settled, at its time limit, or when a
+  guard finds harm. Keep sets the owner's setting for agents (`agents` in the settings), Drop leaves it. A new
+  trial is a row of `SETTING_TRIALS` plus the session setting an agent reads up its tree (`src/engine/agent-defaults.ts`).
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

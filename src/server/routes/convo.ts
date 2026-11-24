@@ -7,7 +7,7 @@
 // is rewritten: a summary is a new event, the old branch stays.
 import { timed } from "../../admin/stall.ts";
 import type { Message, Session, StoredEvent } from "../../core/types.ts";
-import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, checkpointData, settle, STATEMENTS_FORMAT } from "../../engine/compact.ts";
+import { checkpointAt, contextTokens, headMoved, checkpointData, settle, STATEMENTS_FORMAT } from "../../engine/compact.ts";
 import { runningData } from "../../engine/running.ts";
 import { warmUntil } from "../../admin/telemetry.ts";
 import { registerHooks } from "../../engine/hooks.ts";
@@ -133,7 +133,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
       const used = contextTokens(line, s.model).used;
       const info = await modelOf(s);
       const window = info?.context;
-      const compacts = s.settings.compact_at ?? (window ? Math.floor(window * COMPACT_SHARE) : undefined);
+      const compacts = window ? engine.limitOf(s, window) : s.settings.compact_at;
       // By the lifetime the last request asked for; null where the provider states none.
       const until = warmUntil(store, s.id);
       const warm = until === undefined ? null : Math.max(0, Math.round((until - Date.now()) / 1000));

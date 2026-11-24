@@ -27,6 +27,7 @@ import { mineRead, untagged } from "../automation/lessons-mine.ts";
 import { BUDGET_MS, trialRead, type TrialAsk } from "../safety/trial-read.ts";
 import { readProcs, type ProcAsk } from "../admin/proc-read.ts";
 import { sealBundleTo, sealRoots, sealVerify } from "../admin/seal-read.ts";
+import { liveReport, type Experiment } from "../admin/experiment-report.ts";
 
 export const tasks = {
   // What /proc says of the processes under the daemon (the resource sampler's pass, src/admin/proc-read.ts).
@@ -59,6 +60,8 @@ export const tasks = {
   "compact.priceFacts": (db: Database, a: { since: number; quiet: number }) => priceFactsRead(db, a),
   // Where a session's agent tree spent its time: its spans, turns, agents and waits (src/admin/hours-read.ts).
   "hours.tree": (db: Database, a: HoursAsk) => readHours(db, a),
+  // What a running live experiment says now (its intervals are a bootstrap over every turn and tree of it: a second of computing).
+  "experiment.report": (db: Database, a: { exp: Experiment; now: number }) => liveReport(db, a.exp, a.now),
   // Why a range cost what it did, from the cost drivers' rollup; and that rollup held against the ledger (no repair: the thread reads only).
   "usage.drivers": (db: Database, a: DriversAsk) => driversOf(db, a),
   "usage.driversCheck": (db: Database, _a: Record<string, never>) => checkDrivers(db, false),

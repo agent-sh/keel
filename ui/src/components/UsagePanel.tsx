@@ -19,6 +19,7 @@ import { ReviewYield } from "./ReviewYield.tsx";
 import { Segmented } from "./Settings.tsx";
 import { PART, Split, Stat, Stats } from "./Stat.tsx";
 import { KINDS, KIND_LABEL, addCosts, bucketName, kindCosts, noCosts, spendDrivers, type Costs } from "../lib/spend.ts";
+import { SettingTrials } from "./SettingTrials.tsx";
 import { CompactionsView, CompareView, ErrorsView, TokensView } from "./UsageViews.tsx";
 
 type Stats = {
@@ -180,7 +181,7 @@ export function Table({ head, rows, align, onRow, expanded, wide }: { head: stri
   );
 }
 
-type View = "overview" | "causes" | "sessions" | "calls" | "tokens" | "errors" | "compactions" | "yield" | "memory" | "compare";
+type View = "overview" | "causes" | "sessions" | "calls" | "tokens" | "errors" | "compactions" | "yield" | "memory" | "compare" | "trials";
 
 // The sections of Settings > Usage. The overview is what a person opens the page to learn: what
 // was spent, what drove it, where it went, and whether anything is wrong. Each further question
@@ -200,20 +201,20 @@ export function UsagePanel() {
     addEventListener(USAGE_LINK, follow);
     return () => removeEventListener(USAGE_LINK, follow);
   }, []);
-  const ranged = view !== "compare" && !(view === "memory" && (memoryTab === "given" || memoryTab === "search"));
+  const ranged = view !== "compare" && view !== "trials" && !(view === "memory" && (memoryTab === "given" || memoryTab === "search"));
   return (
     <div className="flex flex-col gap-4" data-testid="usage-panel">
       <div className="flex flex-wrap items-center gap-3">
-        {/* Ten views: where they do not fit one line (a phone) they go on to the next, whole, not cut mid-word behind a scroll. */}
+        {/* Eleven views: where they do not fit one line (a phone) they go on to the next, whole, not cut mid-word behind a scroll. */}
         <Seg<View> wrap label="View" value={view} onChange={setView} options={[
           { value: "overview", label: "Overview" }, { value: "causes", label: "Causes" }, { value: "sessions", label: "Sessions" }, { value: "calls", label: "Speed and tools" }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
-          { value: "compactions", label: "Compactions" }, { value: "yield", label: "Review yield" }, { value: "memory", label: "Memory" }, { value: "compare", label: "Compare" },
+          { value: "compactions", label: "Compactions" }, { value: "yield", label: "Review yield" }, { value: "memory", label: "Memory" }, { value: "compare", label: "Compare" }, { value: "trials", label: "Trials" },
         ]} />
         {ranged && <Segmented<Range> label="Range" value={range} onChange={setRange} options={RANGE_OPTIONS} />}
         <Help label="where it is measured">Measured on this machine. Nothing is sent anywhere.</Help>
       </div>
       {view === "overview" ? <Overview range={range} go={setView} /> : view === "causes" ? <CostDrivers range={range} /> : view === "sessions" ? <SpendRank range={range} /> : view === "calls" ? <CallsView range={range} /> : view === "tokens" ? <TokensView range={range} />
-        : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "yield" ? <ReviewYield range={range} /> : view === "memory" ? <MemoryView key={link.n} range={range} session={link.session} given={link.memory} onTab={setMemoryTab} /> : <CompareView />}
+        : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "yield" ? <ReviewYield range={range} /> : view === "memory" ? <MemoryView key={link.n} range={range} session={link.session} given={link.memory} onTab={setMemoryTab} /> : view === "trials" ? <SettingTrials /> : <CompareView />}
     </div>
   );
 }
