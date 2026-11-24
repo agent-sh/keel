@@ -100,3 +100,16 @@ test("a skill folder past what the scan reads is not trusted, with the reason, a
   writeFileSync(join(dir, "zz/hook.sh"), "echo changed again\n");
   expect(t.skillAllowed(dir)).toBe(false);
 });
+
+test("the note about held files is owed once per change of them, not at each prompt", () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-trust-told-")));
+  const t = new Trust(store);
+  const s = store.createSession({ model: "m:x", workspace: "/w", title: "t" });
+  const a = { path: "/r/AGENTS.md", state: "changed", sha256: "aaa" };
+  expect(t.owesNote(s.id, [a])).toBe(true);
+  expect(t.owesNote(s.id, [a])).toBe(false); // a daemon start makes the prompt again
+  expect(t.owesNote(s.id, [{ ...a, sha256: "bbb" }])).toBe(true); // the file changed again
+  expect(t.owesNote(s.id, [{ ...a, sha256: "bbb" }, { path: "/r/.agents/skills/x", state: "new", sha256: "ccc" }])).toBe(true);
+  expect(t.owesNote(s.id, [])).toBe(false); // trusted
+  expect(t.owesNote(s.id, [{ ...a, sha256: "bbb" }])).toBe(true); // held again
+});

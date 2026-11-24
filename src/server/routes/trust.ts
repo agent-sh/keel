@@ -58,10 +58,20 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
   registerHooks({
     // Once per session (the prompt is frozen): say which of the repository's
     // files wait for the owner.
-    system(s) {
+    async system(s) {
       const held = trust.files(s.workspace).filter((f) => f.state === "new" || f.state === "changed");
-      if (held.length) {
-        notify(s.id, `${held.length} file${held.length === 1 ? "" : "s"} of this repository ${held.length === 1 ? "is" : "are"} held until you trust ${held.length === 1 ? "it" : "them"}: ${held.map((f) => `${relative(f.root, f.path)} (${f.state === "changed" ? "changed" : "new"}${f.kind === "instructions" && f.state === "changed" ? ", the trusted version is used" : ""})`).join(", ")}. Open the Trust panel to read and trust them.`, "trust");
+      // Said once per change of the files (src/safety/trust.ts owesNote): not at each daemon start.
+      if (trust.owesNote(s.id, held)) {
+        // How far each changed file is from the version last trusted, so the owner knows what is waiting before opening the panel.
+        const size = async (f: (typeof held)[number]) => {
+          if (f.kind !== "instructions" || f.state !== "changed") return "";
+          try {
+            const p = await patchOf(relative(f.root, f.path), trust.pinnedText(f.path) ?? "", readFileSync(f.path, "utf8"));
+            return `, +${p.added} -${p.removed} lines`;
+          } catch { return ""; }
+        };
+        const parts = await Promise.all(held.map(async (f) => `${relative(f.root, f.path)} (${f.state === "changed" ? "changed" : "new"}${await size(f)}${f.kind === "instructions" && f.state === "changed" ? ", the trusted version is used" : ""})`));
+        notify(s.id, `${held.length} file${held.length === 1 ? "" : "s"} of this repository ${held.length === 1 ? "is" : "are"} held until you trust ${held.length === 1 ? "it" : "them"}: ${parts.join(", ")}. Open the Trust panel to read what changed and trust ${held.length === 1 ? "it" : "them"}.`, "trust");
         bus.emit({ t: "feature", name: "trust", session_id: s.id, data: { held: held.length } });
       }
       return "";

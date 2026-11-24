@@ -30,6 +30,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS trust_pins (path TEXT PRIMARY KEY, kind TEXT NOT NULL, root TEXT NOT NULL, sha TEXT NOT NULL, content TEXT, auto INTEGER NOT NULL DEFAULT 0, trusted INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS trust_pins_root ON trust_pins(root);
 CREATE TABLE IF NOT EXISTS trust_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS trust_told (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, key TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS trust_servers (root TEXT PRIMARY KEY, auto INTEGER NOT NULL DEFAULT 0, trusted INTEGER NOT NULL);
 `;
 const INSTRUCTION_NAMES = ["AGENTS.md", "CLAUDE.md"]; // as the system prompt loads them
@@ -148,6 +149,19 @@ export class Trust {
   private setPin(f: { path: string; kind: TrustKind; root: string }, digest: string, content: string | null, auto: boolean) {
     this.store.db.query("INSERT INTO trust_pins (path, kind, root, sha, content, auto, trusted) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET sha = excluded.sha, content = excluded.content, auto = excluded.auto, trusted = excluded.trusted")
       .run(f.path, f.kind, f.root, digest, content, auto ? 1 : 0, Date.now());
+  }
+
+  // Whether the session is owed the note about files held for the owner: not when it was already told of
+  // these files at these contents (each file by its path, state and hash), so a restart of the daemon, which
+  // makes every session's prompt again, tells nothing twice. A change of a file, or another file held, is
+  // a new key. Taking it records it.
+  owesNote(sessionId: string, held: readonly { path: string; state: string; sha256: string | null }[]): boolean {
+    if (!held.length) { this.store.db.query("DELETE FROM trust_told WHERE session_id = ?").run(sessionId); return false; } // trusted since: a later hold is news again
+    const key = sha(held.map((f) => `${f.path}\0${f.state}\0${f.sha256 ?? ""}`).sort().join("\n"));
+    const told = this.store.db.query<{ key: string }, [string]>("SELECT key FROM trust_told WHERE session_id = ?").get(sessionId)?.key;
+    if (told === key) return false;
+    this.store.db.query("INSERT INTO trust_told (session_id, key) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET key = excluded.key").run(sessionId, key);
+    return true;
   }
 
   // The project files that apply in `cwd`, as they are now, each with its state.
