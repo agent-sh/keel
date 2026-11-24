@@ -1749,3 +1749,18 @@ test("an agent inherits its parent's effort and speed, a spawn may set either, a
     setDeps(baseDeps);
   }
 });
+
+test("an agent deleted while its end is settled owes nothing and leaves no error", async () => {
+  leftovers.migrate(store);
+  const a = await spawn();
+  const seen: unknown[] = [];
+  const was = baseDeps.errors.capture;
+  baseDeps.errors.capture = (...args: unknown[]) => { seen.push(args[1]); };
+  try {
+    end(a, "end_turn", "report gone");
+    store.db.query("DELETE FROM agents WHERE id = ?").run(a.id); // its session was deleted while its end was read
+    await settled();
+    await settled();
+  } finally { baseDeps.errors.capture = was; }
+  expect(seen.map(String)).toEqual([]);
+});

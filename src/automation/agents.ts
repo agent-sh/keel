@@ -2153,7 +2153,8 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
     if (r === "started" || r === "gone") return;
     if (r) result += `${result ? "\n\n" : ""}${r.note}`;
   }
-  const row = D().store.db.query<{ output_schema: string | null; schema_tries: number }, [string]>("SELECT output_schema, schema_tries FROM agents WHERE id = ?").get(a.id)!;
+  const row = D().store.db.query<{ output_schema: string | null; schema_tries: number }, [string]>("SELECT output_schema, schema_tries FROM agents WHERE id = ?").get(a.id);
+  if (!row) return; // deleted since its turn ended: nothing is owed
   if (row.output_schema && status === "completed") {
     const text = lastRound(a);
     const got = extractJson(text);
@@ -2208,10 +2209,12 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // written, or that its cause can no longer name, leaves the report owed.
   let grouped = false;
   const rec = D().store.db.transaction(() => {
+    if (!get(a.id)) return undefined; // deleted while its end was read: nothing is owed
     if (status === "failed") grouped = failures.agentFailed({ ...a, report: reportId(a) }, cls, cause || got.error || how.note || result, !!cause && !blocked);
     if (owes) beforeRun.owe(ran!.id, a.id, before);
-    return update(a.id, { status, ended: Date.now(), result: lines ? `${result}${result ? "\n\n" : ""}${lines}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
+    return update(a.id, { status, ended: Date.now(), result: lines ? `${result}${result ? "\n\n" : ""}${lines}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true);
   })();
+  if (!rec) return;
   emit("agent", brief(rec));
   // It finished: the servers its file defines end with it, as in Claude Code.
   try { agentServers.release?.(a.session_id); } catch (e) { capture(e, { at: "agent servers release", agent: a.id }); }
