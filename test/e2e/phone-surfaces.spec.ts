@@ -440,5 +440,42 @@ for (const size of SIZES) {
         await drop(request, session.id);
       }
     });
+
+    test("the checks-beside notice on an agent's card reads whole inside the page", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Phone beside");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say Done." } });
+        await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        // The notice Keel writes for the agent (src/checks/beside-run.ts), with long test names and a long command line, as a real failure has.
+        const text = [
+          "[harness] Checks beside your work: Keel ran unit (12 test files) by itself on your files as they were at 3f9c2ab.",
+          "- unit (`sh unit.sh ./packages/a-package-with-a-long-name/src/a-long-test-file-name.test.ts ./other.test.ts`): 2 of 12 failed: a very long suite name > a nested group of tests > it adds the numbers the way the README says; lib > adds",
+          "error: add 1 2 gave -1, not 3 at /home/someone/projects/a-repository-with-a-long-name/packages/a-package-with-a-long-name/src/a-long-test-file-name.test.ts:42:17",
+        ].join("\n");
+        await page.route(new RegExp(`/api/sessions/${id}(\\?.*)?$`), async (route) => {
+          const res = await route.fetch();
+          const body = await res.json();
+          const last = body.events.at(-1);
+          body.events.push({ id: "beside-note-1", session_id: id, seq: last.seq + 1, parent: last.id, kind: "user", data: { text, kind: "checks_beside" }, ts: Date.now() });
+          body.session.head = "beside-note-1";
+          await route.fulfill({ json: body });
+        });
+        await page.goto(`/s/${id}`);
+        const card = page.getByTestId("beside-notice");
+        await expect(card).toBeVisible();
+        await card.scrollIntoViewIfNeeded();
+        await inside(page, card.locator("xpath=.."));
+        await noSideScroll(page);
+        expect(await small(card), "every control of the notice is a finger's target").toEqual([]);
+        // The failing lines are read where they stand: wrapped, none cut at the edge or scrolled away.
+        const pre = card.locator("pre");
+        await expect(pre).toContainText("error: add 1 2 gave -1");
+        expect(await pre.evaluate((el) => el.scrollWidth > el.clientWidth + 1), "the failure's lines run past the notice").toBe(false);
+        await shoot(page, `phone-surfaces-15-beside-${size.width}`);
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }
