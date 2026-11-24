@@ -10,10 +10,12 @@ import type { Classifier, Found } from "./credential-reads.ts";
 
 // The folders a look does not enter: a repository's own store and the installed packages.
 const NOT_ENTERED = new Set([".git", "node_modules"]);
-// What one folder's look reads at most, and may take. The entries are the folder's, all levels together; a folder
-// of 20,000 entries is read in about a third of the time (see WALK_MS's measurement in the commit), so the time is
-// room for a slow disk and a loaded machine, not what a look usually takes.
-export const WALK_ENTRIES = 20_000;
+// How long one part of a folder's look may take. A part runs to this time and not to a count of entries (a count
+// ended parts after a twentieth of their time and a search of a folder of 60,000 entries was refused part after
+// part); a folder of 20,000 entries is read in about a third of a second, so the time is room for a slow disk and a
+// loaded machine, and one search answers a folder of the usual size. `entries` bounds a part too, for a caller that
+// wants it (a test).
+export const WALK_ENTRIES = Number.POSITIVE_INFINITY;
 export const WALK_MS = 5_000;
 export const WALK_NAMES = 20;
 // How long an answer stands whatever the folders' times say (a hard link made elsewhere does not touch them).
@@ -21,6 +23,9 @@ const STANDS_MS = 60_000;
 const DIRS_AT_ONCE = 16, FILES_AT_ONCE = 32;
 // The entries of one folder handled between two looks at the clock.
 const CHUNK = 512;
+// How long the look runs before it lets the loop take what waits (the file calls give it back too, but a folder of
+// folders asks for none).
+const SLICE_MS = 8;
 
 type Kept = { at: number; found: Found[]; stamps: Map<string, string> };
 // A look that stopped before it was done: the folders still to read, what the parts so far found and the stamp of
@@ -110,7 +115,7 @@ async function walk(folder: string, is: Classifier, ms: number, limit: number, f
   const end = began + ms;
   const st: Partial = from ?? { at: began, folder, pending: [folder], queued: new Set([folder]), names: new Map(), stamps: new Map(), offsets: new Map(), seen: 0, parts: 0 };
   const { names, stamps, offsets, pending, queued } = st;
-  let part = 0, late = false, active = 0;
+  let part = 0, late = false, active = 0, since = began;
   const stop = () => late || part >= limit || names.size >= WALK_NAMES;
   const readDir = async (d: string) => {
     // (The stamp first: a folder that changes while it is read is read again at the next search. A folder that
@@ -138,7 +143,9 @@ async function walk(folder: string, is: Classifier, ms: number, limit: number, f
         if (foreign) names.set(p, { path: p, foreign: true });
         else if (is.by(p)) names.set(p, { path: p });
       });
-      if (performance.now() > end) late = true;
+      const now = performance.now();
+      if (now > end) late = true;
+      else if (now - since > SLICE_MS) { await new Promise<void>((r) => setImmediate(r)); since = performance.now(); }
     }
     offsets.delete(d);
   };

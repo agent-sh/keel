@@ -182,10 +182,10 @@ test("a look that stops at its entry limit with folders unread goes on at the ne
   expect(counts.by).toBe(made);
 });
 
-// A folder of 50,000 entries: more than one look reads (20,000 entries), so it is read over successive searches.
-function bigFolder() {
+// A folder of 50,000 entries, read in parts of 20,000 entries (a caller that bounds its parts), so over successive searches.
+function bigFolder(dirs = 50) {
   const h = realpathSync(mkdtempSync(join(tmpdir(), "keel-look-big-")));
-  for (let d = 0; d < 50; d++) {
+  for (let d = 0; d < dirs; d++) {
     const dir = join(h, "w", `d${d}`);
     mkdirSync(dir, { recursive: true });
     for (let i = 0; i < 999; i++) writeFileSync(join(dir, `f${i}.ts`), "");
@@ -202,7 +202,7 @@ test("a folder of 50,000 entries is looked through over successive searches, the
   let key = "";
   const asks: Found[][] = [];
   for (let i = 0; i < 6 && (i === 0 || asks.at(-1)!.some((f) => f.unread)); i++) {
-    asks.push(await lookUnder(top, is, { scope: "big" }));
+    asks.push(await lookUnder(top, is, { scope: "big", entries: 20_000 }));
     // Between the first and the second part, a key is made in a folder the first part has already read.
     if (i === 0) {
       expect(asks[0]!.at(-1)).toMatchObject({ unread: true, resumes: true });
@@ -218,6 +218,23 @@ test("a folder of 50,000 entries is looked through over successive searches, the
   expect(asks.length).toBeLessThanOrEqual(4);
   expect(asks.at(-1)!.map((f) => f.path)).toEqual([key]);
   const made = counts.by;
-  expect(await lookUnder(top, is, { scope: "big" })).toEqual(asks.at(-1)!);
+  expect(await lookUnder(top, is, { scope: "big", entries: 20_000 })).toEqual(asks.at(-1)!);
   expect(counts.by).toBe(made);
+}, 60_000);
+
+// A part runs to its time, not to a count of entries: a search of 60,000 entries is answered by one call, and the loop
+// is not held for long while it reads.
+test("a folder of 60,000 entries is answered by one look, with the loop free while it is read", async () => {
+  forgetLooks();
+  const h = bigFolder(60);
+  const is: Classifier = { by: (p) => credentialAt(p, { home: h }), link: () => null };
+  writeFileSync(join(h, "w/d59/server.key"), "k\n");
+  let worst = 0, last = performance.now();
+  const beat = setInterval(() => { const now = performance.now(); worst = Math.max(worst, now - last); last = now; }, 5);
+  try {
+    const found = await lookUnder(join(h, "w"), is, { scope: "sixty" });
+    expect(found.map((f) => f.path)).toEqual([join(h, "w/d59/server.key")]);
+    expect(found.some((f) => f.unread)).toBe(false);
+    expect(worst).toBeLessThan(500);
+  } finally { clearInterval(beat); }
 }, 60_000);
