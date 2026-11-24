@@ -20,7 +20,7 @@ import { realOf } from "../core/paths.ts";
 import { madeNow, madeNowSync } from "./made.ts";
 import { linkedWorktree, linkedWorktreeAsync, SCRATCH } from "./sandbox.ts";
 import { readdir as readdirP, readFile as readFileP, realpath, stat as statP } from "node:fs/promises";
-import type { Shared } from "./shared-branches.ts";
+import type { Shared, Stash } from "./shared-branches.ts";
 
 // A ref's value: the commit it names, and the ref it points at when it is a symbolic one.
 export type RefState = { refs: Map<string, string>; branch?: string };
@@ -105,7 +105,7 @@ export function checkoutsOf(root: string, branch: string, base: string | null, k
     if (kept.size > 256) kept.delete(kept.keys().next().value!);
   }
   // (The branches are read when a command names one: they change with every branch made, which no mark here sees.)
-  return { ...shared, kids, foreign: () => foreignBranches(at.common, at.own, branch, kids) };
+  return { ...shared, kids, foreign: () => foreignBranches(at.common, at.own, branch, kids), stashes: () => stashesOf(at.common, at.own, branch, kids) };
 }
 
 // checkoutsOf with the asynchronous file calls (the same answer, off the loop). `withForeign`: the branches that are
@@ -127,9 +127,10 @@ export async function checkoutsOfAsync(root: string, branch: string, base: strin
     kept.set(key, { mark, shared });
     if (kept.size > 256) kept.delete(kept.keys().next().value!);
   }
-  if (!withForeign) return { ...shared, kids, foreign: () => foreignBranches(at.common, at.own, branch, kids) };
+  const stashes = () => stashesOf(at.common, at.own, branch, kids);
+  if (!withForeign) return { ...shared, kids, foreign: () => foreignBranches(at.common, at.own, branch, kids), stashes };
   const set = await foreignBranchesAsync(at.common, at.own, branch, kids);
-  return { ...shared, kids, foreign: () => set };
+  return { ...shared, kids, foreign: () => set, stashes };
 }
 
 const realAsync = async (p: string) => { try { return await realpath(p); } catch { return realOf(p); } };
@@ -214,6 +215,23 @@ function foreignBranches(common: string, own: string, branch: string, kids: stri
 async function foreignBranchesAsync(common: string, own: string, branch: string, kids: string[]): Promise<Set<string>> {
   const [all, made] = await Promise.all([localBranchesAsync(common), madeNow(common, own)]);
   return foreignOf(all, branch, kids, await branchOfAsync(own), made);
+}
+// The repository's stash list, newest first (stash@{0} first), from the stash's own log in the shared git directory.
+// A stash is made on a branch (`WIP on <branch>: ...`, `On <branch>: ...`); `mine`: that branch is this worktree's own,
+// the one its HEAD is on, one its git made, or one an agent under it made. A subject of another form (git stash store -m)
+// names no branch and is no one's the rules can tell.
+export function stashesOf(common: string, own: string, branch: string, kids: string[]): Stash[] {
+  let text = "";
+  try { text = readFileSync(join(common, "logs", "refs", "stash"), "utf8"); } catch { return []; }
+  const head = branchOf(own)?.replace(/^refs\/heads\//, "");
+  let made: Set<string> | undefined;
+  const mineSet = (): Set<string> => (made ??= new Set([branch, ...kids, ...(head ? [head] : []), ...madeNowSync(common, own)].map((b) => b.toLowerCase())));
+  const lines = text.split("\n").filter((l) => l.length > 0);
+  return lines.reverse().map((line, n) => {
+    const subject = line.slice(line.indexOf("\t") + 1);
+    const b = /^(?:WIP on|On) ([^:]+?): /.exec(subject)?.[1] ?? null;
+    return { n, branch: b, mine: b !== null && mineSet().has(b.toLowerCase()), subject };
+  });
 }
 function readCheckouts(root: string, branch: string, base: string | null, at: { own: string; common: string }, names: string[]): Shared {
   const out = new Map<string, string>();

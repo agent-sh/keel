@@ -34,6 +34,10 @@ import { laid } from "./risk.ts";
 import { name, redirected, SHELLS, type Run } from "./risk-words.ts";
 import { isReadOnly, splitCommand, type Simple } from "./shell.ts";
 
+// One stash entry: its place in the list (stash@{n}), the branch it was made on (null: its subject names none), whether
+// that branch is this worktree's, and its subject.
+export type Stash = { n: number; branch: string | null; mine: boolean; subject: string };
+
 // The checkouts an agent's worktree shares its branches with.
 // `root`: the agent's worktree; `gitDir`: its own git directory
 // (<common>/worktrees/<name>); `branch`: its own branch; `base`: the branch it
@@ -50,6 +54,9 @@ export type Shared = {
   // agent under it did), in small letters. They are no one's but another's: the owner's, another agent's, one
   // left by an agent that is gone. Read when a command names a branch, not before. Absent: not known.
   foreign?: () => Set<string>;
+  // The repository's stash list, newest first. The list is shared by every worktree of the repository. Read when a
+  // stash command names an entry. Absent: not known.
+  stashes?: () => Stash[];
   // The branches an agent under this one made (each with its own worktree), for the hook's script.
   kids?: string[];
 };
@@ -365,6 +372,7 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
     const makes = args.some((a) => /^(-b|-c|-C|--orphan|--create|--force-create)/.test(a));
     return k < 0 && !makes && !args.includes("--") && p.length === 1 && named(p[0]!) && !unread(p[0]!) ? `puts this worktree on ${what(p[0]!)}` : null;
   }
+  if (sub === "stash" && s.stashes && /^(pop|apply|drop|clear|branch)$/.test(args[0] ?? "")) return takesStash(args[0]!, args.slice(1), s.stashes(), s);
   if (sub === "worktree" && args[0] === "add") {
     const rest = args.slice(1);
     const k = rest.findIndex((a) => a === "-B");
@@ -407,6 +415,26 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
     return url !== undefined && isLocal(url, dir, home, s, true) !== false ? `points the remote ${p[0]} at this repository itself, where a push to it moves the shared branches` : null;
   }
   return null;
+}
+
+// git stash pop|apply|drop|clear|branch: the stash list is the repository's, not the worktree's, so a bare `git stash pop`
+// takes whatever was stashed last, in any checkout. Held when an entry it takes was made on another branch.
+function takesStash(verb: string, rest: string[], list: Stash[], s: Shared): string | null {
+  const other = (e: Stash) => !e.mine;
+  const whose = (e: Stash) => (e.branch !== null ? `on the branch ${e.branch}` : `with no branch in its subject ("${e.subject.slice(0, 60)}")`);
+  const hold = (e: Stash, how: string) =>
+    `${how} stash@{${e.n}}, which was made ${whose(e)}, not on this worktree's branch (${s.branch}). The stash list is shared by every worktree of the repository, so that entry is another checkout's work: keep your own work in a commit (a WIP commit on ${s.branch}), not in a stash`;
+  const verbs: Record<string, string> = { pop: "takes", apply: "applies", drop: "drops", clear: "clears the stash list, which holds", branch: "takes" };
+  if (verb === "clear") { const e = list.find(other); return e ? hold(e, verbs.clear!) : null; }
+  // The entry it names: the last operand (`branch` takes the branch name first), else the newest.
+  const ops = operands(rest, /^$/);
+  const named = verb === "branch" ? ops[1] : ops[0];
+  if (named === undefined) return list[0] && other(list[0]) ? hold(list[0], verbs[verb]!) : null;
+  const m = /^(?:stash@\{(\d+)\}|(\d+))$/.exec(named);
+  // An entry the rules cannot place (a date, a commit, an expansion) may be any: held when any entry is another's.
+  if (!m) { const e = list.find(other); return e ? `${verbs[verb]} an entry it names as ${named}, which the rules cannot place, while the stash list holds one made ${whose(e)}, not on this worktree's branch (${s.branch}). Name it as stash@{N}, or keep your own work in a commit` : null; }
+  const e = list[Number(m[1] ?? m[2])];
+  return e && other(e) ? hold(e, verbs[verb]!) : null;
 }
 
 // The commands a git command runs by itself, as shell text: rebase --exec, bisect run, submodule foreach.

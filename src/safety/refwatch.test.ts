@@ -133,6 +133,58 @@ test("the checkouts a worktree shares its branches with are read from the reposi
   }
 });
 
+// The stash list is the repository's, shared by every worktree: a pop in one takes what another stashed.
+test("git stash pop, apply, drop and clear in a worktree are held when an entry they take was made on another branch", async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { realOf } = await import("../core/paths.ts");
+  const { checkoutsOf } = await import("./refwatch.ts");
+  const { sharedRefusal } = await import("./shared-branches.ts");
+  const dir = realOf(mkdtempSync(join(process.env.TMPDIR ?? ".", "stash-")));
+  const git = (cwd: string, ...args: string[]) => {
+    const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { cwd, env: { PATH: process.env.PATH!, HOME: dir, GIT_CONFIG_NOSYSTEM: "1" } });
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+  };
+  try {
+    const main = join(dir, "main"), agent = join(dir, "agent"), other = join(dir, "other");
+    git(dir, "init", "-q", main);
+    writeFileSync(join(main, "a"), "a\n");
+    git(main, "add", "a");
+    git(main, "commit", "-qm", "a");
+    git(main, "worktree", "add", "-q", "-b", "keel/x", agent);
+    git(main, "worktree", "add", "-q", "-b", "keel/y", other);
+    const refused = (line: string) => sharedRefusal(line, agent, dir, checkoutsOf(agent, "keel/x", "main")!);
+    // No stash yet: nothing to take.
+    expect(refused("git stash pop")).toBeNull();
+    // The agent's own entry: its subject names its branch.
+    writeFileSync(join(agent, "a"), "mine\n");
+    git(agent, "stash", "push", "-q");
+    expect(refused("git stash pop")).toBeNull();
+    expect(refused("git stash apply stash@{0}")).toBeNull();
+    expect(refused("git stash drop")).toBeNull();
+    expect(refused("git stash clear")).toBeNull();
+    // Another lane stashes after it: the newest entry is the other branch's.
+    writeFileSync(join(other, "a"), "theirs\n");
+    git(other, "stash", "push", "-q", "-m", "their work");
+    for (const line of ["git stash pop", "git stash apply", "git stash drop", "git stash pop --index -q", "git stash apply stash@{0}", "git stash pop 0", "git stash branch nb", "git stash clear", "cd " + agent + " && git stash pop"]) {
+      const why = refused(line);
+      expect([line, why?.includes("keel/y")]).toEqual([line, true]);
+    }
+    expect(refused("git stash pop")).toContain("stash@{0}");
+    expect(refused("git stash pop")).toContain("keel/x");
+    // The entry below is the agent's own: naming it passes, naming the other's is held, and so is one it cannot place.
+    expect(refused("git stash pop stash@{1}")).toBeNull();
+    expect(refused("git stash drop 1")).toBeNull();
+    expect(refused("git stash branch nb stash@{1}")).toBeNull();
+    expect(refused("git stash pop stash@{0}")).not.toBeNull();
+    expect(refused("git stash pop 'stash@{2.days.ago}'")).not.toBeNull();
+    // What stays allowed: making, listing and reading entries.
+    for (const line of ["git stash", "git stash push -m mine", "git stash list", "git stash show stash@{0}", "git stash show -p", "git stash create", "git stash -u"]) expect([line, refused(line)]).toEqual([line, null]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // A command that starts without the environment (env -i) drops the git settings Keel gives, the guard's among them.
 // It is refused with words of its own unless it gives the whole settings back in the command itself: no script is
 // trusted to do it (the agent writes the scripts of its worktree).
