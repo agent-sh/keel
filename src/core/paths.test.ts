@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { homedir, tmpdir } from "node:os";
+import { dirname } from "node:path";
 import { contains, homeDir } from "./paths.ts";
 
 test("contains: root, children, siblings, parents", () => {
@@ -29,5 +30,5 @@ test("homeDir reads HOME as it is now, not as the process started", () => {
 
 test("the preload gives every test a scratch home", () => {
   expect(homeDir()).toBe(process.env.HOME!);
-  expect(homeDir().startsWith(tmpdir())).toBe(true);
+  expect(homeDir().startsWith(dirname(tmpdir()))).toBe(true); // the run's folder, which holds the scratch home and its TMPDIR
 });

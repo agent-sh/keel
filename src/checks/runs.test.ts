@@ -1,9 +1,8 @@
 // What a command exports is read from the environment the session's commands get, not the daemon's.
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ownEnv } from "../../test/env.ts";
+import { ownEnv, tempTree } from "../../test/env.ts";
 import { registerEnvDrop } from "../tools/jobs.ts";
 import { checksIn } from "./runs.ts";
 
@@ -12,7 +11,7 @@ const undrop = registerEnvDrop("runs-test", (id) => (id === "s-runs" ? ["KEEL_T_
 afterAll(undrop);
 
 test("an assignment exports a variable only when the session's commands have it", () => {
-  const repo = mkdtempSync(join(tmpdir(), "keel-runs-"));
+  const repo = tempTree("keel-runs-");
   mkdirSync(join(repo, ".keel"));
   writeFileSync(join(repo, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "bun test", args: true } } }));
   expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);

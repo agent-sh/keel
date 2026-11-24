@@ -4,6 +4,9 @@
 // files come later is the order of the folder on the disk: it differs from one
 // machine to the next (test/preload.ts names a file that leaves one).
 import { afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // `undefined` unsets a variable for the file.
 export function ownEnv(set: Record<string, string | undefined>): void {
@@ -13,4 +16,15 @@ export function ownEnv(set: Record<string, string | undefined>): void {
   };
   put(set);
   afterAll(() => put(before));
+}
+
+// A folder of the file's own under the run's temporary folder (test/preload.ts points TMPDIR at one), removed
+// when the file ends. A work folder a sandbox's overlay made has no permissions: opened up first.
+export function tempTree(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  afterAll(() => {
+    Bun.spawnSync(["chmod", "-R", "u+rwX", dir], { stdout: "ignore", stderr: "ignore" });
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  });
+  return dir;
 }

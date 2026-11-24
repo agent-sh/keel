@@ -1,6 +1,6 @@
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tempTree } from "../../test/env.ts";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
@@ -38,7 +38,7 @@ test("an agent in a mode that writes nothing gets no worktree", () => {
 });
 
 test("Claude Code agents keep auto, acceptEdits and bypassPermissions distinct", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "keel-agent-modes-"));
+  const cwd = tempTree("keel-agent-modes-");
   const folder = join(cwd, ".claude", "agents");
   mkdirSync(folder, { recursive: true });
   for (const mode of ["auto", "acceptEdits", "bypassPermissions"])
@@ -49,7 +49,7 @@ test("Claude Code agents keep auto, acceptEdits and bypassPermissions distinct",
 
 // The parent's side of its agents, with a stand-in engine: a child's turn
 // ends when the test says so. Stops, waits, reports and forked context.
-const dir = mkdtempSync(join(tmpdir(), "keel-agents-"));
+const dir = tempTree("keel-agents-");
 const store = new Store(join(dir, "state"));
 const busy = new Set<string>();
 const sends: { id: string; text: string }[] = [];
@@ -589,7 +589,7 @@ test("a wait result settles the report it holds while a newer one is owed", asyn
 // continues it as a new task, so the agent is running, not "done" while its
 // session works, and that task's report reaches the parent too.
 test("a message sent while an agent's report settles continues it", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "keel-agents-repo-"));
+  const repo = tempTree("keel-agents-repo-");
   Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
   Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start"], { cwd: repo });
   const p = store.createSession({ model: "m:x", workspace: repo, title: "work parent" });
@@ -968,7 +968,7 @@ test("a task found already stored at a restart is where the agent's report start
 // is held from the start, so a spawn in that time is refused instead of
 // taking the slot and leaving the worktree made for nothing.
 test("a message that restarts a finished agent holds its slot while its worktree is made again", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "keel-agents-slot-"));
+  const repo = tempTree("keel-agents-slot-");
   Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
   Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start"], { cwd: repo });
   const p = store.createSession({ model: "m:x", workspace: repo, title: "slot parent" });
@@ -1540,7 +1540,7 @@ test("a peer's message sent while an agent's report settles says who sent it", a
 // Its new and changed tests run on the base without its change when it reports (src/checks/before-run.ts).
 // The report waits for that run a bounded time: what is still running then is said, and follows when it ends.
 const beforeRepo = (files: Record<string, string>) => {
-  const repo = mkdtempSync(join(tmpdir(), "keel-agents-before-"));
+  const repo = tempTree("keel-agents-before-");
   const g = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: repo });
   g("init", "-q", "-b", "main");
   mkdirSync(join(repo, ".keel"));
@@ -1648,7 +1648,7 @@ test("answers a report owes for a run a restart cut are told by the next daemon"
 // Finding the files reads git: a slow read does not hold the report past BEFORE_WAIT, and what it finds follows.
 test("a run whose start is slow does not hold the report, and its answers follow it", async () => {
   const p = beforeRepo({ "late.test.sh": "exit 1\n" });
-  const bin = mkdtempSync(join(tmpdir(), "keel-agents-git-"));
+  const bin = tempTree("keel-agents-git-");
   const real = Bun.which("git")!;
   writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in *" merge-base "*) sleep 3;; esac\nexec ${real} "$@"\n`, { mode: 0o755 });
   const was = agents.BEFORE_WAIT.ms, path = process.env.PATH;

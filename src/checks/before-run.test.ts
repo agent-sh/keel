@@ -2,8 +2,8 @@
 // confined by the session's own sandbox profile.
 import { expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tempTree } from "../../test/env.ts";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { Gate } from "../safety/gate.ts";
@@ -14,7 +14,7 @@ import { bindBefore, leftScopes, runOne, settled, startFor } from "./before-run.
 import { beforeLine } from "./before.ts";
 import { bindLedger } from "./ledger.ts";
 
-const dir = mkdtempSync(join(tmpdir(), "keel-before-run-"));
+const dir = tempTree("keel-before-run-");
 const store = new Store(join(dir, "state"));
 new Worktrees(store, join(dir, "worktrees")); // its table: the base is read from it
 bindLedger(store);

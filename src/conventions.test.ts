@@ -1,7 +1,8 @@
 // Conventions that kept breaking across lanes, checked over the source tree.
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 function files(dir: string, ext: RegExp): string[] {
@@ -139,4 +140,27 @@ test("no test runs git in the checkout it was started from", () => {
     return /["'`](--version|init|clone)["'`]/.test(l) ? [] : [`${relative(ROOT, f)}:${i + 1}`];
   }));
   expect(bare).toEqual([]);
+});
+
+// A test that makes a folder with mkdtemp leaves it behind when it forgets it. test/preload.ts points TMPDIR
+// at a folder of the run and removes it when the run ends, so a folder made under tmpdir() or $TMPDIR is
+// cleaned up. A test file that makes one elsewhere (a named place such as /tmp, or the checkout) removes it
+// itself, and so does the preload's own tmp, which this holds in place.
+test("a test that calls mkdtemp makes it under the run's TMPDIR or removes it", () => {
+  expect(readFileSync(join(ROOT, "test/preload.ts"), "utf8")).toMatch(/TMPDIR: made\("tmp"\)/);
+  expect(tmpdir()).toBe(join(dirname(process.env.KEEL_STATE_DIR!), "tmp"));
+  const tests = [...files(join(ROOT, "src"), /\.test\.ts$/), ...files(join(ROOT, "scripts"), /\.test\.ts$/)].filter((f) => !f.endsWith("conventions.test.ts"));
+  const removes = /\b(rmSync|rmdirSync|rm|rmdir|cleanup|tempTree)\(|rm -rf/;
+  const found = tests.flatMap((f) => {
+    const text = readFileSync(f, "utf8");
+    if (removes.test(text)) return [];
+    // Without a removal, every base is the run's: tmpdir(), $TMPDIR, or a folder the file named from them.
+    return text.split("\n").flatMap((l, i) => {
+      const call = /\bmkdtemp(?:Sync)?\(\s*(.*)$/.exec(l.replace(/\/\/.*$/, ""));
+      if (!call) return [];
+      const base = call[1]!.replace(/process\.env\.TMPDIR\s*\?\?\s*(?:"[^"]*"|`[^`]*`|tmpdir\(\))/g, "tmpdir()");
+      return /^(?:join\(\s*)?["'`]\//.test(base) || /["'`]\/(?:tmp|var\/tmp|dev\/shm)\b/.test(base) ? [`${relative(ROOT, f)}:${i + 1}`] : [];
+    });
+  });
+  expect(found).toEqual([]);
 });

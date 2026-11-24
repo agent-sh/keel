@@ -34,6 +34,9 @@ const scratch: Record<string, string> = {
   KEEL_WEB_ENV: join(dir, "no-web-env"),
   KEEL_CONFIG_DIR: made("config"),
   KEEL_STATE_DIR: made("state"),
+  // The machine's temporary folder: a test that makes a folder and forgets it leaves it here, removed with the
+  // rest when the run ends, not in /tmp (a run of unit tests once used up the inodes of its disk).
+  TMPDIR: made("tmp"),
   // The other agents' setup and session stores (MCP import, keel port, session import).
   KEEL_IMPORT_HOME: made("import", "home"),
   KEEL_IMPORT_CLAUDE_DIR: join(dir, "import", "claude"),
@@ -153,7 +156,7 @@ afterEach(() => {
 // Once, after the last test file (bun test fires no exit event from a preload).
 afterAll(() => {
   // (A sandbox's cache layers hold folders the kernel made with no permissions: opened up first.)
-  Bun.spawnSync(["chmod", "-R", "u+rwX", join(dir, "state")], { stdout: "ignore", stderr: "ignore" });
+  Bun.spawnSync(["chmod", "-R", "u+rwX", dir], { stdout: "ignore", stderr: "ignore" });
   try {
     leftBehind();
   } finally {
