@@ -4,10 +4,12 @@
 // only kind that waits for the hook (tacit.ts); any other call is asked beside its tool as before.
 import { statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { homeDir } from "../core/paths.ts";
+import { ownerHome } from "../core/paths.ts";
 
-// Where the store keeps it: its state folder (TACIT_STATE_DIR, else ~/.local/state/tacit).
-export const denyKeysFile = () => join(process.env.TACIT_STATE_DIR || join(homeDir(), ".local", "state", "tacit"), "deny-keys.json");
+// Where the store keeps it: its state folder. TACIT_STATE_DIR is a stand-in variable like TACIT_BIN, always
+// honoured; else the owner's own (~/.local/state/tacit), which a scratch daemon that may not read the home
+// finds empty, so it reads no keys.
+export const denyKeysFile = () => join(process.env.TACIT_STATE_DIR || join(ownerHome(), ".local", "state", "tacit"), "deny-keys.json");
 
 // A key's leading words, up to its first option: `gh pr merge`, `git fetch --all` -> `git fetch`, `rm -rf` -> `rm`.
 // (The store's own match reads the key's options anywhere in the command; waiting for every command that
