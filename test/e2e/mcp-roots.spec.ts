@@ -42,9 +42,10 @@ test("mcp roots: a local server is told the session's folder", async ({ page, re
     expect(atStart.roots).toHaveLength(1);
     expect(atStart.roots[0].uri).toMatch(/^file:\/\/\//);
     expect(atStart.roots[0].uri).not.toBe(root(ws).roots[0]!.uri);
-    // What each was told Keel offers: roots to the legacy local server only, elicitation in both modes and sampling to both, and the tasks extension to the modern one.
-    expect(JSON.parse(results[2]!)).toEqual({ elicitation: { form: {}, url: {} }, sampling: {}, roots: { listChanged: true } });
-    expect(JSON.parse(results[3]!)).toEqual({ elicitation: { form: {}, url: {} }, sampling: {}, extensions: { "io.modelcontextprotocol/tasks": {} } });
+    // What each was told Keel offers: roots to the legacy local server only, elicitation in both modes and sampling to both, the apps extension to both, and the tasks extension to the modern one.
+    const apps = { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } };
+    expect(JSON.parse(results[2]!)).toEqual({ elicitation: { form: {}, url: {} }, sampling: {}, roots: { listChanged: true }, extensions: apps });
+    expect(JSON.parse(results[3]!)).toEqual({ elicitation: { form: {}, url: {} }, sampling: {}, extensions: { "io.modelcontextprotocol/tasks": {}, ...apps } });
     // Its first call came from a session with another folder: the server was told the folders
     // changed, once, and the folder it asked for again is that session's.
     expect(results[4]).toBe(`latest after 1 changes: ${JSON.stringify(root(ws))}`);
