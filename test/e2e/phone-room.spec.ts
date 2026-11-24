@@ -919,6 +919,23 @@ test.describe("on a phone, a long last reply", () => {
       const jump = pane.getByTestId("reply-start-jump");
       await expect(jump).toBeVisible();
       await shoot(page, "phone-19-reply-start");
+      // Looking at the view runs a moment after every scroll (a timer of 200 ms); it does not search the
+      // page for the last reply each time. (The count of those timers that ran says that looks ran.)
+      await page.evaluate(() => {
+        const w = window as any;
+        w.__searches = 0; w.__looks = 0;
+        const find = Element.prototype.querySelectorAll;
+        Element.prototype.querySelectorAll = function (this: Element, sel: string) { if (String(sel).includes("assistant-text")) w.__searches++; return find.call(this, sel) as any; } as any;
+        const set = window.setTimeout.bind(window);
+        window.setTimeout = ((fn: any, ms?: number, ...rest: any[]) => set(ms === 200 && typeof fn === "function" ? (...a: any[]) => { try { return fn(...a); } finally { w.__looks++; } } : fn, ms, ...rest)) as any;
+      });
+      for (let i = 0; i < 4; i++) {
+        const before = await page.evaluate(() => (window as any).__looks);
+        await pane.evaluate((el, d) => { el.querySelector(".k-reading")!.scrollBy(0, d); }, i % 2 ? 4 : -4);
+        await expect.poll(() => page.evaluate(() => (window as any).__looks)).toBeGreaterThan(before);
+      }
+      expect(await page.evaluate(() => (window as any).__searches)).toBeLessThanOrEqual(1);
+      await expect(jump).toBeVisible();
       await jump.tap();
       const at = () => pane.evaluate((el) => { const v = el.querySelector(".k-reading")!.getBoundingClientRect(); const all = el.querySelectorAll('[data-testid="assistant-text"]'); return Math.round(all[all.length - 1]!.getBoundingClientRect().top - v.top); });
       await expect.poll(at).toBeGreaterThanOrEqual(0);

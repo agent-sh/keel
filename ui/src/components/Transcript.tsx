@@ -1112,8 +1112,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // than the view opens at its end, and a way to its first line stands at the conversation's foot.
   const [replyUp, setReplyUp] = useState(false);
   const lastReply = () => { const all = content.current?.querySelectorAll<HTMLElement>('[data-testid="assistant-text"]'); return all?.length ? all[all.length - 1]! : null; };
+  // The last reply's element, kept between looks: a look runs on every scroll, and the element changes
+  // only when the events or the rows drawn do (or it leaves the page).
+  const replyEl = useRef<{ events: unknown; rows: number; el: HTMLElement | null } | null>(null);
   const lookReply = (view: DOMRect) => {
-    const r = lastReply()?.getBoundingClientRect();
+    const rows = content.current?.children.length ?? 0;
+    let kept = replyEl.current;
+    if (!kept || kept.events !== events || kept.rows !== rows || (kept.el && !kept.el.isConnected)) kept = replyEl.current = { events, rows, el: lastReply() };
+    const r = kept.el?.getBoundingClientRect();
     const up = !!r && r.height > view.height && r.top < view.top - 8 && r.bottom > view.top + 8;
     if (up !== replyUp) setReplyUp(up);
   };

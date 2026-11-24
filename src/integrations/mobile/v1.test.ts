@@ -614,6 +614,21 @@ describe("errors", () => {
     expect((await call("POST", `/v1/errors/${stall.id}/forget`)).status).toBe(400);
     expect((await call("POST", "/v1/errors/no-such-error/read")).status).toBe(404);
   });
+  // A key that reached an error's message is not sent to the phone: the tracker keeps the redacted text, and the route sends that.
+  test("a secret in an error's message arrives redacted, and the list needs the device's signature", async () => {
+    const key = "sk-ant-api03-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3";
+    const e = fail("provider", `HTTP 401: invalid x-api-key ${key} for the account`);
+    const row = (await call("GET", "/v1/errors")).body.errors.find((x: any) => x.id === e.id);
+    expect(row.message).toContain("HTTP 401: invalid x-api-key");
+    expect(JSON.stringify(row)).not.toContain(key);
+    expect(JSON.stringify(row)).not.toContain("Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3");
+    // Without the signature or with a signature of another path: nothing of the list.
+    for (const headers of [{} as Record<string, string>, { authorization: `Bearer ${dev.token}` }]) {
+      const res: Response = await routes["/v1/errors"].GET(Object.assign(new Request("http://x/v1/errors", { headers }), { params: {} }), { requestIP: () => null, timeout() {} });
+      expect(res.status).toBe(401);
+      expect(JSON.stringify(await res.json())).not.toContain("errors\":");
+    }
+  });
 });
 
 describe("landings", () => {

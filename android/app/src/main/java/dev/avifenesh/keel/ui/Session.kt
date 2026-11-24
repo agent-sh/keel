@@ -207,6 +207,13 @@ fun replyStartAbove(reply: Int, shown: List<Shown>, viewEnd: Int): Boolean {
 /** How far to scroll (px, toward older items) so a shown reply's top line sits at the top of the view, under its padding `pad`. */
 fun toReplyStart(reply: Shown, viewEnd: Int, pad: Int): Int = (reply.offset + reply.size - (viewEnd - pad)).coerceAtLeast(0)
 
+/**
+ * Room kept at the foot of a list that has a last reply: the button to that reply's start floats over the
+ * foot (a button of 44 dp and the gap above it), and the last line, such as a tool's label, must not lie under it.
+ * It does not depend on where the owner reads, so showing or hiding the button moves nothing.
+ */
+private val FOOT_BUTTONS = 52.dp
+
 @Composable
 fun FollowingList(newest: String?, newestMine: Boolean, growth: Int, modifier: Modifier = Modifier, replyAt: Int = -1, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
     val k = k()
@@ -242,7 +249,7 @@ fun FollowingList(newest: String?, newestMine: Boolean, growth: Int, modifier: M
         } finally { own = false; follow = !list.canScrollBackward }
     }
     Box(modifier) {
-        LazyColumn(Modifier.fillMaxSize(), state = list, reverseLayout = true, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = S.md), content = content)
+        LazyColumn(Modifier.fillMaxSize(), state = list, reverseLayout = true, contentPadding = androidx.compose.foundation.layout.PaddingValues(top = S.md, bottom = S.md + if (replyAt >= 0) FOOT_BUTTONS else 0.dp), content = content)
         Column(Modifier.align(Alignment.BottomCenter).padding(bottom = S.md), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(S.sm)) {
             if (startAbove) Row(
                 Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(S.rPill))
