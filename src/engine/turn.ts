@@ -498,6 +498,25 @@ const overWindow = (info: ModelInfo, tokens: number) => Object.assign(
   { status: 409, code: "context_over_window", kind: "context", unsent: true },
 );
 
+// What a request streamed so far, by block: the stop keeps the whole items (src/engine/turn.ts).
+export type Streamed = Map<number, { kind: string; text: string; name?: string; done?: boolean }>;
+// The items of a reply a stop keeps: its text, and each tool call whose input is whole (the stream
+// moved on from it, or its input is a complete object) and that the model has. Thinking is dropped
+// (it has no signature yet); a call cut mid-input is discarded.
+export function streamedItems(partial: Streamed, tools: string[]): (AssistantBlock & { type: "text" | "tool_use" })[] {
+  const out: (AssistantBlock & { type: "text" | "tool_use" })[] = [];
+  for (const [, p] of [...partial.entries()].sort(([a], [b]) => a - b)) {
+    if (p.kind === "text") { if (p.text.trim()) out.push({ type: "text", text: p.text }); continue; }
+    if (p.kind !== "tool_input" || !p.name || !tools.includes(p.name)) continue;
+    const raw = p.text.trim(), input = raw ? parseJsonObject(raw) : p.done ? {} : undefined;
+    if (input !== undefined) out.push({ type: "tool_use", id: `call_${Bun.randomUUIDv7().replace(/-/g, "")}`, name: p.name, input });
+  }
+  return out;
+}
+const parseJsonObject = (s: string): Record<string, unknown> | undefined => {
+  try { const v = JSON.parse(s); return v && typeof v === "object" && !Array.isArray(v) ? v : undefined; } catch { return undefined; }
+};
+
 const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortError" });
 
 // What became of an input: stored as the session's prompt (`event`), kept in
@@ -2041,7 +2060,7 @@ export class Engine {
   // finally built (after the hooks, the tools of this request and the files
   // resolved for this model) is counted against the model's window from it,
   // and one over the window is refused here instead of sent.
-  private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Map<number, { kind: string; text: string }>, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn", fit?: Fit): Promise<ProviderResult> {
+  private async call(id: string, st: Step, messages: Message[], signal: AbortSignal, partial: Streamed, session: Session, quiet = false, purpose: ProviderRequest["purpose"] = quiet ? "side" : "turn", fit?: Fit): Promise<ProviderResult> {
     const counted = fit ? { messages: fit.base ?? messages, tools: toolsBytes(st.tools) } : undefined;
     // A call to a provider the session's folder does not allow is never sent (src/safety/content-routes.ts).
     // A turn's, a summary's and a warm read's refusal is told by what fails on it; the rest are told here.
@@ -2125,6 +2144,7 @@ export class Engine {
     }
     for (;;) {
       partial.clear();
+      let lastAt: number | undefined;
       this.measure(id, (h) => h.requestSent?.(session, req));
       const since = Date.now();
       if (!quiet) this.status(id, { kind: "model", since, model: st.info.name });
@@ -2158,6 +2178,10 @@ export class Engine {
           if (!quiet) this.outputs.set(id, last);
           const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
           p.text += d.text;
+          if (d.kind === "tool_input" && d.name) p.name = d.name;
+          // A block the stream moved on from is whole.
+          if (lastAt !== undefined && lastAt !== d.index) { const was = partial.get(lastAt); if (was) was.done = true; }
+          lastAt = d.index;
           partial.set(d.index, p);
           for (const h of timing) try { h.requestDelta!(session, req, d); } catch (e) { this.errors.capture("server", e, { hook: "measure", session: id }); }
           if (!quiet) this.deltas.push(id, d);
@@ -2554,7 +2578,7 @@ export class Engine {
     let toolResults = 0;
     let toolErrors = 0;
     let toolDenied = 0;
-    const partial = new Map<number, { kind: string; text: string }>();
+    const partial: Streamed = new Map();
     // Each result is stored as it settles, not when the whole batch has:
     // a crash while one call still runs keeps what the others returned
     // (a denial and its reason, a finished read). The projection puts a
@@ -2775,9 +2799,17 @@ export class Engine {
             continue;
           }
           if (signal.aborted) {
-            // Keep what the owner already saw of the reply.
-            const text = [...partial.entries()].sort(([a], [b]) => a - b).filter(([, p]) => p.kind === "text" && p.text.trim()).map(([, p]) => ({ type: "text" as const, text: p.text }));
-            if (text.length) { this.append(id, "assistant", { blocks: text, model: st.info.id, usage: emptyUsage(), stop: "interrupted" }); replies++; }
+            // Keep what the owner already saw of the reply, and each call it finished
+            // streaming (a stop for a restart keeps the text only: the turn goes on).
+            const kept = streamedItems(partial, this.parking.has(id) ? [] : st.tools.map((t) => t.name));
+            if (kept.length) {
+              this.append(id, "assistant", { blocks: kept, model: st.info.id, usage: emptyUsage(), stop: "interrupted" });
+              replies++;
+              // A kept call never ran: its result says so, and the history stays valid.
+              for (const u of kept) if (u.type === "tool_use") {
+                await settleNow(u)({ type: "tool_result", tool_use_id: u.id, is_error: true, content: stoppedBefore(this.stoppedBy.get(id)) });
+              }
+            }
           }
           throw e;
         }
