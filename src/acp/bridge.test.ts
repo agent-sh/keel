@@ -577,3 +577,28 @@ test("a failure goes as a notice to an editor that takes them and as a line of t
     }
   }
 });
+
+test("a plan goes as an identified plan to an editor that takes plan operations, removed when cleared, and as the checklist to another", async () => {
+  const s = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  const todo = (todos: any[]) => ({ t: "event", event: { session_id: "s", kind: "assistant", data: { blocks: [{ type: "tool_use", id: `t${todos.length}${todos[0]?.status ?? ""}`, name: "TodoWrite", input: { todos } }] } } });
+  const frames = [todo([{ content: "Read", status: "in_progress" }, { content: "Write", status: "pending" }]), todo([{ content: "Read", status: "completed" }]), todo([])];
+  const entry = (content: string, status: string) => ({ content, priority: "medium", status });
+  const seen = async (clientCapabilities: any) => {
+    const f = fixture([s], {});
+    await call(f.bridge, f.out, "initialize", { protocolVersion: 1, clientCapabilities });
+    void call(f.bridge, f.out, "session/prompt", { sessionId: "s", prompt: [{ type: "text", text: "go" }] });
+    await Bun.sleep(0);
+    for (const x of frames) f.frame(x);
+    return f.updates("s").filter((u: any) => /^plan/.test(u.sessionUpdate));
+  };
+  expect(await seen({})).toEqual([
+    { sessionUpdate: "plan", entries: [entry("Read", "in_progress"), entry("Write", "pending")] },
+    { sessionUpdate: "plan", entries: [entry("Read", "completed")] },
+    { sessionUpdate: "plan", entries: [] },
+  ]);
+  expect(await seen({ plan: {} })).toEqual([
+    { sessionUpdate: "plan_update", plan: { type: "items", planId: "plan", entries: [entry("Read", "in_progress"), entry("Write", "pending")] } },
+    { sessionUpdate: "plan_update", plan: { type: "items", planId: "plan", entries: [entry("Read", "completed")] } },
+    { sessionUpdate: "plan_removed", planId: "plan" },
+  ]);
+});

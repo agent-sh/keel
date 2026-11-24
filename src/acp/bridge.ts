@@ -110,6 +110,9 @@ export function permissionRequest(a: Json, name: string, form?: CardForm): Json 
   };
 }
 
+// A session's plan is one list that every TodoWrite or update_plan replaces: one id.
+const PLAN_ID = "plan";
+
 export function planOf(name: string, input: Json): Json[] | null {
   const n = name.toLowerCase();
   if (n === "todowrite" && Array.isArray(input?.todos))
@@ -247,6 +250,7 @@ export class AcpBridge {
   private pending = new Map<number, (msg: Json) => void>();
   private live = new Map<string, Live>();
   private caps: Json = {};
+  private planned = new Set<string>(); // sessions whose plan the editor was given as an identified one
   private tools = new Map<string, string>(); // tool_use id -> tool name
   private asked = new Set<string>();         // approvals sent to the editor
   private stopFrames?: () => void;
@@ -378,7 +382,7 @@ export class AcpBridge {
       this.children.delete(c);
       if (this.agentSessions.get(child.agent.id) === c) this.agentSessions.delete(child.agent.id);
     }
-    for (const x of [id, ...gone]) { this.texts.delete(x); this.retried.delete(x); }
+    for (const x of [id, ...gone]) { this.texts.delete(x); this.retried.delete(x); this.planned.delete(x); }
     this.daemon.unwatch?.([id, ...gone]);
   }
 
@@ -531,6 +535,17 @@ export class AcpBridge {
     this.retried.set(id, key);
     if (this.caps?.session?.notices) this.notify(id, retryNotice(s));
     else if (first && t.shown) this.notify(id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n\n[Keel: the model request failed and is sent again.]\n\n" } });
+  }
+
+  // The session's plan, as the editor takes it: an editor that advertised plan
+  // operations gets it as the session's one identified plan, and its removal when
+  // it is cleared; another gets the legacy checklist, an empty one included.
+  private plan(id: string, entries: Json[]) {
+    if (!this.caps?.plan) return this.notify(id, { sessionUpdate: "plan", entries });
+    if (entries.length) {
+      this.planned.add(id);
+      this.notify(id, { sessionUpdate: "plan_update", plan: { type: "items", planId: PLAN_ID, entries } });
+    } else if (this.planned.delete(id)) this.notify(id, { sessionUpdate: "plan_removed", planId: PLAN_ID });
   }
 
   // Something the editor's user should know that is not the conversation: a
@@ -890,7 +905,7 @@ export class AcpBridge {
           if (this.caps?.elicitation?.form) void this.elicit(sessionId, b);
         }
         const plan = planOf(b.name, b.input);
-        if (plan) this.notify(sessionId, { sessionUpdate: "plan", entries: plan });
+        if (plan) this.plan(sessionId, plan);
         const r = replay?.results.get(b.id);
         const status = !replay ? "pending" : r ? (r.is_error ? "failed" : "completed") : replay.running ? "in_progress" : "failed";
         this.notify(sessionId, { sessionUpdate: "tool_call", toolCallId: b.id, title: toolTitle(b.name, b.input), kind: toolKind(b.name), status, rawInput: b.input, ...toolDetail(b.name, b.input) });

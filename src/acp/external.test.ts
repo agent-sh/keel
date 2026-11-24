@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { joinAgents } from "./agents.ts";
-import { classOf, optionFor, streamedInput } from "./external.ts";
+import { applyPlan, classOf, optionFor, streamedInput } from "./external.ts";
 import { splitCommand } from "../safety/shell.ts";
 
 // Kimi Code asks permission for a call whose input it only streamed as text.
@@ -58,4 +58,19 @@ test("what an agent offered stays listed through a resume that states nothing an
   expect(a.learned("ag")?.error).toBeTruthy();
   expect(ids()).toEqual(["ag", "ag/fast", "ag/deep"]);
   expect(JSON.parse(readFileSync(join(st, "acp-choices.json"), "utf8")).ag.models.options).toHaveLength(2);
+});
+
+test("an agent's plan updates, legacy or identified, leave the steps its plans show", () => {
+  const plans = new Map<string, any[]>();
+  const entries = (...c: string[]) => c.map((content, i) => ({ content, priority: "high", status: i ? "pending" : "completed" }));
+  expect(applyPlan(plans, { sessionUpdate: "plan", entries: entries("a", "b") })).toEqual([{ step: "a", status: "completed" }, { step: "b", status: "pending" }]);
+  // An identified plan beside it; a second update of it replaces it whole.
+  expect(applyPlan(plans, { sessionUpdate: "plan_update", plan: { type: "items", planId: "p1", entries: entries("c") } })!.map((s) => s.step)).toEqual(["a", "b", "c"]);
+  expect(applyPlan(plans, { sessionUpdate: "plan_update", plan: { type: "markdown", planId: "p1", content: "## Steps\n- [ ] one\n- [x] two", path: "/w/PLAN.md" } })).toEqual([{ step: "a", status: "completed" }, { step: "b", status: "pending" }, { step: "one", status: "pending" }, { step: "two", status: "completed" }]);
+  expect(applyPlan(plans, { sessionUpdate: "plan_update", plan: { type: "markdown", planId: "p2", content: "Do the thing\nin two parts" } })!.at(-1)).toEqual({ step: "Do the thing", status: "pending" });
+  // A removal of one it does not know changes nothing; of one it knows, drops it.
+  expect(applyPlan(plans, { sessionUpdate: "plan_removed", planId: "nope" })).toBeNull();
+  expect(applyPlan(plans, { sessionUpdate: "plan_removed", planId: "p2" })!.length).toBe(4);
+  expect(applyPlan(plans, { sessionUpdate: "plan_removed", planId: "p1" })!.length).toBe(2);
+  expect(applyPlan(plans, { sessionUpdate: "tool_call" })).toBeNull();
 });

@@ -155,6 +155,7 @@ type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; caps: Js
   served?: ServedTools; offered: Set<string>; terms: AcpTerminals; commands?: SlashCommand[];
   // The offered tools whose parameters were renamed to fit (by the name the agent calls), with the server's names.
   renamed?: Map<string, Record<string, string>>;
+  plans?: Map<string, Json[]>;  // the agent's plans by id ("" is the legacy checklist), each as the steps it shows
   closed: AbortController };  // aborted when the agent's connection ends
 type TurnState = {
   io: ExternalIO;
@@ -166,6 +167,34 @@ type TurnState = {
   cost?: number;              // the agent's cumulative cost when the turn began
   lastCost?: number;
 };
+
+const STEP = /^\s*(?:[-*+]|\d+[.)])\s+(?:\[([ xX])\]\s+)?(.+?)\s*$/;
+// The steps of a Markdown plan: its checklist, bullet and numbered lines (a
+// `[x]` is done); a plan with none is one pending step, its first line.
+export function markdownSteps(md: string): Json[] {
+  const steps: Json[] = [];
+  for (const line of md.split("\n")) {
+    const m = STEP.exec(line);
+    if (m) steps.push({ step: m[2], status: m[1] && m[1] !== " " ? "completed" : "pending" });
+  }
+  const head = md.split("\n").map((l) => l.replace(/^\s*#+\s*/, "").trim()).find(Boolean);
+  return steps.length ? steps : head ? [{ step: head, status: "pending" }] : [];
+}
+
+// A plan update of the agent (`plan`, `plan_update`, `plan_removed`) applied to
+// the plans it holds: the steps of all of them after it, or null when it
+// changes nothing. One plan, the usual case, is its steps as it sent them.
+export function applyPlan(plans: Map<string, Json[]>, u: Json): Json[] | null {
+  const status = (s: unknown) => (s === "completed" || s === "in_progress" ? s : "pending");
+  if (u.sessionUpdate === "plan") plans.set("", (u.entries ?? []).map((e: Json) => ({ step: String(e.content ?? ""), status: status(e.status) })));
+  else if (u.sessionUpdate === "plan_update" && u.plan && typeof u.plan.planId === "string") {
+    if (u.plan.type === "markdown") plans.set(u.plan.planId, markdownSteps(String(u.plan.content ?? "")));
+    else plans.set(u.plan.planId, (u.plan.entries ?? []).map((e: Json) => ({ step: String(e.content ?? ""), status: status(e.status) })));
+  } else if (u.sessionUpdate === "plan_removed") {
+    if (typeof u.planId !== "string" || !plans.delete(u.planId)) return null; // (an id it does not know is ignored)
+  } else return null;
+  return [...plans.values()].flat();
+}
 
 export class AcpRunner {
   private live = new Map<string, Live>();
@@ -226,7 +255,7 @@ export class AcpRunner {
       const init = await conn.request("initialize", {
         protocolVersion: 1,
         // (Boolean config options are shown: session-config-options.)
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell, session: { configOptions: { boolean: {} } } },
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell, session: { configOptions: { boolean: {} } }, plan: {} },
         clientInfo: { name: "keel", title: "Keel", version: "0.1.0" },
       });
       live.caps = init?.agentCapabilities ?? {};
@@ -418,11 +447,14 @@ export class AcpRunner {
         if (tc.status === "completed" || tc.status === "failed") { this.finish(t, tc); t.io.status({ kind: "model", since: Date.now(), model: t.session.model }); }
         break;
       }
-      case "plan": {
+      case "plan":
+      case "plan_update":
+      case "plan_removed": {
         // Shown as the plan the dock and the transcript already read.
+        const plan = applyPlan((live.plans ??= new Map()), u);
+        if (!plan) break;
         this.flush(t);
         const id = `acp-plan-${crypto.randomUUID()}`;
-        const plan = (u.entries ?? []).map((e: Json) => ({ step: String(e.content ?? ""), status: e.status === "completed" || e.status === "in_progress" ? e.status : "pending" }));
         t.io.append("assistant", { blocks: [{ type: "tool_use", id, name: "update_plan", input: { plan }, origin: "acp" }], model: t.session.model, usage: emptyUsage(), stop: "tool_use" });
         t.io.append("tool_result", { results: [{ type: "tool_result", tool_use_id: id, content: "Plan updated" }] });
         break;
