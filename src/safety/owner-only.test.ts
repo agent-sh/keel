@@ -389,3 +389,28 @@ test("a quoted > in a command with a real redirect is not a write to the folder 
   expect(run('echo "x>=1" > /home/u/state/out.txt')).toBe("deny");
   expect(run('cd /home/u/state && echo "a > b" > out.txt')).toBe("deny");
 });
+
+// A program told to write a file by an option of its own writes it as a redirect to the same path does: the same verdict in
+// every mode, for the files only the owner changes and for Keel's own.
+test("an output option is judged as a redirect to the same path", () => {
+  const modes = ["ask", "auto-edits", "auto", "full-auto", "read-only", "plan", "reviewer"] as Mode[];
+  const keep = { keel: (p: string) => (p === "/home/u/state" || p.startsWith("/home/u/state/") ? "Keel's own state" : null) };
+  const verdicts = (command: string) => modes.map((mode) => how(decide({ kind: "shell", command, cwd: ws }, facts(mode, keep))));
+  const forms = (p: string) => [
+    `git log --output=${p}`, `git log -p --output ${p}`, `git diff --output=${p} HEAD~1`, `git show --output=${p}`, `git -C sub diff --output=${p}`,
+    `git format-patch -o ${p} HEAD~1`, `git format-patch -o${p} HEAD~1`, `git format-patch --output-directory=${p} HEAD~1`, `git format-patch --output-directory ${p} HEAD~1`,
+    `git archive -o ${p} HEAD`, `git archive --output=${p} HEAD`, `git bundle create ${p} HEAD`,
+    `sort -o ${p} data.txt`, `sort -ro ${p} data.txt`, `sort --output=${p} data.txt`, `sort -o${p} data.txt`,
+  ];
+  for (const p of ["~/.ssh/authorized_keys", "/home/u/.bashrc", "$HOME/.zshrc", "/home/u/.config/keel-bun/mcp.json", "/home/u/state/keel.db", "/w/repo/.github/workflows/ci.yml", "/w/repo/out.txt", "/tmp/out.txt"]) {
+    const want = verdicts(`echo x > ${p}`);
+    for (const line of forms(p)) {
+      expect([line, verdicts(line)]).toEqual([line, want]);
+    }
+  }
+  // The files the owner changes are asked as theirs or refused, not run in Full auto: the gap this closed.
+  for (const line of ["git log --output=/home/u/.bashrc", "git format-patch -o ~/.ssh HEAD~1", "sort -o ~/.bashrc data.txt"]) expect([line, verdicts(line)[3]]).toEqual([line, "ask-high"]);
+  expect(verdicts("git log --output=/home/u/state/keel.db")[3]).toBe("deny");
+  // An option that names no file is no write, and neither is a push option.
+  for (const line of ["git log --oneline -o", "git push -o ~/.bashrc", "git log --output-indicator-new=+ -p", "git log --grep=--output=/home/u/.bashrc", "git diff -- --output=/home/u/.bashrc"]) expect([line, verdicts(line)[3]]).not.toEqual([line, "ask-high"]);
+});

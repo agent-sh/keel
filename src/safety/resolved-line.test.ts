@@ -75,7 +75,6 @@ test("a line the written form would misread keeps being refused", () => {
     "W=git; ${W/g/h} branch -D keel/agent-2",
     "W=git; trap '$W branch -D keel/agent-2' EXIT",
     "W=git; unset W; $W branch -D keel/agent-2",
-    "W=rm; $W -rf ~; W=git",
     "$W branch -D keel/agent-2; W=git",
     "echo a | W=git; $W branch -D keel/agent-2",
     "(W=git); $W branch -D keel/agent-2",
@@ -204,7 +203,6 @@ test("a tilde that is quoted, or a home the line changed, is not written out", (
   const home = "/home/u";
   for (const line of [
     "HOME=/e; S=~/x; $S/start.sh",
-    "HOME=/r/.git; S=~/HEAD; git log --output=$S",
     "read HOME <<< /r/.git; S=~/HEAD; git log --output=$S",
     "printf -v HOME %s /r/.git; S=~/HEAD; git log --output=$S",
     "unset HOME; S=~/HEAD; git log --output=$S",
@@ -212,11 +210,59 @@ test("a tilde that is quoted, or a home the line changed, is not written out", (
     "S='~/x'; $S/start.sh",
     "S=\\~/x; $S/start.sh",
     "mkdir '~'; S='~/../../.git/HEAD'; git log --output=$S",
-    "S=~/x; S=~/y; $S/start.sh",
     "S=~/x\\ y; $S/start.sh",
   ]) expect([line, resolvedLine(line, home)]).toEqual([line, null]);
   // Not looser than before: the lines that write into the git store stay held where they were.
   for (const line of ["HOME=/r/.git; S=~/HEAD; git log --output=$S", "mkdir '~'; S='~/../../.git/HEAD'; git log --output=$S"]) {
     expect([line, verdicts(line).slice(0, 4).some((k) => k === "allow")]).toEqual([line, false]);
   }
+});
+
+// A line that sets HOME to a literal has its later `~` and `$HOME` written out as that value, and a name set twice is read
+// by its last literal before each use: the verdict of each form is the written-out line's, in every mode, and never looser
+// than the typed line. (These fell back to the weaker verdict of the line as it is.)
+test("a home or a variable the line set to a literal, set again, is judged as written out", () => {
+  const home = "/home/u";
+  for (const [line, written, typed] of [
+    ["HOME=/home/u/.ssh; echo x > ~/authorized_keys", "HOME=/home/u/.ssh; echo x > /home/u/.ssh/authorized_keys", "echo x > /home/u/.ssh/authorized_keys"],
+    ["HOME=/home/u/.ssh; echo x > $HOME/authorized_keys", "HOME=/home/u/.ssh; echo x > /home/u/.ssh/authorized_keys", "echo x > /home/u/.ssh/authorized_keys"],
+    ["HOME=/home/u/.ssh; echo x >> \"$HOME/authorized_keys\"", "HOME=/home/u/.ssh; echo x >> \"/home/u/.ssh/authorized_keys\"", "echo x >> /home/u/.ssh/authorized_keys"],
+    ["HOME=/home/u; echo x > ~/.bashrc", "HOME=/home/u; echo x > /home/u/.bashrc", "echo x > /home/u/.bashrc"],
+    ["HOME=/home/u/.ssh; cp f ~/authorized_keys", "HOME=/home/u/.ssh; cp f /home/u/.ssh/authorized_keys", "cp f /home/u/.ssh/authorized_keys"],
+    ["HOME=/home/u/.ssh; git log --output $HOME/authorized_keys", "HOME=/home/u/.ssh; git log --output /home/u/.ssh/authorized_keys", "git log --output /home/u/.ssh/authorized_keys"],
+    ["HOME=/home/u/.ssh; sort -o $HOME/authorized_keys f", "HOME=/home/u/.ssh; sort -o /home/u/.ssh/authorized_keys f", "sort -o /home/u/.ssh/authorized_keys f"],
+    ["HOME=/r/.git; echo x > ~/HEAD", "HOME=/r/.git; echo x > /r/.git/HEAD", "echo x > /r/.git/HEAD"],
+    ["HOME=/r/.git; git format-patch -o $HOME/refs HEAD~1", "HOME=/r/.git; git format-patch -o /r/.git/refs HEAD~1", "git format-patch -o /r/.git/refs HEAD~1"],
+    ["HOME=/x; HOME=/home/u/.ssh; echo x > ~/authorized_keys", "HOME=/x; HOME=/home/u/.ssh; echo x > /home/u/.ssh/authorized_keys", "echo x > /home/u/.ssh/authorized_keys"],
+    ["cat ~/a; HOME=/home/u/.ssh; echo x > ~/authorized_keys", "cat ~/a; HOME=/home/u/.ssh; echo x > /home/u/.ssh/authorized_keys", "cat ~/a; echo x > /home/u/.ssh/authorized_keys"],
+    ["F=/r/wt/a; F=/home/u/.ssh/authorized_keys; echo x > $F", "F=/r/wt/a; F=/home/u/.ssh/authorized_keys; echo x > /home/u/.ssh/authorized_keys", "echo x > /home/u/.ssh/authorized_keys"],
+    ["F=/r/.git/HEAD; F=/r/wt/a; echo x > $F", "F=/r/.git/HEAD; F=/r/wt/a; echo x > /r/wt/a", "echo x > /r/wt/a"],
+    ["W=echo; W=git; $W branch -D keel/agent-2", "W=echo; W=git; git branch -D keel/agent-2", "git branch -D keel/agent-2"],
+    ["W=rm; $W -rf /abs/a; W=git; $W branch -D keel/agent-2", "W=rm; rm -rf /abs/a; W=git; git branch -D keel/agent-2", "rm -rf /abs/a; git branch -D keel/agent-2"],
+    ["V=status; V=push; git $V --force", "V=status; V=push; git push --force", "git push --force"],
+    ["S=/abs; S=/r/.git/refs; rm -rf $S", "S=/abs; S=/r/.git/refs; rm -rf /r/.git/refs", "rm -rf /r/.git/refs"],
+    ["S=/r/.git/refs; rm -rf $S; S=/abs; rm -rf $S", "S=/r/.git/refs; rm -rf /r/.git/refs; S=/abs; rm -rf /abs", "rm -rf /r/.git/refs; rm -rf /abs"],
+  ] as const) {
+    const got = resolvedLine(line, home);
+    expect([line, got]).toEqual([line, written]);
+    for (const withShared of [true, false]) {
+      const have = verdicts(line, withShared), want = verdicts(got!, withShared), bare = verdicts(typed, withShared);
+      // Never looser than the written line, and an agent in its worktree gets the written line's verdict.
+      expect([line, withShared, have.map((k, i) => rank[k]! >= rank[want[i]!]!)]).toEqual([line, withShared, modes.map(() => true)]);
+      if (withShared) expect([line, have]).toEqual([line, want]);
+      // (A line that also sets a variable asks low where the typed line has nothing to ask: no looser than it.)
+      expect([line, withShared, have.map((k, i) => rank[k]! >= rank[bare[i]!]!)]).toEqual([line, withShared, modes.map(() => true)]);
+    }
+  }
+  // The files the owner changes are held in Full auto as the typed line is: high risk, where the line as it is let them through.
+  for (const line of ["HOME=/home/u/.ssh; echo x > ~/authorized_keys", "HOME=/home/u/.ssh; git log --output $HOME/authorized_keys", "F=/r/wt/a; F=/home/u/.bashrc; echo x > $F"])
+    expect([line, verdicts(line, false)[3]]).toEqual([line, "ask-high"]);
+  // Not written out: a setting that may not run, runs in another shell, or leaves the value unknown.
+  for (const line of [
+    "true && HOME=/y; cat ~/a", "HOME=/y | cat; cat ~/a", "HOME=/x; HOME=$(echo y); cat ~/a", "HOME=/x; export HOME=/y; cat ~/a", "HOME=/x; HOME+=y; cat ~/a",
+    "HOME=/x; read HOME; cat ~/a", "HOME=/x; echo $(HOME=/y; cat ~/a)", "false || HOME=/y; cat ~/a", "HOME=/x cat ~/a", "cat ~/a; HOME=/y", "HOME=/x; cat '~/a' \\~/b", "HOME=/x; git log --output=~/a",
+    "F=/a; F=/b; echo '$F'; $F/run.sh", "F=/a; F=$(echo b); $F/run.sh", "F=/a; (F=/b); $F/run.sh", "F=/a; echo x | F=/b; $F/run.sh",
+  ]) expect([line, resolvedLine(line, home)]).toEqual([line, null]);
+  // A tilde that is quoted stays; the one outside quotes is written out.
+  expect(resolvedLine("HOME=/x; cat '~/a' \"~/b\" ~/c", home)).toBe("HOME=/x; cat '~/a' \"~/b\" /x/c");
 });

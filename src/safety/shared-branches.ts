@@ -30,6 +30,7 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { SHELL_GIT_SETTINGS } from "../core/git.ts";
 import { guardEnv, PAD } from "./ref-guard.ts";
+import { outputsOf } from "./outputs.ts";
 import { laid } from "./risk.ts";
 import { name, redirected, SHELLS, type Run } from "./risk-words.ts";
 import { isReadOnly, splitCommand, type Simple } from "./shell.ts";
@@ -520,6 +521,8 @@ function writtenPaths(part: Simple, run: Run): string[] {
   const out = redirected(part).map((r) => r.to).filter((t) => !/^(&|\/dev\/)/.test(t));
   const w = run.words, prog = name(w[0]);
   if (prog === "dd") for (const a of w) if (a.startsWith("of=")) out.push(a.slice(3));
+  // (git's own --output is judged apart, by movesShared, with its own words.)
+  out.push(...outputsOf(w).filter((o) => prog !== "git" || !(w[o.at]!.startsWith("--output=") || w[o.at - 1] === "--output")).map((o) => o.to));
   const how = WRITES[prog];
   if (!how) return out;
   const args = w.slice(1);

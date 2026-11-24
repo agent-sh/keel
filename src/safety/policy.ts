@@ -9,6 +9,7 @@ import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.t
 import type { Looked } from "./looked.ts";
 import { RULE_WORDS, codeGiven, laid, risksAt } from "./risk.ts";
 import type { PartRisk } from "./own-places.ts";
+import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
@@ -357,7 +358,7 @@ const EACH_ARG = new Set(["tee", "mv", "rm", "truncate", "shred", "sponge", "yq"
 // The programs looked for anywhere among the words, as they always were, and the ones read only where the program stands.
 const WRITERS = /^(?:.*\/)?(?:cp|install|ln|rsync|scp|tee|mv|rm|truncate|shred|sed|dd)$/;
 const WRITER_NAMES = new Set(["cp", "install", "ln", "rsync", "scp", "tee", "mv", "rm", "truncate", "shred", "sed", "dd"]);
-const WRITERS_FIRST = /^(?:curl|wget|git|yq|perl|sponge|patch|chmod|chown|chgrp|ed|ex|vi|vim|nvim)$/;
+const WRITERS_FIRST = /^(?:curl|wget|git|sort|yq|perl|sponge|patch|chmod|chown|chgrp|ed|ex|vi|vim|nvim)$/;
 // `run`: the command the part runs, when the caller has worked it out already.
 export function writesOf(p: Simple, run?: Run): string[] {
   const out: string[] = [];
@@ -381,7 +382,10 @@ export function writesOf(p: Simple, run?: Run): string[] {
       if (/^(--output|--output-document|-[a-zA-Z]*[oO])$/.test(a) && rest[k + 1] !== undefined && !(name === "curl" && /O$/.test(a))) out.push(rest[k + 1]!);
       else if (/^--(output|output-document)=/.test(a)) out.push(a.slice(a.indexOf("=") + 1));
     });
-  } else if (name === "git") {
+  } else if (name === "sort") out.push(...outputsOf(p.words.slice(i)).map((o) => o.to));
+  else if (name === "git") {
+    // The files its output options name (log, diff, show, format-patch ... --output=FILE, format-patch -o DIR), as a redirect's.
+    out.push(...outputsOf(p.words.slice(i)).map((o) => o.to));
     // The paths git writes from a commit: checkout and restore of pathspecs, and a rename's new name.
     const sub = args[0], dd = rest.indexOf("--");
     const named = rest.slice(rest.indexOf(sub!) + 1).filter((a, k, all) => !a.startsWith("-") && !/^(-s|--source|-b|-B)$/.test(all[k - 1] ?? ""));

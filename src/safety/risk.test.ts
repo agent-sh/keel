@@ -359,13 +359,13 @@ test("a move of, or an overwrite onto, what is outside the folder is high risk w
   // A copy into a folder that holds a file of the same name, a variable the line gave one value, code that opens
   // the file to write it, and the programs that write their output over a file.
   for (const c of ["cp README.md ~/other/", "mv README.md ~/other", "F=~/other/x; echo y > $F", "python3 -c 'open(\"/home/u/other/x\",\"w\").write(\"y\")'", "node -e 'require(\"fs\").writeFileSync(\"/home/u/other/x\", \"y\")'",
-    "sort -o ~/other/x data.txt", "sponge ~/other/x"]) {
+    "sort -o ~/other/x data.txt", "sponge ~/other/x", "git log --output=~/other/x", "git diff --output ~/other/x", "git archive -o ~/other/x HEAD", "sort --output=~/other/x data.txt"]) {
     expect([c, how(c, "ask", there)]).toEqual([c, "high:destroys"]);
     expect([c, how(c, "auto", { ...there, sandboxed: true })]).toEqual([c, "allow"]);
   }
   // A folder copied whole over a folder of the same name there.
   expect(how("cp -r other ~/", "ask", there)).toBe("high:destroys");
-  for (const c of ["cp notes.md ~/other/", "python3 -c 'open(\"/home/u/other/new.txt\",\"w\").write(\"y\")'", "python3 -c 'print(open(\"/home/u/other/x\").read())'", "sort -o sorted.txt data.txt"])
+  for (const c of ["cp notes.md ~/other/", "python3 -c 'open(\"/home/u/other/new.txt\",\"w\").write(\"y\")'", "python3 -c 'print(open(\"/home/u/other/x\").read())'", "sort -o sorted.txt data.txt", "git log --output=sorted.txt", "git log --output=~/other/new.txt"])
     expect([c, how(c, "ask", there)]).toEqual([c, "low"]);
   for (const c of ["mv ~/projects /tmp/gone", "cp /dev/null ~/projects/x/main.go", "dd if=/dev/zero of=$HOME/projects/x/main.go", "tee ~/projects/x/main.go < /dev/null", "echo x > ~/projects/x/main.go", ": > /srv/app/state",
     "install /dev/null ~/projects/x/main.go", "sed -i 'd' ~/projects/x/*.go", "ln -sfn /tmp ~/projects"]) {

@@ -258,20 +258,27 @@ export const LOST: Values = new Map();
 // With `home` (a written-out folder), a value that starts with `~`, `~/`, `$HOME/` or `${HOME}/` is read as the shell would
 // read it: that folder first. Only these; `~user` stays unread, and so does `$HOME` when the line sets `HOME` itself.
 const HOME_LEAD = /^(?:\$HOME|\$\{HOME\})(\/[A-Za-z0-9_.\/@:+,%^-]*)?$/;
-export function valuesOf(parts: Simple[], runs: Run[], home?: string): Values {
+// `hist`: every place the line sets a name, in order, each with its written-out value when it is one that always runs
+// in the shell of the words after it (otherwise `text` is null: the name is not known after it). A name set twice has
+// two events; `at` is the part, `k` the word. The map is left empty when the line can give a name a value unseen.
+export type SetEvent = { at: number; k: number; text: string | null };
+export function valuesOf(parts: Simple[], runs: Run[], home?: string, hist?: Map<string, SetEvent[]>): Values {
   // (A home that is not a plain absolute folder is not written out.)
   if (home !== undefined) home = /^\/[A-Za-z0-9_.\/@:+,%^-]*$/.test(home) && home.length > 1 ? home.replace(/\/+$/, "") : undefined;
   const out: Values = new Map();
   // A value is only ever read into a word an expansion makes: a line with none has none to read.
-  if (!parts.some((p) => p.dyn || (p.redirects && p.text.includes("$")))) return out;
+  if (!hist && !parts.some((p) => p.dyn || (p.redirects && p.text.includes("$")))) return out;
   const count = new Map<string, number>();
   const bare = new Set<string>();
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]!, prog = name(runs[i]!.words[0]);
-    if (/^(eval|source|\.|declare|typeset|local)$/.test(prog) || (p.dyn && BINDS.test(prog))) return out;
-    for (const w of p.words) {
+    if (/^(eval|source|\.|declare|typeset|local)$/.test(prog) || (p.dyn && BINDS.test(prog))) { hist?.clear(); return out; }
+    for (const [k, w] of p.words.entries()) {
       const m = /^([A-Za-z_][A-Za-z0-9_]*)(\+?=|\[)/.exec(w);
-      if (m) count.set(m[1]!, (count.get(m[1]!) ?? 0) + 1);
+      if (m) {
+        count.set(m[1]!, (count.get(m[1]!) ?? 0) + 1);
+        if (hist) { const l = hist.get(m[1]!); const e = { at: i, k, text: null }; if (l) l.push(e); else hist.set(m[1]!, [e]); }
+      }
       else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(w)) bare.add(w);
     }
   }
@@ -286,18 +293,20 @@ export function valuesOf(parts: Simple[], runs: Run[], home?: string): Values {
     p.words.forEach((w, k) => {
       const eq = w.indexOf("=");
       const n = w.slice(0, eq), v = w.slice(eq + 1);
-      if (count.get(n) !== 1 || bare.has(n)) return;
+      if ((!hist && count.get(n) !== 1) || bare.has(n)) return;
       const how = p.how?.[p.dyn?.indexOf(k) ?? -1];
+      const known = (text: string) => { const e = hist?.get(n)?.find((x) => x.at === at && x.k === k); if (e) e.text = text; };
       if (!how) {
         if (!WRITTEN.test(v)) return;
         // A `~` that is quoted or escaped is a plain character; `~` is the home only where nothing set or read HOME before it.
         const tilde = home && !count.has("HOME") && !bare.has("HOME") && !p.quotes?.includes(k) && (v === "~" || v.startsWith("~/"));
         out.set(n, { text: tilde ? home + v.slice(1) : v, at });
+        known(tilde ? home + v.slice(1) : v);
         return;
       }
       if (home && !count.has("HOME") && !bare.has("HOME") && !how.subs.length && how.vars.length === 1 && how.vars[0]!.name === "HOME" && !how.rest) {
         const h = HOME_LEAD.exec(v);
-        if (h) { out.set(n, { text: home + (h[1] ?? ""), at }); return; }
+        if (h) { out.set(n, { text: home + (h[1] ?? ""), at }); known(home + (h[1] ?? "")); return; }
       }
       const sub = how.subs.length === 1 && !how.vars.length && !how.rest && (v === "$(...)" || v === "`...`") ? how.subs[0]! : null;
       if (!sub) return;

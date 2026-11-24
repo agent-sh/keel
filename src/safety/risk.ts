@@ -40,6 +40,7 @@ import { protectedBranch } from "./autonomy.ts";
 import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, sqlClient, type Part } from "./risk-reach.ts";
 import { awkReads, harmless, runsProgram, sedReads } from "./closed-code.ts";
 import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, untrailed, literal, madeName, name, redirected, rootOf, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
+import { outputsOf } from "./outputs.ts";
 import { docOf, docsRun, highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
 
 export { secretFile } from "./risk-reach.ts";
@@ -187,7 +188,7 @@ function swept(find: string[], verb: string, dir: string | null, c: Ctx, at: num
 
 // A move of, or an overwrite onto, what is outside the session's folder, in a session nothing confines to it
 // (confined, the write fails by itself). Temporary and cache folders hold nothing that is missed.
-const OVERWRITES = new Set(["mv", "cp", "install", "ln", "tee", "dd", "sed", "perl", "sort", "sponge"]);
+const OVERWRITES = new Set(["mv", "cp", "install", "ln", "tee", "dd", "sed", "perl", "sort", "sponge", "git"]);
 function overwrites(x: Part, c: Ctx): Risk[] {
   const { p, args, dir, s } = x;
   const { w } = c;
@@ -223,7 +224,11 @@ function overwrites(x: Part, c: Ctx): Risk[] {
     onto(named.at(-1)!.a, x.made(named.at(-1)!.k), "moves a file onto", named.slice(0, -1).map((f) => f.a));
   } else if ((p === "cp" || p === "install") && named.length >= 2) onto(named.at(-1)!.a, x.made(named.at(-1)!.k), "copies a file onto", named.slice(0, -1).map((f) => f.a));
   else if (p === "sponge") { for (const { a, k } of named) onto(a, x.made(k), "overwrites"); }
-  else if (p === "sort") args.forEach((a, k) => { if (/^(-o|--output)$/.test(args[k - 1] ?? "")) onto(a, x.made(k), "overwrites"); else if (a.startsWith("--output=")) onto(a.slice(9), undefined, "overwrites"); });
+  else if (p === "sort" || p === "git") {
+    // The file its output option names (sort -o, git log --output=): the word whole, or after an `=`.
+    const words = [p, ...args];
+    for (const o of outputsOf(words)) onto(o.to, words[o.at] === o.to ? x.made(o.at - 1) : undefined, "overwrites");
+  }
   else if (p === "ln" && named.length >= 2 && args.some((a) => /^-[a-zA-Z]*f/.test(a) || a === "--force")) {
     // A forced link takes the place of what stood there, a folder too.
     const t = target(named.at(-1)!.a, x.made(named.at(-1)!.k), dir, w, vals, x.i);
@@ -974,11 +979,12 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     const sub = (text: string, at: string | null, into: Risk[]) => script(text, at, into, cx.w, firm[i] === true);
     out.push(...loaded(run.set.length || /^(export|declare|typeset|readonly)$/.test(x.p) ? [...run.set, ...args.filter((a) => ASSIGN.test(a))] : run.set), ...overwrites(x, cx));
     // On another machine: a write to a file that runs later there, or lets someone in.
-    if (w.away && (s.redirects || x.p === "tee")) {
-      const to = [...(s.redirects ? redirected(s).map((r) => r.to) : []), ...(x.p === "tee" ? x.plain : [])].find((t) => AWAY_LATER.test(t));
+    const outs = x.p === "git" || x.p === "sort" ? outputsOf([x.p, ...x.args]).map((o) => o.to) : [];
+    if (w.away && (s.redirects || x.p === "tee" || outs.length)) {
+      const to = [...(s.redirects ? redirected(s).map((r) => r.to) : []), ...(x.p === "tee" ? x.plain : []), ...outs].find((t) => AWAY_LATER.test(t));
       if (to) out.push({ rule: "remote", why: `writes ${to}, which runs later or lets someone in` });
       // One of the system's own files, emptied and written over.
-      const over = to ? undefined : (s.redirects ? redirected(s).filter((r) => r.empties).map((r) => r.to) : []).find((t) => AWAY_SYSTEM.test(t));
+      const over = to ? undefined : [...(s.redirects ? redirected(s).filter((r) => r.empties).map((r) => r.to) : []), ...outs].find((t) => AWAY_SYSTEM.test(t));
       if (over) out.push({ rule: "remote", why: `overwrites ${over}, a file of the system there` });
     }
     // `env -S 'CMD ARGS'` runs the string as a command.
