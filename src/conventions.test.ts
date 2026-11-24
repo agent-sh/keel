@@ -174,11 +174,38 @@ test("a test file removes none of the run's shared folders and puts the settings
   // (The sandbox specs remove the TMPDIR they set for one command, which is theirs: they put it back.)
   const removing = /\b(rmSync|rmdirSync|rm|rmdir)\(\s*(join\(\s*)?process\.env\.(KEEL_STATE_DIR|KEEL_CONFIG_DIR|KEEL_IMPORT_\w+|HOME)\b/;
   expect(tests.filter((f) => removing.test(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f))).toEqual([]);
-  // The settings file is the last one loaded (src/admin/settings.ts): a file that loads one from a folder of its own
-  // loads the run's state folder again when it ends.
-  const own = tests.filter((f) => {
-    const loads = [...readFileSync(f, "utf8").matchAll(/\bloadSettings\(([^,)]*)/g)].map((m) => m[1]!.trim());
-    return loads.some((a) => a !== "process.env.KEEL_STATE_DIR!") && !loads.includes("process.env.KEEL_STATE_DIR!");
-  });
-  expect(own.map((f) => relative(ROOT, f))).toEqual([]);
+  expect(tests.filter((f) => leavesSettingsOwn(readFileSync(f, "utf8"))).map((f) => relative(ROOT, f))).toEqual([]);
+});
+
+// The settings file is the last one loaded (src/admin/settings.ts): a file that loads one from a folder of its own
+// loads the run's state folder again when it ends, in an afterAll or a finally. A load of the run's folder anywhere
+// else (before its own load, in a test) puts nothing back at the end.
+const RUN = "process.env.KEEL_STATE_DIR!";
+function body(text: string, from: number): string {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === "(" || text[i] === "{") depth++;
+    else if ((text[i] === ")" || text[i] === "}") && --depth === 0) return text.slice(from, i + 1);
+  }
+  return text.slice(from);
+}
+function leavesSettingsOwn(text: string): boolean {
+  const loads = [...text.matchAll(/\bloadSettings\(([^,)]*)/g)].map((m) => m[1]!.trim());
+  if (!loads.some((a) => a !== RUN)) return false;
+  const ends = [...text.matchAll(/\bafterAll\(|\bfinally\s*(?=\{)/g)].map((m) => body(text, m.index! + m[0].length - (m[0].endsWith("(") ? 1 : 0)));
+  return !ends.some((b) => new RegExp(`\\bloadSettings\\(\\s*${RUN.replace(/[.!]/g, "\\$&")}`).test(b));
+}
+
+test("a settings load of the run's folder counts only at the end of the file (afterAll or finally)", () => {
+  const own = 'const d = mkdtempSync(x);\nloadSettings(d, () => {});\n';
+  // The old skills-peer form: its own folder, nothing put back.
+  expect(leavesSettingsOwn(own)).toBe(true);
+  // The run's folder loaded first and the file's own after it: the process ends on the file's own.
+  expect(leavesSettingsOwn(`loadSettings(${RUN}, () => {});\n${own}`)).toBe(true);
+  expect(leavesSettingsOwn(`test("a", () => { loadSettings(${RUN}, () => {}); });\n${own}`)).toBe(true);
+  expect(leavesSettingsOwn(`${own}afterAll(() => { loadSettings(${RUN}, () => {}); });\n`)).toBe(false);
+  expect(leavesSettingsOwn(`afterAll(async () => { x(); (await import("a")).loadSettings(${RUN}, () => {}); });\n${own}`)).toBe(false);
+  expect(leavesSettingsOwn(`try { f(); } finally { loadSettings(${RUN}, () => {}); }\n${own}`)).toBe(false);
+  // A file that loads only the run's folder, or none, leaves nothing.
+  expect(leavesSettingsOwn(`loadSettings(${RUN}, () => {});`)).toBe(false);
 });
