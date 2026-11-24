@@ -235,7 +235,8 @@ test("the looks at a park on a command stop when the parts are set again", async
   setDeps({ ...deps, store: other, errors: { capture: (...x: unknown[]) => void theirs.push(x) } });
   try {
     await Bun.sleep(2 * agents.PARK_LOOK_MS + 200);
-    expect(theirs).toEqual([]);
+    // (An earlier test's agent may still settle meanwhile: only a look at a park is this test's.)
+    expect(theirs.filter((x) => (x as [unknown, unknown, { at?: string }])[2]?.at === "agent park look")).toEqual([]);
   } finally {
     setDeps(deps);
     await jobs.stopJob(j, "was stopped by the test");

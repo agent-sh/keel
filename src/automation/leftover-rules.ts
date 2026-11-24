@@ -216,8 +216,8 @@ export type ScopeProc = { pid: number; parent: number; start: string; tty: boole
 export function attachedWhy(procs: ScopeProc[], job: { pid: number; start?: string }, reapers: Set<number>): string | undefined {
   const t = procs.find((p) => p.tty || p.pty);
   if (t) return `process ${t.pid} in it has a terminal`;
-  const inside = new Set(procs.map((p) => p.pid));
+  const inScope = new Set(procs.map((p) => p.pid));
   const own = (p: ScopeProc) => p.pid === job.pid && (job.start === undefined || p.start === job.start);
-  const o = procs.find((p) => !inside.has(p.parent) && !reapers.has(p.parent) && p.parent !== job.pid && !own(p));
+  const o = procs.find((p) => !inScope.has(p.parent) && !reapers.has(p.parent) && p.parent !== job.pid && !own(p));
   return o ? `process ${o.pid} was put in it from outside (its parent ${o.parent} is not of the command)` : undefined;
 }
