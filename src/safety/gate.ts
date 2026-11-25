@@ -179,11 +179,14 @@ export type BatchResult = { id: string; ok: true } | { id: string; error: string
 // `seen`: the client's word that it showed the whole text before the answer (card.ts: refusal). `by`: who answers.
 export type Choice = { choice: "once" | "session" | "always" | "deny"; reason?: string; rules?: Suggest[]; seen?: "whole"; by?: Omit<AnsweredBy, "seen"> };
 
+// The helper's answers, newest first (its partial index's condition word for word, so the index serves it).
+export const HELPER_ANSWERS = "SELECT data FROM approvals WHERE json_extract(data, '$.by.client') = 'helper' AND state IN ('allowed', 'denied') ORDER BY created DESC LIMIT ?";
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS perm_sessions (session_id TEXT PRIMARY KEY, mode TEXT NOT NULL, sandbox TEXT NOT NULL DEFAULT 'off', network INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS perm_rules (id TEXT PRIMARY KEY, kind TEXT NOT NULL, pattern TEXT NOT NULL, scope TEXT NOT NULL, lifetime TEXT NOT NULL, session_id TEXT, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS approvals_session ON approvals(session_id, created);
+CREATE INDEX IF NOT EXISTS approvals_helper ON approvals(created) WHERE json_extract(data, '$.by.client') = 'helper';
 CREATE TABLE IF NOT EXISTS perm_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS perm_blocked (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS perm_blocked_session ON perm_blocked(session_id, created);
@@ -1315,9 +1318,9 @@ export class Gate {
   }
 
   // The cards the owner's helper answered, newest first (Settings > Helper lists them).
+  // (Read through approvals_helper, which holds the helper's rows alone: never a pass over every card.)
   helperAnswers(limit = 50): Approval[] {
-    return this.store.db.query<{ data: string }, [number]>("SELECT data FROM approvals WHERE state IN ('allowed', 'denied') AND json_extract(data, '$.by.client') = 'helper' ORDER BY created DESC LIMIT ?")
-      .all(limit).map((r) => JSON.parse(r.data) as Approval);
+    return this.store.db.query<{ data: string }, [number]>(HELPER_ANSWERS).all(limit).map((r) => JSON.parse(r.data) as Approval);
   }
   // The newest verdict of the reviewer or the judge on a call of this card's shape in its session, within a day.
   verdictOf(a: Approval): { by: string; decision: string; risk: string | null; model: string | null; created: number } | undefined {

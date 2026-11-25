@@ -10,7 +10,7 @@ import type { ToolCall } from "../engine/hooks.ts";
 import { toolsFor, webUse } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
 import { hiddenCode, keelPorts, keelReach, ownerClass, shellClass, toolClass, toolWords } from "./delegate.ts";
-import { Gate, type Approval } from "./gate.ts";
+import { Gate, HELPER_ANSWERS, type Approval } from "./gate.ts";
 import { learner } from "./public-send.ts";
 
 // Each class of card that stays the owner's, made by the real gate from a real call, and the helper's answer on
@@ -147,7 +147,7 @@ test("driving another session or Keel itself is the owner's", async () => {
 });
 
 test("a card the helper may answer takes its allow once, recorded as the helper's on the instruction, and nothing more", async () => {
-  const { g, s, card, helperSays } = rig();
+  const { g, s, store, card, helperSays } = rig();
   const { a, out } = await card(bash, { command: "npm install left-pad" });
   expect(ownerClass(a)).toBeNull();
   // A standing answer is never the helper's.
@@ -156,6 +156,10 @@ test("a card the helper may answer takes its allow once, recorded as the helper'
   expect(await out).not.toHaveProperty("deny");
   expect(g.approval(a.id)).toMatchObject({ state: "allowed", choice: "once", by: { client: "helper", seen: "whole", helper: { session: "helper-session", source: "Settings > Helper > Answer approvals", reason: "fine" } } });
   expect(g.helperAnswers().map((x) => x.id)).toEqual([a.id]);
+  // Read through the index of the helper's rows alone, never a pass over every card.
+  const plan = store.db.query<{ detail: string }, [number]>(`EXPLAIN QUERY PLAN ${HELPER_ANSWERS}`).all(50).map((r) => r.detail).join("; ");
+  expect(plan).toContain("approvals_helper");
+  expect(plan).not.toMatch(/SCAN approvals(?! USING)/);
   // The same call again asks again: no rule, no grant for the session.
   const again = await card(bash, { command: "npm install left-pad" });
   expect(again.a.id).not.toBe(a.id);
