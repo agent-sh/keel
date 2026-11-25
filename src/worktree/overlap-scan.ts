@@ -18,6 +18,14 @@
 // config, which would run its program on another session's branch, and no
 // union merge hides a conflict.
 //
+// A branch whose worktree holds edits that are not committed is judged by those
+// too: its tip and its working tree as one commit made for the pass (the tree
+// is the check ledger's look, src/checks/ledger.ts treeOf, the commit goes to
+// the pass's folder of objects). A pair that conflicts only through such edits
+// is marked uncommitted; every reader that decides on what can land (the
+// landing queue, the pair checks, a branch against the base) reads the
+// committed judgement only.
+//
 // A new conflict is owed to the sessions on both sides, and to the parent of
 // each that is an agent, as one harness note each. It is told inside a turn
 // only: as a note for the model written just before one of the turn's model
@@ -27,6 +35,7 @@
 // that went (a rebase) is told as gone, once, to whoever was told of it.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { objectsOf, repoOf, treeOf } from "../checks/ledger.ts";
 import { git, locate, type Where } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
@@ -43,10 +52,13 @@ CREATE TABLE IF NOT EXISTS overlap_marks (session_id TEXT PRIMARY KEY REFERENCES
 // `raw`: what git's merge of a branch pair said, before the files only the base meets were taken out
 // (JSON: the conflicted paths, or null when clean); `base_tip`: the base that was judged against.
 // A row with no `raw` was written by an earlier build and is merged again once.
-type PairRow = { repo: string; a: string; b: string; base: number; a_tip: string; b_tip: string; conflict: number; error: string | null; files: string; checked: number; raw: string | null; base_tip: string | null };
+// `work`: the commits made of the two sides' working trees that the row was judged with ([a, b], a null for a side
+// with no uncommitted edit), null when neither had; `by_work`: the conflict stored is of those, the committed tips merge clean.
+type PairRow = { repo: string; a: string; b: string; base: number; a_tip: string; b_tip: string; conflict: number; error: string | null; files: string; checked: number; raw: string | null; base_tip: string | null; work: string | null; by_work: number };
 type ToldRow = { session_id: string; repo: string; a: string; b: string; told: string | null; owed: "conflict" | "cleared" | null };
 // `waits`: a conflict between two branches that is not told while one side conflicts with the base (overlap.ts waiting).
-export type Pair = { a: string; b: string; base: boolean; a_tip: string; b_tip: string; conflict: boolean; error?: string; files: ConflictFile[]; checked: number; a_session?: string; b_session?: string; waits?: true };
+// `uncommitted`: the sides (branches) whose edits not yet committed make the conflict.
+export type Pair = { a: string; b: string; base: boolean; a_tip: string; b_tip: string; conflict: boolean; error?: string; files: ConflictFile[]; checked: number; a_session?: string; b_session?: string; waits?: true; uncommitted?: string[] };
 // `checked`: it has commits of its own and its pairs were checked (a branch with none has nothing to land).
 export type Branch = { branch: string; tip: string; session_id: string; title: string; managed: boolean; checked: boolean };
 // A worktree Keel made whose holder is not live (its agent ended, its session archived), so it is no live branch:
@@ -63,6 +75,10 @@ const PLACED = 40;
 // A tool call that moved a tip is followed by its scan after this, so the
 // calls of one step (a commit, then a push) make one pass.
 const SETTLE_MS = 750;
+// A call that moved no tip may have edited files: a pass follows it after this (one for every call of the window).
+const EDIT_MS = 20_000;
+// What a commit made of a working tree says of its author and time: the same tree gives the same commit.
+const WORK_ENV = { GIT_AUTHOR_NAME: "keel", GIT_AUTHOR_EMAIL: "keel@localhost", GIT_AUTHOR_DATE: "1000000000 +0000", GIT_COMMITTER_NAME: "keel", GIT_COMMITTER_EMAIL: "keel@localhost", GIT_COMMITTER_DATE: "1000000000 +0000" };
 
 // `changed`: the sessions whose repository's forecast changed (their views read it again).
 // `passed`: a pass of the repository ended (the pair checks read its pairs, src/landing/together.ts).
@@ -107,7 +123,7 @@ export class Overlaps {
   private bases = new Map<string, string | null>(); // repo → the base's full ref name
   private lands = new Map<string, boolean>(); // `${tip} ${baseTip}` → landing it changes the base
   private passes = new Map<string, Pass>();
-  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private timers = new Map<string, { t: ReturnType<typeof setTimeout>; due: number }>();
   private scanning = new Map<string, Promise<void>>();
   private again = new Set<string>();
   private empty = new Map<string, string>(); // repo → its empty tree's id (sha1 or sha256)
@@ -122,6 +138,8 @@ export class Overlaps {
     store.migrate(SCHEMA);
     if (!store.columnExists("overlap_pairs", "raw")) store.migrate("ALTER TABLE overlap_pairs ADD COLUMN raw TEXT");
     if (!store.columnExists("overlap_pairs", "base_tip")) store.migrate("ALTER TABLE overlap_pairs ADD COLUMN base_tip TEXT");
+    if (!store.columnExists("overlap_pairs", "work")) store.migrate("ALTER TABLE overlap_pairs ADD COLUMN work TEXT");
+    if (!store.columnExists("overlap_pairs", "by_work")) store.migrate("ALTER TABLE overlap_pairs ADD COLUMN by_work INTEGER NOT NULL DEFAULT 0");
     // A pass a stop cut left its folder: no pass runs yet, so none is in use.
     rmSync(join(store.stateDir, "overlap-objects"), { recursive: true, force: true });
     byStore.set(store, this);
@@ -145,7 +163,7 @@ export class Overlaps {
       if (this.lands.get(`${tip} ${baseTip}`) === false) return { ...at, state: "nothing" as const };
       if (!row || row.a_tip !== tip || row.b_tip !== baseTip) return { ...at, state: "stale" as const };
       if (row.error) return { ...at, state: "error" as const, why: row.error };
-      return row.conflict ? { ...at, state: "conflict" as const, files: (JSON.parse(row.files) as ConflictFile[]).map((f) => f.path) } : { ...at, state: "clean" as const };
+      return row.conflict && !row.by_work ? { ...at, state: "conflict" as const, files: (JSON.parse(row.files) as ConflictFile[]).map((f) => f.path) } : { ...at, state: "clean" as const };
     };
     const first = await read();
     if (first?.state !== "stale") return first;
@@ -207,11 +225,18 @@ export class Overlaps {
   // ---- the pass ----
 
   // A pass of `repo` after SETTLE_MS; calls meanwhile make it one.
+  // A later one is brought forward by an earlier ask.
   schedule(repo: string, ms = SETTLE_MS) {
-    if (this.timers.has(repo)) return;
+    const had = this.timers.get(repo);
+    const due = Date.now() + ms;
+    if (had) { if (had.due <= due) return; clearTimeout(had.t); }
     const t = setTimeout(() => { this.timers.delete(repo); this.scan(repo).catch((e) => this.teller.failed(e, "overlap scan")); }, ms);
     t.unref?.();
-    this.timers.set(repo, t);
+    this.timers.set(repo, { t, due });
+  }
+  // A call of a session that holds a live branch of the repository moved no tip: it may have edited the files.
+  edited(repo: string, sessionId: string) {
+    if ([...this.owners(repo).values()].includes(sessionId)) this.schedule(repo, EDIT_MS);
   }
 
   // One pass at a time a repository; a pass asked for while one runs follows it.
@@ -251,39 +276,49 @@ export class Overlaps {
         objects = mkdtempSync(join(dir, "pass-"));
         mkdirSync(join(objects, "info"), { recursive: true });
       }
-      return { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(w.common, "objects") };
+      // (The ledger's folder holds the trees of the working trees looked at.)
+      return { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: [join(w.common, "objects"), ...extra].join(":") };
     };
+    const extra: string[] = [];
     const changed = new Set<string>();
     let keep = new Set<string>();
     let old = new Map<string, PairRow>();
     try {
     const live: string[] = [];
+    // The commit of each branch's uncommitted edits (a branch whose worktree holds none has no entry).
+    const works = new Map<string, string>();
+    const folders = await this.folders(repo);
     for (const b of names) {
       const tip = tips.get(`refs/heads/${b}`);
       if (!tip) { if (!managed.has(b)) this.store.db.query("DELETE FROM overlap_branches WHERE repo = ? AND branch = ?").run(repo, b); continue; }
-      if (baseTip && !(await this.lands_(repo, tip, baseTip, envOf, stat))) continue; // nothing of its own to land
+      const folder = folders.get(b);
+      const work = folder ? await this.workCommit(folder, tip, envOf, extra) : undefined;
+      if (work) works.set(b, work);
+      if (baseTip && !(await this.lands_(repo, tip, baseTip, envOf, stat)) && !(work && (await this.lands_(repo, work, baseTip, envOf, stat)))) continue; // nothing of its own to land
       live.push(b);
     }
     const shortBase = base?.replace(/^refs\/(heads|remotes)\//, "") ?? null;
     // The pairs with the base first: what each branch meets the base in decides what of a branch pair is the base's.
-    const want: { a: string; b: string; base: boolean; ta: string; tb: string }[] = [];
-    if (shortBase && baseTip) for (const a of live) want.push({ a, b: shortBase, base: true, ta: tips.get(`refs/heads/${a}`)!, tb: baseTip });
-    for (const [a, b] of pairsOf(live)) want.push({ a, b, base: false, ta: tips.get(`refs/heads/${a}`)!, tb: tips.get(`refs/heads/${b}`)! });
+    const want: { a: string; b: string; base: boolean; ta: string; tb: string; wa?: string; wb?: string; work: string | null }[] = [];
+    const add = (p: { a: string; b: string; base: boolean; ta: string; tb: string; wa?: string; wb?: string }) => want.push({ ...p, work: p.wa || p.wb ? JSON.stringify([p.wa ?? null, p.wb ?? null]) : null });
+    if (shortBase && baseTip) for (const a of live) add({ a, b: shortBase, base: true, ta: tips.get(`refs/heads/${a}`)!, tb: baseTip, wa: works.get(a) });
+    for (const [a, b] of pairsOf(live)) add({ a, b, base: false, ta: tips.get(`refs/heads/${a}`)!, tb: tips.get(`refs/heads/${b}`)!, wa: works.get(a), wb: works.get(b) });
     keep = new Set(want.map((p) => `${p.a}\0${p.b}`));
     old = new Map(this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ?").all(repo).map((r) => [`${r.a}\0${r.b}`, r]));
     const withBase = new Map<string, Set<string>>(); // branch → the files it conflicts with the base in
     const paths = (files: string) => (JSON.parse(files) as ConflictFile[]).map((f) => f.path);
       for (const p of want) {
         const row = old.get(`${p.a}\0${p.b}`);
-        const same = !!row && row.a_tip === p.ta && row.b_tip === p.tb && !row.error;
+        const sameTips = !!row && row.a_tip === p.ta && row.b_tip === p.tb && !row.error;
+        const same = sameTips && (row!.work ?? null) === p.work;
         if (p.base && same) {
           stat.reused++;
           if (row!.conflict) withBase.set(p.a, new Set(paths(row!.files)));
           continue;
         }
         // A branch pair merged by this build: its merge is kept, and judged again only when the base moved.
-        const kept = !p.base && same && row!.raw !== null ? (JSON.parse(row!.raw) as string[] | null) : undefined;
-        if (kept !== undefined && (kept === null || row!.base_tip === (baseTip ?? null))) { stat.reused++; continue; }
+        const kept = !p.base && sameTips && row!.raw !== null ? (JSON.parse(row!.raw) as string[] | null) : undefined;
+        if (kept !== undefined && (row!.work ?? null) === p.work && (kept === null || row!.base_tip === (baseTip ?? null))) { stat.reused++; continue; }
         let merged: Result;
         if (kept !== undefined) merged = kept === null ? { conflict: false } : { conflict: true, files: kept };
         else {
@@ -292,18 +327,30 @@ export class Overlaps {
           stat.merges++;
           merged = parseMergeTree(mt.out, mt.code, mt.err);
         }
-        const r = p.base ? merged : await this.meeting(repo, p, merged, baseTip, withBase);
+        let r = p.base ? merged : await this.meeting(repo, p, merged, baseTip, withBase);
+        // The tips merge clean: do they with the uncommitted edits? (The commits of those are in the pass's objects.)
+        let at = { ta: p.ta, tb: p.tb }, byWork = false;
+        if (p.work && "conflict" in r && !r.conflict) {
+          const env = envOf();
+          const ea = p.wa ?? p.ta, eb = p.wb ?? p.tb;
+          const mt = await git(repo, [...(await this.noAttrs(repo)), "merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", ea, eb], { read: true, env });
+          stat.merges++;
+          const wm = parseMergeTree(mt.out, mt.code, mt.err);
+          // (A merge git could not make of them is no forecast: the committed one stands.)
+          const wr = "error" in wm ? wm : p.base ? wm : await this.meeting(repo, { a: p.a, b: p.b, ta: ea, tb: eb }, wm, baseTip, withBase, env);
+          if ("conflict" in wr && wr.conflict) { r = wr; at = { ta: ea, tb: eb }; byWork = true; }
+        }
         if (p.base && "conflict" in r && r.conflict) withBase.set(p.a, new Set(r.files));
         // A judgement again of a kept merge that names the same files keeps their places.
-        const sameFiles = kept !== undefined && !!row!.conflict && "conflict" in r && r.conflict && JSON.stringify(paths(row!.files)) === JSON.stringify(r.files);
-        const files = sameFiles ? (JSON.parse(row!.files) as ConflictFile[]) : "conflict" in r && r.conflict ? await this.place(repo, p.ta, p.tb, r.files, stat) : [];
-        const was = row ? { conflict: !!row.conflict, files: row.files, error: row.error } : undefined;
-        const now = { conflict: "conflict" in r && r.conflict, files: JSON.stringify(files), error: "error" in r ? r.error : null };
+        const sameFiles = !byWork && !row?.by_work && kept !== undefined && !!row!.conflict && "conflict" in r && r.conflict && JSON.stringify(paths(row!.files)) === JSON.stringify(r.files);
+        const files = sameFiles ? (JSON.parse(row!.files) as ConflictFile[]) : "conflict" in r && r.conflict ? await this.place(repo, at.ta, at.tb, r.files, stat, byWork ? envOf() : undefined) : [];
+        const was = row ? { conflict: !!row.conflict, files: row.files, error: row.error, byWork: !!row.by_work } : undefined;
+        const now = { conflict: "conflict" in r && r.conflict, files: JSON.stringify(files), error: "error" in r ? r.error : null, byWork };
         const raw = p.base || "error" in merged ? null : JSON.stringify(merged.conflict ? merged.files : null);
-        this.store.db.query(`INSERT INTO overlap_pairs (repo, a, b, base, a_tip, b_tip, conflict, error, files, checked, raw, base_tip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(repo, a, b) DO UPDATE SET base = excluded.base, a_tip = excluded.a_tip, b_tip = excluded.b_tip, conflict = excluded.conflict, error = excluded.error, files = excluded.files, checked = excluded.checked, raw = excluded.raw, base_tip = excluded.base_tip`)
-          .run(repo, p.a, p.b, p.base ? 1 : 0, p.ta, p.tb, now.conflict ? 1 : 0, now.error, now.files, Date.now(), raw, baseTip ?? null);
-        if (!was || was.conflict !== now.conflict || was.files !== now.files || was.error !== now.error) changed.add(`${p.a}\0${p.b}`);
+        this.store.db.query(`INSERT INTO overlap_pairs (repo, a, b, base, a_tip, b_tip, conflict, error, files, checked, raw, base_tip, work, by_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(repo, a, b) DO UPDATE SET base = excluded.base, a_tip = excluded.a_tip, b_tip = excluded.b_tip, conflict = excluded.conflict, error = excluded.error, files = excluded.files, checked = excluded.checked, raw = excluded.raw, base_tip = excluded.base_tip, work = excluded.work, by_work = excluded.by_work`)
+          .run(repo, p.a, p.b, p.base ? 1 : 0, p.ta, p.tb, now.conflict ? 1 : 0, now.error, now.files, Date.now(), raw, baseTip ?? null, p.work, byWork ? 1 : 0);
+        if (!was || was.conflict !== now.conflict || was.files !== now.files || was.error !== now.error || was.byWork !== now.byWork) changed.add(`${p.a}\0${p.b}`);
         this.owe(repo, p.a, p.b, p.base, r, owners);
       }
     } finally {
@@ -341,6 +388,41 @@ export class Overlaps {
       this.empty.set(repo, tree);
     }
     return ["--attr-source", tree, "-c", "core.attributesFile=/dev/null"];
+  }
+
+  // The folder each branch is checked out in (the repository's checkouts, its worktrees too), read from git.
+  private async folders(repo: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const r = await git(repo, ["worktree", "list", "--porcelain", "-z"], { read: true });
+    if (r.code !== 0) return out;
+    for (const block of r.out.split("\0\0")) {
+      let path: string | undefined, branch: string | undefined;
+      for (const line of block.split("\0")) {
+        if (line.startsWith("worktree ")) path = line.slice(9);
+        else if (line.startsWith("branch refs/heads/")) branch = line.slice(18);
+      }
+      if (path && branch && !out.has(branch)) out.set(branch, path);
+    }
+    return out;
+  }
+
+  // The commit of a branch's tip and the files of its folder as they are now, when they differ from the tip: the
+  // ledger's look at the folder (new files included, ignored ones not), one commit on the tip made in the pass's
+  // folder of objects. The same files give the same commit. Undefined: nothing uncommitted, the folder is on
+  // another commit, or the look was not made (too many or too large files).
+  private async workCommit(folder: string, tip: string, envOf: () => Record<string, string>, extra: string[]): Promise<string | undefined> {
+    try {
+      const rp = repoOf(folder);
+      if (!rp) return undefined;
+      const look = await treeOf(rp);
+      if (!look?.tree || look.head !== tip) return undefined;
+      const own = await git(folder, ["rev-parse", "--verify", "-q", `${tip}^{tree}`], { read: true });
+      if (own.code !== 0 || own.out.trim() === look.tree) return undefined;
+      const dir = objectsOf(rp);
+      if (dir && !extra.includes(dir)) extra.push(dir);
+      const made = await git(folder, ["commit-tree", look.tree, "-p", tip, "-m", "uncommitted"], { read: true, env: { ...envOf(), ...WORK_ENV } });
+      return made.code === 0 && /^[0-9a-f]{40,64}$/.test(made.out.trim()) ? made.out.trim() : undefined;
+    } catch { return undefined; } // a folder that cannot be looked at is judged by its commits
   }
 
   // What git's merge of two tips says, for a reader outside a pass (the tree review, src/board/tree-review.ts):
@@ -389,25 +471,25 @@ export class Overlaps {
   // new commits, so its merge with an older branch conflicts wherever the base meets that branch: a file
   // is taken out when one of the two conflicts with the base in it and not both changed it since they
   // left the base (by path: a file renamed on one side stays, its new path is no change of the other's).
-  private async meeting(repo: string, p: { a: string; b: string; ta: string; tb: string }, r: Result, baseTip: string | undefined, withBase: Map<string, Set<string>>): Promise<Result> {
+  private async meeting(repo: string, p: { a: string; b: string; ta: string; tb: string }, r: Result, baseTip: string | undefined, withBase: Map<string, Set<string>>, env?: Record<string, string>): Promise<Result> {
     if (!baseTip || !("conflict" in r) || !r.conflict || !r.files.length) return r;
     const ba = withBase.get(p.a), bb = withBase.get(p.b);
     if (!ba && !bb) return r;
-    const [oa, ob] = await Promise.all([this.ownFiles(repo, p.ta, baseTip), this.ownFiles(repo, p.tb, baseTip)]);
+    const [oa, ob] = await Promise.all([this.ownFiles(repo, p.ta, baseTip, env), this.ownFiles(repo, p.tb, baseTip, env)]);
     if (!oa || !ob) return r;
     const files = r.files.filter((f) => (oa.has(f) && ob.has(f)) || !(ba?.has(f) || bb?.has(f)));
     return files.length ? { conflict: true, files } : { conflict: false };
   }
 
   // The files a branch changed since it left the base (from their merge base): null when git cannot say.
-  private async ownFiles(repo: string, tip: string, baseTip: string): Promise<Set<string> | null> {
+  private async ownFiles(repo: string, tip: string, baseTip: string, env?: Record<string, string>): Promise<Set<string> | null> {
     const key = `${tip} ${baseTip}`;
     if (this.own.has(key)) return this.own.get(key)!;
     let files: Set<string> | null = null;
-    const mb = await git(repo, ["merge-base", baseTip, tip], { read: true });
+    const mb = await git(repo, ["merge-base", baseTip, tip], { read: true, env });
     const from = mb.code === 0 ? mb.out.trim().split("\n")[0] : "";
     if (from) {
-      const d = await git(repo, ["diff", "--name-only", "-z", "--no-renames", from, tip], { read: true });
+      const d = await git(repo, ["diff", "--name-only", "-z", "--no-renames", from, tip], { read: true, env });
       if (d.code === 0) files = new Set(d.out.split("\0").filter(Boolean));
     }
     if (this.own.size > 4096) this.own.clear();
@@ -417,13 +499,13 @@ export class Overlaps {
 
   // Where the two sides' changes of each conflicted file meet: each side's
   // `git diff -U0` from their merge base, compared (overlap.ts clashes).
-  private async place(repo: string, ta: string, tb: string, files: string[], stat: Pass): Promise<ConflictFile[]> {
-    const mb = (await git(repo, ["merge-base", ta, tb], { read: true })).out.trim().split("\n")[0];
+  private async place(repo: string, ta: string, tb: string, files: string[], stat: Pass, env?: Record<string, string>): Promise<ConflictFile[]> {
+    const mb = (await git(repo, ["merge-base", ta, tb], { read: true, env })).out.trim().split("\n")[0];
     const placed = mb ? files.slice(0, PLACED) : [];
     // One diff a side for all the files; a file whose part is not found there is diffed alone.
     const raw = async (tip: string, paths: string[]) => {
       stat.diffs++;
-      const r = await git(repo, [...(await this.noAttrs(repo)), "-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-renames", mb!, tip, "--", ...paths.map((p) => `:(literal)${p}`)], { read: true });
+      const r = await git(repo, [...(await this.noAttrs(repo)), "-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-renames", mb!, tip, "--", ...paths.map((p) => `:(literal)${p}`)], { read: true, env });
       return r.code === 0 ? r.out : undefined;
     };
     const diff = async (tip: string) => splitDiff((await raw(tip, placed)) ?? "");
@@ -509,8 +591,9 @@ export class Overlaps {
       // The recipient's own side comes first; a parent reads the pair as it is ordered.
       const flip = !p.base && owners.get(p.b) === sessionId && owners.get(p.a) !== sessionId;
       const [mb, ob, mt, ot] = flip ? [p.b, p.a, p.b_tip, p.a_tip] : [p.a, p.b, p.a_tip, p.b_tip];
-      const mine: Side = { branch: mb, tip: mt, who: this.who(sessionId, owners.get(mb)) };
-      const other: Side = { branch: ob, tip: ot, who: p.base ? "the base" : this.who(sessionId, owners.get(ob)) };
+      const edits = p.by_work ? uncommittedSides(p) : [];
+      const mine: Side = { branch: mb, tip: mt, who: this.who(sessionId, owners.get(mb)), ...(edits.includes(mb) ? { edits: true as const } : {}) };
+      const other: Side = { branch: ob, tip: ot, who: p.base ? "the base" : this.who(sessionId, owners.get(ob)), ...(edits.includes(ob) ? { edits: true as const } : {}) };
       const files = (JSON.parse(p.files) as ConflictFile[]).map((f) => f.path);
       const before = row.told ? (JSON.parse(row.told) as string[]) : [];
       const fresh = files.filter((f) => !before.includes(f));
@@ -539,13 +622,13 @@ export class Overlaps {
 
   // The pairs of a repository as the last pass left them, conflicts and errors only (the landing queue orders and warns by them).
   pairsOf(repo: string): { a: string; b: string; base: boolean; conflict: boolean; files: ConflictFile[] }[] {
-    return this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND (conflict = 1 OR error IS NOT NULL)").all(repo).map((r) => ({ a: r.a, b: r.b, base: !!r.base, conflict: !!r.conflict, files: JSON.parse(r.files) }));
+    return this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND ((conflict = 1 AND by_work = 0) OR error IS NOT NULL)").all(repo).map((r) => ({ a: r.a, b: r.b, base: !!r.base, conflict: !!r.conflict, files: JSON.parse(r.files) }));
   }
 
   // Every pair of the repository as the last pass left it, at the tips it judged (the pair checks
   // take the branch pairs that merge clean, of branches that merge clean with the base).
   pairRows(repo: string): { a: string; b: string; base: boolean; a_tip: string; b_tip: string; conflict: boolean; error: boolean }[] {
-    return this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ?").all(repo).map((r) => ({ a: r.a, b: r.b, base: !!r.base, a_tip: r.a_tip, b_tip: r.b_tip, conflict: !!r.conflict, error: !!r.error }));
+    return this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ?").all(repo).map((r) => ({ a: r.a, b: r.b, base: !!r.base, a_tip: r.a_tip, b_tip: r.b_tip, conflict: !!r.conflict && !r.by_work, error: !!r.error }));
   }
 
   // ---- what the page reads ----
@@ -565,6 +648,7 @@ export class Overlaps {
     const pairs: Pair[] = rows.filter((r) => r.conflict || r.error).map((r) => ({
       ...(waits.has(pairKey(r.a, r.b)) ? { waits: true as const } : {}),
       a: r.a, b: r.b, base: !!r.base, a_tip: r.a_tip, b_tip: r.b_tip, conflict: !!r.conflict, ...(r.error ? { error: r.error } : {}), files: JSON.parse(r.files), checked: r.checked,
+      ...(r.by_work ? { uncommitted: uncommittedSides(r) } : {}),
       ...(owners.get(r.a) ? { a_session: owners.get(r.a) } : {}), ...(!r.base && owners.get(r.b) ? { b_session: owners.get(r.b) } : {}),
     }));
     const baseTip = rows.find((r) => r.base)?.b_tip ?? null;
@@ -606,6 +690,12 @@ export class Overlaps {
     return w ? { repo: rootOf(w), branch: headBranch(w) } : null;
   }
 }
+
+// The branches of a row whose uncommitted edits it was judged with.
+const uncommittedSides = (r: PairRow): string[] => {
+  const [wa, wb] = r.work ? (JSON.parse(r.work) as (string | null)[]) : [null, null];
+  return [...(wa ? [r.a] : []), ...(wb && !r.base ? [r.b] : [])];
+};
 
 // What a tool call could move, read from the files before and after it: the
 // branch the session's checkout is on with its tip, and the base's tip.

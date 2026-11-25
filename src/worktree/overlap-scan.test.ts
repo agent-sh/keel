@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync 
 import { join } from "node:path";
 import { ownEnv } from "../../test/env.ts";
 import { Store } from "../core/store.ts";
+import { bindLedger, unbindLedger } from "../checks/ledger.ts";
 import { keepMark, lastMark, Overlaps } from "./overlap-scan.ts";
 
 // Each test runs git a dozen times; a busy disk makes one call take half a second.
@@ -363,4 +364,39 @@ test("a worktree no live session holds is listed with its commits and uncommitte
   expect(await ov.unheld(a)).toEqual([]);
   store.db.run("UPDATE sessions SET archived = 1 WHERE id = ?", [holder.id]);
   expect(await ov.unheld(a)).toEqual([{ branch: "keel/builder", session_id: holder.id, title: "Builder", why: "archived", commits: 0, uncommitted: 2 }]);
+});
+
+test("edits not committed yet are forecast: the pair conflicts, marked uncommitted, and nothing of the repository changes", async () => {
+  const { repo, store, ov, a } = setup();
+  bindLedger(store);
+  try {
+    store.db.run("DELETE FROM overlap_branches WHERE branch = 'keel/b'");
+    // keel/c has no commit of its own: only its folder holds a change of line 3.
+    const path = join(repo, "..", "worker");
+    g(repo, "worktree", "add", "-q", "-b", "keel/c", path, "main");
+    const c = store.createSession({ model: "scripted:stand-in", workspace: path, title: "C" });
+    ov.committed(repo, "keel/c", c.id);
+    writeFileSync(join(path, "notes.md"), readFileSync(join(path, "notes.md"), "utf8").replace("line 3\n", "line 3 by c\n"));
+    const state = () => [g(repo, "for-each-ref"), g(repo, "stash", "list"), g(repo, "count-objects", "-v"), g(path, "status", "--porcelain"), g(path, "ls-files", "-s"), g(repo, "worktree", "list")].join("\n--\n");
+    const before = state();
+    await ov.scan(repo);
+    expect(state()).toBe(before);
+    const pair = ov.view(a).pairs.find((p) => !p.base && p.conflict);
+    expect(pair).toMatchObject({ a: "keel/a", b: "keel/c", uncommitted: ["keel/c"] });
+    expect(pair!.files.map((f) => f.path)).toEqual(["notes.md"]);
+    // What lands, the committed state, has no conflict: the landing queue's reads stay clean.
+    expect(ov.pairsOf(repo)).toEqual([]);
+    expect(ov.pairRows(repo).filter((r) => r.conflict)).toEqual([]);
+    expect(await ov.againstBase(repo, "keel/c")).toMatchObject({ state: "nothing" });
+    // Both sessions are told, the one with the edits too.
+    expect(ov.noteFor(a)?.text).toContain("its edits not committed yet");
+    expect(ov.noteFor(c.id)?.text).toContain("Your branch keel/c (its edits not committed yet)");
+    // The edit moves off the line: the conflict goes, and it is told as gone.
+    writeFileSync(join(path, "notes.md"), readFileSync(join(path, "notes.md"), "utf8").replace("line 3 by c\n", "line 3\n").replace("line 6\n", "line 6 by c\n"));
+    await ov.scan(repo);
+    expect(ov.view(a).pairs.filter((p) => p.conflict)).toEqual([]);
+    expect(state()).not.toBe("");
+  } finally {
+    unbindLedger();
+  }
 });

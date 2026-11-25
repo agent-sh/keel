@@ -38,7 +38,7 @@ export const overlapRoutes: RouteModule = (deps: Deps) => {
       if (!now) return;
       if (!last.has(s.id)) last.set(s.id, lastMark(store, s.id) ?? null);
       const was = last.get(s.id) ?? undefined;
-      if (sameMark(was, now)) return;
+      if (sameMark(was, now)) return void ov.edited(now.repo, s.id);
       last.set(s.id, now);
       if (last.size > 4096) last.delete(last.keys().next().value!);
       keepMark(store, s.id, now);

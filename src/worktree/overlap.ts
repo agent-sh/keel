@@ -96,7 +96,8 @@ export function linesSay([first, last]: [number, number]): string {
 // has them), within NOTE_CHARS. A coordinator holding many agents' branches
 // gets one short note, not a note a pair: pairs past the budget are a count.
 // `who`: how the recipient stands to a side, in its words.
-export type Side = { branch: string; tip: string; who: string };
+// `edits`: the conflict is of this side's edits that are not committed yet.
+export type Side = { branch: string; tip: string; who: string; edits?: true };
 // `held`: for a conflict with the base, how many conflicts of the branch with other branches wait until it is rebased.
 export type Told = { mine: Side; other: Side; files: string[]; all: number; base: boolean; held?: number };
 export type Gone = { mine: Side; other: Side; base: boolean };
@@ -106,8 +107,8 @@ export const FILES_TOLD = 4; // files named a pair; the rest is a count
 export const NOTE_CHARS = 2_500;
 // Other branches named on one branch's line, so a coordinator's note reaches its other branches too.
 export const PER_BRANCH = 4;
-const side = (s: Side) => (s.who === "your branch" ? `your branch ${s.branch}` : `${s.branch} (${s.who})`);
-const lead = (s: Side) => (s.who === "your branch" ? `Your branch ${s.branch}` : side(s));
+const side = (s: Side) => (s.who === "your branch" ? `your branch ${s.branch}${s.edits ? " (its edits not committed yet)" : ""}` : `${s.branch} (${s.who}${s.edits ? ", its edits not committed yet" : ""})`);
+const lead = (s: Side) => (s.who === "your branch" ? `Your branch ${s.branch}${s.edits ? " (its edits not committed yet)" : ""}` : side(s));
 const against = (t: { other: Side; base: boolean }) => (t.base ? `the base ${t.other.branch}` : side(t.other));
 function filesSay(t: Told): string {
   const shown = t.files.slice(0, FILES_TOLD);
