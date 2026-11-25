@@ -44,6 +44,7 @@ import { timed } from "../admin/stall.ts";
 import { buildId } from "../core/build.ts";
 import { ruledOf, type Ruled } from "./trial.ts";
 import { Provenance } from "./provenance-books.ts";
+import { importOf, ownersImported } from "./imported.ts";
 import { headHold } from "./head-trust.ts";
 import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, wholeTargets, type Hit, type Reach } from "./provenance.ts";
 import { webShape } from "./web-shape.ts";
@@ -1001,15 +1002,15 @@ export class Gate {
   }
 
   // The stored words that may name a session's own folders, newest first: for an agent its tasks and its parent's
-  // messages, and the owner's own prompts (ownerPrompt), but none a session imported from another harness holds
-  // (they are that harness's transcript). Read on the read thread, only the fields read.
+  // messages, and the owner's own prompts (ownerPrompt). Of a session imported from another harness, only the prompts
+  // the owner typed in a session of their own store (src/safety/imported.ts); the rest is that harness's transcript.
+  // Read on the read thread, only the fields read.
   private async placeWords(session: Session): Promise<{ text: string; from: "parent" | "owner" }[]> {
-    type Row = { kind: string | null; origin: string | null; from_agent: string | null; text: string | null; ts: number };
+    type Row = { kind: string | null; origin: string | null; from_agent: string | null; typed: number | null; text: string | null; ts: number };
     let rows: Row[] = [];
-    let since = 0;
-    try { since = this.store.db.query<{ synced_ms: number }, [string]>("SELECT synced_ms FROM import_links WHERE session_id = ?").get(session.id)?.synced_ms ?? 0; } catch {} // nothing was imported here
+    const imp = importOf(this.store, session.id);
     try {
-      rows = await this.readSql("SELECT json_extract(data, '$.kind') AS kind, json_extract(data, '$.origin') AS origin, json_extract(data, '$.from_agent') AS from_agent, substr(json_extract(data, '$.text'), 1, 20000) AS text, ts FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 200", [session.id]) as Row[];
+      rows = await this.readSql("SELECT json_extract(data, '$.kind') AS kind, json_extract(data, '$.origin') AS origin, json_extract(data, '$.from_agent') AS from_agent, json_extract(data, '$.typed') AS typed, substr(json_extract(data, '$.text'), 1, 20000) AS text, ts FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 200", [session.id]) as Row[];
     } catch { return []; }
     const out: { text: string; from: "parent" | "owner" }[] = [];
     for (const r of rows) {
@@ -1018,7 +1019,7 @@ export class Gate {
       const kind = r.kind ?? undefined, origin = r.origin ?? undefined;
       if (session.parent_id && kind === "task") out.push({ text: text.replace(/^[\s\S]*?\nTask:\n/, ""), from: "parent" });
       else if (session.parent_id && kind === "steer" && !r.from_agent && text.startsWith(FROM_PARENT)) out.push({ text, from: "parent" });
-      else if (ownerPrompt({ kind, origin }) && r.ts > since && !text.startsWith("[harness]") && !text.startsWith(PEER_PREFIX)) out.push({ text, from: "owner" });
+      else if ((r.ts > imp.until ? ownerPrompt({ kind, origin }) : ownersImported(imp, { typed: r.typed === 1 || undefined, kind, origin })) && !text.startsWith("[harness]") && !text.startsWith(PEER_PREFIX)) out.push({ text, from: "owner" });
     }
     return out;
   }

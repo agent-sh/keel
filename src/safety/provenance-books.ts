@@ -4,6 +4,7 @@
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { git } from "../core/git.ts";
+import { importOf } from "./imported.ts";
 import {
   ProvenanceBook, extractTargets, hostOfRemote, held, inputTargets, wholeTargets, withOwn,
   type Hit, type Origin, type Reach, type SourceOf, type Target,
@@ -20,9 +21,6 @@ export class Provenance {
 
   constructor(private store: Store, private source: SourceOf) {}
 
-  private importedUntil(id: string): number {
-    try { return this.store.db.query<{ synced_ms: number }, [string]>("SELECT synced_ms FROM import_links WHERE session_id = ?").get(id)?.synced_ms ?? 0; } catch { return 0; } // nothing was imported here
-  }
 
   // A session's book, taken up to its last event; the agents under it first, so a report finds what its agent saw.
   private async bookOf(id: string, depth = 0, seen = new Set<string>()): Promise<ProvenanceBook> {
@@ -35,7 +33,8 @@ export class Provenance {
     let b = this.books.get(id);
     if (!b) {
       if (this.books.size >= MAX_BOOKS) this.books.delete(this.books.keys().next().value!);
-      this.books.set(id, (b = new ProvenanceBook(this.source, this.importedUntil(id), (agent) => { const sid = this.kids.get(agent); return sid ? this.books.get(sid) ?? null : null; })));
+      const imp = importOf(this.store, id);
+      this.books.set(id, (b = new ProvenanceBook(this.source, imp.until, (agent) => { const sid = this.kids.get(agent); return sid ? this.books.get(sid) ?? null : null; }, imp.own)));
     }
     // A session not in memory is brought in, and the bodies of the events this book has not read are read, off the loop.
     if (this.store.session(id)) await this.store.warmBodies(id, b.seq + 1);

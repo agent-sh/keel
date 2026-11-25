@@ -5,7 +5,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { damageNotes, headTail, readLines, scanFor } from "./files.ts";
-import { Builder, clip, FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN, resultText, type Found, type Read } from "./types.ts";
+import { Builder, clip, FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN, resultText, typedWords, type Found, type Read } from "./types.ts";
 import { ownerEnv, ownerHome } from "../../core/paths";
 
 export const codexHome = () => process.env.KEEL_IMPORT_CODEX_DIR ?? ownerEnv("CODEX_HOME") ?? join(ownerHome(), ".codex");
@@ -29,6 +29,8 @@ export function* codexFiles(home = codexHome()): Generator<{ path: string; size:
 const injected = (t: string) => /^\s*(<environment_context>|<user_instructions>|<permissions instructions>|<skills_instructions>|# AGENTS\.md instructions|<turn_aborted>|<subagent_notification>)/.test(t);
 
 const TEXT_PARTS = new Set(["input_text", "output_text", "text"]);
+// Each text part of a message by itself: Codex puts its own context in a part of its own beside the typed words.
+const textOnly = (content: any): string[] => (Array.isArray(content) ? content : []).filter((p: any) => TEXT_PARTS.has(p?.type)).map((p: any) => String(p.text ?? ""));
 const textOf = (content: any) =>
   (Array.isArray(content) ? content : []).filter((p: any) => TEXT_PARTS.has(p?.type)).map((p: any) => p.text ?? "").join("\n");
 
@@ -99,10 +101,20 @@ const HISTORY_ONLY = "Shown as they were then; history only, not tools available
 
 // A rollout's records converted to events one at a time, in order: a whole
 // read converts them all, a rollout followed as it grows converts what it gained.
+// Codex's own clients a person types into: the terminal (codex-tui; codex_cli_rs before it), the editor extension and
+// the desktop app. Not codex_exec (a prompt a program passed), nor another writer of the format (Keel's own is "keel").
+const PEOPLE_CLIENTS = new Set(["codex-tui", "codex_cli_rs", "codex_vscode", "Codex Desktop"]);
+
 export class CodexConvert {
   b = new Builder();
   model: string | undefined;
   compacted = false;
+  // Whether the thread's user messages are a person's prompts: its session_meta names one of Codex's own clients, an
+  // interactive source (not exec, not a subagent's thread) and a thread the user started (`thread_source`, which older
+  // rollouts lack: their prompts are not counted). A turn the desktop app made of another harness's session
+  // (`external-import-...`) holds that session's records, whatever they were there.
+  private people = false;
+  private importTurn = false;
   // Why each skipped item was left out, counted per reason for the report.
   skips = new Map<string, number>();
   // A native tool search, kept as a note for the model: its query, then the
@@ -117,6 +129,8 @@ export class CodexConvert {
     const ts = Date.parse(r.timestamp) || fallbackTs;
     const p = r.payload ?? {};
     if (r.type === "turn_context" && p.model) this.model = p.model;
+    if (r.type === "session_meta") this.people = PEOPLE_CLIENTS.has(p.originator) && (p.source === "cli" || p.source === "vscode") && p.thread_source === "user";
+    if ((r.type === "event_msg" && p.type === "task_started") || (r.type === "turn_context" && typeof p.turn_id === "string")) this.importTurn = String(p.turn_id ?? "").startsWith("external-import");
     if (r.type === "compacted") {
       // Codex replaces the model's history here: with its summary (`message`)
       // and the owner's messages it kept, else with the items it names. The
@@ -145,7 +159,7 @@ export class CodexConvert {
           const media = resultText((Array.isArray(p.content) ? p.content : []).filter((c: any) => c?.type && !TEXT_PARTS.has(c.type)));
           const parts = Array.isArray(media) ? media : media ? [{ type: "text", text: media }] : [];
           for (const m of parts) if (m.type === "text") missing.push(m.text);
-          b.user(text, ts, parts.filter((m) => m.type === "image"));
+          b.user(text, ts, parts.filter((m) => m.type === "image"), this.people && !this.importTurn && textOnly(p.content).filter((t) => t.trim()).every((t) => typedWords(t) && !injected(t)));
         } else if (p.role === "assistant" && text.trim()) b.assistant([{ type: "text", text }], ts, model);
         else if (p.role === "assistant" && p.encrypted_content) b.assistant([{ type: "text", text: UNAVAILABLE }], ts, model);
         else if (p.role === "assistant") skip("an empty assistant message");

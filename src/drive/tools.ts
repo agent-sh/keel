@@ -12,6 +12,7 @@ import { OUTPUT_CAP } from "../tools/spill.ts";
 import { fail, ok, type ToolOutput } from "../tools/types.ts";
 import { DriveError, modelCommand, type Drive, type Found } from "./drive.ts";
 import { pickChoice } from "./text.ts";
+import { noteSent } from "./sent.ts";
 
 const fmt = (e: unknown): ToolOutput => fail(e instanceof DriveError ? `Error [${e.code}]: ${e.message}` : `Error: ${(e as Error).message}`);
 
@@ -76,6 +77,7 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
       { to: { type: "string" }, text: { type: "string" } }, ["to", "text"], false,
       async (i) => {
         try {
+          noteSent(store, String(i.text ?? ""));
           return ok(await drive.send(i.to, String(i.text ?? ""), judged.get(i)));
         } catch (e) {
           return fmt(e);
@@ -95,6 +97,7 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
       ["id", "request", "hash", "decision"], false,
       async (i) => {
         try {
+          if (typeof i.note === "string") noteSent(store, i.note);
           return ok(await drive.answer(i.id, i, judged.get(i)));
         } catch (e) {
           return fmt(e);
@@ -141,6 +144,7 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
         try {
           const f = judged.get(i) ?? (await drive.find(i.id));
           if (!f.row.drive.resume) throw new DriveError("NOT_AVAILABLE", `that session is ${f.row.state} and cannot be resumed by the agent view`);
+          noteSent(store, String(i.text ?? ""));
           return ok(await drive.send(i.id, String(i.text ?? ""), f));
         } catch (e) {
           return fmt(e);

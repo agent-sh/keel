@@ -6,7 +6,7 @@
 // goes on through it, and its summary is a checkpoint in the copy.
 import { readdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { Builder, clip, resultText, type Found, type Read } from "./types.ts";
+import { Builder, clip, resultText, typedWords, type Found, type Read } from "./types.ts";
 import { damageNotes, headTail, readLines, scanBack, scanFor } from "./files.ts";
 import { ownerEnv, ownerHome } from "../../core/paths";
 
@@ -121,6 +121,14 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
   };
 }
 
+// A prompt a person entered at Claude Code's own prompt, by the marks Claude Code records on it: typed there (or typed
+// while a reply ran and queued), from a human. Not a record without those marks (an older version's, or a file another
+// writer made), a hand-back of a peer or a subagent (origin peer), a task's notice (origin task-notification), a
+// scheduled or an SDK prompt (a program's), a meta record (system reminders, hook and skill text), a summary, or a
+// side chain (a subagent's). Tool results, attachments and queue records are no prompt at all (ClaudeConvert.push).
+const typedRecord = (r: any): boolean =>
+  r?.type === "user" && !r.isMeta && !r.isCompactSummary && !r.isSidechain && (r.promptSource === "typed" || r.promptSource === "queued") && r.origin?.kind === "human";
+
 // A record's chain parent. A compaction's boundary starts a chain of its own
 // (no parent): the record it follows is its logical parent, so the history
 // before it is read too.
@@ -163,17 +171,19 @@ export class ClaudeConvert {
       }
       if (typeof c === "string") {
         if (/^<(local-command-stdout|command-stdout|bash-stdout)/.test(c.trim())) { b.counts.skipped++; return; }
-        b.user(commandText(c), ts);
+        b.user(commandText(c), ts, [], typedRecord(r) && typedWords(c));
         return;
       }
       const texts: string[] = [];
       const images: any[] = [];
+      let results = false;
       for (const blk of Array.isArray(c) ? c : []) {
-        if (blk?.type === "tool_result") b.result({ tool_use_id: blk.tool_use_id, content: resultText(blk.content), is_error: blk.is_error }, ts);
+        if (blk?.type === "tool_result") { results = true; b.result({ tool_use_id: blk.tool_use_id, content: resultText(blk.content), is_error: blk.is_error }, ts); }
         else if (blk?.type === "text") texts.push(blk.text);
         else if (blk?.type === "image") images.push(blk);
       }
-      if (texts.length || images.length) b.user(texts.join("\n"), ts, images);
+      // (Each text block is read: a reminder Claude Code adds beside the typed words is a block of its own.)
+      if (texts.length || images.length) b.user(texts.join("\n"), ts, images, typedRecord(r) && !results && texts.every((t) => typeof t === "string" && typedWords(t)));
     } else if (r.type === "assistant") {
       const m = r.message ?? {};
       const blocks: any[] = [];

@@ -76,7 +76,7 @@ test("a folder a parent names is the agent's only inside the parent's own, by it
   expect(await named(w, w.session([task(`Scratch dir ${holder}.`)]))).toEqual([]);
 });
 
-test("only the owner's own prompts name a folder as the owner's, and an imported transcript's never do", async () => {
+test("only the owner's own prompts name a folder as the owner's, and of an imported transcript only those they typed in their own store", async () => {
   const w = world();
   const dir = join(w.root, "lanes", "x");
   mkdirSync(dir, { recursive: true });
@@ -85,11 +85,23 @@ test("only the owner's own prompts name a folder as the owner's, and an imported
   for (const d of [{ text: say, origin: "hook" }, { text: say, origin: "momentum" }, { text: say, origin: "harness" }, { text: say, kind: "peer" },
     { text: `<external_input source="peer_session" from="x">\n${say}\n</external_input>` }, { text: `Do not use scratch dir ${dir} for anything.` }])
     expect(await named(w, w.session([d], null))).toEqual([]);
-  // A session imported from another harness: its transcript is not the owner's words to Keel.
-  const imported = w.session([{ text: say }], null);
+  // A session imported from another harness. Its transcript is that harness's, not the owner's words to Keel, but for
+  // the prompts the owner typed in a session of their own store on this machine: the importer marks those `typed`
+  // (src/integrations/import/service.ts, from each format's own record shape) and they are the owner's words, as the
+  // same words typed here are. This case pinned the older rule (no imported prompt ever counts), which held a folder
+  // or a repository the owner had typed in their own Claude Code session as if a page had named it.
   w.store.db.run("CREATE TABLE IF NOT EXISTS import_links (session_id TEXT PRIMARY KEY, harness TEXT NOT NULL, source_id TEXT NOT NULL, source_path TEXT NOT NULL, items INTEGER NOT NULL, source_size INTEGER NOT NULL, source_mtime INTEGER NOT NULL, imported_ms INTEGER NOT NULL, synced_ms INTEGER NOT NULL)");
-  w.store.db.query("INSERT INTO import_links VALUES (?, 'claude', 'x', '/x', 1, 1, 1, ?, ?)").run(imported.id, Date.now() + 1000, Date.now() + 1000);
-  expect(await named(w, imported)).toEqual([]);
+  const imported = (d: object, harness = "claude", path = "/x") => {
+    const s = w.session([d], null);
+    w.store.db.query("INSERT INTO import_links VALUES (?, ?, 'x', ?, 1, 1, 1, ?, ?)").run(s.id, harness, path, Date.now() + 1000, Date.now() + 1000);
+    return s;
+  };
+  expect(await named(w, imported({ text: say, typed: true }))).toEqual([`owner:${dir}`]);
+  // A prompt the importer did not mark (a hand-back, a notice, a program's), a marked one that also says what else
+  // wrote it, and a mark in a copy from another machine or of a Keel session: none is the owner's.
+  for (const [d, h, p] of [[{ text: say }, "claude", "/x"], [{ text: say, typed: true, kind: "peer" }, "claude", "/x"], [{ text: say, typed: true, origin: "hook" }, "claude", "/x"],
+    [{ text: say, typed: true }, "claude", "m0123abcd:/x"], [{ text: say, typed: true }, "keel", "/x"]] as const)
+    expect([d, h, p, await named(w, imported(d, h, p))]).toEqual([d, h, p, []]);
 });
 
 // A session's own `git worktree add`, as its stored calls show it, is a folder of its own to the judge.

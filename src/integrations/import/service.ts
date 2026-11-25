@@ -4,7 +4,8 @@
 // preview, and an import that copies a session into a new keel-bun session.
 // The source is only read; an import is linked to it, so the next import of
 // the same source opens or updates that session instead of making another.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { Store } from "../../core/store.ts";
 import type { Session } from "../../core/types.ts";
 import { claudeFiles, claudeFound, claudeRoot, readClaude } from "./claude.ts";
@@ -14,12 +15,14 @@ import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import { opencodeDb, opencodePending, opencodeSessions, readOpencode } from "./opencode.ts";
 import { geminiHome, geminiPending, geminiSessions, readGemini } from "./gemini.ts";
-import { inDatabase, storedData, type Found, type Harness, type Read } from "./types.ts";
+import { inDatabase, sourceMachine, storedData, type Found, type Harness, type ImportedEvent, type Read } from "./types.ts";
 import { hasAttachmentsRoot, saveAttachment } from "../../engine/attachments.ts";
 import { haystack, keyHash, kindsOf, offered, order, pageLimit, readCursor, select, wordsOf, writeCursor, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
 import { filesWithAll } from "./inside.ts";
 import { MORE, moreOf } from "./more.ts";
+import { contains } from "../../core/paths.ts";
+import { wasSent } from "../../drive/sent.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
   { harness: "claude", label: "Claude Code", store: claudeRoot },
@@ -62,8 +65,7 @@ type IndexKey = { rowid: number; path: string; harness: Harness; id: string; upd
 
 export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null };
 
-// Fleet import links encode the source machine as `<machine>:<absolute path>`.
-export const sourceMachine = (path: string) => /^(m[0-9a-f]{8}):\//.exec(path)?.[1];
+export { sourceMachine };
 
 // A prompt's file a reader carries with its bytes (`data`, base64) is stored
 // as Keel stores an attached file, once by its content, and the prompt keeps
@@ -91,9 +93,27 @@ export const WENT_ON = "the Keel session went on since it was copied, so it is n
 
 export type { ListQuery } from "./offer.ts";
 
+// Whether a source is a file of the owner's own store on this machine that the importer reads: Claude Code's
+// projects, Codex's sessions (archived too), and the command line's and the IDE's stores of Antigravity, by real
+// path (a link out of the store is not in it). Not a file given by its path from anywhere else, another machine's,
+// a session of a store kept in one database, or Antigravity's ACP store, whose prompts are whichever client ran it
+// (Keel's own ACP provider included). Only such a source's typed prompts keep their mark (see copy).
+const realOf = (p: string) => { try { return realpathSync(p); } catch { return null; } };
+export function ownStore(f: Pick<Found, "harness" | "path">): boolean {
+  const roots = f.harness === "claude" ? [claudeRoot()]
+    : f.harness === "codex" ? [join(codexHome(), "sessions"), join(codexHome(), "archived_sessions")]
+    : f.harness === "agy" ? [join(agyHome(), "antigravity-cli"), join(agyHome(), "antigravity")]
+    : [];
+  const file = roots.length ? realOf(f.path) : null;
+  return !!file && roots.some((r) => { const root = realOf(r); return !!root && contains(root, file); });
+}
+
 const sourceStat = (f: Found) => {
   try { const s = statSync(inDatabase(f.harness) ? f.path.split("#")[0]! : f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; }
 };
+
+// A user event its reader marked typed (ImportedEvent): the mark is the reader's, never the data's.
+const typedPrompt = (e: ImportedEvent) => e.kind === "user" && e.typed === true && typeof e.data?.text === "string" && !e.data.kind && !e.data.origin;
 
 const REFRESH_MS = 30_000;
 
@@ -637,13 +657,18 @@ export class Imports {
   // the conversation.
   // `before`: the source's events an earlier import copied (an update), which
   // a compaction's kept events may reach back into.
-  private copy(sessionId: string, events: Read["events"], before: Read["events"] = []) {
+  // `own`: the source is the owner's own (ownStore, a session a person ran): a prompt its reader found typed keeps
+  // `typed` in its stored data, unless Keel's drive sent those words there (a model's, src/drive/sent.ts). Every
+  // event is dated no later than now, so each is before the link's `synced_ms` and read as the import's.
+  private copy(sessionId: string, events: Read["events"], before: Read["events"] = [], own = false) {
     let last: number | undefined;
     const ids: string[] = [];
     let prior: (string | undefined)[] | undefined;
+    const now = Date.now();
     events.forEach((e, j) => {
-      if (Number.isFinite(e.ts) && e.ts > 0) last = e.ts;
-      const data = filesStored(storedData(e, (n) => (j - n >= 0 ? ids[j - n] : (prior ??= this.copied(sessionId, before))[before.length + j - n])));
+      if (Number.isFinite(e.ts) && e.ts > 0) last = Math.min(e.ts, now);
+      const stored = filesStored(storedData(e, (n) => (j - n >= 0 ? ids[j - n] : (prior ??= this.copied(sessionId, before))[before.length + j - n])));
+      const data = own && typedPrompt(e) && !wasSent(this.store, String(e.data.text)) ? { ...stored, typed: true } : stored;
       ids.push(this.store.append(sessionId, e.kind, data, undefined, last).id);
     });
   }
@@ -681,6 +706,8 @@ export class Imports {
     // by another session since is not copied under the first one's name.
     if (r.found.id !== f.id) throw refuse(`the file now holds another session (${r.found.id}), not ${f.id}: look at the list again`);
     const st = (o.from ? undefined : sourceStat(f)) ?? { size: f.size_bytes, mtime: f.updated_ms };
+    // A person's prompts count as the owner's only from a session the owner ran in a store of their own here.
+    const own = !o.from && r.found.kind === "interactive" && ownStore(f) && ownStore(r.found);
     // From here to the return nothing waits: what was true before the read
     // (the copies, a copy's head and link) is looked at again, and the events
     // and the link are written as one transaction or not at all.
@@ -699,7 +726,7 @@ export class Imports {
       if (r.events.length <= link.items) return { action: "opened", session: s, imported_events: 0, read: r };
       const more = r.events.slice(link.items);
       this.store.atomic(s.id, () => {
-        this.copy(s.id, more, r.events.slice(0, link.items));
+        this.copy(s.id, more, r.events.slice(0, link.items), own);
         this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), s.id);
       });
       return { action: "updated", session: this.store.session(s.id)!, imported_events: more.length, read: r };
@@ -713,7 +740,7 @@ export class Imports {
     const id = this.store.db.transaction(() => {
       const s = this.store.createSession({ title: o.title ?? found.title, model: o.model, workspace: o.workspace });
       if (o.from) this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(o.from.machine, s.id);
-      this.copy(s.id, r.events);
+      this.copy(s.id, r.events, [], own);
       const counts = r.counts;
       const summary = `Imported from ${label}${o.from ? " on another machine" : ""} (${f.id}): ${counts.prompts} prompts, ${counts.assistant_messages} replies, ${counts.tool_calls} tool calls. The original is unchanged.`;
       this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });

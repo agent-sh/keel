@@ -28,7 +28,25 @@ export type Found = {
   archived?: boolean;   // the source keeps it archived
 };
 
-export type ImportedEvent = { kind: EventKind; data: any; ts: number };
+// `typed`: a prompt the source's own client recorded as entered at its prompt by a person (its reader says which
+// records are: never a tool result, a notice, a hand-back or a hook's text). It is not part of the event's data:
+// a copy keeps it only when it was read from the owner's own store on this machine (Imports.copy), and the
+// provenance gate then counts its words as the owner's (src/safety/imported.ts).
+export type ImportedEvent = { kind: EventKind; data: any; ts: number; typed?: true };
+
+// Fleet import links encode the source machine as `<machine>:<absolute path>`.
+export const sourceMachine = (path: string) => /^(m[0-9a-f]{8}):\//.exec(path)?.[1];
+
+// Whether words a client recorded as typed read as the person's own. Not when they open with markup (a notice, a
+// reminder, command output, a slash command, a paste or a relayed session's message that a harness or a program put
+// at the prompt), carry one of the harnesses' notices anywhere, or open with a label another program puts before what
+// it types into a terminal ("[name] ..."); Claude Code's own image placeholder ("[Image #1]") is the person's.
+const NOTICE = /<\/?(system-reminder|user-prompt-submit-hook|local-command-stdout|local-command-stderr|command-stdout|command-name|bash-stdout|bash-input|task-notification|external_input|keel_note)\b/;
+export function typedWords(text: string): boolean {
+  const t = text.trimStart();
+  if (!t.trim() || t.startsWith("<") || NOTICE.test(t)) return false;
+  return !/^\[(?!Image #\d+\])[^\]\n]{1,120}\]/.test(t);
+}
 
 export type Counts = { prompts: number; assistant_messages: number; tool_calls: number; thoughts_dropped: number; skipped: number; media: number };
 
@@ -70,13 +88,14 @@ export class Builder {
     const held = this.sealed.get(this.base + this.events.length - 1);
     return held !== undefined && held === itemsOf(e) ? undefined : e;
   }
-  user(text: string, ts: number, images: any[] = []) {
+  // `typed`: the reader found the record to be a prompt a person entered (see ImportedEvent).
+  user(text: string, ts: number, images: any[] = [], typed = false) {
     // Stored as Keel stores a prompt's images (the providers' wires read that shape).
     images = images.map((b) => (b?.type === "image" && b.source?.type === "base64" ? { type: "image", media_type: b.source.media_type, data: b.source.data } : b));
     if (!text.trim() && !images.length) return;
     this.counts.prompts++;
     this.counts.media += images.length;
-    this.events.push({ kind: "user", data: { text, images: images.length ? images : undefined }, ts });
+    this.events.push({ kind: "user", data: { text, images: images.length ? images : undefined }, ts, ...(typed && typedWords(text) ? { typed: true as const } : {}) });
   }
   // `stop` is a stored outcome the source says outright (an interrupted reply);
   // without one, a reply with calls asked for tools and one without ended.

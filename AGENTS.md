@@ -537,8 +537,12 @@ under `~/.cache/keel-work/bun/research/`.
   kept per session with where it first appeared (`src/safety/provenance.ts`, read from the stored events;
   `src/safety/provenance-books.ts` for the sessions above, the agents below and the repository). Outside content is
   a page, an MCP server's answer (every server but Keel's own until servers are classed), the output of curl,
-  wget or gh, a channel event, an imported transcript, and an agent's report when that agent read any of these;
-  a search result lists an address (a page fetch of that address, or of a page above it with no query, goes on;
+  wget or gh, a channel event, an imported transcript, and an agent's report when that agent read any of these.
+  Of a session copied from the owner's own store here (Claude Code, Codex, Antigravity's command line and IDE),
+  the prompts a person typed are the owner's words: the reader marks them `typed` from its format's own record
+  shapes, the copy keeps the mark only for such a source and never for words Keel's drive sent there
+  (`src/drive/sent.ts`), and the gate reads it through `src/safety/imported.ts`; the rest of the copy stays
+  outside. A search result lists an address (a page fetch of that address, or of a page above it with no query, goes on;
   a path or query it did not list, a header, a cookie or a body is a send). A text is read whole, in chunks,
   with a turn of the loop between them; a text past 8 MB, or more than 50,000 targets in a session, leaves the
   session "unbounded" (an agent's report brings it up; a full book drops the model's own sightings before

@@ -13,7 +13,9 @@
 //   MCP server's result (every server that is not one of Keel's own, until
 //   servers are classed), the output of curl, wget or gh (issue and pull
 //   request text), a channel event, a transcript imported from another
-//   harness, an agent's report when that agent read any of these;
+//   harness (but for the prompts the owner typed in a session of their own
+//   store, which are `owner`: src/safety/imported.ts), an agent's report when
+//   that agent read any of these;
 // - `listed`: an address a web search result gave, or a link in a page a fetch
 //   tool or a plain `curl` read (what a reader model said of a page is not the
 //   page's text: `outside`). A plain page fetch to it goes on, when the address
@@ -34,6 +36,7 @@
 // read back is `inside`. What is held is what outside content named whole.
 import { resolve } from "node:path";
 import { ownerPrompt } from "../core/owner.ts";
+import { ownersImported } from "./imported.ts";
 import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
 import { name as baseName, unwrap, type Run } from "./risk-words.ts";
 import { groupOf, readerAnswered, withScheme } from "./addresses.ts";
@@ -814,6 +817,9 @@ export class ProvenanceBook {
     private importedUntil = 0,
     // The book of the agent a report is from, taken up to its last event (null: not an agent here).
     private child: (agentId: string) => ProvenanceBook | null = () => null,
+    // The transcript is a copy of a session the owner ran in a store of their own here (src/safety/imported.ts):
+    // its prompts marked typed are the owner's words.
+    private ownImport = false,
   ) {}
 
   get(key: string): Origin | undefined { return this.first.get(key); }
@@ -929,7 +935,10 @@ export class ProvenanceBook {
       // Another harness's transcript, whatever it holds.
       if (this.importedUntil > 0 && e.ts <= this.importedUntil) {
         const where = "an imported transcript";
-        if (e.kind === "user") await this.noteAll(String(d.text ?? ""), "outside", where, e);
+        // A prompt the owner typed there is theirs, as one typed here is; everything else of the copy (its tool
+        // results, the model's words and calls, notices, hand-backs) stays outside content.
+        if (e.kind === "user" && ownersImported({ until: this.importedUntil, own: this.ownImport }, d)) await this.noteAll(String(d.text ?? ""), "owner", "the owner's prompt in an imported transcript", e);
+        else if (e.kind === "user") await this.noteAll(String(d.text ?? ""), "outside", where, e);
         else if (e.kind === "assistant") for (const b of d.blocks ?? []) { if (b?.type === "text") await this.noteAll(String(b.text ?? ""), "outside", where, e); else if (b?.type === "tool_use") await this.noteAll(JSON.stringify(b.input ?? {}), "outside", where, e); }
         else if (e.kind === "tool_result") for (const r of d.results ?? []) await this.noteAll(textOf(r?.content), "outside", where, e);
         continue;
