@@ -29,10 +29,24 @@ export function leafOf(events: readonly StoredEvent[], id: string): string {
   return best.id;
 }
 
-// The other versions of a prompt: user events with the same parent, in order.
+// Where a prompt branches from: its parent, past the notes stored between (a rewind's notes sit there:
+// the prompt typed after a rewind is stored under them, the one it replaces under what stood before them).
+// `get` finds an event by id; a note's own parent is on the same branch, so the walk stays on it.
+export function anchorOf(parent: string | null, get: (id: string) => { kind: string; parent: string | null } | undefined): string | null {
+  for (let i = 0; parent && i < 64; i++) {
+    const x = get(parent);
+    if (!x || x.kind !== "note") break;
+    parent = x.parent;
+  }
+  return parent;
+}
+
+// The other versions of a prompt: user events that branch from the same place, in order.
 export function versions(events: readonly StoredEvent[], e: StoredEvent): StoredEvent[] {
   if (e.kind !== "user") return [e];
-  return events.filter((x) => x.kind === "user" && x.parent === e.parent && !x.data.origin);
+  const by = new Map(events.map((x) => [x.id, x]));
+  const at = anchorOf(e.parent, (id) => by.get(id));
+  return events.filter((x) => x.kind === "user" && !x.data.origin && anchorOf(x.parent, (id) => by.get(id)) === at);
 }
 
 // A part of one branch, for a reader that holds a long session in pages (the
@@ -145,7 +159,14 @@ export function pageOfLine(line: readonly StoredEvent[], ask: { limit: number; b
   const [a, b] = pageRange(line, ask);
   const part = line.slice(a, b);
   const out = new Map(part.map((e) => [e.id, e]));
-  for (const e of part) if (e.kind === "user" && !e.data.origin) for (const v of versions(e.parent)) out.set(v.id, v);
+  // (`versions` is asked where the prompt branches from: on the branch that is before it, past any notes.)
+  for (let i = 0; i < part.length; i++) {
+    const e = part[i]!;
+    if (e.kind !== "user" || e.data.origin) continue;
+    let j = a + i - 1;
+    while (j >= 0 && line[j]!.kind === "note") j--;
+    for (const v of versions(j >= 0 ? line[j]!.id : null)) out.set(v.id, v);
+  }
   // The newest events of the branch come with the start of its last turn (the reader's clock of a running turn).
   if (ask.at === undefined && ask.before === undefined && ask.after === undefined) {
     for (let k = line.length - 1; k >= 0; k--) if (line[k]!.kind === "turn_start") { out.set(line[k]!.id, line[k]!); break; }

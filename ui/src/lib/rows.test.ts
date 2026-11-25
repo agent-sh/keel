@@ -240,3 +240,29 @@ test("the calls of one reply are grouped by what they do, however the model orde
   const run = flat(buildRows(undefined, all.slice(from), nextSiblings(undefined, all).map, false, input)).find((r) => r.kind === "work")!;
   expect(run.steps!.map((st) => [st.family, st.items.length])).toEqual([["run", 25], ["explore", 50], ["change", 25]]);
 });
+
+test("the prompt typed after a rewind is a version of the one it replaced, whether or not it stood at the root", () => {
+  for (const root of [false, true]) {
+    const list: StoredEvent[] = [];
+    const add = (kind: StoredEvent["kind"], data: any, parent: string | null): StoredEvent => {
+      const e: StoredEvent = { id: `v${root}${list.length + 1}`, session_id: "s", seq: 1000 + list.length, parent, kind, data, ts: 1 };
+      list.push(e);
+      return e;
+    };
+    const first = add("user", { text: "first" }, null);
+    const end = add("turn_end", {}, first.id);
+    const old = root ? first : add("user", { text: "second" }, end.id);
+    const at = root ? null : end.id;
+    // The rewind's notes, then the new prompt under them.
+    const n1 = add("note", { kind: "rewind", model: true }, at);
+    const n2 = add("note", { kind: "rewound" }, n1.id);
+    const fresh = add("user", { text: "again" }, n2.id);
+    const sibs = nextSiblings(undefined, list).map;
+    expect(sibs.get(fresh.parent)!.map((e) => e.id)).toEqual([old.id, fresh.id]);
+    expect(sibs.get(old.parent)!.map((e) => e.id)).toEqual([old.id, fresh.id]);
+    // The same one event at a time.
+    let step: SiblingsOf | undefined;
+    for (let i = 1; i <= list.length; i++) step = nextSiblings(step, list.slice(0, i));
+    expect(step!.map.get(fresh.parent)!.map((e) => e.id)).toEqual([old.id, fresh.id]);
+  }
+});

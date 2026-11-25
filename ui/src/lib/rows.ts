@@ -307,21 +307,30 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
   return b;
 }
 
-// The versions of each prompt (see versions() in tree.ts), by parent. Events
-// added to the list change only the parents they name.
+// The versions of each prompt (see versions() in tree.ts): the list is under the parent of each of its
+// members, so a prompt finds the others by its own parent. Prompts that branch from the same place are
+// versions even when notes stand between (a rewind's: the prompt typed after one is stored under them).
+// Events added to the list change only the lists they join.
 export type Siblings = Map<string | null, StoredEvent[]>;
-export type SiblingsOf = { all: StoredEvent[]; map: Siblings };
+export type SiblingsOf = { all: StoredEvent[]; map: Siblings; up: Map<string, string | null>; groups: Map<string | null, StoredEvent[]> };
 export function nextSiblings(prev: SiblingsOf | undefined, all: StoredEvent[]): SiblingsOf {
   const grew = !!prev && prev.all.length > 0 && all.length >= prev.all.length && all[0] === prev.all[0] && all[prev.all.length - 1] === prev.all[prev.all.length - 1];
   let map: Siblings = grew ? prev!.map : new Map();
   let copied = !grew;
+  // A note's place: where it branches from, past the notes under it. Held across calls, only ever added to.
+  const up: SiblingsOf["up"] = grew ? prev!.up : new Map();
+  const groups: SiblingsOf["groups"] = grew ? prev!.groups : new Map();
   for (let i = grew ? prev!.all.length : 0; i < all.length; i++) {
     const e = all[i]!;
+    if (e.kind === "note") { up.set(e.id, e.parent !== null && up.has(e.parent) ? up.get(e.parent)! : e.parent); continue; }
     if (e.kind !== "user" || e.data.origin) continue;
     if (!copied) { map = new Map(map); copied = true; }
-    map.set(e.parent, [...(map.get(e.parent) ?? []), e]);
+    const at = e.parent !== null && up.has(e.parent) ? up.get(e.parent)! : e.parent;
+    const list = [...(groups.get(at) ?? []), e];
+    groups.set(at, list);
+    for (const m of list) map.set(m.parent, list);
   }
-  return { all, map };
+  return { all, map, up, groups };
 }
 
 // lineage() of tree.ts, from the previous one: events appended under the

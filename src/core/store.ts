@@ -1,4 +1,5 @@
 import { ownersMeta } from "./owner.ts";
+import { anchorOf } from "./tree.ts";
 import { keyShaped, keyShapedDeep } from "./conceal.ts";
 import { BARE_INDEX_SQL, bareBy, hasBareIndex, INDEX_NOW_ROWS } from "./bare-index.ts";
 import { Database } from "bun:sqlite";
@@ -1114,10 +1115,11 @@ export class Store {
       // the newest event starts nothing (nothing else is stored there yet); one
       // under any other event may be a second version: the map is made again
       // when it is next asked for.
+      // (A prompt under a note, a rewind's, branches from what stood before the notes: the map is made again.)
       if (k.forks && kind === "user") {
         const versions = k.forks.get(p);
         if (versions) k.forks.set(p, [...versions, held]);
-        else if (p !== (k.all[at - 1]?.id ?? null)) k.forks = undefined;
+        else if (p !== (k.all[at - 1]?.id ?? null) || k.all[at - 1]?.kind === "note") k.forks = undefined;
       }
       this.touch(session_id, k);
       this.trim(k, Math.floor(at / RUN));
@@ -1496,15 +1498,17 @@ export class Store {
     return this.db.query<{ n: number | null }, [string]>("SELECT MAX(seq) AS n FROM events WHERE session_id = ?").get(session_id)?.n ?? 0;
   }
 
-  // The versions of the prompt stored under `parent` when it has several (the
-  // owner's prompts with that parent, in order, as versions() of
-  // src/core/tree.ts gives them); none for a prompt that is the only one.
-  // Only the bodies of the messages stored under that parent are read.
+  // The versions of the prompt that branches from `at` when it has several (the
+  // owner's prompts that branch from there, in order, as versions() of
+  // src/core/tree.ts gives them: an event, or the one before the notes a prompt
+  // is stored under); none for a prompt that is the only one.
+  // Only the bodies of the messages that branch from there are read.
   versions(session_id: string, parent: string | null): readonly StoredEvent[] {
     const k = this.held(session_id);
     if (!k.forks) {
       const by = new Map<string | null, StoredEvent[]>();
-      for (const e of k.all) if (e.kind === "user") (by.get(e.parent) ?? by.set(e.parent, []).get(e.parent)!).push(e);
+      const notes = new Map(k.all.filter((e) => e.kind === "note").map((e) => [e.id, e]));
+      for (const e of k.all) if (e.kind === "user") { const at = anchorOf(e.parent, (id) => notes.get(id)); (by.get(at) ?? by.set(at, []).get(at)!).push(e); }
       k.forks = new Map([...by].filter(([, list]) => list.length > 1));
     }
     return (k.forks.get(parent) ?? []).filter((e) => !e.data.origin);

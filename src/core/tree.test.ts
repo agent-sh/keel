@@ -1,7 +1,7 @@
 // A page of a branch (pageOf): which events a reader that holds a session in
 // parts is given for each way of asking.
 import { expect, test } from "bun:test";
-import { firstAt, leafCount, lineage, pageOf, pageOfLine, replyBefore } from "./tree.ts";
+import { firstAt, leafCount, lineage, pageOf, pageOfLine, replyBefore, versions } from "./tree.ts";
 import type { StoredEvent } from "./types.ts";
 
 const all: StoredEvent[] = [];
@@ -136,4 +136,34 @@ test("the branches of a session are counted without a set of every parent", () =
   const list = [mk("a", null, 1), mk("b", "a", 2), mk("c", "b", 3), mk("d", "a", 4), mk("e", "b", 5), mk("f", "b", 6), mk("g", null, 7)];
   expect(leafCount(list)).toBe(naive(list));
   expect(leafCount(list)).toBe(5);
+});
+
+// A prompt typed after a rewind is stored under the rewind's notes; the prompt it replaces is under what stood before them.
+test("a prompt typed after a rewind is a version of the one it replaced, past the notes between", () => {
+  const log: StoredEvent[] = [];
+  const add = (kind: StoredEvent["kind"], data: any, parent: string | null): StoredEvent => {
+    const e: StoredEvent = { id: `r${log.length + 1}`, session_id: "s", seq: log.length + 1, parent, kind, data, ts: 1 };
+    log.push(e);
+    return e;
+  };
+  const a = add("user", { text: "first" }, null);
+  const ts = add("turn_start", {}, a.id);
+  const end = add("turn_end", {}, ts.id);
+  const b = add("user", { text: "second" }, end.id);
+  const bEnd = add("turn_end", {}, b.id);
+  // The rewind to before `b`: the head went back to `end`; two notes were stored under it; the new prompt under them.
+  const n1 = add("note", { kind: "rewind", model: true }, end.id);
+  const n2 = add("note", { kind: "rewound" }, n1.id);
+  const b2 = add("user", { text: "second, again" }, n2.id);
+  expect(versions(log, b2).map((e) => e.id)).toEqual([b.id, b2.id]);
+  expect(versions(log, b).map((e) => e.id)).toEqual([b.id, b2.id]);
+  // The page of the new branch brings the old prompt in beside it.
+  const line = lineage(log, b2.id);
+  const page = pageOfLine(line, { limit: 100 }, (at) => (at === end.id ? [b, b2] : []), b2.id, true);
+  expect(page.events.map((e) => e.id)).toContain(b.id);
+  expect(bEnd.id).toBeDefined();
+  // Rewinding to the very first prompt: the notes stand at the root, and the new prompt is still a version of it.
+  const m1 = add("note", { kind: "rewound" }, null);
+  const a2 = add("user", { text: "first, again" }, m1.id);
+  expect(versions(log, a2).map((e) => e.id)).toEqual([a.id, a2.id]);
 });

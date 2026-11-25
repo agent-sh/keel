@@ -9,7 +9,7 @@ import { FileDiff } from "lucide-react";
 import { createRoot } from "react-dom/client";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { PromptBlock } from "../../../src/core/types.ts";
-import { promptRows } from "../lib/rewind.ts";
+import { promptRows, promptRowsOf } from "../lib/rewind.ts";
 import { sessionLine } from "../lib/rewind-act.ts";
 import { stoppingShells } from "../lib/shells.ts";
 import { api, failed, useStore } from "../lib/store.ts";
@@ -52,7 +52,10 @@ function RewindDialog({ ask, onClose }: { ask: Ask; onClose: () => void }) {
   const events = useStore((s) => s.events[sid]);
   const head = useStore((s) => s.sessions[sid]?.head);
   const [turns, setTurns] = useState<{ turn: number; files: unknown[] }[] | null>(null);
-  const rows = useMemo(() => promptRows(sessionLine(sid), turns ?? []), [events, head, turns, sid]);
+  // The branch's prompts from the daemon: the page holds only the newest part of a long one. Until they come (or
+  // when they cannot be read) the page's own are listed.
+  const [asked, setAsked] = useState<{ prompts: { id: string; seq: number; text: string; attachments: boolean }[]; starts: number[] } | null>(null);
+  const rows = useMemo(() => (asked ? promptRowsOf(asked.prompts, new Set(asked.starts), turns ?? []) : promptRows(sessionLine(sid), turns ?? [])), [events, head, turns, sid, asked]);
   const [picked, setPicked] = useState<string | null>(ask.eventId ?? null);
   const [mode, setMode] = useState<Mode>("both");
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -65,6 +68,7 @@ function RewindDialog({ ask, onClose }: { ask: Ask; onClose: () => void }) {
     let live = true;
     api<{ turns: { turn: number; files: unknown[]; elsewhere?: string }[] }>(`/api/sessions/${sid}/checkpoints`)
       .then((r) => live && setTurns(r.turns.filter((t) => !t.elsewhere)), () => live && setTurns([]));
+    api<NonNullable<typeof asked>>(`/api/sessions/${sid}/prompts`).then((r) => live && setAsked(r), () => {});
     return () => { live = false; };
   }, [sid]);
   // Opened with nothing chosen (a command, Esc twice): the newest prompt, which is where a rewind usually goes.

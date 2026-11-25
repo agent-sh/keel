@@ -775,3 +775,20 @@ test("a session's rows come from the read thread, and what was stored meanwhile 
   expect(plain.events(s.id)).toHaveLength(9001);
   other.close();
 });
+
+test("a prompt stored under a rewind's notes is a version of the prompt it replaced", () => {
+  const store = new Store(scratch());
+  const s = store.createSession({ model: "m", workspace: "/" });
+  const first = store.append(s.id, "user", { text: "first" });
+  const end = store.append(s.id, "turn_end", {});
+  const old = store.append(s.id, "user", { text: "second" });
+  store.append(s.id, "turn_end", {});
+  expect(store.versions(s.id, end.id)).toEqual([]);
+  // The rewind: the head goes back, two notes are stored under it, then the new prompt.
+  store.updateSession(s.id, { head: end.id });
+  store.append(s.id, "note", { kind: "rewind", model: true });
+  store.append(s.id, "note", { kind: "rewound" });
+  const fresh = store.append(s.id, "user", { text: "second again" });
+  expect(store.versions(s.id, end.id).map((e) => e.id)).toEqual([old.id, fresh.id]);
+  expect(first.id).toBeDefined();
+});

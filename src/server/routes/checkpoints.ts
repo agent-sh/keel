@@ -138,6 +138,17 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         return json({ turns: turns.map((t) => (place.has(t.turn) ? { ...t, n: place.get(t.turn) } : t)), expired, scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
       }),
     },
+    // The prompts of the branch shown, all of them (the page holds only the newest part of a long one), and
+    // where its turns start: what the Rewind dialog lists. Text is the first line, cut.
+    "/api/sessions/:id/prompts": {
+      GET: (req: any) => guard(async () => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        const line = store.lineage(s.id);
+        const prompts = line.filter(shownAsPrompt).map((e) => ({ id: e.id, seq: e.seq, text: String(e.data.text ?? "").trim().split("\n")[0]!.slice(0, 200), attachments: (e.data.images?.length ?? 0) > 0 }));
+        return json({ prompts, starts: line.filter((e) => e.kind === "turn_start").map((e) => e.seq) });
+      }),
+    },
     "/api/sessions/:id/checkpoints/diff": {
       GET: (req: any) => guard(async () => {
         const s = store.session(req.params.id);
