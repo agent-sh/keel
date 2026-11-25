@@ -89,7 +89,10 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
   const composer = page.getByTestId("composer");
 
   // Two Send nows and a Remove for one queued prompt while the stop is pending.
-  await msg("script:slow");
+  // A provider that ignores Stop for a while keeps these requests inside
+  // the stop, rather than racing for the last few ms of a normal request.
+  await msg("script:deaf");
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${sid}`)).json()).status?.kind).toBe("model");
   const twin = (await msg("same words", "queue")).queued;
   const other = (await msg("same words", "queue")).queued;
   expect(other.id).not.toBe(twin.id); // identical text, two prompts
@@ -119,6 +122,9 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
     else await page.getByTestId("queue-button").click();
   }
   for (const t of ["alpha", "bravo", "charlie"]) { await composer.fill(t); await composer.press("Control+Shift+Enter"); }
+  const more = page.getByTestId("queue-more");
+  await expect(more).toHaveText("3 more queued");
+  await more.click();
   await expect(page.getByTestId("queue-item")).toHaveCount(5);
   await page.getByTestId("stop").click();
   await expect(page.getByTestId("queue-held")).toBeVisible({ timeout: 10_000 });
@@ -327,6 +333,9 @@ test("prompts queued one after another keep their order when the first request i
     });
     for (const t of ["alpha", "bravo", "charlie"]) { await composer.fill(t); await composer.press("Control+Shift+Enter"); }
     await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}/queue`)).json()).queue as { text: string }[]).map((x) => x.text), { timeout: 15_000 }).toEqual(["alpha", "bravo", "charlie"]);
+    const more = page.getByTestId("queue-more");
+    await expect(more).toHaveText("1 more queued");
+    await more.click();
     await expect(page.getByTestId("queue-item")).toHaveText([/alpha/, /bravo/, /charlie/]);
   } finally {
     writeFileSync(gate, "");
