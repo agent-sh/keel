@@ -88,7 +88,7 @@ export function Failures({ tool, session, since, until, count }: { tool?: string
   );
 }
 
-function MoneyField({ value, onSave, label, testid }: { value: number | null; onSave: (v: number | null) => Promise<unknown>; label: string; testid?: string }) {
+function MoneyField({ value, onSave, label, testid, hours }: { value: number | null; onSave: (v: number | null) => Promise<unknown>; label: string; testid?: string; hours?: boolean }) {
   const [text, setText] = useState(value == null ? "" : String(value));
   const [bad, setBad] = useState(false);
   useEffect(() => setText(value == null ? "" : String(value)), [value]);
@@ -101,10 +101,48 @@ function MoneyField({ value, onSave, label, testid }: { value: number | null; on
   };
   return (
     <label className={cn("flex h-8 items-center gap-1 rounded-md border bg-raised px-2.5 text-ui", bad ? "border-danger" : "border-line-strong")}>
-      <span className="text-muted">$</span>
+      {hours ? null : <span className="text-muted">$</span>}
       <input aria-label={label} data-testid={testid} inputMode="decimal" value={text} placeholder="None" onChange={(e) => setText(e.target.value)} onBlur={save}
         onKeyDown={(e) => e.key === "Enter" && !composing(e) && (e.currentTarget as HTMLInputElement).blur()} className="w-16 bg-transparent text-right tabular-nums outline-none placeholder:text-faint" />
+      {hours ? <span className="text-muted">hours</span> : null}
     </label>
+  );
+}
+
+// The daemon's spend cap over a rolling window (src/automation/window-cap.ts): off until both numbers are set.
+type WindowRead = { cap: { usd: number; hours: number } | null; spent: number; level: "off" | "ok" | "warn" | "spent"; pct: number; rolls_at: number | null };
+function SpendWindow() {
+  const [set, setSet] = useState<{ usd: number | null; hours: number | null } | null>(null);
+  const [now, setNow] = useState<WindowRead | null>(null);
+  const read = () => api<WindowRead>("/api/spend-window").then(setNow).catch(reportError);
+  useEffect(() => {
+    api<{ settings: any }>("/api/settings").then((x) => setSet(x.settings.spend_window)).catch(reportError);
+    read();
+    const iv = setInterval(read, 15_000);
+    return () => clearInterval(iv);
+  }, []);
+  const save = (key: "usd" | "hours", v: number | null) =>
+    api<{ settings: any }>("/api/settings", { method: "PATCH", body: JSON.stringify({ spend_window: { [key]: v } }) }).then((x) => { setSet(x.settings.spend_window); read(); });
+  if (!set) return null;
+  const half = (set.usd === null) !== (set.hours === null);
+  const hold = now?.level === "spent";
+  return (
+    <Panel plain title="Spend window" hint="one cap for the whole daemon over the last N hours: loops, wakes, monitors and agents wait at it, your own messages run" testid="usage-window">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 text-ui text-muted">
+        <label className="flex items-center gap-2.5">Spend at most
+          <MoneyField label="Spend window: dollars" testid="window-usd" value={set.usd} onSave={(v) => save("usd", v)} />
+        </label>
+        <label className="flex items-center gap-2.5">over
+          <MoneyField hours label="Spend window: hours" testid="window-hours" value={set.hours} onSave={(v) => save("hours", v)} />
+        </label>
+      </div>
+      <p className="mt-2.5 text-caption text-faint" data-testid="window-state">
+        {!now?.cap ? (half ? "Set both numbers to turn it on." : "Off.")
+          : hold ? `Reached: ${fmtUsd(now.spent)} of ${fmtUsd(now.cap.usd)}. New requests of unattended turns wait${now.rolls_at ? ` until about ${clock(now.rolls_at, { date: new Date(now.rolls_at).toDateString() !== new Date().toDateString() })}` : " until the window rolls under it"}.`
+          : `${fmtUsd(now.spent)} of ${fmtUsd(now.cap.usd)} in the last ${now.cap.hours === 1 ? "hour" : `${now.cap.hours} hours`}, every session counted.`}
+      </p>
+      {now?.cap ? <div className="mt-1.5 h-1 w-64 max-w-full rounded-full bg-sunken"><div className={cn("h-1 rounded-full", hold ? "bg-danger" : now.level === "warn" ? "bg-warn" : "bg-series-1")} style={{ width: `${Math.min(100, now.pct * 100)}%` }} /></div> : null}
+    </Panel>
   );
 }
 
@@ -397,6 +435,7 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
         </div>
       </Panel>
 
+      <SpendWindow />
       {budget && (
         <Panel plain title="Spend limits" hint="a turn stops before a request once a limit is reached; calls with no known price are not counted" testid="usage-budget">
           <div className="flex flex-wrap gap-x-10 gap-y-3">

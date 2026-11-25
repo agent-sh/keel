@@ -44,7 +44,7 @@ import { inputProblem, normalised } from "../tools/validate.ts";
 import { isDeferError, keepReferenced, loadsNatively, nativeName, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
 import { catalogReady } from "../tools/catalog.ts";
 import type { ToolGroup } from "./context-parts.ts";
-import { allHooks, cacheBreaks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
+import { allHooks, cacheBreaks, hookChanged, type TurnHooks, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
 import { trialModel } from "./model-trial.ts";
@@ -558,6 +558,8 @@ const parseJsonObject = (s: string): Record<string, unknown> | undefined => {
   try { const v = JSON.parse(s); return v && typeof v === "object" && !Array.isArray(v) ? v : undefined; } catch { return undefined; }
 };
 
+// A turn that waits for the spend window looks again this often (the owner's steer into it is read then).
+const SPEND_RECHECK_MS = 3_000;
 const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortError" });
 
 // What became of an input: stored as the session's prompt (`event`), kept in
@@ -968,6 +970,42 @@ export class Engine {
   // do not rebuild the tree; the array is shared and read-only.
   lineage(id: string): readonly StoredEvent[] {
     return this.store.lineage(id);
+  }
+
+  // The spend window's hold (src/automation/window-cap.ts) before a model step: waits while a hook says so,
+  // with the reason in the turn's status and once in its notes. Returns whether the owner's note was told.
+  private async holdForSpend(id: string, model: string, signal: AbortSignal, noted: boolean): Promise<boolean> {
+    let told = false;
+    const running = this.running.get(id);
+    const done = (v: boolean) => { if (told && !signal.aborted) this.status(id, { kind: "idle" }); return v; };
+    for (;;) {
+      const s = this.store.session(id);
+      if (!s) return done(noted);
+      let held: ReturnType<NonNullable<TurnHooks["stepHold"]>>;
+      for (const h of allHooks()) {
+        try { held = h.stepHold?.(s, () => this.byOwner(id)); } catch (e) { this.errors.capture("server", e, { hook: "stepHold", session: id }); }
+        if (held) break;
+      }
+      if (!held) return done(noted);
+      if (!held.wait) {
+        if (held.note && !noted) this.append(id, "note", { kind: "spend_window", text: held.note });
+        return done(true);
+      }
+      if (!told) {
+        told = true;
+        this.append(id, "note", { kind: "spend_window", text: held.note ?? held.why });
+      }
+      this.status(id, { kind: "model", since: Date.now(), model, limit: { ...(held.until ? { until: held.until } : {}), why: held.why, spend: true } });
+      if (running) running.providerWaiting = true;
+      // Asked again every few seconds: the owner's own words steered into this turn end its wait.
+      const asked = new AbortController();
+      const off = () => asked.abort();
+      signal.addEventListener("abort", off, { once: true });
+      const tick = setTimeout(off, SPEND_RECHECK_MS);
+      try { await held.wait(asked.signal); } finally { clearTimeout(tick); signal.removeEventListener("abort", off); if (running) running.providerWaiting = false; }
+      if (signal.aborted) return noted;
+      for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: ownersMeta(q.meta) })) this.emitQueue(id);
+    }
   }
 
   // The turn that runs was started, or steered into, by the owner's own words (not a loop, a wake,
@@ -2967,6 +3005,8 @@ export class Engine {
     // The closing step is a dollar cap's, and the cap's note was told in this turn.
     let closingCap = false;
     let capNoted = false;
+    // The spend window's note was told in this turn.
+    let windowNoted = false;
     // What the turn's end says it took: the replies the model gave, its tool
     // results, those of calls that ran and failed (what telemetry and the
     // trace count too), and those of calls a gate denied. A call the turn's
@@ -3080,6 +3120,10 @@ export class Engine {
           reason = "max_steps";
           break;
         }
+        // The daemon's spend cap over a window: a step of a turn the owner did not start waits until the
+        // window rolls under it; the owner's own turn goes on with a note, once.
+        if (!signal.aborted) windowNoted = await this.holdForSpend(id, st.info.name, signal, windowNoted);
+        if (signal.aborted) throw abortError();
         // A budget of the session's own (an agent's steps, minutes or dollars) that is spent: one
         // more step, in words, then the turn ends. Asked before each step, so a turn a wake starts
         // after the budget ran out gets only that step.

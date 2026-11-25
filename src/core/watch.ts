@@ -280,7 +280,7 @@ function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "un
   if (st?.kind === "tool") return { why: "tool", text: f.step || `Running ${st.names.slice(0, 3).join(", ")}${st.names.length > 3 ? ` and ${st.names.length - 3} more` : ""}`, ...since(st.since) };
   if (st?.kind === "model") {
     // Held in the account's line while its limit holds requests (src/providers/admission.ts).
-    if (st.limit) return { why: "limit", text: LIMIT_WAIT, ...since(st.since), ...(st.limit.until ? { until: st.limit.until } : {}) };
+    if (st.limit) return { why: "limit", text: st.limit.spend ? SPEND_WAIT : LIMIT_WAIT, ...since(st.since), ...(st.limit.until ? { until: st.limit.until } : {}) };
     if (st.quiet) return { why: "stalled", text: "The model is answering, no output", ...since(st.quiet) };
     // The provider answered and the model has said nothing yet: it is answering. Before that the request is on its way
     // (the session works: it is not said to wait, which is the word of a session at rest until something wakes it).
@@ -297,7 +297,8 @@ function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "un
 
 // A request held in its account's line, and how long the account said that lasts: "about 12s".
 export const LIMIT_WAIT = "Waits for the account's limit";
-export const limitText = (until: number | undefined, now: number) => (until && until > now ? `${LIMIT_WAIT}, about ${span(until - now)}` : LIMIT_WAIT);
+export const SPEND_WAIT = "Waits for the spend window";
+export const limitText = (until: number | undefined, now: number, spend?: boolean) => { const w = spend ? SPEND_WAIT : LIMIT_WAIT; return until && until > now ? `${w}, about ${span(until - now)}` : w; };
 
 // A retry of the model request in words, with the class of the failure it follows when it has one.
 export function retryText(st: { attempt: number; max: number; message?: string }): string {

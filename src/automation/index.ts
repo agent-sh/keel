@@ -29,6 +29,7 @@ import * as taskRenames from "./task-renames.ts";
 import * as writeAsks from "./write-asks.ts";
 import * as agents from "./agents.ts";
 import * as caps from "./caps.ts";
+import * as windowCap from "./window-cap.ts";
 import { dollars, raisedCap } from "./cap-rules.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
@@ -87,6 +88,7 @@ const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_us
 
 function init(deps: Deps) {
   setDeps(deps);
+  windowCap.listen();
   // What a parked session waits on, for its cache plan.
   deps.engine.waitShape = (id) => waits.shapeOf(id);
   // What a wait on the owner costs as it begins, kept with its alert (the next-look queue's key).
@@ -211,6 +213,7 @@ function init(deps: Deps) {
     // An agent whose budget is spent writes its report in one more step (src/automation/budget.ts).
     // Another session's message to a top session at its reached cap waits for a raise, as a loop run does.
     holdsInput: (s) => caps.held(s.id),
+    stepHold: (s, byOwner) => windowCap.hold(s, byOwner),
     budget: (s, byOwner) => (s.parent_id ? agents.budgetSpent(s.id, byOwner) : caps.closing(s.id, false, byOwner)),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
@@ -393,6 +396,7 @@ function init(deps: Deps) {
     alerts.tickWithheld();
     // The dollar caps' figures: a read every ten seconds while any is set (src/automation/caps.ts).
     caps.pulse();
+    windowCap.pulse();
     // Most passes find nothing active: one indexed query says so and the
     // pass ends there (each step below would find nothing to do).
     if (!busy(deps)) return;
@@ -778,6 +782,11 @@ export const automationRoutes: RouteModule = (deps) => {
     //   an agent's session carries it as its dollar budget. POST { raise: true } doubles it.
     "/api/caps": {
       GET: () => attempt(async () => json({ caps: await caps.refresh() })),
+    },
+    // The daemon's spend cap over a rolling window (src/automation/window-cap.ts): its figure now. It is set in
+    // Settings > Usage (PATCH /api/settings { spend_window: { usd, hours } }).
+    "/api/spend-window": {
+      GET: () => attempt(async () => json(await windowCap.refresh())),
     },
     "/api/sessions/:id/cap": {
       GET: (req: any) => attempt(async () => {
