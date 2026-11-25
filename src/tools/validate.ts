@@ -179,3 +179,23 @@ export function inputProblem(tool: Checked, input: unknown): string | undefined 
   const fields = known.slice(0, 14).map((k) => (plan.required.includes(k) ? `${k} (required)` : k)).join(", ") + (known.length > 14 ? ", ..." : "");
   return `${tool.name} did not run, its input is invalid: ${problems.join("; ")}. Its fields: ${fields || "none"}. Send the call again with the right fields.`;
 }
+
+// The input with each name the tool reads in a field's place moved to the field, when the field is not
+// given and the name is not a property of its own. The gates (src/safety) read the fields by their own
+// names, so a call is normalised before any of them sees it: a name only the tool reads would be a
+// write the gate and the policy never judged. The input is returned as it is when nothing moves.
+export function normalised<T>(tool: Checked, input: T): T {
+  if (!tool.inputAlias || !input || typeof input !== "object" || Array.isArray(input)) return input;
+  const have = input as Record<string, unknown>;
+  const props = (tool.input_schema as Schema | undefined)?.properties;
+  let out: Record<string, unknown> | undefined;
+  for (const [field, names] of Object.entries(tool.inputAlias)) {
+    if (have[field] !== undefined && have[field] !== null) continue;
+    const name = names.find((n) => have[n] !== undefined && have[n] !== null && !(props && n in props));
+    if (name === undefined) continue;
+    out ??= { ...have };
+    out[field] = have[name];
+    delete out[name];
+  }
+  return (out ?? input) as T;
+}

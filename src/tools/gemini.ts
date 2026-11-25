@@ -112,7 +112,7 @@ const read_file: Tool = {
 
 const write_file: Tool = {
   name: "write_file",
-  inputAlias: { file_path: ["path"] },
+  inputAlias: { file_path: ["path"], content: ["file_text"] },
   readOnly: false,
   kind: "edit",
   description: "Writes the complete content to a file, automatically creating missing parent directories. Overwrites existing files. Best for new or small files; use 'replace' for targeted edits.",

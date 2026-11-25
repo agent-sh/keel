@@ -829,14 +829,15 @@ test("a call with a missing or unknown field is answered from the schema and doe
   const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
   const ran: unknown[] = [];
   const gated: string[] = [];
+  const seenByGate: unknown[] = [];
   const measured: string[] = [];
   const tools = [{
-    name: "Write", description: "", readOnly: false, inputAlias: { file_path: ["path"] },
+    name: "Write", description: "", readOnly: false, inputAlias: { file_path: ["path"], content: ["file_text"] },
     input_schema: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"], additionalProperties: false },
     run: async (input: any) => (ran.push(input), { content: "written" }),
   }] as any;
   const mine = {
-    beforeTool: (_s: any, call: any) => { if (call.ctx.sessionId === s.id) gated.push(call.tool.name); return undefined; },
+    beforeTool: (_s: any, call: any) => { if (call.ctx.sessionId === s.id) { gated.push(call.tool.name); seenByGate.push(call.input); } return undefined; },
     toolRan: (session: any, call: any, _r: any, m: any) => { if (session.id === s.id) measured.push(`${call.tool.name}:${m.outcome}`); },
   } as any;
   // The owner's hook that fills a field in (it runs before the check: the call it leaves is the one judged).
@@ -856,13 +857,22 @@ test("a call with a missing or unknown field is answered from the schema and doe
     // The name a tool reads in a field's place is the field: the call runs.
     const b = await call("b", { path: "/a", content: "x" });
     expect([b.is_error, b.content]).toEqual([undefined, "written"]);
-    expect(ran).toEqual([{ path: "/a", content: "x" }]);
+    // (The gates read the field's own name, so the call is moved to it before any of them sees it.)
+    expect(ran).toEqual([{ file_path: "/a", content: "x" }]);
     expect(gated).toEqual(["Write"]);
+    expect(seenByGate).toEqual([{ file_path: "/a", content: "x" }]);
+    // The same for the content: a gate judges what the call writes, whatever name the model gave it.
+    seenByGate.length = ran.length = 0;
+    const t = await call("t", { file_path: "/a", file_text: "plugins" });
+    expect(t.is_error).toBeUndefined();
+    expect(seenByGate).toEqual([{ file_path: "/a", content: "plugins" }]);
+    expect(ran).toEqual([{ file_path: "/a", content: "plugins" }]);
+    ran.length = 0;
     // A hook that makes the call right rescues it.
     const c = await call("c", { file_path: "/b", fill: true });
     expect(c.is_error).toBeUndefined();
     expect(c.content).toContain("written");
-    expect(ran[1]).toEqual({ file_path: "/b", content: "filled" });
+    expect(ran[0]).toEqual({ file_path: "/b", content: "filled" });
   } finally {
     allHooks().splice(allHooks().indexOf(fills), 1);
     allHooks().splice(allHooks().indexOf(mine), 1);

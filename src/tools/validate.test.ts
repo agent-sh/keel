@@ -6,7 +6,8 @@ import { gptTools } from "./gpt.ts";
 import { memoryTools } from "../helper/memtools.ts";
 import "../fleet/tools.ts";
 import { sharedTool } from "./registry.ts";
-import { inputProblem, type Checked } from "./validate.ts";
+import { classify } from "../safety/policy.ts";
+import { inputProblem, normalised, type Checked } from "./validate.ts";
 
 const tool = (name: string, properties: Record<string, unknown>, required: string[] = [], more: Record<string, unknown> = {}, extra: Partial<Checked> = {}): Checked =>
   ({ name, input_schema: { type: "object", properties, required, ...more }, ...extra });
@@ -155,4 +156,21 @@ test("a pinned older schema never refuses what the build's own schema takes", ()
   // A field neither has is still named; a build that is open does not close.
   expect(inputProblem(now, { a: "x", z: 1 })).toContain("`z` is not a field");
   expect(inputProblem({ ...now, built: { ...built, additionalProperties: undefined } }, { a: "x", z: 1 })).toBeUndefined();
+});
+
+// The gate and the policy read the fields by their own names: a name only the tool reads is a write they never judged.
+test("a name the tool reads in a field's place is moved to the field before a gate reads the call", () => {
+  const given: Record<string, unknown> = { file_path: "/w/tsconfig.json", file_text: '{ "plugins": [{ "name": "x" }] }' };
+  expect(inputProblem(Write, given)).toBeUndefined();
+  // As sent, the policy sees no words in the write.
+  expect(classify(Write as any, given, "/w")).toEqual({ kind: "edit", paths: ["/w/tsconfig.json"] });
+  const moved = normalised(Write, given);
+  expect(moved).toEqual({ file_path: "/w/tsconfig.json", content: given.file_text });
+  expect(classify(Write as any, moved, "/w")).toEqual({ kind: "edit", paths: ["/w/tsconfig.json"], names: ["plugins"] });
+  // The given input is not changed, and a field that is given is not replaced by its alias.
+  expect(given).toHaveProperty("file_text");
+  expect(normalised(Write, { file_path: "/a", content: "x", file_text: "y" })).toEqual({ file_path: "/a", content: "x", file_text: "y" });
+  const same = { file_path: "/a", content: "x" };
+  expect(normalised(Write, same)).toBe(same);
+  expect(normalised(find(geminiTools, "write_file"), { path: "/a", file_text: "z" } as Record<string, unknown>)).toEqual({ file_path: "/a", content: "z" });
 });

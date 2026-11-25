@@ -138,7 +138,7 @@ const Read: Tool = {
 const Write: Tool = {
   name: "Write",
   readOnly: false,
-  inputAlias: { file_path: ["path"] },
+  inputAlias: { file_path: ["path"], content: ["file_text"] },
   kind: "edit",
   description:
     "Create a file or overwrite one with the full content given, creating parent directories. Overwriting an " +

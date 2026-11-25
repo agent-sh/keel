@@ -40,7 +40,7 @@ import { runningData } from "./running.ts";
 import { StepOrder } from "./step-order.ts";
 import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
 import { answers, callPaths, stoppedWaiting, unansweredText } from "../tools/fs-bound.ts";
-import { inputProblem } from "../tools/validate.ts";
+import { inputProblem, normalised } from "../tools/validate.ts";
 import { isDeferError, keepReferenced, loadsNatively, nativeName, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
 import { catalogReady } from "../tools/catalog.ts";
 import type { ToolGroup } from "./context-parts.ts";
@@ -3439,7 +3439,7 @@ export class Engine {
         .finally(() => { mine.delete(id); if (!mine.size && this.nested.get(key) === mine) this.nested.delete(key); });
     };
     const offers = (name: string) => tools.some((t) => t.name === name);
-    const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id, callTool, offers } };
+    const call: ToolCall = { id: u.id, tool, input: normalised(tool, u.input ?? {}), ctx: { ...ctx, callId: u.id, callTool, offers } };
     // An interrupt answers at once, whether or not a gate or the tool honors the signal.
     // The listener goes when the call settles: the turn's signal is shared by all its calls.
     let onStop = () => {};
