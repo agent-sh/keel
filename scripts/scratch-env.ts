@@ -33,6 +33,15 @@ export function standIns(dir: string, { host = false } = {}): Record<string, str
     KEEL_IMPORT_HERMES_DIR: join(dir, "import/hermes"),
     KEEL_IMPORT_OPENCODE_DIR: join(dir, "import/opencode"),
     KEEL_IMPORT_GEMINI_DIR: join(dir, "import/gemini"),
+    KEEL_IMPORT_GROK_DIR: join(dir, "import/grok"),
+    KEEL_IMPORT_KIMI_DIR: join(dir, "import/kimi"),
+    KEEL_IMPORT_PI_DIR: join(dir, "import/pi"),
+    KEEL_IMPORT_CURSOR_DIR: join(dir, "import/cursor"),
+    KEEL_IMPORT_COPILOT_DIR: join(dir, "import/copilot"),
+    KEEL_IMPORT_AIDER_DIR: join(dir, "import/aider"),
+    KEEL_IMPORT_QWEN_DIR: join(dir, "import/qwen"),
+    KEEL_IMPORT_GOOSE_DIR: join(dir, "import/goose"),
+    KEEL_IMPORT_CRUSH_DIR: join(dir, "import/crush"),
     // The other agents' setups (MCP configs, and what `keel port` brings) are read from a scratch home.
     KEEL_IMPORT_HOME: join(dir, "import/home"),
     // A saved listing beside the state (the connect e2e writes it), not the public registry.

@@ -19,6 +19,7 @@ import { hasAttachmentsRoot, saveAttachment } from "../../engine/attachments.ts"
 import { haystack, keyHash, kindsOf, offered, order, pageLimit, readCursor, select, wordsOf, writeCursor, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
 import { filesWithAll } from "./inside.ts";
+import { MORE, moreOf } from "./more.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
   { harness: "claude", label: "Claude Code", store: claudeRoot },
@@ -28,6 +29,7 @@ export const HARNESSES: { harness: Harness; label: string; store: () => string; 
   { harness: "hermes", label: "Hermes", store: hermesDb },
   { harness: "opencode", label: "OpenCode", store: opencodeDb },
   { harness: "gemini", label: "Gemini CLI", store: geminiHome },
+  ...MORE.map((m) => ({ harness: m.harness, label: m.label, store: m.store })),
 ];
 
 const SCHEMA = `
@@ -114,6 +116,7 @@ export class Imports {
   private hermesCache: { at: number; rows: Found[] } | null = null;
   private opencodeCache: { at: number; rows: Found[] } | null = null;
   private geminiCache: { at: number; rows: Found[] } | null = null;
+  private moreCache = new Map<string, { at: number; rows: Found[] }>();
   complete = false;
   // Set by the daemon (routes/imports.ts): a session this index just made from another harness's.
   created?: (sessionId: string) => void;
@@ -195,6 +198,15 @@ export class Imports {
         await new Promise((r) => setTimeout(r, 0));
       }
       this.geminiCache = null;
+      // The stores that list themselves (more.ts) the same way: a slice of the reading at a time.
+      for (const m of MORE) {
+        for (let i = 0; i < 10_000; i++) {
+          try { m.list(); } catch { break; }
+          if (!m.pending?.()) break;
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+      this.moreCache.clear();
       const gone = [...known.keys()].filter((p) => !seen.has(p));
       const del = db.query("DELETE FROM import_index WHERE path = ?");
       for (const p of gone) del.run(p);
@@ -250,6 +262,7 @@ export class Imports {
     this.hermesCache = null;
     this.opencodeCache = null;
     this.geminiCache = null;
+    this.moreCache.clear();
   }
 
   // Up to `ms` of a refresh before answering; the rest goes on in the background.
@@ -309,7 +322,23 @@ export class Imports {
     return rows;
   }
 
-  // The sessions of the stores that list themselves (the Rust Keel, Antigravity, Hermes, OpenCode, Gemini CLI): few, read whole.
+  // The other harnesses' stores (more.ts), each cached for a few seconds.
+  private more(harness?: Harness): Found[] {
+    const out: Found[] = [];
+    for (const m of MORE) {
+      if (harness && harness !== m.harness) continue;
+      let c = this.moreCache.get(m.harness);
+      if (!c || Date.now() - c.at >= 5000) {
+        let rows: Found[] = [];
+        try { rows = m.list(); } catch {}
+        this.moreCache.set(m.harness, (c = { at: Date.now(), rows }));
+      }
+      out.push(...c.rows);
+    }
+    return out;
+  }
+
+  // The sessions of the stores that list themselves (the Rust Keel, Antigravity, Hermes, OpenCode, Gemini CLI and more.ts): few, read whole.
   private side(harness?: Harness): Found[] {
     const out: Found[] = [];
     if (!harness || harness === "keel") out.push(...this.keel());
@@ -317,6 +346,7 @@ export class Imports {
     if (!harness || harness === "hermes") out.push(...this.hermes());
     if (!harness || harness === "opencode") out.push(...this.opencode());
     if (!harness || harness === "gemini") out.push(...this.gemini());
+    out.push(...this.more(harness));
     return out;
   }
 
@@ -516,6 +546,9 @@ export class Imports {
     if (harness === "agy" || path.endsWith("/.system_generated/logs/transcript_full.jsonl")) return this.side("agy").find((f) => f.path === path);
     // A Gemini CLI session (tmp/<project>/chats/...) is no Claude Code transcript, whatever its name ends with.
     if (harness === "gemini" || /\/tmp\/[^/]+\/chats\/(?:[^/]+\/)?[^/]+\.jsonl?$/.test(path)) return this.side("gemini").find((f) => f.path === path);
+    // A session of a store in more.ts, named by its harness or found by its path in their lists.
+    const extra = harness ? moreOf(harness) : MORE.find((m) => this.more(m.harness).some((f) => f.path === path));
+    if (extra) return this.more(extra.harness).find((f) => f.path === path);
     let st;
     try { st = statSync(path); } catch { return undefined; }
     const h = harness ?? (/\/rollout-[^/]*\.jsonl$/.test(path) ? "codex" : path.endsWith(".jsonl") ? "claude" : undefined);
@@ -531,6 +564,8 @@ export class Imports {
     if (f.harness === "hermes") return readHermes(f);
     if (f.harness === "opencode") return readOpencode(f);
     if (f.harness === "gemini") return readGemini(f);
+    const extra = moreOf(f.harness);
+    if (extra) return extra.read(f);
     return readKeel(f.id);
   }
 

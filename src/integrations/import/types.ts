@@ -3,9 +3,10 @@
 // events. Readers only read: they never write beside the files they read.
 import type { EventKind } from "../../core/types.ts";
 
-export type Harness = "claude" | "codex" | "keel" | "agy" | "hermes" | "opencode" | "gemini";
+export type Harness = "claude" | "codex" | "keel" | "agy" | "hermes" | "opencode" | "gemini" | "grok" | "kimi" | "pi" | "cursor" | "copilot" | "aider" | "qwen" | "goose" | "crush";
 // A store that keeps every session in one database: a source's path is `<database>#<session id>`.
-export const inDatabase = (h: string) => h === "keel" || h === "hermes" || h === "opencode";
+const DATABASES = new Set<string>(["keel", "hermes", "opencode", "goose", "crush"]);
+export const inDatabase = (h: string) => DATABASES.has(h);
 export type Kind = "interactive" | "subagent" | "headless";
 
 export type Found = {
