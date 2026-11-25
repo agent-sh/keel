@@ -158,3 +158,29 @@ test("agents' branch chips end in one column, live or done", async ({ page, requ
     await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { status: string }[]).some((a) => a.status === "running"), { timeout: 30_000 }).toBe(false);
   }
 });
+
+test("a session's box on a desk is one quiet line in the workbench: the pickers behind its +, no ring, Send an icon's size", async ({ page, request }) => {
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Quiet box" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await expect(page.locator(".k-shell")).not.toHaveAttribute("data-mode", "focus");
+  const box = page.getByTestId("composer-box");
+  await page.getByTestId("composer").click();
+  await expect(page.getByTestId("composer")).toBeFocused();
+  const look = await box.evaluate((el) => {
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize), s = getComputedStyle(el);
+    const send = el.querySelector<HTMLElement>('[data-testid="send"]')!.getBoundingClientRect(), field = el.querySelector("textarea")!;
+    return { height: el.getBoundingClientRect().height / rem, ring: s.boxShadow, send: send.width / rem, sendRow: Math.abs(send.bottom - field.getBoundingClientRect().bottom) < rem, words: parseFloat(getComputedStyle(field).fontSize) };
+  });
+  // One row: the field with Send beside it, at the body's size; a hairline frame, no ring around it.
+  expect(look.height).toBeLessThanOrEqual(3.25);
+  expect(look.sendRow).toBe(true);
+  expect(look.ring).toBe("none");
+  expect(look.send).toBeLessThanOrEqual(1.75);
+  expect(look.words).toBe(15);
+  // What the next turn runs with is behind the +.
+  await expect(box.getByTestId("model-picker")).toHaveCount(0);
+  await box.getByTestId("box-more").click();
+  await expect(page.getByTestId("box-more-popup").getByTestId("model-picker")).toBeVisible();
+  await expect(page.getByTestId("box-more-popup").getByTestId("permission-menu")).toBeVisible();
+  await shoot(page, "quiet-08-box-one-line");
+});

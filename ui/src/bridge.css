@@ -1189,6 +1189,19 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-composer-box { border-radius: var(--radius-md); box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
 .k-composer-box:focus-within { box-shadow: 0 0 0 2px var(--ring); border-color: transparent; }
 .k-send { border-radius: var(--radius-md); }
+/* On a desk the box is quiet in every view: a hairline frame that takes a step of ink, and no ring, when it has
+   the keyboard (the caret says so), and Send and Stop at the size of a line's icon button. Send wears the accent
+   only while there is something to send. */
+@media (min-width: 768px) {
+  .k-composer-box { border-color: var(--line); }
+  .k-composer-box:focus-within { border-color: var(--line-strong); box-shadow: none; }
+  .k-compose-tools :is(.k-attach, .k-dictate, .k-box-more, .k-queue) { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); }
+  .k-send { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-md); }
+  .k-stop { width: auto; min-width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-md); border-color: transparent; color: var(--muted); }
+  :is(.k-send, .k-stop) svg { width: 0.875rem; height: 0.875rem; }
+  .k-send:disabled { background: transparent; color: var(--faint); opacity: 1; }
+  .k-stop:hover { color: var(--fg); background: var(--hover); }
+}
 /* Approvals and open questions: the one thing in yellow. */
 /* A request is a card of the page's own line, not a yellow frame: what it waits on is its agent's dot and its
    words. The one Enter answers carries the state's edge (red for a high risk); the others are plain cards, and only
@@ -1992,7 +2005,6 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-shell[data-mode="focus"] .k-top-in > .k-session-header { display: none; }
 .k-shell[data-mode="focus"] .k-stations .k-transcript, .k-shell[data-mode="focus"] .k-stations .k-compose-in { max-width: 43rem; }
 .k-shell[data-mode="focus"] .k-compose-in { padding-bottom: 2.25rem; }
-.k-shell[data-mode="focus"] .k-composer-box:focus-within { box-shadow: 0 0 0 1px var(--line-strong); }
 /* A message's acts, its turn's figures and its notes come under the pointer or the keys. */
 .k-shell[data-mode="focus"] .k-turn-foot:not(:hover, :focus-within) > *,
 .k-shell[data-mode="focus"] .k-user-message:not(:hover, :focus-within) > button { opacity: 0; }
@@ -2017,22 +2029,15 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 @media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-station .k-station-identity .k-station-title { font-size: var(--text-base); font-weight: 400; color: var(--muted); letter-spacing: 0; }
 }
-/* Focus's message box: a hairline frame in quiet ink, one line at rest (Composer.tsx rests it as a phone's), and
-   Send and Stop at the size of a line's icon button. Send wears the accent only while there is something to send. */
-.k-shell[data-mode="focus"] .k-composer-box { border-color: var(--line); background: transparent; }
-.k-shell[data-mode="focus"] .k-composer-box:focus-within { border-color: var(--line-strong); box-shadow: none; }
-/* One line: the field, and beside it on its line the few tools used while typing (Composer.tsx); what else the box
-   holds (attachments, notices) spans the line above or below. */
-.k-shell[data-mode="focus"] .k-composer-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
-.k-shell[data-mode="focus"] .k-composer-box > * { grid-column: 1 / -1; }
-.k-shell[data-mode="focus"] .k-composer-box > textarea { grid-column: 1; padding-bottom: 0.625rem; }
-.k-shell[data-mode="focus"] .k-composer-box > .k-compose-tools { grid-column: 2; flex-wrap: nowrap; padding: 0 0.375rem 0.375rem 0; }
-.k-shell[data-mode="focus"] .k-compose-tools :is(.k-attach, .k-dictate, .k-box-more, .k-queue) { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); }
-.k-shell[data-mode="focus"] :is(.k-send, .k-stop) { width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-md); }
-.k-shell[data-mode="focus"] :is(.k-send, .k-stop) svg { width: 0.875rem; height: 0.875rem; }
-.k-shell[data-mode="focus"] .k-send:disabled { background: transparent; color: var(--faint); opacity: 1; }
-.k-shell[data-mode="focus"] .k-stop { border-color: transparent; color: var(--muted); }
-.k-shell[data-mode="focus"] .k-stop:hover { color: var(--fg); background: var(--hover); }
+/* Focus's message box: the desk's quiet frame on the page's own ground, and one line at rest (Composer.tsx rests
+   it as a phone's). */
+.k-shell[data-mode="focus"] .k-composer-box { background: transparent; }
+/* A session's box on a desk is one line in every view: the field, and beside it on its line the few tools used
+   while typing (Composer.tsx); what else the box holds (attachments, notices) spans the line above or below. */
+.k-composer-box[data-line] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.k-composer-box[data-line] > * { grid-column: 1 / -1; }
+.k-composer-box[data-line] > textarea { grid-column: 1; padding-bottom: 0.625rem; }
+.k-composer-box[data-line] > .k-compose-tools { grid-column: 2; flex-wrap: nowrap; padding: 0 0.375rem 0.375rem 0; }
 /* The agents of the dock in Focus: one item in muted ink, the word and how many are live (AgentsDock.tsx). */
 .k-shell[data-mode="focus"] .k-agents-line[data-calm] .k-agents-label { font-weight: 400; color: var(--muted); }
 .k-agents-count { color: var(--muted); }

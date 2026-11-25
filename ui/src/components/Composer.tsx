@@ -41,7 +41,7 @@ import { SpeedPicker } from "./SpeedPicker.tsx";
 import { LimitChip } from "./Limits.tsx";
 import { SETTLE_MS } from "../lib/settle.ts";
 import { DESK_QUERY } from "../lib/phone.ts";
-import { useCalm, usePhoneFocus } from "../lib/focus.ts";
+import { useDesk, usePhoneFocus } from "../lib/focus.ts";
 
 // The two presses of Escape that open the rewind come within this time.
 const ESC_TWICE_MS = 700;
@@ -487,10 +487,13 @@ const SessionComposer = memo(function SessionComposer({
   // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
   // Focus on a desk: the box is one line, the field with Send beside it; the mode, the model and the context are
   // behind its + (BoxMore, lib/focus.ts).
-  const focusMode = useCalm();
   // A phone's Focus: the box is one line too, the field with the plus, the queue, Stop and Send beside it, each a
   // line's icon (a finger's target round it). Attach and speech are behind the plus with the pickers.
   const phoneLine = usePhoneFocus() && !!session;
+  // On a desk a session's box is one line in every view: the field and the few tools used while typing. What the
+  // next turn runs with (mode, model, effort, context) is behind its +. The start page's box keeps them in sight.
+  const desk = useDesk();
+  const oneLine = !!session && (desk || phoneLine);
   const rest = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !working && !notice && synced;
   // Untouched and holding nothing, whatever runs: while a card waits above it on a phone, the box rests as its
   // one line then, Stop included, until a tap brings its tools (bridge.css).
@@ -1070,7 +1073,7 @@ const SessionComposer = memo(function SessionComposer({
       )}
       data-testid="composer-box"
       data-rest={rest || undefined}
-      data-line={phoneLine || undefined}
+      data-line={oneLine || undefined}
       data-calm={calm || undefined}
       ref={boxEl}
       onFocus={() => { setTapped(true); setKeysHere(true); }}
@@ -1275,10 +1278,10 @@ const SessionComposer = memo(function SessionComposer({
             <FileInput at={fileInput} take={takeFiles} />
             {!phoneLine && <SpeechButtons sid={sid} />}
             {/* The mode, the model, the effort and the context stand in one row: what the next turn may do is read where it is asked for. */}
-            {/* (In Focus they are behind the box's +: the box is one line.) */}
-            {!focusMode && sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
-            {!focusMode && <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />}
-            {focusMode && (
+            {/* (In a session on a desk they are behind the box's +: the box is one line.) */}
+            {!oneLine && sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
+            {!oneLine && <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />}
+            {oneLine && (
               <BoxMore signal={`${modeOpen}|${pickerSignal}|${effortOpen}`}>
                 {phoneLine && <span className="flex items-center gap-x-0.5">{attach}<SpeechButtons sid={sid} /></span>}
                 {sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
@@ -1291,16 +1294,16 @@ const SessionComposer = memo(function SessionComposer({
               </BoxMore>
             )}
           </span>
-          {!focusMode && sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}
-          {!focusMode && sid && <Pickers.Speed sessionId={sid} />}
-          {!focusMode && sid && <Pickers.Fallback sessionId={sid} />}
-          {!focusMode && model && <Pickers.Limit model={model} />}
-          {!focusMode && short && !narrow && sid && <Pickers.Meter sessionId={sid} />}
+          {!oneLine && sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}
+          {!oneLine && sid && <Pickers.Speed sessionId={sid} />}
+          {!oneLine && sid && <Pickers.Fallback sessionId={sid} />}
+          {!oneLine && model && <Pickers.Limit model={model} />}
+          {!oneLine && short && !narrow && sid && <Pickers.Meter sessionId={sid} />}
           {!short && status}
         </div>
         <div className="k-compose-send ml-auto flex shrink-0 items-center gap-1.5">
           {/* On a phone the ring stands with Send, out of what scrolls. */}
-          {!focusMode && (!short || narrow) && sid && <Pickers.Meter sessionId={sid} />}
+          {!oneLine && (!short || narrow) && sid && <Pickers.Meter sessionId={sid} />}
           {busy && onQueue && (
             <button
               ref={queueButton}
