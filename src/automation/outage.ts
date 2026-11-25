@@ -10,6 +10,7 @@ import { zonedClock } from "../core/clock.ts";
 import { agentsWaitLine, agentsWentOnLine, outageBegan, outageEnded } from "../core/state-words.ts";
 import { span } from "../core/watch.ts";
 import type { Outage } from "../providers/outage.ts";
+import { statusOf } from "../providers/status.ts";
 import { addNotice, hasNotice } from "../tools/jobs.ts";
 import * as activity from "./activity.ts";
 import { readWhere } from "./alerts.ts";
@@ -43,7 +44,9 @@ function tellParent(parent: string, o: Outage) {
     fresh: () => {
       const now = D().providers.outages.list().find((x) => x.provider === o.provider && x.since === o.since);
       n = now ? agentsOf(parent, now) : 0;
-      return n ? `[harness] ${agentsWaitLine(n, zonedClock(o.since))}. Keel tries again by itself and they go on when it answers: nothing to send them, and none of them failed.` : undefined;
+      const status = statusOf(o.provider);
+      const there = status ? ` The provider's status page: ${status.page}${status.incident ? `. Open there: ${status.incident.title} (${status.incident.url})` : ""}.` : "";
+      return n ? `[harness] ${agentsWaitLine(n, zonedClock(o.since))}. Keel tries again by itself and they go on when it answers: nothing to send them, and none of them failed.${there}` : undefined;
     },
     stored: () => D().providers.outages.tellParent(o, parent, n),
   });

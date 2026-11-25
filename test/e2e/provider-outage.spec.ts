@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { sessionsFolder, specEnv, TACIT_STANDIN } from "./own-daemon.ts";
@@ -323,4 +324,45 @@ test("a daemon restart in the middle of the outage: the turn waits on in the nex
     d.proc.kill("SIGKILL");
     await exited(d.proc);
   }
+});
+
+// The provider's status page is the owner's to name (Settings: status_pages). A stub status page of
+// Statuspage's kind answers with one unresolved incident: the wait's line names the page and the incident.
+test("a wait names the provider's status page and its open incident", async ({ page, request }) => {
+  const id = await open(request, "Outage: status page");
+  const stub = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(req.url === "/api/v2/incidents/unresolved.json"
+      ? JSON.stringify({ incidents: [{ name: "Elevated errors on the stand-in", impact: "major", shortlink: "https://stub.invalid/inc/abc", status: "investigating" }] })
+      : "{}");
+  });
+  await new Promise<void>((ok) => stub.listen(0, "127.0.0.1", ok));
+  const base = `http://127.0.0.1:${(stub.address() as any).port}`;
+  try {
+    expect((await request.patch("/api/settings", { data: { status_pages: { pages: { scripted: base } } } })).ok()).toBe(true);
+    await page.goto(`/s/${id}`);
+    await send(page, "script:outage dns 12000");
+    const wait = page.getByTestId("provider-wait");
+    await expect(wait).toContainText(SINCE);
+    const status = wait.getByTestId("provider-status");
+    await expect(status.getByTestId("provider-status-page")).toHaveAttribute("href", base);
+    await expect(status.getByTestId("provider-status-incident")).toContainText("Elevated errors on the stand-in");
+    await expect(status.getByTestId("provider-status-incident")).toHaveAttribute("href", "https://stub.invalid/inc/abc");
+    // The incident the daemon keeps for the wait carries the same words, for its alert and its row.
+    await expect.poll(async () => (await (await request.get("/api/incidents")).json()).open.find((i: any) => i.key === "provider:scripted")?.status?.incident?.title).toBe("Elevated errors on the stand-in");
+    await shoot(page, "outage-02-status-page");
+    await page.setViewportSize({ width: 390, height: 844 });
+    // The incident's words stay inside the line's box on a phone (cut with an ellipsis, not run past its border).
+    await expect.poll(async () => wait.evaluate((el) => { const box = el.getBoundingClientRect(); return [...el.querySelectorAll("a")].every((a) => a.getBoundingClientRect().right <= box.right); })).toBe(true);
+    await shoot(page, "outage-02b-status-page-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await expect(page.getByTestId("assistant-text").last()).toHaveText("Answered after the outage.", { timeout: 60_000 });
+  } finally {
+    await request.patch("/api/settings", { data: { status_pages: null } });
+    await new Promise((ok) => stub.close(ok));
+  }
+  // With no page named the wait names none.
+  await send(page, "script:outage dns 8000");
+  await expect(page.getByTestId("provider-wait")).toContainText(SINCE);
+  await expect(page.getByTestId("provider-status")).toHaveCount(0);
 });

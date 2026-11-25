@@ -30,6 +30,7 @@ import { flushPlaces, isLater, newAfter, offsetAt, placeOf, putPlace, WRITE_MS, 
 import { auto, autoState, presentAt } from "../lib/automation.ts";
 import { STOPPERS } from "../../../src/core/stoppers.ts";
 import type { PaneSwap } from "../lib/looks.ts";
+import { ProviderStatus } from "./ProviderStatus.tsx";
 import { TurnFailure } from "./TurnFailure.tsx";
 import { Markdown, NearView } from "./Markdown.tsx";
 import { estimate, heldWords, sameKeys, shares, windowOf, type Span } from "../lib/window.ts";
@@ -512,6 +513,7 @@ function Status({ sessionId }: { sessionId: string }) {
         {/* The words wrap whole on a narrow page; the transport's message takes what is left, or a line of its own. */}
         <span className="min-w-0 max-w-[calc(100%-1rem)] text-fg" data-testid="provider-wait-since">{unreachableSince(hhmm(st.unreachable))}</span>
         <span className="min-w-[8rem] flex-1 truncate text-faint" title={st.message}>{st.message}</span>
+        <ProviderStatus sessionId={sessionId} />
       </div>
     );
   }
@@ -522,6 +524,7 @@ function Status({ sessionId }: { sessionId: string }) {
       {/* Its retry waits in the account's line, with the other requests the account's limit holds. */}
       {st.limit ? <span className="shrink-0 text-muted" title={st.limit} data-testid="retry-limit">{LIMIT_WAIT}</span> : null}
       <span className="shrink-0 tabular-nums text-faint">retrying in {fmtWait(st.at - liveNow())}, {attemptWords(st.attempt, st.max)}</span>
+      <ProviderStatus sessionId={sessionId} />
     </div>
   );
 }

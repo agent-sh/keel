@@ -47,6 +47,8 @@ export type Incident = {
   cleared_how?: string;
   // When the one alert for it went out.
   notified?: number;
+  // The provider's status page the owner named, and the incident open there (src/providers/status.ts).
+  status?: { page: string; incident?: { title: string; url: string } };
 };
 
 // A thing that happened, of a cause. `session`: where (none for the daemon's own).
@@ -156,9 +158,12 @@ export function radiusOf(i: Pick<Incident, "touched" | "more" | "failed" | "caus
 // The row as one line: the activity list's, the alert's body, a terminal's.
 // A radius with nothing in it (a stop of the daemon that cut no turn) is left out.
 const sentences = (...xs: string[]) => xs.filter(Boolean).map((x) => (/[.!?]$/.test(x) ? x : `${x}.`)).join(" ");
-export const lineOf = (i: Incident) => (i.cleared ? sentences(`${titleOf(i)} (cleared: ${i.cleared_how ?? "over"})`, radiusOf(i)) : sentences(titleOf(i), radiusOf(i), doingOf(i)));
+export const lineOf = (i: Incident) => (i.cleared ? sentences(`${titleOf(i)} (cleared: ${i.cleared_how ?? "over"})`, radiusOf(i)) : sentences(titleOf(i), radiusOf(i), doingOf(i), statusOf(i)));
+// The provider's status page and the incident open there, as the owner named the page.
+export const statusOf = (i: Pick<Incident, "status">): string =>
+  i.status ? `Status page: ${i.status.page}${i.status.incident ? `. Open there: ${i.status.incident.title} (${i.status.incident.url})` : ""}` : "";
 // The alert's body: what it touched and what Keel does.
-export const bodyOf = (i: Incident) => sentences(radiusOf(i), doingOf(i));
+export const bodyOf = (i: Incident) => sentences(radiusOf(i), doingOf(i), statusOf(i));
 
 // Whether the owner is told now: once, when work failed or stopped because of it, at once; a
 // held wait only when it lasts (outage.ts, alertMs): a short one needs nothing of the owner.

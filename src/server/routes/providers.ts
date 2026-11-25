@@ -8,6 +8,7 @@ import { recordRepairs } from "../../providers/project.ts";
 import { LOOK_WAIT_MS } from "../../providers/registry.ts";
 import { Check } from "../../providers/plugins/check.ts";
 import { readPlugins } from "../../providers/plugins/config.ts";
+import { readStatus, statusPageOf } from "../../providers/status.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 // Whether a full model id is hidden under these choices (its own rule or its provider's).
@@ -58,6 +59,16 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
 
   return {
     "/api/providers": { GET: async () => json(await report()) },
+
+    // The status page the owner named for a provider and the incident open on it (null: no page named).
+    "/api/providers/status": {
+      GET: async (req: Request) => {
+        const page = statusPageOf(new URL(req.url).searchParams.get("provider") ?? "");
+        if (!page) return json({ status: null });
+        const { incident } = await readStatus(page);
+        return json({ status: { page, ...(incident ? { incident } : {}) } });
+      },
+    },
 
     // The windows alone, for the picker: every provider's, with the close ones
     // named, and the account problems that stop turns.

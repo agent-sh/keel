@@ -18,6 +18,7 @@ import { shutWords } from "../providers/account.ts";
 import { span } from "../core/watch.ts";
 import type { Outage } from "../providers/outage.ts";
 import { bodyOf, causeOfClass, IncidentBook, lineOf, owesAlert, titleOf, wentDownByItself, type Hit, type Incident } from "./incident-book.ts";
+import { readStatus, statusFresh, statusKnown, statusOf, statusPageOf } from "../providers/status.ts";
 import { absorbHook, raise, readWhere } from "./alerts.ts";
 import { D, capture, emit } from "./core.ts";
 
@@ -80,6 +81,19 @@ function persist(i: Incident, now = false): boolean {
   } catch (e) { capture(e, { at: "incident row" }); return false; }
 }
 
+// The provider's status page the owner named, and the incident open there, on the incident as it stands. False
+// while the page has not been read once: the read is on its way and takes the incident up again when it ends.
+function named(i: Incident): boolean {
+  if (i.cause !== "provider" || i.cleared || !i.key.startsWith("provider:")) return true;
+  const pid = i.key.slice("provider:".length);
+  const page = statusPageOf(pid);
+  const now = statusOf(pid);
+  if (JSON.stringify(now) !== JSON.stringify(i.status)) { if (now) i.status = now; else delete i.status; }
+  if (!page || statusFresh(page)) return true;
+  void readStatus(page).then(() => { if (!i.cleared && book().get(i.key) === i) changed(i); }, () => {});
+  return statusKnown(page);
+}
+
 // The one alert, when it is owed, and the row that says so in the same call; read when the incident clears.
 function tell(i: Incident) {
   if (!owesAlert(i)) return;
@@ -93,7 +107,9 @@ function tell(i: Incident) {
 function changed(i: Incident | undefined) {
   if (!i) return;
   const s = st();
-  if (owesAlert(i)) tell(i);
+  // A provider's alert waits for the first read of its status page (a few seconds at most), so it can name an open incident.
+  const ready = named(i);
+  if (owesAlert(i) && ready) tell(i);
   else persist(i);
   if (i.cleared) try { readWhere("incident", i.id); } catch (e) { capture(e, { at: "incident alert read" }); }
   if (!s.news) return;
