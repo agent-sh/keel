@@ -103,12 +103,12 @@ export function WorktreeChip({ session }: { session: Session }) {
       <Popover.Trigger
         data-testid="worktree-chip"
         className={cn(
-          "k-worktree-chip inline-flex h-7 max-w-56 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg data-popup-open:bg-hover",
+          "k-worktree-chip inline-flex h-7 max-w-56 items-center max-md:h-auto max-md:min-h-7 max-md:max-w-full gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg data-popup-open:bg-hover",
           wt.state !== "active" && "text-warn",
         )}
       >
         <GitBranch className="size-3.5 shrink-0" />
-        <span className="truncate font-mono">{wt.branch.replace(/^keel\//, "")}</span>
+        <span className="truncate font-mono max-md:whitespace-normal max-md:break-all max-md:text-left">{wt.branch.replace(/^keel\//, "")}</span>
         {wt.state !== "active" && <span className="text-micro">{wt.state}</span>}
         {wt.setup && wt.setup.state !== "ok" && (
           <span data-testid="setup-mark" data-state={wt.setup.state} title={setupWords(wt.setup)}
@@ -131,10 +131,10 @@ export function WorktreeChip({ session }: { session: Session }) {
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner align="end" sideOffset={6} className="z-50">
-          <Popover.Popup className={cn(popupClass, "w-[min(24rem,calc(100vw-1rem))] p-3")} data-testid="worktree-popup">
+          <Popover.Popup className={cn(popupClass, "max-h-[var(--available-height)] w-[min(24rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain p-3")} data-testid="worktree-popup">
             <Popover.Title className="flex items-center gap-2 text-ui font-medium">
               <GitBranch className="size-4 text-accent" />
-              <span className="truncate font-mono">{wt.branch}</span>
+              <span className="truncate font-mono max-md:whitespace-normal max-md:break-all">{wt.branch}</span>
             </Popover.Title>
             <p className="mt-0.5 text-caption text-muted">
               Worktree from <span className="font-mono">{wt.base.length === 40 ? wt.base.slice(0, 8) : wt.base}</span>
@@ -142,7 +142,7 @@ export function WorktreeChip({ session }: { session: Session }) {
                 ? <> · {wt.dirty} changed file{wt.dirty === 1 ? "" : "s"} · {wt.commits_ahead} commit{wt.commits_ahead === 1 ? "" : "s"} ahead</>
                 : wt.state === "parked" ? " · parked: the folder is gone, its work saved" : " · removed"}
             </p>
-            <p className="mt-1 truncate font-mono text-micro text-faint" title={wt.path}>{wt.path}</p>
+            <p className="mt-1 truncate font-mono text-micro text-faint max-md:whitespace-normal max-md:break-all" title={wt.path}>{wt.path}</p>
             {wt.setup && (
               <div className="mt-2 text-caption" data-testid="worktree-setup" data-state={wt.setup.state}>
                 <p className={cn("font-medium", wt.setup.state === "ok" ? "text-ok" : wt.setup.state === "failed" ? "text-danger" : "text-warn")}>{setupWords(wt.setup)}</p>

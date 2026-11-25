@@ -1745,5 +1745,53 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    // MOB-S108 (the worktree chip and its popup), MOB-S109 (the pull request field in the start box)
+    test("the start box takes a pull request's number on a phone, and a worktree session's chip and popup name the branch and folder whole", async ({ browser, request }) => {
+      const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `phone-wt-${size.width}-${Date.now()}`);
+      mkdirSync(root, { recursive: true });
+      const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: root, encoding: "utf8" });
+      git("init", "-q", "-b", "main");
+      writeFileSync(join(root, "notes.md"), "main\n");
+      git("add", "-A");
+      git("commit", "-qm", "init");
+      let id = "";
+      try {
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.addInitScript((ws) => { localStorage.setItem("keel.newWorkspace", JSON.stringify(ws)); localStorage.setItem("keel.startInWorktree", "0"); }, root);
+            await page.goto("/");
+            await page.getByTestId("start-in-worktree").tap();
+            const field = page.getByTestId("worktree-pr-input");
+            await field.fill("1234");
+            const start = page.getByTestId("new-composer");
+            expect(await phoneProblems(page.locator("body")), `the start box with a pull request at ${scale * 100}% text`).toEqual([]);
+            await inside(page, field);
+            await shoot(page, `phone-surfaces-45-start-pr-${size.width}-${scale}`);
+            await field.fill("");
+            await start.getByTestId("composer").fill("Reply with ok.");
+            await start.getByTestId("composer").press("Enter");
+            await page.waitForURL(/\/s\//, { timeout: 30_000 });
+            id = new URL(page.url()).pathname.split("/").pop()!;
+            // The chip is in the session's menu on a phone.
+            const chip = page.getByTestId("worktree-chip");
+            await expect(page.getByTestId("session-menu").first()).toBeVisible();
+            await expect(async () => { if (!(await chip.isVisible())) await page.getByTestId("session-menu").first().tap(); await expect(chip).toBeVisible({ timeout: 1500 }); }).toPass({ timeout: 15_000 });
+            // The chip says the branch whole inside the menu's row; its popup the branch, the base and the folder.
+            expect(await chip.evaluate((el) => [...el.querySelectorAll<HTMLElement>("span")].filter((e) => e.scrollWidth > e.clientWidth + 1).length), "the chip's words are not cut").toBe(0);
+            await chip.tap();
+            const popup = page.getByTestId("worktree-popup");
+            await expect(popup).toBeVisible();
+            // (A popup scales in: it is measured once it has settled.)
+            await popup.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+            expect(await phoneProblems(popup), `the worktree popup at ${scale * 100}% text`).toEqual([]);
+            await inside(page, popup);
+            await shoot(page, `phone-surfaces-46-worktree-popup-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        if (id) await drop(request, id);
+      }
+    });
   });
 }
