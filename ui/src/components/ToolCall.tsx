@@ -473,6 +473,10 @@ function Terminal({ name, input, command, whole: onLine, out, running, movable: 
   const shown = big ? big[3]! : body;
   const [whole, setWhole] = useState(false);
   const box = useRef<HTMLPreElement>(null);
+  // The row under a running command that can move keeps its place while the call is held open after it ends: it says so
+  // there, so the lines above do not drop by its height at the moment the command ends (lib/held.ts keeps a held call as it stood).
+  const barred = useRef(false);
+  if (running && canMove) barred.current = true;
   useLayoutEffect(() => { if (failed && box.current) scrollToError(box.current); }, [failed, shown]);
   const above = !!command && !onLine && (command.includes("\n") || command.length > LINE_COMMAND);
   return (
@@ -499,7 +503,7 @@ function Terminal({ name, input, command, whole: onLine, out, running, movable: 
             ) : <pre ref={box} className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted"><Ansi text={shown} /></pre>}
           </Copyable>
         ) : !running && <p className="px-2.5 py-2 pr-16 font-sans text-faint" data-testid="no-output">{quiet}</p>}
-      {running && canMove && sessionId && callId && (
+      {running && canMove && sessionId && callId ? (
         <div className="k-out-more" data-testid="move-bar">
           <button type="button" data-testid="move-to-background" className="k-out-link" onClick={(ev) => void moveToBackground(sessionId, { call: callId }, ev.currentTarget)}
             title="The command goes on behind the call and you are told when it ends">
@@ -507,6 +511,8 @@ function Terminal({ name, input, command, whole: onLine, out, running, movable: 
           </button>
           <span className="hidden items-center gap-1 text-micro text-faint md:inline-flex" data-testid="move-keys">{keyLabel(BACKGROUND_COMMAND_KEYS).map((k) => <kbd key={k} className="rounded-sm border border-line px-1 font-sans">{k}</kbd>)}</span>
         </div>
+      ) : !running && held && barred.current && (
+        <div className="k-out-more" data-testid="move-ended"><span className="k-out-link text-faint">The command ended.</span></div>
       )}
       {/* The command is on the call's line: its copy button stands with the output's. */}
       {!above && command && <CopyButton text={command} label="Copy the command" testid="copy-command" icon={<SquareTerminal />} className="k-copy-corner k-copy-second" />}
