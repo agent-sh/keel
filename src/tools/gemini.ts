@@ -104,7 +104,7 @@ const read_file: Tool = {
         const r = await lineRange(p, { offset: s ?? 1, limit, number: false, signal: ctx.signal });
         if (r.stopped) return fail(`The read of ${p} was stopped before it reached line ${s ?? 1}.`);
         if (r.past) { ctx.seen.set(p, mtime(p)); return fail(`${p} has ${r.total} lines; line ${s} is past the end.`); }
-        return page(await textPage(p, ctx, mtime(p), r.body, r.partial, { ...asked, numbered: false, first: s ?? 1, total: r.total }));
+        return page(await textPage(p, ctx, mtime(p), r, { ...asked, numbered: false, first: s ?? 1, total: r.total }));
       }
       const { text } = decodeText(new Uint8Array(await Bun.file(h.io).arrayBuffer()));
       // As a whole read says it: an empty file has no line 1 to be past.
@@ -112,7 +112,7 @@ const read_file: Tool = {
       const r = numbered(text, s ?? 1, limit, false);
       // The same answer as for a file read in chunks: a start past the end is said, not an empty success.
       if (s && s > r.total) { ctx.seen.set(p, mtime(p)); return fail(`${p} has ${r.total} lines; line ${s} is past the end.`); }
-      return page(await textPage(p, ctx, mtime(p), r.body, r.partial, { ...asked, numbered: false, first: s ?? 1, total: r.total }));
+      return page(await textPage(p, ctx, mtime(p), r, { ...asked, numbered: false, first: s ?? 1, total: r.total }));
       } finally { h.close(); }
     }
     const r = await readFile(p, ctx, asked);

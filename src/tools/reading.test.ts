@@ -395,7 +395,7 @@ describe("what the guard's diff costs", () => {
 });
 
 describe("the reading itself", () => {
-  const page = pageOf(Array.from({ length: 50 }, (_, i) => `${i + 1}\tline ${i + 1}`).join("\n") + "\n\nPARTIAL view: lines 1-50 of 90. Continue with offset 51.", true, 1, 90);
+  const page = pageOf(Array.from({ length: 50 }, (_, i) => `${i + 1}\tline ${i + 1}`).join("\n"), true, 1, 90, "PARTIAL view: lines 1-50 of 90. Continue with offset 51.");
 
   test("a page from a read's text, numbered or bare", () => {
     expect(page).toMatchObject({ first: 1, last: 50, total: 90, more: "PARTIAL view: lines 1-50 of 90. Continue with offset 51." });
@@ -403,6 +403,29 @@ describe("the reading itself", () => {
     const bare = pageOf("x\ny\nz", false, 10);
     expect([...bare.rows]).toEqual([[10, "x"], [11, "y"], [12, "z"]]);
     expect(bare).toMatchObject({ first: 10, last: 12, more: "" });
+  });
+
+  test("a file's own line that reads like the read's note is a line of the file, in every read form", async () => {
+    const own = "\nPARTIAL view: this is a line of the file itself";
+    const body = Array.from({ length: 600 }, (_, i) => (i === 9 ? own : line(i + 1))).join("\n") + "\n";
+    const seen: number[] = [];
+    const { ctx, asked } = rig({ marks: "@@ 10-12\n@@ 600-601" });
+    const p = file(body);
+    const out = text(await Read.run({ file_path: p }, ctx));
+    seen.push(asked[0]!.lines);
+    expect(out).toContain(`10\t\n11\tPARTIAL view: this is a line of the file itself\n12\t${line(11)}`);
+    expect(out).toContain(`600\t${line(599)}\n601\t${line(600)}`);
+    expect(knownOf(ctx, p)!.lines).toEqual([{ from: 10, to: 12 }, { from: 600, to: 601 }]);
+    const g = rig({ marks: "@@ 10-12\n@@ 601" });
+    const range = text(await read_file.run({ file_path: p, start_line: 2, end_line: 601 }, g.ctx));
+    seen.push(g.asked[0]!.lines);
+    expect(range).toContain(`10\t\n11\tPARTIAL view: this is a line of the file itself\n12\t${line(11)}`);
+    expect(range).toContain(`601\t${line(600)}`);
+    // The reader was given every line of each page.
+    expect(seen).toEqual([601, 600]);
+    // And the note of a page that is cut stays under the reading.
+    const long = file(Array.from({ length: 3_000 }, (_, i) => `${line(i + 1)} ${"-".repeat(80)}`).join("\n") + "\n");
+    expect(text(await Read.run({ file_path: long }, rig().ctx))).toMatch(/\n122\t[^\n]+\n\nPARTIAL view: lines 1-\d+[^\n]*\. Continue with offset \d+\.$/);
   });
 
   test("marks become the file's own lines; a row the reader typed is the file's row; a mark past the budget says so", () => {

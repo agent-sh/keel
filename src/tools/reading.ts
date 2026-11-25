@@ -223,10 +223,10 @@ export function shellSaw(ctx: Pick<ToolContext, "seen">, command: string, dir: s
 // A page of a file as a read tool shows it: its lines by number, and the note under them (where to continue).
 export type Page = { rows: Map<number, string>; first: number; last: number; total?: number; chars: number; more: string };
 
-// The page a raw read would return, from its text: rows `N<tab>line` (`numbered`) or bare lines from `first`.
-export function pageOf(body: string, numbered: boolean, first: number, total?: number): Page {
-  const cut = body.indexOf("\n\nPARTIAL view:");
-  const text = cut < 0 ? body : body.slice(0, cut);
+// The page a raw read would return, from its rows (`N<tab>line` when `numbered`, else bare lines from `first`)
+// and the note the read put under them (`note`: where to continue, as the read itself returned it; never
+// looked for in the text, where a file's own line can say the same words).
+export function pageOf(text: string, numbered: boolean, first: number, total?: number, note = ""): Page {
   const rows = new Map<number, string>();
   let last = first - 1;
   text.split("\n").forEach((l, i) => {
@@ -235,7 +235,7 @@ export function pageOf(body: string, numbered: boolean, first: number, total?: n
     const n = Number(l.slice(0, tab));
     if (tab > 0 && Number.isInteger(n)) rows.set((last = n), l.slice(tab + 1));
   });
-  return { rows, first: rows.size ? Math.min(...rows.keys()) : first, last, total, chars: text.length, more: cut < 0 ? "" : body.slice(cut + 2) };
+  return { rows, first: rows.keys().next().value ?? first, last, total, chars: text.length, more: note };
 }
 
 // A mark on a line of its own: `@@ 120-145`, with a bullet, backticks or a closing `@@` around it, and words after it.

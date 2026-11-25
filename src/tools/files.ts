@@ -295,9 +295,11 @@ export type ReadResult = { content: string | (TextBlock | ImageBlock)[]; error?:
 // A page of a text file as the read answers it: a reader's compiled reading of it by default, the page itself
 // when the caller asked for it (`raw`), when it is short, or when no reader gave a reading (said above it once).
 // `numbered`: the page's rows carry their line numbers; `first`: its first line.
-export async function textPage(p: string, ctx: ToolContext, mtime: number, body: string, partial: boolean,
+// `r`: the page as numbered() or lineRange() returned it: its text, and the note at its end (where to continue).
+export async function textPage(p: string, ctx: ToolContext, mtime: number, r: { body: string; partial: boolean; note: string },
   o: { raw?: boolean; aim?: unknown; form?: RawForm; numbered?: boolean; first?: number; total?: number }): Promise<ReadResult> {
-  const page = pageOf(body, o.numbered !== false, Math.max(1, o.first ?? 1), o.total);
+  const { body, partial, note } = r;
+  const page = pageOf(note ? body.slice(0, body.length - note.length - 2) : body, o.numbered !== false, Math.max(1, o.first ?? 1), o.total, note);
   const via = await throughReader(p, ctx, page, { raw: o.raw, aim: o.aim, mtime, form: o.form });
   if ("content" in via) return { content: via.content, partial, compiled: true, shown: via.shown };
   sawText(ctx, p, mtime, { from: page.first, to: page.last, whole: page.first <= 1 && !partial && o.total !== undefined && page.last >= o.total });
@@ -306,7 +308,8 @@ export async function textPage(p: string, ctx: ToolContext, mtime: number, body:
 
 // Lines `offset`.. of a text file, numbered from 1 (`N<tab>line`), cut to one
 // page; the result says where to continue.
-export function numbered(text: string, offset = 1, limit?: number, number = true, maxChars = READ_CHARS): { body: string; partial: boolean; total: number } {
+// (`note`: the last line of `body` when the page is partial, where to continue; else "".)
+export function numbered(text: string, offset = 1, limit?: number, number = true, maxChars = READ_CHARS): { body: string; partial: boolean; total: number; note: string } {
   const lines = text.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   const total = lines.length;
@@ -326,8 +329,9 @@ export function numbered(text: string, offset = 1, limit?: number, number = true
   }
   let body = out.join("\n");
   const partial = last < total && (!limit || last < end);
-  if (partial) body += `\n\nPARTIAL view: lines ${start}-${last} of ${total}. Continue with offset ${last + 1}.`;
-  return { body, partial, total };
+  const note = partial ? `PARTIAL view: lines ${start}-${last} of ${total}. Continue with offset ${last + 1}.` : "";
+  if (note) body += `\n\n${note}`;
+  return { body, partial, total, note };
 }
 
 const CHUNK = 64 * 1024;
@@ -340,7 +344,7 @@ const CHUNK = 64 * 1024;
 // lies beyond it); a page cut before that says where to continue without it.
 // `signal` stops a scan on its way to a far offset. (A limit below 1 is
 // refused by the tools before a file is read: readFile, read_file.)
-export async function lineRange(p: string, o: { offset?: number; limit?: number; number?: boolean; maxChars?: number; signal?: AbortSignal } = {}): Promise<{ body: string; partial: boolean; total?: number; past?: boolean; stopped?: boolean; bytes: number }> {
+export async function lineRange(p: string, o: { offset?: number; limit?: number; number?: boolean; maxChars?: number; signal?: AbortSignal } = {}): Promise<{ body: string; partial: boolean; note: string; total?: number; past?: boolean; stopped?: boolean; bytes: number }> {
   const start = Math.max(1, o.offset ?? 1);
   const end = o.limit ? start - 1 + o.limit : Infinity;
   const maxChars = o.maxChars ?? READ_CHARS;
@@ -406,8 +410,9 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
   // Cut by its size before the range's end: where to go on, without the line count a whole read would take.
   // The file's scale is said by bytes instead: how far into it the page ends.
   const share = bytes > 0 ? `, ending ${Math.min(99, Math.max(1, Math.round((pos / bytes) * 100)))}% into the file's ${bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`}` : "";
-  if (cut) body += `\n\nPARTIAL view: lines ${start}-${last}${share}. Continue with offset ${last + 1}.`;
-  return { body, partial: cut, total, past: total !== undefined && start > total, stopped, bytes: pos };
+  const note = cut ? `PARTIAL view: lines ${start}-${last}${share}. Continue with offset ${last + 1}.` : "";
+  if (note) body += `\n\n${note}`;
+  return { body, partial: cut, note, total, past: total !== undefined && start > total, stopped, bytes: pos };
 }
 
 // `large` (Claude Code's allow_large): a text read sized to the context left
@@ -457,14 +462,14 @@ async function readHeld(p: string, ctx: ToolContext, o: ReadAsk): Promise<ReadRe
     const r = await lineRange(p, { offset: o.offset, limit: o.limit, signal: ctx.signal });
     if (r.stopped) return { content: `The read of ${p} was stopped before it reached line ${Math.max(1, o.offset ?? 1)}.`, error: true };
     if (r.past) { ctx.seen.set(p, st.mtimeMs); return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true }; }
-    return textPage(p, ctx, st.mtimeMs, r.body, r.partial, { raw: o.raw, aim: o.aim, form: o.form, first: o.offset, total: r.total });
+    return textPage(p, ctx, st.mtimeMs, r, { raw: o.raw, aim: o.aim, form: o.form, first: o.offset, total: r.total });
   }
   const { text } = decodeText(new Uint8Array(await f.arrayBuffer()));
   if (!text) { ctx.seen.set(p, st.mtimeMs); return { content: `${p} exists but is empty.` }; }
   const r = numbered(text, o.offset, o.limit, true, o.large ? roomChars : READ_CHARS);
   if (o.offset && o.offset > r.total) { ctx.seen.set(p, st.mtimeMs); return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true }; }
   // (A read sized to the context left is a request for all of it: the file itself.)
-  return textPage(p, ctx, st.mtimeMs, r.body, r.partial, { raw: o.large ? true : o.raw, aim: o.aim, form: o.form, first: o.offset, total: r.total });
+  return textPage(p, ctx, st.mtimeMs, r, { raw: o.large ? true : o.raw, aim: o.aim, form: o.form, first: o.offset, total: r.total });
 }
 
 function pageRange(spec: string, count: number): [number, number] | string {
