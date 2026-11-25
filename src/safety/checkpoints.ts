@@ -264,18 +264,16 @@ export class Checkpoints {
     if (mark) for (const p of await sh.changed(mark, tree)) live.outside.add(p);
     this.save(s, { turn: live.turn, at: "end", tree, paths: start.paths, skipped: this.skippedOf(sh), outside: [...live.outside].sort() });
     this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { turn: live.turn } });
-    this.maybeMaintain(s.workspace);
+    this.maybeMaintain();
   }
 
-  // Every 20 turn ends of a workspace, or when the last pass was an hour ago:
-  // retention, then the store is repacked and what no checkpoint holds goes.
-  private ends = new Map<string, { n: number; at: number }>();
-  private maybeMaintain(workspace: string) {
-    const e = this.ends.get(workspace) ?? { n: 0, at: Date.now() };
-    e.n++;
-    this.ends.set(workspace, e);
-    if (e.n < 20 && Date.now() - e.at < 3600_000) return;
-    this.ends.set(workspace, { n: 0, at: Date.now() });
+  // One pass covers every store under the root, so one count of turn ends serves them all: a pass
+  // starts at the 20th end since the last one, or an hour after it. Never two at once.
+  private ends = { n: 0, at: Date.now() };
+  private maybeMaintain() {
+    this.ends.n++;
+    if (this.ends.n < 20 && Date.now() - this.ends.at < 3600_000) return;
+    if (this.pass) return;
     // The store's upkeep, not this turn's work: it runs and fails in no turn.
     detached(() => this.maintain().catch((err) => this.errors.capture("server", err, { at: "checkpoint maintenance" })));
   }
@@ -283,7 +281,19 @@ export class Checkpoints {
   // A checkpoint retention lets go keeps its row with no tree when it is a
   // turn's start (a rewind to that turn then says it expired instead of
   // landing on the next turn); other rows go.
-  async maintain(): Promise<{ removed: number; bytes: number }> {
+  private pass: Promise<{ removed: number; bytes: number }> | null = null;
+  private next: Promise<{ removed: number; bytes: number }> | null = null;
+  maintain(): Promise<{ removed: number; bytes: number }> {
+    // A pass runs one at a time. One asked for while another runs waits for it and is one pass for
+    // every asker, since it reads the rows when it starts.
+    if (this.pass) return (this.next ??= this.pass.catch(() => {}).then(() => { this.next = null; return this.maintain(); }));
+    this.ends = { n: 0, at: Date.now() };
+    const run = this.run().finally(() => { this.pass = null; });
+    this.pass = run;
+    return run;
+  }
+
+  private async run(): Promise<{ removed: number; bytes: number }> {
     const db = this.store.db;
     let removed = 0;
     const settle = () => db.query("DELETE FROM checkpoints WHERE tree = '' AND at != 'start'").run();
@@ -291,12 +301,12 @@ export class Checkpoints {
     removed += db.query("DELETE FROM checkpoints WHERE session_id NOT IN (SELECT id FROM sessions)").run().changes;
     removed += db.query(`UPDATE checkpoints SET tree = '' WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created DESC) AS r FROM checkpoints WHERE tree != '') WHERE r > ?)`).run(keep()).changes;
     settle();
-    const gcAll = async () => {
+    const gcAll = async (full = false) => {
       // Each tree is kept in the shadow of the folder it was taken of.
       const rows = db.query<{ id: string; tree: string; workspace: string }, []>("SELECT c.id, c.tree, COALESCE(c.workspace, s.workspace) AS workspace FROM checkpoints c JOIN sessions s ON s.id = c.session_id WHERE c.tree != ''").all();
       const by = new Map<string, Map<string, string>>();
       for (const r of rows) (by.get(r.workspace) ?? by.set(r.workspace, new Map()).get(r.workspace)!).set(r.id, r.tree);
-      for (const ws of new Set([...this.shadows.keys(), ...by.keys()])) await this.shadow(ws).maintain(by.get(ws) ?? new Map());
+      for (const ws of new Set([...this.shadows.keys(), ...by.keys()])) await this.shadow(ws).maintain(by.get(ws) ?? new Map(), full);
     };
     await gcAll();
     // Over the budget: the oldest tenth goes, until it fits.
@@ -306,7 +316,7 @@ export class Checkpoints {
       const n = Math.max(1, Math.ceil((db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM checkpoints WHERE tree != ''").get()?.n ?? 0) / 10));
       removed += db.query("UPDATE checkpoints SET tree = '' WHERE id IN (SELECT id FROM checkpoints WHERE tree != '' ORDER BY created LIMIT ?)").run(n).changes;
       settle();
-      await gcAll();
+      await gcAll(true); // only a full pass gives back what the let-go trees held
       bytes = sizeOf(this.root);
     }
     return { removed, bytes };

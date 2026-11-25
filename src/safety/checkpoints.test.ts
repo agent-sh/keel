@@ -4,10 +4,10 @@
 import { afterAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ownEnv } from "../../test/env.ts";
 
 const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `ckpt-${process.pid}`);
-process.env.KEEL_CHECKPOINT_KEEP = "4";
-process.env.KEEL_CHECKPOINT_FILE_MB = String(100 / 1024 / 1024); // 100 bytes
+ownEnv({ KEEL_CHECKPOINT_KEEP: "4", KEEL_CHECKPOINT_FILE_MB: String(100 / 1024 / 1024) }); // 100 bytes
 const { Store } = await import("../core/store.ts");
 const { Bus } = await import("../core/bus.ts");
 const { ErrorTracker } = await import("../core/errors.ts");
@@ -505,4 +505,20 @@ test("a workspace found too large is not walked again at the next start, until i
   } finally {
     if (before === undefined) delete process.env.KEEL_CHECKPOINT_SNAPSHOT_MB; else process.env.KEEL_CHECKPOINT_SNAPSHOT_MB = before;
   }
+});
+
+test("one maintenance pass serves every workspace: the turn ends of all of them are one count", async () => {
+  const t = setup({ "a.txt": "0\n" });
+  const b = join(t.ws, "..", "b");
+  mkdirSync(b, { recursive: true });
+  writeFileSync(join(b, "a.txt"), "0\n");
+  let passes = 0;
+  const run = t.c.maintain.bind(t.c);
+  t.c.maintain = () => { passes++; return run(); };
+  for (let i = 0; i < 10; i++) await t.turn(() => t.write("a.txt", `a${i}\n`));
+  expect(passes).toBe(0);
+  Object.assign(t.s, t.store.updateSession(t.s.id, { workspace: b }));
+  for (let i = 0; i < 10; i++) await t.turn(() => writeFileSync(join(b, "a.txt"), `b${i}\n`));
+  expect(passes).toBe(1);
+  await new Promise((r) => setTimeout(r, 300));
 });

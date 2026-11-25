@@ -34,6 +34,12 @@ const ALWAYS_OUT = ["node_modules/", ".venv/", "venv/", "__pycache__/", ".cache/
 const LARGE_FILE = "keel-large.json";
 const LARGE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 type Large = { reason: string; listed: number; top: string; entries: number; file_cap: number; snap_cap: number; at: number };
+// What the last maintenance pass of a store found (see Shadow.maintain), and how long a full pass waits
+// after the last one when a tree was let go; past MAX_PACKS packs a full pass rolls them up whatever.
+type GcState = { refs: string; full_at: number; owed: boolean };
+const GC_FILE = "keel-gc.json";
+const FULL_EVERY_MS = 6 * 3600 * 1000;
+const MAX_PACKS = 40;
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 export class Shadow {
@@ -68,7 +74,7 @@ export class Shadow {
     return run;
   }
 
-  async git(args: string[], opts: { index?: string; input?: string; timeout?: number; ok?: number[] } = {}): Promise<string> {
+  async git(args: string[], opts: { index?: string; input?: string; timeout?: number; ok?: number[]; low?: boolean } = {}): Promise<string> {
     const here = existsSync(this.workspace);
     // Through the one place that runs git (src/core/git.ts). The store's own
     // bare directory has Keel's config. A real repository's git directory
@@ -77,7 +83,7 @@ export class Shadow {
     // even for what reads only the shadow (refs, trees, gc).
     const r = await git(here ? this.workspace : this.dir, ["-c", "core.autocrlf=false", "-c", "core.quotepath=false", ...args], {
       ...(this.gitDir ? {} : { mode: "own" as const, gitDir: this.dir, workTree: here ? this.workspace : undefined }),
-      index: opts.index, input: opts.input, timeout: opts.timeout ?? 60_000,
+      index: opts.index, input: opts.input, timeout: opts.timeout ?? 60_000, low: opts.low,
     });
     if (r.code !== 0 && !(opts.ok ?? []).includes(r.code)) throw new Error(`git ${args[0]} failed (${r.code}): ${r.err.trim().slice(0, 500)}`);
     return r.out;
@@ -350,17 +356,61 @@ export class Shadow {
     });
   }
 
-  // Keep exactly these trees (one ref each), repack, and let git drop what no
-  // checkpoint holds any more. Objects younger than an hour stay: a snapshot
-  // in flight is not yet recorded.
-  maintain(trees: Map<string, string>): Promise<void> {
+  // Keep exactly these trees (one ref each), and tidy the store only as far as it needs:
+  // - nothing changed since the last pass (the same trees, no loose object):
+  //   nothing runs after the one read of the object counts;
+  // - something changed: the new objects are packed beside the old packs and the packs are
+  //   rolled up by size (a geometric repack), which writes only what is new;
+  // - a full `gc` (everything rewritten, what no checkpoint holds dropped once an hour old, as
+  //   the cruft pack's expiry) when a tree was let go and `full` is set (the root is over its
+  //   budget) or the last full pass was a while ago, because only a full one frees what the
+  //   let-go trees held.
+  // A store with no record of a last pass is read the same way: tidy stays as it is. Returns what it did.
+  maintain(trees: Map<string, string>, full = false): Promise<"skipped" | "packed" | "full"> {
     return this.lock(async () => {
-      if (this.gitDir || !existsSync(join(this.dir, "HEAD"))) return;
-      const have = (await this.git(["for-each-ref", "--format=%(refname)", "refs/keel/cp/"])).split("\n").filter(Boolean);
-      const lines = [...have.filter((r) => !trees.has(r.slice("refs/keel/cp/".length))).map((r) => `delete ${r}`), ...[...trees].map(([id, t]) => `update refs/keel/cp/${id} ${t}`)];
-      if (lines.length) await this.git(["update-ref", "--stdin"], { input: lines.join("\n") + "\n", timeout: 120_000 });
-      await this.git(["-c", "pack.threads=2", "gc", "--quiet", "--prune=1.hour.ago"], { timeout: 600_000 });
+      if (this.gitDir || !existsSync(join(this.dir, "HEAD"))) return "skipped";
+      const sorted = [...trees].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      const refs = createHash("sha1").update(sorted.map(([id, t]) => `${id} ${t}`).join("\n")).digest("hex");
+      const last = this.gcState();
+      const counts = await this.counts();
+      const same = last?.refs === refs;
+      const fullAt = last?.full_at ?? Date.now(); // (a store with no record was packed by the pass before this one)
+      const due = Date.now() - fullAt > FULL_EVERY_MS;
+      const clean = counts.loose === 0; // (a few packs are a geometric repack's own shape and a gc's cruft pack)
+      let owed = last?.owed ?? false; // a tree was let go and no full pass has freed what it held yet
+      if (same && clean && !(owed && (full || due))) return "skipped";
+      if (!same) {
+        const have = (await this.git(["for-each-ref", "--format=%(refname)", "refs/keel/cp/"])).split("\n").filter(Boolean);
+        const gone = have.filter((r) => !trees.has(r.slice("refs/keel/cp/".length)));
+        if (gone.length) owed = true;
+        const lines = [...gone.map((r) => `delete ${r}`), ...sorted.map(([id, t]) => `update refs/keel/cp/${id} ${t}`)];
+        if (lines.length) await this.git(["update-ref", "--stdin"], { input: lines.join("\n") + "\n", timeout: 120_000 });
+      }
+      const doFull = (owed && (full || due)) || counts.packs > MAX_PACKS;
+      // Tidy already (no loose object) and not due for a full pass: only the record is made.
+      if (!doFull && clean) { this.gcState({ refs, full_at: fullAt, owed }); return "skipped"; }
+      if (doFull) await this.git(["-c", "pack.threads=2", "gc", "--quiet", "--prune=1.hour.ago"], { timeout: 600_000, low: true });
+      else await this.git(["-c", "pack.threads=2", "repack", "-d", "-l", "-q", "--geometric=2"], { timeout: 600_000, low: true });
+      this.gcState({ refs, full_at: doFull ? Date.now() : fullAt, owed: doFull ? false : owed });
+      return doFull ? "full" : "packed";
     });
+  }
+
+  // The last pass of maintain, kept with the store: the trees it held (a digest), when the last full pass ran, and whether a tree was let go since.
+  private gcState(set?: GcState): GcState | undefined {
+    const file = join(this.dir, GC_FILE);
+    if (set) { try { writeFileSync(file, JSON.stringify(set)); } catch {} return set; }
+    try {
+      const m = JSON.parse(readFileSync(file, "utf8"));
+      return typeof m?.refs === "string" && typeof m.full_at === "number" ? { refs: m.refs, full_at: m.full_at, owed: m.owed === true } : undefined;
+    } catch { return undefined; }
+  }
+
+  // Loose objects and packs, as `git count-objects -v` says.
+  private async counts(): Promise<{ loose: number; packs: number }> {
+    const out = await this.git(["count-objects", "-v"], { low: true });
+    const n = (k: string) => Number(new RegExp(`^${k}: (\\d+)$`, "m").exec(out)?.[1] ?? 0);
+    return { loose: n("count"), packs: n("packs") };
   }
 
   // Paths that differ between two trees.

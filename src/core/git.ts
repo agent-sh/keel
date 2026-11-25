@@ -79,6 +79,8 @@ export type GitOpts = {
   read?: boolean;
   // The output is bytes, not text (`cat-file --batch` of blobs): in `bytes`.
   raw?: boolean;
+  // Background upkeep (a repack): niced, and its disk use at the lowest weight where ionice is.
+  low?: boolean;
   // The call puts files into a work tree (the fill of a new worktree, the
   // checkout of a restore): in a partial clone it may fetch the objects the
   // repository was promised. Through the view that fetch knows the remote's
@@ -615,6 +617,7 @@ async function readBytes(s: ReadableStream<Uint8Array>): Promise<Uint8Array> {
 }
 
 // git in `dir`. Never throws for a failed command: the code says.
+const LOW = [...(Bun.which("nice") ? ["nice", "-n", "10"] : []), ...(Bun.which("ionice") ? ["ionice", "-c2", "-n7"] : [])];
 export async function git(dir: string, args: string[], o: GitOpts = {}): Promise<GitResult> {
   let p: Plan;
   try { p = plan(dir, args, o); } catch (e) { return { code: 128, out: "", err: `git: ${(e as Error).message}` }; }
@@ -626,7 +629,7 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
   }
   let proc: ReturnType<typeof Bun.spawn>;
   try {
-    proc = Bun.spawn(p.argv, { cwd: p.cwd, env: p.env, stdin: bytes(o.input), stdout: "pipe", stderr: "pipe", timeout: o.timeout ?? 120_000, killSignal: "SIGKILL", signal: o.signal });
+    proc = Bun.spawn(o.low ? [...LOW, ...p.argv] : p.argv, { cwd: p.cwd, env: p.env, stdin: bytes(o.input), stdout: "pipe", stderr: "pipe", timeout: o.timeout ?? 120_000, killSignal: "SIGKILL", signal: o.signal });
   } catch (e) {
     return { code: 127, out: "", err: `git could not start: ${(e as Error).message}` };
   }
