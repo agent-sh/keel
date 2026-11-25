@@ -1,7 +1,9 @@
 // Speech through the owner's providers, for dictation and conversation mode in the page:
 //   GET  /api/speech                     the speech models the providers list ({ models, failed }); ?fresh=1 reads again
 //   POST /api/speech/transcribe?route=   the recording as the body (its content type), ?lang=: { text }
-//   POST /api/speech/speak               { route, text, voice? }: the audio of the text
+//   POST /api/speech/speak               { route, text, voice? }: the audio of the text (no voice: none is sent; a provider
+//                                        that refuses for it is answered 422 with { error, voice_needed: true })
+// A text to speech model carries `voices` when its provider lists them (GET <base>/audio/voices).
 // What speaks and what listens is chosen in the page (Settings > Speech); the daemon sends only to a
 // model its provider's own listing names as a speech model.
 import { Speech, SpeechError } from "../../speech/speech.ts";
@@ -11,7 +13,7 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 export const speechRoutes: RouteModule = ({ providers }) => {
   const speech = new Speech({ providers: () => providers.all(), lookup: (m) => providers.catalog.lookup(m) });
-  const answer = (e: unknown) => (e instanceof SpeechError ? json({ error: e.message }, e.status) : json({ error: (e as Error).message }, 502));
+  const answer = (e: unknown) => (e instanceof SpeechError ? json({ error: e.message, ...(e.voiceNeeded ? { voice_needed: true } : {}) }, e.status) : json({ error: (e as Error).message }, 502));
   return {
     "/api/speech": {
       GET: async (req: Request) => {

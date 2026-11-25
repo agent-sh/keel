@@ -7,7 +7,8 @@ import type { CatalogEntry } from "../providers/catalog.ts";
 import type { Provider, SpeechAccess } from "../providers/types.ts";
 
 export type SpeechKind = "stt" | "tts";
-export type SpeechModel = { route: string; provider: string; provider_label: string; model: string; kind: SpeechKind };
+// `voices`: the names a text to speech model's provider lists for it, when it lists any (below).
+export type SpeechModel = { route: string; provider: string; provider_label: string; model: string; kind: SpeechKind; voices?: string[] };
 
 // The kind of a listed model: the catalog's modalities when it knows the model, else the words of
 // its id (a kind filter like notChat in family.ts, not a model list).
@@ -22,6 +23,20 @@ export function speechKind(id: string, entry?: Pick<CatalogEntry, "speech">): Sp
 export function splitRoute(route: string): { provider: string; model: string } | null {
   const i = route.indexOf(":");
   return i > 0 && i < route.length - 1 ? { provider: route.slice(0, i), model: route.slice(i + 1) } : null;
+}
+
+// The voices a provider lists at `GET <base>/audio/voices` (the route OpenAI-style servers that offer voices
+// share; OpenAI's own API lists none). The answer is `{ voices: [...] }` or `{ data: [...] }`, each a name or
+// an object with an `id`, `voice_id` or `name`. Nothing else is read, and nothing is made up.
+export function parseVoices(d: unknown): string[] {
+  const list = Array.isArray(d) ? d : Array.isArray((d as any)?.voices) ? (d as any).voices : Array.isArray((d as any)?.data) ? (d as any).data : [];
+  const out = new Set<string>();
+  for (const v of list) {
+    const name = typeof v === "string" ? v : String(v?.id ?? v?.voice_id ?? v?.name ?? "");
+    if (name && name.length <= 100) out.add(name);
+    if (out.size >= 500) break;
+  }
+  return [...out];
 }
 
 const KEEP_MS = 5 * 60_000;
@@ -52,6 +67,12 @@ export class Speech {
         const model = String(m?.id ?? m?.name ?? "");
         const kind = model ? speechKind(model, this.deps.lookup(model)) : null;
         if (kind) models.push({ route: `${p.id}:${model}`, provider: p.id, provider_label: p.label ?? p.id, model, kind });
+      }
+      // Voices are asked for only where there is a text to speech model to use one; a provider with no such list answers
+      // an error (or none): its models are then listed with no voices.
+      if (models.some((m) => m.kind === "tts")) {
+        const voices = await getJson(p.label ?? p.id, `${a.base}/audio/voices`, a.headers, a.secrets, Date.now() + LISTING_MS).then(parseVoices, () => []);
+        if (voices.length) for (const m of models) if (m.kind === "tts") m.voices = voices;
       }
       out = { models };
     } catch (e) {
@@ -93,7 +114,7 @@ export class Speech {
     if (!r.ok) {
       const body = scrub(await r.text().catch(() => ""), a.secrets);
       const e: ProviderError = classify(label, r.status, r.headers, body);
-      throw new SpeechError(e.kind === "auth" ? 401 : 502, e.message);
+      throw new SpeechError(e.kind === "auth" ? 401 : 502, e.message, r.status);
     }
     return r;
   }
@@ -121,18 +142,24 @@ export class Speech {
     if (text.length > MAX_TEXT) throw new SpeechError(413, `the text is over ${MAX_TEXT} characters`);
     const { a, model, label } = await this.access(route, "tts");
     const format = opts.format === "wav" ? "wav" : "mp3";
-    // `voice` is the provider's own name for one; the OpenAI route requires the field.
-    const body = JSON.stringify({ model, input: text, voice: opts.voice?.trim() || DEFAULT_VOICE, response_format: format });
-    const r = await this.send(label, `${a.base}/audio/speech`, { method: "POST", body, headers: { "content-type": "application/json" } }, a);
+    // `voice` is the provider's own name for one. With none chosen the field is left out, never filled with a name of ours:
+    // a provider that needs one says so, in its own words, and the page shows them (`voice_needed`).
+    const voice = opts.voice?.trim();
+    const body = JSON.stringify({ model, input: text, ...(voice ? { voice } : {}), response_format: format });
+    let r: Response;
+    try {
+      r = await this.send(label, `${a.base}/audio/speech`, { method: "POST", body, headers: { "content-type": "application/json" } }, a);
+    } catch (e) {
+      if (!voice && e instanceof SpeechError && (e.upstream === 400 || e.upstream === 422)) throw new SpeechError(422, e.message, e.upstream, true);
+      throw e;
+    }
     return new Response(r.body, { headers: { "content-type": r.headers.get("content-type") ?? (format === "wav" ? "audio/wav" : "audio/mpeg"), "cache-control": "no-store" } });
   }
 }
 
-// The OpenAI route's own default voice: a field its API requires, changed in Settings > Speech.
-export const DEFAULT_VOICE = "alloy";
-
 export class SpeechError extends Error {
-  constructor(readonly status: number, message: string) {
+  // `upstream`: the status the provider answered; `voiceNeeded`: it refused a request that named no voice.
+  constructor(readonly status: number, message: string, readonly upstream?: number, readonly voiceNeeded = false) {
     super(message);
   }
 }

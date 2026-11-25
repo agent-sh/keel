@@ -221,3 +221,66 @@ test("a speech model of a provider hears the dictation and speaks the reply when
     fake.server.close();
   }
 });
+
+test("voices: a provider that lists them is asked about once, and the pick is kept; one that lists none is shown its own words", async ({ page, request }) => {
+  const listed = await startSpeechEndpoint({ voices: ["ember", "vale"] });
+  try {
+    await request.put(`/api/providers/endpoints/${SPEECH_ID}`, { data: { config: { id: SPEECH_ID, label: "Speech E2E", base_url: `${listed.url}/v1`, wire: "chat_completions", auth: "none" } } });
+    const found = await (await request.get("/api/speech?fresh=1")).json();
+    expect(found.models.find((m: any) => m.kind === "tts").voices).toEqual(["ember", "vale"]);
+    await page.addInitScript(BROWSER);
+    await session(page, request, { say: "model" });
+    // Settings > Speech offers them, and none is chosen yet.
+    await page.goto("/settings/speech");
+    const list = page.getByTestId("speech-voice-list");
+    await expect(list).toContainText("Choose a voice");
+    await list.click();
+    await expect(page.getByRole("option")).toHaveText(["Choose a voice", "ember", "vale"]);
+    await page.keyboard.press("Escape");
+    await page.goBack();
+    // The first reply asks, and nothing is sent until the owner picks.
+    await page.getByTestId("converse").click();
+    await expect(page.getByTestId("speech-state")).toHaveText("Listening");
+    await hear(page, "go script:say Read this one.");
+    await expect(page.getByTestId("speech-voice-ask")).toBeVisible();
+    await page.getByTestId("speech-voice-pick").click();
+    await expect(page.getByRole("option")).toHaveText(["ember", "vale"]);
+    expect(listed.asked.spoken).toEqual([]);
+    await page.keyboard.press("Escape");
+    await shoot(page, "speech-06-voice-ask");
+    await page.getByTestId("speech-voice-pick").click();
+    await page.getByRole("option", { name: "vale" }).click();
+    await page.getByTestId("speech-voice-use").click();
+    await expect.poll(() => listed.asked.spoken).toEqual([{ model: TTS, input: "Read this one.", voice: "vale" }]);
+    await expect(page.getByTestId("speech-voice-ask")).toHaveCount(0);
+    await expect(page.getByTestId("speech-state")).toHaveText("Listening");
+    // The pick is kept: the next reply is read at once.
+    await hear(page, "again script:say And this.");
+    await expect.poll(() => listed.asked.spoken.map((s) => s.voice)).toEqual(["vale", "vale"]);
+    await page.getByTestId("converse").click();
+  } finally {
+    await request.delete(`/api/providers/endpoints/${SPEECH_ID}`);
+    listed.server.close();
+  }
+
+  const strict = await startSpeechEndpoint({ strict: true });
+  try {
+    await request.put(`/api/providers/endpoints/${SPEECH_ID}`, { data: { config: { id: SPEECH_ID, label: "Speech E2E", base_url: `${strict.url}/v1`, wire: "chat_completions", auth: "none" } } });
+    await page.addInitScript(() => localStorage.removeItem("keel.speech"));
+    await session(page, request, { say: "model" });
+    await page.getByTestId("converse").click();
+    await expect(page.getByTestId("speech-state")).toHaveText("Listening");
+    await hear(page, "go script:say Read this one.");
+    // No name of ours went first: the provider refused the text, and its words are shown for the owner to choose from.
+    await expect(page.getByTestId("speech-voice-why")).toContainText("ash, coral, sage");
+    expect(strict.asked.spoken).toEqual([{ model: TTS, input: "Read this one.", voice: undefined }]);
+    await page.getByTestId("speech-voice-name").fill("coral");
+    await page.getByTestId("speech-voice-name").press("Enter");
+    await expect.poll(() => strict.asked.spoken.at(-1)).toEqual({ model: TTS, input: "Read this one.", voice: "coral" });
+    await expect(page.getByTestId("speech-state")).toHaveText("Listening");
+    await page.getByTestId("converse").click();
+  } finally {
+    await request.delete(`/api/providers/endpoints/${SPEECH_ID}`);
+    strict.server.close();
+  }
+});

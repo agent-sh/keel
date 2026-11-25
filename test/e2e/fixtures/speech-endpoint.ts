@@ -16,9 +16,12 @@ function wav(): Buffer {
   return Buffer.concat([h, Buffer.alloc(n, 128)]);
 }
 
-export type Asked = { heard: { model: string; bytes: number }[]; spoken: { model: string; input: string; voice: string }[] };
+export type Asked = { heard: { model: string; bytes: number }[]; spoken: { model: string; input: string; voice: string | undefined }[] };
+// `voices`: the names it lists at /v1/audio/voices (else that route is not there, as at OpenAI). `strict`: a text that names
+// no voice is refused with the provider's own words about the names it takes.
+export type Options = { voices?: string[]; strict?: boolean };
 
-export function startSpeechEndpoint(): Promise<{ url: string; server: Server; asked: Asked }> {
+export function startSpeechEndpoint(opts: Options = {}): Promise<{ url: string; server: Server; asked: Asked }> {
   const asked: Asked = { heard: [], spoken: [] };
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -37,9 +40,17 @@ export function startSpeechEndpoint(): Promise<{ url: string; server: Server; as
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({ text: HEARD }));
       }
+      if (path === "/v1/audio/voices" && opts.voices) {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ voices: opts.voices }));
+      }
       if (path === "/v1/audio/speech") {
         const b = JSON.parse(body.toString() || "{}");
         asked.spoken.push({ model: b.model, input: b.input, voice: b.voice });
+        if (opts.strict && !b.voice) {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "Missing required parameter: voice. The voices this provider takes are: ash, coral, sage." } }));
+        }
         res.writeHead(200, { "content-type": "audio/wav" });
         return res.end(wav());
       }

@@ -1,15 +1,17 @@
 // Speech in the message box: a mic that dictates into it, a button that turns conversation mode on, and
 // the line above the box that says what is happening (listening, thinking, speaking), which way the
 // words are heard, and how to stop. The state mark is the session's own.
+import { useState } from "react";
 import { AudioLines, Mic, Square, X } from "lucide-react";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { dismissDictationError, stopDictation, toggleDictation, useDictation } from "../lib/dictation.ts";
-import { commandKeys } from "../lib/keys.ts";
-import { dismissConversationError, stop as endConversation, toggleConversation, useConversation } from "../lib/talk.ts";
+import { commandKeys, composing } from "../lib/keys.ts";
+import { chooseVoice, dismissConversationError, skipVoice, stop as endConversation, toggleConversation, useConversation } from "../lib/talk.ts";
 import { useStore } from "../lib/store.ts";
 import { useWatch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { Mark } from "./Mark.tsx";
+import { Select } from "./Select.tsx";
 
 const button = "grid size-8 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg aria-pressed:bg-accent-soft aria-pressed:text-accent";
 const withKeys = (what: string, id: string) => { const k = commandKeys(id); return k ? `${what} (${k})` : what; };
@@ -84,6 +86,7 @@ export function SpeechBand({ sid }: { sid: string | undefined }) {
   const how = talking ? c.listenLabel : d.label;
   const heard = talking ? c.heard : "";
   return (
+    <>
     <div className={cn(line, "text-muted")} role="status" data-testid="speech-band" data-mode={talking ? "conversation" : "dictation"} data-phase={phase} data-state={state.toLowerCase()}>
       <Mark w={talking ? w : "work"} />
       <span className="font-medium text-fg" data-testid="speech-state">{state}</span>
@@ -100,6 +103,30 @@ export function SpeechBand({ sid }: { sid: string | undefined }) {
         <Square className="size-3 fill-current" />
         {talking ? "End" : "Stop"}
       </button>
+    </div>
+    {talking && c.voiceAsk && <VoiceAsk key={c.voiceAsk.text} ask={c.voiceAsk} />}
+    {talking && c.note && !c.voiceAsk && <p className="px-4 pt-0.5 text-caption text-faint" data-testid="speech-note">{c.note}</p>}
+    </>
+  );
+}
+
+// The reply waits on a voice. A provider that lists voices gives a list; one that does not says what it takes (its own
+// words, shown as text) and the owner types a name. No name of ours is sent in its place.
+function VoiceAsk({ ask }: { ask: { text: string; voices: string[] } }) {
+  const [name, setName] = useState(ask.voices[0] ?? "");
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-4 pt-1 text-caption text-muted" data-testid="speech-voice-ask">
+      <span className="min-w-0 basis-full break-words sm:basis-auto sm:flex-1" data-testid="speech-voice-why">{ask.text}</span>
+      {ask.voices.length ? (
+        <Select value={name} onChange={(e) => setName(e.target.value)} aria-label="Voice" data-testid="speech-voice-pick" className="w-40">
+          {ask.voices.map((v) => <option key={v} value={v}>{v}</option>)}
+        </Select>
+      ) : (
+        <input className="k-field k-field-sm w-36" aria-label="Voice name" placeholder="Voice name" value={name} onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter" && name.trim()) chooseVoice(name); }} data-testid="speech-voice-name" />
+      )}
+      <button type="button" data-testid="speech-voice-use" disabled={!name.trim()} onClick={() => chooseVoice(name)} className="h-6 rounded-md px-2 text-fg hover:bg-hover disabled:opacity-40">Use</button>
+      <button type="button" data-testid="speech-voice-skip" onClick={() => skipVoice()} className="h-6 rounded-md px-2 hover:bg-hover">Skip</button>
     </div>
   );
 }

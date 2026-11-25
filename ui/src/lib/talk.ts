@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
 import { STOPPERS } from "../../../src/core/stoppers.ts";
 import { boxOf } from "./quote.ts";
 import { modalOpen } from "./overlay.ts";
-import { chooseListen, chooseSay, getPrefs, hear, hush, langOf, loadSpeechModels, speak, voicesReady, type Hear, type Way1 } from "./speech.ts";
+import { chooseListen, chooseSay, getPrefs, hear, hush, langOf, loadSpeechModels, setPrefs, speak, VoiceNeeded, voicesOf, voicesReady, type Hear, type Way1 } from "./speech.ts";
 import { getState, subscribe } from "./store.ts";
 import { OFF, replyOf, spokenText, talkStep, type Effect, type Phase, type Talk, type TalkEvent } from "./talk-core.ts";
 import { getUI, onUI } from "./ui.ts";
@@ -20,8 +20,11 @@ export type Conversation = {
   sayLabel: string | null;        // null: replies are not read aloud (note says why)
   note: string | null;
   error: string | null;
+  // The reply waits on a voice: the owner is asked to pick one. `text`: what the provider said (or that it lists
+  // voices); `voices`: the names it lists, if it lists any, else the owner types one.
+  voiceAsk: { text: string; voices: string[] } | null;
 };
-const IDLE: Conversation = { sid: null, phase: "off", heard: "", recording: null, listenLabel: "", sayLabel: null, note: null, error: null };
+const IDLE: Conversation = { sid: null, phase: "off", heard: "", recording: null, listenLabel: "", sayLabel: null, note: null, error: null, voiceAsk: null };
 let view = IDLE;
 const subs = new Set<() => void>();
 const publish = (v: Partial<Conversation>) => { view = { ...view, ...v }; subs.forEach((f) => f()); };
@@ -46,7 +49,8 @@ function dispatch(e: TalkEvent) {
   const r = talkStep(talk, e);
   const before = talk;
   talk = r.talk;
-  publish({ phase: talk.phase, heard: join(talk.final, talk.interim), ...(talk.error ? { error: talk.error } : {}), ...(talk.phase !== "listening" ? { recording: talk.phase === "thinking" ? view.recording : null } : {}) });
+  if (talk.phase !== "speaking") held = null;
+  publish({ phase: talk.phase, ...(talk.phase !== "speaking" && view.voiceAsk ? { voiceAsk: null } : {}), heard: join(talk.final, talk.interim), ...(talk.error ? { error: talk.error } : {}), ...(talk.phase !== "listening" ? { recording: talk.phase === "thinking" ? view.recording : null } : {}) });
   // Silence is counted from the last change of the words, on a timer that runs while they are heard.
   if (talk.phase === "listening" && talk.lastAt !== before.lastAt && listenWay?.source === "browser") {
     clearTimeout(silent);
@@ -116,7 +120,38 @@ function say(text: string) {
   const mine = gen;
   const done = () => { if (mine === gen) dispatch({ t: "spoken" }); };
   if (!sayWay) { done(); return; }
-  speak(text, sayWay, getPrefs()).then(done, (e) => { if (mine === gen) publish({ note: `Not read aloud: ${(e as Error).message}` }); done(); });
+  // A provider that lists voices is read with one the owner chose from them; with none chosen the owner is asked first.
+  const voices = sayWay.source === "model" ? voicesOf() : [];
+  if (voices.length && !voices.includes(getPrefs().voice.trim())) { ask(text, "This provider lists voices. Choose the one that reads your replies.", voices); return; }
+  speak(text, sayWay, getPrefs()).then(done, (e) => {
+    if (mine !== gen) return;
+    // No voice was named and the provider needs one: its own words are shown, and the owner names one.
+    if (e instanceof VoiceNeeded) return ask(text, e.message, []);
+    publish({ note: `Not read aloud: ${(e as Error).message}` });
+    done();
+  });
+}
+
+// The reply is held while the owner picks a voice (the band asks); the pick is kept in Settings > Speech and the reply is then read.
+let held: string | null = null;
+function ask(text: string, why: string, voices: string[]) {
+  held = text;
+  publish({ voiceAsk: { text: why, voices } });
+}
+export function chooseVoice(name: string) {
+  const text = held, v = name.trim();
+  if (!text || !v) return;
+  held = null;
+  setPrefs({ voice: v });
+  publish({ voiceAsk: null });
+  say(text);
+}
+// Not read this time: the conversation goes on to listening.
+export function skipVoice() {
+  if (held === null) return;
+  held = null;
+  publish({ voiceAsk: null });
+  dispatch({ t: "spoken" });
 }
 
 // The session's events say when the turn has ended and what it answered; the session leaving the screen ends the mode.
@@ -179,6 +214,7 @@ export function stop() {
   h?.cancel();
   h = null;
   hush();
+  held = null;
   sentSeq = null;
   if (had || view.phase !== "off") publish({ ...IDLE, note: null });
 }

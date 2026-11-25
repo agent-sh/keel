@@ -31,7 +31,7 @@ export const langOf = (p = prefs) => p.lang.trim() || navigator.language || "en-
 
 // ---- what there is to choose from ----
 
-export type SpeechModel = { route: string; provider: string; provider_label: string; model: string; kind: "stt" | "tts" };
+export type SpeechModel = { route: string; provider: string; provider_label: string; model: string; kind: "stt" | "tts"; voices?: string[] };
 type Listing = { models: SpeechModel[]; failed: { provider: string; error: string }[] };
 let listing: Listing | null = null;
 let listingOut: Promise<Listing> | null = null;
@@ -228,6 +228,15 @@ function hearRecording(o: HearOpts): Hear {
 
 // ---- speaking ----
 
+// A provider refused a text that named no voice: it says, in its own words, what it takes. No name of ours is sent in its place.
+export class VoiceNeeded extends Error {}
+
+// The voices the chosen text to speech model's provider lists (none when it lists none).
+export const voicesOf = (p = prefs, l = listing): string[] => {
+  const tts = (l?.models ?? []).filter((m) => m.kind === "tts");
+  return (tts.find((x) => x.route === p.sayModel) ?? tts[0])?.voices ?? [];
+};
+
 let hush1: (() => void) | null = null;
 export function hush() { hush1?.(); hush1 = null; }
 
@@ -258,8 +267,12 @@ export async function speak(text: string, way: Way1, p = prefs): Promise<void> {
     const ctl = new AbortController();
     stops.push(() => ctl.abort());
     const fetchPiece = async (part: string) => {
-      const r = await fetch("/api/speech/speak", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ route: way.route, text: part, voice: p.voice }), signal: ctl.signal });
-      if (!r.ok) throw new Error(String(((await r.json().catch(() => ({}))) as any).error ?? `HTTP ${r.status}`));
+      const r = await fetch("/api/speech/speak", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ route: way.route, text: part, voice: p.voice.trim() || undefined }), signal: ctl.signal });
+      if (!r.ok) {
+        const b = (await r.json().catch(() => ({}))) as any;
+        const message = String(b.error ?? `HTTP ${r.status}`);
+        throw b.voice_needed ? new VoiceNeeded(message) : new Error(message);
+      }
       return URL.createObjectURL(await r.blob());
     };
     const parts = pieces(text, 3500);

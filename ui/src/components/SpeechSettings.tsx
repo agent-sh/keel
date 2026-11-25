@@ -1,7 +1,7 @@
 // Settings > Speech: how the owner's words are heard (dictation and conversation mode) and how replies are
 // read aloud. Each is the browser's own where it has one, else a speech model one of the providers lists.
 import { useEffect } from "react";
-import { browserVoices, chooseListen, chooseSay, loadSpeechModels, recognizerCtor, setPrefs, usePrefs, useSpeechModels, type Way } from "../lib/speech.ts";
+import { browserVoices, chooseListen, chooseSay, loadSpeechModels, recognizerCtor, setPrefs, usePrefs, useSpeechModels, voicesOf, type Way } from "../lib/speech.ts";
 import { SILENCE_MS } from "../lib/talk-core.ts";
 import { commandKeys } from "../lib/keys.ts";
 import { Seg } from "./Seg.tsx";
@@ -16,6 +16,7 @@ export function SpeechSettings() {
   useEffect(() => { void loadSpeechModels(); }, []);
   const stt = (list?.models ?? []).filter((m) => m.kind === "stt");
   const tts = (list?.models ?? []).filter((m) => m.kind === "tts");
+  const voices = voicesOf(p, list);
   const listen = chooseListen(p, list), say = chooseSay(p, list);
   const dictate = commandKeys("dictate"), converse = commandKeys("converse");
   return (
@@ -49,9 +50,18 @@ export function SpeechSettings() {
             {tts.map((m) => <option key={m.route} value={m.route}>{m.model} ({m.provider_label})</option>)}
           </Select>
         </SettingRow>
-        <SettingRow label="Voice" hint="The provider's own name for a voice. Empty: the provider's default voice name (alloy).">
-          <input className="k-field k-field-sm w-32" aria-label="Voice" value={p.voice} onChange={(e) => setPrefs({ voice: e.target.value })} data-testid="speech-voice" />
-        </SettingRow>
+        {voices.length ? (
+          <SettingRow label="Voice" hint="The voices this provider lists for the model. The first reply asks for one until you choose.">
+            <Select value={voices.includes(p.voice) ? p.voice : ""} onChange={(e) => setPrefs({ voice: e.target.value })} aria-label="Voice" data-testid="speech-voice-list" className="w-72">
+              <option value="" disabled>Choose a voice</option>
+              {voices.map((v) => <option key={v} value={v}>{v}</option>)}
+            </Select>
+          </SettingRow>
+        ) : (
+          <SettingRow label="Voice" hint="This provider lists no voices. Type the name its documentation gives. Empty: none is sent, and if the provider needs one, the first reply shows what it says and asks you.">
+            <input className="k-field k-field-sm w-32" aria-label="Voice" value={p.voice} onChange={(e) => setPrefs({ voice: e.target.value })} data-testid="speech-voice" />
+          </SettingRow>
+        )}
       </Group>
       <Group title="This browser">
         <SettingRow label="Speech recognition"><Status tone={recognizerCtor() ? "ok" : "quiet"}>{recognizerCtor() ? "Present" : "None"}</Status></SettingRow>

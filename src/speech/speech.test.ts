@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import type { Provider } from "../providers/types.ts";
-import { Speech, SpeechError, speechKind, splitRoute } from "./speech.ts";
+import { parseVoices, Speech, SpeechError, speechKind, splitRoute } from "./speech.ts";
 
 const seen: { path: string; auth: string | null; body?: unknown }[] = [];
 const server = Bun.serve({
@@ -17,8 +17,12 @@ const server = Bun.serve({
       seen.push({ path, auth, body: { model: f.get("model"), language: f.get("language"), size: (f.get("file") as File).size } });
       return Response.json({ text: " hello there " });
     }
+    // A provider that lists voices (key "listed"), and one that refuses a request that names none (key "strict").
+    if (path === "/v1/audio/voices") return auth === "Bearer listed" ? Response.json({ voices: ["ember", { id: "vale" }, "ember", ""] }) : new Response("no", { status: 404 });
     if (path === "/v1/audio/speech") {
-      seen.push({ path, auth, body: await req.json() });
+      const body = await req.json();
+      seen.push({ path, auth, body });
+      if (auth === "Bearer strict" && !(body as any).voice) return Response.json({ error: { message: "Missing required parameter: voice. Supported values are: 'ash', 'coral'." } }, { status: 400 });
       return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/mpeg" } });
     }
     return new Response("no", { status: 404 });
@@ -88,4 +92,28 @@ test("a text goes to the text to speech route with the voice asked for, and the 
 test("a provider that cannot be listed is reported, not thrown", async () => {
   const s = speech([provider({ speech: async () => { throw new Error("Lab: no key"); } })]);
   expect(await s.models()).toEqual({ models: [], failed: [{ provider: "lab", error: "Lab: no key" }] });
+});
+
+test("the voices a provider lists are read from its voices route, and a provider with none lists none", async () => {
+  expect(parseVoices({ voices: ["a", { id: "b" }, { voice_id: "c" }, { name: "d" }, "a", ""] })).toEqual(["a", "b", "c", "d"]);
+  expect(parseVoices({ data: [{ id: "x" }] })).toEqual(["x"]);
+  expect(parseVoices({ object: "list" })).toEqual([]);
+  expect(parseVoices(null)).toEqual([]);
+  const withKey = (key: string) => provider({ speech: async () => ({ base: `http://127.0.0.1:${server.port}/v1`, headers: { authorization: `Bearer ${key}` }, secrets: [key] }) });
+  const listed = (await speech([withKey("listed")]).models()).models.filter((m) => m.kind === "tts");
+  expect(listed.map((m) => m.voices)).toEqual([["ember", "vale"]]);
+  const none = (await speech([withKey("other")]).models()).models.filter((m) => m.kind === "tts");
+  expect(none.map((m) => m.voices)).toEqual([undefined]);
+});
+
+test("no voice is sent when none was chosen, and a provider that refuses for it is told to the page as needing one", async () => {
+  const strict = provider({ speech: async () => ({ base: `http://127.0.0.1:${server.port}/v1`, headers: { authorization: "Bearer strict" }, secrets: ["strict"] }) });
+  const s = speech([strict]);
+  const e = await s.speak("lab:tts-1", "Hello.").catch((x) => x);
+  expect(e).toBeInstanceOf(SpeechError);
+  expect(e).toMatchObject({ status: 422, voiceNeeded: true });
+  expect(e.message).toContain("Supported values are: 'ash', 'coral'");
+  expect(seen.findLast((x) => x.path === "/v1/audio/speech")!.body).toEqual({ model: "tts-1", input: "Hello.", response_format: "mp3" });
+  // With a voice named, the same provider answers.
+  expect((await s.speak("lab:tts-1", "Hello.", { voice: "ash" })).status).toBe(200);
 });
