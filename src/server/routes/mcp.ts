@@ -11,7 +11,7 @@ import { memoryOn } from "../../integrations/tacit.ts";
 import { isAgentKey, ProjectServers } from "../../mcp/project.ts";
 import { agentServers, defOfSession } from "../../automation/agents.ts";
 import { readsOf } from "../reads.ts";
-import { configPath, readConfig, type McpServerConfig } from "../../mcp/config.ts";
+import { configPath, readConfig, serverFromJson, type McpServerConfig } from "../../mcp/config.ts";
 import { endpoint, importHome } from "../../mcp/sources.ts";
 import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
 import { catalogSources, catalogTools, sessionOff } from "../../tools/catalog.ts";
@@ -283,6 +283,14 @@ export const mcpRoutes: RouteModule = (deps) => {
       GET: servers,
       POST: async (req: Request) => {
         const b = await body(req);
+        // The whole server as one JSON (`keel mcp add NAME --json -`), checked as the owner's file is read.
+        if (b.config !== undefined) {
+          const got = serverFromJson(b.config);
+          if ("error" in got) return bad(got.error);
+          if (got.config.command || got.config.headers_helper) { const guard = needs(req); if (guard) return guard; }
+          const err = m.add(String(b.name ?? ""), got.config);
+          return err ? bad(err) : servers();
+        }
         if (b.command) { const guard = needs(req); if (guard) return guard; }
         const cfg: McpServerConfig = b.command
           ? { command: b.command, args: b.args, env: b.env, cwd: b.cwd }

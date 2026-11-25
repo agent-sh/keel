@@ -135,6 +135,24 @@ export function validate(name: string, c: McpServerConfig): string | null {
   return null;
 }
 
+// The keys one server's JSON may hold, Claude Code's (`type`, `headersHelper`, `disabled`) and Keel's own.
+const SERVER_KEYS = new Set(["type", "command", "args", "env", "env_vars", "owner_env_vars", "cwd", "url", "headers", "headers_env", "bearer_env", "enabled", "disabled",
+  "timeout_secs", "tool_timeout_secs", "tool_max_secs", "oauth", "read_tools", "transport", "headers_helper", "headersHelper", "sync", "channel", "close_idle_browser", "keep_running", "share", "class"]);
+
+// One server's JSON as a person gives it (`keel mcp add NAME --json -`: from stdin, so a token stays off the
+// command line). An unknown key is refused by name, never dropped: a misspelled `headers` would otherwise
+// save a server with no sign-in. The reasons name keys, never values, so a token is not echoed back.
+export function serverFromJson(raw: unknown): { config: McpServerConfig } | { error: string } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { error: "the server's JSON is one object, like {\"command\": \"npx\", \"args\": [\"-y\", \"some-server\"]} or {\"url\": \"https://host/mcp\"}" };
+  const c = raw as Record<string, unknown>;
+  const unknown = Object.keys(c).filter((k) => !SERVER_KEYS.has(k));
+  if (unknown.length) return { error: `unknown field${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}. Known: ${[...SERVER_KEYS].filter((k) => k !== "headersHelper" && k !== "disabled").join(", ")}` };
+  if (c.type !== undefined && !["stdio", "http", "sse", "streamable-http"].includes(String(c.type))) return { error: `type is stdio, http or sse, not ${JSON.stringify(c.type).slice(0, 40)}` };
+  if (c.args !== undefined && !Array.isArray(c.args)) return { error: "args is a list of words" };
+  for (const k of ["env", "headers", "headers_env"]) if (c[k] !== undefined && (!c[k] || typeof c[k] !== "object" || Array.isArray(c[k]))) return { error: `${k} is an object of names and values` };
+  return { config: normalize(c) };
+}
+
 // One shape from Claude Code's (type/command/args/env/url/headers) and keel's own.
 function normalize(c: any): McpServerConfig {
   const out: McpServerConfig = {};

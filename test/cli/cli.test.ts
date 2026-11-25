@@ -1140,6 +1140,24 @@ describe("client commands against a running daemon", () => {
   }, 30_000);
   afterAll(() => daemon?.kill("SIGTERM"));
 
+  test("mcp add reads the server's JSON from standard input, so a token is never an argument", async () => {
+    const file = join(ENV.KEEL_CONFIG_DIR, "mcp.json");
+    const token = "tok-never-on-the-command-line";
+    const added = await k(["mcp", "add", "remote-one", "--json", "-"], { stdin: JSON.stringify({ type: "http", url: "https://example.invalid/mcp", headers: { Authorization: `Bearer ${token}` }, enabled: false }) });
+    expect([added.code, json(added.out).servers.map((s: any) => s.name)]).toEqual([0, ["remote-one"]]);
+    // Whole in the owner's file, which the daemon wrote through its own writer.
+    expect(json(readFileSync(file, "utf8")).servers["remote-one"]).toEqual({ url: "https://example.invalid/mcp", headers: { Authorization: `Bearer ${token}` }, enabled: false });
+    // A misspelled key is refused by name, nothing is saved, and the token is not printed.
+    const typo = await k(["mcp", "add", "remote-two", "--json", "-"], { stdin: JSON.stringify({ url: "https://example.invalid/mcp", header: { Authorization: `Bearer ${token}` } }) });
+    expect([typo.code, typo.err]).toEqual([3, expect.stringContaining("unknown field: header")]);
+    expect(typo.err + typo.out).not.toContain(token);
+    expect(Object.keys(json(readFileSync(file, "utf8")).servers)).toEqual(["remote-one"]);
+    // No input, or not JSON: said, not hung.
+    expect((await k(["mcp", "add", "remote-three", "--json", "-"], { stdin: "" })).err).toContain("no JSON on standard input");
+    expect((await k(["mcp", "add", "remote-three", "--json", "-"], { stdin: "{nope" })).err).toContain("not JSON");
+    expect((await k(["mcp", "add", "remote-three", "--json"])).code).toBe(3);
+  });
+
   test("run, approve, resume, idempotency", async () => {
     // The daemon is found from the state folder alone.
     expect(json(readFileSync(join(state, "daemon.lock"), "utf8")).url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
