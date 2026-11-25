@@ -85,6 +85,10 @@ export class AcpConnection {
     });
   }
 
+  get pid(): number {
+    return this.proc.pid;
+  }
+
   get alive() {
     return this.proc.exitCode === null && !this.proc.killed;
   }

@@ -25,7 +25,7 @@
 // was delivered; not found, it says so and waits for the owner to send it
 // again. One that never started goes when the daemon is back, if the thread is
 // still free.
-import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { AcpConnection } from "../../acp/rpc.ts";
 import type { Bus } from "../../core/bus.ts";
 import type { Store } from "../../core/store.ts";
@@ -38,7 +38,7 @@ import { allPendingQuestions, askFor, DECLINED, type Answers } from "../../tools
 import type { Tool, ToolContext } from "../../tools/types.ts";
 import { headTail } from "../import/files.ts";
 import { splitGrown } from "./facts.ts";
-import { codexKeepsLocks } from "./writer.ts";
+import { alive, codexKeepsLocks, statFields } from "./writer.ts";
 
 type Json = any;
 
@@ -54,6 +54,13 @@ CREATE TABLE IF NOT EXISTS outside_sends (
   created INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS outside_sends_key ON outside_sends(session_id, key);
+-- Keel's own children (codex app-server), by their pid and start time: one a daemon that ended left running is
+-- ended by the next one (it holds the thread's writer lock while it lives).
+CREATE TABLE IF NOT EXISTS outside_children (
+  session_id TEXT PRIMARY KEY,
+  pid INTEGER NOT NULL,
+  start TEXT NOT NULL
+);
 `;
 
 // stored: taken, not yet given to Codex. started: given (turn/start or turn/steer written). delivered: the
@@ -387,6 +394,7 @@ export class CodexApp {
     const conn = new AcpConnection([bin, "app-server"], { cwd, env: { CODEX_HOME: home } }, (m) => this.d.trouble(new Error(m), "codex app-server"));
     const run: Run = { sessionId, threadId: row.source_id, path: row.path, conn, ready: Promise.resolve(false), nonce: Bun.randomUUIDv7().slice(-12), items: new Map(), changes: new Map(), cards: new Map(), stopped: new AbortController(), given: new Set() };
     this.runs.set(sessionId, run);
+    this.keepChild(sessionId, conn.pid);
     conn.onNotification = (method, p) => this.heard(run, method, p);
     conn.onRequest = (method, p, rid) => this.asked(run, method, p, rid);
     void conn.exited.then(() => this.gone(run));
@@ -551,8 +559,34 @@ export class CodexApp {
     if (late) { run.conn.close("SIGKILL"); await run.conn.exited; }
   }
 
+  // The child's pid and start time, kept until it ended.
+  private keepChild(sessionId: string, pid: number) {
+    let start: string | undefined;
+    try { start = statFields(readFileSync(`/proc/${pid}/stat`, "utf8"))?.start; } catch {}
+    if (start) this.d.store.db.query("INSERT OR REPLACE INTO outside_children (session_id, pid, start) VALUES (?, ?, ?)").run(sessionId, pid, start);
+  }
+
+  // A child an earlier daemon left running: the same pid, started at the same moment, running app-server. Never
+  // a process Keel did not start. Resolves when every one has ended.
+  private async orphans(): Promise<void> {
+    const rows = this.d.store.db.query<{ session_id: string; pid: number; start: string }, []>("SELECT session_id, pid, start FROM outside_children").all();
+    const left: number[] = [];
+    for (const c of rows) {
+      let argv = "";
+      try { argv = readFileSync(`/proc/${c.pid}/cmdline`, "utf8"); } catch {}
+      if (alive(c.pid, c.start) && argv.split("\0").includes("app-server")) {
+        try { process.kill(c.pid, "SIGTERM"); left.push(c.pid); } catch {}
+      }
+    }
+    this.d.store.db.query("DELETE FROM outside_children WHERE session_id IN (SELECT value FROM json_each(?))").run(JSON.stringify(rows.map((r) => r.session_id)));
+    const end = Date.now() + END_MS;
+    while (left.some((p) => alive(p)) && Date.now() < end) await Bun.sleep(50);
+    for (const p of left) if (alive(p)) try { process.kill(p, "SIGKILL"); } catch {}
+  }
+
   private gone(run: Run) {
     run.stopped.abort();
+    if (!this.closed) this.d.store.db.query("DELETE FROM outside_children WHERE session_id = ? AND pid = ?").run(run.sessionId, run.conn.pid);
     if (this.closed) return;
     if (this.runs.get(run.sessionId) === run) this.runs.delete(run.sessionId);
     this.check(run, true);
@@ -571,6 +605,7 @@ export class CodexApp {
     for (const a of gate?.approvals({ pending: true }) ?? []) {
       if (a.call_id.startsWith("codex-") && this.d.store.session(a.session_id)?.outside) gate!.settled(a.session_id, a.call_id, CUT);
     }
+    const owed: Send[] = [];
     for (const s of this.d.store.db.query<Send, []>("SELECT * FROM outside_sends WHERE state IN ('stored', 'started') ORDER BY created").all()) {
       const row = this.d.outside.row(s.session_id);
       if (!row) { this.set(s.id, "lost", { said: "its session is no longer followed" }); continue; }
@@ -580,8 +615,13 @@ export class CodexApp {
         else this.set(s.id, "lost", { said: "Keel restarted while it went, and the session does not hold it: send it again" });
         continue;
       }
-      void this.deliver(s.session_id, s.id).catch((e) => this.d.trouble(e, "answering a Codex session in place"));
+      owed.push(s);
     }
+    // A send that never started goes once Keel's own children an earlier daemon left have ended (their locks
+    // with them).
+    void this.orphans().catch((e) => this.d.trouble(e, "ending a Codex child an earlier daemon left")).then(() => {
+      for (const s of owed) void this.deliver(s.session_id, s.id).catch((e) => this.d.trouble(e, "answering a Codex session in place"));
+    });
   }
 
   stop() {

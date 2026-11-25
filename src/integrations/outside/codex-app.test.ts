@@ -15,6 +15,7 @@ import { answer, allPendingQuestions } from "../../tools/interact.ts";
 import { Outside } from "./service.ts";
 import { OUTSIDE_DEFAULTS } from "./settings.ts";
 import { Gate } from "../../safety/gate.ts";
+import { statFields } from "./writer.ts";
 import { CodexApp, holdsMessage, threadFacts, type CardGate } from "./codex-app.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-codex-app-"));
@@ -278,6 +279,27 @@ describe("a Codex session answered in place", () => {
       expect(r.store.db.query<{ id: string }, []>("SELECT id FROM outside_sends ORDER BY id").all().map((x) => x.id)).toEqual(["lost", "new"]);
     } finally { r.done(); }
   });
+
+  test("a child an earlier daemon left running is ended at the start, and nothing it did not start", async () => {
+    const r = rig();
+    const orphan = Bun.spawn([STANDIN, "app-server"], { stdin: "pipe", stdout: "ignore", stderr: "ignore", env: { ...process.env, CODEX_HOME: r.codex } });
+    const other = Bun.spawn(["sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    try {
+      const s = await r.session();
+      const startOf = (pid: number) => statFields(readFileSync(`/proc/${pid}/stat`, "utf8"))!.start;
+      await until(() => { try { return readFileSync(`/proc/${orphan.pid}/cmdline`, "utf8").includes("app-server"); } catch { return false; } });
+      const put = r.store.db.query("INSERT INTO outside_children (session_id, pid, start) VALUES (?, ?, ?)");
+      put.run(s.id, orphan.pid, startOf(orphan.pid));
+      // Not Keel's child: another program, and a pid whose start differs (taken again since).
+      put.run("not-a-session", other.pid, startOf(other.pid));
+      put.run("taken-again", process.pid, "1");
+      r.app().stop();
+      r.make().start();
+      await until(() => orphan.exitCode !== null || orphan.signalCode !== null, 8000);
+      expect(other.exitCode).toBeNull();
+      expect(r.store.db.query("SELECT * FROM outside_children").all()).toEqual([]);
+    } finally { other.kill(); orphan.kill(); r.done(); }
+  }, 30_000);
 
   test("a session another process holds takes nothing, and says who holds it", async () => {
     const r = rig({ holder: () => ({ kind: "terminal", pid: 4242 }) });
