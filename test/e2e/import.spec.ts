@@ -652,8 +652,11 @@ test("the import sheet's head is one line and an empty store is named", async ({
   expect(await high(sheet.getByRole("heading", { name: "Import sessions" }))).toBeLessThan(1.75);
   expect(await high(page.getByTestId("import-keel-file"))).toBeLessThan(2.25);
   expect(await high(sheet.locator("> div").first())).toBeLessThan(4);
-  await page.getByTestId(`import-tab-${bare.harness}`).click();
-  await expect(page.getByTestId("import-empty")).toHaveText(/^No .* store on this machine\.$/);
+  // A harness with no store on this machine is not a tab (the sheet lists the harnesses that have one), so the sheet
+  // does not offer the empty pane of one; a search that finds nothing in a harness that has a store says so in its words.
+  await expect(page.getByTestId(`import-tab-${bare.harness}`)).toHaveCount(0);
+  await page.getByTestId("import-search").fill("no session has these words zzqx");
+  await expect(page.getByTestId("import-empty")).toHaveText("No sessions match.");
   await shoot(page, "import-no-store");
 });
 

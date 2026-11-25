@@ -187,7 +187,7 @@ test("a head with a long title and a long reason is still one bar, the brand row
     const folder = asks.workspace.split("/").filter(Boolean).pop()!;
     await expect(head.locator(".k-station-where"), "the pane names its folder nowhere").toBeVisible();
     await expect(head.locator(".k-station-where")).toHaveText(folder);
-    expect(await head.getByTestId("station-title").getAttribute("title")).toBe(`${title}\n${asks.workspace}`);
+    expect(await head.getByTestId("station-title").getAttribute("title")).toBe(`${title}\n${asks.workspace}\nClick to rename`);
     await expect(pane.getByTestId("session-header").getByTestId("head-folder")).toBeHidden();
     await expect(pane.getByTestId("session-menu").locator("span")).toHaveCount(0);
     // The clock is part of the state: the word's size, not a figure of its own.

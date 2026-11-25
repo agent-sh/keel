@@ -49,7 +49,7 @@ export function ContextPartsView({ parts }: { parts: ContextParts }) {
         ))}
         {/* Sources with nothing in the request are one line, not a row each: tool search or mcp_call brings a tool in only when the model asks for it. */}
         {deferred.length > 0 && (
-          <span className="col-span-2 truncate text-faint" data-testid="tools-deferred" title={`${deferred.map((g) => `${g.label} (${g.tools})`).join(", ")}. A source with none loaded costs nothing: a tool comes in only when the model asks for it.`}>
+          <span className="col-span-2 truncate text-faint max-md:whitespace-normal max-md:break-words" data-testid="tools-deferred" title={`${deferred.map((g) => `${g.label} (${g.tools})`).join(", ")}. A source with none loaded costs nothing: a tool comes in only when the model asks for it.`}>
             Deferred: {deferred.length} {deferred.length === 1 ? "group" : "groups"}, none in the request
           </span>
         )}

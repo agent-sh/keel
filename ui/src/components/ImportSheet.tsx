@@ -500,9 +500,9 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
           )}
           <div className="flex min-h-0 flex-1">
             <div className={cn("flex w-[26rem] shrink-0 flex-col border-r border-line", narrow && "w-full min-w-0 border-r-0", narrow && sel && "hidden")}>
-              <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+              <div className="flex items-center gap-2 border-b border-line px-3 py-2 max-md:flex-wrap">
                 <Search className="size-4 shrink-0 text-faint" />
-                <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={narrow ? "Search sessions" : "Title, folder, prompt or reply"} className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
+                <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={narrow ? "Search sessions" : "Title, folder, prompt or reply"} className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint max-md:basis-[calc(100%-2rem)]" />
                 {!from && (
                   <label className="flex shrink-0 items-center gap-1.5 text-caption text-faint" title="Sessions already imported show on their Keel session, not here. Show them to make another copy.">
                     Imported
