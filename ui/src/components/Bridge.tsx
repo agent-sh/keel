@@ -383,7 +383,7 @@ function Swap({ session, slot, covered }: { session: string; slot: number; cover
 
 // The pane's top bar: its head and, in the pane worked in, the session's tools. Where the pane is
 // wide the two are one bar of one height (bridge.css, .k-top); narrower, the tools are a row under it.
-const head = (x: Session, on: boolean) => <div className="k-top"><div className="k-top-in">{on && <SidebarButton />}<StationHead s={x} helm={on} pinned={isPinned(x)} />{on && <SessionHeader session={x} bar />}</div></div>;
+const head = (x: Session, on: boolean) => <div className="k-top"><div className="k-top-in">{on && <SidebarButton />}{on && <HeadNeed />}<StationHead s={x} helm={on} pinned={isPinned(x)} />{on && <SessionHeader session={x} bar />}</div></div>;
 
 // One session's view in a pane: the pane's own, or a look over it (`back` leads out of that).
 // The same component in both places, so a look that is kept goes on as the pane's session
@@ -597,6 +597,19 @@ function FillWaiting({ skip, helm }: { skip: number; helm: string | null }) {
     for (const i of stations.fill(waiting ? waiting.split(" ") : [], skip)) said.current.set(i, { id: getStations().slots[i]!, n: paneSay(i, `${STATE_WORD.need}: opened in this empty pane`) });
   }, [waiting, slots, skip, helm]);
   return null;
+}
+
+// A phone on its side has no dock (bridge.css): the head says how many things wait on the owner, in one line
+// beside the list's button, and a press goes to the one that has waited longest, as the dock's count does.
+// Drawn only where the dock is gone (the stylesheet); with nothing waiting it is not there at all.
+function HeadNeed() {
+  const need = useNeedCount();
+  if (need < 1) return null;
+  return (
+    <button type="button" className="k-dock-need k-head-need" data-testid="head-need" title={`${countWord("need", need)}. Go to the next.`} onClick={goNextWaiting}>
+      <span className="k-dock-need-n"><span className="k-dock-need-mark" aria-hidden="true" />{countWord("need", need)}</span>
+    </button>
+  );
 }
 
 // Phone: the marks of the stations along the bottom; tap one to go there.

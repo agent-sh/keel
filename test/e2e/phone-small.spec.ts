@@ -76,6 +76,40 @@ for (const size of SIZES) {
         await expect(pane.getByTestId("converse")).toBeInViewport({ ratio: 1 });
         await shoot(page, `phone-small-mic-${size.width}x${size.height}-${scale * 100}`);
       });
+
+      test("what waits on the owner is counted where the phone has no dock, and a press opens it", async ({ page, request }) => {
+        const here = await create(request, "Reading here", folder("phone-small-need-a"));
+        const asker = await create(request, "Asks for a command", folder("phone-small-need-b"));
+        await page.goto(`/s/${here}`);
+        const pane = page.locator(".k-station[data-helm]");
+        await expect(pane.getByTestId("composer")).toBeVisible();
+        const head = pane.getByTestId("head-need");
+        // Nothing waits: no count anywhere.
+        await expect(head).toHaveCount(0);
+        await ask(request, asker, "approval", "count");
+        const on_its_side = size.height < 500;
+        if (!on_its_side) {
+          // The dock says it, and the head leaves it there.
+          await expect(page.getByTestId("dock-need")).toBeVisible();
+          await expect(head).toBeHidden();
+          return;
+        }
+        await expect(page.locator(".k-dock")).toBeHidden();
+        await expect(head).toBeVisible();
+        await expect(head).toHaveText(/^\d+ needs? you$/);
+        // It stands in the head's one row, is a finger's size and cuts nothing off.
+        const [bar, b, rem] = await Promise.all([pane.locator(".k-top").boundingBox(), head.boundingBox(), page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))]);
+        expect(b!.y >= bar!.y - 1 && b!.y + b!.height <= bar!.y + bar!.height + 1, "in the head's row").toBe(true);
+        expect(Math.min(b!.width, b!.height), "a finger").toBeGreaterThanOrEqual(2.25 * rem - 0.5);
+        expect(bar!.height, "the head stays one row").toBeLessThanOrEqual(3.5 * rem + 1);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth), "no sideways scroll").toBeLessThanOrEqual(size.width);
+        await expect(pane.getByTestId("station-title")).toBeVisible();
+        await shoot(page, `phone-small-need-${size.width}x${size.height}-${scale * 100}`);
+        // A press opens the session that asks.
+        await head.tap();
+        await expect(page).toHaveURL(new RegExp(`/s/${asker}$`));
+        await expect(page.locator(".k-station[data-helm]").getByTestId("approvals")).toBeVisible();
+      });
     });
   }
 }

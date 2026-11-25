@@ -1405,9 +1405,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 }
 /* A phone on its side has no height to give a bar: the dock goes, and its work is the head's list button (the sessions)
    and the cards and lines in the conversation (what waits). The conversation takes the whole height. */
+.k-dock-need.k-head-need { display: none; }
 @media (pointer: coarse) and (max-height: 499px) {
   .k-dock { display: none; }
   .k-stations { height: 100%; }
+  .k-dock-need.k-head-need { display: grid; align-self: center; }
 }
 
 /* The station head already names the folder: the helm header drops its folder chip. */
