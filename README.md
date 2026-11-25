@@ -2021,7 +2021,9 @@ keeps the answer (the helper's conversation and call, the instruction and
 where the owner gave it, the reason), and so do the chain of cards, the
 session's timeline and the call's line ("allowed by the Helper"). Settings >
 Helper lists the helper's answers. The helper is told of each open card once,
-as a row of its digest, and again only when the card changed.
+as a row of its digest, and again only when the card changed. A card the helper
+had when the daemon stopped is the owner's after the restart, with a
+notification.
 
 A question is not a permission card. When the owner answers another
 session's question in the helper's conversation, the helper relays his words

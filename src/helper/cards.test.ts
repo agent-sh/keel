@@ -56,7 +56,8 @@ const send = (session: string, text: string, meta: Record<string, unknown>, opts
 const raised: { id: string; note?: string }[] = [];
 // The context a card was sent to: the only session whose answer is taken for it.
 const ctxOf = (card: string) => sent.find((x) => x.cards.includes(card))!.session;
-const cards = new HelperCards(helper, () => gate, { send: send as any, raise: ((a: any, _silent: boolean, note?: string) => { raised.push({ id: a.id, note }); return undefined; }) as any });
+const io = { send: send as any, raise: ((a: any, _silent: boolean, note?: string) => { raised.push({ id: a.id, note }); return undefined; }) as any, untold: () => true };
+const cards = new HelperCards(helper, () => gate, io);
 
 let runs = 0;
 const tool = { name: "Bash", description: "", kind: "shell", readOnly: false, input_schema: { type: "object", properties: { command: {} } },
@@ -176,4 +177,33 @@ test("a card is answered in a fresh context of the helper's own: no history, no 
     gate.resolve(card.id, s.id, { choice: "deny" });
     await call;
   } finally { cards.stop(); }
+});
+
+test("after a restart, every card the helper had goes to the owner with a notification, and its cut contexts are closed", async () => {
+  const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Restart" });
+  gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
+  const call = run(s, "npm install across-restart", "restart-1");
+  const card = await open(s.id);
+  expect(cards.take(card.id)).toBe(true);
+  const ctx = ctxOf(card.id);
+  // The daemon stops (the helper's memory of what it had goes with it) and starts again.
+  cards.stop();
+  const after = new HelperCards(helper, () => gate, io);
+  expect(after.restored()).toEqual([card.id]);
+  expect(raised.at(-1)).toEqual({ id: card.id, note: "The daemon restarted while the Helper had this card, so it is yours." });
+  expect(store.session(ctx)!.archived).toBe(true);
+  // Once: a second start raises nothing, and the card put back is not the helper's again.
+  expect(after.restored()).toEqual([]);
+  expect(after.take(card.id)).toBe(false);
+  // A card that already reached the owner is not told twice.
+  gate.resolve(card.id, s.id, { choice: "deny" });
+  await call;
+  const call2 = run(s, "npm install told-already", "restart-2");
+  const second = await open(s.id);
+  expect(after.take(second.id)).toBe(true);
+  after.stop();
+  const third = new HelperCards(helper, () => gate, { ...io, untold: () => false });
+  expect(third.restored()).toEqual([]);
+  gate.resolve(second.id, s.id, { choice: "deny" });
+  await call2;
 });

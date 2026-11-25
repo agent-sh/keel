@@ -102,9 +102,11 @@ export class HelperCards {
   // `io`: how a card is sent to the helper and raised for the owner (a test keeps both).
   private send: typeof deliver;
   private raise: typeof alerts.raiseApproval;
-  constructor(private h: HelperOf, private gate: () => Gate | undefined = () => perm.gate, io: { send?: typeof deliver; raise?: typeof alerts.raiseApproval } = {}) {
+  private untold: (approvalId: string) => boolean;
+  constructor(private h: HelperOf, private gate: () => Gate | undefined = () => perm.gate, io: { send?: typeof deliver; raise?: typeof alerts.raiseApproval; untold?: (approvalId: string) => boolean } = {}) {
     this.send = io.send ?? deliver;
     this.raise = io.raise ?? alerts.raiseApproval;
+    this.untold = io.untold ?? alerts.approvalUntold;
   }
 
   on(): boolean {
@@ -125,6 +127,9 @@ export class HelperCards {
         : undefined));
     }
     this.off.push(() => { alerts.helperFirst.take = undefined; if (gate) { gate.helperSession = undefined; gate.toolLimits.delete("helper-cards"); } });
+    // A restart: what the helper had when the daemon stopped is the owner's now, and its open contexts are closed.
+    const after = setTimeout(() => { try { this.restored(); } catch (e) { this.h.deps.errors.capture("server", e, { at: "helper cards after a restart" }); } }, 0);
+    this.off.push(() => clearTimeout(after));
     this.off.push(this.h.deps.bus.on((f: Frame) => {
       try {
         // A card answered or closed meanwhile waits on the helper no more.
@@ -133,6 +138,25 @@ export class HelperCards {
         if (f.t === "event" && f.event.kind === "turn_end" && this.h.isCards(f.event.session_id)) this.turnEnded(f.event.session_id);
       } catch (e) { this.h.deps.errors.capture("server", e, { at: "helper cards" }); }
     }));
+  }
+
+  // The cards the helper had when the daemon stopped (an `offered:<id>` row of helper_told each): every one still
+  // open goes to the owner with a notification, unless it already reached him; the contexts a stop cut are closed.
+  restored(): string[] {
+    const db = this.h.deps.store.db;
+    const rows = db.query<{ key: string }, []>("SELECT key FROM helper_told WHERE key LIKE 'offered:%'").all();
+    const raised: string[] = [];
+    for (const { key } of rows) {
+      const id = key.slice("offered:".length);
+      if (this.offered.has(id)) continue;
+      db.query("DELETE FROM helper_told WHERE key = ?").run(key);
+      const a = this.gate()?.approval(id);
+      if (!a || a.state !== "pending" || !this.untold(id)) continue;
+      this.raise(a, false, "The daemon restarted while the Helper had this card, so it is yours.");
+      raised.push(id);
+    }
+    for (const s of this.h.deps.store.sessions()) if (s.settings.helper_cards && ![...this.offered.values()].some((o) => o.ctx === s.id)) this.h.closeCards(s.id);
+    return raised;
   }
 
   stop() {
@@ -186,6 +210,8 @@ export class HelperCards {
     const timer = setTimeout(() => this.toOwner(a.id, "The Helper did not answer it in time."), HELPER_ANSWER_MS);
     const o: Offer = { at: Date.now(), timer, ctx };
     this.offered.set(a.id, o);
+    // Kept on disk while the helper has it: a restart gives it to the owner (restored).
+    this.h.deps.store.db.query("INSERT INTO helper_told (key, fp, ts) VALUES (?, 'offered', ?) ON CONFLICT(key) DO UPDATE SET ts = excluded.ts").run(`offered:${a.id}`, Date.now());
     const verdict = this.gate()?.verdictOf(a);
     const text = `${PROMPT_HEAD(1)}\n\n${cardText(a, title, YOURS, verdict)}`;
     const sent = this.send(ctx, text, { kind: "helper_approvals", cards: [a.id] }, {
@@ -208,6 +234,7 @@ export class HelperCards {
     if (!o) return;
     clearTimeout(o.timer);
     this.offered.delete(id);
+    this.h.deps.store.db.query("DELETE FROM helper_told WHERE key = ?").run(`offered:${id}`);
   }
 
   private turnEnded(ctx: string) {

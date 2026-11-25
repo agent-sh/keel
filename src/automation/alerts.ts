@@ -578,6 +578,13 @@ export function raiseApproval(a: { id: string; session_id: string; tool: string;
     { approval_id: a.id, open_session: a.session_id, risk: a.risk, ...(form ? { hold: form.hold, glance: form.glance } : {}), ...(note ? { helper_note: note } : {}) }, silent);
 }
 
+// Whether an approval card's alert has reached no channel yet: no row, or its newest row unread and told nowhere
+// (one kept back while the helper had the card).
+export function approvalUntold(approvalId: string): boolean {
+  const r = D().store.db.query<{ read: number; channels: string | null }, [string]>("SELECT read, channels FROM alerts WHERE kind = 'approval' AND json_extract(data, '$.approval_id') = ? AND far_id IS NULL ORDER BY ts DESC LIMIT 1").get(approvalId);
+  return !r || (!r.read && (!r.channels || r.channels === "[]"));
+}
+
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown, silent = false): Alert | undefined {
   try {
     const { store } = D();
