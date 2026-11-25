@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { ask, HAIKU, shoot } from "./shots.ts";
+import { ask, HAIKU, shoot, showArchived } from "./shots.ts";
 
 // Feature: edit-and-resend makes a branch and the arrows move between the
 // versions; fork from a message opens a new session; rename, archive, restore,
@@ -50,13 +50,13 @@ test("branches, fork, rename, archive, search, delete", async ({ page, request }
   await page.getByTestId("session-menu").click();
   await page.getByTestId("menu-archive").click();
   await expect(page.getByTestId("session-list")).not.toContainText(`Fruit fork ${tag}`);
-  await page.getByTestId("tab-archived").click();
+  await showArchived(page, true);
   await expect(page.getByTestId("session-list")).toContainText(`Fruit fork ${tag}`);
   await shoot(page, "tree-03-archived");
   await page.getByTestId("session-menu").click();
   await page.getByTestId("menu-restore").click();
   await expect(page.getByTestId("session-list")).not.toContainText(`Fruit fork ${tag}`);
-  await page.getByTestId("tab-active").click();
+  await showArchived(page, false);
   await expect(page.getByTestId("session-list")).toContainText(`Fruit fork ${tag}`);
 
   // Search what was said: the edited prompt of the first session opens on its

@@ -358,9 +358,9 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   await expect(page).toHaveTitle(/^\(\d+\) /);
   const things = Number((await page.title()).match(/^\((\d+)\)/)![1]);
   expect(things).toBeGreaterThanOrEqual(5);
-  // One count of what waits: the tab's title, the home headline and the list's line say the same number.
+  // One count of what waits: the tab's title, the home headline and the Inbox's count say the same number.
   await expect(page.getByTestId("home-count-need")).toHaveText(new RegExp(`^${things} need you$`));
-  await expect(page.getByTestId("sum-need")).toHaveText(new RegExp(`^${things}need you$`));
+  await expect(page.getByTestId("inbox-count")).toHaveText(String(things));
   await bell.click();
   await page.getByRole("radio", { name: "All" }).click();
   const needs = page.locator('[data-testid="inbox-item"][data-part="need"]');
@@ -602,17 +602,16 @@ test("one status a session: every surface counts working and waiting alike, and 
       .toEqual(["work", "command", "work", 1, 0, "wait"]);
 
     await page.goto("/");
-    // The home and the line above the list say the same numbers, and they are the daemon's, counted by root session.
+    // The home says the daemon's numbers, counted by root session.
     const counted = async () => {
       const s = await states(request);
       const roots = ((await (await request.get("/api/sessions")).json()).sessions as { id: string; parent_id?: string | null; archived?: boolean; settings?: { helper?: boolean } }[])
         .filter((x) => !x.parent_id && !x.archived && !x.settings?.helper);
       const n = (w: string[]) => roots.filter((x) => w.includes(s[x.id]?.watch ?? "")).length;
-      const read = async (id: string) => Number((await page.getByTestId(id).locator(".k-sum-n, [data-count]").first().textContent().catch(() => "0")) ?? 0) || 0;
       const home = async (w: string) => Number(await page.getByTestId(`home-count-${w}`).getAttribute("data-count").catch(() => "0")) || 0;
-      return { api: [n(["work"]), n(["wait", "resume"])], home: [await home("work"), await home("wait")], head: [await read("sum-work"), await read("sum-wait")] };
+      return { api: [n(["work"]), n(["wait", "resume"])], home: [await home("work"), await home("wait")] };
     };
-    await expect.poll(async () => { const c = await counted(); return c.home.join() === c.api.join() && c.head.join() === c.api.join() && c.api[0]! >= 2 && c.api[1]! >= 1; }, { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => { const c = await counted(); return c.home.join() === c.api.join() && c.api[0]! >= 2 && c.api[1]! >= 1; }, { timeout: 30_000 }).toBe(true);
     // No count of its own for a command in the background.
     await expect(page.getByTestId("home-watch")).not.toContainText("in background");
 
@@ -691,10 +690,10 @@ test("a command stopped after its turn ended turns the session's 'still runs' al
   }
 });
 
-// The line above the list counts every state at the sidebar's width: with a session in each state, what
-// calls the owner keeps its word, and a count whose word has no room keeps its mark and says itself in
-// words in its tooltip ("1 waiting: ..."); what is new gives its word up before a state does.
-test("the line above the list keeps the waiting count's word at the sidebar's width", async ({ page, request }) => {
+// The home headline counts every state in words at the desk's widths: with a session in each state, each
+// count is its figure and its word ("1 waiting"), and says in its tooltip which session a press opens.
+// What is new is not a count of its own there: the rows' white dots and the Inbox say it.
+test("the home headline says each state's count in words", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   test.setTimeout(120_000);
   mkdirSync(gates, { recursive: true });
@@ -714,19 +713,18 @@ test("the line above the list keeps the waiting count's word at the sidebar's wi
     for (const [width, height] of [[1400, 900], [1920, 1040]] as const) {
       await page.setViewportSize({ width, height });
       await page.goto("/");
-      const line = page.getByTestId("list-summary");
-      for (const k of ["need", "fail", "work", "wait", "unread"]) await expect(line.getByTestId(`sum-${k}`)).toBeVisible();
-      // What calls the owner keeps its word; every count says itself in words, shown or in its tooltip when there is no room.
-      for (const k of ["need", "fail"]) await expect(line.getByTestId(`sum-${k}`).locator(".k-sum-word")).toBeVisible();
-      const wait = line.getByTestId("sum-wait");
-      await expect(wait).toHaveAccessibleName(/^\d+ waiting\. Go to the next$/);
-      await expect(wait).toHaveAttribute("title", /^\d+ waiting: .*Line: it checks back in an hour/);
-      if (await wait.getAttribute("data-bare") !== null) await expect(wait.locator(".k-sum-mark")).toBeVisible();
-      else await expect(wait.locator(".k-sum-word")).toBeVisible();
-      await expect(line.getByTestId("sum-work")).toHaveAttribute("title", /^\d+ working: /);
-      await expect(line.getByTestId("sum-unread")).toHaveAttribute("title", /^\d+ new since you looked: /);
+      const words: [string, RegExp][] = [["need", /^\d+ needs? you$/], ["fail", /^\d+ failed$/], ["work", /^\d+ working$/], ["wait", /^\d+ waiting$/]];
+      for (const [k, said] of words) {
+        const count = page.getByTestId(`home-count-${k}`);
+        await expect(count, `the ${k} count at ${width}`).toBeInViewport({ ratio: 1 });
+        await expect(count).toHaveText(said);
+        await expect(count).toHaveAttribute("title", /Open .+/);
+      }
+      await expect(page.getByTestId("home-count-wait")).toHaveAccessibleName(/^\d+ waiting\. Open /);
+      await expect(row(page, told)).toHaveAttribute("data-news", "true");
+      await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true");
     }
-    await shoot(page, "state-words-12-line-every-state");
+    await shoot(page, "state-words-12-home-every-state");
   } finally {
     release("line");
     for (const id of made) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});

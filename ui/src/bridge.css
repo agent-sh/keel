@@ -30,7 +30,7 @@
 @keyframes k-dot-breathe-still { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .k-mark[data-watch="work"]::after { animation-name: k-dot-breathe-still; } }
 /* A count's mark and an alert's are small and in a crowd (and inside lines that clip): the halo is not drawn there. */
-:is(.k-marks-head, .k-alert-icon, .k-tick, .k-sum, .k-sum-mark) .k-mark[data-watch="work"]::after { display: none; }
+:is(.k-marks-head, .k-alert-icon, .k-tick) .k-mark[data-watch="work"]::after { display: none; }
 /* Waiting on its agents or a command in the background: a hollow ring of dashes in the work blue. */
 .k-mark[data-bg] { background: transparent; box-shadow: none; border: 1.5px dashed var(--dot-work); }
 .k-mark[data-bg]::after { display: none; }
@@ -102,8 +102,9 @@
 }
 .k-act svg { width: 1.0625rem; height: 1.0625rem; flex-shrink: 0; }
 .k-act:hover { background: var(--hover); color: var(--fg); }
-.k-act[aria-current] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.k-act.k-alert { color: var(--st-fail-ink); }
+.k-act[aria-current] { background: var(--hover); color: var(--fg); }
+/* Errors with one unread: the count is in the failure's ink, the word stays quiet. */
+.k-act.k-alert .k-act-n { color: var(--st-fail-ink); }
 /* A row's shortcut is said where the hand is: three chips on three rows read as a column of noise
    every second the list is open. They keep their room, so nothing moves when one shows. */
 .k-rail .k-rail-acts .k-act-filter { display: none; }
@@ -112,7 +113,7 @@
 .k-act-label { display: none; }
 .k-rail[data-open] .k-rail-acts .k-act { justify-content: flex-start; height: var(--spacing-ctl-lg); }
 .k-rail[data-open] .k-act-label { display: inline; }
-.k-rail[data-open] .k-new-session { color: var(--fg); font-weight: 600; }
+.k-rail[data-open] .k-new-session { color: var(--fg); }
 .k-act-count {
   position: absolute; right: 1px; top: 1px; min-width: 1rem; height: 1rem; padding: 0 0.25rem; border-radius: 999px;
   font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--st-need-on); background: var(--st-need-fill);
@@ -319,14 +320,12 @@
   /* The filter and the tabs are behind its icon until used: it stays while it holds words, has the keyboard or was asked for. */
   .k-rail[data-short]:not([data-find]) .k-find:not(:focus-within, [data-on]) { display: none; }
   /* The Sessions and Archived tabs go with it, unless Archived is the one shown. */
-  .k-rail[data-short]:not([data-find]) .k-list-tabs:not(:has([role="tab"]:last-child[aria-selected="true"])) { display: none; }
   /* The foot is one row of icons: the theme is Settings' to change, and the drawer is as wide as five fingers need. */
   .k-rail[data-short] > .k-rail-foot, .k-rail[data-short] > .k-rail-acts { gap: 0; }
   .k-rail[data-short] > .k-rail-foot { flex-wrap: nowrap; padding-block: 0.125rem max(0.125rem, env(safe-area-inset-bottom)); padding-inline: 0.375rem; }
   .k-rail[data-short] > .k-rail-foot > .k-act { flex: 1 1 0; justify-content: center; padding-inline: 0; }
   .k-rail[data-short] > .k-rail-foot > .k-act svg { width: 1.25rem; height: 1.25rem; }
   /* The rows keep their room: a calm list says nothing in a line of its own, and a row's two lines stand closer. */
-  .k-rail[data-short] .k-sum:has(> .k-sum-calm:not([hidden])) { display: none; }
   .k-rail[data-short] .k-index[data-lines="two"] .k-row { row-gap: 0; padding-block: 0.1875rem; }
   .k-rail[data-short] > .k-rail-foot :is(.k-act-label, .k-foot-word) { display: none; }
   .k-rail[data-short] > .k-rail-foot .k-theme-toggle { display: none; }
@@ -417,14 +416,18 @@
 .k-row[aria-current]::before { background: var(--fg); }
 .k-row-title { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-row-name { flex: 1 1 auto; height: 1.5rem; padding: 0 0.375rem; margin: -0.125rem -0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--fg); font-size: inherit; font-weight: inherit; outline: none; box-shadow: 0 0 0 2px var(--ring); }
-/* What calls the owner (needs them, failed, declined) is in ink and one step heavier: the rarest rows
-   stand out first. News at rest is in ink and a half step heavier, a session at work is in ink, and the rest
-   steps back, so a list of many unread rows is not a wall. The open row is in ink too. The row's end then holds one thing. */
-.k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); font-weight: 600; }
+/* Every row is one weight: the dot says the state. What calls the owner (needs them, failed, declined), news,
+   a session at work and the open row are in ink; the rest steps back to the quiet ink. The row's end holds one thing. */
+.k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); }
 .k-row[data-unread]:not([data-gone]):is([data-watch="done"], [data-watch="idle"], [data-watch="stop"]) .k-row-title { color: var(--fg); }
-/* News at rest is the title's weight: a session with something new reads heavier than one you have seen, and no second dot
-   stands in the row beside the state's. */
-.k-row[data-news]:not([data-gone]) .k-row-title { font-weight: 400; }
+/* News is a white dot at the row's end, in the time's place (a live clock keeps its place). */
+.k-row-new { display: none; }
+.k-row[data-news]:not([data-gone]) .k-row-new { display: block; flex-shrink: 0; width: 0.4375rem; height: 0.4375rem; margin: 0 0.375rem 0 0.25rem; border-radius: 999px; background: var(--dot-unread); }
+.k-row[data-news]:not([data-gone]) .k-row-time:not([data-live]) { display: none; }
+/* Under the hand the row's actions take the end, as they do the time's place: the dot gives way with the time. */
+.k-row[data-news]:is(:hover, :focus-within) .k-row-new { display: none; }
+/* A finished row that was read steps back: its green is for what finished since you looked. */
+.k-row[data-watch="done"]:not([data-unread]):not([aria-current]) > .k-mark { opacity: 0.55; }
 /* A session at work reads first of the rows that need nothing: its title is in ink, not the quiet grey of a row at rest. */
 .k-row[data-watch="work"]:not([data-gone], [data-offline]) .k-row-title { color: var(--fg); }
 /* A quiet row's time is in its tooltip where it says what the row above said (Sidebar.tsx, calm). */
@@ -619,32 +622,13 @@
 .k-row-act svg { width: 0.875rem; height: 0.875rem; }
 .k-more { height: var(--spacing-ctl-md); padding-left: 1.75rem; border-radius: var(--radius-md); text-align: left; font-size: var(--text-caption); color: var(--faint); }
 .k-more:hover { background: var(--hover); color: var(--muted); }
-/* The line above the list: how many need the owner, failed, work, have something new or sit on a
-   machine that does not answer; a press on a count goes to the next row it names. One line, always
-   there and always as high, so a count that comes or goes moves nothing under it. It fits its bar
-   by measure (Sidebar.tsx): a word that does not fit goes (data-bare), then the room between the
-   counts (data-tight), and a figure is never cut. */
-.k-sum { display: flex; align-items: center; gap: 0; flex-shrink: 0; height: 1.75rem; margin: 0 0.625rem 0.125rem; overflow: hidden; border-bottom: 1px solid var(--line); }
+/* The archive's head: what the list shows, and the way back. */
+.k-list-view { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; height: var(--spacing-ctl-sm); margin: 0 0.625rem 0.25rem; padding: 0 0.5rem; font-size: var(--text-micro); color: var(--muted); }
+.k-list-view .k-link { color: var(--muted); }
+.k-list-view .k-link:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
 /* One quiet sentence in the text face, "3 need you, 3 failed, 18 new": each count a press, the
    figure in ink, the words muted. Only what needs the owner wears its ink; a count's state is said
    by the rows' marks under it. */
-.k-sum-chip { display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0; height: var(--spacing-ctl-sm); padding: 0 0.25rem; border-radius: var(--radius-sm); white-space: nowrap; font-size: var(--text-caption); line-height: 1; color: var(--muted); }
-.k-sum-chip:not([hidden]) ~ .k-sum-chip:not([hidden])::before { content: ","; margin: 0 0.125rem 0 -0.4375rem; color: var(--faint); }
-.k-sum-chip[hidden], .k-sum-calm[hidden], .k-sum-chip[data-bare] .k-sum-word { display: none; }
-.k-sum-chip[data-short] .k-sum-or { display: none; }
-.k-sum-mark { display: none; }
-.k-sum-chip[data-bare] .k-sum-mark { display: inline-grid; place-items: center; }
-.k-sum-mark .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-sum-dot { width: 0.375rem; height: 0.375rem; border-radius: 999px; background: var(--dot-unread); }
-.k-sum[data-tight] .k-sum-chip { gap: 0.1875rem; padding: 0 0.1875rem; }
-.k-sum[data-tight] .k-sum-chip:not([hidden]) ~ .k-sum-chip:not([hidden])::before { margin-left: -0.25rem; }
-.k-sum-chip:hover { background: var(--hover); color: var(--fg); }
-.k-sum-chip:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
-.k-sum-chip svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; color: var(--faint); }
-.k-sum-n { font-weight: 400; font-variant-numeric: tabular-nums; color: var(--fg); }
-.k-sum-word { font-weight: 400; letter-spacing: 0; }
-.k-sum-chip[data-kind="need"] :is(.k-sum-n, .k-sum-word) { color: var(--st-need-ink); }
-.k-sum-calm { flex: 0 1 auto; min-width: 0; padding: 0 0.375rem; overflow: hidden; white-space: nowrap; font-size: var(--text-caption); color: var(--faint); }
 /* Under the line a machine's separator needs no rule of its own. */
 .k-index > .k-machine-sep:first-child { padding-top: 0.125rem; border-top: 0; }
 /* What stands above the list (the steps without progress) keeps its height while the hand is on the list. */
@@ -670,11 +654,8 @@
 .k-rail[data-narrow] .k-row[data-shown]::before { left: -0.375rem; top: 0.25rem; bottom: 0.25rem; }
 .k-rail[data-narrow] .k-group { margin-top: 0.5rem; }
 .k-rail[data-narrow] .k-group-head { padding: 0 0.375rem; }
-.k-rail[data-narrow] .k-sum { margin-inline: 0.375rem; }
 .k-rail[data-narrow] .k-find { margin-inline: 0.375rem; }
 /* Its tabs keep their words whole: closer to the bar's edges, in the small size. */
-.k-rail[data-narrow] .k-list-tabs { margin-inline: 0.375rem; }
-.k-rail[data-narrow] .k-list-tabs > button { padding: 0 0.125rem; font-size: var(--text-micro); }
 .k-rail[data-narrow] .k-session-children { margin-left: 0.375rem; padding-left: 0.25rem; }
 
 /* The note in the Arrange menu about a default that changed: read once. */
@@ -1840,10 +1821,10 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-alert-icon .k-mark { width: 0.5625rem; height: 0.5625rem; }
 .k-alert-icon[data-read] .k-mark { opacity: 0.45; }
 .k-inbox-count {
-  min-width: 1rem; height: 1rem; padding: 0 0.3125rem; border-radius: 999px;
-  font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);
+  min-width: 0.5rem; height: 1rem; padding: 0;
+  font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--k-st);
 }
-.k-inbox-count[data-watch="idle"] { background: var(--accent); }
+.k-inbox-count[data-watch="idle"] { color: var(--muted); }
 
 /* A turn the model declined: a failure under its own word. The same red as a
    failed one wherever a state is drawn, and its own mark (an empty square). */
@@ -1901,7 +1882,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   /* Rows and bars that hold targets are as tall as a target. */
   .k-station .k-session-header { height: calc(var(--spacing-tap) + 0.25rem); }
   .k-find { height: var(--spacing-tap); }
-  .k-sum, .k-list-note { height: var(--spacing-tap); }
+  .k-list-note { height: var(--spacing-tap); }
   /* (transcript.css comes after this sheet: these name the bar's place to win over its sizes.) */
   .k-station .k-new-bar { height: calc(var(--spacing-tap) + 0.375rem); }
   /* The room under the last line is as tall as the way to what is new: no last line, and none of its controls, is under it. */

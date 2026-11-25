@@ -55,7 +55,7 @@
   /* The other two ambers (brass, and "working" among the state colors) read as words in the same ink. */
   --brass-ink: var(--warn-ink);
   /* Red and green as text, for the same reason: the fills are under 4.5:1 on the rail and on their own tints.
-     Green is a success mark's hue (--ok); the done state's dot is the quiet grey. */
+     Green is a success mark's hue (--ok) and the done state's dot. */
   --danger-ink: oklch(0.5 0.2 27);
   --ok-ink: oklch(0.45 0.12 150);
   --code-bg: oklch(0.95 0.005 250);
@@ -96,8 +96,9 @@
   --dot-need: oklch(0.8 0.17 88);
   --dot-need-edge: oklch(0.55 0.12 80);
   --dot-fail: oklch(0.55 0.2 27);
-  /* Done is the quiet dot: colour is for what needs the owner, failed and at work. A success mark (a check, a saved note) stays green: --ok. */
-  --dot-done: var(--st-idle);
+  /* Done is green, as a success mark is (--ok). A finished row you have read steps back (bridge.css), so a list of
+     finished sessions is not a wall of green: the full green is what finished since you looked. */
+  --dot-done: var(--ok);
   /* News is a "white" dot. On the light rail a white dot is invisible (1.3:1), so it is the ink, the one neutral that is
      as far from the rail as white is in the dark theme (14:1 here, 18:1 there). */
   --dot-unread: var(--fg);
@@ -208,8 +209,7 @@
   --dot-need: oklch(0.85 0.16 95);
   --dot-need-edge: var(--dot-need);
   --dot-fail: oklch(0.7 0.18 27);
-  /* The done dot is a grey that reads on the bar and the tab strip, not only on the rail (4.5:1 on --bg). */
-  --dot-done: oklch(0.64 0.014 255);
+  --dot-done: var(--ok);
   --dot-unread: oklch(0.98 0 0);
   /* At night the band is steel, not a white bar across the screen. */
   --band: oklch(0.52 0.018 255);

@@ -11,14 +11,14 @@
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, ListFilter, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sun, SunMoon, Tag, X } from "lucide-react";
-import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, ListFilter, MessageSquareMore, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, Settings, Tag, X } from "lucide-react";
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { composing, runCommand } from "../lib/keys.ts";
-import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
+import { machineName, useFleet } from "../lib/fleet.ts";
 import { getStations, stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
-import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, scrollerOf, useActed, useAnchor, useCounts, useHand, usePhoneWidth, useUnderLook, type Hand, type Kind } from "../lib/list-hold.ts";
+import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, scrollerOf, useActed, useAnchor, useCounts, useHand, usePhoneWidth, useUnderLook, type Hand } from "../lib/list-hold.ts";
 import { around, folders, held as heldList, isNews, pinnedOrder, tally } from "../lib/list-order.ts";
 import { countedState, withAgentFailures } from "../lib/home.ts";
 import { focusAsk } from "../lib/asks.ts";
@@ -30,10 +30,10 @@ import { capTip, dollars } from "../../../src/automation/cap-rules.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { opened, openFocus } from "../lib/self-focus.ts";
 import { fitBands } from "../lib/rail-fit.ts";
-import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
+import { navigate, phone, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, timeBucket, when } from "../lib/utils.ts";
-import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, WAITS_ON_YOU, backgroundOf, dotWord, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, stateWords, wentWrongWord } from "../../../src/core/state-words.ts";
+import { AT_REST, branchOf, lastLine, useLastLine, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
+import { COUNTERS, WAITS_ON_YOU, backgroundOf, dotWord, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, stateWords } from "../../../src/core/state-words.ts";
 import { OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
@@ -59,7 +59,6 @@ import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
 import { HelperFace, useHelperName } from "./HelperFace.tsx";
-import { Seg, tabId } from "./Seg.tsx";
 import { StuckStrip } from "./Stuck.tsx";
 import { selected, selectRange, toggleSelected, useIsSelected } from "../lib/select.ts";
 import { SelectBar } from "./SelectBar.tsx";
@@ -78,7 +77,7 @@ const Find = memo(ListFind);
 // was held, and whether the list is the narrow one.
 // `key`: what the owner chose for the list (its tab, filter and arrangement): a list they changed is drawn in its own order.
 // `fluid`: the order moves rows as their sessions work (by recent activity, by state).
-const ListCtx = createContext<{ watches: Record<string, Watch>; gone: Set<string>; narrow: boolean; lines: "one" | "two"; key: string; fluid: boolean }>({ watches: {}, gone: new Set(), narrow: false, lines: "one", key: "", fluid: false });
+const ListCtx = createContext<{ watches: Record<string, Watch>; gone: Set<string>; narrow: boolean; key: string; fluid: boolean }>({ watches: {}, gone: new Set(), narrow: false, key: "", fluid: false });
 
 // The card beside an entry: shown at once for a mark (it has no words of its
 // own), after a pause for a list row (its title is already there), and at
@@ -189,13 +188,6 @@ function neighbour(row: HTMLElement | null): HTMLElement | undefined {
   return i < 0 ? undefined : rows[i + 1] ?? rows[i - 1];
 }
 
-// The second line of a session at rest, in a list of two lines a row: what it last said or did,
-// when this page holds its events (it opened the session), else the model it runs on.
-function RestLine({ s }: { s: Session }) {
-  const line = useStore((x) => lastLine(branchOf(x.events[s.id], s.head), s.workspace));
-  return <span className="k-row-why k-row-last" data-testid="row-last">{line || modelOf(s.model)}</span>;
-}
-
 // The row's chevron for the agents the session started: the tree opens under the row (SessionChildren) and
 // the owner's choice is kept. How many work, wait, failed or are done is said in the session itself
 // (AgentsDock.tsx); the row says only that there is a tree. Shown only for a session that has agents.
@@ -246,7 +238,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const live = useStore((x) => x.sessions[given.id]);
   const deleted = useStore((x) => !!x.gone[given.id]);
   const s = live ?? given;
-  const { narrow, lines, watches: heldWatches } = useContext(ListCtx);
+  const { narrow, watches: heldWatches } = useContext(ListCtx);
   const restore = s.archived;
   // A session whose agents failed reads Failed until the owner looks at it, as the counters count it (lib/home.ts);
   // as the list shows it: a change that calls the owner at once, any other once it has held (lib/settle.ts).
@@ -260,7 +252,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const offline = !!st.offline;
   const now = useNow(timed(st) && !offline, ROW_BEAT);
   // A row of one line may have no room for its reason: the card beside it comes sooner.
-  const card = useContext(CardCtx)(s, lines === "one" ? 250 : 450, lines === "two");
+  const card = useContext(CardCtx)(s, 250, false);
   // A message of the session waits for the daemon to be back and goes out by itself: said on the
   // state line, whatever the state is (it is the reason itself when the session is otherwise at rest).
   const waitingSend = useWaitingSend(s.id);
@@ -285,13 +277,12 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const orderOf = () => [...(row.current?.closest('[data-testid="session-list"]')?.querySelectorAll<HTMLElement>('[data-testid="session-row"]') ?? [])].map((r) => r.dataset.session!);
   // It, or an agent of it, needs the owner while its pane shows another session for now (a look lies over it).
   const under = useUnderLook(s.id);
-  // Who a row that calls the owner waits on, in the time's place on a row of one line: the owner, or the
-  // failure's class (what to see to). The time is the word's tooltip. A row of two lines says it on its
-  // second line and keeps the time; a list too narrow for the time says it on the reason's line.
+  // Who a row that calls the owner waits on, in the time's place: the owner, or the failure's class (what
+  // to see to). The time is the word's tooltip; a list too narrow for the time says it on the reason's line.
   // A row red for its agents says how many failed; a failure with no class still says so in a word.
   const cls = failWord(st.cls);
   const agents = w === "fail" && st.why === "agents" ? agentsFailedWord(st.agents_failed ?? 1) : "";
-  const on = !narrow && lines === "one" && !offline && !gone ? (w === "need" ? WAITS_ON_YOU : w === "declined" ? DECLINED_WORD : "") : "";
+  const on = !narrow && !offline && !gone ? (w === "need" ? WAITS_ON_YOU : w === "declined" ? DECLINED_WORD : "") : "";
   // A menu of the row is the hand on the list: the list is held while one is open.
   const keep = useContext(HandCtx).keep;
   const over = placing || !!menu || renaming;
@@ -403,8 +394,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           {offline
             ? <span className="k-row-why" data-testid="row-why" data-why="offline">{asOf(clock(toldAt))}</span>
             : SPELLED.includes(w)
-            ? <span className="k-row-state" data-testid="row-state">{/* One line: how many agents work is said in the session itself, not on its row. */lines === "one" ? stateWords(st).word : stateLabel(st)}</span>
-            : lines === "two" && <RestLine s={s} />}
+            ? <span className="k-row-state" data-testid="row-state">{/* How many agents work is said in the session itself, not on its row. */stateWords(st).word}</span>
+            : null}
           {/* On a phone there is no tooltip to read the dot's word in: a state the row does not say in words (a session at rest,
               what it waits on in the background) and the white news dot are said here, in the row (bridge.css shows it there only). */}
           {dotWords && (
@@ -481,8 +472,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         </button>
         )}
       </span>
-      {/* News is the title's weight (bridge.css), not a dot: the state's dot is the row's one colour. A reader is told in words. */}
-      {news && <span className="sr-only" data-testid="row-new">{NEW}</span>}
+      {/* News is a white dot at the row's end, in the time's place (bridge.css); a reader is told in words. */}
+      {news && <span className="k-row-new" data-testid="row-new"><span className="sr-only">{NEW}</span></span>}
       {menu && (
         <RowMenu
           at={menu}
@@ -1034,133 +1025,6 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
   );
 }
 
-// The line above the list: how many sessions need the owner, failed, work, have
-// something new, or sit on a machine that does not answer. It is always there
-// and always as high, so nothing under it moves when a count comes or goes. A
-// press on a count goes to the row of the next session it names, wherever
-// that row is (Alt A, the key that was there before, opens the next that needs them).
-// The words are the vocabulary's (src/core/state-words.ts). What needs the owner is counted as
-// things, each once, as the tab's title and the home headline count them (a session with three
-// requests is three); the others count sessions, and "failed" says so when a turn was declined instead.
-const COUNTS: { kind: Kind; watch?: Watch; says: string }[] = [
-  { kind: "need", watch: "need", says: STATE_WORD.need },
-  { kind: "fail", watch: "fail", says: STATE_WORD.fail },
-  { kind: "work", watch: "work", says: STATE_WORD.work },
-  { kind: "wait", watch: "wait", says: STATE_WORD.wait },
-  { kind: "unread", says: NEW_SINCE },
-  { kind: "offline", says: "On a machine that does not answer" },
-];
-// The line fits its bar at every width and text size, and a figure is never cut: measured on the
-// line itself. Every count keeps its mark and its figure, and the words take the room that is
-// left, the one that calls the owner first, the states before what is new (whose mark is the
-// rows' own dot for news), the room between the counts given up before a word. With no room for
-// a word the line's calm sentence goes, then the room between the counts, and at the very
-// narrowest whole counts, the ones that call the owner last.
-const WORDS_STAY: Kind[] = ["need", "fail", "offline", "work", "wait", "unread"];
-const COUNTS_GO: Kind[] = ["wait", "work", "unread", "offline"];
-// A count's tooltip starts with the count in its words, which a count whose word has no room keeps there.
-const tipHead = (c: (typeof COUNTS)[number], n: number, word: string) => c.kind === "offline" ? c.says : `${n} ${c.kind === "unread" ? NEW_SINCE.toLowerCase() : word}`;
-function fitSummary(el: HTMLElement) {
-  const chips = [...el.querySelectorAll<HTMLElement>(".k-sum-chip")];
-  const chip = (k: Kind) => chips.find((c) => c.dataset.kind === k);
-  const calm = el.querySelector<HTMLElement>(".k-sum-calm");
-  const over = () => el.scrollWidth > el.clientWidth || (!!calm && !calm.hidden && calm.scrollWidth > calm.clientWidth);
-  el.removeAttribute("data-tight");
-  if (calm) calm.hidden = false;
-  for (const c of chips) { c.hidden = false; c.setAttribute("data-bare", ""); c.removeAttribute("data-short"); }
-  if (!over()) {
-    for (const k of WORDS_STAY) {
-      const c = chip(k);
-      if (!c) continue;
-      c.removeAttribute("data-bare");
-      // "failed or declined" gives up its second half before a count loses its word: the tooltip has it whole.
-      if (over()) chips.find((x) => x.querySelector(".k-sum-or"))?.setAttribute("data-short", "");
-      // Closer counts first, then the word goes: a word that says less is not shown where one that says more has no room.
-      if (over() && !el.hasAttribute("data-tight")) { el.setAttribute("data-tight", ""); if (!over()) continue; el.removeAttribute("data-tight"); }
-      if (over()) { c.setAttribute("data-bare", ""); break; }
-    }
-    return;
-  }
-  const steps: (() => void)[] = [
-    () => { if (calm) calm.hidden = true; },
-    () => el.setAttribute("data-tight", ""),
-    ...COUNTS_GO.map((k) => () => { const c = chip(k); if (c) c.hidden = true; }),
-  ];
-  for (const step of steps) { step(); if (!over()) break; }
-}
-
-function Summary() {
-  const counts = useCounts();
-  const sessions = useStore((s) => s.sessions);
-  // The machines out of reach, for the offline count: its name when it is one machine, and since when in its tip.
-  const out = useReach((x) => x.unheard);
-  const down = [...new Set(counts.offline.map((id) => sessions[id]?.machine).filter((m): m is string => !!m && !!out[m]))].map((m) => out[m]!);
-  const since = down.map((m) => `${m.name}${m.since ? ` since ${clock(m.since)}` : ""}`).join(", ");
-  const shown = COUNTS.filter((c) => counts[c.kind].length > 0);
-  const calls = counts.need.length + counts.fail.length > 0;
-  const line = useRef<HTMLDivElement>(null);
-  // How many a count says, and in what words.
-  const need = useNeedCount();
-  const failed = useMemo(() => counts.fail.map((id) => sessions[id]).filter((x): x is Session => !!x), [counts.fail, sessions]);
-  const failedStates = useSessionStates(failed);
-  const declined = counts.fail.filter((id) => failedStates[id]?.watch === "declined").length;
-  const said = (kind: Kind, ids: string[]): { n: number; word: string } => {
-    if (kind === "need") { const n = Math.max(ids.length, need); return { n, word: countName("need", n) }; }
-    if (kind === "fail") return { n: ids.length, word: wentWrongWord(ids.length - declined, declined) };
-    return { n: ids.length, word: kind === "work" || kind === "wait" ? countName(kind, ids.length) : kind === "unread" ? NEW.toLowerCase() : OFFLINE.toLowerCase() };
-  };
-  // What the fit depends on: which counts show, how many figures each has and its word. A count that
-  // goes from 4 to 5 is as wide as it was, and is not measured again (a fit writes every chip twice).
-  const figures = COUNTS.filter((c) => counts[c.kind].length > 0).map((c) => { const x = said(c.kind, counts[c.kind]); return `${c.kind}:${String(x.n).length}:${x.word}`; }).join("|");
-  useLayoutEffect(() => {
-    const el = line.current;
-    if (!el) return;
-    const fit = () => fitSummary(el);
-    fit();
-    // Measured again when the bar or a count changes width: the edge dragged, the text size, a face that arrived after the first paint.
-    // (A frame later: the fit changes the size of the line and of its counts, which the observer watches.)
-    const later = afterSize(fit);
-    const ro = new ResizeObserver(later);
-    ro.observe(el);
-    for (const c of el.children) ro.observe(c);
-    document.fonts?.addEventListener("loadingdone", fit);
-    return () => { ro.disconnect(); later.stop(); document.fonts?.removeEventListener("loadingdone", fit); };
-  }, [figures]);
-  // One stop for Tab: the arrows move between the counts, Home and End reach the ends.
-  const [stop, setStop] = useState<Kind | null>(null);
-  const at = shown.some((c) => c.kind === stop) ? stop : shown[0]?.kind;
-  const step = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return;
-    const chips = [...e.currentTarget.querySelectorAll<HTMLElement>(".k-sum-chip:not([hidden])")];
-    const i = chips.indexOf(document.activeElement as HTMLElement);
-    if (i < 0) return;
-    e.preventDefault();
-    (e.key === "Home" ? chips[0] : e.key === "End" ? chips.at(-1) : chips[i + (e.key === "ArrowRight" ? 1 : -1)])?.focus();
-  };
-  return (
-    <div ref={line} className="k-sum" data-testid="list-summary" role="toolbar" aria-label="What the sessions need" onKeyDown={step}>
-      {!calls && <span className="k-sum-calm" data-testid="sum-calm">{COUNTERS.calm}</span>}
-      {shown.map((c) => {
-        const ids = counts[c.kind];
-        const names = ids.slice(0, 6).map((id) => sessions[id]?.title || "New session").join("; ");
-        const { n, word } = said(c.kind, ids);
-        return (
-          <button key={c.kind} type="button" className="k-sum-chip" data-kind={c.kind} data-testid={`sum-${c.kind}`} tabIndex={c.kind === at ? 0 : -1} onFocus={() => setStop(c.kind)} onClick={() => jumpNext(c.kind)}
-            aria-label={`${n} ${c.kind === "offline" && since ? `on ${since}, ${word}` : word}. Go to the next`} title={`${tipHead(c, n, word)}${c.kind === "offline" && since ? ` (${since})` : ""}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
-            {/* One sentence in the text face: the rows' marks say each state, the line says how many. */}
-            {c.kind === "offline" && <ServerOff aria-hidden="true" />}
-            {/* A count whose word has no room keeps its state's mark, so the figure still says what it counts. */}
-            {c.watch && c.kind !== "need" && c.kind !== "fail" && <span className="k-sum-mark" aria-hidden="true"><Mark w={c.watch} /></span>}
-            {c.kind === "unread" && <span className="k-sum-mark" aria-hidden="true"><span className="k-sum-dot" /></span>}
-            <b className="k-sum-n">{n}</b>
-            <span className="k-sum-word">{c.kind === "offline" && down.length === 1 && <span className="inline-block max-w-[6.5rem] truncate align-bottom" data-testid="sum-offline-name">{down[0]!.name}</span>}{c.kind === "offline" && down.length === 1 ? " " : ""}{c.kind === "fail" && word.includes(" or ") ? <>{word.split(" or ")[0]}<span className="k-sum-or"> or {word.split(" or ")[1]}</span></> : word}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 // Keeps whom each count names, for the line above the list and for the key, also while the list is folded.
 function CountsKeeper() {
   const sessions = useStore((s) => s.sessions);
@@ -1208,7 +1072,8 @@ function Index({ current }: { current: string | null }) {
   const note = useNote();
   useFleet((s) => s.machines.length); // machine names in the group heads
   const [tab, setTab] = useState<"active" | "archived">(() => { const t = openOn; openOn = "active"; return t; });
-  const panel = useId();
+  // (One function for the life of the list: the filter is memoized, and a new one each render drew it again each time.)
+  const showArchive = useCallback((on: boolean) => setTab(on ? "archived" : "active"), []);
   const [archived, setArchived] = useState<Session[]>([]);
   // The archive is asked for when its tab opens and when what it lists moved:
   // a session was archived or restored, or one is gone. A status or a title
@@ -1247,7 +1112,7 @@ function Index({ current }: { current: string | null }) {
   const from = useHeld(held, listKey, base_, liveWatches, current);
   // A list the owner arranged anew is drawn as they asked, not around where a row stood before.
   const scale = useUI((x) => x.scale);
-  useLayoutEffect(reanchor, [listKey, arr.lines, narrow, scale]);
+  useLayoutEffect(reanchor, [listKey, narrow, scale]);
   const watches = from.watches;
   const fits = (s: Session) => (!tag || (s.settings.tags ?? []).includes(tag)) && (!q || matches(s, q));
   const listed = from.list.filter(fits);
@@ -1315,8 +1180,14 @@ function Index({ current }: { current: string | null }) {
       {/* What scrolls: on a phone the tabs, the tags and the counts go with the rows (the find stays),
           and below it the list's foot, which never covers a row it names. Elsewhere both are no box. */}
       <div className="k-list-scroll">
-      <Seg kind="tabs" panel={panel} bare className="k-list-tabs mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
-      <Find q={q} setQ={setQ} narrow={narrow} />
+      <Find q={q} setQ={setQ} narrow={narrow} archived={tab === "archived"} setArchived={showArchive} />
+      {/* The archive is a view the list's menu opens (Archived sessions): its head says so and leads back. */}
+      {tab === "archived" && (
+        <div className="k-list-view" data-testid="archive-head">
+          <span className="truncate">Archived</span>
+          <button type="button" className="k-link" data-testid="tab-active" onClick={() => setTab("active")}>Back to sessions</button>
+        </div>
+      )}
       {tags.length > 0 && !narrow && (
         <div className="k-tag-row" role="group" aria-label="Filter by tag" data-testid="tag-filter">
           {tags.map((t) => (
@@ -1327,9 +1198,7 @@ function Index({ current }: { current: string | null }) {
           ))}
         </div>
       )}
-      {/* The tabs' panel: it takes no box of its own, the list keeps its place in the rail. */}
-      <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="contents">
-      <Summary />
+      <div className="contents">
       {/* Said once to whom the order changed under, where they will see it: a hint for the load it was
           seen on, gone with the next one, or before when dismissed or when the Arrange menu was opened. */}
       {note && !narrow && (
@@ -1339,8 +1208,8 @@ function Index({ current }: { current: string | null }) {
           <button type="button" className="k-find-btn" data-testid="list-note-dismiss" aria-label="Dismiss" title="Dismiss" onClick={readNote}><X /></button>
         </p>
       )}
-      <ListCtx.Provider value={{ watches, gone: from.gone, narrow, lines: narrow ? "one" : arr.lines, key: listKey, fluid }}>
-      <nav ref={nav} className="k-index" data-testid="session-list" data-lines={narrow ? "one" : arr.lines} data-held={held || undefined} aria-label="Sessions" onKeyDown={stepRows} {...hand.on}>
+      <ListCtx.Provider value={{ watches, gone: from.gone, narrow, key: listKey, fluid }}>
+      <nav ref={nav} className="k-index" data-testid="session-list" data-held={held || undefined} aria-label="Sessions" onKeyDown={stepRows} {...hand.on}>
         {pinned.length > 0 && (
           <PinnedGroup list={pinned} current={current} every={!!q} />
         )}
@@ -1364,7 +1233,6 @@ function Index({ current }: { current: string | null }) {
               {own.map((g) => (
                 <section key={g.key} className="k-group" data-machine={g.machine}>
                   <h2 className="k-group-head" title={g.machine ? `${g.ws} on ${machineName(g.machine)}` : g.ws}>
-                    <Folder />
                     <span className="truncate">{heads.get(`${g.machine ?? ""}\u0000${g.ws}`) ?? base(g.ws)}</span>
                   </h2>
                   <Group list={g.list} current={current} every={!!q} />
@@ -1457,12 +1325,10 @@ export function Sidebar({ open }: { open: boolean }) {
   const link = useLink();
   const route = useUI((s) => s.route);
   const newUnsent = useUnsent("new");
-  const theme = useUI((s) => s.theme);
   const rail = useRail();
   const current = route.name === "session" ? route.id : null;
   const onHelper = useStore((s) => (current ? !!s.sessions[current]?.settings.helper : false));
   const helperName = useHelperName();
-  const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
   const { card, bind, hide } = useCard();
   const grip = useRef<{ from: number; to: number | null }>({ from: 0, to: null });
   const aside = useRef<HTMLElement>(null);
@@ -1579,11 +1445,6 @@ export function Sidebar({ open }: { open: boolean }) {
       </CardCtx.Provider>
       {card && <RailCard s={card.s} y={card.y} left={card.left} row={card.row} cut={card.cut} />}
       <div ref={foot} className="k-rail-foot" data-testid="rail-foot">
-        {!open && (
-          <button type="button" className="k-act" data-testid="tab-archived" aria-label="Archived sessions" title="Archived sessions" onClick={() => { openOn = "archived"; toggleList(true); }}>
-            <Archive />
-          </button>
-        )}
         {/* How many panes: the open list has it in its Arrange menu; folded, it is a menu here. */}
         {!open && !phone() && <PanesButton />}
         <button type="button" className="k-act k-act-word" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>
@@ -1596,9 +1457,6 @@ export function Sidebar({ open }: { open: boolean }) {
         <AutomationFooter />
         <button type="button" className={cn("k-act k-foot-named", errors > 0 && "k-alert")} data-testid="errors-button" aria-label={`Errors. ${COUNTERS.errors(errors)}`} title={`Errors. ${COUNTERS.errors(errors)}`} onClick={() => setUI({ errors: true })}>
           <Bug /><span className="k-foot-word">Errors</span>{errors > 0 && <span className="k-act-n">{errors}</span>}
-        </button>
-        <button type="button" className="k-theme-toggle k-act" data-testid="theme-toggle" onClick={() => setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system")} title={`Theme: ${theme}`} aria-label={`Theme: ${theme}. Change`}>
-          <ThemeIcon />
         </button>
       </div>
     </aside>

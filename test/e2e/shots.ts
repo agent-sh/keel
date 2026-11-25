@@ -79,6 +79,32 @@ export async function setPanes(page: Page, n: number) {
   await expect(page.getByTestId("arrange-menu")).toBeHidden();
 }
 
+// Shows the archived sessions in the list, or the sessions again. The archive is a view the list's
+// Arrange menu opens (Archived sessions); while it shows, its head has a link back. The list must be open.
+export async function showArchived(page: Page, on: boolean) {
+  const head = page.getByTestId("archive-head");
+  if ((await head.isVisible()) === on) return;
+  if (!on) {
+    await head.getByTestId("tab-active").click();
+    await expect(head).toBeHidden();
+    return;
+  }
+  await page.getByTestId("list-arrange").click();
+  await page.getByTestId("arrange-menu").getByTestId("tab-archived").click();
+  await expect(page.getByTestId("arrange-menu")).toBeHidden();
+  await expect(head).toBeVisible();
+}
+
+// Sets the theme as the owner does, from the palette's command ("Theme: light", "Theme: dark",
+// ui/src/lib/builtins.ts). The choice is kept (keel.theme), as a press in Settings keeps it.
+export async function setTheme(page: Page, theme: "light" | "dark") {
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill(`Theme: ${theme}`);
+  await page.getByTestId("palette").getByRole("option").filter({ hasText: `Theme: ${theme}` }).first().click();
+  await expect(page.getByTestId("palette")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("dark"))).toBe(theme === "dark");
+}
+
 // Opens a side panel of the session on screen from the Panels picker.
 // Nothing happens when it is already open.
 export async function openPanel(page: Page, id: string) {

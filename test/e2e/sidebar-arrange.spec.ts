@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
-import { openPanel, shoot } from "./shots.ts";
+import { openPanel, shoot, showArchived } from "./shots.ts";
 
 // Feature: the list and the panes stay the owner's to arrange. A second pane
 // is never forced: a kept layout with an empty pane opens as one pane, and
@@ -231,7 +231,7 @@ test("the archive list is read again only when the archive changed", async ({ pa
     const list = page.getByTestId("session-list");
     const row = (id: string) => list.locator(`[data-testid="session-row"][data-session="${id}"]`);
     await page.goto(`/s/${busy}`);
-    await page.getByTestId("tab-archived").click();
+    await showArchived(page, true);
     await expect(row(old)).toBeVisible();
     await expect(row(next)).toHaveCount(0);
     expect(reads).toBe(1);
@@ -243,11 +243,11 @@ test("the archive list is read again only when the archive changed", async ({ pa
     await patch(busy, { title: `Renamed while worked on ${tag}` });
     await patch(later, { title: `Renamed and not archived yet ${tag}` });
     await expect(page.getByTestId("session-title")).toHaveText(`Renamed while worked on ${tag}`);
-    await page.getByTestId("tab-active").click();
+    await showArchived(page, false);
     await expect(row(later)).toContainText(`Renamed and not archived yet ${tag}`);
-    await page.getByTestId("tab-archived").click();
+    await showArchived(page, true);
     await expect(row(old)).toBeVisible();
-    expect(reads).toBe(2); // the tab opened again; nothing between
+    expect(reads).toBe(2); // the archive shown again; nothing between
 
     // Archived: it joins the list. Renamed there: the list follows without a read.
     await patch(next, { archived: true });
@@ -293,7 +293,7 @@ test("the archive list is read again only when the archive changed", async ({ pa
     // (The page is loaded anew first: it then holds no archived row of its
     // own, whose loss to the list reload would be a change it sees.)
     await page.reload();
-    await page.getByTestId("tab-archived").click();
+    await showArchived(page, true);
     await expect(row(stale)).toBeVisible();
     await expect(row(last)).toBeVisible();
     let back!: () => void;

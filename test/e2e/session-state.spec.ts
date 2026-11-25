@@ -253,7 +253,8 @@ test("is anything stuck: a held stream, a silent command and a stalled agent are
     // An agent is no entry of its own: the session it works for is, with how many of its agents are stuck.
     await expect.poll(() => tip(strip.locator(`[data-session="${parent}"]`))).toMatch(/agent of Audit the three services/);
     await expect(strip.locator(`[data-session="${parent}"]`)).toHaveAttribute("data-agents", "1");
-    await expect(strip.locator(`[data-session="${parent}"] [data-testid="stuck-agents"]`)).toHaveText("1 agent");
+    // The row says no count of them: the tooltip names the agent.
+    await expect(strip.locator(`[data-session="${parent}"] [data-testid="stuck-agents"]`)).toHaveCount(0);
     await expect(strip.locator(`[data-session="${agent}"]`)).toHaveCount(0);
     for (const id of [stream, tool, parent]) {
       const item = strip.locator(`[data-session="${id}"]`);
@@ -382,28 +383,25 @@ test("a session that needs the owner or failed is never behind the fold, and a f
     expect(await group.locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")))).toEqual(["done", "done", "done", "done", "done", "done", "need", "fail", "fail", "fail"]);
     await expect(group.locator(".k-more")).toHaveText("4 more");
     await expect(row(page, quiet[0]!)).toHaveCount(0);
-    // The line above the list counts them, and is on screen however short the window is.
-    await expect(page.getByTestId("sum-need")).toHaveText(/1\s*needs you/i);
-    await expect(page.getByTestId("sum-fail")).toHaveText(/3\s*failed/i);
+    // What waits on the owner is counted in the tab's title and at the list's foot.
+    await expect(page).toHaveTitle(/^\(1\) /);
+    await expect(page.getByTestId("inbox-count")).toHaveText("1");
     await shoot(page, "session-state-05-never-folded");
+    // However short the window is, the rows out of view are named at the list's foot: the one that needs the owner
+    // first, the failures behind "+3", whose press brings a failure's row on screen with the keyboard on it.
     await page.setViewportSize({ width: 1920, height: 480 });
     await page.getByTestId("session-list").evaluate((nav) => { nav.scrollTop = 0; });
     await expect(row(page, asks)).not.toBeInViewport();
-    await expect(page.getByTestId("sum-need")).toBeInViewport({ ratio: 1 });
-    // One press: its row is on screen with the keyboard on it. The next failure the same way, each in turn.
-    await page.getByTestId("sum-need").click();
-    await expect(row(page, asks)).toBeInViewport({ ratio: 0.95 });
-    await expect(row(page, asks)).toBeFocused();
-    const reached: string[] = [];
-    for (let i = 0; i < 3; i++) {
-      await page.getByTestId("sum-fail").click();
-      await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-watch"))).toBe("fail");
-      const id = (await page.evaluate(() => document.activeElement?.getAttribute("data-session")))!;
-      await expect(row(page, id)).toBeInViewport({ ratio: 0.95 });
-      reached.push(id);
-      await page.getByTestId("composer").focus();
-    }
-    expect([...reached].sort()).toEqual([...failed].sort());
+    const strip = page.getByTestId("need-strip");
+    await expect(strip.locator(`.k-need-name[data-session="${asks}"]`)).toBeInViewport({ ratio: 1 });
+    await expect(strip.getByTestId("need-strip-more")).toHaveText("+3");
+    for (const title of ["Reindex the docs", "Summarize the incident", "Draft the changelog"]) await expect(strip.getByTestId("need-strip-more")).toHaveAttribute("title", new RegExp(title));
+    await strip.getByTestId("need-strip-more").click();
+    await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-watch"))).toBe("fail");
+    const reached = (await page.evaluate(() => document.activeElement?.getAttribute("data-session")))!;
+    expect(failed).toContain(reached);
+    await expect(row(page, reached)).toBeInViewport({ ratio: 0.95 });
+    await page.getByTestId("composer").focus();
   } finally {
     await drop(request, made);
   }
@@ -622,9 +620,9 @@ test("the card beside a mark says a question waits, as it says an approval waits
   }
 });
 
-// With two lines a row (the choice in the Arrange menu) the row says its state and its reason,
-// and the card adds only what it lacks. A row of one line says neither: its card is the whole one.
-test("the card beside a list row adds what the row lacks and repeats nothing of it", async ({ page, request }) => {
+// A row is one line: it has no room for its reason, so the card beside it is the whole one, with the
+// state's word, the title and the reason in full. The row has no tooltip of the browser's own.
+test("the card beside a list row of one line is the whole card", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1920, height: 1040 });
   const made: string[] = [];
@@ -639,42 +637,18 @@ test("the card beside a list row adds what the row lacks and repeats nothing of 
     await page.goto(`/s/${watcher}`);
     const r = row(page, approval);
     const card = page.getByTestId("rail-card");
-    // One line a row: the whole card, with the state's word, the title and the reason in full.
-    await expect(page.getByTestId("session-list")).toHaveAttribute("data-lines", "one");
+    // The whole card, with the state's word, the title and the reason in full.
     await r.hover();
     await expect(card).toBeVisible();
     await expect(card).not.toHaveAttribute("data-kind", "row");
     await expect(card).toContainText(/needs you/i);
     await expect(card).toContainText("Clean the build output before the release");
     await expect(card.getByTestId("rail-card-why")).toHaveText(`Approve Bash: ${command}`);
+    await expect(card).toContainText("Model");
+    expect(await r.locator(".k-row-title").getAttribute("title")).toBeNull();
+    await shoot(page, "session-state-11-row-card");
     await page.mouse.move(1200, 500);
     await expect(card).toHaveCount(0);
-    // Two lines a row.
-    await page.getByTestId("list-arrange").click();
-    await page.getByTestId("arrange-lines-two").click();
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("session-list")).toHaveAttribute("data-lines", "two");
-    await expect(r.getByTestId("row-why")).toContainText("Approve Bash: rm -rf dist");
-    await expect(r.getByTestId("row-why")).toBeInViewport({ ratio: 1 });
-    await r.hover();
-    await expect(card).toBeVisible();
-    await expect(card).toHaveAttribute("data-kind", "row");
-    // What the row cuts: the whole command. What it has no room for: the model, the path, the exact time.
-    await expect(card.getByTestId("rail-card-why")).toHaveText(`Approve Bash: ${command}`);
-    await expect(card).toContainText("Model");
-    await expect(card).toContainText("Path");
-    // Nothing of the row again: not its state word, not the folder's name alone, and its title only
-    // where the row cut it (the card then says it whole: the row has no tooltip of the browser's own).
-    await expect(card).not.toContainText(/needs you/i);
-    const cut = await r.locator(".k-row-title").evaluate((el) => el.scrollWidth > el.clientWidth + 1);
-    if (cut) await expect(card).toContainText("Clean the build output before the release");
-    else await expect(card).not.toContainText("Clean the build output before the release");
-    expect(await r.locator(".k-row-title").getAttribute("title")).toBeNull();
-    await expect(card.locator(".k-mark")).toHaveCount(0);
-    await shoot(page, "session-state-11-row-card");
-    await page.getByTestId("list-arrange").click();
-    await page.getByTestId("arrange-reset").click();
-    await page.keyboard.press("Escape");
   } finally {
     await drop(request, made);
   }
@@ -1110,7 +1084,9 @@ test("what made no progress is capped at three entries with the rest a count, ag
     await expect(strip).toBeVisible({ timeout: 15_000 });
     await expect(strip.getByTestId("stuck-item")).toHaveCount(3);
     await expect(strip.getByTestId("stuck-more")).toHaveText(`+${total - 3} more`);
-    await expect(strip.locator("h2")).toContainText(String(total));
+    // The head is the group's name and how many are in it.
+    await expect(strip.locator("h2")).toContainText("Not moving");
+    await expect(strip.locator("h2 .k-stuck-n")).toHaveText(String(total));
     expect(await strip.evaluate((el) => el.getBoundingClientRect().height), "the band takes about five rows").toBeLessThan(5.5 * 24 + 16);
     await shoot(page, "session-state-05-stuck-capped");
     await strip.getByTestId("stuck-more").click();
@@ -1118,7 +1094,9 @@ test("what made no progress is capped at three entries with the rest a count, ag
     // The coordinator is one entry for both its agents; they are not entries of their own.
     const folded = strip.locator(`[data-session="${lead}"]`);
     await expect(folded).toHaveAttribute("data-agents", "2");
-    await expect(folded.getByTestId("stuck-agents")).toHaveText("2 agents");
+    // The row has no count of its agents: its tooltip has a line for each.
+    await expect(folded.getByTestId("stuck-agents")).toHaveCount(0);
+    await expect.poll(async () => ((await folded.getAttribute("title")) ?? (await folded.getAttribute("data-tip")) ?? "").split("\n").filter((l) => l.includes("agent of")).length).toBe(2);
     await expect(strip.locator("[data-testid=stuck-item]", { hasText: "Quiet worker" })).toHaveCount(0);
     await shoot(page, "session-state-06-stuck-all");
     await strip.getByTestId("stuck-more").click();

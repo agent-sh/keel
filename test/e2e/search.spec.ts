@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, shoot, showArchived } from "./shots.ts";
 
 // Feature: the palette finds what was said in any session and opens the
 // session at that message.
@@ -133,7 +133,7 @@ test("search commands, outputs, files and archived titles", async ({ page, reque
   await shoot(page, "search-05-sidebar-folders");
   await page.getByTestId("tag-filter").getByRole("button", { name: `t${tag}` }).click();
   await expect(page.getByTestId("session-list")).toContainText(`Near ${tag}`);
-  await page.getByTestId("tab-archived").click();
+  await showArchived(page, true);
   await expect(page.getByTestId("session-list")).toContainText(`École ${tag}`);
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;

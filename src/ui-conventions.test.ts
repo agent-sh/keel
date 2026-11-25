@@ -677,12 +677,12 @@ const TEST_ID_PARTS: Record<string, string[]> = {
   "components/automation/Lane.tsx": ["l.key"], "components/ElsewherePanel.tsx": ["g.id"],
   "components/ExperimentsPanel.tsx": ["m"], "components/HeavyPool.tsx": ["r.state"], "components/Pictures.tsx": ["side"],
   "components/HomeWatch.tsx": ["p.w"], "components/ImportSheet.tsx": ["h.harness"],
-  "components/ListArrange.tsx": ["g", "l.v", "s.v"], "components/LogsSettings.tsx": ["id"],
+  "components/ListArrange.tsx": ["g", "s.v"], "components/LogsSettings.tsx": ["id"],
   "components/NewModels.tsx": ["k", "r"], "components/ObservabilityPanel.tsx": ["g.metric"], "components/Panes.tsx": ["n"],
   "components/PermissionMenu.tsx": ["m.id", "p.id"], "components/ProviderModels.tsx": ["k"], "components/QuestionCard.tsx": ["s.scope"],
   "components/ResumeFrom.tsx": ["v"], "components/SessionHeader.tsx": ["a.id"],
   "components/SessionPanel.tsx": ["x.id"], "components/SessionUsage.tsx": ["k"],
-  "components/Settings.tsx": ["Math.round(v * 100)"], "components/Sidebar.tsx": ["c.kind", "w"],
+  "components/Settings.tsx": ["Math.round(v * 100)"], "components/Sidebar.tsx": ["w"],
   "components/SidePanel.tsx": ["p.id"], "components/surfaces/kit.tsx": ["a.id", "kind", "v"],
   "components/surfaces/PluginUnits.tsx": ["testid"], "components/TerminalPanel.tsx": ["f"],
   "components/TimelinePanel.tsx": ['v || "all"'], "components/Transcript.tsx": ["a.id"],
@@ -813,8 +813,8 @@ function stateHues(styles: string): string[] {
       for (const token of [`st-${state}`, `st-${state}-ink`, ...(state === "need" ? ["st-need-fill"] : [])]) {
         const got = resolveOklch(vars, token);
         if (!got) { out.push(`${theme}: --${token} is not a color`); continue; }
-        // Done is the quiet grey: colour is for what needs the owner, failed and at work, so its tokens have none.
-        if (state === "done") { if (got.c >= 0.04) out.push(`${theme}: --${token} is a colour (chroma ${got.c}), done is quiet`); continue; }
+        // Done's mark is its dot's green; its word stays the quiet ink (a list of Done words is not a wall of green).
+        if (token === "st-done-ink") { if (got.c >= 0.04) out.push(`${theme}: --${token} is a colour (chroma ${got.c}), done's word is quiet`); continue; }
         const d = Math.abs(got.h - want.h) % 360;
         if (Math.min(d, 360 - d) >= 15 || got.c < 0.04) out.push(`${theme}: --${token} is hue ${got.h} (chroma ${got.c}), its dot ${want.h}`);
       }
@@ -964,7 +964,7 @@ test("each check lets ordinary edits through", () => {
   expect(segmented(tsx('const first = el.querySelector(\'[role="radio"]\');'), [])).toEqual([]);
   expect(shared(tsx('<Switch.Root\n  checked={on}\n  className="k-switch"><Switch.Thumb className="k-switch-thumb" /></Switch.Root>\n<h3 className="k-label mt-2">Tools</h3>\n<span className="rounded-xs bg-sunken px-1 text-micro font-medium text-muted">tag</span>'))).toEqual([]);
   // A state's token that leaves its dot's hue is refused, one that follows it is let through; a color written in a component is refused, a mask's black is not.
-  const palette = (need: string, ink: string) => `:root { --dot-need: oklch(0.8 0.17 88); --dot-need-edge: oklch(0.55 0.12 80); --dot-work: oklch(0.56 0.19 255); --dot-fail: oklch(0.55 0.2 27); --dot-done: oklch(0.56 0.015 255); --st-need: ${need}; --st-need-ink: ${ink}; --st-need-fill: var(--dot-need); --st-work: var(--dot-work); --st-work-ink: oklch(0.47 0.15 255); --st-wait: var(--st-work); --st-fail: var(--dot-fail); --st-fail-ink: var(--dot-fail); --st-done: var(--dot-done); --st-done-ink: oklch(0.4 0.02 258); }`;
+  const palette = (need: string, ink: string) => `:root { --dot-need: oklch(0.8 0.17 88); --dot-need-edge: oklch(0.55 0.12 80); --dot-work: oklch(0.56 0.19 255); --dot-fail: oklch(0.55 0.2 27); --dot-done: oklch(0.5 0.13 150); --st-need: ${need}; --st-need-ink: ${ink}; --st-need-fill: var(--dot-need); --st-work: var(--dot-work); --st-work-ink: oklch(0.47 0.15 255); --st-wait: var(--st-work); --st-fail: var(--dot-fail); --st-fail-ink: var(--dot-fail); --st-done: var(--dot-done); --st-done-ink: oklch(0.4 0.02 258); }`;
   expect(stateHues(palette("var(--dot-need-edge)", "oklch(0.46 0.1 82)"))).toEqual([]);
   expect(stateHues(palette("var(--dot-need-edge)", "oklch(0.46 0.2 295)"))).toHaveLength(2);
   expect(ownColors(tsx('<i style={{ color: "oklch(0.5 0.2 295)" }} className="text-violet-500" />'), css(".k-a { color: #7c3aed; background: rgb(1 2 3); mask-image: linear-gradient(#000, transparent); box-shadow: 0 1px oklch(0 0 0 / 0.2); }"))).toHaveLength(4);

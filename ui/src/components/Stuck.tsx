@@ -59,7 +59,6 @@ const SAID = (i: Item) => (i.what === "stream" ? "no output" : i.what === "model
 const TIP = (i: Item) => `${i.s.title || "New session"}${i.parent ? `, agent of ${i.parent.title || "a session"}` : ""}: ${SAID(i)}`;
 // The entry's dot is its session's own state: the session's, else the first agent's when only an agent is stuck.
 const st = (g: StuckGroup) => (g.own ?? g.agents[0]!).st;
-const agentsWord = (n: number) => `${n} ${n === 1 ? "agent" : "agents"}`;
 
 export function StuckStrip({ open }: { open: boolean }) {
   const items = useStuck();
@@ -85,7 +84,6 @@ export function StuckStrip({ open }: { open: boolean }) {
           <Mark w={st(g).watch} st={st(g)} />
           <span className="k-row-main"><span className="k-row-title">{g.s.title || "New session"}</span></span>
           <span className="k-row-end">
-            {g.agents.length > 0 && <span className="k-stuck-agents" data-testid="stuck-agents">{agentsWord(g.agents.length)}</span>}
             <span className="k-row-time">{span(g.elapsed)}</span>
           </span>
         </button>

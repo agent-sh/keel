@@ -26,7 +26,8 @@ test("side panel, Errors, Inbox, Loops and Settings share one container grammar"
     const behind = (x: Element | null) => { for (let p = x; p; p = p.parentElement) { const c = getComputedStyle(p).backgroundColor; if (!/, 0\)$|\/ 0\)$|transparent/.test(c)) return c; } return "none"; };
     const head = el.querySelector(".k-surface-head");
     const title = el.querySelector(".k-surface-title");
-    const close = el.querySelector(".k-surface-close");
+    // The close button is the head's last (the side panel's pop-out wears the same button before it).
+    const close = [...el.querySelectorAll(".k-surface-close")].at(-1) ?? null;
     // The band is the top border of the surface, or of a page's head.
     const banded = [el, head].find((x) => x && px(getComputedStyle(x).borderTopWidth) > 2);
     const b = banded ? getComputedStyle(banded) : null, t = title ? getComputedStyle(title) : null, h = head ? getComputedStyle(head) : null;
@@ -67,7 +68,9 @@ test("side panel, Errors, Inbox, Loops and Settings share one container grammar"
     expect(new Set(names.map((n) => got[n]![key])).size, `${key}: ${names.map((n) => got[n]![key]).join(" | ")}`).toBe(1);
   }
   expect(got.panel!.band).not.toBe("none");
-  expect(got.panel!.title).toContain("Martian Mono");
+  // A surface's name is in the text face, as a heading: the narrow mono is for a call sign and a key only.
+  expect(got.panel!.title).not.toContain("Martian Mono");
+  expect(got.panel!.title).toContain("Plex Sans");
   // The four that close: the same button, at the head's right end.
   const closing = ["panel", "errors", "inbox", "loops"] as const;
   expect(new Set(closing.map((n) => got[n]!.close)).size, closing.map((n) => got[n]!.close).join(" | ")).toBe(1);

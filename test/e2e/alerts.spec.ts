@@ -304,16 +304,21 @@ test("alerts: agents that fail are one alert a cause, and their coordinator coun
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto("/");
+  // How many failed the home's headline counts before (none: no count).
+  const failedHead = async () => ((await page.getByTestId("home-count-fail").count()) ? Number((await page.getByTestId("home-count-fail").getAttribute("data-count")) ?? 0) : 0);
+  // (Read once the page holds the sessions: until then the headline asks what to work on.)
+  await expect(page.getByTestId("home-watch")).not.toHaveText("What should we work on?");
+  const failedBefore = await failedHead();
   const spawn = (i: number) => ({ name: "spawn_agent", input: { message: `Billing lane ${i}\nscript:billing`, isolation: "none" } });
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([spawn(1), spawn(2), spawn(3)])}` } });
   await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as any[]).filter((a) => a.status === "failed").length, { timeout: 60_000 }).toBe(3);
   const mine = async () => ((await (await request.get("/api/alerts")).json()).alerts as any[]).filter((a) => a.session_id === session.id && a.kind === "failed");
   await expect.poll(async () => (await mine()).map((a) => a.title), { timeout: 30_000 }).toEqual(["Coordinator of three: 3 agents failed: billing"]);
-  // Counted as Failed on every counter of the screen, with one number: its home row, its list row, the two counts.
+  // Counted as Failed on every counter of the screen: its home row, its list row, and the home's headline, one more than before.
   await expect(page.locator(`[data-testid="session-row"][data-session="${session.id}"]`)).toHaveAttribute("data-watch", "fail", { timeout: 30_000 });
   await expect(page.locator(`[data-testid="home-session"][data-session="${session.id}"]`)).toHaveAttribute("data-watch", "fail");
-  const headline = Number((await page.getByTestId("home-count-fail").textContent())?.match(/\d+/)?.[0]);
-  await expect(page.getByTestId("sum-fail")).toHaveText(new RegExp(`^\\s*${headline}\\s*failed`, "i"));
+  await expect(page.getByTestId("home-count-fail")).toContainText(/failed/i);
+  await expect.poll(failedHead).toBe(failedBefore + 1);
   await shoot(page, "alerts-11-agents-failed");
   // Looked at (opened from its home row, at the agent that failed last, its failure in the head): it reads as itself again.
   const failedAgents = ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { session_id: string }[]).map((a) => a.session_id);

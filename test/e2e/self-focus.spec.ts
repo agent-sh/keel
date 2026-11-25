@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
+import { showArchived } from "./shots.ts";
 
 // Feature: what focuses by itself never takes the keyboard from the owner.
 // The message box takes the keyboard as its page or its session opens, and it
@@ -136,7 +137,7 @@ test("a key pressed while a session is opening leaves the keyboard for its box, 
     await expect(box).toBeFocused();
 
     // A press on the row, then Shift alone while the session is read: the box takes the keyboard when it is drawn.
-    await page.getByTestId("tab-archived").click();
+    await showArchived(page, true);
     await rowOf(page, one).click();
     await page.keyboard.press("Shift");
     expect(await box.count(), "the message box is not drawn yet").toBe(0);
@@ -158,7 +159,7 @@ test("a key pressed while a session is opening leaves the keyboard for its box, 
     await page.unrouteAll({ behavior: "ignoreErrors" });
 
     // Enter on the row of a session already in the page: its box opens at once, with no new line from that Enter.
-    await page.getByTestId("tab-active").click();
+    await showArchived(page, false);
     await rowOf(page, open).focus();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(new RegExp(`/s/${open}$`));

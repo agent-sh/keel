@@ -2,7 +2,7 @@ import type { APIRequestContext, Page } from "./isolate.ts";
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { openPanel, shoot, tabInto, setPanes } from "./shots.ts";
+import { openPanel, setTheme, shoot, tabInto, setPanes } from "./shots.ts";
 
 // Feature: the layout is the owner's. The number of panes is the one picked
 // in the rail (1, 2, 3, more when the window holds them) and Keel never adds
@@ -334,8 +334,8 @@ test("pane count and settings choices by keyboard", async ({ page, request }) =>
   // Set while the keyboard is in the group (Ctrl 0), the focus goes to the size now in use.
   await page.keyboard.press("Control+0");
   await expect(at(sizes)).toHaveAttribute("data-testid", "text-size-100");
-  // The rail's theme button changes the theme: Tab into the group lands on the new one.
-  await page.getByTestId("theme-toggle").click();
+  // The palette's command changes the theme: Tab into the group lands on the new one.
+  await setTheme(page, "dark");
   await expect.poll(dark).toBe(true);
   await tabInto(page, theme);
   await expect(at(theme)).toHaveText("Dark");

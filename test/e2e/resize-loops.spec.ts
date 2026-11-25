@@ -71,8 +71,8 @@ test("a long session with many agents raises no window error while it streams an
     await page.mouse.move(700, 400);
     for (let i = 0; i < 40; i++) { await page.mouse.wheel(0, -700); await page.waitForTimeout(60); if (i % 10 === 5) await page.setViewportSize({ width: 1500 + (i % 20) * 12, height: 900 }); }
     for (let i = 0; i < 40; i++) { await page.mouse.wheel(0, 700); await page.waitForTimeout(60); if (i % 10 === 5) await page.setViewportSize({ width: 1920, height: 1040 - (i % 20) * 10 }); }
-    // The list's edge is dragged out and back in small steps: the line of counts and the foot under the list
-    // fit their words to each width they pass.
+    // The list's edge is dragged out and back in small steps: the rows and the foot under the list fit their
+    // words to each width they pass.
     const grip = (await page.getByTestId("list-grip").boundingBox())!;
     await page.mouse.move(grip.x + grip.width / 2, 500);
     await page.mouse.down();
@@ -81,13 +81,13 @@ test("a long session with many agents raises no window error while it streams an
     await page.mouse.up();
     await page.evaluate(() => localStorage.removeItem("keel.listW"));
     // The text size changes, and the window takes widths at random, as fast as the page lays out: every width
-    // the list's line and foot change their words at is passed, many times, in both directions.
+    // the list's rows and foot change their words at is passed, many times, in both directions.
     let seed = 7;
     const rand = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
     for (const scale of ["1.5", "1", "1.25"]) {
       await page.evaluate((v) => localStorage.setItem("keel.textScale", v), scale);
       await page.reload();
-      await expect(page.getByTestId("list-summary")).toBeVisible();
+      await expect(page.getByTestId("session-list")).toBeVisible();
       for (let i = 0; i < 70; i++) { await page.setViewportSize({ width: 330 + Math.floor(rand() * 1200), height: 900 }); await page.waitForTimeout(Math.floor(rand() * 40)); }
     }
     await page.evaluate(() => localStorage.removeItem("keel.textScale"));

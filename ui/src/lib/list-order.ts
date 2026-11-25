@@ -15,13 +15,12 @@
 // hand has left. What the owner did themselves (archived a row, opened a new
 // session) is not held.
 //
-// A row is one line by default: the mark, the title, the time, and the reason
-// where the title leaves it room. Two lines, with the reason always there, is
-// a choice. Either way every row of the list is as high as every other.
+// A row is one line: the mark, the title, the time, and the reason where the
+// title leaves it room. Every row of the list is as high as every other.
 import { LIST_TIER, WATCH_RANK, type Watch } from "../../../src/core/watch.ts";
 
-export type Arrange = { group: "project" | "mine" | "folder" | "flat"; sort: "created" | "recent" | "name" | "state"; hideDone: boolean; lines: "one" | "two" };
-export const DEFAULT: Arrange = { group: "folder", sort: "created", hideDone: false, lines: "one" };
+export type Arrange = { group: "project" | "mine" | "folder" | "flat"; sort: "created" | "recent" | "name" | "state"; hideDone: boolean };
+export const DEFAULT: Arrange = { group: "folder", sort: "created", hideDone: false };
 
 // What the browser keeps: the arrangement, the version of its defaults, and
 // whether the note about the changed default is still to be read.
@@ -45,7 +44,6 @@ export function readArrange(raw: string | null, used: boolean): Kept {
       group: pick(o.group, ["project", "mine", "folder", "flat"] as const, DEFAULT.group),
       sort: !now && sort === "recent" ? DEFAULT.sort : sort,
       hideDone: o.hideDone === true,
-      lines: pick(o.lines, ["one", "two"] as const, DEFAULT.lines),
     },
     // Told once to whom the order changed under: they had the old default (recent activity). One who
     // chose by state keeps it, and by name rows already kept their place.

@@ -245,11 +245,14 @@ test("a row red for its agents says how many failed, and a calm list says a time
     });
     expect(said.twice, "a quiet row says the time the quiet row above it said").toEqual([]);
     expect(said.hidden).toBeGreaterThan(0);
-    // A row with news keeps its time in the column, by the same rule (its title's ink says it is new, no dot).
+    // A row with news has its white dot in the time's place: the time gives way to it (the tooltip keeps it).
     await request.post(`/api/sessions/${two}/marks`, { data: { unread: true } });
     await expect(row(page, two)).toHaveAttribute("data-unread", "true");
+    await expect(row(page, two)).toHaveAttribute("data-news", "true");
     await expect(row(page, two).getByTestId("unread-dot")).toHaveCount(0);
+    await expect(row(page, two).getByTestId("row-new")).toBeVisible();
     await expect(row(page, two).getByTestId("row-time")).toHaveCount(1);
+    await expect(row(page, two).getByTestId("row-time")).toBeHidden();
     await expect(row(page, two).getByTestId("row-time")).toHaveAttribute("title", /\d/);
     // A row at work with news keeps its clock alone: the right column holds one kind of thing in every state
     // (a word for who it waits on, the clock of a step, or a time).
@@ -266,12 +269,20 @@ test("a row red for its agents says how many failed, and a calm list says a time
     })));
     await expect.poll(async () => (await kinds()).filter((r) => r.kinds.length > 1)).toEqual([]);
     expect((await kinds()).find((r) => r.id === busy)!.kinds).toEqual(["row-time"]);
-    // The line above the list counts news as the rows show it: the number of rows with the title's weight. A row at work keeps its
-    // clock in the end slot and its news is in "new" too.
-    const news = () => page.evaluate(() => document.querySelectorAll<HTMLElement>('[data-testid="session-row"][data-news]').length);
-    await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the rows that say they are new" }).toBe(await news());
+    // Every row with news shows its dot, and no other row does. A row at work keeps its clock in the end slot
+    // and its news is the dot beside it; the Inbox says there is news.
+    const news = () => page.evaluate(() => {
+      const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="session-row"]')];
+      const dot = (r: HTMLElement) => { const d = r.querySelector<HTMLElement>('[data-testid="row-new"]'); return !!d && d.getBoundingClientRect().width > 0; };
+      return { news: rows.filter((r) => r.hasAttribute("data-news")).length, dots: rows.filter(dot).length, odd: rows.filter((r) => r.hasAttribute("data-news") !== dot(r)).map((r) => r.dataset.session) };
+    });
+    await expect.poll(async () => (await news()).odd, { message: "the rows that say they are new and the rows that show the dot" }).toEqual([]);
+    expect((await news()).dots).toBeGreaterThan(0);
+    await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true");
     await expect(row(page, busy)).toHaveAttribute("data-news", "true");
     await expect(row(page, busy).getByTestId("row-new")).toHaveText("New");
+    await expect(row(page, busy).getByTestId("row-new")).toBeVisible();
+    await expect(row(page, busy).getByTestId("row-time")).toBeVisible();
     expect((await kinds()).find((r) => r.id === coord)!.kinds).toHaveLength(1);
     await shoot(page, "rest-bar-04-rows");
   } finally {

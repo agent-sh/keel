@@ -83,13 +83,13 @@ test("a page hears the whole stream of the session it shows, and of the others w
   await shoot(page, "page-scope-01-one-shown");
 
   // What the list shows of the others is as fresh as before: a new title, a question that waits
-  // (the row, the count above the list, the inbox), each within a second of the daemon having it.
+  // (the row, the tab's title, the inbox), each within a second of the daemon having it.
   await request.patch(`/api/sessions/${third}`, { data: { title: "Third: renamed while it works" } });
   await expect(row(page, third)).toContainText("Third: renamed while it works", { timeout: 1_000 });
   await request.post(`/api/sessions/${asker}/messages`, { data: { text: calls([question]) } });
   await expect.poll(async () => (await (await request.get(`/api/sessions/${asker}/questions`)).json()).pending.length, { timeout: 30_000 }).toBe(1);
   await expect(row(page, asker)).toHaveAttribute("data-watch", "need", { timeout: 1_000 });
-  await expect(page.getByTestId("sum-need")).toContainText("1", { timeout: 1_000 });
+  await expect(page).toHaveTitle(/^\(1\) /, { timeout: 1_000 });
   await expect(row(page, asker)).toHaveAttribute("data-unread", "true", { timeout: 1_000 });
   await expect(page.getByTestId("inbox-count")).toHaveText("1", { timeout: 1_000 });
   // The alert came by its frame, with the counts: the list of alerts was not read for it.

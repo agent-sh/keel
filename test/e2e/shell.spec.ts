@@ -175,7 +175,7 @@ test("shell: the page says the daemon is away unless the app's title bar does, i
   test.skip(!(await scripted(request)), "requires the scripted provider");
   const a = await make(request, "Shell: the socket is cut");
   await expect.poll(() => ended(request, a.id), { timeout: 60_000 }).toBe(true);
-  // A session that needs the owner, so the list counts one.
+  // A session that needs the owner, so the list has a row that calls them.
   const q = await create(request, "Shell: a question waits", folder("shell-away"));
   await ask(request, q, "question");
   const live: { ws?: import("@playwright/test").WebSocketRoute; cut: boolean } = { cut: false };
@@ -190,6 +190,7 @@ test("shell: the page says the daemon is away unless the app's title bar does, i
     await expect(page.getByTestId("transcript")).toBeVisible();
     const band = page.getByTestId("daemon-away");
     await expect(band).toHaveCount(0);
+    await expect(page.locator(`[data-testid="session-list"] [data-testid="session-row"][data-session="${q}"]`)).toHaveAttribute("data-watch", "need", { timeout: 30_000 });
 
     live.cut = true;
     await live.ws!.close({ code: 4000, reason: "cut by the test" });
@@ -203,14 +204,10 @@ test("shell: the page says the daemon is away unless the app's title bar does, i
     // And the rest of the page says the state in the bar's words, not a word of its own.
     await expect(page.getByTestId("sync-state")).toHaveText("Keel is not running");
     await expect(page.locator(".k-logo")).toHaveAttribute("title", "Keel is not running");
-    // The list's count of what needs the owner is as old as its rows: it pales with them.
-    const need = page.getByTestId("sum-need");
-    await expect(need).toBeVisible();
-    // The counts carry no marks since the rows' marks say each state: the count's words pale to the muted ink.
-    const inkOf = (sel: string) => need.locator(sel).evaluate((el) => getComputedStyle(el).color);
-    const muted = await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--muted)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; });
-    await expect.poll(() => inkOf(".k-sum-n")).toBe(muted);
-    await expect.poll(() => inkOf(".k-sum-word")).toBe(muted);
+    // The list is as old as its rows: the mark of the row that needs the owner pales and stops.
+    const mark = page.locator(`[data-testid="session-list"] [data-testid="session-row"][data-session="${q}"] .k-mark`).first();
+    await expect(mark).toBeVisible();
+    await expect.poll(() => mark.evaluate((el) => getComputedStyle(el).opacity)).toBe("0.45");
     await shoot(page, "shell-05-app-says-not-running");
     // The app sees the daemon back while the page is still cut off: the page says so again.
     await tell(page, { daemon: "up" });

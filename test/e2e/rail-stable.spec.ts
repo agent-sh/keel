@@ -1,12 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, showArchived } from "./shots.ts";
 
 // Feature: the session list stays where the owner left it. By default a row's
 // place comes from when its session was made, so no turn that starts or ends
-// anywhere moves it; what a session needs is its mark and a count on the
-// line above the list, where a press goes to the next one's row and marks it.
-// A row is one line (two is a choice) and as high at rest as at work. Under
+// anywhere moves it; what a session needs is its mark, counted at the list's
+// foot, and a row out of view that needs the owner is named there, where a
+// press goes to its row and marks it. A row is one line and as high at rest
+// as at work. Under
 // the pointer or the keyboard nothing moves in any order: a session that
 // arrives waits at the list's end and one that leaves stays as a dimmed row
 // until the hand has left. The owner's own new session takes its place at
@@ -277,67 +278,69 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     await run;
   }
 
-  // 6. What needs the owner is never out of reach: counted above the list, one press from its row,
-  // also when the row is scrolled away.
-  await page.setViewportSize({ width: 1920, height: 620 });
-  await expect(page.getByTestId("sum-need")).toHaveText(/1\s*needs you/i);
-  await expect(page.getByTestId("sum-fail")).toHaveText(/1\s*failed/i);
-  await expect(page.getByTestId("sum-need")).toBeInViewport({ ratio: 1 });
-  // The counts are one stop for Tab: the arrows move between them.
-  const bar = page.getByTestId("list-summary");
-  await expect(bar).toHaveAttribute("role", "toolbar");
-  await expect(bar.locator('button[tabindex="0"]')).toHaveCount(1);
-  await page.getByTestId("sum-need").focus();
-  await page.keyboard.press("ArrowRight");
-  await expect(page.getByTestId("sum-fail")).toBeFocused();
-  await page.keyboard.press("End");
-  await expect(bar.locator("button:not([hidden])").last()).toBeFocused();
-  await page.keyboard.press("Home");
-  await expect(page.getByTestId("sum-need")).toBeFocused();
-  await expect(bar.locator('button[tabindex="0"]')).toHaveCount(1);
-  await page.getByTestId("composer").focus();
+  // 6. What needs the owner is never out of reach: counted at the list's foot and in the tab's title,
+  // named at the foot when its row is out of view, and one press from its row. The window is made short
+  // enough that the row of the session that needs the owner can be scrolled out of the list's box (rows
+  // are one line, and nothing stands above the list but the find).
+  const hideable = () => list.evaluate((nav, sid) => {
+    const r = nav.querySelector<HTMLElement>(`[data-session="${sid}"]`)!.getBoundingClientRect(), n = nav.getBoundingClientRect();
+    const top = r.top - n.top + nav.scrollTop;
+    return top + r.height + 2 <= nav.scrollHeight - nav.clientHeight || top >= nav.clientHeight;
+  }, ids.need!);
+  for (const height of [620, 560, 500, 440, 380]) {
+    await page.setViewportSize({ width: 1920, height });
+    if (await hideable()) break;
+  }
+  expect(await hideable(), "the list scrolls past the row").toBe(true);
+  await expect(page.getByTestId("inbox-count")).toHaveText("1");
+  await expect(page.getByTestId("inbox-count")).toBeInViewport({ ratio: 1 });
+  await expect(page).toHaveTitle(/^\(1\) /);
+  await expect(row(ids.need!)).toHaveAttribute("data-watch", "need");
+  await expect(row(ids.fail!)).toHaveAttribute("data-watch", "fail");
   // A row has no tooltip of the browser's own: it would lie over the card beside the row, which says the title whole.
   expect(await row(ids.need!).evaluate((el) => [el, ...el.querySelectorAll(".k-row-title, .k-row-why")].map((x) => x.getAttribute("title")))).toEqual([null, null, null]);
+  // Scrolls the list so the row is out of its box: past its top where the list scrolls that far, else below its end.
   const hide = (id: string) => list.evaluate((nav, sid) => {
     const r = nav.querySelector<HTMLElement>(`[data-session="${sid}"]`)!.getBoundingClientRect(), n = nav.getBoundingClientRect();
-    nav.scrollTop = r.top - n.top + nav.scrollTop > nav.clientHeight ? 0 : nav.scrollHeight;
+    const top = r.top - n.top + nav.scrollTop;
+    nav.scrollTop = top + r.height + 2 <= nav.scrollHeight - nav.clientHeight ? top + r.height + 2 : 0;
   }, id);
+  const strip = page.getByTestId("need-strip");
   await hide(ids.need!);
   await expect(row(ids.need!)).not.toBeInViewport();
-  await page.getByTestId("sum-need").click();
-  await expect(row(ids.need!)).toBeFocused();
-  await expect(row(ids.need!)).toBeInViewport({ ratio: 1 });
+  await expect(strip.locator(`.k-need-name[data-session="${ids.need}"]`)).toBeVisible();
+  await page.getByTestId("composer").click();
+  // From the archive, where neither row is drawn: the strip names the first and keeps the other behind
+  // "+1", whose press shows the sessions again and goes to its row. The pane keeps its session.
+  await showArchived(page, true);
+  await expect(row(ids.need!)).toHaveCount(0);
+  await expect(strip.locator(`.k-need-name[data-session="${ids.need}"]`)).toBeVisible();
+  await expect(strip.getByTestId("need-strip-more")).toHaveText("+1");
+  await strip.getByTestId("need-strip-more").click();
+  await expect(page.getByTestId("archive-head")).toHaveCount(0);
+  await expect(row(ids.fail!)).toBeFocused();
+  await expect(row(ids.fail!)).toBeInViewport({ ratio: 1 });
   // It is marked for a moment, also after this press of the pointer (which shows no focus ring), and
   // stands in the middle of the list, not at its edge, where the list can be scrolled that far.
-  await expect(row(ids.need!)).toHaveAttribute("data-jump", "");
-  expect(await row(ids.need!).evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");
-  const place = await row(ids.need!).evaluate((el) => {
+  await expect(row(ids.fail!)).toHaveAttribute("data-jump", "");
+  expect(await row(ids.fail!).evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");
+  const place = await row(ids.fail!).evaluate((el) => {
     const nav = el.closest<HTMLElement>('[data-testid="session-list"]')!, r = el.getBoundingClientRect(), n = nav.getBoundingClientRect();
     return { off: Math.abs((r.top + r.bottom) / 2 - (n.top + n.bottom) / 2), room: n.height, atEnd: nav.scrollTop <= 1 || nav.scrollTop >= nav.scrollHeight - nav.clientHeight - 1 };
   });
   expect(place.atEnd || place.off < place.room / 4, `the row is ${Math.round(place.off)}px from the middle of a list ${Math.round(place.room)}px high`).toBe(true);
-  await expect(row(ids.need!)).not.toHaveAttribute("data-jump", "", { timeout: 5000 });
+  await expect(row(ids.fail!)).not.toHaveAttribute("data-jump", "", { timeout: 5000 });
   // Nothing was opened: the pane shows what it showed.
   await expect(page).toHaveURL(new RegExp(`/s/${ids.reader}$`));
-  await hide(ids.fail!);
+  await expect(page.locator("section.k-station")).toHaveAttribute("data-station", ids.reader!);
   await page.getByTestId("composer").click();
-  // By keyboard: the count is a button; pressed again with nothing else needing them, the same row.
-  await hide(ids.need!);
-  await page.getByTestId("sum-need").focus();
+  // By keyboard: "+1" is a button; pressed again with nothing else failed, the same row.
+  await showArchived(page, true);
+  await strip.getByTestId("need-strip-more").focus();
   await page.keyboard.press("Enter");
-  await expect(row(ids.need!)).toBeFocused();
-  await expect(row(ids.need!)).toBeInViewport({ ratio: 1 });
-  await page.getByTestId("sum-fail").click();
   await expect(row(ids.fail!)).toBeFocused();
   await expect(row(ids.fail!)).toBeInViewport({ ratio: 1 });
-  // From the archive: the count's press shows the sessions again and goes to the row. The pane keeps its session.
-  await page.getByTestId("tab-archived").click();
-  await expect(row(ids.need!)).toHaveCount(0);
-  await page.getByTestId("sum-need").click();
-  await expect(row(ids.need!)).toBeFocused();
-  await expect(page.getByTestId("tab-active")).toHaveAttribute("aria-selected", "true");
   await expect(page).toHaveURL(new RegExp(`/s/${ids.reader}$`));
-  await expect(page.locator("section.k-station")).toHaveAttribute("data-station", ids.reader!);
   await page.getByTestId("composer").focus();
   await page.setViewportSize({ width: 1920, height: 1040 });
 
@@ -437,7 +440,8 @@ test("with four panes the list is still titles, one line a session, and folds to
     await expect(page.getByTestId("look-bar")).toBeVisible();
     await expect(row(ids.need!).getByTestId("row-under")).toBeVisible();
     await expect(row(ids.work!).getByTestId("row-under")).toHaveCount(0);
-    await expect(page.getByTestId("sum-need")).toHaveText(/^1/);
+    await expect(page.getByTestId("inbox-count")).toHaveText("1");
+    await expect(page).toHaveTitle(/^\(1\) /);
     await shoot(page, "rail-stable-08-need-under-a-look");
 
     // Four panes at 1920: no room for the list at its width, room for titles.
@@ -465,13 +469,12 @@ test("with four panes the list is still titles, one line a session, and folds to
     for (const r of rows.filter((x) => x.reason)) expect(r.height, `the reason of "${r.title}" has a line of its own`).toBeLessThan(3 * rem);
     // The panes keep their narrowest width and nothing scrolls sideways for the list.
     expect(await fits()).toBe(true);
-    // Its words are whole: the filter's hint is the short one, and neither tab is cut.
+    // Its words are whole: the filter's hint is the short one.
     await expect(page.getByTestId("list-filter")).toHaveAttribute("placeholder", "Filter");
     expect(await page.getByTestId("list-filter").evaluate((el: HTMLInputElement) => { const c = document.createElement("canvas").getContext("2d")!; c.font = getComputedStyle(el).font; return c.measureText(el.placeholder).width <= el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft) - parseFloat(getComputedStyle(el).paddingRight); })).toBe(true);
-    for (const t of ["tab-active", "tab-archived"]) expect(await page.getByTestId(t).evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const w = r.getBoundingClientRect(), b = el.getBoundingClientRect(); return w.left >= b.left + 1 && w.right <= b.right - 1; }), `${t} keeps its word inside`).toBe(true);
-    // The bar's own controls are still in it: the toggle, New session, the filter, the tabs, the foot.
+    // The bar's own controls are still in it: the toggle, New session, the filter, the Arrange menu, the foot.
     const edge = (await side.boundingBox())!;
-    for (const t of ["rail-toggle", "new-session", "list-filter", "list-arrange", "tab-archived", "list-summary", "settings-button", "theme-toggle"]) {
+    for (const t of ["rail-toggle", "new-session", "list-filter", "list-arrange", "settings-button", "inbox-button", "errors-button"]) {
       const b = (await page.getByTestId(t).boundingBox())!;
       expect(b.x, t).toBeGreaterThanOrEqual(edge.x);
       expect(b.x + b.width, t).toBeLessThanOrEqual(edge.x + edge.width + 0.5);
@@ -492,20 +495,20 @@ test("with four panes the list is still titles, one line a session, and folds to
     await page.setViewportSize({ width: 1920, height: 1040 });
     await expect(side).toHaveAttribute("data-narrow", "true");
 
-    // The phone: the same two-line rows in the drawer.
+    // The phone: the same rows in the drawer.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${ids.reader}`);
     await page.getByTestId("show-sidebar").first().click();
     // The dot says it: the slot draws no word, and a reader has it.
     await expect(row(ids.need!).getByTestId("row-on")).toHaveText("Needs you");
-    await expect(page.getByTestId("sum-need")).toBeVisible();
+    await expect(row(ids.need!)).toBeVisible();
     await shoot(page, "rail-stable-05-phone");
   } finally {
     writeFileSync(day.gate, "");
   }
 });
 
-test("a count goes to a row that a fold hides and never changes a pane; what is unread is never folded away", async ({ page, request }) => {
+test("the foot's strip goes to a row that a fold hides and never changes a pane; what is unread is never folded away", async ({ page, request }) => {
   test.skip(!((await (await request.get("/api/models")).json()).models as { id: string }[]).some((m) => m.id === MODEL), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const root = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/folds-${Date.now().toString(36)}`;
   mkdirSync(root, { recursive: true });
@@ -535,37 +538,50 @@ test("a count goes to a row that a fold hides and never changes a pane; what is 
     await expect(row(oldest)).toHaveAttribute("data-unread", "true");
     await expect(row(quiet[1]!)).toHaveCount(0);
     await expect(list.locator(".k-more")).toHaveText("3 more");
-    await expect(page.getByTestId("sum-unread")).toHaveText(/^1/);
+    // Counted at the foot as news (the Inbox's ink), and the row says it with its white dot.
+    await expect(page.getByTestId("inbox-button")).toHaveAttribute("data-news", "true", { timeout: 30_000 });
+    await expect(row(oldest).getByTestId("row-new")).toBeVisible();
 
-    // One of the owner's folders, folded, holds a session that needs them: its head says so.
-    const asks = await mk("Clean the build output", "ask");
-    made.push(asks);
-    await send(asks, `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "rm -rf dist build" } }])}`);
-    await expect.poll(async () => ((await (await request.get("/api/state")).json()).states ?? {})[asks]?.watch, { timeout: 30_000 }).toBe("need");
+    // One of the owner's folders, folded, holds two sessions that need them: its head says so.
+    const asking: string[] = [];
+    for (const title of ["Clean the build output", "Clean the cache folder"]) {
+      const id = await mk(title, "ask");
+      made.push(id);
+      asking.push(id);
+      await send(id, `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "rm -rf dist build" } }])}`);
+    }
+    for (const id of asking) await expect.poll(async () => ((await (await request.get("/api/state")).json()).states ?? {})[id]?.watch, { timeout: 30_000 }).toBe("need");
     folder = (await (await request.post("/api/session-folders", { data: { name: "Chores" } })).json()).folder.id as string;
-    await request.patch(`/api/sessions/${asks}`, { data: { folder_id: folder } });
+    for (const id of asking) await request.patch(`/api/sessions/${id}`, { data: { folder_id: folder } });
     await request.patch(`/api/session-folders/${folder}`, { data: { collapsed: true } });
     await page.getByTestId("list-arrange").click();
     await page.getByTestId("arrange-group-mine").click();
     await page.keyboard.press("Escape");
     const head = list.locator(`[data-testid="folder-head"][data-folder="${folder}"]`);
     await expect(head).toBeVisible();
-    await expect(row(asks)).toHaveCount(0);
+    for (const id of asking) await expect(row(id)).toHaveCount(0);
     await expect(head.locator('.k-mark[data-watch="need"]')).toBeVisible();
+    // The list's foot names what the fold hides: the first by its title, the other behind "+1".
+    const strip = page.getByTestId("need-strip");
+    await expect(strip.locator(".k-need-name[data-session]")).toHaveCount(1);
+    expect(asking).toContain(await strip.locator(".k-need-name[data-session]").getAttribute("data-session"));
+    await expect(strip.getByTestId("need-strip-more")).toHaveText("+1");
     await shoot(page, "rail-stable-06-folded-head-mark");
-    // The count's press opens the fold for that row and puts the keyboard on it. Twice: the pane never changes.
-    for (let i = 0; i < 2; i++) {
-      await page.getByTestId("sum-need").click();
-      await expect(row(asks)).toBeFocused();
-      await expect(page).toHaveURL(new RegExp(`/s/${reader}$`));
-      await expect(page.locator("section.k-station")).toHaveAttribute("data-station", reader);
-    }
-    await expect(row(asks)).toHaveAttribute("data-jump", "");
+    // The press on "+1" opens the fold for the next one's row and puts the keyboard on it. The pane never changes.
+    await strip.getByTestId("need-strip-more").click();
+    const focused = () => page.evaluate(() => document.activeElement?.closest('[data-testid="session-list"] [data-testid="session-row"]')?.getAttribute("data-session") ?? null);
+    await expect.poll(focused).not.toBeNull();
+    const jumped = (await focused())!;
+    expect(asking, "the keyboard is on a row the fold held").toContain(jumped);
+    await expect(row(jumped)).toBeFocused();
+    await expect(page).toHaveURL(new RegExp(`/s/${reader}$`));
+    await expect(page.locator("section.k-station")).toHaveAttribute("data-station", reader);
+    await expect(row(jumped)).toHaveAttribute("data-jump", "");
     await shoot(page, "rail-stable-07-jumped-row");
     // What they chose for the folder is kept: it folds again when they have left the list.
     await page.getByTestId("composer").focus();
     await page.mouse.move(1200, 500);
-    await expect(row(asks)).toHaveCount(0, { timeout: 8000 });
+    await expect(row(jumped)).toHaveCount(0, { timeout: 8000 });
     expect(((await (await request.get("/api/session-folders")).json()).folders as { id: string; collapsed: boolean }[]).find((f) => f.id === folder)?.collapsed).toBe(true);
     await page.getByTestId("list-arrange").click();
     await page.getByTestId("arrange-reset").click();

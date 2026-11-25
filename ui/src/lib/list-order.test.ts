@@ -79,12 +79,12 @@ test("the line above the list counts working and waiting as the home does: a com
 
 test("an arrangement kept before the default changed moves to it once, and says so", () => {
   // Kept by the version before: sorted by recent activity, whether chosen or not.
-  expect(readArrange(JSON.stringify({ group: "flat", sort: "recent", hideDone: true }), true)).toEqual({ arrange: { group: "flat", sort: "created", hideDone: true, lines: "one" }, note: true });
+  expect(readArrange(JSON.stringify({ group: "flat", sort: "recent", hideDone: true }), true)).toEqual({ arrange: { group: "flat", sort: "created", hideDone: true }, note: true });
   // Another order was their choice: kept, and nothing changed for them, so nothing is said.
-  expect(readArrange(JSON.stringify({ group: "folder", sort: "state", hideDone: false }), true)).toEqual({ arrange: { group: "folder", sort: "state", hideDone: false, lines: "one" }, note: false });
+  expect(readArrange(JSON.stringify({ group: "folder", sort: "state", hideDone: false }), true)).toEqual({ arrange: { group: "folder", sort: "state", hideDone: false }, note: false });
   expect(readArrange(JSON.stringify({ group: "flat", sort: "name", hideDone: false }), true).note).toBe(false);
-  // Two lines a row is a choice that is kept.
-  expect(readArrange(keep({ arrange: { ...DEFAULT, lines: "two" }, note: false }), true).arrange.lines).toBe("two");
+  // A row of two lines was a choice once: a kept one reads as the one line every row has.
+  expect(readArrange(JSON.stringify({ ...DEFAULT, lines: "two", v: 2 }), true).arrange).toEqual(DEFAULT);
   // Nothing kept: the default; a browser that ran Keel before is told, a first visit is not.
   expect(readArrange(null, true)).toEqual({ arrange: DEFAULT, note: true });
   expect(readArrange(null, false)).toEqual({ arrange: DEFAULT, note: false });

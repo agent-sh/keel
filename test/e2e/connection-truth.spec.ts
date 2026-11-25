@@ -571,6 +571,9 @@ test("connection truth: a session on another machine is followed like one here, 
   const farUrl = await farLink.listen();
   const name = `farbox-${tag}`;
   let machine = "";
+  // A session here too, so the list has a line over each machine's sessions (it draws them only for two
+  // machines or more) and the far machine's line can say it is offline.
+  const { session: here } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Here ${tag}` } })).json();
   // This page's own network, with a hand on it.
   const net = await holeOn(page);
   try {
@@ -620,8 +623,8 @@ test("connection truth: a session on another machine is followed like one here, 
     await expect(page).toHaveTitle(/^\(1\) /);
     expect((await mine()).map((a) => a.kind).sort()).toEqual(["finished", "question"]);
 
-    // ---- that machine's daemon stops: said in the list's count within seconds, at a laptop's size
-    // too, by the machine's name, and nothing in the list moves for it.
+    // ---- that machine's daemon stops: said in the list within seconds, at a laptop's size too: its
+    // rows say Offline, the line over its sessions names the machine, and nothing in the list moves for it.
     await page.setViewportSize({ width: 1440, height: 900 });
     const listAt = await top(page, "session-list"), was = await rowAt();
     // The home view counts it among what needs the owner, and lists it.
@@ -631,18 +634,21 @@ test("connection truth: a session on another machine is followed like one here, 
     await expect(home.getByTestId("home-asof")).toHaveCount(0);
     const needed = await needs();
     expect(needed).toBeGreaterThanOrEqual(1);
-    // The list's line and the tab's title count it too: the same number everywhere.
-    const listed = async () => ((await page.getByTestId("sum-need").count()) ? Number((await page.getByTestId("sum-need").locator(".k-sum-n").innerText()).match(/\d+/)![0]) : 0);
+    // The Inbox's count and the tab's title count it too: the same number everywhere.
+    const listed = async () => ((await page.getByTestId("inbox-count").count()) ? Number((await page.getByTestId("inbox-count").innerText()).match(/\d+/)![0]) : 0);
     const titled = async () => Number((await page.title()).match(/^\((\d+)\) /)?.[1] ?? 0);
     expect([await listed(), await titled()]).toEqual([needed, needed]);
     const s0 = Date.now();
     far.proc.kill("SIGKILL");
     await exited(far.proc);
-    const count = page.getByTestId("sum-offline");
+    // (The row's word for it: shown while the machine is out of reach, and held a while after it is heard again.)
+    const count = row(page, id).getByTestId("row-time").filter({ hasText: /^Offline$/ });
     await expect(count).toBeVisible({ timeout: 8000 });
     const shownAfter = Date.now() - s0;
-    await expect(count).toContainText(`${name} offline`);
-    await expect(count).toHaveAttribute("title", new RegExp(`${name} since \\d\\d:\\d\\d`));
+    const sep = page.getByTestId("session-list").locator(`[data-testid="machine-sep"][data-machine="${machine}"]`);
+    await expect(sep).toHaveAttribute("data-reach", "offline");
+    await expect(sep).toContainText(name);
+    await expect(sep).toContainText("Offline");
     const box = (await count.boundingBox())!;
     expect(box.y + box.height).toBeLessThanOrEqual(900);
     expect([await top(page, "session-list"), await rowAt()]).toEqual([listAt, was]);
@@ -659,7 +665,7 @@ test("connection truth: a session on another machine is followed like one here, 
     // Nothing can be answered there: the row's button only opens it, and does not lead.
     await expect(home.getByTestId("home-review")).toHaveText("Open");
     await expect(home.getByTestId("home-review")).toHaveAttribute("data-quiet", "true");
-    // The list's line and the tab's title leave it out as well: it is counted as offline, once.
+    // The Inbox's count and the tab's title leave it out as well.
     await expect.poll(async () => [await listed(), await titled()]).toEqual([needed - 1, needed - 1]);
     expect(await home.locator(".k-home-row-mark").evaluate((el) => [getComputedStyle(el).opacity, getComputedStyle(el.querySelector(".k-mark")!).animationPlayState])).toEqual(["0.45", "paused"]);
     await shoot(page, "connection-truth-04-far-offline-1440");
@@ -777,6 +783,7 @@ test("connection truth: a session on another machine is followed like one here, 
     console.log(`CONNECTION-TRUTH dead link between the daemons, 20 s: the finish made in it was here ${relayed} ms after the link`);
     expect(relayed).toBeLessThan(8000);
   } finally {
+    await request.delete(`/api/sessions/${here.id}`).catch(() => {});
     if (machine) await request.delete(`/api/fleet/machines/${machine}`).catch(() => {});
     await farLink.close();
     far.proc.kill("SIGTERM");

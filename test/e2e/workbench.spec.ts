@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { expect, test, type APIRequestContext } from "./isolate.ts";
-import { ask, openPanel, pickModel, shoot } from "./shots.ts";
+import { ask, openPanel, pickModel, shoot, showArchived } from "./shots.ts";
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 
@@ -144,14 +144,14 @@ test("workbench", async ({ page, request }) => {
   await page.getByTestId("session-menu").click();
   await page.getByRole("menuitem", { name: "Archive" }).click();
   await expect(page.locator(`[data-session="${sid}"]`)).toHaveCount(0);
-  await page.getByTestId("tab-archived").click();
+  await showArchived(page, true);
   const row = page.locator(`[data-session="${sid}"]`);
   await expect(row).toBeVisible();
   await shoot(page, "wb-12-archived");
   await row.hover();
   await row.getByRole("button", { name: "Restore session" }).click();
   await expect(row).toHaveCount(0);
-  await page.getByTestId("tab-active").click();
+  await showArchived(page, false);
   await page.locator(`[data-session="${sid}"]`).click();
   await expect(page).toHaveURL(new RegExp(sid));
 

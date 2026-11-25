@@ -2,8 +2,8 @@
 // box (title or folder words), and one menu for the rest: grouped by project,
 // by the owner's own folders, by working folder or one flat list; sorted by
 // when a session was made (the default: a row keeps its place), by name, by
-// recent work or by state; a row of one line or of two; finished sessions
-// shown or hidden. Above them, how many panes are open (a desk only). The
+// recent work or by state; finished sessions shown or hidden; the archived
+// sessions. Above them, how many panes are open (a desk only). The
 // arrangement is kept; the filter words are not. The order itself is
 // lib/list-order.ts.
 import { Menu } from "@base-ui/react/menu";
@@ -60,13 +60,9 @@ const SORTS: { v: Arrange["sort"]; label: string }[] = [
   { v: "recent", label: "Recent activity" },
   { v: "state", label: "State (needs you first)" },
 ];
-const LINES: { v: Arrange["lines"]; label: string }[] = [
-  { v: "one", label: "One line" },
-  { v: "two", label: "Two lines, with the reason" },
-];
 const label = "k-label px-2.5 pt-1.5 pb-1";
 
-export function ListFind({ q, setQ, narrow }: { q: string; setQ: (q: string) => void; narrow?: boolean }) {
+export function ListFind({ q, setQ, narrow, archived = false, setArchived }: { q: string; setQ: (q: string) => void; narrow?: boolean; archived?: boolean; setArchived?: (on: boolean) => void }) {
   const a = useArrange();
   const note = useNote();
   // The menu opens by its button, and from the note under the counts line.
@@ -76,7 +72,7 @@ export function ListFind({ q, setQ, narrow }: { q: string; setQ: (q: string) => 
     addEventListener("keel:arrange", show);
     return () => removeEventListener("keel:arrange", show);
   }, []);
-  const changed = a.group !== DEFAULT.group || a.sort !== DEFAULT.sort || a.hideDone !== DEFAULT.hideDone || a.lines !== DEFAULT.lines;
+  const changed = a.group !== DEFAULT.group || a.sort !== DEFAULT.sort || a.hideDone !== DEFAULT.hideDone;
   const radio = (on: boolean) => <span className="grid w-3.5 shrink-0 place-items-center">{on && <Check className="size-3.5 text-accent" />}</span>;
   return (
     <div className="k-find" data-testid="list-find" data-on={q ? "" : undefined}>
@@ -93,7 +89,7 @@ export function ListFind({ q, setQ, narrow }: { q: string; setQ: (q: string) => 
       {q && <button type="button" className="k-find-btn" aria-label="Clear the filter" onClick={() => setQ("")}><X /></button>}
       {/* The note about the changed default is read once: it is gone when the menu that showed it closes. */}
       <Menu.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) readNote(); }}>
-        <Menu.Trigger className={cn("k-find-btn", changed && "k-find-on")} data-testid="list-arrange" aria-label="Arrange the panes and the list" title="Panes, group, sort and show">
+        <Menu.Trigger className={cn("k-find-btn", changed && "k-find-on")} data-testid="list-arrange" aria-label="Arrange the panes and the list" title="Panes, group, sort, show and the archive">
           <SlidersHorizontal />
         </Menu.Trigger>
         <Menu.Portal>
@@ -113,16 +109,16 @@ export function ListFind({ q, setQ, narrow }: { q: string; setQ: (q: string) => 
                   {radio(a.sort === s.v)}{s.label}
                 </Menu.Item>
               ))}
-              <div className={label}>Rows</div>
-              {LINES.map((l) => (
-                <Menu.Item key={l.v} closeOnClick={false} className={itemClass} data-testid={`arrange-lines-${l.v}`} aria-checked={a.lines === l.v} role="menuitemradio" onClick={() => setArrange({ lines: l.v })}>
-                  {radio(a.lines === l.v)}{l.label}
-                </Menu.Item>
-              ))}
               <div className="my-1 h-px bg-line" />
               <Menu.Item closeOnClick={false} className={itemClass} data-testid="arrange-hide-done" aria-checked={a.hideDone} role="menuitemcheckbox" onClick={() => setArrange({ hideDone: !a.hideDone })}>
                 {radio(a.hideDone)}Hide finished sessions
               </Menu.Item>
+              {/* The archive: a view of the list, rarely wanted, so it is here and not a tab over the list. */}
+              {setArchived && (
+                <Menu.Item className={itemClass} data-testid="tab-archived" aria-checked={archived} role="menuitemcheckbox" onClick={() => setArchived(!archived)}>
+                  {radio(archived)}Archived sessions
+                </Menu.Item>
+              )}
               {changed && (
                 <Menu.Item className={cn(itemClass, "text-muted")} data-testid="arrange-reset" onClick={() => setArrange(DEFAULT)}>
                   <span className="w-3.5 shrink-0" />Back to the default

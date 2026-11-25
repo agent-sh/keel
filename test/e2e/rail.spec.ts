@@ -185,8 +185,8 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   for (const e of (await (await request.get("/api/errors?resolved=0")).json()).errors) if (e.message.includes("credit balance")) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } });
 });
 
-// The rail's foot names its places in words (Inbox, Errors, Loops; the gear and the theme are glyphs every desk
-// knows, named by their tips), and the three open the same way: a sheet from the rail's side, at one place, one size.
+// The rail's foot names its places in words (Inbox, Errors, Loops; the gear is a glyph every desk
+// knows, named by its tip), and the three open the same way: a sheet from the rail's side, at one place, one size.
 test("the foot names its places, and they open from one side in one style", async ({ page, request }) => {
   await page.setViewportSize({ width: 1920, height: 1040 });
   // With counts of two figures the words still fit the list's default width (they once gave way to glyphs there).
@@ -209,7 +209,9 @@ test("the foot names its places, and they open from one side in one style", asyn
       await expect(label, `the ${word} button shows no name`).toBeVisible();
       await expect(label).toHaveText(word);
     }
-    for (const id of ["settings-button", "theme-toggle"]) expect(await foot.getByTestId(id).getAttribute("title")).toBeTruthy();
+    expect(await foot.getByTestId("settings-button").getAttribute("title")).toBeTruthy();
+    // The theme is chosen in Settings and the palette, not at the foot.
+    await expect(foot.getByTestId("theme-toggle")).toHaveCount(0);
     // The foot is one row inside the rail.
     const f = (await foot.boundingBox())!, rail = (await page.getByTestId("sidebar").boundingBox())!;
     for (const b of await foot.locator(":scope > *").all()) { const r = await b.boundingBox(); if (r) { expect(r.x + r.width, "a foot button spills from the rail").toBeLessThanOrEqual(rail.x + rail.width); expect(Math.abs(r.y + r.height / 2 - (f.y + f.height / 2))).toBeLessThan(4); } }
@@ -236,8 +238,8 @@ test("the foot names its places, and they open from one side in one style", asyn
 
 // The session list (its top block, its rows, its foot) and the top bar beside it are one block of the
 // text face: names and actions, state words, clocks and counts. The sizes and weights step alike: the
-// product's name is the session title's step, New session and a row that calls the owner share a weight,
-// Search and a read row another.
+// product's name is the session title's step, and New session, Search and every row's title share one
+// weight, whatever the row's state.
 test("the list's top block, its rows and the top bar are set in one face, at the same steps", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
   test.skip(!models.some((m) => m.id === "scripted:stand-in"), "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
@@ -285,6 +287,7 @@ test("the list's top block, its rows and the top bar are set in one face, at the
     expect(await font(".k-brand-name"), "the product's name and the session's title are two steps").toBe(await font(`section.k-station[data-station="${asks}"] [data-testid="station-title"]`));
     expect(await font('[data-testid="new-session"] .k-act-label')).toBe(await font(`[data-testid="session-row"][data-session="${asks}"] .k-row-title`));
     expect(await font('[data-testid="open-palette"] .k-act-label')).toBe(await font(`[data-testid="session-row"][data-session="${seen}"] .k-row-title`));
+    expect(await font(`[data-testid="session-row"][data-session="${failed}"] .k-row-title`), "a failed row's title is a read row's weight").toBe(await font(`[data-testid="session-row"][data-session="${seen}"] .k-row-title`));
     await shoot(page, "rail-10-one-face");
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);

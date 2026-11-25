@@ -1415,9 +1415,12 @@ for (const size of SIZES) {
             const height = (id: string) => row(id).evaluate((el) => el.getBoundingClientRect().height);
             expect(await height(done), "a finished row is one line, shorter than one with a word under its title").toBeLessThan(await height(command));
             expect(await height(news), "and so is one with news").toBeLessThan(await height(command));
-            // News is the title's weight (no word beside it, no second dot): heavier than the title of a row read.
+            // News is a white dot at the row's end, in the time's place (no word beside it): a row read has none, and the
+            // two titles are one weight.
             const weight = (id: string) => row(id).locator(".k-row-title").evaluate((el) => Number(getComputedStyle(el).fontWeight));
-            expect(await weight(news), "news is the title's weight").toBeGreaterThan(await weight(done));
+            await expect(row(news).getByTestId("row-new"), "news is a dot at the row's end").toBeVisible();
+            await expect(row(done).getByTestId("row-new")).toHaveCount(0);
+            expect(await weight(news), "a row with news is the weight of one read").toBe(await weight(done));
             expect(await row(done).evaluate((el) => (el as HTMLElement).innerText), "a row read has no news").not.toContain("New");
             await noSideScroll(page);
             await shoot(page, `phone-surfaces-33-dot-words-${size.width}-${scale}`);
@@ -1585,11 +1588,13 @@ for (const size of SIZES) {
             if (scale >= 1.5) expect.soft(seen.rows, `session rows whole in the drawer at ${scale * 100}% text: ${JSON.stringify(seen)}`).toBeGreaterThanOrEqual(8);
             await shoot(page, `phone-surfaces-38-drawer-${size.width}-${scale}`);
             if (scale >= 1.5) {
-              // The filter and the tabs are behind one icon while the drawer is slim, and it brings them back.
+              // The filter and the list's menu (where the archive is) are behind one icon while the drawer is slim, and it
+              // brings them back.
               await expect(rail.getByTestId("list-filter")).toBeHidden();
+              await expect(rail.getByTestId("list-arrange")).toBeHidden();
               await rail.getByTestId("open-filter").tap();
               await expect(rail.getByTestId("list-filter")).toBeVisible();
-              await expect(rail.getByTestId("tab-archived")).toBeVisible();
+              await expect(rail.getByTestId("list-arrange")).toBeVisible();
               await shoot(page, `phone-surfaces-38-drawer-filter-${size.width}-${scale}`);
               // The head steps aside while the filter has the keyboard; once it lets go, the icon puts it away again.
               await rail.getByTestId("list-filter").evaluate((el) => (el as HTMLInputElement).blur());

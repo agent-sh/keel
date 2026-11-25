@@ -2,8 +2,8 @@ import { expect, test } from "./isolate.ts";
 import type { Locator, Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
-// Feature: one segmented control with one keyboard. The session list's tabs,
-// the Errors tabs and a Settings choice are the same component: one Tab stop
+// Feature: one segmented control with one keyboard. The Errors tabs, the
+// Inbox's tabs and a Settings choice are the same component: one Tab stop
 // on the chosen option, the arrow keys move and choose and wrap at the ends,
 // Home and End choose the first and the last. Its track holds buttons only.
 test("tabs and segmented choices share one keyboard", async ({ page, request }) => {
@@ -60,13 +60,20 @@ test("tabs and segmented choices share one keyboard", async ({ page, request }) 
   expect(count.widest).toBeCloseTo(count.tall, 1);
   await page.keyboard.press("Escape");
 
-  await walk(page, page.getByRole("tablist", { name: "Session list" }), ["Sessions", "Archived"]);
-  await shoot(page, "seg-01-session-list");
+  // (The session list has no tabs: the archive is a view its Arrange menu opens.)
+  await expect(page.getByRole("tablist", { name: "Session list" })).toHaveCount(0);
   await page.getByTestId("errors-button").first().click();
-  await walk(page, page.getByRole("tablist", { name: "Which errors" }), ["Open", "Recovered", "Resolved"]);
+  // The Errors tabs are the kinds that hold an error (Open, Recovered, Resolved, in that order): the walk takes the ones drawn.
+  const kinds = page.getByRole("tablist", { name: "Which errors" });
+  await kinds.waitFor();
+  const drawn = await kinds.getByRole("tab").evaluateAll((els) => els.map((e) => (e.textContent ?? "").replace(/\d+$/, "").trim()));
+  expect(drawn.length, "the Errors tabs are drawn with two kinds or more").toBeGreaterThanOrEqual(2);
+  expect(["Open", "Recovered", "Resolved"].filter((k) => drawn.includes(k)), "in their order").toEqual(drawn);
+  await walk(page, kinds, drawn);
   await page.keyboard.press("Escape");
   await page.getByTestId("inbox-button").first().click();
   await walk(page, page.getByRole("tablist", { name: "Inbox views" }), ["Alerts", "Activity"]);
+  await shoot(page, "seg-01-inbox-views");
   await page.keyboard.press("Escape");
 
   await page.goto("/settings/general");
@@ -127,11 +134,13 @@ test("an arrow key never loosens permissions, and tabs keep to their own keys", 
   await page.keyboard.press("Escape");
 
   // Tabs in a row: Up and Down are not theirs.
-  const list = page.getByRole("tablist", { name: "Session list" });
+  await page.getByTestId("inbox-button").first().click();
+  const list = page.getByRole("tablist", { name: "Inbox views" });
+  const first = (await list.getByRole("tab", { selected: true }).textContent())!;
   await list.getByRole("tab", { selected: true }).focus();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowUp");
-  await expect(list.getByRole("tab", { selected: true })).toHaveText("Sessions");
+  await expect(list.getByRole("tab", { selected: true })).toHaveText(first);
   // Each set of tabs names its panel, and the panel names its tab.
   const tied = async (tabs: typeof list) => {
     const tab = tabs.getByRole("tab", { selected: true });
@@ -140,6 +149,7 @@ test("an arrow key never loosens permissions, and tabs keep to their own keys", 
     await expect(panel).toHaveAttribute("aria-labelledby", (await tab.getAttribute("id"))!);
   };
   await tied(list);
+  await page.keyboard.press("Escape");
   await page.getByTestId("errors-button").first().click();
   await tied(page.getByRole("tablist", { name: "Which errors" }));
   await page.keyboard.press("Escape");

@@ -183,12 +183,9 @@ test("sessions on another machine sit under that machine's separator; a local on
     await expect(page.getByTestId("station-why")).toHaveText(/^as of \d\d:\d\d$/);
     await expect(page.getByTestId("station-clock")).toHaveCount(0);
     expect(await row(page, placed.id).locator(".k-row-title").evaluate((el) => getComputedStyle(el).color)).toBe(await sep.locator(".k-machine-sep-count").evaluate((el) => getComputedStyle(el).color));
-    // And the line above the list counts them, on screen wherever the machine's separator is: a press goes to the first.
-    // (By the machine's name, since it is one machine.)
-    await expect(page.getByTestId("sum-offline")).toHaveText(/^1\s*rowbox\s+offline$/i);
-    await expect(page.getByTestId("sum-offline")).toBeInViewport({ ratio: 1 });
-    await page.getByTestId("sum-offline").click();
-    await expect(row(page, placed.id)).toBeFocused();
+    // The separator names the machine, and its row is in the list under it.
+    await expect(sep).toContainText("rowbox");
+    await expect(row(page, placed.id)).toBeVisible();
     await shoot(page, "session-rows-05-remote-offline");
     // The card beside the row says the same: what the session last told, with no clock that runs.
     await row(page, placed.id).hover();
@@ -207,9 +204,9 @@ test("sessions on another machine sit under that machine's separator; a local on
     await page.evaluate(() => localStorage.setItem("keel.list", "true"));
     await page.goto(`/s/${placed.id}`);
 
-    // All five counts at once (one needs the owner, one failed, one works, one is unread, one is on the
-    // machine that does not answer): the line fits its bar at every text size and at the narrowest the
-    // list goes. Words give way before figures, and no figure is cut.
+    // Rows of five states at once (one needs the owner, one failed, one works, one is unread, one is on the
+    // machine that does not answer): every row is one line, as high as every other, at every text size and
+    // at the narrowest the list goes, and nothing of a row's end leaves the row.
     const mk = async (title: string, text: string, mode = "full-auto") => {
       const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title, workspace: WS } })).json();
       made.push(session.id);
@@ -221,7 +218,7 @@ test("sessions on another machine sit under that machine's separator; a local on
     const asks = await mk("Asks before it deletes", script([{ name: "Bash", input: { command: "rm -rf dist" } }]), "ask");
     const bad = await mk("Fails on the bill", "script:billing");
     const busy = await mk("Runs for a while", script([{ name: "Bash", input: { command: "tail -f /dev/null" } }]));
-    await mk("Finished unseen", "script:say Done.");
+    const unseen = await mk("Finished unseen", "script:say Done.");
     await expect.poll(() => state(asks), { timeout: 30_000 }).toBe("need");
     await expect.poll(() => state(bad), { timeout: 30_000 }).toBe("fail");
     await expect.poll(() => state(busy), { timeout: 30_000 }).toBe("work");
@@ -230,20 +227,18 @@ test("sessions on another machine sit under that machine's separator; a local on
         const at = `text size ${scale}${width ? ", the narrowest list" : ""}`;
         await page.evaluate(([s, w]) => { localStorage.setItem("keel.textScale", JSON.stringify(s)); if (w) localStorage.setItem("keel.listW", JSON.stringify(w)); else localStorage.removeItem("keel.listW"); }, [scale, width] as const);
         await page.reload();
-        for (const kind of ["need", "fail", "work", "unread", "offline"]) await expect(page.getByTestId(`sum-${kind}`), `the ${kind} count at ${at}`).toBeVisible();
-        // Settled: the faces are in and the line has been measured with them.
+        const ids = [asks, bad, busy, unseen, placed.id];
+        for (const [id, attr, value] of [[asks, "data-watch", "need"], [bad, "data-watch", "fail"], [busy, "data-watch", "work"], [unseen, "data-news", "true"], [placed.id, "data-offline", "true"]] as const) await expect(row(page, id), `the ${value === "true" ? attr : value} row at ${at}`).toHaveAttribute(attr, value, { timeout: 15_000 });
+        // Settled: the faces are in and the rows are laid out with them.
         await page.evaluate(() => document.fonts.ready);
-        const line = await page.getByTestId("list-summary").evaluate((el) => {
-          const box = el.getBoundingClientRect();
-          const chips = [...el.querySelectorAll<HTMLElement>(".k-sum-chip")];
-          const cut = chips.filter((c) => { const b = c.getBoundingClientRect(), n = c.querySelector(".k-sum-n")!.getBoundingClientRect(); return n.width < 1 || b.right > box.right + 0.5 || b.left < box.left - 0.5; });
-          return { over: el.scrollWidth - el.clientWidth, cut: cut.map((c) => c.dataset.kind), words: chips.filter((c) => !c.hasAttribute("data-bare")).map((c) => c.dataset.kind) };
-        });
-        expect(line.cut, `counts cut at ${at}`).toEqual([]);
-        expect(line.over, `the line's content beyond its bar at ${at}`).toBeLessThanOrEqual(0);
-        // What calls the owner keeps its word longest.
-        if (line.words.length) expect(line.words, at).toContain("need");
-        if (scale === 1 && !width) await shoot(page, "session-rows-06-five-counts");
+        const rows = await page.evaluate((ids) => ids.map((id) => {
+          const r = document.querySelector<HTMLElement>(`[data-testid="session-row"][data-session="${id}"]`)!;
+          const box = r.getBoundingClientRect(), end = r.querySelector<HTMLElement>(".k-row-end")!.getBoundingClientRect();
+          return { id, height: Math.round(box.height), out: end.right > box.right + 0.5 || end.left < box.left - 0.5 };
+        }), ids);
+        expect(new Set(rows.map((r) => r.height)).size, `the rows' heights at ${at}: ${rows.map((r) => r.height).join(",")}`).toBe(1);
+        expect(rows.filter((r) => r.out).map((r) => r.id), `a row's end beyond its row at ${at}`).toEqual([]);
+        if (scale === 1 && !width) await shoot(page, "session-rows-06-five-states");
       }
     } finally {
       await page.evaluate(() => { localStorage.removeItem("keel.textScale"); localStorage.removeItem("keel.listW"); });
