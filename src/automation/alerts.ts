@@ -22,6 +22,7 @@ import { handShell, shellShows, tellShells } from "../server/shell.ts";
 import { costLine, costs, rankWaiting, type WaitCost, type WaitNow } from "../core/wait-rank.ts";
 import { isOutside } from "../core/outside.ts";
 import { OUTSIDE_LABEL } from "../core/watch.ts";
+import { DEFAULT_PER_HOUR } from "../integrations/mobile/budget.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -84,6 +85,9 @@ export type AlertSettings = {
   completion: "never" | "background" | "always";
   // Whether a desktop notification makes the system's sound. On unless the owner turned it off.
   sound: boolean;
+  // The most pushes the phone gets in an hour; the rest of what would be pushed comes in one digest
+  // (src/integrations/mobile/budget.ts). 0: no limit.
+  push_per_hour: number;
 };
 
 const channels = new Map<string, AlertChannel>();
@@ -166,6 +170,7 @@ const defaults = (): AlertSettings => ({
   routes: Object.fromEntries(KINDS.map((k) => [k, ["desktop", "command", "push"]])) as AlertSettings["routes"],
   completion: "background",
   sound: true,
+  push_per_hour: DEFAULT_PER_HOUR,
 });
 
 export function settings(): AlertSettings {
@@ -173,7 +178,7 @@ export function settings(): AlertSettings {
   const d = defaults();
   if (!r) return d;
   const v = JSON.parse(r.value);
-  return { routes: { ...d.routes, ...v.routes }, completion: v.completion ?? d.completion, sound: v.sound ?? d.sound };
+  return { routes: { ...d.routes, ...v.routes }, completion: v.completion ?? d.completion, sound: v.sound ?? d.sound, push_per_hour: v.push_per_hour ?? d.push_per_hour };
 }
 
 // `routes` replaces the lists of the kinds it names; `route` turns one channel
@@ -183,6 +188,7 @@ export function saveSettings(p: Partial<AlertSettings> & { route?: { kind: strin
   const cur = settings();
   if (p.completion && !["never", "background", "always"].includes(p.completion)) throw new Error("completion is never, background or always");
   if (p.sound !== undefined && typeof p.sound !== "boolean") throw new Error("sound is true or false");
+  if (p.push_per_hour !== undefined && !(Number.isInteger(p.push_per_hour) && p.push_per_hour >= 0)) throw new Error("push_per_hour is a whole number, 0 or more (0 is no limit)");
   const routes = { ...cur.routes };
   for (const [k, v] of Object.entries(p.routes ?? {})) {
     if (!KINDS.includes(k as AlertKind)) throw new Error(`unknown alert kind ${k}`);
@@ -196,7 +202,7 @@ export function saveSettings(p: Partial<AlertSettings> & { route?: { kind: strin
     const rest = (routes[k] ?? []).filter((c) => c !== ch);
     routes[k] = p.route.on ? [...rest, ch] : rest;
   }
-  const next = { routes, completion: p.completion ?? cur.completion, sound: p.sound ?? cur.sound };
+  const next = { routes, completion: p.completion ?? cur.completion, sound: p.sound ?? cur.sound, push_per_hour: p.push_per_hour ?? cur.push_per_hour };
   D().store.db.query("INSERT INTO alert_settings (id, value) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value").run(JSON.stringify(next));
   return next;
 }

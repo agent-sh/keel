@@ -1,11 +1,15 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { auto, useAuto, type AlertSettings as Settings } from "../../lib/automation.ts";
-import { reportError } from "../../lib/store.ts";
+import { every } from "../../lib/clock.ts";
+import { api, onFeature, reportError } from "../../lib/store.ts";
+import { composing } from "../../lib/keys.ts";
 import { navigate } from "../../lib/ui.ts";
+import { clock } from "../../lib/utils.ts";
 import { Card, Segmented, SettingRow } from "../Settings.tsx";
 import { Tick, Toggle } from "../surfaces/kit.tsx";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { ALERT_LABEL, ALERT_STATE, CHANNEL_NAME } from "./bits.tsx";
+import type { BudgetStatus } from "../../../../src/integrations/mobile/budget.ts";
 
 const KINDS: (keyof Settings["routes"])[] = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine", "outage", "review", "mcp"];
 
@@ -22,6 +26,43 @@ const SETUP: Record<string, string> = {
   desktop: "Shown by the Keel desktop app while it is open, or by this machine's notification service when the daemon runs in a desktop session.",
   command: "Set KEEL_NOTIFY_COMMAND for the daemon to a program. It gets each alert as JSON in its last argument.",
 };
+
+// The phone's budget of interruptions: how many pushes an hour, and where the hour stands.
+function PushBudgetRow({ limit }: { limit: number }) {
+  const [b, setB] = useState<BudgetStatus | null>(null);
+  const [text, setText] = useState(String(limit));
+  useEffect(() => setText(String(limit)), [limit]);
+  const load = useCallback(() => void api<BudgetStatus>("/api/mobile/budget").then(setB, reportError), []);
+  useEffect(() => {
+    load();
+    const stop = every(15_000, load);
+    const off = onFeature({ frame: (f) => f.name === "mobile" && load(), reconnect: load });
+    return () => { stop(); off(); };
+  }, [load, limit]);
+  const save = async () => {
+    const n = Number(text);
+    if (text.trim() === "" || !Number.isInteger(n) || n < 0 || n === limit) return setText(String(limit));
+    await auto.saveSettings({ push_per_hour: n }).catch((e) => { reportError(e); setText(String(limit)); });
+    load();
+  };
+  const line = !b ? "" : [
+    b.limit > 0 ? `${b.sent} of ${b.limit} pushes in the last hour` : `${b.sent} pushes in the last hour, no limit`,
+    b.held ? `${b.held} held${b.held_need ? `, ${b.held_need} of them need${b.held_need === 1 ? "s" : ""} you` : ""}${b.next_slot ? `, told at ${clock(b.next_slot)}` : ""}` : "",
+  ].filter(Boolean).join(" · ");
+  return (
+    <SettingRow label="Pushes an hour" hint="The phone gets at most this many pushes an hour: what needs you first, then failures, reports and finished work. The rest come in one push, such as 4 more: 2 done, 1 failed, 1 report. Nothing that needs you is dropped. 0 is no limit.">
+      <div className="flex items-center gap-3">
+        {line && <span role="status" data-testid="push-budget-state" data-sent={b?.sent} data-held={b?.held} className="text-caption text-muted">{line}</span>}
+        <input
+          type="number" min={0} step={1} inputMode="numeric" value={text} data-testid="push-per-hour" aria-label="Pushes an hour"
+          onChange={(e) => setText(e.target.value)} onBlur={() => void save()}
+          onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) (e.target as HTMLInputElement).blur(); }}
+          className="k-field w-20 text-right tabular-nums"
+        />
+      </div>
+    </SettingRow>
+  );
+}
 
 // Settings > Alerts: where each kind of alert goes besides the inbox.
 export default function AlertSettings() {
@@ -63,6 +104,7 @@ export default function AlertSettings() {
         <SettingRow label="Play a sound" hint="A desktop notification makes the system's alert sound. Off keeps them silent.">
           <Toggle on={settings.sound} label="Play a sound" testid="alert-sound" onChange={(sound) => auto.saveSettings({ sound }).catch(reportError)} />
         </SettingRow>
+        <PushBudgetRow limit={settings.push_per_hour} />
         <SettingRow label="Test" hint="An alert of the kind From the agent, through its routes.">
           <div className="flex items-center gap-3">
             {tested && <span role="status" data-testid="alert-test-result" className="text-caption text-muted">{tested}</span>}

@@ -1,8 +1,9 @@
 // The phone: pairing and the device list for the workbench (/api/mobile), the
 // Hermes Mobile API the phone app calls (/v1), and phone push as an alert channel.
 import { renderSVG } from "uqr";
-import { atDesk, liveWait, get as alertOf, opensErrors, registerChannel, type Alert } from "../../automation/alerts.ts";
+import { atDesk, liveWait, get as alertOf, opensErrors, registerChannel, settings as alertSettings, type Alert } from "../../automation/alerts.ts";
 import { costLine, costs } from "../../core/wait-rank.ts";
+import { digestOf, PushBudget, WINDOW_MS, type Held } from "../../integrations/mobile/budget.ts";
 import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
 import { PhoneShown } from "../../integrations/mobile/shown.ts";
@@ -126,6 +127,40 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { ...about, device: r.device_id });
     if (recs.length) changed();
   };
+  // The budget of interruptions (src/integrations/mobile/budget.ts): an alert that is due goes through it,
+  // told alone, inside the digest of the hour, or held until a slot opens.
+  type Due = Held & { alert: Alert; open: () => boolean };
+  const sendAlone = async (a: Alert) => {
+    const msg = pushOf(a);
+    const recs = await push.send(mobile, mobile.globalSeq(), msg);
+    if (recs.some((r) => r.ok)) shown.pushed(msg);
+    for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { alert: a.id, device: r.device_id });
+    if (recs.length) changed();
+  };
+  // A digest is an agent's word with no session: its tap opens the app, where the inbox has each of them.
+  const sendDigest = async (items: Due[]) => {
+    const d = digestOf(items);
+    const recs = await push.send(mobile, mobile.globalSeq(), {
+      kind: "agent", session_id: null, high: d.need + d.failed > 0,
+      data: { title: d.title, body: d.body, ek: "digest", pri: d.need + d.failed > 0 ? "high" : "normal", reply: "0" },
+    });
+    for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { digest: items.length, device: r.device_id });
+    if (recs.length) changed();
+  };
+  // What an earlier run of the daemon pushed in the last hour: the device that got the most of it.
+  const pushedBefore = () => {
+    const by = new Map<string, number[]>();
+    const rows = store.db.query<{ device_id: string; sent_ms: number }, [number]>("SELECT device_id, sent_ms FROM pushes WHERE ok = 1 AND kind NOT IN ('live', 'withdraw', 'test') AND sent_ms > ?").all(Date.now() - WINDOW_MS);
+    for (const r of rows) (by.get(r.device_id) ?? by.set(r.device_id, []).get(r.device_id)!).push(r.sent_ms);
+    return [...by.values()].sort((a, b) => b.length - a.length)[0] ?? [];
+  };
+  const budget = new PushBudget<Due>({
+    limit: () => alertSettings().push_per_hour,
+    alone: (d) => sendAlone(d.alert),
+    digest: sendDigest,
+    moot: (d) => !d.open(),
+    seed: pushedBefore,
+  });
   registerChannel({
     id: "push",
     label: "Phone push",
@@ -150,13 +185,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         stillOpen,
         atDesk: async () => atDesk() || (await screenUnlocked()),
         sleep: (ms) => Bun.sleep(ms),
-        send: async () => {
-          const msg = pushOf(a);
-          const recs = await push.send(mobile, mobile.globalSeq(), msg);
-          if (recs.some((r) => r.ok)) shown.pushed(msg);
-          for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { alert: a.id, device: r.device_id });
-          if (recs.length) changed();
-        },
+        send: () => budget.offer({ id: a.id, ts: a.ts, kind: a.kind, wait: a.data?.wait, alert: a, open: stillOpen }),
       });
     },
     // Nothing in the session is unread any more (answered or read on the
@@ -183,6 +212,8 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
       live: nowLive, helper: () => helperNow?.() ?? null, away: () => awayNow?.() ?? null, awaySeen: () => awaySeen?.(), ownerSeen: (ms) => void ownerSeen(ms),
       search: (r) => (searchSessions ? searchSessions(r) : Promise.resolve(Response.json({ error: "the search is not loaded" }, { status: 409 }))) }),
 
+    // The budget of interruptions as it stands: the limit, the pushes of the last hour, what is held, when the next slot opens.
+    "/api/mobile/budget": { GET: () => json(budget.status()) },
     "/api/mobile/settings": {
       GET: () => json({ public_url: mobile.setting("public_url") ?? process.env.MOBILE_PUBLIC_URL ?? "", push: { configured: push.configured(), path: push.accountPath() } }),
     },
