@@ -26,11 +26,12 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
   });
 
   // Words a model is about to put at another session's prompt, kept as digests before they go (src/drive/sent.ts),
-  // and told to the Keel of the machine the session runs on (nothing is sent when that Keel cannot be told).
+  // and told to the Keel of the machine the session runs on (nothing is sent when that Keel cannot be reached; a Keel
+  // too old to keep them is told once it can, src/drive/sent.ts farSent).
   const sent = async (f: Found, text: string) => {
     const digests = noteSent(store, text);
     if (f.host) {
-      try { await farSent(f.host, digests); } catch (e) { throw new DriveError("NOT_SENT", `the Keel on ${f.host} could not be told what is sent (${(e as Error).message}). Nothing was sent.`); }
+      try { await farSent(store, f.host, digests); } catch (e) { throw new DriveError("NOT_SENT", `the Keel on ${f.host} could not be told what is sent (${(e as Error).message}). Nothing was sent.`); }
     }
   };
 

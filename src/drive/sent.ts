@@ -63,11 +63,70 @@ export async function backfillSent(store: Store, run: (a: SentAsk) => Promise<{ 
   store.db.query("INSERT OR REPLACE INTO drive_sends_state (k, v) VALUES ('backfilled', ?)").run(Date.now());
 }
 
-// Tells the Keel of the machine an outside session runs on (its agent view's host name) the digests of a send,
-// before the send: set by the fleet (src/server/routes/fleet.ts). It throws when that machine runs a Keel that could
-// not be told; it does nothing for a host with no Keel the fleet knows.
-let far: ((host: string, digests: string[]) => Promise<void>) | undefined;
+// A far machine's Keel, told the digests of a send into a session it may copy: set by the fleet
+// (src/server/routes/fleet.ts). "told": it keeps them; "old": a paired Keel of a build before the route, which
+// keeps no typed marks at all; "none": no Keel the fleet can reach there (a machine reached over ssh, or a host
+// the fleet does not know). It throws when that machine's Keel could not be reached. `quiet`: a catch-up, not a
+// send.
+export type FarAnswer = "told" | "old" | "none";
+let far: ((host: string, digests: string[], quiet: boolean) => Promise<FarAnswer>) | undefined;
 export const onFarSent = (fn: typeof far) => { far = fn; };
-export async function farSent(host: string, digests: string[]) {
-  if (host && digests.length && far) await far(host, digests);
+
+// The teller the fleet sets: `machine` is the fleet's machine a host names, `post` gives it the digests (a LinkError
+// with the status of an answer that is not ok). A Keel of a build before the route answers 404. A machine reached
+// over ssh with no daemon runs no Keel that could copy the session. A host the fleet does not know is told to the
+// owner (`unknown`, an Errors row) on a send: a Keel there, paired or not, was not told.
+export function farTeller(o: { machine: (host: string) => { id: string; ssh: boolean } | undefined; post: (id: string, digests: string[]) => Promise<unknown>; unknown: (host: string) => void }) {
+  return async (host: string, digests: string[], quiet: boolean): Promise<FarAnswer> => {
+    const m = o.machine(host);
+    if (!m) { if (!quiet) o.unknown(host); return "none"; }
+    if (m.ssh) return "none";
+    try {
+      await o.post(m.id, digests);
+      return "told";
+    } catch (e) {
+      if ((e as { status?: number }).status === 404) return "old";
+      throw e;
+    }
+  };
+}
+
+// What waits for a far machine's Keel: kept with the host the send went to until that Keel took it, so a Keel that
+// could not keep it yet (an older build) gets it once it can, before it copies a session the drive sent into.
+const FAR = "CREATE TABLE IF NOT EXISTS drive_sends_far (host TEXT NOT NULL, digest TEXT NOT NULL, sent_ms INTEGER NOT NULL, PRIMARY KEY (host, digest))";
+const PART = 4096; // what the route takes at once (noteDigests)
+
+// A send into a session on `host`: its digests wait for that host's Keel, which is told them (and whatever else
+// waits for it) before the words go. The send may go unless this throws.
+export async function farSent(store: Store, host: string, digests: string[]): Promise<FarAnswer | undefined> {
+  if (!host || !digests.length || !far) return undefined;
+  store.migrate(FAR);
+  const q = store.db.query("INSERT OR IGNORE INTO drive_sends_far (host, digest, sent_ms) VALUES (?, ?, ?)");
+  const now = Date.now();
+  store.db.transaction(() => { for (const d of digests) q.run(host, d, now); })();
+  return pushFar(store, host, false);
+}
+
+async function pushFar(store: Store, host: string, quiet: boolean): Promise<FarAnswer | undefined> {
+  if (!far) return undefined;
+  const waiting = store.db.query<{ digest: string }, [string]>("SELECT digest FROM drive_sends_far WHERE host = ? ORDER BY sent_ms").all(host).map((r) => r.digest);
+  let answer: FarAnswer = "told";
+  for (let i = 0; i < waiting.length; i += PART) {
+    const part = waiting.slice(i, i + PART);
+    answer = await far(host, part, quiet);
+    if (answer !== "told") return answer;
+    const del = store.db.query("DELETE FROM drive_sends_far WHERE host = ? AND digest = ?");
+    store.db.transaction(() => { for (const d of part) del.run(host, d); })();
+  }
+  return answer;
+}
+
+// Every host whose Keel still waits for digests and that `reached` says a link to it just came up: told again.
+// A host still out of reach or still too old waits for its next link.
+export async function farCatchUp(store: Store, reached: (host: string) => boolean) {
+  let hosts: string[];
+  try { hosts = store.db.query<{ host: string }, []>("SELECT DISTINCT host FROM drive_sends_far").all().map((r) => r.host); } catch { return; } // nothing ever waited
+  for (const h of hosts.filter(reached)) {
+    try { await pushFar(store, h, true); } catch {} // out of reach again: its next link tries
+  }
 }

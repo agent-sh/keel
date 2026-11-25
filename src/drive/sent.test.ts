@@ -5,8 +5,8 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { backfillSent, noteSent, onFarSent, wasSent } from "./sent.ts";
-import { sentCalls } from "./sent-read.ts";
+import { backfillSent, farCatchUp, farTeller, noteSent, onFarSent, wasSent } from "./sent.ts";
+import { digestsOf, sentCalls } from "./sent-read.ts";
 import { driveTools } from "./tools.ts";
 
 const root = mkdtempSync(join(tmpdir(), "keel-drive-sent-"));
@@ -68,23 +68,52 @@ test("the history read counts the drive's first name for the message tool and th
   expect(wasSent(store, "typed by the owner")).toBe(false);
 });
 
-test("a send to a session on another machine goes only once that machine's Keel has its digests", async () => {
+test("a send to a session on another machine: its Keel is told first; one too old to keep it gets it once it can", async () => {
   const store = fresh();
   const sends: string[] = [];
+  let host = "far";
   const row = { id: "claude:far::k", name: "far one", kind: "claude", state: "idle", live: true, drive: { send: true, resume: true } };
-  const drive = { find: async () => ({ host: "far", key: "k", raw: {}, row }), send: async (_id: string, text: string) => { sends.push(text); return "sent"; } } as any;
+  const drive = { find: async () => ({ host, key: "k", raw: {}, row }), send: async (_id: string, text: string) => { sends.push(text); return "sent"; } } as any;
   const tool = driveTools(drive, store, {} as any).find((t) => t.name === "session_message")!;
-  const told: [string, string[]][] = [];
+  const send = (text: string) => tool.run({ to: "claude:far::k", text }, {} as any).then((o) => JSON.stringify(o));
+  let keel: "old" | "new" | "down" = "old";
+  const posted: [string, string[]][] = [];
+  const unknown: string[] = [];
+  const machines: Record<string, { id: string; ssh: boolean }> = { far: { id: "m1", ssh: false }, box: { id: "m2", ssh: true } };
   try {
-    onFarSent(async (host, digests) => { told.push([host, digests]); });
-    await tool.run({ to: "claude:far::k", text: "hello there" }, {} as any);
-    expect(sends).toEqual(["hello there"]);
-    expect(told.map(([h, d]) => [h, d.length > 0])).toEqual([["far", true]]);
-    // That Keel cannot be told: nothing is sent.
-    onFarSent(async () => { throw new Error("link down"); });
-    const out = await tool.run({ to: "claude:far::k", text: "second" }, {} as any);
-    expect(JSON.stringify(out)).toContain("NOT_SENT");
-    expect(sends).toEqual(["hello there"]);
+    onFarSent(farTeller({
+      machine: (h) => machines[h],
+      post: async (id, digests) => {
+        if (keel === "old") throw Object.assign(new Error("not found"), { status: 404 });
+        if (keel === "down") throw new Error("link down");
+        posted.push([id, digests]);
+      },
+      unknown: (h) => unknown.push(h),
+    }));
+    // A paired Keel of a build before the route: it keeps no typed marks, so the words go.
+    await send("hello there");
+    await send("second");
+    expect(sends).toEqual(["hello there", "second"]);
+    expect(posted).toEqual([]);
+    // Once it takes them, a link to it brings it everything that waited, once.
+    keel = "new";
+    await farCatchUp(store, (h) => h === "far");
+    expect(posted.map(([id, d]) => [id, new Set(d)])).toEqual([["m1", new Set([...digestsOf("hello there"), ...digestsOf("second")])]]);
+    await farCatchUp(store, (h) => h === "far");
+    await send("third");
+    expect(posted.map(([, d]) => d)[1]).toEqual(digestsOf("third"));
+    // That Keel cannot be reached: nothing is sent.
+    keel = "down";
+    expect(await send("fourth")).toContain("NOT_SENT");
+    expect(sends).toEqual(["hello there", "second", "third"]);
+    // A machine reached over ssh runs no Keel; a host the fleet does not know is told to the owner, on a send only.
+    host = "box";
+    await send("to the ssh box");
+    host = "nowhere";
+    await send("to a host nobody knows");
+    await farCatchUp(store, () => true);
+    expect(sends.slice(3)).toEqual(["to the ssh box", "to a host nobody knows"]);
+    expect(unknown).toEqual(["nowhere"]);
   } finally {
     onFarSent(undefined);
   }

@@ -5,7 +5,7 @@
 import { boundedFeed, FEED_LIMIT } from "../streams.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
-import { noteDigests, onFarSent } from "../../drive/sent.ts";
+import { farCatchUp, farTeller, noteDigests, onFarSent } from "../../drive/sent.ts";
 import { instructionFiles } from "../../engine/turn.ts";
 import { Fleet, RELAY_PING_MS } from "../../fleet/fleet.ts";
 import { bindFollow } from "../../fleet/follow.ts";
@@ -72,13 +72,24 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   });
   bindFleetTools(f, msgs, (id) => store.session(id), bindNotices(f, msgs, store, engine));
   // A model's send through the drive into a session on another machine: that machine's Keel is told its digests
-  // first. The agent view names a machine as the fleet does (its name or its ssh host); one the fleet does not know,
-  // or reaches over ssh with no daemon, runs no Keel that could copy the session.
-  onFarSent(async (host, digests) => {
+  // first (src/drive/sent.ts). The agent view names a machine as the fleet does (its name or its ssh host). A Keel
+  // of a build before the route answers 404: it keeps no typed marks, so the send goes, and its digests wait until
+  // it takes them, tried again each time a link to it comes up (farTeller says what each answer means).
+  const farMachine = (host: string) => {
     const h = host.toLowerCase();
-    const m = f.rows().find((r) => r.name.toLowerCase() === h || r.ssh_host?.toLowerCase() === h);
-    if (!m || f.isSsh(m)) return;
-    await f.handsJson(m.id, "/api/fleet/drive-sent", { method: "POST", body: JSON.stringify({ digests }), timeout: 10_000 });
+    return f.rows().find((r) => r.name.toLowerCase() === h || r.ssh_host?.toLowerCase() === h);
+  };
+  onFarSent(farTeller({
+    machine: (host) => { const m = farMachine(host); return m && { id: m.id, ssh: f.isSsh(m) }; },
+    post: (id, digests) => f.handsJson(id, "/api/fleet/drive-sent", { method: "POST", body: JSON.stringify({ digests }), timeout: 10_000 }),
+    unknown: (host) => errors.capture("server", new Error(`a model's words went through the drive into a session on ${host}, a machine the fleet does not know: a Keel there was not told they are a model's, so a copy it makes may count them as the owner's`), { at: "drive far send", host }),
+  }));
+  const gfar = globalThis as { __keelFarCatchUp?: () => void };
+  gfar.__keelFarCatchUp?.();
+  gfar.__keelFarCatchUp = bus.on((fr: any) => {
+    if (fr.t !== "feature" || fr.name !== "fleet_sessions" || typeof fr.data?.machine !== "string") return;
+    const id = fr.data.machine;
+    void farCatchUp(store, (host) => farMachine(host)?.id === id).catch((e) => errors.capture("server", e, { at: "drive far catch-up", machine: id }));
   });
   // The state of each message as it moves: read, handled, dropped (message-state.ts).
   const gs = globalThis as { __keelMessageStates?: MessageStates };
