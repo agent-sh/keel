@@ -1781,3 +1781,17 @@ test("the phone gets nothing of an outside session: no row, no message, no frame
   expect(JSON.stringify(answers[3])).toContain(mine.id);
   expect((await call("GET", `/v1/chats/${out.id}/messages`)).status).toBe(404);
 });
+
+// A reply that streams is kept as the turn's draft for a phone that connects in the middle of it: of a session the
+// phone is shown only, never of one Keel answers in place for another harness.
+test("the phone's drafts hold the reply a session of its own streams, never one of another harness's", async () => {
+  const out = session("Codex in place");
+  store.updateSession(out.id, { outside: { harness: "codex", source_id: "src-draft", state: "working", since: Date.now(), files: 0, failures: 0 } });
+  const mine = session("Mine streams");
+  bus.emit({ t: "delta", session_id: out.id, kind: "text", index: 0, text: "CANARY-DRAFT from Codex" } as any);
+  bus.emit({ t: "delta", session_id: mine.id, kind: "text", index: 0, text: "mine so far" } as any);
+  const drafts = (await call("GET", "/v1/sync?since=0")).body.drafts as { chat_id: string; text: string }[];
+  expect(drafts.find((d) => d.chat_id === mine.id)?.text).toBe("mine so far");
+  expect(JSON.stringify(drafts)).not.toContain("CANARY-DRAFT");
+  expect(drafts.some((d) => d.chat_id === out.id)).toBe(false);
+});

@@ -507,12 +507,20 @@ export function mobileApi(ctx: MobileCtx) {
   // The words each running turn has streamed since its last stored step, for
   // a phone that connects (or recovers) in the middle of a reply.
   const drafts = new Map<string, string>();
+  // Whether a session's reply may reach the phone, kept by session (a delta comes for every few words of a reply,
+  // so the store is asked once a session, not once a delta): not a session another harness runs, whose reply
+  // streams while Keel answers it in place and stays home. A session frame asks again.
+  const streams = new Map<string, boolean>();
+  const streamsHere = (sid: string) => {
+    let v = streams.get(sid);
+    if (v === undefined) streams.set(sid, (v = !!sessionShown(sid)));
+    return v;
+  };
   bus.on((f) => {
-    // (Not a session another harness runs: its reply streams while Keel answers it in place, and stays home.)
-    if (f.t === "delta" && f.kind === "text") { if (sessionShown(f.session_id)) drafts.set(f.session_id, (drafts.get(f.session_id) ?? "") + f.text); }
+    if (f.t === "delta" && f.kind === "text") { if (streamsHere(f.session_id)) drafts.set(f.session_id, (drafts.get(f.session_id) ?? "") + f.text); }
     else if (f.t === "event" && (f.event.kind === "assistant" || f.event.kind === "turn_end")) drafts.delete(f.event.session_id);
     else if (f.t === "status" && f.status.kind === "retry") drafts.delete(f.session_id);
-    else if (f.t === "session" && f.deleted) drafts.delete(f.session.id);
+    else if (f.t === "session") { streams.delete(f.session.id); if (f.deleted || isOutside(f.session)) drafts.delete(f.session.id); }
   });
   function recent(s: Session) {
     const out: any[] = [];
@@ -898,7 +906,7 @@ export function mobileApi(ctx: MobileCtx) {
                   const ids = new Set(((f.event.data.results ?? []) as any[]).map((r) => r.tool_use_id));
                   for (const q of closedQuestions(f.event.ts - 60_000)) if (q.session_id === f.event.session_id && ids.has(q.call_id)) send({ type: "approval", seq: gseq, approval: closedQuestion(q) });
                 }
-              } else if (f.t === "delta" && f.kind === "text") { if (sessionShown(f.session_id)) send({ type: "delta", chat_id: f.session_id, delta: f.text }); }
+              } else if (f.t === "delta" && f.kind === "text") { if (streamsHere(f.session_id)) send({ type: "delta", chat_id: f.session_id, delta: f.text }); }
               else if (f.t === "session") {
                 if (isOutside(f.session)) return;
                 // Gone on the desktop: the phone drops it. Renamed, archived or
@@ -1093,7 +1101,8 @@ export function mobileApi(ctx: MobileCtx) {
       approvals: [...pendingApprovals(), ...closedCards(from)],
       working: working(),
       // The reply each running turn has streamed so far.
-      drafts: [...drafts].filter(([chat_id]) => sessionShown(chat_id)).map(([chat_id, text]) => ({ chat_id, text })),
+      // (Of the sessions the phone is shown only: a draft of another harness's session is never kept.)
+      drafts: [...drafts].map(([chat_id, text]) => ({ chat_id, text })),
     };
   }
 
