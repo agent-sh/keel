@@ -30,13 +30,15 @@ const Row = ({ label, tokens, id }: { label: string; tokens: number; id: string 
 
 export function ContextPartsView({ parts }: { parts: ContextParts }) {
   const { system, tools, messages } = parts;
+  const deferred = tools.groups.filter((g) => g.kind !== "builtin" && !g.carried);
+  const live = tools.groups.filter((g) => !deferred.includes(g));
   return (
     <div className="mt-3 flex flex-col gap-1" data-testid="context-parts">
       <Section id="system" title="System prompt" tokens={system.tokens}>
         {system.blocks.map((b) => <Row key={b.key} id={`system:${b.key}`} label={b.label} tokens={b.tokens} />)}
       </Section>
       <Section id="tools" title="Tool definitions" tokens={tools.tokens} open>
-        {tools.groups.map((g) => (
+        {live.map((g) => (
           <div key={g.key} className="contents" data-testid="tools-group" data-group={g.key}>
             <span className="truncate text-muted" title={g.label}>
               {g.label} <span className="text-faint">{g.kind === "builtin" ? `${g.tools}` : `${g.carried} of ${g.tools}`}</span>
@@ -45,8 +47,11 @@ export function ContextPartsView({ parts }: { parts: ContextParts }) {
             {g.save && <span className={cn("col-span-2 -mt-0.5 mb-0.5 text-faint")} data-testid="tools-save">{g.save}</span>}
           </div>
         ))}
-        {parts.native_tools && tools.groups.some((g) => g.kind !== "builtin" && !g.carried) && (
-          <span className="col-span-2 text-faint" data-testid="tools-unloaded-note">A source with none loaded costs nothing: tool search brings a tool in only when the model asks for it.</span>
+        {/* Sources with nothing in the request are one line, not a row each: tool search or mcp_call brings a tool in only when the model asks for it. */}
+        {deferred.length > 0 && (
+          <span className="col-span-2 truncate text-faint" data-testid="tools-deferred" title={`${deferred.map((g) => `${g.label} (${g.tools})`).join(", ")}. A source with none loaded costs nothing: a tool comes in only when the model asks for it.`}>
+            Deferred: {deferred.length} {deferred.length === 1 ? "group" : "groups"}, none in the request
+          </span>
         )}
       </Section>
       <Section id="messages" title="Messages" tokens={messages.tokens} open>

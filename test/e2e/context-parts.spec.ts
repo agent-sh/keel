@@ -60,6 +60,10 @@ test("context popup: system prompt, tools by server and messages by origin", asy
     await expect(row).toContainText("bulk");
     await expect(row).toContainText("3 of 40");
     await expect(popup.getByTestId("tools-save").filter({ hasText: "Customize > MCP servers" })).toHaveCount(1);
+    // The sources with nothing in the request are one line, not a row each with the same sentence.
+    await expect(popup.getByTestId("tools-deferred")).toHaveText(/^Deferred: \d+ groups?, none in the request$/);
+    await expect(popup.getByTestId("tools-group").filter({ hasText: " 0 of " })).toHaveCount(0);
+    await expect(popup.getByTestId("tools-save").filter({ hasText: "Reached through" })).toHaveCount(0);
     await expect(popup.locator('[data-testid="context-part"][data-part="system"]')).toBeVisible();
     await expect(popup.locator('[data-testid="context-part"][data-part="tools"] [data-testid="context-part-tokens"]')).toContainText("~");
     await expect(popup.locator('[data-testid="context-row"][data-row="message:owner"]')).toBeVisible();
