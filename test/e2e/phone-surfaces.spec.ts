@@ -1881,5 +1881,135 @@ for (const size of SIZES) {
         await request.delete("/api/helper/avatar");
       }
     });
+    // MOB-S114
+    test("a running command's Move to the background is a finger's target on its card, with no key hint, and a press moves it", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Move to background");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 25; echo finished-phone" } }])}` } });
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${id}`);
+            const card = page.getByTestId("tool-call").last();
+            const move = card.getByTestId("move-to-background");
+            await expect(move).toBeVisible({ timeout: 30_000 });
+            expect(await phoneProblems(card.getByTestId("move-bar")), `the move bar at ${scale * 100}% text`).toEqual([]);
+            await expect(card.getByTestId("move-keys"), "no key to name on a touch screen").toBeHidden();
+            await inside(page, move);
+            await shoot(page, `phone-surfaces-51-move-to-background-${size.width}-${scale}`);
+            if (scale === 1.5) {
+              await move.tap();
+              await expect(card).toHaveAttribute("data-state", "ok", { timeout: 10_000 });
+            }
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
+    // MOB-S115 (the rename), MOB-S116 (the pop-out)
+    test("a session is renamed from its menu by a tap, and the side panel has no pop-out on a phone", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Rename by tap");
+      try {
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${id}`);
+            // No F2 and no double click to find: the menu has Rename, and the field is in the page.
+            await (await inHead(page, "menu-rename")).tap();
+            const field = page.getByRole("textbox", { name: "Session title" });
+            await expect(field).toBeFocused();
+            await field.fill(`Renamed at ${scale * 100}`);
+            expect(await phoneProblems(page.getByTestId("session-header")), `the title field at ${scale * 100}% text`).toEqual([]);
+            await shoot(page, `phone-surfaces-52-rename-${size.width}-${scale}`);
+            await field.press("Enter");
+            await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).session.title).toBe(`Renamed at ${scale * 100}`);
+            // A panel opened from the menu has no pop-out button, and the command is not offered.
+            await page.getByTestId("session-menu").first().tap();
+            await page.getByTestId("header-more").getByTestId("menu-panel-files").tap();
+            await expect(page.getByTestId("side-panel")).toBeVisible();
+            await expect(page.getByTestId("panel-popout")).toHaveCount(0);
+            await page.getByTestId("composer").first().focus();
+            await page.keyboard.press("Control+k");
+            await page.getByTestId("palette-input").fill("Pop the side panel");
+            await expect(page.getByRole("option", { name: /Pop the side panel out/ })).toHaveCount(0);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
+    // MOB-S117
+    test("'N more below' at the foot of the request region is a finger's target and goes to the request", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const ws = folder(`phone-cue-${size.width}`);
+      const root = await create(request, "Coordinator", ws);
+      try {
+        await request.put(`/api/sessions/${root}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+        const question = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } };
+        const gamma = `Gamma\n${calls([{ ...question, after_ms: 3000 }])}`;
+        const alpha = `Alpha\n${calls([{ name: "spawn_agent", input: { message: gamma, isolation: "none" } }, { name: "Bash", input: { command: "touch alpha.txt" } }])}`;
+        await request.post(`/api/sessions/${root}/messages`, { data: { text: calls([{ name: "spawn_agent", input: { message: alpha, isolation: "none" } }]) } });
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${root}`);
+            const tray = page.getByTestId("composer-tray");
+            const cue = tray.getByTestId("tray-more-below");
+            await expect(cue).toHaveText(/1 more below/, { timeout: 45_000 });
+            expect(await small(cue), `the cue at ${scale * 100}% text`).toEqual([]);
+            const c = (await cue.boundingBox())!, t = (await tray.boundingBox())!;
+            expect(c.x).toBeGreaterThanOrEqual(t.x - 1);
+            expect(c.x + c.width).toBeLessThanOrEqual(size.width);
+            await shoot(page, `phone-surfaces-53-more-below-${size.width}-${scale}`);
+            await cue.tap();
+            await expect(page.getByTestId("question-option").first()).toBeInViewport({ timeout: 10_000 });
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, root);
+      }
+    });
+    // MOB-S118
+    test("Fork into a new worktree is one tap in the session's menu on a phone, and the fork opens with its branch named whole", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `phone-fork-${size.width}-${Date.now()}`);
+      mkdirSync(root, { recursive: true });
+      const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: root, encoding: "utf8" });
+      git("init", "-q", "-b", "main");
+      writeFileSync(join(root, "notes.md"), "main\n");
+      git("add", "-A");
+      git("commit", "-qm", "init");
+      const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Fork walk", workspace: root } })).json();
+      const id = session.id as string;
+      let fork = "";
+      try {
+        await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: "hello" } });
+        await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        const { ctx, page } = await atScale(browser, size, 1.5);
+        try {
+          await page.goto(`/s/${id}`);
+          const item = await inHead(page, "menu-fork-worktree");
+          // The menu scrolls: the row is reached by a swipe, then whole in the page.
+          await item.scrollIntoViewIfNeeded();
+          await expect(item).toBeInViewport({ ratio: 1 });
+          // (A menu scales in: the row is measured once it has settled.)
+          await item.evaluate((el) => Promise.all(el.closest("[data-testid=header-more]")!.getAnimations().map((a) => a.finished)));
+          expect((await item.boundingBox())!.height, "a finger's height").toBeGreaterThanOrEqual(2.75 * 25.5 - 1);
+          await item.tap();
+          await expect(page).toHaveURL(new RegExp(`/s/(?!${id})`), { timeout: 30_000 });
+          fork = new URL(page.url()).pathname.split("/").pop()!;
+          await expect(page.getByTestId("session-menu").first()).toBeVisible();
+          await (async () => { const chip = page.getByTestId("worktree-chip"); await expect(async () => { if (!(await chip.isVisible())) await page.getByTestId("session-menu").first().tap(); await expect(chip).toBeVisible({ timeout: 1500 }); }).toPass({ timeout: 15_000 }); })();
+          expect(await phoneProblems(page.getByTestId("header-more")).then((p) => p.filter((x) => !x.startsWith("small:"))), "the menu of the fork").toEqual([]);
+          await shoot(page, `phone-surfaces-54-fork-worktree-${size.width}`);
+        } finally { await ctx.close(); }
+      } finally {
+        await drop(request, id, ...(fork ? [fork] : []));
+      }
+    });
   });
 }
