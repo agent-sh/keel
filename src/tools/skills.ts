@@ -34,6 +34,8 @@ export type Skill = {
   kind: "skill" | "command"; // a SKILL.md folder, or a command file (<name>.md)
   root: string; // the folder it was found in (~/.claude/skills, <repo>/.agents/skills)
   enabled: boolean; // the owner can turn a skill off without deleting it
+  // Other folders hold a different file under this name and are not used: this one was found first.
+  shadows?: { file: string; scope: Skill["scope"]; plugin?: string }[];
   same?: string; // the skill found first whose file is byte for byte this one (a plugin's copy of a folder the owner keeps too): not listed to the model, still loaded by name
   data?: string; // a plugin's folder that outlives its updates (${CLAUDE_PLUGIN_DATA})
   plugin?: string; // the installed plugin it came with
@@ -196,6 +198,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
   const off = skillsOff();
   const seenReal = new Set<string>();
   const firstOf = new Map<string, string>();
+  const texts = new Map<string, string>(); // the file each name was taken from, to tell a copy from a different file
   // `held` is what the trust pin decides on: a skill's folder, a command's file.
   const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"], prefix = "", chosen = false, unit?: { id: string; data: string }) => {
     let real: string;
@@ -210,7 +213,13 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
     try { text = readFileSync(file, "utf8"); } catch { return; }
     const { data, body } = frontmatter(text);
     const name = prefix + String((kind === "skill" && data.name) || fallback);
-    if (out.has(name) || /[<>​]/.test(name)) return;
+    if (/[<>​]/.test(name)) return;
+    const used = out.get(name);
+    if (used) {
+      // The name is taken: a file that differs from the one used is told on it (a second copy of the same file loses nothing).
+      if (texts.get(name) !== text) (used.shadows ??= []).push({ file, scope, ...(unit ? { plugin: unit.id } : {}) });
+      return;
+    }
     const desc = skillDescription(data, body);
     // A folder the owner chose (another harness's skills, a plugin) keeps every skill it holds.
     if (scope === "personal" && !chosen && foreignSkill(name, desc, body)) return;
@@ -218,6 +227,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
     const same = enabled ? firstOf.get(`${kind}\0${text}`) : undefined;
     if (enabled && !same) firstOf.set(`${kind}\0${text}`, name);
     const args = Array.isArray(data.arguments) ? data.arguments : typeof data.arguments === "string" ? data.arguments.split(/\s+/).filter(Boolean) : [];
+    texts.set(name, text);
     out.set(name, {
       name, description: desc, dir: dirname(file), file, scope, kind,
       argumentHint: data["argument-hint"] || undefined,

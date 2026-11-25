@@ -99,3 +99,29 @@ test("a second copy of a skill file is not listed, and still loads by its name",
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Two folders holding one name: the first found is used. A different file under the name is told on the used skill
+// (which file is not used); a second copy of the same file loses nothing and says nothing.
+test("a name two folders hold with different files names the file not used", async () => {
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { discoverSkills } = await import("./skills.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "skills-shadow-"));
+  mkdirSync(join(dir, ".git"));
+  const put = (root: string, folder: string, text: string) => {
+    mkdirSync(join(dir, root, folder), { recursive: true });
+    writeFileSync(join(dir, root, folder, "SKILL.md"), text);
+  };
+  try {
+    put(".claude/skills", "plan", "---\ndescription: First\n---\nOne\n");
+    put(".agents/skills", "plan", "---\ndescription: Second\n---\nTwo\n");
+    put(".claude/skills", "kept", "---\ndescription: Same\n---\nOne\n");
+    put(".agents/skills", "kept", "---\ndescription: Same\n---\nOne\n");
+    const found = discoverSkills(dir).filter((s) => s.scope === "project");
+    expect(found.find((s) => s.name === "plan")!.file).toBe(join(dir, ".claude/skills/plan/SKILL.md"));
+    expect(found.find((s) => s.name === "plan")!.shadows?.map((x) => x.file)).toEqual([join(dir, ".agents/skills/plan/SKILL.md")]);
+    expect(found.find((s) => s.name === "kept")!.shadows).toBeUndefined();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

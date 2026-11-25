@@ -339,3 +339,46 @@ test("skills: disallowed-tools for the turn, hooks for the session", async ({ re
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+// Feature: the Skills page says which skill is a second copy of another file (the model's list names the first and
+// leaves the copy out), and which name two folders hold with different files (the first found is used).
+test("skills: a copy of a skill file and a name two folders hold are said on the page", async ({ page, request }) => {
+  const dev = process.env.KEEL_DEV_DIR;
+  test.skip(!dev, "needs the scratch daemon's folder (KEEL_DEV_DIR): the skill folders are written there");
+  const own = join(dev!, "config/skills"), other = join(dev!, `other-skills-${Date.now()}`), cfg = join(dev!, "config/skills.json");
+  const was = existsSync(cfg) ? readFileSync(cfg, "utf8") : null;
+  const put = (dir: string, name: string, text: string) => { mkdirSync(join(dir, name), { recursive: true }); writeFileSync(join(dir, name, "SKILL.md"), text); };
+  const copy = "---\ndescription: A skill file kept twice\n---\nSteps\n";
+  put(own, "copy-a", copy);
+  put(own, "copy-b", copy);
+  put(own, "twice", "---\ndescription: Held in two folders, this one is used\n---\nOne\n");
+  put(other, "twice", "---\ndescription: Held in two folders, not used\n---\nTwo\n");
+  writeFileSync(cfg, JSON.stringify({ ...(was ? JSON.parse(was) : {}), roots: [{ dir: other }] }));
+  try {
+    const ws = join(dev!, "skills-twice-ws");
+    mkdirSync(ws, { recursive: true });
+    const skills = async () => (await (await request.get(`/api/skills?cwd=${encodeURIComponent(ws)}`)).json()).skills as any[];
+    const by = async (n: string) => (await skills()).find((x) => x.name === n);
+    expect(await by("copy-b")).toMatchObject({ same: "copy-a", listing_tokens: 0 });
+    expect((await by("copy-a")).same).toBeNull();
+    expect((await by("twice")).shadows.map((x: any) => x.file)).toEqual([join(other, "twice/SKILL.md")]);
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto("/customize/skills");
+    await expect(page.getByTestId("toolkit-folder")).toContainText("copies");
+    await expect(page.getByTestId("toolkit-folder")).toContainText("names twice");
+    // (By the name's own text: a description may hold the word too.)
+    const row = (n: string) => page.getByTestId("skill-entry").filter({ has: page.getByText(n, { exact: true }) }).first();
+    await expect(row("copy-b")).toContainText("copy");
+    await row("copy-b").click();
+    await expect(page.getByTestId("skill-copy")).toContainText("Same file as copy-a");
+    await shoot(page, "skills-05-copy");
+    await row("twice").click();
+    await expect(page.getByTestId("skill-shadows")).toContainText("different twice");
+    await expect(page.getByTestId("skill-shadows")).toContainText("This file is the one used");
+    await shoot(page, "skills-06-name-twice");
+  } finally {
+    if (was === null) rmSync(cfg, { force: true }); else writeFileSync(cfg, was);
+    for (const n of ["copy-a", "copy-b", "twice"]) rmSync(join(own, n), { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  }
+});

@@ -161,8 +161,11 @@ export function scanFiles(ask: FilesAsk): FilesResult {
         const { name, foreign } = checked;
         if (foreign) continue;
         const first = taken.get(name);
-        if (first) findings.push({ group: "settings", level: "warning", kind: it.kind, path: it.file, name, layer: it.layer, why: `${name} is never offered: ${first} has the same name and is read first`, fix: "rename or delete one of the two" });
-        else taken.set(name, it.file);
+        if (first) {
+          // A second copy of the same file loses nothing; a different file under the name is hidden by the first.
+          const a = text(first), b = text(it.file);
+          if ("text" in a && "text" in b && a.text !== b.text) findings.push({ group: "settings", level: "warning", kind: it.kind, path: it.file, name, layer: it.layer, why: `${name} is never offered: ${first} holds a different file under the same name, is read first and is the one used`, fix: "rename or delete one of the two" });
+        } else taken.set(name, it.file);
       } else {
         const checked = check(it);
         if (!checked) continue;

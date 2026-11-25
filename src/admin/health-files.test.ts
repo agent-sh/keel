@@ -137,3 +137,21 @@ test("the walk mirrors what the skill list leaves out: another harness's skill a
     expect(shadow.filter((f) => f.name === "held" && /never offered/.test(f.why))).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("two folders that hold one skill name: a different file is told with which one is used, a copy of the same file is not", () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-health-names-"));
+  try {
+    const put = (path: string, text: string) => { mkdirSync(join(root, path, ".."), { recursive: true }); writeFileSync(join(root, path), text); };
+    const one = "---\nname: same\ndescription: one\n---\nx";
+    put("a/same/SKILL.md", one);
+    put("b/same/SKILL.md", one);
+    put("a/diff/SKILL.md", "---\nname: diff\ndescription: first\n---\nx");
+    put("b/diff/SKILL.md", "---\nname: diff\ndescription: second\n---\nx");
+    const r = scanFiles({ folders: [{ dir: join(root, "a"), kind: "skill", layer: "personal" }, { dir: join(root, "b"), kind: "skill", layer: "personal" }], plugins: [], builtins: [], json: [] });
+    expect(r.findings.map((f) => [f.name, f.path.slice(root.length + 1), f.why])).toEqual([
+      ["diff", "b/diff/SKILL.md", `diff is never offered: ${join(root, "a/diff/SKILL.md")} holds a different file under the same name, is read first and is the one used`],
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

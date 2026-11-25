@@ -83,6 +83,8 @@ export const surfaceRoutes: RouteModule = (deps) => {
     // What it costs: its line in every session's listing, and its body when loaded (about 4 characters a token).
     // A second copy of a skill file is not listed: the name of the first, and no cost.
     same: s.same ?? null,
+    // Other folders that hold a different file under this name: this one was found first and is the one used.
+    shadows: s.shadows ?? [],
     listing_tokens: s.modelInvocable && !s.same ? Math.ceil((s.name.length + s.description.length + 4) / 4) : 0,
     // Past the listing's budget its description is left out (the least loaded first).
     name_only: s.modelInvocable && s.enabled && !s.same && nameOnly.has(s.name),

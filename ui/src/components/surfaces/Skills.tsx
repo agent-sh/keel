@@ -2,12 +2,14 @@
 // comes from, its file, on and off, and a new one.
 import { useCallback, useEffect, useState } from "react";
 import { api, reportError } from "../../lib/store.ts";
-import { Blank, FileEditor, FolderLine, Ledger, NewFile, ReaderHead, Toggle, tok, useFolder, type Group, type Mark } from "./kit.tsx";
+import { Blank, FileEditor, FolderLine, Ledger, NewFile, ReaderHead, Toggle, tilde, tok, useFolder, type Group, type Mark } from "./kit.tsx";
 
 export type SkillInfo = {
   name: string; description: string; scope: "personal" | "project"; kind: "skill" | "command"; root: string; dir: string; file: string;
   enabled: boolean; user_invocable: boolean; model_invocable: boolean; argument_hint?: string;
   trust: "trusted" | "new" | "changed" | "gone" | null; listing_tokens: number;
+  same?: string | null; // a second copy of the skill file of that name: not listed to the model
+  shadows?: { file: string; scope: string; plugin?: string }[]; // files of other folders that hold this name with different content: not used
   name_only?: boolean; // past the listing's budget: the model sees its name, not its description
 };
 // What the listing may take: a share of the default model's window, in characters.
@@ -63,11 +65,21 @@ export function SkillReader({ name, cwd, onChanged, listing }: { name: string; c
           ["Kind", s.kind === "command" ? "command file" : "skill"],
           ["Runs for", loads(s)],
           ...(s.argument_hint ? [["Arguments", s.argument_hint] as [string, string]] : []),
-          ["Every session", !s.model_invocable || !s.enabled ? "nothing" : s.name_only ? "its name only" : `~${tok(s.listing_tokens)} tokens`],
+          ["Every session", !s.model_invocable || !s.enabled ? "nothing" : s.same ? "nothing (a copy)" : s.name_only ? "its name only" : `~${tok(s.listing_tokens)} tokens`],
           ["When loaded", `~${tok(d.body_tokens)} tokens`],
           ...(s.trust ? [["Trust", s.trust] as [string, string]] : []),
         ]}
       >
+        {s.same && s.enabled && (
+          <div className="k-issue mt-3" data-tone="quiet" data-testid="skill-copy">
+            Same file as <b>{s.same}</b>: the model's list names that one and leaves this copy out. It still loads by its name.
+          </div>
+        )}
+        {!!s.shadows?.length && (
+          <div className="k-issue mt-3" data-tone="need" data-testid="skill-shadows">
+            Another folder holds a different {s.name}: <b>{s.shadows.map((x) => tilde(x.file)).join(", ")}</b>. This file is the one used; the other is never read. Rename or delete one of them.
+          </div>
+        )}
         {s.name_only && s.enabled && (
           <div className="k-issue mt-3" data-tone="quiet" data-testid="skill-name-only">
             Listed by name only: the skill list is past its budget{listing ? ` of ${listing.budget.toLocaleString()} characters (1% of ${listing.model ? `${listing.model}'s` : "the model's"} context window)` : ""}, and the skills loaded least lose their descriptions first. The model can still load it by name.
@@ -107,7 +119,9 @@ export default function Skills() {
   return (
     <div data-testid="skills-settings">
       <FolderLine tally={[
-        { n: list.length, label: "skills" },
+        { n: list.filter((s) => !s.same).length, label: "skills" },
+        ...(list.some((s) => s.same) ? [{ n: list.filter((s) => s.same).length, label: "copies" }] : []),
+        ...(list.some((s) => s.shadows?.length) ? [{ n: list.filter((s) => s.shadows?.length).length, label: "names twice", tone: "need" as const }] : []),
         { n: list.filter((s) => !s.enabled).length, label: "off" },
         ...(held ? [{ n: held, label: "held", tone: "need" as const }] : []),
         ...(data?.listing?.name_only ? [{ n: data.listing.name_only, label: "name only" }] : []),
@@ -115,7 +129,7 @@ export default function Skills() {
       ]} />
       <Ledger
         testid="skills-ledger"
-        groups={groupSkills(list, (s) => (!s.enabled ? "off" : !s.model_invocable ? "by hand" : s.name_only ? "name only" : `${tok(s.listing_tokens)} tok`))}
+        groups={groupSkills(list, (s) => (!s.enabled ? "off" : !s.model_invocable ? "by hand" : s.same ? "copy" : s.name_only ? "name only" : `${tok(s.listing_tokens)} tok`))}
         selected={sel}
         onSelect={setSel}
         add={[{ id: "+new", label: "New skill" }]}
