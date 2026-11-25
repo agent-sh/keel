@@ -84,8 +84,6 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     // Eight agents started together are one line in the conversation, which opens to each agent's own line.
     const started = station(page, coord).locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
     const open = async () => { await expect(started).toContainText("Started 8 agents"); if ((await started.getAttribute("aria-expanded")) !== "true") await started.click(); };
-    await open();
-
     // The session itself counts every agent by state (its dock's word Agents says them all), and names each live one over
     // the box by its dot and title: what works, waits, needs the owner or failed unseen; the done one is in the list it opens.
     // The sidebar says no number: its row has a chevron that opens the tree.
@@ -95,11 +93,16 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await summary.toHaveText("8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
     await expect(dock).toHaveAttribute("title", "8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
     const named = page.getByTestId("dock-agents-summary").getByTestId("dock-agent");
-    // The live ones named over the box, by state (a failure stays named until the owner looked at it).
+    // Check the unseen failure before touching the pane: clicking to switch
+    // views marks it seen, so that click and this check must not race.
+    const namedStates = () => named.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch") ?? "").sort());
     const live = async () => (await named.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch") ?? ""))).filter((w) => w !== "fail").sort();
-    expect((await named.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")))).sort()).toEqual(["fail", "need", "wait", "wait", "work", "work", "work"]);
+    await expect.poll(namedStates).toEqual(["fail", "need", "wait", "wait", "work", "work", "work"]);
     for (const l of LANES.filter((x) => x.word !== "Done")) await expect(named.filter({ hasText: l.title }).locator(".k-mark"), `named: ${l.title}`).toBeVisible();
     await expect(named.filter({ hasText: "Summarize the open issues" })).toHaveCount(0);
+    // The Conversation lens is the default, and the call rows are in the full stream.
+    await station(page, coord).getByTestId("lens-to-stream").click();
+    await open();
     await expect(kids.getByTestId("children-total")).toHaveCount(0);
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await toggle.click();

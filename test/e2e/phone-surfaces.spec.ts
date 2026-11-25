@@ -989,16 +989,20 @@ for (const size of SIZES) {
         const pane = page.getByRole("region", { name: /Phone ACP children/ });
         await pane.getByTestId("composer").fill("start the children");
         await page.keyboard.press("Enter");
-        const lines = pane.getByTestId("agent-line");
-        await expect(lines).toHaveCount(2, { timeout: 45_000 });
         await expect(pane.getByTestId("approval").first()).toBeVisible({ timeout: 30_000 });
+        // The approval takes most of the reading space on a phone. The
+        // header's menu switches views without reaching behind the card.
+        await pane.getByTestId("session-menu").tap();
+        await page.getByTestId("menu-stream").tap({ timeout: 10_000 });
+        const lines = pane.getByTestId("agent-line");
+        await expect(lines).toHaveCount(2);
         // Each child's row: its name and what it asks are whole (a line of the row, wrapped), and every control is a target.
         const cut = await lines.evaluateAll((els) => els.flatMap((l) => [...l.querySelectorAll<HTMLElement>('[data-testid="agent-line-name"], [data-testid="agent-line-step"]')].filter((e) => e.scrollWidth > e.clientWidth + 1 || e.scrollHeight > e.clientHeight + 1).map((e) => e.textContent)));
         expect(cut, "words of the child rows cut off").toEqual([]);
         await noSideScroll(page);
         await shoot(page, `phone-surfaces-25-acp-children-${size.width}`);
         // The step's own line for each child names it too.
-        await pane.getByTestId("work-step").locator(".k-line[data-step]").first().tap();
+        await pane.getByTestId("work-step").locator(".k-line[data-step]").first().tap({ timeout: 10_000 });
         const titles = pane.getByTestId("agent-call-title");
         await expect(titles).toHaveCount(2);
         for (const t of await titles.all()) {

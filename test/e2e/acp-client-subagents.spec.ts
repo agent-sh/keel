@@ -24,6 +24,8 @@ test("acp client subagents", async ({ page, request }) => {
 
     // Both children are rows under the session with their titles, the agent's own labels.
     await expect.poll(async () => (await agents()).map((a) => a.title).sort(), { timeout: 30_000 }).toEqual(["Doc checker", "Test investigator"]);
+    await page.getByTestId("session-menu").click();
+    await page.getByTestId("menu-stream").click({ timeout: 10_000 });
     const lines = page.getByTestId("agent-line");
     await expect(lines).toHaveCount(2);
     await expect(lines.filter({ hasText: "Test investigator" })).toBeVisible();
@@ -40,7 +42,9 @@ test("acp client subagents", async ({ page, request }) => {
     expect(test_.external?.state).toBe("requires_action");
     expect(((await (await request.get(`/api/sessions/${test_.session_id}/approvals?all=1`)).json()).approvals as { summary: string }[]).map((a) => a.summary)).toEqual([expect.stringContaining("touch investigated.txt")]);
     await shoot(page, "acp-children-01-ask");
-    await card.getByTestId("allow-once").click();
+    const allow = card.getByTestId("allow-once");
+    await expect(allow).not.toHaveAttribute("aria-disabled", "true");
+    await allow.click();
     await expect.poll(async () => (await agents()).find((a) => a.id === test_.id)?.status, { timeout: 30_000 }).toBe("completed");
 
     // Its transcript is its own: the parent's task as a message from the parent, its thought and reply, its call.
