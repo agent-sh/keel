@@ -4,9 +4,9 @@
 import { useState } from "react";
 import { AudioLines, Mic, Square, X } from "lucide-react";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
-import { dismissDictationError, stopDictation, toggleDictation, useDictation } from "../lib/dictation.ts";
+import { dismissDictationError, stopDictation, toggleDictation, useDictation, warmDictation } from "../lib/dictation.ts";
 import { commandKeys, composing } from "../lib/keys.ts";
-import { chooseVoice, dismissConversationError, skipVoice, stop as endConversation, toggleConversation, useConversation } from "../lib/talk.ts";
+import { chooseVoice, dismissConversationError, skipVoice, stop as endConversation, toggleConversation, useConversation, warmConversation } from "../lib/talk.ts";
 import { useStore } from "../lib/store.ts";
 import { useWatch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
@@ -30,6 +30,8 @@ export function SpeechButtons({ sid }: { sid: string | undefined }) {
         aria-label={dictating ? "Stop dictating" : "Dictate"}
         title={dictating ? withKeys("Stop dictating", "dictate") : withKeys("Dictate: speak, and the words go in the box", "dictate")}
         disabled={talking}
+        onPointerEnter={warmDictation}
+        onFocus={warmDictation}
         onClick={() => toggleDictation()}
         className={cn(button, "k-dictate relative disabled:opacity-40")}
       >
@@ -44,6 +46,8 @@ export function SpeechButtons({ sid }: { sid: string | undefined }) {
           aria-label={talking ? "End the conversation" : "Talk with this session"}
           title={talking ? withKeys("End the conversation (Esc also ends it)", "converse") : withKeys("Conversation: speak a message, hear the reply, and go on", "converse")}
           disabled={dictating}
+          onPointerEnter={warmConversation}
+          onFocus={warmConversation}
           onClick={() => toggleConversation(sid)}
           className={cn(button, "disabled:opacity-40")}
         >

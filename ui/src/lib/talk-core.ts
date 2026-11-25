@@ -36,19 +36,7 @@ export function vadStep(v: Vad, level: number, now: number, silenceMs: number): 
 
 // ---- the words in the box ----
 
-// What stood before and after the caret when dictation began.
-export type Base = { before: string; after: string };
-const closes = /^[\s.,;:!?)\]}'"]/;
-// The box with the dictated words at the caret: a space between words and what is around them where
-// there is none, and the caret at the end of the words.
-export function dictated(base: Base, words: string): { text: string; caret: number } {
-  const w = words.trim();
-  if (!w) return { text: base.before + base.after, caret: base.before.length };
-  const lead = base.before && !/\s$/.test(base.before) ? " " : "";
-  const trail = base.after && !closes.test(base.after) ? " " : "";
-  const head = base.before + lead + w;
-  return { text: head + trail + base.after, caret: head.length };
-}
+export { dictated, type Base } from "./dictated.ts";
 
 // ---- what is read aloud ----
 

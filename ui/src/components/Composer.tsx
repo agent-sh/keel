@@ -23,7 +23,7 @@ import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { PASTED } from "../lib/paste-key.ts";
 import { registerBox, withQuote } from "../lib/quote.ts";
 import { registerDictation } from "../lib/dictation.ts";
-import { dictated, type Base } from "../lib/talk-core.ts";
+import { dictated, type Base } from "../lib/dictated.ts";
 import { SpeechBand, SpeechButtons } from "./Speech.tsx";
 import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
 import { appSaysNow, useAppSays } from "./Stale.tsx";
