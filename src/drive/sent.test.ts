@@ -154,7 +154,8 @@ test("a send to a session on another machine: its Keel is told first; one too ol
     // Once it takes them, a link to it brings it everything that waited, once, and then that nothing more waits;
     // every later link says so again.
     keel = "new";
-    await farCatchUp(store, "m1", ["FAR"]);
+    // The machine was named again since: what waits for it is found by its id.
+    await farCatchUp(store, "m1", ["renamed"]);
     expect(posted.map(([id, d]) => [id, new Set(d)])).toEqual([["m1", new Set([...digestsOf("hello there"), ...digestsOf("second")])]]);
     expect(caught).toEqual(["m1"]);
     await farCatchUp(store, "m1", ["far"]);
@@ -183,7 +184,7 @@ test("a send to a session on another machine: its Keel is told first; one too ol
     // (with the send that could not be told while the link was down)
     const total = digestsOf(big).length + digestsOf("fourth").length;
     expect(posted.map(([, d]) => d.length)).toEqual([...Array(Math.floor(total / 4096)).fill(4096), total % 4096]);
-    expect(store.db.query("SELECT COUNT(*) AS n FROM drive_sends_far WHERE host = 'far'").get()).toEqual({ n: 0 });
+    expect(store.db.query("SELECT COUNT(*) AS n FROM drive_far_waiting WHERE target = 'm:m1'").get()).toEqual({ n: 0 });
     expect(unknown).toEqual(["nowhere"]);
   } finally {
     onFarSent(undefined);

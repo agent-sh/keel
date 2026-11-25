@@ -121,48 +121,49 @@ export function farTeller(o: { machine: (host: string) => { id: string; ssh: boo
   };
 }
 
-// What waits for a far machine's Keel: kept with the host the send went to (as the fleet names it, in lower case)
-// until that Keel took it, so a Keel that could not keep it yet (an older build) gets it once it can, before it
-// copies a session the drive sent into. A host with no Keel the fleet reaches keeps its digests too: a Keel paired
-// there later is told them.
-const FAR = "CREATE TABLE IF NOT EXISTS drive_sends_far (host TEXT NOT NULL, digest TEXT NOT NULL, sent_ms INTEGER NOT NULL, PRIMARY KEY (host, digest))";
+// What waits for a far machine's Keel: kept until that Keel took it, so a Keel that could not keep it yet (an older
+// build) gets it once it can, before it copies a session the drive sent into. Kept by the machine's id when the
+// fleet knew the host (`m:<id>`: a later name of the machine finds it), else by the host as the agent view named it
+// (`h:<host>`, in lower case: a Keel paired there later, under that name, is told it).
+const FAR = "CREATE TABLE IF NOT EXISTS drive_far_waiting (target TEXT NOT NULL, digest TEXT NOT NULL, sent_ms INTEGER NOT NULL, PRIMARY KEY (target, digest))";
 const PART = 4096; // what the route takes at once (noteDigests)
 
 // A send into a session on `host`: its digests wait for that host's Keel, which is told them (and whatever else
 // waits for it) before the words go. The send may go unless this throws.
 export async function farSent(store: Store, host: string, digests: string[]): Promise<FarAnswer | undefined> {
   if (!host || !digests.length || !far) return undefined;
-  const h = host.toLowerCase();
-  store.migrate(FAR);
-  const q = store.db.query("INSERT OR IGNORE INTO drive_sends_far (host, digest, sent_ms) VALUES (?, ?, ?)");
-  const now = Date.now();
-  store.db.transaction(() => { for (const d of digests) q.run(h, d, now); })();
   const id = far.machine(host, false);
-  return id ? pushFar(store, far, h, id) : "none";
+  const target = id ? `m:${id}` : `h:${host.toLowerCase()}`;
+  store.migrate(FAR);
+  const q = store.db.query("INSERT OR IGNORE INTO drive_far_waiting (target, digest, sent_ms) VALUES (?, ?, ?)");
+  const now = Date.now();
+  store.db.transaction(() => { for (const d of digests) q.run(target, d, now); })();
+  return id ? pushFar(store, far, target, id) : "none";
 }
 
-// What waits for the host, a part at a time from its index (an older Keel's host can gather many): each part is
-// read, told and removed before the next is read.
-async function pushFar(store: Store, to: Far, host: string, id: string): Promise<"told" | "old"> {
-  const read = store.db.query<{ digest: string }, [string, number]>("SELECT digest FROM drive_sends_far WHERE host = ? LIMIT ?");
-  const del = store.db.query("DELETE FROM drive_sends_far WHERE host = ? AND digest = ?");
+// What waits under `target`, a part at a time from its index (an older Keel's machine can gather many): each part
+// is read, told and removed before the next is read.
+async function pushFar(store: Store, to: Far, target: string, id: string): Promise<"told" | "old"> {
+  const read = store.db.query<{ digest: string }, [string, number]>("SELECT digest FROM drive_far_waiting WHERE target = ? LIMIT ?");
+  const del = store.db.query("DELETE FROM drive_far_waiting WHERE target = ? AND digest = ?");
   for (;;) {
-    const part = read.all(host, PART).map((r) => r.digest);
+    const part = read.all(target, PART).map((r) => r.digest);
     if (!part.length) return "told";
     if ((await to.post(id, part, false)) === "old") return "old";
-    store.db.transaction(() => { for (const d of part) del.run(host, d); })();
+    store.db.transaction(() => { for (const d of part) del.run(target, d); })();
     if (part.length < PART) return "told";
   }
 }
 
-// A link to machine `id` came up (`hosts`: the names the fleet knows it by): its Keel is told what still waits for
-// it, then that nothing more does (caught up), even when nothing waited. Until every Keel paired with it has said
-// so, a Keel counts no prompt of a copy as the owner's (typedHeld): a send it was not told of may be in its sessions.
-// Throws when that Keel is out of reach again: its next link tries.
+// A link to machine `id` came up (`hosts`: the names the fleet knows it by now): its Keel is told what waits for it
+// by its id and under each of those names, then that nothing more does (caught up), even when nothing waited. Until
+// every Keel paired with it has said so, a Keel counts no prompt of a copy as the owner's (typedHeld): a send it was
+// not told of may be in its sessions. Throws when that Keel is out of reach again: its next link tries.
 export async function farCatchUp(store: Store, id: string, hosts: string[]) {
   const to = far;
   if (!to) return;
   store.migrate(FAR);
-  for (const h of new Set(hosts.filter(Boolean).map((x) => x.toLowerCase()))) if ((await pushFar(store, to, h, id)) === "old") return;
+  const targets = [`m:${id}`, ...new Set(hosts.filter(Boolean).map((x) => `h:${x.toLowerCase()}`))];
+  for (const t of targets) if ((await pushFar(store, to, t, id)) === "old") return;
   await to.post(id, [], true);
 }
