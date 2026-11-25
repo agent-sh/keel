@@ -652,7 +652,8 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
       {need > 0 && !fresh && (
         // The need mark and the count, the words for a screen reader: the marks keep the row's room.
         <button type="button" className="k-dock-need" data-testid="dock-need" aria-label={countWord("need", need)} title={countWord("need", need)} onClick={goNextWaiting}>
-          <span className="k-dock-need-n" aria-hidden="true"><span className="k-dock-need-mark" />{need}</span>
+          {/* The state's dot is its one color, the count in ink beside it: no pill, as the line over the box names an agent. */}
+          <span className="k-dock-need-n" aria-hidden="true"><Mark w="need" />{need}</span>
           <span className="sr-only" aria-live="polite">{countWord("need", need)}</span>
         </button>
       )}

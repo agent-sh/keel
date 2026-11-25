@@ -584,6 +584,17 @@ test("the phone strip says how many need the owner, in plain words to a reader, 
     await expect(dock.locator('.k-dock-mark[data-watch="need"]').getByTestId("dock-code")).toHaveText("Clean");
     await expect(dock.locator(".k-dock-mark[aria-current]").getByTestId("dock-code")).toHaveText("Explain");
     expect((await dock.getByTestId("dock-code").allInnerTexts()).length).toBeGreaterThanOrEqual(2);
+    // The strip keeps the desk's calm rules: a name in the text face and its regular weight, the state's color on its
+    // dot alone (no filled pill), a count as a figure (no ring, no fill).
+    const look = await dock.evaluate((d) => {
+      const code = getComputedStyle(d.querySelector('[data-testid="dock-code"]')!);
+      const need = d.querySelector<HTMLElement>(".k-dock-need-n")!;
+      return { face: code.fontFamily.split(",")[0], weight: code.fontWeight, fill: getComputedStyle(need).backgroundColor, dot: !!need.querySelector('.k-mark[data-watch="need"]') };
+    });
+    expect(look.face, "a name is in the text face").toContain("Plex Sans");
+    expect(look.weight, "a name is regular").toBe("400");
+    expect(look.fill, "no filled pill").toMatch(/^(transparent|rgba\(0, 0, 0, 0\))$/);
+    expect(look.dot, "the need is said by its dot").toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await shoot(page, "session-state-10-phone-strip");
   } finally {

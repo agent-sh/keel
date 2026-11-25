@@ -387,8 +387,8 @@
 /* (The list's and the top bar's figures, in the text face: tabular, so a clock does not jitter.) */
 .k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-n, .k-stuck-chip, .k-tick-more, .k-act-count, .k-act-n, .k-inbox-count, .k-machine-sep-count { font-variant-numeric: tabular-nums; }
 /* 1. A session's call sign on the folded rail. */
+.k-tick .k-tick-code { font-family: var(--font-inst); font-stretch: 75%; }
 .k-hour-inferred { background-image: repeating-linear-gradient(135deg, transparent 0 0.1875rem, var(--hour-hatch) 0.1875rem 0.3125rem); }
-.k-tick-code, .k-dock-code { font-family: var(--font-inst); font-stretch: 75%; }
 /* The name of a surface (the product, a page, a panel, a dialog) is set in the text face, as a heading: the one
    face the page reads in, tightened a little at a title's size. */
 .k-face-title, .text-display, .text-title, .k-page h1, .k-surface-title {
