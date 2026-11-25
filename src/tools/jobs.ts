@@ -1081,7 +1081,9 @@ function watchAdopted() {
 // (checked again each time, until nothing of it is left).
 export const running = (j: Job) => {
   if (j.ended === undefined) return true;
-  if (j.left && Date.now() - (j.looked ?? 0) >= LOOK_MS) {
+  // (A look stamped after now was made before the clock was set back: it is due.)
+  const since = Date.now() - (j.looked ?? 0);
+  if (j.left && (since < 0 || since >= LOOK_MS)) {
     j.looked = Date.now();
     // The processes known to be left are read one by one. Only when they are gone is the rest looked
     // for (others of the group, the cgroup, what carries the mark): once, and then by pid again.
@@ -1255,7 +1257,9 @@ type Row = { state: string; parent: number; group: number; session: number; star
 const TABLE_MS = 15;
 let table: { at: number; rows: Map<number, Row> } | undefined;
 function procTable(fresh = false): Map<number, Row> {
-  if (!fresh && table && Date.now() - table.at < TABLE_MS) return table.rows;
+  // (A table stamped after now was read before the clock was set back: it is as old as the clock's step back, and is not shared.)
+  const age = table ? Date.now() - table.at : -1;
+  if (!fresh && table && age >= 0 && age < TABLE_MS) return table.rows;
   const rows = new Map<number, Row>();
   let names: string[] = [];
   try { names = readdirSync("/proc"); } catch {}
@@ -1281,7 +1285,8 @@ const lives = (pid: number, start?: string) => { const r = rowOf(pid); return !d
 // carries a job's mark or sits in its group (a daemon a job started, over the same state folder).
 let line: { at: number; pids: Set<number> } | undefined;
 function selfLine(): Set<number> {
-  if (line && Date.now() - line.at < 1000) return line.pids;
+  const age = line ? Date.now() - line.at : -1;
+  if (line && age >= 0 && age < 1000) return line.pids;
   const out = new Set<number>([process.pid]);
   for (let pid = process.pid, i = 0; pid > 1 && i < 64; i++) {
     let ppid: number;
@@ -1331,7 +1336,9 @@ const MARKS_MS = 300;
 let marks: { at: number; by: Map<string, number[]> } | undefined;
 // Every marked process by its mark, read here and now (a call a restart cut is answered at once).
 function marksNow(fresh = false): Map<string, number[]> {
-  if (!fresh && marks && Date.now() - marks.at < MARKS_MS) return marks.by;
+  // (As the table of processes: one stamped after now is not shared.)
+  const age = marks ? Date.now() - marks.at : -1;
+  if (!fresh && marks && age >= 0 && age < MARKS_MS) return marks.by;
   const by = new Map<string, number[]>();
   const head = Buffer.from(`${MARK}=`);
   let names: string[] = [];
@@ -1479,7 +1486,8 @@ export const cgroupHoldsSelf = (cgroup: string): boolean => {
 // that a job's end settled something must not see a process the snapshot kept after it ended).
 export const jobHasProcesses = (j: Job, fresh = false): boolean => jobLive(j) || members(j, { fresh }).length > 0;
 // The pids alive of a job, as jobHasProcesses finds them (a wait looks at their open files).
-export const jobPidsOf = (j: Job): number[] => members(j).map((m) => m.pid);
+// `fresh`: from the processes as they are now, not from the table the looks of one moment share.
+export const jobPidsOf = (j: Job, fresh = false): number[] => members(j, { fresh }).map((m) => m.pid);
 // The processes of each session's commands that still run, by what the daemon holds each command by: its cgroup
 // (the scope it was started in), else its process group and session, each with its start time checked (members).
 // Never by what a process says of itself: its environment is its own to set.

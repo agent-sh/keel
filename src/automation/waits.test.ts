@@ -776,6 +776,36 @@ test("a log wait on a file a job writes inside itself ends at the job's end, wit
   expect(wakes(w.id)[0]).toContain(`The job that writes ${out} ended and no line of it matched ^DONE$.`);
 });
 
+// The look for the process that holds the file is made once, and then not again for seconds: it reads the
+// processes as they are, not the table the looks of the moment before shared. (Where a cgroup holds the job, the
+// cgroup names its processes and this passes either way; with its process group alone, the table is all there is.)
+test("a wait set in the moment its writer started finds the writer", async () => {
+  const jobs = await import("../tools/jobs.ts");
+  const out = join(dir, "moment.log");
+  const script = join(dir, "moment.sh");
+  const go = join(dir, "moment.go");
+  writeFileSync(script, `exec 3>>"${out}"\necho started >&3\nwhile [ ! -e "${go}" ]; do sleep 0.02; done\n`);
+  const before = jobs.startJob({ sessionId: s.id, command: `while [ ! -e "${go}" ]; do sleep 0.02; done`, cwd: dir, logDir: join(dir, "jobs") });
+  let job: ReturnType<typeof jobs.startJob> | undefined;
+  let w: ReturnType<typeof waits.create> | undefined;
+  try {
+    // The clock stands still from a look at the processes to the wait: the table read here, before the writer
+    // started, is the one the looks of that moment share.
+    setSystemTime(new Date(Date.now() + 60_000));
+    expect(jobs.jobPidsOf(before).length).toBeGreaterThan(0);
+    job = jobs.startJob({ sessionId: s.id, command: `bash ${script}`, cwd: dir, logDir: join(dir, "jobs") });
+    await until(() => existsSync(out) && readFileSync(out, "utf8").includes("started"), 60_000);
+    w = waits.create(s.id, waits.normalize({ kind: "log", path: out, match: "^DONE$" }, dir), { timeout_seconds: 600 });
+    expect(waits.carries(w)).toContain(`job ${job.id} that writes it`);
+  } finally {
+    setSystemTime();
+    if (w) waits.cancel(w.id);
+    writeFileSync(go, "");
+    await jobs.waitJob(before, 60_000);
+    if (job) await jobs.waitJob(job, 60_000);
+  }
+});
+
 test("a file wait on the command the model named as its writer ends at its end; a writer that is not one of the session's commands is refused", async () => {
   const { startJob, waitJob } = await import("../tools/jobs.ts");
   const out = join(dir, "named.out");

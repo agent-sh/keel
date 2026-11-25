@@ -245,12 +245,19 @@ const FD_LOOK_MS = 5000;
 const fdLooked = new Map<string, number>();
 function holderOf(w: WaitRecord, jobs: Job[], path: string, now: number): Job | undefined {
   if (!jobs.length || process.platform !== "linux") return undefined;
-  if (now - (fdLooked.get(w.id) ?? 0) < FD_LOOK_MS) return undefined;
+  // (A look stamped after now was made before the clock was set back: the next one is due.)
+  const since = now - (fdLooked.get(w.id) ?? 0);
+  if (since >= 0 && since < FD_LOOK_MS) return undefined;
   if (fdLooked.size > 512) fdLooked.clear();
   fdLooked.set(w.id, now);
   const real = realOrPlanned(path);
+  // The processes are read as they are now, once for the jobs of this look: the table the looks of one moment
+  // share may be from before a job's processes were there, and what this look misses stays missed for FD_LOOK_MS.
+  let fresh = true;
   for (const j of jobs) {
-    for (const pid of jobPidsOf(j).slice(0, 64)) {
+    const pids = jobPidsOf(j, fresh);
+    fresh = false;
+    for (const pid of pids.slice(0, 64)) {
       let fds: string[] = [];
       try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
       for (const fd of fds.slice(0, 1024)) {
@@ -438,7 +445,8 @@ function judgeJob(w: WaitRecord, now: number): Judged | undefined {
     if (j.contain === "cgroup") alive = jobLive(j);
     else {
       // (Its group and session are read from the whole process table: not at every probe.)
-      if (st && now - (st.aliveAt ?? 0) < FD_LOOK_MS) return undefined;
+      const since = now - (st?.aliveAt ?? 0);
+      if (st && since >= 0 && since < FD_LOOK_MS) return undefined;
       if (st) st.aliveAt = now;
       alive = jobHasProcesses(j);
     }

@@ -441,6 +441,51 @@ test("a stop ends a child that took a session of its own, also where only the pr
   expect(sleeping("313.01", "313.02")).toEqual([]);
 });
 
+// The looks of one moment share one read of the process table. A look that must not miss (a wait looks for the
+// process that writes its file once, then not again for seconds) reads the processes as they are, and a table
+// read before the clock was set back is not taken for a new one. Where only the process group holds a job,
+// the table is all that says which processes are the job's.
+test("a job's processes are found as they are now when asked so, and never from a table stamped after now", async () => {
+  const root = mkdtempSync(join(RUN, "jobs-"));
+  const dir = join(root, "spill/s14/jobs");
+  const code = `
+    import { startJob, stopJob, jobPidsOf } from ${JOBS};
+    import { writeFileSync } from "node:fs";
+    const real = Date.now;
+    const started = [];
+    const begin = (n) => { const j = startJob({ sessionId: "s14", cwd: ${JSON.stringify(root)}, logDir: ${JSON.stringify(dir)}, command: "sleep 314.0" + n }); started.push(j); return j; };
+    try {
+    const first = begin(1);
+    await Bun.sleep(300);
+    // The clock stands still: the table read now is the one the looks share.
+    const t = real();
+    Date.now = () => t;
+    const had = jobPidsOf(first).length;
+    const second = begin(2);
+    await Bun.sleep(300);
+    const shared = jobPidsOf(second).length, now = jobPidsOf(second, true).length;
+    // The clock an hour ahead for one read, then back: that table is from before the third job.
+    Date.now = () => t + 3_600_000;
+    jobPidsOf(first, true);
+    Date.now = real;
+    const third = begin(3);
+    await Bun.sleep(300);
+    const after = jobPidsOf(third).length;
+    writeFileSync(${JSON.stringify(join(root, "found.txt"))}, [first.contain, had, shared, now, after].join(" "));
+    } finally {
+      // (Whatever went wrong above, nothing it started is left running.)
+      Date.now = real;
+      for (const j of started) await stopJob(j, "was interrupted");
+    }
+    process.exit(0);`;
+  expect(await daemonBefore(code, GROUP)).toBe(0);
+  const [contain, had, shared, now, after] = readFileSync(join(root, "found.txt"), "utf8").split(" ");
+  expect(contain).toBe("group");
+  // (`shared` 0: the second job started after the table the looks of that moment share was read.)
+  expect([Number(had) > 0, Number(shared), Number(now) > 0, Number(after) > 0]).toEqual([true, 0, true, true]);
+  expect(sleeping("314.01", "314.02", "314.03")).toEqual([]);
+});
+
 test("a stop a killed daemon left under way is finished at the start, and its call is told that; a stopped background command is still told", async () => {
   const root = mkdtempSync(join(RUN, "jobs-"));
   const dir = join(root, "spill/s14/jobs");
