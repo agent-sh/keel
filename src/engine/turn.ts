@@ -3252,7 +3252,7 @@ export class Engine {
         if (await this.tellSwitch(id, events, st)) events = this.lineage(id);
         if (steps === 1 && (await this.tellBranch(session, events))) events = this.lineage(id);
         if (st.info.id === session.model && this.tellPrompt(session, events)) events = this.lineage(id);
-        const messages = toMessages(events);
+        const messages = timed(() => "projecting a session's history into a request's messages", () => toMessages(events));
         let res: ProviderResult;
         let sentAt = 0;
         try {

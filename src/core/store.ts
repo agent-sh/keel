@@ -1218,8 +1218,13 @@ export class Store {
   // with who asked (`bodyReads`), and the stall watcher is told who while it runs. A reader that
   // can wait has the bodies it needs read off the loop first (`warmBodies`).
   private read(k: Kept, i: number): Run {
-    const end = Math.min(k.all.length, (i + 1) * RUN);
     const who = asker();
+    // (Named in a stall it makes: the table's part is the statement's, the parse after it is nobody's else.)
+    const run = () => this.readRun(k, i, who);
+    return this.timed ? this.timed(() => `reading and parsing a run of a session's event bodies on the loop (asked by ${who})`, run) : run();
+  }
+  private readRun(k: Kept, i: number, who: string): Run {
+    const end = Math.min(k.all.length, (i + 1) * RUN);
     const t0 = performance.now();
     const rows = asking(who, () => this.db
       .query<{ data: string }, [string, number, number]>(BODIES)
