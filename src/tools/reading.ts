@@ -18,8 +18,8 @@
 // READER_WAIT_MS falls back to the file itself, said once.
 //
 // A reading counts as having read the file only for the lines it shows as
-// they are: an edit of other lines is refused once, with the read to make
-// first (editGuard).
+// they are: an edit of other lines is refused with the read to make first,
+// and that same edit sent again is applied (editGuard).
 import { isAbsolute, relative } from "node:path";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import { QUOTE_MARK, readingPrompt, type Chunk, type Material } from "../engine/reader.ts";
@@ -33,11 +33,12 @@ export type Span = { from: number; to: number };
 // ---- what a session holds of a file it read through a reader -----------------
 
 // The lines of a file the session has as they are (shown by a reading, read as a
-// range since, or written by its own edits), the file's time then, and whether
-// an edit of other lines was refused already. A file the session has seen whole
+// range since, or written by its own edits), the file's time then, and the one
+// edit of other lines that was refused last (`refused`: what it replaces and
+// with what, as a hash). A file the session has seen whole
 // (`ctx.seen`: a raw read, a command that printed it, its own Write) has no
 // entry: nothing is held back from it. Kept with `ctx.seen`, for as long.
-export type Known = { mtime: number; lines: Span[]; told: boolean };
+export type Known = { mtime: number; lines: Span[]; refused?: string };
 type Book = { files: Map<string, Known>; restUntil: number; said: boolean };
 const books = new WeakMap<Map<string, number>, Book>();
 const bookOf = (ctx: Pick<ToolContext, "seen">): Book => {
@@ -118,25 +119,28 @@ export const CLAUDE_RAW: RawForm = { how: "Read it with raw: true (offset and li
 export const GEMINI_RAW: RawForm = { how: "use read_file with raw: true (start_line and end_line name a range)", range: (a, b) => `read_file with raw: true, start_line ${a}, end_line ${b}` };
 
 // An edit of a file the session read through a reader: refused when it changes
-// lines the session does not have as they are, once for a file, with the read
-// to make first. The refusal is recorded, so the same edit sent again is
-// applied: a model that has the lines from somewhere else (a search, a
-// command's output) is not held in a loop, and one that has not is told once
-// what to read. `mtime`: the file's time before the edit; a file that changed
-// since the reading has no line the session is known to have.
-export function editGuard(ctx: Pick<ToolContext, "seen">, p: string, mtime: number, before: string, after: string, form: RawForm = CLAUDE_RAW): string | undefined {
+// lines the session does not have as they are, with the read to make first.
+// The refused edit is remembered (`edit`: what it replaces and with what), and
+// that one edit sent again as it is is applied: a model that has the lines
+// from somewhere else (a search, a command's output) is not held in a loop,
+// and one that has not is told what to read. Any other edit of lines it does
+// not have is checked again, and is then the one remembered. `mtime`: the
+// file's time before the edit; a file that changed since the reading has no
+// line the session is known to have.
+export function editGuard(ctx: Pick<ToolContext, "seen">, p: string, mtime: number, before: string, after: string, edit: string, form: RawForm = CLAUDE_RAW): string | undefined {
   const k = knownOf(ctx, p);
   if (!k) return undefined;
-  if (k.mtime !== mtime) { k.lines = []; k.mtime = mtime; }
-  if (k.told) return undefined;
+  if (k.mtime !== mtime) { k.lines = []; k.mtime = mtime; k.refused = undefined; }
   const miss = missing(k.lines, touched(before, after), splitLines(before).length);
   if (!miss.length) return undefined;
-  k.told = true;
+  const key = String(Bun.hash(edit));
+  if (k.refused === key) { k.refused = undefined; return undefined; }
+  k.refused = key;
   const says = (s: Span) => (s.from === s.to ? `${s.from}` : `${s.from}-${s.to}`);
   const all = { from: miss[0]!.from, to: miss.at(-1)!.to };
   return `Not applied: you have ${p} as a compiled reading, and line${miss.length === 1 && miss[0]!.from === miss[0]!.to ? "" : "s"} ${miss.slice(0, 4).map(says).join(", ")}${miss.length > 4 ? ", ..." : ""} ` +
     `that this edit changes ${miss.length === 1 && miss[0]!.from === miss[0]!.to ? "is" : "are"} not among the lines it showed. Read them first (${form.range(all.from, all.to, p)}), then send the edit again. ` +
-    "If you have these lines exactly from another result, send the same edit again as it is: it is applied.";
+    "If you have these lines exactly from another result, send this same edit again as it is: it is applied (this one edit only).";
 }
 
 // After an edit of such a file was written: its known lines in the new text's numbers.
@@ -154,7 +158,7 @@ export function sawText(ctx: Pick<ToolContext, "seen">, p: string, mtime: number
   const b = books.get(ctx.seen);
   const k = b?.files.get(p);
   if (!k || !lines || lines.whole) { b?.files.delete(p); ctx.seen.set(p, mtime); return; }
-  if (k.mtime !== mtime) { k.lines = []; k.mtime = mtime; k.told = false; }
+  if (k.mtime !== mtime) { k.lines = []; k.mtime = mtime; }
   k.lines = merge([...k.lines, { from: lines.from, to: lines.to }]);
 }
 
@@ -357,7 +361,7 @@ export async function throughReader(p: string, ctx: ToolContext, page: Page, o: 
   // Seen whole already and unchanged since: the reading takes nothing back.
   if (ctx.seen.get(p) !== o.mtime) {
     ctx.seen.delete(p);
-    book.files.set(p, { mtime: o.mtime, lines: quoted, told: false });
+    book.files.set(p, { mtime: o.mtime, lines: quoted });
   }
   const usage = addUsage(emptyUsage(), o2.usage);
   return {

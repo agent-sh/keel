@@ -6,7 +6,7 @@ import { HAIKU, SCRIPTED, shoot } from "./shots.ts";
 // Feature: a file read through a reader. The model's Read of a long text file
 // comes back as its reader model's compiled reading, with the file's own
 // lines where the reader marked them; `raw` gives the file itself; an edit of
-// lines the reading did not show is refused once with the read to make first,
+// lines the reading did not show is refused with the read to make first,
 // and applied after it. The reader's request is booked to the session.
 const line = (n: number) => `export const v${n} = ${n}; // the value of line ${n}`;
 

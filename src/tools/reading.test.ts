@@ -205,24 +205,46 @@ describe("which reads go to the reader", () => {
 });
 
 describe("an edit after a reading", () => {
-  test("the lines a reading showed are edited; other lines are refused once, with the read to make", async () => {
+  test("the lines a reading showed are edited; an edit of other lines is refused with the read to make, and applied when sent again", async () => {
     const { ctx } = rig();
     const p = file();
     await Read.run({ file_path: p }, ctx);
-    expect(knownOf(ctx, p)).toMatchObject({ lines: [{ from: 120, to: 122 }], told: false });
+    expect(knownOf(ctx, p)).toMatchObject({ lines: [{ from: 120, to: 122 }] });
     const ok = await Edit.run({ file_path: p, old_string: line(121), new_string: "const v121 = 0;" }, ctx);
     expect(ok.is_error).toBeFalsy();
     const edit = { file_path: p, old_string: line(300), new_string: "const v300 = 0;" };
     const no = await Edit.run(edit, ctx);
     expect(no.is_error).toBe(true);
     expect(text(no)).toBe(`Not applied: you have ${p} as a compiled reading, and line 300 that this edit changes is not among the lines it showed. ` +
-      "Read them first (Read with raw: true, offset 300, limit 1), then send the edit again. If you have these lines exactly from another result, send the same edit again as it is: it is applied.");
+      "Read them first (Read with raw: true, offset 300, limit 1), then send the edit again. If you have these lines exactly from another result, send this same edit again as it is: it is applied (this one edit only).");
     expect(readFileSync(p, "utf8")).toContain(line(300));
-    // Sent again: applied. And nothing else of the file is refused after that.
+    // Sent again as it is: applied, and the lines it wrote are the session's.
     expect((await Edit.run(edit, ctx)).is_error).toBeFalsy();
-    expect((await Edit.run({ file_path: p, old_string: line(400), new_string: "const v400 = 0;" }, ctx)).is_error).toBeFalsy();
+    expect((await Edit.run({ file_path: p, old_string: "const v300 = 0;", new_string: "const v300 = 1;" }, ctx)).is_error).toBeFalsy();
     expect(readFileSync(p, "utf8")).toContain("const v121 = 0;\n");
-    expect(readFileSync(p, "utf8")).toContain("const v300 = 0;\n");
+    expect(readFileSync(p, "utf8")).toContain("const v300 = 1;\n");
+  });
+
+  test("only the refused edit goes through on a resend: another edit of lines not shown is checked again", async () => {
+    const { ctx } = rig();
+    const p = file();
+    await Read.run({ file_path: p }, ctx);
+    const one = { file_path: p, old_string: line(300), new_string: "const v300 = 0;" };
+    const other = { file_path: p, old_string: line(400), new_string: "const v400 = 0;" };
+    const every = { file_path: p, old_string: "the value of line", new_string: "line", replace_all: true };
+    expect((await Edit.run(one, ctx)).is_error).toBe(true);
+    // A different edit is not the one that was refused: neither a wider one nor one of other lines.
+    expect(text(await Edit.run(every, ctx))).toContain("lines 1-119, 123-600 that this edit changes are not among the lines it showed");
+    expect((await Edit.run(other, ctx)).is_error).toBe(true);
+    expect(readFileSync(p, "utf8")).toBe(LONG);
+    // The last one refused is the one a resend applies; the first is asked about again.
+    expect((await Edit.run(other, ctx)).is_error).toBeFalsy();
+    expect((await Edit.run(one, ctx)).is_error).toBe(true);
+    expect((await Edit.run(one, ctx)).is_error).toBeFalsy();
+    // And after it, an edit of lines not shown is refused as before.
+    expect((await Edit.run({ file_path: p, old_string: line(500), new_string: "x" }, ctx)).is_error).toBe(true);
+    expect(readFileSync(p, "utf8")).toContain(`const v300 = 0;\n`);
+    expect(readFileSync(p, "utf8")).toContain(line(500));
   });
 
   test("a raw read of the range makes its lines the session's, and a raw read of the whole lifts the rule", async () => {
@@ -232,7 +254,7 @@ describe("an edit after a reading", () => {
     await Read.run({ file_path: p, raw: true, offset: 300, limit: 5 }, ctx);
     expect(knownOf(ctx, p)!.lines).toEqual([{ from: 120, to: 122 }, { from: 300, to: 304 }]);
     expect((await Edit.run({ file_path: p, old_string: `${line(301)}\n${line(302)}`, new_string: "const merged = 0;" }, ctx)).is_error).toBeFalsy();
-    expect(knownOf(ctx, p)!.told).toBe(false);
+    expect(knownOf(ctx, p)!.refused).toBeUndefined();
     const whole = file();
     await Read.run({ file_path: whole }, ctx);
     await Read.run({ file_path: whole, raw: true }, ctx);
@@ -253,7 +275,7 @@ describe("an edit after a reading", () => {
     // What was line 122, and a line the edit wrote.
     expect((await Edit.run({ file_path: p, old_string: line(122), new_string: "const v122 = 0;" }, ctx)).is_error).toBeFalsy();
     expect((await Edit.run({ file_path: p, old_string: "const a = 1;", new_string: "const a = 2;" }, ctx)).is_error).toBeFalsy();
-    expect(knownOf(ctx, p)!.told).toBe(false);
+    expect(knownOf(ctx, p)!.refused).toBeUndefined();
     // Lines added next to a line it has are placed, not refused.
     expect((await Edit.run({ file_path: p, old_string: "const v122 = 0;", new_string: "const v122 = 0;\nconst c = 3;" }, ctx)).is_error).toBeFalsy();
   });

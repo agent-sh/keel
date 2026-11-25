@@ -146,7 +146,7 @@ const write_file: Tool = {
 
 const replace: Tool = {
   name: "replace",
-  // A change of lines the session has only a reader's reading of is refused once (src/tools/reading.ts editGuard).
+  // A change of lines the session has only a reader's reading of is refused, and applied when the same change is sent again (src/tools/reading.ts editGuard).
   urgent: "edit-after-reading",
   inputAlias: { file_path: ["path"] },
   inputOptional: ["instruction"], // the run reads no instruction

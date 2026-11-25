@@ -175,7 +175,7 @@ const Write: Tool = {
 
 const Edit: Tool = {
   name: "Edit",
-  // An edit of lines the session has only a reader's reading of is refused once (src/tools/reading.ts editGuard).
+  // An edit of lines the session has only a reader's reading of is refused, and applied when the same edit is sent again (src/tools/reading.ts editGuard).
   urgent: "edit-after-reading",
   readOnly: false,
   inputAlias: { file_path: ["path"] },

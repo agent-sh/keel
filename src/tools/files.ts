@@ -752,8 +752,8 @@ export async function editFile(p: string, oldS: string, newS: string, all: boole
   const before = new TextDecoder().decode(bytes);
   const r = applyEdit(before, oldS, newS, all);
   if ("error" in r) return r;
-  // A file read through a reader: only the lines the reading showed as they are, or read since, are changed (once refused, then applied).
-  { const no = editGuard(ctx, p, m, before, r.text, form); if (no) return { error: no }; }
+  // A file read through a reader: only the lines the reading showed as they are, or read since, are changed (refused, and applied when this same edit is sent again).
+  { const no = editGuard(ctx, p, m, before, r.text, `${all ? 1 : 0}\0${oldS}\0${newS}`, form); if (no) return { error: no }; }
   const seen = ctx.seen.get(p);
   { const no = await writeFile(p, bom ? `\uFEFF${r.text}` : r.text, ctx); if (no) return { error: no }; }
   edited(ctx, p, before, r.text, await mtimeOf(p));

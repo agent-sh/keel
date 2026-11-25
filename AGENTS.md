@@ -37,7 +37,7 @@ under `~/.cache/keel-work/bun/research/`.
   marked them (`src/tools/reading.ts`; the file itself with `raw`, for prose and instruction files and a file
   the session's own prompts name unless the call says `raw: false`, a page under the carry size,
   a program's read, or when the reader fails or is slower than a minute, said once; an edit of lines a reading
-  did not show is refused once with the read to make first; `read_through` in a session's settings and
+  did not show is refused with the read to make first, and only that same edit sent again is applied; `read_through` in a session's settings and
   `agents.read_through` turn it off, and a trial tries it on agent trees), idle compaction before a long context's cache
   expires (`src/engine/compact.ts`), and a cache plan for a session that waits past its cache's
   lifetime, on a wait it set or a long tool step: a one-token read keeps the cache warm (where the
