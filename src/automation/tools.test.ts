@@ -213,15 +213,17 @@ async function startedLike(name: string, command: (port: number) => string, gap 
   }
 }
 test("an http wait waits while a command the session started in the last minute still runs, whatever its start form", async () => {
-  const forms = [
+  // Side by side: each form waits on its own port for its own server to bind, so the test takes as long as the
+  // slowest form (the gate), not the sum of them, and a loaded machine stretches one wait, not four in a row.
+  const forms = await Promise.all([
     // A gate (waitfor --capacity) or a build that holds the server back for longer than the old ten seconds.
-    await startedLike("gated", (port) => `sleep 13 && exec ${SERVER(port)}`),
+    startedLike("gated", (port) => `sleep 13 && exec ${SERVER(port)}`),
     // Asked for after a while, with the server still to come.
-    await startedLike("later", (port) => `sleep 3 && exec ${SERVER(port)}`, 1500),
+    startedLike("later", (port) => `sleep 3 && exec ${SERVER(port)}`, 1500),
     // Detached: the shell ends at once and the server, in a session of its own, keeps running.
-    await startedLike("setsid", (port) => `setsid nohup ${SERVER(port)} > /dev/null 2>&1 &`),
-    await startedLike("gated setsid", (port) => `(sleep 2; exec setsid nohup ${SERVER(port)} > /dev/null 2>&1) &`),
-  ];
+    startedLike("setsid", (port) => `setsid nohup ${SERVER(port)} > /dev/null 2>&1 &`),
+    startedLike("gated setsid", (port) => `(sleep 2; exec setsid nohup ${SERVER(port)} > /dev/null 2>&1) &`),
+  ]);
 
   expect(forms.map((f) => [f.name, f.refused])).toEqual([["gated", false], ["later", false], ["setsid", false], ["gated setsid", false]]);
 }, 60_000);
