@@ -575,7 +575,7 @@ export function raiseApproval(a: { id: string; session_id: string; tool: string;
   const form = card ? perm.gate!.form(card) : undefined;
   const line = form?.line ?? `${a.tool}: ${spelled(a.summary)}`.slice(0, 500);
   return raise("approval", a.session_id, `Approval: ${s?.title || "a session"}`, note ? `${note} ${line}`.slice(0, 500) : line,
-    { approval_id: a.id, open_session: a.session_id, risk: a.risk, ...(form ? { hold: form.hold, glance: form.glance } : {}), ...(note ? { helper_note: note } : {}) }, silent);
+    { approval_id: a.id, open_session: a.session_id, risk: a.risk, ...(form ? { hold: form.hold, glance: form.glance } : {}), ...(note ? { helper_note: note } : {}), ...(silent ? { helper_first: true } : {}) }, silent);
 }
 
 // Whether an approval card's alert has reached no channel yet: no row, or its newest row unread and told nowhere
@@ -707,7 +707,7 @@ function file(x: Filing): Alert | undefined {
   // Why nothing left the inbox when nothing did: no route chosen, or the
   // chosen ones are not set up (judged now, when it was raised).
   const inboxOnly = sendTo.length || watched || withheld || farRead || !f.deliver || f.quiet ? {}
-    : x.silent ? { inbox_only: { many: true } }
+    : x.silent ? { inbox_only: (data as { helper_first?: boolean } | undefined)?.helper_first ? { helper: true } : { many: true } }
     : { inbox_only: !chosen.length ? { no_route: true } : quietKind && chosen.some((c) => INTERRUPTS.has(c) && channels.get(c)?.available()) ? { routine: true } : { not_set_up: chosen } };
   const flags = { ...(f.deliver ? {} : { snoozed: true }), ...(f.quiet ? { held: true } : {}), ...(withheld ? { withheld: routed } : {}) };
   if (withheld) withheldMaybe = true;

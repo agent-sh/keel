@@ -58,6 +58,7 @@ function routeOf(a: Alert): string | undefined {
   if (only?.no_route) return "Kept here: no route is chosen for this kind";
   if (only?.not_set_up) return `Kept here: ${list(only.not_set_up.map(name))} not set up`;
   if (only?.routine) return "Kept here: a routine finish";
+  if (only?.helper) return "Kept here: the Helper answers it first, on your standing instruction";
   return undefined;
 }
 

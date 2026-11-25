@@ -681,3 +681,17 @@ test("an archived session's unread alerts are read and its notification is taken
   expect(withdrawn).toContain(s);
   expect(withdrawn).not.toContain(other);
 });
+
+test("an approval the helper answers first is kept in the inbox, told nowhere, and says so; given back, it is told", () => {
+  const { session } = scratch();
+  const s = session("Build");
+  alerts.saveSettings({ routes: { ...Object.fromEntries(alerts.KINDS.map((k) => [k, []])), approval: ["desktop"] } as any });
+  const card = { id: "card-1", session_id: s, tool: "Bash", summary: "npm install x", risk: "low" };
+  const held = alerts.raiseApproval(card, true)!;
+  expect(held.channels).toEqual([]);
+  expect(held.data.inbox_only).toEqual({ helper: true });
+  expect(alerts.approvalUntold("card-1")).toBe(true);
+  const back = alerts.raiseApproval(card, false, "The Helper left this to you.")!;
+  expect(back.data.inbox_only).not.toEqual({ helper: true });
+  expect(back.body).toStartWith("The Helper left this to you.");
+});
