@@ -36,7 +36,7 @@ import { focusBox } from "../lib/utils.ts";
 import { askSuffix } from "../../../src/core/watch.ts";
 import { CARDED, useCardInView } from "../lib/card-view.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
-import { COUNTERS, OFFLINE, STATE_WORD, asOf, backgroundOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
+import { COUNTERS, OFFLINE, STATE_WORD, asOf, backgroundOf, countWord, lastTold, stateLabel, stateWords } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
 import { useFleet } from "../lib/fleet.ts";
 import { splitId } from "../lib/fleet-ids.ts";
@@ -47,7 +47,7 @@ import { Grip } from "./Grip.tsx";
 import { PaneMap } from "./PaneMap.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
-import { briefText, elapsed, failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
+import { briefText, elapsed, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
 import { Crumbs } from "./Crumbs.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
@@ -155,7 +155,8 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // What a card of this pane says (an approval, a question, a plan or a secret it asks for, above the
   // message box, the agents' too; a declined request in the transcript) the head does not say again: it
   // keeps the state and its clock, and the whole reason is its tooltip.
-  const carded = (w === "need" && CARDED.has(st.why ?? "")) || w === "declined";
+  // A failure is the card in the transcript (its cause, its acts): the head keeps the word and the reason is its tooltip.
+  const carded = (w === "need" && CARDED.has(st.why ?? "")) || w === "declined" || w === "fail";
   // The head does not say the card's words again, but the reason a session needs the owner stays in view: a faint line after the folder.
   // While its card is in view the card says it, and the bar does not (lib/card-view.ts): the reason is said once.
   const inView = useCardInView(s.id, st);
@@ -186,11 +187,12 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
         <span className="k-station-state">
-          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : undefined}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateLabel(st)}</span></span>
-          {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
-          {timed(st) && !offline && !(crowded && working) && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
+          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : undefined}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateWords(st).word}</span></span>
+          {/* At work the step's clock is the line over the box's (DockNow.tsx): one clock for one step. */}
+          {timed(st) && !offline && !working && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
           {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}
         </span>
+        {/* At rest the bar names the folder (at work the line over the box does): once in the pane. */}
         {!working && <span className="k-station-meta" title={s.workspace} data-ask={ask ? "" : undefined}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>
           {/* What it waits on you for, faint after the folder, cut to the room left (the card says the rest). */}
