@@ -18,7 +18,9 @@ import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopo
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { openPanel, PanelsButton, useHandPanels } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
-import { putAwayCount } from "../../../src/core/state-words.ts";
+import { putAwayCount, stateLabel } from "../../../src/core/state-words.ts";
+import { whyText } from "../../../src/core/watch.ts";
+import { useSessionState } from "../lib/watch.ts";
 import { REST_AT } from "../../../src/automation/cap-rules.ts";
 import { CapControl } from "./CapControl.tsx";
 import { useCap } from "../lib/caps.ts";
@@ -155,7 +157,7 @@ function useFit(tools: Tool[], reserve: number) {
 // control opened from elsewhere (a command, a shortcut) opens the menu with it, and the row measures
 // what they would take back.
 type Act = { id: string; head?: string; label: string; icon: ReactNode; run: () => void; danger?: boolean; disabled?: boolean; gap?: boolean; command?: string };
-function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool[]; live: string; list: { current: HTMLElement | null }; changed: () => void; acts: Act[]; button: RefObject<HTMLButtonElement | null> }) {
+function SessionMenu({ tools, live, list, changed, acts, button, said }: { tools: Tool[]; live: string; list: { current: HTMLElement | null }; changed: () => void; acts: Act[]; button: RefObject<HTMLButtonElement | null>; said?: { word: string; why: string } }) {
   const [open, setOpen] = useState(false);
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const [n, setN] = useState(tools.length);
@@ -206,6 +208,8 @@ function SessionMenu({ tools, live, list, changed, acts, button }: { tools: Tool
               is not a second dialog under the one that is (the shortcut sheet). */}
           {/* Opened by the keys, they go to its first control; by a pointer, to the list itself (no row lights up under nothing). */}
           <Popover.Popup ref={popup} tabIndex={-1} className="k-stow" data-testid="header-more" aria-label="Session actions" role={open ? "dialog" : "none"} finalFocus={button} initialFocus={(how) => (how === "keyboard" ? true : popup.current)}>
+            {/* A phone's bar holds the state as a dot and its age: the word and what it waits on, whole, are here. */}
+            {said && <div className="k-stow-said md:hidden" data-testid="menu-state"><span className="k-stow-said-word" data-testid="menu-state-word">{said.word}</span>{said.why && <span className="k-stow-said-why" data-testid="menu-state-why">{said.why}</span>}</div>}
             <div ref={setEl} hidden={!n || undefined}>
               {tools.map((t) => t.item ? <div key={t.id} className="k-stow-act">{t.item(close)}</div> : (
                 <div key={t.id} className="k-stow-row" role="group" aria-label={t.label} data-tool={t.id} onClick={reach}>
@@ -330,6 +334,8 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   ];
   // A session another harness runs takes no setting of Keel's (it is read-only here): what it cost is all its row has.
   const tools = session.outside ? every.filter((t) => t.id === "usage") : every;
+  const state = useSessionState(session);
+  const said = { word: stateLabel(state), why: state.text ? whyText(state, Date.now()) : "" };
   const { head, list, out, later } = useFit(tools, editing ? TITLE_ROOM : 0);
   const hand = useHandPanels(session);
   const folded = tools.filter((t) => out.includes(t.id));
@@ -417,7 +423,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}
       </div>
       <PanelsButton session={session} />
-      <SessionMenu tools={folded} live={live} list={list} changed={later} acts={acts} button={menuButton} />
+      <SessionMenu tools={folded} live={live} list={list} changed={later} acts={acts} button={menuButton} said={said} />
       {session.phase === "working" && <div className="k-wake-line" aria-hidden="true" data-testid="wake-line" />}
     </header>
   );

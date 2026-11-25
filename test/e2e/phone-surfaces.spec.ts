@@ -1061,27 +1061,41 @@ for (const size of SIZES) {
         await drop(request, id, q);
       }
     });
-    test("the head's reason for a state is read whole: it wraps under the word, never cut by an ellipsis", async ({ page, request }) => {
+    test("the top bar is one line on a phone, working or at rest: the title cut to the room, the state's dot and its age; its word and reason are the menu's first row, whole", async ({ page, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
-      const id = await start(request, "Phone head reason");
+      const id = await start(request, "Phone head one line with a title long enough to be cut by the room the bar leaves it");
       try {
         await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 30", description: "Building the whole documentation cache from every source folder in the checkout module" } }]) } });
         await page.goto(`/s/${id}`);
-        const why = page.locator(".k-station[data-helm]").getByTestId("station-why");
+        const station = page.locator(".k-station[data-helm]");
+        const why = station.getByTestId("station-why");
         await expect(why).toContainText("Building the whole documentation cache", { timeout: 30_000 });
-        // Whole: no ellipsis, nothing clipped in either direction, every line of it inside the page and the head.
-        const cut = await why.evaluate((e) => {
-          const head = e.closest(".k-station-head")!.getBoundingClientRect();
-          const lines = [...e.getClientRects()];
-          return { ellipsis: getComputedStyle(e).textOverflow === "ellipsis" && e.scrollWidth > e.clientWidth + 1, wide: e.scrollWidth > e.clientWidth + 1, tall: e.scrollHeight > e.clientHeight + 1,
-            right: Math.round(Math.max(...lines.map((r) => r.right))), below: Math.round(Math.max(...lines.map((r) => r.bottom)) - head.bottom) };
-        });
-        expect(cut.ellipsis || cut.wide || cut.tall, `the reason is cut: ${JSON.stringify(cut)}`).toBe(false);
-        expect(cut.right).toBeLessThanOrEqual(size.width);
-        expect(cut.below, "a line of the reason is below the head").toBeLessThanOrEqual(1);
+        // One line: the bar is as tall as one row of its controls, whichever the state, and the title is cut inside its room.
+        const bar = async () => station.locator(".k-top").evaluate((el) => Math.round(el.getBoundingClientRect().height));
+        const working = await bar();
+        const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+        expect(working, "the top bar of a working session is one row").toBeLessThanOrEqual(Math.ceil(3.25 * rem));
+        const title = station.getByTestId("station-title");
+        expect(await title.evaluate((e) => e.scrollWidth > e.clientWidth + 1), "a long title is cut by an ellipsis").toBe(true);
+        const clock = station.getByTestId("station-clock");
+        await expect(clock).toBeVisible();
+        const dot = station.locator(".k-station-state .k-mark");
+        await expect(dot).toBeVisible();
+        expect(await station.getByTestId("station-word").evaluate((e) => (e.textContent ?? "").trim().length > 0), "its word is still there for a reader").toBe(true);
+        expect(await why.isVisible(), "the reason is not on the bar").toBe(false);
+        // The word and the reason, whole, open the menu.
+        await station.getByTestId("session-menu").tap();
+        const said = page.getByTestId("menu-state");
+        await expect(said.getByTestId("menu-state-word")).toHaveText("Working");
+        await expect(said.getByTestId("menu-state-why")).toContainText("Building the whole documentation cache");
+        const cut = await said.evaluate((e) => [...e.querySelectorAll<HTMLElement>("span")].filter((s) => s.scrollWidth > s.clientWidth + 1).length);
+        expect(cut, "the menu's state is not cut").toBe(0);
         await noSideScroll(page);
-        await shoot(page, `phone-surfaces-27-head-reason-${size.width}`);
+        await shoot(page, `phone-surfaces-27-head-one-line-${size.width}`);
+        await page.keyboard.press("Escape");
         await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
+        await expect.poll(() => idle(request, id), { timeout: 30_000 }).toBe(true);
+        expect(await bar(), "and at rest").toBeLessThanOrEqual(Math.ceil(3.25 * rem));
       } finally {
         await drop(request, id);
       }

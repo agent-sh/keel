@@ -181,7 +181,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
         <span className="k-station-state">
-          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
+          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : undefined}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateLabel(st)}</span></span>
           {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
           {timed(st) && !offline && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
           {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}

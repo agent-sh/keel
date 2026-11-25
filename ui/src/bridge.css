@@ -962,6 +962,17 @@ html[data-resizing] iframe { pointer-events: none; }
   }
 }
 
+/* A phone's top bar is one line: the title (cut to the room), the state's dot and its age. The state's word and what it
+   waits on are the first rows of the session's menu (they are a menu away, not three lines of the bar). */
+@media (max-width: 767px) {
+  .k-station[data-helm] .k-station-identity { flex-wrap: nowrap; column-gap: 0.5rem; }
+  .k-station[data-helm] .k-station-identity .k-station-title { display: block; flex: 0 1 auto; min-width: 2rem; margin-top: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .k-station[data-helm] .k-station-rest { flex: 0 0 auto; min-height: 0; }
+  .k-station[data-helm] .k-station-rest > .k-station-meta { display: none; }
+  .k-station[data-helm] .k-station-state { flex-wrap: nowrap; white-space: nowrap; }
+  .k-station[data-helm] .k-station-word-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .k-station[data-helm] .k-station-state > :is(.k-station-why, .k-row-class) { display: none; }
+}
 /* The helm's full header: the tools row only (its title is in the head above). */
 .k-station .k-session-header { height: var(--spacing-bar-sub); background: transparent; backdrop-filter: none; border-bottom-color: var(--line); }
 .k-station .k-session-header .k-session-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -1007,6 +1018,10 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-stow-cmd:hover, .k-stow-cmd:focus-visible { background: var(--hover); }
 .k-stow-cmd:disabled { opacity: 0.5; }
 .k-stow-head { padding: 0.375rem 0.625rem 0.125rem; }
+/* A phone's menu opens with the state in words (the bar has its dot and age). */
+.k-stow-said { display: flex; flex-direction: column; gap: 0.125rem; padding: 0.5rem 0.625rem; margin-bottom: 0.25rem; border-bottom: 1px solid var(--line); font-size: var(--text-ui); }
+.k-stow-said-word { font-weight: 600; color: var(--fg); }
+.k-stow-said-why { font-size: var(--text-caption); color: var(--muted); overflow-wrap: anywhere; }
 /* A list taller than the screen scrolls inside it, and its foot fades while more is below (styles.css, k-foot). */
 @supports (animation-timeline: scroll()) {
   .k-stow::after { content: ""; display: block; position: sticky; bottom: 0; height: var(--k-foot); margin-top: calc(-1 * var(--k-foot)); background: linear-gradient(to bottom, transparent, var(--raised)); pointer-events: none; animation: k-foot linear both; animation-timeline: scroll(self block); }
