@@ -72,12 +72,13 @@ export function SpeechBand({ sid }: { sid: string | undefined }) {
   const error = (talking ? null : c.sid === sid || (!sid && !c.sid) ? c.error : null) ?? (d.box === null || d.box === (sid ?? "start") ? d.error : null);
   if (!talking && !dictating && !error) return null;
 
-  const line = "flex min-h-8 items-center gap-2 px-4 pt-1.5 text-caption";
+  // (On a phone it wraps: what was heard and the way it is heard are read whole under the state, and the end button is a finger's size.)
+  const line = "flex min-h-8 items-center gap-2 px-4 pt-1.5 text-caption max-md:flex-wrap max-md:px-3";
   if (!talking && !dictating && error) {
     return (
       <div className={cn(line, "text-danger")} role="alert" data-testid="speech-error">
         <span className="min-w-0 flex-1">{error}</span>
-        <button type="button" aria-label="Dismiss" onClick={() => { dismissDictationError(); dismissConversationError(); }} className="grid size-6 place-items-center rounded-md hover:bg-hover"><X className="size-3.5" /></button>
+        <button type="button" aria-label="Dismiss" onClick={() => { dismissDictationError(); dismissConversationError(); }} className="grid size-6 place-items-center rounded-md hover:bg-hover max-md:size-11"><X className="size-3.5" /></button>
       </div>
     );
   }
@@ -87,18 +88,18 @@ export function SpeechBand({ sid }: { sid: string | undefined }) {
   const heard = talking ? c.heard : "";
   return (
     <>
-    <div className={cn(line, "text-muted max-sm:flex-wrap")} role="status" data-testid="speech-band" data-mode={talking ? "conversation" : "dictation"} data-phase={phase} data-state={state.toLowerCase()}>
+    <div className={cn(line, "text-muted")} role="status" data-testid="speech-band" data-mode={talking ? "conversation" : "dictation"} data-phase={phase} data-state={state.toLowerCase()}>
       <Mark w={talking ? w : "work"} />
       <span className="font-medium text-fg" data-testid="speech-state">{state}</span>
-      {heard && <span className="min-w-0 flex-1 truncate italic" data-testid="speech-heard">{heard}</span>}
+      {heard && <span className="min-w-0 flex-1 truncate italic max-md:order-3 max-md:basis-full max-md:whitespace-normal max-md:break-words" data-testid="speech-heard">{heard}</span>}
       {!heard && <span className="flex-1" />}
-      {/* (On a phone the way is a line of its own under the words, so End stays in view.) */}
-      <span className="min-w-0 truncate text-faint max-sm:order-last max-sm:basis-full" data-testid="speech-way">{how}{talking && c.sayLabel ? `, read aloud by ${c.sayLabel}` : ""}</span>
+      {/* (On a phone the way is a line under the state and End, above the words, and is read whole, so End stays in view.) */}
+      <span className="min-w-0 truncate text-faint max-md:order-2 max-md:basis-full max-md:overflow-visible max-md:whitespace-normal max-md:break-words" data-testid="speech-way">{how}{talking && c.sayLabel ? `, read aloud by ${c.sayLabel}` : ""}</span>
       <button
         type="button"
         data-testid="speech-end"
         onClick={() => (talking ? endConversation() : stopDictation())}
-        className="flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-fg hover:bg-hover"
+        className="flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-fg hover:bg-hover max-md:order-1 max-md:ml-auto max-md:h-11 max-md:min-w-11 max-md:justify-center"
         title={talking ? "End the conversation (Esc)" : "Stop dictating (Esc)"}
       >
         <Square className="size-3 fill-current" />

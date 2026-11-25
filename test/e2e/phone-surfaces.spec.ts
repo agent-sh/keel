@@ -1616,5 +1616,40 @@ for (const size of SIZES) {
         } finally { await ctx.close(); }
       }
     });
+    // MOB-S103
+    test("the speech line stands inside the page: what was heard and the way it is heard wrap, and End is a finger's size", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Speech line");
+      try {
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            // A recognizer the spec makes speak, and a voice: the page finds them where a browser's own are.
+            await page.addInitScript(() => {
+              const w = window as any;
+              class Rec { lang = ""; continuous = false; interimResults = false; onresult: any; onend: any; onerror: any; start() { w.__rec = this; } stop() { setTimeout(() => this.onend?.(), 0); } abort() {} }
+              w.SpeechRecognition = w.webkitSpeechRecognition = Rec;
+              w.SpeechSynthesisUtterance = class { constructor(public text: string) {} };
+              Object.defineProperty(w, "speechSynthesis", { configurable: true, value: { getVoices: () => [{ name: "Stand-in" }], speak: () => {}, cancel: () => {}, addEventListener: () => {}, removeEventListener: () => {} } });
+            });
+            await page.goto(`/s/${id}`);
+            await page.getByTestId("composer-open").tap();
+            await page.getByTestId("converse").tap();
+            const band = page.getByTestId("speech-band");
+            await expect(band).toHaveAttribute("data-mode", "conversation");
+            // Words heard: a long sentence, read whole on the line, not cut or pushed past the edge.
+            await page.evaluate(() => (window as any).__rec?.onresult?.({ results: [Object.assign([{ transcript: "please look at the failing test in the checkout flow and tell me what changed since yesterday" }], { isFinal: false })] }));
+            expect(await phoneProblems(band), `the speech line at ${scale * 100}% text`).toEqual([]);
+            const end = page.getByTestId("speech-end");
+            await inside(page, end);
+            await shoot(page, `phone-surfaces-40-speech-line-${size.width}-${scale}`);
+            await end.tap();
+            await expect(band).toHaveCount(0);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }
