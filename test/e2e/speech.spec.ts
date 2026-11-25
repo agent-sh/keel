@@ -334,3 +334,29 @@ test("barge-in off in Settings > Speech: the reply is read to its end and nothin
   await expect(page.getByTestId("speech-state")).toHaveText("Listening");
   expect(await live(page)).toBe(1);
 });
+
+test("narrow: the speech line and Settings > Speech at 390x844 in both themes", async ({ page, request }) => {
+  await page.addInitScript(BROWSER);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await session(page, request);
+  // (On a phone the tools rest behind a button until it is tapped.)
+  const more = page.getByTestId("composer-open");
+  if (await more.isVisible()) await more.click();
+  await page.getByTestId("converse").click();
+  await expect(page.getByTestId("speech-state")).toHaveText("Listening");
+  await hear(page, "", "tell me about the tests please and then some");
+  await expect(page.getByTestId("speech-band")).toBeVisible();
+  const band = await page.getByTestId("speech-band").boundingBox();
+  expect(band!.x + band!.width).toBeLessThanOrEqual(390);
+  // End stays in view: the way the words are heard is a line of its own on a phone.
+  const end = await page.getByTestId("speech-end").boundingBox();
+  expect(end!.x + end!.width).toBeLessThanOrEqual(390);
+  await expect(page.getByTestId("speech-heard")).toBeVisible();
+  await shoot(page, "speech-07-narrow-band");
+  await page.keyboard.press("Escape");
+  await page.goto("/settings/speech");
+  await expect(page.getByTestId("speech-settings")).toBeVisible();
+  const scroll = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(scroll).toBeLessThanOrEqual(390);
+  await shoot(page, "speech-08-narrow-settings");
+});

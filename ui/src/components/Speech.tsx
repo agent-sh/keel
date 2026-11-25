@@ -87,12 +87,13 @@ export function SpeechBand({ sid }: { sid: string | undefined }) {
   const heard = talking ? c.heard : "";
   return (
     <>
-    <div className={cn(line, "text-muted")} role="status" data-testid="speech-band" data-mode={talking ? "conversation" : "dictation"} data-phase={phase} data-state={state.toLowerCase()}>
+    <div className={cn(line, "text-muted max-sm:flex-wrap")} role="status" data-testid="speech-band" data-mode={talking ? "conversation" : "dictation"} data-phase={phase} data-state={state.toLowerCase()}>
       <Mark w={talking ? w : "work"} />
       <span className="font-medium text-fg" data-testid="speech-state">{state}</span>
       {heard && <span className="min-w-0 flex-1 truncate italic" data-testid="speech-heard">{heard}</span>}
       {!heard && <span className="flex-1" />}
-      <span className="shrink-0 text-faint" data-testid="speech-way">{how}{talking && c.sayLabel ? `, read aloud by ${c.sayLabel}` : ""}</span>
+      {/* (On a phone the way is a line of its own under the words, so End stays in view.) */}
+      <span className="min-w-0 truncate text-faint max-sm:order-last max-sm:basis-full" data-testid="speech-way">{how}{talking && c.sayLabel ? `, read aloud by ${c.sayLabel}` : ""}</span>
       <button
         type="button"
         data-testid="speech-end"
