@@ -43,6 +43,8 @@ export function buildId(): string {
 // src/tools/types.ts), a prompt block here, one entry a line. A session whose
 // pinned copy carries another mark, or none, takes this build's tools and
 // prompt at its next request, at the price of one cache write of its context.
+// A tool's mark reaches only the sessions that used the tool (a safety change starts its mark
+// with "!", which reaches every session; a prompt block's mark always does).
 // Everything not marked waits. The marks live where the change is, so two
 // branches that each mark a tool merge clean (one record here, edited by both
 // at the same line, conflicted every time).

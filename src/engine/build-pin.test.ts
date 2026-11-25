@@ -140,16 +140,33 @@ test("an urgent tool mark moves a session that used the tool at its next request
   store.db.exec("CREATE TABLE IF NOT EXISTS telemetry_tools (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, tool TEXT NOT NULL)");
   pins.prompt(s.id, undefined, blocks("one"), [], false);
   pins.tools(s, at, v1);
+  const pinned = () => {
+    const x = store.createSession({ model: "p:m", workspace: "/" });
+    pins.prompt(x.id, undefined, blocks("one"), [], false);
+    pins.tools(x, at, v1);
+    return x;
+  };
+  const old = pinned(), idle = pinned();
   URGENT.tools.Bash = "no-force-push";
   try {
     // Never called Bash: the change waits, and the request carries the pinned description.
     expect(pins.due(s, at, v2, never)).toBeUndefined();
     expect(pins.tools(s, at, v2).map((t) => t.description)).toEqual(["Reads.", "Runs."]);
-    // Its first call: the next request takes the build's, once.
+    // Not asked of the store again: a row it gained beside this process is not read at every request.
     store.db.query("INSERT INTO telemetry_tools (session_id, ts, tool) VALUES (?, 1, 'Bash')").run(s.id);
+    expect(pins.due(s, at, v2, never)).toBeUndefined();
+    // Its first call here is told to the pins: the next request takes the build's, once.
+    pins.called(s.id, "Bash");
     expect(pins.due(s, at, v2, never)).toBe("Bash has an urgent change");
     expect(pins.tools(s, at, v2).map((t) => t.description)).toEqual(["Reads.", "Runs, and never force pushes."]);
     expect(pins.due(s, at, v2, never)).toBeUndefined();
+    // A session whose ledger already holds a call (a restart) is read once, at its first question.
+    store.db.query("INSERT INTO telemetry_tools (session_id, ts, tool) VALUES (?, 1, 'Bash')").run(old.id);
+    expect(pins.due(old, at, v2, never)).toBe("Bash has an urgent change");
+    // A mark that starts with "!" (a safety change) reaches a session that never used the tool.
+    expect(pins.due(idle, at, v2, never)).toBeUndefined();
+    URGENT.tools.Bash = "!no-force-push";
+    expect(pins.due(idle, at, v2, never)).toBe("Bash has an urgent change");
   } finally { delete URGENT.tools.Bash; }
 }));
 

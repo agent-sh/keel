@@ -71,6 +71,8 @@ test("an urgent mark moves a session that has used the tool, and waits for one t
   const idle = mergeTools(pinned, reworded, marks, (n) => n === "Read");
   expect([idle.urgent, idle.waiting]).toEqual([undefined, ["Bash"]]);
   expect(idle.tools.find((t) => t.name === "Bash")?.description).toBe("Runs.");
+  // A safety mark ("!") reaches every session, used or not.
+  expect(mergeTools(pinned, reworded, { Bash: "!force-push" }, (n) => n === "Read").urgent).toBe("Bash has an urgent change");
 });
 
 test("deferred tools follow the build: they are not in the cached prefix", () => {

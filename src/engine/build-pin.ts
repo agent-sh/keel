@@ -205,20 +205,35 @@ export class BuildPins {
     this.hashes.set(now.tools, next.list);
   }
 
-  // Whether the session's conversation has used the tool: it called it, or loaded it through the search. Asked only
-  // for a tool the build marks urgent that the session's pin does not carry the mark of, and kept once true.
+  // Whether the session's conversation has used the tool: it called it, or loaded its definition through the
+  // search (a catalog tool; the built-ins in the prompt are never loaded). Asked only for a tool the build marks
+  // urgent that the session's pin does not carry the mark of. The tables are read once for a session and a tool in
+  // this process, and a call or a load after that is told here (`called`), so a session that never used the tool
+  // costs no query at its next requests (the ledger is a side table: a read of it makes the waiting side writes).
   private usedTools = new Map<string, Set<string>>();
-  private used(id: string, name: string): boolean {
+  private unusedTools = new Map<string, Set<string>>();
+  called(id: string, name: string) {
     let set = this.usedTools.get(id);
-    if (set?.has(name)) return true;
+    if (!set) this.usedTools.set(id, (set = new Set()));
+    set.add(name);
+    this.unusedTools.get(id)?.delete(name);
+  }
+  private used(id: string, name: string): boolean {
+    if (this.usedTools.get(id)?.has(name)) return true;
+    if (this.unusedTools.get(id)?.has(name)) return false;
     const q = this.store.db;
-    // (Where the question cannot be answered the tool counts as used: the mark is taken, as it always was.)
+    // (Where the question cannot be answered the tool counts as used: the mark is taken, as it always was, and the answer is not kept.)
     let yes = true;
     try {
-      yes = !!q.query("SELECT 1 FROM telemetry_tools WHERE session_id = ? AND tool = ? LIMIT 1").get(id, name)
-        || !!q.query("SELECT 1 FROM session_loaded WHERE session_id = ? AND name = ?").get(id, name);
-    } catch {}
-    if (yes) { if (!set) this.usedTools.set(id, (set = new Set())); set.add(name); }
+      yes = !!q.query("SELECT 1 FROM session_loaded WHERE session_id = ? AND name = ?").get(id, name)
+        || !!q.query("SELECT 1 FROM telemetry_tools WHERE session_id = ? AND tool = ? LIMIT 1").get(id, name);
+    } catch { return true; }
+    if (yes) this.called(id, name);
+    else {
+      let set = this.unusedTools.get(id);
+      if (!set) this.unusedTools.set(id, (set = new Set()));
+      set.add(name);
+    }
     return yes;
   }
 
@@ -381,8 +396,10 @@ export class BuildPins {
       // Sent as loaded while its server reconnects, it is the definition the cache holds from here.
       if ((t as { left?: boolean }).left) {
         if (was?.retake) this.store.db.query("INSERT OR REPLACE INTO session_loaded (session_id, name, def) VALUES (?, ?, ?)").run(id, t.name, JSON.stringify(pinOf(was)));
+        if (was) this.called(id, t.name);
         return was ? { ...t, ...pinOf(was) } : t;
       }
+      this.called(id, t.name);
       if (was && !was.retake && servable(was, t)) return { ...t, description: was.description, input_schema: was.input_schema, built: t.input_schema };
       this.store.db.query("INSERT INTO session_loaded (session_id, name, def) VALUES (?, ?, ?) ON CONFLICT(session_id, name) DO UPDATE SET def = excluded.def").run(id, t.name, JSON.stringify(pinOf(t)));
       return t;

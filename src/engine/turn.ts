@@ -3526,6 +3526,7 @@ export class Engine {
     let dispatched: Promise<unknown> | undefined;
     const ran = (r: ToolResultBlock, outcome: "ok" | "error" | "interrupted", error?: Error) => {
       const ms = Date.now() - t0!;
+      this.pins.called(session.id, call.tool.name);
       this.measure(session.id, (h) => h.toolRan?.(session, call, r, { ms, outcome, error }));
       if (outcome === "error") this.verdicts.set(r, "failed");
       return r;
@@ -3589,6 +3590,7 @@ export class Engine {
       const invalid = inputProblem(tool, call.input);
       if (invalid) {
         const bad: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: invalid, is_error: true };
+        this.pins.called(session.id, call.tool.name);
         this.measure(session.id, (h) => h.toolRan?.(session, call, bad, { ms: 0, outcome: "error" }));
         this.verdicts.set(bad, "failed");
         return told(bad);

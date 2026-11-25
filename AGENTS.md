@@ -60,9 +60,13 @@ under `~/.cache/keel-work/bun/research/`.
   input schema (the model would keep the old description of the new
   behaviour). A removed tool or a changed input needs none: the pinned
   definition is not offered. Rewording, a new optional parameter and a new
-  tool need none either. A tool's mark reaches only the sessions that used the tool (a call in its history,
-  or a definition it loaded): one that never did waits like an unmarked change, and takes the mark at the request
-  after its first call (`used` in `src/tools/pin.ts`, `src/engine/build-pin.ts`).
+  tool need none either. A tool's mark reaches only the sessions that used the tool: one that never did waits like an unmarked
+  change, and takes the mark at the request after its first call (`used` in `src/tools/pin.ts`,
+  `src/engine/build-pin.ts`). Used means a call of the tool in the session's ledger, or, for a catalog (MCP)
+  deferred tool only, a loaded definition; a built-in is never loaded, so a call is its only use. A safety
+  change is marked with a `!` in front (`EVERY` in `src/tools/pin.ts`), which reaches every session, or is a
+  prompt block mark, which always does. The store is asked once for a session and a tool, and a call or load
+  is told to the pins as it happens (`BuildPins.called`), so a request costs no query for it.
 - A request counted over the model's window is never sent: the context is
   compacted first. A context no provider has counted yet (an imported history)
   is counted from its bytes at the model's own bytes a token, learned from what
