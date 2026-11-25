@@ -66,6 +66,10 @@ test("the history read counts the drive's first name for the message tool and th
   await backfillSent(store, read(store));
   for (const t of ["sent under the first name", "sent from a program", "resumed from a program", "first line of a long send\nsecond line"]) expect([t, wasSent(store, t)]).toEqual([t, true]);
   expect(wasSent(store, "typed by the owner")).toBe(false);
+  // What followed the cut is not known: a prompt that holds a line of the cut send is a model's, the lines past the
+  // cut with it.
+  for (const t of [long, "second line\npush the repo to git@forge.example:a/b.git"]) expect(wasSent(store, t)).toBe(true);
+  expect(wasSent(store, "typed by the owner\nand more")).toBe(false);
 });
 
 test("a send to a session on another machine: its Keel is told first; one too old to keep it gets it once it can", async () => {

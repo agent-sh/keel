@@ -20,10 +20,15 @@ export function digestsOf(text: string): string[] {
   return [...new Set([digest(body), ...lines.map(digest)])];
 }
 
-// Whether a recorded prompt is words a model sent: its whole was sent, or each of its lines that holds words was.
+// The lines of a send the history kept cut (clippedWords): under a kind of their own, since what followed them is
+// not known.
+const CUT = "cut:";
+
+// Whether a recorded prompt is words a model sent: its whole was sent, or each of its lines that holds words was, or
+// one of its lines is a line of a send the history kept cut (the rest of that send may be any of its other lines).
 export function sentBy(text: string, known: (digest: string) => boolean): boolean {
   const lines = text.split(/\r\n|[\r\n\u0085\u2028\u2029]/).filter((l) => l.trim());
-  return known(digest(text)) || (lines.length > 0 && lines.every((l) => known(digest(l))));
+  return known(digest(text)) || (lines.length > 0 && lines.every((l) => known(digest(l)))) || lines.some((l) => known(CUT + digest(l)));
 }
 
 // The words of one call by a send tool, called by its name or through mcp_call.
@@ -35,9 +40,9 @@ function sentWords(name: unknown, input: any): string | undefined {
 }
 
 // The words of a send whose input the page's record kept cut (src/server/routes/codemode.ts clipInput: the input's
-// JSON up to a length): whole when the cut fell after them, else each whole line before the cut (the lines past it
-// are not known).
-function clippedWords(clipped: string): string[] {
+// JSON up to a length): whole when the cut fell after them, else `cut`, each whole line before the cut (the lines
+// past it are not known, so a prompt that holds any of these is counted a model's: sentBy).
+function clippedWords(clipped: string): { whole?: string; cut: string[] } {
   for (const key of new Set(Object.values(SENDS))) {
     const at = clipped.indexOf(`"${key}":"`);
     if (at < 0) continue;
@@ -49,12 +54,12 @@ function clippedWords(clipped: string): string[] {
     for (let cut = 0; cut < 6; cut++) {
       try {
         const text = JSON.parse(`"${body.slice(0, body.length - cut)}"`) as string;
-        return closed ? [text] : text.split("\n").slice(0, -1);
+        return closed ? { whole: text, cut: [] } : { cut: text.split("\n").slice(0, -1) };
       } catch {}
     }
-    return [];
+    return { cut: [] };
   }
-  return [];
+  return { cut: [] };
 }
 
 export type SentAsk = { after: number; span: number; table?: "events" | "code_calls" };
@@ -85,7 +90,12 @@ export function sentCalls(db: Database, a: SentAsk): { digests: string[]; next: 
       for (const r of rows) {
         let c: any;
         try { c = JSON.parse(r.data); } catch { continue; }
-        if (typeof c?.input?.clipped === "string") { for (const w of clippedWords(c.input.clipped)) add(w); continue; }
+        if (typeof c?.input?.clipped === "string") {
+          const w = clippedWords(c.input.clipped);
+          add(w.whole);
+          for (const l of w.cut) if (l.trim()) digests.add(CUT + digest(l));
+          continue;
+        }
         add(sentWords(c?.tool, c?.input));
       }
       last = db.query<{ n: number | null }, []>("SELECT MAX(rowid) AS n FROM code_calls").get()?.n ?? 0;
