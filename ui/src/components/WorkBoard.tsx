@@ -281,6 +281,9 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
       .catch((e) => setErr(failed(e, { at: "WorkBoard land" })))
       .finally(() => setLanding(false));
   };
+  // A branch that landed says so: "done" is what every finished agent says, and the mark that told landed from not
+  // landed was a tick whose words are in its tooltip.
+  const word = w === "done" && r.landed?.state === "yes" ? "landed" : STATE_WORD[w].toLowerCase();
   const reviewing = r.reviews.length > 0;
   const changes = !!(r.work && (r.work.uncommitted || r.work.branch));
   // A tile shows only a fact: a check the repository names, a review, a landing, a live record.
@@ -300,7 +303,7 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={`${r.title} (agent ${r.id})`} data-testid="board-toggle">
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="k-whole text-ui font-medium text-fg" data-testid="board-title">{r.title}</span>
-              <span className="text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
+              <span className="text-micro text-muted" data-testid="board-state">{word}</span>
             </span>
             {toggle}
           </button>
@@ -310,7 +313,7 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
             {r.branch && <span className="k-whole hidden min-w-0 max-w-[30%] shrink truncate font-mono text-micro text-muted @[30rem]:inline" title={r.branch} data-testid="board-branch">{short(r.branch)}</span>}
             <Delta r={r} />
             <Marks facts={marks} held={held} />
-            <span className="hidden shrink-0 text-micro text-muted @[26rem]:inline" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
+            <span className="hidden shrink-0 text-micro text-muted @[26rem]:inline" data-testid="board-state">{word}</span>
           </>
         )}
         {answers && <button type="button" className="k-btn" data-ink="" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it">Answer</button>}

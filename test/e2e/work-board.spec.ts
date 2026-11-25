@@ -172,6 +172,8 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const panel = page.getByTestId("work-board");
   const card = (id: string) => panel.locator(`[data-testid="board-row"][data-agent="${id}"]`);
   await expect(card(alpha.id).getByTestId("board-landed")).toHaveAttribute("data-state", "yes");
+  // The row says it in a word: a landed branch is not one more "done".
+  await expect(card(alpha.id).getByTestId("board-state")).toHaveText("landed");
   await expect(card(alpha.id).getByTestId("board-live")).toHaveAttribute("data-state", "yes");
   await expect(card(alpha.id).getByTestId("board-review")).toHaveAttribute("data-state", "approved");
   await expect(card(beta.id).getByTestId("board-landed")).toHaveAttribute("data-state", "no");
