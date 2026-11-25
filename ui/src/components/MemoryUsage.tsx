@@ -22,6 +22,7 @@ import { FactReader, GivenView, SearchView, UnusedView, type MemorySession, type
 import { MemorySweep } from "./MemorySweep.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { fmtMs, fmtPct, Panel, Table } from "./UsagePanel.tsx";
+import { PHONE_QUERY } from "../lib/phone.ts";
 
 type Row = {
   asked: number; recalls: number; empty: number; repeat: number; skipped: number; late: number; later: number; timeouts: number; failures: number;
@@ -57,7 +58,7 @@ const HINT: Record<MemoryTab, string> = {
   sweep: "the helper's daily look at how each memory system did, and what it offers to improve",
 };
 const PANEL = "memory-view";
-const PHONE = "(max-width: 767px)";
+const PHONE = PHONE_QUERY;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 // Whether a media query holds now.

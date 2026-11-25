@@ -3,6 +3,12 @@
 @custom-variant dark (&:where(.dark, .dark *));
 /* Inside a model chooser narrower than 24rem (ModelMenu.tsx): rem here is the owner's text size. */
 @custom-variant picker-narrow (@container picker (width < 24rem));
+/* A phone is under 768 px wide, or a touch screen under 500 px tall (a phone on its side): the page's
+   one reading of it (ui/src/lib/phone.ts). md: is the desk, max-md: the phone; max-sm: (a narrow
+   phone) follows max-md: so it wins over it, as the built-in order has it. */
+@custom-variant md { @media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) { @slot; } }
+@custom-variant max-md { @media (max-width: 767px), (pointer: coarse) and (max-height: 499px) { @slot; } }
+@custom-variant max-sm { @media (width < 40rem) { @slot; } }
 /* Where nothing hovers (a touch screen): what a mouse reveals on hover is shown from the start. */
 @custom-variant touch (@media (hover: none));
 
@@ -519,7 +525,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    --spacing-tap each way: 44 px at the default text size, the least that Apple's guidance and
    WCAG 2.5.5 give a finger. The control's box grows, centered on what it shows; a link among
    words keeps its line (WCAG leaves those out). A floor, so it wins over a control's own size. */
-@media (pointer: coarse) and (max-width: 767px) {
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
   :where(button, [role="button"], [role="link"], [role="tab"], [role="switch"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="radio"], select, summary, input:not([type="checkbox"], [type="radio"], [type="range"], [type="hidden"]), a[href]):not(.prose-keel *, [data-inline-target], [hidden], .k-diff-no > [data-line]) {
     min-height: var(--spacing-tap) !important;
     min-width: var(--spacing-tap) !important;
@@ -770,7 +776,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 @media (hover: none) { .k-turn-foot > *, .k-turn-end > * { opacity: 1 !important; } }
 /* On a phone, with no pointer to show it, an earlier reply keeps its actions and lets its figures go: the
    last reply says its time, tokens and cost, and every turn's are in the Usage panel. One row a reply. */
-@media (hover: none) and (max-width: 767px) { .k-turn-foot[data-quiet] .k-turn-end > :not(.k-turn-reason) { display: none; } }
+@media (hover: none) and ((max-width: 767px) or (max-height: 499px)) { .k-turn-foot[data-quiet] .k-turn-end > :not(.k-turn-reason) { display: none; } }
 
 /* The cards above the message box (Composer's Tray): an edge fades where more is scrolled out of view. */
 .k-tray[data-more="up"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
@@ -925,7 +931,7 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 @keyframes k-moment-rise { 0%, 60%, 100% { transform: none; opacity: 0.5; } 30% { transform: translateY(-0.1875rem); opacity: 1; } }
 @keyframes k-moment-bar { 0%, 100% { transform: scaleY(0.55); } 50% { transform: scaleY(1); } }
 @keyframes k-moment-fade { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-docket { margin-bottom: 0.25rem; }
   .k-docket-line { padding-inline: 0.25rem; height: auto; min-height: var(--spacing-ctl-md); }
   /* A narrow window, with a finger or a mouse: where the agents or the commands stand beside the plan, its line is its
@@ -946,7 +952,7 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 /* A phone's dock: each line is as tall as the finger's target its button needs (the buttons are that tall, so lines
    of the shorter height laid their buttons over each other), grows where its words need a second line, and cuts
    no word: the command's line has Stop beside its name and what it says under it. */
-@media (pointer: coarse) and (max-width: 767px) {
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
   .k-docket-line { height: auto; min-height: var(--spacing-tap); }
   .k-docket-job { flex-wrap: wrap; row-gap: 0; }
   /* The plan's count already says how far it is; the bar would take the step's words their room. */
@@ -954,4 +960,4 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
   .k-docket-job > .k-job-stop { order: 1; }
 }
 .k-job-meta { display: contents; }
-@media (pointer: coarse) and (max-width: 767px) { .k-job-meta { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; } }
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) { .k-job-meta { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; } }

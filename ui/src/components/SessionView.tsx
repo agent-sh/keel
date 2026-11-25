@@ -24,6 +24,7 @@ import { whenIdle } from "../lib/utils.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import "../lib/gutter.ts";
 import { useAppSays } from "./Stale.tsx";
+import { DESK_QUERY } from "../lib/phone.ts";
 
 // The conversation (Markdown, tool rows) is its own chunk: the start page does
 // not need it, and a session link starts loading it with the page.
@@ -190,7 +191,7 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
       {...(does.escape ? { onEscape: does.escape, ...(parentId ? { stopLabel: "Stop this agent" } : {}) } : {})}
       focus={focus}
       // (Not in a pane the answering sequence opened to bring the keyboard to its card: lib/asks.ts.)
-      autoFocus={focus && matchMedia("(min-width: 768px)").matches && sequenceAt() !== id}
+      autoFocus={focus && matchMedia(DESK_QUERY).matches && sequenceAt() !== id}
       above={above}
       asks={asks}
       closed={outside ? `${outside} runs this agent. Keel shows its work and asks you for what it needs; it reads no message from here.` : undefined}

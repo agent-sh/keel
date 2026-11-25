@@ -21,7 +21,7 @@ import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
 import { MachineBlocked, MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
 import { fleet, useFleet } from "../lib/fleet.ts";
 import { isFailure } from "../lib/home.ts";
-import { useRail, useWidth } from "../lib/rail.ts";
+import { useRail } from "../lib/rail.ts";
 import { createInWorktree, isGitFolder, startBase, startPr, useStartInWorktree } from "../lib/worktree.ts";
 
 const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeToggle })));
@@ -66,8 +66,8 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
   // The newest sessions anywhere, without the ones the rows of what needs the owner show.
   const attended = useAttended();
   const rail = useRail();
-  const listed = useWidth() >= 768 && rail.list;
   const phone = usePhoneWidth();
+  const listed = !phone && rail.list;
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !attended.has(s.id)).sort((a, b) => b.updated - a.updated), [sessions, attended]);
   const watches = useWatches(live);
   // The six newest, and any failed session older than those: a red mark in the list has its row here, whatever its age.

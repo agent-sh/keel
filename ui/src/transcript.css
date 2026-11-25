@@ -224,7 +224,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-agent-line-open { width: 0.8125rem; height: 0.8125rem; opacity: 0.55; }
 /* A phone: the agent's name is written whole, the word beside it, and what it does under the name; the stop
    and open marks of its call stand on a row of their own under the line, so the line keeps the width the words need. */
-@media (pointer: coarse) and (max-width: 767px) {
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
   .k-agent-line { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; height: auto; min-height: var(--spacing-tap); padding-block: 0.25rem; }
   .k-agent-line > .k-agent-line-name { grid-column: 2; max-width: none; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
   .k-agent-line > .k-agent-line-word { grid-column: 3; }
@@ -255,7 +255,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-lane-row { display: contents; }
 .k-lane-label { color: var(--faint); font-weight: 600; white-space: nowrap; }
 .k-lane-text { margin: 0; min-width: 0; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--fg); font-variant-numeric: tabular-nums; }
-@media (max-width: 767px) { .k-lane-text { -webkit-line-clamp: 4; } }
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) { .k-lane-text { -webkit-line-clamp: 4; } }
 .k-lane-row[data-from="own"] .k-lane-text { color: var(--muted); font-style: italic; }
 .k-lane-row[data-from="missing"] .k-lane-text { color: var(--faint); }
 .k-lane-row[data-tone="need"] :is(.k-lane-label, .k-lane-text) { color: var(--st-need-ink); }

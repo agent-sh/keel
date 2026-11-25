@@ -26,6 +26,7 @@ import { SecretCards } from "./SecretCards.tsx";
 import { TrustCards } from "./TrustCards.tsx";
 import { PlanCards } from "./PlanCard.tsx";
 import { WaitingSlot } from "./AnswerQueue.tsx";
+import { DESK_QUERY } from "../lib/phone.ts";
 
 const TITLE: Record<Approval["kind"], string> = {
   shell: "Run this command?",
@@ -720,7 +721,7 @@ function useHandBack(root: RefObject<HTMLElement | null>, list: RefObject<HTMLDi
     queueMicrotask(() => {
       if (to?.isConnected) to.focus({ preventScroll: true });
       // (Not while the answering sequence is on: it moves the keyboard to what waits next, never by way of a message box.)
-      else if (!sequenceAt() && matchMedia("(min-width: 768px)").matches) box?.focus({ preventScroll: true });
+      else if (!sequenceAt() && matchMedia(DESK_QUERY).matches) box?.focus({ preventScroll: true });
     });
   }, []);
   return held;

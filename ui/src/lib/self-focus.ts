@@ -25,13 +25,15 @@
 // keyboard holds it here like a control the owner went to, so a message box
 // drawn after it does not take it back.
 
+import { DESK_QUERY } from "./phone.ts";
+
 // How long after a key or a press a focus is still that key's or press's own.
 const ACT_MS = 100;
 // How long after a press on blank space a control going away is still that press's doing (a menu it dismissed).
 const BLANK_MS = 600;
 // How many frames a closing dialog or menu is waited for before the keyboard is left where it fell.
 const CLOSE_FRAMES = 40;
-const DESK = "(min-width: 768px)";
+const DESK = DESK_QUERY;
 const TYPING = 'input, textarea, select, [contenteditable=""], [contenteditable="true"]';
 const CONTROL = 'a[href], button, input, textarea, select, summary, label, [tabindex], [contenteditable], [role="button"], [role="link"], [role="option"], [role="menuitem"], [role="tab"], [role="separator"]';
 const POPUP = '[role="dialog"], [role="alertdialog"], [role="menu"]';

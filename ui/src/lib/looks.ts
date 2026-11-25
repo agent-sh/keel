@@ -38,6 +38,7 @@ import { tipChange, tipSay } from "./tips.ts";
 import { offerUndo } from "./undo.ts";
 import { getUI, navigate } from "./ui.ts";
 import { useSessionStates } from "./watch.ts";
+import { DESK_QUERY } from "./phone.ts";
 
 export type PaneSwap = { session: string; slot: number; state: "covered" | "restored" | "left" };
 export const tellSwap = (detail: PaneSwap): void => {
@@ -46,7 +47,7 @@ export const tellSwap = (detail: PaneSwap): void => {
 };
 
 const helm = () => { const r = getUI().route; return r.name === "session" ? r.id : null; };
-const DESK = "(min-width: 768px)";
+const DESK = DESK_QUERY;
 const BOX = '[data-testid="composer"]';
 // Where a press in a pane is work there, not reading: its message box, a field, a control.
 const WORK = 'textarea, input, select, button, a[href], [role="button"], [role="menuitem"], [contenteditable="true"], [data-ask-card]';

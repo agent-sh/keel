@@ -5,6 +5,7 @@ import type { PromptBlock } from "../../../src/core/types.ts";
 import { opened } from "./self-focus.ts";
 import { isCustomize } from "./customize-ids.ts";
 import { soloWindow } from "./shell.ts";
+import { PHONE_QUERY } from "./phone.ts";
 
 export type Route =
   | { name: "new" }
@@ -81,7 +82,7 @@ const pref = <T,>(k: string, d: T): T => {
   }
 };
 
-const isPhone = () => matchMedia("(max-width: 767px)").matches;
+const isPhone = () => matchMedia(PHONE_QUERY).matches;
 
 let state: UIState = {
   route: parse(),
@@ -169,7 +170,7 @@ export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" 
 }
 
 // Crossing to phone width closes the drawer; back on a wide screen the owner's choice returns.
-matchMedia("(max-width: 767px)").addEventListener("change", (e) => setUI({ sidebar: e.matches ? false : pref("keel.list", true), peek: false }));
+matchMedia(PHONE_QUERY).addEventListener("change", (e) => setUI({ sidebar: e.matches ? false : pref("keel.list", true), peek: false }));
 
 // Text size. The whole interface is set in rem, so one number on the root
 // scales it: type, spacing and controls together, with nothing left behind to clip.

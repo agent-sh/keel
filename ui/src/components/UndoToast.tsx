@@ -9,6 +9,7 @@ import { useStations } from "../lib/stations.ts";
 import { runUndo, useUndo } from "../lib/undo.ts";
 import { cn } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
+import { DESK_QUERY } from "../lib/phone.ts";
 
 // Where it stands: in the list's foot (its left edge and width, as measured now), or hanging from the top.
 function useSpot(on: boolean): { left: number; width: number } | null {
@@ -20,7 +21,7 @@ function useSpot(on: boolean): { left: number; width: number } | null {
       const r = list?.getBoundingClientRect();
       const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
       // A list that is open and holds a sentence: the offer stands in it, a little in from its edges.
-      setSpot(r && r.width >= 15 * rem && r.left >= -1 && matchMedia("(min-width: 768px)").matches ? { left: r.left + 0.5 * rem, width: r.width - rem } : null);
+      setSpot(r && r.width >= 15 * rem && r.left >= -1 && matchMedia(DESK_QUERY).matches ? { left: r.left + 0.5 * rem, width: r.width - rem } : null);
     };
     read();
     addEventListener("resize", read);

@@ -69,10 +69,11 @@ import { sessionCosts } from "../lib/next-look.ts";
 import { cn } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
+import { DESK_QUERY, PHONE_QUERY } from "../lib/phone.ts";
 
 const KEYS = "alt+a";
 // A phone: one page at a time, answered on the way (see the head of the file).
-const phone = () => matchMedia("(max-width: 767px)").matches;
+const phone = () => matchMedia(PHONE_QUERY).matches;
 // How long in a session that waits, once its cards can be answered, before the owner is taken to be reading it.
 const READING_MS = 10_000;
 // What a session asks: a press or a key there is on the way to an answer, not reading.
@@ -260,7 +261,7 @@ export function AnswerQueue() {
     if (visit?.id === cur || (from.name === "session" && from.id === cur)) return;
     const st = opened(getStations(), cur);
     // A look, or a move between panes at a desk. (One pane is a page that is turned: the owner turns it back.)
-    const leaves = st.over.includes(cur) || (st.slots.length > 1 && !movedTo(cur) && matchMedia("(min-width: 768px)").matches) || phone();
+    const leaves = st.over.includes(cur) || (st.slots.length > 1 && !movedTo(cur) && matchMedia(DESK_QUERY).matches) || phone();
     visit = order.includes(cur) && leaves ? { id: cur, from, slot: getStations().active } : null;
   }, [route]);
   // The owner began to read or work in the session they went to: they stay (see the head of the file).

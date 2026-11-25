@@ -55,6 +55,7 @@ import { Kbd } from "./Kbd.tsx";
 import { WatchHeadline, WatchLists, useAttended, useHome } from "./HomeWatch.tsx";
 import { StartBox } from "./StartBox.tsx";
 import { goNextWaiting } from "./AnswerQueue.tsx";
+import { usePhoneWidth } from "../lib/list-hold.ts";
 
 const helmNow = () => { const r = getUI().route; return r.name === "session" ? r.id : null; };
 // What the panes show, left to right: a look where one lies over a pane, else the pane's own session.
@@ -701,7 +702,7 @@ const rowOf = (t: EventTarget | null) => (t instanceof Element ? t.closest<HTMLE
 export function Bridge() {
   const route = useUI((s) => s.route);
   const width = useWidth();
-  const phone = width < 768;
+  const phone = usePhoneWidth();
   const { list, watches } = useLive();
   const kept = useStations((s) => s);
   const sessions = useStore((x) => x.sessions);

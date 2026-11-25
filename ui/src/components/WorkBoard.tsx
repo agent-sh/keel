@@ -22,13 +22,14 @@ import { STATE_WORD, agentState, failWord } from "../../../src/core/state-words.
 import { goToAsk } from "./AnswerQueue.tsx";
 import { Mark as StateMark } from "./Mark.tsx";
 import { PicturesArea } from "./Pictures.tsx";
+import { PHONE_TOUCH_QUERY } from "../lib/phone.ts";
 
 // The tree review: every agent's branch as one diff by area (TreeReview.tsx), read when it opens.
 const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
 
 // A phone: a touch screen at a phone's width. There an agent with a branch is a row (its state and its one
 // action), and its facts are one tap away.
-const PHONE = "(pointer: coarse) and (max-width: 767px)";
+const PHONE = PHONE_TOUCH_QUERY;
 const usePhone = () => useSyncExternalStore(
   (f) => { const m = matchMedia(PHONE); m.addEventListener("change", f); return () => m.removeEventListener("change", f); },
   () => matchMedia(PHONE).matches,

@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Fo
 import { after } from "./list-order.ts";
 import { getState } from "./store.ts";
 import { navigate, phone } from "./ui.ts";
+import { PHONE_QUERY } from "./phone.ts";
 
 // How long after the hand left the list lets go.
 const LEAVE_MS = 400;
@@ -123,7 +124,7 @@ export function useHand() {
     // keyboard there: that is no hand, or the list and what it names at its foot would stand still for
     // as long as the drawer is open. Keys that move it there (a keyboard on the phone) are one.
     onFocus: (e: FocusEvent<HTMLElement>) => {
-      if (matchMedia("(max-width: 767px)").matches && e.target instanceof Element && !e.target.matches(":focus-visible")) return;
+      if (matchMedia(PHONE_QUERY).matches && e.target instanceof Element && !e.target.matches(":focus-visible")) return;
       at.current.rows = e.currentTarget; set({ focus: true });
     },
     onBlur: (e: FocusEvent<HTMLElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) set({ focus: false }); },
@@ -173,7 +174,7 @@ export function reanchor() {
 // What the list scrolls in: the list itself, or on a phone the box above the list's foot, where the
 // list scrolls with what stands above it (bridge.css, .k-list-scroll). Decided again when the screen
 // crosses the phone's width (usePhoneWidth).
-const PHONE = "(max-width: 767px)";
+const PHONE = PHONE_QUERY;
 export const scrollerOf = (nav: HTMLElement | null) => (nav && getComputedStyle(nav).overflowY === "visible" ? nav.closest<HTMLElement>(".k-list-scroll") ?? nav : nav);
 export const usePhoneWidth = () => useSyncExternalStore(
   (f) => { const m = matchMedia(PHONE); m.addEventListener("change", f); return () => m.removeEventListener("change", f); },

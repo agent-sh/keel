@@ -12,6 +12,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { getStations, MAX_PANES, useStations } from "./stations.ts";
 import { getUI, savePref, setUI, useUI } from "./ui.ts";
+import { PHONE_QUERY } from "./phone.ts";
 
 // A length given in px at a 16 px root, at the root's size now (the default
 // size and the owner's text size are the stylesheet's: styles.css sets the root).
@@ -40,7 +41,7 @@ export function listWidth() {
   return Math.round(Math.min(max, Math.max(min, getUI().listW ?? base)));
 }
 
-const phone = () => matchMedia("(max-width: 767px)").matches;
+const phone = () => matchMedia(PHONE_QUERY).matches;
 
 export function useWidth() {
   const [w, setW] = useState(innerWidth);

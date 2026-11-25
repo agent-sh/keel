@@ -5,6 +5,7 @@ import { boxOf, commentMessage, tighten, whereOf } from "../lib/quote.ts";
 import { QUEUE_KEYS, composing, isMac, keyLabel, registerCommand } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
 import { popupClass } from "./ui.tsx";
+import { DESK_QUERY } from "../lib/phone.ts";
 
 // Words selected in the conversation (a reply, a tool's output, a diff hunk, the board) offer two
 // things: Quote puts them in the message box as a quote block; Comment takes one line and sends
@@ -137,7 +138,7 @@ export const SelectionBar = memo(function SelectionBar({ sid, root, working }: {
     const em = parseFloat(getComputedStyle(el).fontSize) || 16;
     const w = el.offsetWidth, h = el.offsetHeight, gap = 0.5 * em;
     const roomAbove = first.top - h - gap >= gap, roomBelow = last.bottom + h + 2 * gap <= innerHeight;
-    const above = !TOUCH.matches && innerWidth >= 768 ? roomAbove || !roomBelow : roomAbove && !roomBelow;
+    const above = !TOUCH.matches && matchMedia(DESK_QUERY).matches ? roomAbove || !roomBelow : roomAbove && !roomBelow;
     const at = above ? first : last;
     const left = Math.min(Math.max(at.left + at.width / 2 - w / 2, gap), innerWidth - w - gap);
     const top = above ? first.top - h - gap : last.bottom + gap;

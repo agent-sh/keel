@@ -41,6 +41,7 @@ import { cn, focusBox } from "../lib/utils.ts";
 import { justOnce, keepRuling, useOfferMark, type Scope } from "../lib/rulings.ts";
 import { Seg } from "./Seg.tsx";
 import { WaitingSlot } from "./AnswerQueue.tsx";
+import { PHONE_QUERY } from "../lib/phone.ts";
 
 type Picked = Record<string, string[]>;
 // Unsent answers, per session and call: they outlive the card (a pane
@@ -89,7 +90,7 @@ function QuestionText({ text, header }: { text: string; header?: string }) {
     const el = ref.current;
     const card = el?.closest<HTMLElement>(".k-question");
     const tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
-    if (!el || !card || !tray || whole || !matchMedia("(max-width: 767px)").matches) return;
+    if (!el || !card || !tray || whole || !matchMedia(PHONE_QUERY).matches) return;
     // Whether every choice stands in the tray, above the card's foot (the state the page has now).
     const shows = () => {
       const t = tray.getBoundingClientRect();

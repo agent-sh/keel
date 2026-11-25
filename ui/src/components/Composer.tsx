@@ -38,6 +38,7 @@ import type { ModelPick } from "./ModelMenu.tsx";
 import { SpeedPicker } from "./SpeedPicker.tsx";
 import { LimitChip } from "./Limits.tsx";
 import { SETTLE_MS } from "../lib/settle.ts";
+import { DESK_QUERY } from "../lib/phone.ts";
 
 // The two presses of Escape that open the rewind come within this time.
 const ESC_TWICE_MS = 700;
@@ -71,7 +72,7 @@ const queueKeys = keyLabel(QUEUE_KEYS).join(" ");
 // Said once in a page's life, the first time Tab goes from a draft to the queue button.
 let queueKeySaid = false;
 // A desk-sized window: focus may go to the message box by itself there.
-const DESK = matchMedia("(min-width: 768px)");
+const DESK = matchMedia(DESK_QUERY);
 // A window lower than this many rem is short: the toolbar keeps to one row.
 const SHORT_REM = 28;
 // How full the context must be for a phone's resting box to show its ring.

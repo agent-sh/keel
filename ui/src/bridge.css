@@ -293,7 +293,7 @@
    instead of keeping half the screen while the rows scroll in what is left. The find stays at the top,
    and a row brought into view stands under it. The foot (who needs you, the machines below, the
    arrivals) stands under the scrolling box, not over it: a row it names is never behind it. */
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-list-scroll { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .k-list-scroll .k-index { flex: none; min-height: auto; overflow: visible; }
   .k-rail .k-list-scroll > .k-find { position: sticky; top: 0.25rem; z-index: 1; background: var(--panel); box-shadow: 0 -0.25rem 0 var(--panel), 0 0.25rem 0 var(--panel); }
@@ -370,7 +370,7 @@
 /* The dot's word beside the title, drawn on a phone only (a desk has the dot's tooltip). A session that waits on what it
    left going says that, not the bare Working the ring is a kind of. */
 .k-row-dot-word { display: none; }
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-row-sub .k-row-dot-word { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: 400; line-height: 1rem; color: var(--faint); }
   .k-row[data-dotword="long"] .k-row-sub > .k-row-state { display: none; }
   .k-row[data-dotword="long"] .k-row-sub > .k-row-why { display: none; }
@@ -390,7 +390,7 @@
 }
 /* Where the list is too narrow to leave a title room beside the word (a large text size), every word is the line under it. */
 @container rail (max-width: 17rem) {
-  @media (max-width: 767px) {
+  @media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
     .k-index .k-row[data-dotword="short"] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem auto; column-gap: 0.5625rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
     .k-index .k-row[data-dotword="short"] .k-row-main { display: contents; }
     .k-index .k-row[data-dotword="short"] > .k-mark { grid-area: 1 / 1; }
@@ -674,7 +674,7 @@
 /* The pane worked in, among several: its lighter paper, its tools in its bar and its title in
    ink; the other panes' titles step back to the muted ink. No rule or edge is drawn across a
    pane's top or down its side: one there met the rail as a short light line in the dark theme. */
-@media (min-width: 768px) {
+@media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
   .k-stations:not([data-count="1"]) .k-station:not([data-helm]) .k-station-title { color: var(--muted); }
 }
 /* A pane's views. The session it holds fills the pane. What lies over it for now (a look,
@@ -692,7 +692,7 @@
 /* A look is not the pane's session: the rule between its bar and the session looked at is
    dashed, as a place a drop would land is, and in ink in the pane worked in. */
 .k-view[data-view="look"] > .k-look-bar { border-bottom-color: transparent; background-image: repeating-linear-gradient(90deg, var(--line-strong) 0 0.625rem, transparent 0.625rem 1rem); background-position: bottom; background-size: 100% 1px; background-repeat: no-repeat; }
-@media (min-width: 768px) {
+@media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
   .k-station[data-helm] > .k-view[data-view="look"] > .k-look-bar { background-image: repeating-linear-gradient(90deg, var(--fg) 0 0.625rem, transparent 0.625rem 1rem); background-size: 100% 2px; }
 }
 /* (One line of two sentences. When both do not fit, the first goes to a line above that is not
@@ -972,7 +972,7 @@ html[data-resizing] iframe { pointer-events: none; }
 /* A pane narrower than the bar's measure, on a desk: the head is still the brand row's height (the title
    over the state, the bar's two-line form), and under it one row of one height, the helm's tools or
    another pane's preview line. So every pane's head ends on one line, whichever holds the keys. */
-@media (min-width: 768px) {
+@media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) {
   @container k-top (max-width: 39.9375rem) {
     .k-top-in > .k-station-head { height: calc(var(--spacing-bar) - var(--k-band-h)); padding-block: 0; row-gap: 0.0625rem; }
     .k-top-in > .k-station-head .k-station-title { line-height: 1.3; }
@@ -985,7 +985,7 @@ html[data-resizing] iframe { pointer-events: none; }
 
 /* A phone's top bar is one line: the title (cut to the room), the state's dot and its age. The state's word and what it
    waits on are the first rows of the session's menu (they are a menu away, not three lines of the bar). */
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-station[data-helm] .k-station-identity { flex-wrap: nowrap; column-gap: 0.5rem; }
   .k-station[data-helm] .k-station-identity .k-station-title { display: block; flex: 0 1 auto; min-width: 2rem; margin-top: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .k-station[data-helm] .k-station-rest { flex: 0 0 auto; min-height: 0; }
@@ -1227,7 +1227,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* On a phone the foot that stays is its buttons: the mode keeps its name for a screen reader only,
    and stands beside Approve on one row. */
 /* (By whether it stays, which depends on the sizes only: by whether it lies over the text now, its height would change what it lies over.) */
-@media (max-width: 767px) { .k-plan-foot[data-stick] .k-plan-label { display: none; } .k-plan-foot[data-stick] { padding-block: 0.5rem; } }
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) { .k-plan-foot[data-stick] .k-plan-label { display: none; } .k-plan-foot[data-stick] { padding-block: 0.5rem; } }
 .k-tray:has(.k-plan-foot[data-stuck])[data-more="down"] { mask-image: none; }
 .k-tray:has(.k-plan-foot[data-stuck])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
 /* The control that opens a request's text and folds it again keeps the width of its longest
@@ -1280,7 +1280,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 
 /* ---------- Phone: the stations are pages, the dock their marks ---------- */
 .k-dock { display: none; }
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   /* A card that waits on the owner gets the room a phone has: the strip of the conversation above it keeps
      a finger's height, and the message box rests as its one line until it is tapped or holds something
      (its tools, Stop among them, come back with the tap). */
@@ -1399,6 +1399,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-dock-need-n { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0 0.5rem; font-weight: 600; font-size: var(--text-caption); line-height: 1.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--fg); }
   .k-dock-need:active { background: var(--hover); }
 }
+/* A phone on its side has no height to give a bar: the dock goes, and its work is the head's list button (the sessions)
+   and the cards and lines in the conversation (what waits). The conversation takes the whole height. */
+@media (pointer: coarse) and (max-height: 499px) {
+  .k-dock { display: none; }
+  .k-stations { height: 100%; }
+}
 
 /* The station head already names the folder: the helm header drops its folder chip. */
 .k-station .k-session-header .k-head-folder { display: none; }
@@ -1422,7 +1428,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-tick-kids .k-child-row { display: flex; justify-content: center; }
 .k-tick-kids :is(.k-child-acts, .k-child-lane) { display: none; }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-station-meta { display: none; }
   /* A phone's header: the title in the page's width, on a second line when it is long, so that it
      is read whole; the state and its reason under it. Pin and close are in the session's menu
@@ -1456,7 +1462,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 }
 
 /* The Errors panel on a phone: its note has a line of its own under the title, read whole. */
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-surface-head.k-errors-head { flex-wrap: wrap; height: auto; min-height: 3rem; padding-block: 0.5rem; row-gap: 0; }
   .k-surface-head.k-errors-head > .k-surface-note { order: 1; flex-basis: 100%; white-space: normal; }
 }
@@ -1489,9 +1495,9 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
    its header, so the panel is switched or closed from either. */
 .k-side[data-mode="sheet"] { position: absolute; inset: 0; z-index: 20; }
 /* A phone gives the sheet the whole screen. */
-@media (max-width: 767px) { .k-side[data-mode="sheet"] { position: fixed; z-index: 40; } }
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) { .k-side[data-mode="sheet"] { position: fixed; z-index: 40; } }
 /* In a pane the panel's close sits under the pane's own close and Session actions: one column. */
-@media (min-width: 768px) { .k-side > .k-surface-head { padding-right: 1rem; } }
+@media (min-width: 768px) and (not ((pointer: coarse) and (max-height: 499px))) { .k-side > .k-surface-head { padding-right: 1rem; } }
 
 /* ---------- Settings: a station of its own ---------- */
 .k-settings { background: var(--bg); container: settings / inline-size; }
@@ -1548,16 +1554,16 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
    no hover shows the rest, and a title is no way to read it on a touch screen. */
 /* (In the components layer, as the utility it replaces was: a width or a wrap a part's own classes give still applies.) */
 @layer components { .k-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
-@media (pointer: coarse) and (max-width: 767px) {
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
   .k-truncate, .k-settings-body :is(.k-path, .k-editor-bar > span:first-child) { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 }
 /* A line a panel cut short with an ellipsis, written whole on a phone (the same as in a Settings section). */
-@media (pointer: coarse) and (max-width: 767px) {
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
   .k-whole { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 }
 /* A checkbox in a row: the label around it is the target, as large as a finger needs on a phone. */
 .k-hit { display: inline-grid; place-items: center; }
-@media (pointer: coarse) and (max-width: 767px) {
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
   .k-hit { min-width: var(--spacing-tap); min-height: var(--spacing-tap); margin: -0.625rem 0 -0.625rem -0.875rem; }
 }
 /* The bar carries the title on a narrow page; the heading stays for a screen reader. */
@@ -1646,7 +1652,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-set-list[data-dense] > .k-set-item { min-height: 2.25rem; padding-block: 0.3125rem; }
 .k-set-sub[data-clip] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
 /* (After the rule it undoes, which the sheet's order would otherwise let win: a phone writes the line whole.) */
-@media (pointer: coarse) and (max-width: 767px) { .k-set-sub[data-clip] { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; } }
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) { .k-set-sub[data-clip] { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; } }
 .k-set-meta { grid-area: meta; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.25rem 1rem; font-size: var(--text-caption); font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
 .k-set-item > .k-set-status { grid-area: status; }
 .k-set-act { grid-area: act; display: flex; align-items: center; justify-content: flex-end; gap: 0.375rem; }
@@ -1856,7 +1862,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
    text, not over it: the text ends where they begin. */
 .k-box[data-rest] > .k-rest-text { width: calc(100% - 2.75rem); }
 .k-box[data-rest]:has(> .k-rest-ring > *) > .k-rest-text { width: calc(100% - 4.75rem); }
-@media (pointer: coarse) and (max-width: 767px) {
+@media (pointer: coarse) and ((max-width: 767px) or (max-height: 499px)) {
   .k-box[data-rest] > .k-rest-text { width: calc(100% - var(--spacing-tap) - 0.375rem); }
   .k-box[data-rest] > .k-rest-ring { right: calc(var(--spacing-tap) + 0.375rem); }
   .k-box[data-rest]:has(> .k-rest-ring > *) > .k-rest-text { width: calc(100% - 2 * var(--spacing-tap) - 0.375rem); }
@@ -1898,7 +1904,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-outside[data-state="waiting"] .k-outside-state { color: var(--st-need-ink); }
 .k-outside[data-state="stale"] .k-outside-state { font-weight: 400; color: var(--muted); }
 /* On a phone the button stands on its own line under the sentence, as wide as the bar. */
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-outside-head { flex-wrap: wrap; row-gap: 0.5rem; }
   .k-outside-head > .k-btn { flex: 1 0 100%; justify-content: center; }
 }
@@ -1949,7 +1955,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 
 /* The import sheet on a phone fills the screen and shows the list or the session picked, one at a time; each control is a
    finger's size (the desk's are 1.5 to 2 rem high). */
-@media (max-width: 767px) {
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
   .k-import :is(button, select, input:not([type="hidden"]), label) { min-height: 2.75rem; }
   .k-import :is(button, select) { min-width: 2.75rem; }
   .k-import-back { display: flex; align-items: center; gap: 0.25rem; padding: 0 0.75rem; border-bottom: 1px solid var(--line); font-size: var(--text-ui); color: var(--accent); text-align: left; }

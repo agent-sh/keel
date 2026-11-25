@@ -30,6 +30,7 @@ import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type RefObjec
 import { holdAt, keysReady, KEY_MS, SETTLE_MS } from "./approvals.ts";
 import { inPopup, overlayOver } from "./overlay.ts";
 import { tipSay } from "./tips.ts";
+import { DESK_QUERY } from "./phone.ts";
 
 const UNIT = "[data-ask-card]";
 const REGION = "[data-ask]";
@@ -190,7 +191,7 @@ export const sequenceAt = (): string | null => bound;
 // desk; on a phone that would raise the keyboard).
 export function restInBox(session: string) {
   const at = document.activeElement;
-  if ((at && at !== document.body && at.isConnected) || !matchMedia("(min-width: 768px)").matches) return;
+  if ((at && at !== document.body && at.isConnected) || !matchMedia(DESK_QUERY).matches) return;
   document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"] ${BOX}${ON_TOP}`)?.focus({ preventScroll: true });
 }
 
@@ -397,7 +398,7 @@ export function useAskKeys(unit: RefObject<HTMLElement | null>, take = true) {
     const box = unit.current?.closest(".k-session")?.querySelector<HTMLElement>(BOX);
     queueMicrotask(() => {
       const now = document.activeElement;
-      if (!bound && (!now || now === document.body || !now.isConnected) && matchMedia("(min-width: 768px)").matches) box?.focus({ preventScroll: true });
+      if (!bound && (!now || now === document.body || !now.isConnected) && matchMedia(DESK_QUERY).matches) box?.focus({ preventScroll: true });
     });
   }, []);
   return held;
