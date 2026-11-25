@@ -147,7 +147,20 @@ test("what a terminal's program is decides how a line is read: a prompt is answe
   expect((await r.write(repl, "\x03")).verdict).toBe("ran");
 }, 30_000);
 
-test("an open bracketed paste is followed only in a shell whose line editor honours it", async () => {
+// What the two tests below need of the machine: the processes of a terminal readable from /proc (a sandbox with no view
+// of them cannot give it). The one after them forces the reader unknown, and needs nothing.
+const canRead = await (async () => {
+  try {
+    const job = startJob({ sessionId: "probe", command: "cat", cwd: tmp(), logDir: mkdtempSync(join(tmp(), "typed-probe-")), argv: ["cat"], pty: true, handle: "num" });
+    let ok = false;
+    for (let i = 0; i < 100 && !ok; i++) { ok = (await readerOfTerminal(job.pid))?.name === "cat"; if (!ok) await Bun.sleep(30); }
+    await stopJob(job);
+    return ok;
+  } catch { return false; }
+})();
+const needsProc = test.skipIf(!canRead);
+
+needsProc("an open bracketed paste is followed only in a shell whose line editor honours it", async () => {
   const open = "\x1b[200~\n";
   for (const [argv, ruled] of [[["sh", "-i"], "card"], [["bash", "--norc", "--noprofile", "-i"], "ran"]] as const) {
     const r = rig("ask");
@@ -160,11 +173,26 @@ test("an open bracketed paste is followed only in a shell whose line editor hono
   }
 }, 30_000);
 
-test("a terminal that starts its shell later is read as a shell while another program runs in front", async () => {
+needsProc("a terminal that starts its shell later is read as a shell while another program runs in front", async () => {
   const r = rig("ask");
   const late = await r.terminal(false, ["bash", "-c", "sleep 6; exec bash --norc --noprofile -i"]);
   expect((await readerOfTerminal(late.pid))?.kind).toBe("program");
   expect((await r.write(late, `${REFUSED}\n`)).verdict).toBe("card");
+}, 30_000);
+
+test("a terminal whose program cannot be read is read as a shell, and an open paste in it asks", async () => {
+  const r = rig("ask");
+  const t = await r.terminal();
+  const real = t.pid;
+  t.pid = 2_147_483_000; // no such process: nothing of the terminal can be read
+  expect(await readerOfTerminal(t.pid)).toBeUndefined();
+  expect((await r.write(t, `${REFUSED}\n`)).verdict).toBe("card");
+  expect((await r.write(t, "\x03")).verdict).toBe("ran");
+  const paste = { session_id: t.num, chars: "\x1b[200~\n", yield_time_ms: 250 };
+  expect(await r.decide(writeStdin, paste)).toBe("card");
+  await writeStdin.run(paste, r.ctx());
+  expect((await r.write(t, `${REFUSED}\n`)).verdict).toBe("card");
+  t.pid = real;
 }, 30_000);
 
 test("a terminal that has just started is read as a shell", async () => {
