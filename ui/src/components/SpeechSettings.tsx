@@ -62,6 +62,9 @@ export function SpeechSettings() {
             <input className="k-field k-field-sm w-32" aria-label="Voice" value={p.voice} onChange={(e) => setPrefs({ voice: e.target.value })} data-testid="speech-voice" />
           </SettingRow>
         )}
+        <SettingRow label="Speak to interrupt" hint="Speech over a reply stops the reading and starts listening. On speakers the reply can come back through the microphone: the input cancels echo, and the reply's own words heard back are not taken as speech. Turn it off if your replies cut themselves off.">
+          <Seg label="Speak to interrupt" value={p.barge ? "on" : "off"} onChange={(v) => setPrefs({ barge: v === "on" })} options={[{ value: "on", label: "On" }, { value: "off", label: "Off" }]} testid="speech-barge" />
+        </SettingRow>
       </Group>
       <Group title="This browser">
         <SettingRow label="Speech recognition"><Status tone={recognizerCtor() ? "ok" : "quiet"}>{recognizerCtor() ? "Present" : "None"}</Status></SettingRow>

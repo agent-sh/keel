@@ -16,6 +16,8 @@ const BROWSER = () => {
   const w = window as any;
   w.__recs = [];
   w.__spoken = [];
+  // `__hold`: a voice that keeps reading until it is cancelled (a long reply); `__cancelled` counts the cancels.
+  w.__hold = false; w.__cancelled = 0; w.__held = null;
   class Rec {
     lang = ""; continuous = false; interimResults = false; onresult: any; onend: any; onerror: any; on = false;
     constructor() { w.__recs.push(this); }
@@ -35,8 +37,8 @@ const BROWSER = () => {
     configurable: true,
     value: {
       getVoices: () => [{ name: "Stand-in" }],
-      speak: (u: any) => { w.__spoken.push(u.text); setTimeout(() => u.onend?.(), 40); },
-      cancel: () => {},
+      speak: (u: any) => { w.__spoken.push(u.text); if (w.__hold) w.__held = u; else setTimeout(() => u.onend?.(), 40); },
+      cancel: () => { w.__cancelled++; const u = w.__held; w.__held = null; u?.onerror?.({ error: "canceled" }); },
       addEventListener: () => {},
       removeEventListener: () => {},
     },
@@ -283,4 +285,52 @@ test("voices: a provider that lists them is asked about once, and the pick is ke
     await request.delete(`/api/providers/endpoints/${SPEECH_ID}`);
     strict.server.close();
   }
+});
+
+const REPLY = "The tests all pass and the build is green.";
+
+test("barge-in: speech over a reply stops the reading and starts the next message; the reply's own words heard back do not", async ({ page, request }) => {
+  await page.addInitScript(BROWSER);
+  await session(page, request);
+  await page.evaluate(() => { (window as any).__hold = true; });
+  const state = page.getByTestId("speech-state");
+  await page.getByTestId("converse").click();
+  await expect(state).toHaveText("Listening");
+  await hear(page, `tell me script:say ${REPLY}`);
+  await expect.poll(() => page.evaluate(() => (window as any).__spoken)).toEqual([REPLY]);
+  await expect(state).toHaveText("Speaking");
+  await expect(page.getByTestId("speech-way")).toContainText("read aloud by Browser voice");
+  // A recognizer runs over the reading (the one that heard the message was closed when it was sent).
+  expect(await live(page)).toBe(1);
+  // The reply's own words coming back through the microphone are not speech.
+  await hear(page, "", "the tests all pass");
+  await hear(page, "", "and the build is green");
+  await expect(state).toHaveText("Speaking");
+  expect(await page.evaluate(() => (window as any).__cancelled)).toBe(0);
+  // The owner speaks over it: the reading stops at once and the words are the start of the next message.
+  await hear(page, "", "wait stop");
+  await expect(state).toHaveText("Listening");
+  await expect(page.getByTestId("speech-heard")).toHaveText("wait stop");
+  expect(await page.evaluate(() => (window as any).__cancelled)).toBe(1);
+  await shoot(page, "speech-05-barge-in");
+  await page.evaluate(() => { (window as any).__hold = false; });
+  await hear(page, "wait stop script:say Stopped.");
+  await expect(page.getByTestId("user-message").last()).toContainText("wait stop script:say Stopped.");
+  await expect.poll(() => page.evaluate(() => (window as any).__spoken)).toEqual([REPLY, "Stopped."]);
+  await expect(state).toHaveText("Listening");
+  expect(await live(page)).toBe(1);
+});
+
+test("barge-in off in Settings > Speech: the reply is read to its end and nothing listens meanwhile", async ({ page, request }) => {
+  await page.addInitScript(BROWSER);
+  await session(page, request, { barge: false });
+  await page.evaluate(() => { (window as any).__hold = true; });
+  await page.getByTestId("converse").click();
+  await expect(page.getByTestId("speech-state")).toHaveText("Listening");
+  await hear(page, `tell me script:say ${REPLY}`);
+  await expect(page.getByTestId("speech-state")).toHaveText("Speaking");
+  expect(await live(page)).toBe(0);
+  await page.evaluate(() => { const w = window as any; const u = w.__held; w.__held = null; u.onend(); });
+  await expect(page.getByTestId("speech-state")).toHaveText("Listening");
+  expect(await live(page)).toBe(1);
 });

@@ -19,6 +19,9 @@ export const VAD_START: Vad = { floor: 0.01, loudAt: null, lastLoudAt: null, end
 const FLOOR_MIN = 0.008, STEP = 3, FLOOR_FOLLOW = 0.05, MIN_SPEECH_MS = 250;
 export const loudAbove = (floor: number) => Math.max(FLOOR_MIN * STEP, floor * STEP);
 
+// Speech has lasted long enough to be speech (not a click or a cough): a reply being read may stop for it.
+export const voiced = (v: Vad): boolean => v.loudAt !== null && v.lastLoudAt !== null && v.lastLoudAt - v.loudAt >= MIN_SPEECH_MS;
+
 export function vadStep(v: Vad, level: number, now: number, silenceMs: number): Vad {
   if (v.ended) return v;
   const loud = level >= loudAbove(v.floor);
@@ -106,8 +109,21 @@ export function replyOf(events: StoredEvent[] | undefined, seq: number): Reply {
 // ---- the turns of a conversation ----
 
 export type Phase = "off" | "listening" | "thinking" | "speaking";
-export type Talk = { phase: Phase; final: string; interim: string; lastAt: number | null; error?: string };
-export const OFF: Talk = { phase: "off", final: "", interim: "", lastAt: null };
+// `say`: the words being read aloud; `hearing`: the recognizer (or a recording) is running. While a reply is read it
+// runs too when barge-in is on, so speech over the reply stops the reading (a reply's own words heard back are not speech).
+export type Talk = { phase: Phase; final: string; interim: string; lastAt: number | null; error?: string; say: string; hearing: boolean };
+export const OFF: Talk = { phase: "off", final: "", interim: "", lastAt: null, say: "", hearing: false };
+
+const wordsOf = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter(Boolean);
+// Whether `heard` is the reply's own words coming back through the microphone: the same words, in a row, inside what
+// is being read. Echo cancellation on the input takes most of it out; this takes out what is left. A word or two the
+// owner says that the reply also holds is taken for echo, and the owner's next words are not.
+export function echoOf(heard: string, said: string): boolean {
+  const h = wordsOf(heard);
+  if (!h.length) return true;
+  const s = ` ${wordsOf(said).join(" ")} `;
+  return s.includes(` ${h.join(" ")} `);
+}
 
 export type TalkEvent =
   | { t: "start"; busy: boolean }                       // the mode is turned on; `busy`: a turn is running
@@ -116,7 +132,8 @@ export type TalkEvent =
   | { t: "captured" }                                   // a recording ended: it is being turned into words
   | { t: "said"; text: string }                         // the words of that recording (none: nothing was said)
   | { t: "send-failed" }                                // the message could not go: listen again
-  | { t: "reply"; text: string }                        // the turn ended; its words to read, if any
+  | { t: "reply"; text: string; barge?: boolean }       // the turn ended; its words to read, if any; `barge`: speech may stop the reading
+  | { t: "voice" }                                      // speech was heard by loudness (a recording has no words to show)
   | { t: "spoken" }
   | { t: "recognizer-ended" }                           // the recognizer stopped by itself while listening
   | { t: "failed"; why: string }
@@ -129,12 +146,18 @@ export function talkStep(s: Talk, e: TalkEvent): { talk: Talk; effects: Effect[]
   const same = { talk: s, effects: [] as Effect[] };
   switch (e.t) {
     case "start":
-      return e.busy ? { talk: { ...OFF, phase: "thinking" }, effects: [] } : { talk: { ...OFF, phase: "listening" }, effects: ["listen"] };
+      return e.busy ? { talk: { ...OFF, phase: "thinking" }, effects: [] } : { talk: { ...OFF, phase: "listening", hearing: true }, effects: ["listen"] };
     case "stop":
       return s.phase === "off" ? same : { talk: OFF, effects: ["unlisten", "hush"] };
     case "failed":
       return s.phase === "off" ? same : { talk: { ...OFF, error: e.why }, effects: ["unlisten", "hush"] };
     case "words": {
+      if (s.phase === "speaking") {
+        // Over the reply: words that are not the reply's own stop the reading and are the start of the owner's message.
+        const heard = join(e.final, e.interim);
+        if (!s.hearing || !heard || echoOf(heard, s.say)) return same;
+        return { talk: { ...OFF, phase: "listening", hearing: true, final: e.final, interim: e.interim, lastAt: e.at }, effects: ["hush"] };
+      }
       if (s.phase !== "listening") return same;
       const changed = join(e.final, e.interim) !== join(s.final, s.interim);
       return { talk: { ...s, final: e.final, interim: e.interim, lastAt: changed ? e.at : s.lastAt }, effects: [] };
@@ -145,21 +168,27 @@ export function talkStep(s: Talk, e: TalkEvent): { talk: Talk; effects: Effect[]
       if (!silenceEnded({ words, lastAt: s.lastAt, now: e.now, silenceMs: e.silenceMs })) return same;
       return { talk: { ...OFF, phase: "thinking" }, effects: ["unlisten", { send: words }] };
     }
+    case "voice":
+      return s.phase === "speaking" && s.hearing ? { talk: { ...OFF, phase: "listening", hearing: true }, effects: ["hush"] } : same;
     case "captured":
       return s.phase === "listening" ? { talk: { ...OFF, phase: "thinking" }, effects: [] } : same;
     case "said": {
       if (s.phase !== "thinking") return same;
-      return e.text.trim() ? { talk: s, effects: [{ send: e.text.trim() }] } : { talk: { ...OFF, phase: "listening" }, effects: ["listen"] };
+      return e.text.trim() ? { talk: s, effects: [{ send: e.text.trim() }] } : { talk: { ...OFF, phase: "listening", hearing: true }, effects: ["listen"] };
     }
     case "send-failed":
-      return s.phase === "thinking" ? { talk: { ...OFF, phase: "listening" }, effects: ["listen"] } : same;
+      return s.phase === "thinking" ? { talk: { ...OFF, phase: "listening", hearing: true }, effects: ["listen"] } : same;
     case "reply": {
       if (s.phase !== "thinking") return same;
-      return e.text.trim() ? { talk: { ...OFF, phase: "speaking" }, effects: [{ speak: e.text }] } : { talk: { ...OFF, phase: "listening" }, effects: ["listen"] };
+      if (!e.text.trim()) return { talk: { ...OFF, phase: "listening", hearing: true }, effects: ["listen"] };
+      return e.barge
+        ? { talk: { ...OFF, phase: "speaking", say: e.text, hearing: true }, effects: ["listen", { speak: e.text }] }
+        : { talk: { ...OFF, phase: "speaking", say: e.text }, effects: [{ speak: e.text }] };
     }
     case "spoken":
-      return s.phase === "speaking" ? { talk: { ...OFF, phase: "listening" }, effects: ["listen"] } : same;
+      // The recognizer that ran over the reply goes on as the one that listens.
+      return s.phase === "speaking" ? { talk: { ...OFF, phase: "listening", hearing: true }, effects: s.hearing ? [] : ["listen"] } : same;
     case "recognizer-ended":
-      return s.phase === "listening" ? { talk: s, effects: ["listen"] } : same;
+      return s.phase === "listening" || (s.phase === "speaking" && s.hearing) ? { talk: s, effects: ["listen"] } : same;
   }
 }

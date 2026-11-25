@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../../../src/core/types.ts";
-import { dictated, loudAbove, OFF, pieces, replyOf, silenceEnded, spokenText, talkStep, VAD_START, vadStep, type Effect, type Talk, type TalkEvent } from "./talk-core.ts";
+import { dictated, echoOf, loudAbove, OFF, pieces, replyOf, silenceEnded, spokenText, talkStep, VAD_START, vadStep, type Effect, type Talk, type TalkEvent } from "./talk-core.ts";
 
 test("quiet ends a message only after words, and only after the whole silence", () => {
   const o = { words: "open the file", lastAt: 1000, silenceMs: 1500 };
@@ -147,4 +147,50 @@ test("a recording: when it ends the words are awaited, and what was said is sent
   expect(quiet.effects).toEqual([["listen"], [], ["listen"]]);
   expect(quiet.talk.phase).toBe("listening");
   expect(talkStep(OFF, { t: "said", text: "late words" }).effects).toEqual([]);
+});
+
+test("barge-in: the recognizer runs over the reply, speech that is not the reply's own stops the reading and starts the message", () => {
+  const r = drive([
+    { t: "start", busy: true },
+    { t: "reply", text: "I opened the file and ran the tests.", barge: true },
+    // the reply's own words heard back are not speech
+    { t: "words", final: "", interim: "ran the tests", at: 10 },
+    { t: "words", final: "", interim: "I opened the file", at: 20 },
+    // the owner speaks over it
+    { t: "words", final: "", interim: "wait no", at: 30 },
+  ]);
+  expect(r.effects).toEqual([[], ["listen", { speak: "I opened the file and ran the tests." }], [], [], ["hush"]]);
+  expect(r.talk).toMatchObject({ phase: "listening", hearing: true, interim: "wait no", lastAt: 30, say: "" });
+  // The silence that ends the message counts from the words of the owner's speech.
+  expect(talkStep(r.talk, { t: "tick", now: 1600, silenceMs: 1500 }).effects).toEqual(["unlisten", { send: "wait no" }]);
+});
+
+test("barge-in: a recording hears speech by loudness and the reading stops with no words yet", () => {
+  const r = drive([{ t: "start", busy: true }, { t: "reply", text: "Done.", barge: true }, { t: "voice" }]);
+  expect(r.effects).toEqual([[], ["listen", { speak: "Done." }], ["hush"]]);
+  expect(r.talk).toMatchObject({ phase: "listening", hearing: true, final: "", interim: "" });
+  // Loud with no reading, or with barge-in off, is nothing.
+  expect(talkStep({ ...OFF, phase: "listening", hearing: true }, { t: "voice" }).effects).toEqual([]);
+  expect(talkStep({ ...OFF, phase: "speaking", say: "Done." }, { t: "voice" }).effects).toEqual([]);
+});
+
+test("barge-in off: the reading is not heard over, and the reply ends into listening as before", () => {
+  const r = drive([{ t: "start", busy: true }, { t: "reply", text: "Done." }, { t: "words", final: "no", interim: "", at: 5 }, { t: "spoken" }]);
+  expect(r.effects).toEqual([[], [{ speak: "Done." }], [], ["listen"]]);
+});
+
+test("barge-in: when the reply ends unbroken the recognizer that ran over it goes on listening, and one that stopped is started again", () => {
+  const r = drive([{ t: "start", busy: true }, { t: "reply", text: "Done.", barge: true }, { t: "recognizer-ended" }, { t: "spoken" }]);
+  expect(r.effects).toEqual([[], ["listen", { speak: "Done." }], ["listen"], []]);
+  expect(r.talk).toMatchObject({ phase: "listening", hearing: true });
+});
+
+test("a reply's own words heard back are told from speech: the same words in a row inside what is read", () => {
+  const said = "I opened the file, and then I ran the tests.";
+  expect(echoOf("the file and then", said)).toBe(true);
+  expect(echoOf("I ran the tests", said)).toBe(true);
+  expect(echoOf("ran I the tests", said)).toBe(false);
+  expect(echoOf("the file stop", said)).toBe(false);
+  expect(echoOf("wait", said)).toBe(false);
+  expect(echoOf("  ", said)).toBe(true);
 });

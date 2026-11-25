@@ -6,14 +6,14 @@
 import { useSyncExternalStore } from "react";
 import { shellMicrophone } from "./shell.ts";
 import { api, failed } from "./store.ts";
-import { pieces, SILENCE_MS, VAD_START, vadStep } from "./talk-core.ts";
+import { pieces, SILENCE_MS, VAD_START, vadStep, voiced } from "./talk-core.ts";
 
 // ---- what the owner chose ----
 
 export type Way = "auto" | "browser" | "model";
-export type Prefs = { listen: Way; listenModel: string; say: Way; sayModel: string; voice: string; silenceMs: number; lang: string };
+export type Prefs = { listen: Way; listenModel: string; say: Way; sayModel: string; voice: string; silenceMs: number; lang: string; barge: boolean };
 const KEY = "keel.speech";
-const FALLBACK: Prefs = { listen: "auto", listenModel: "", say: "auto", sayModel: "", voice: "", silenceMs: SILENCE_MS, lang: "" };
+const FALLBACK: Prefs = { listen: "auto", listenModel: "", say: "auto", sayModel: "", voice: "", silenceMs: SILENCE_MS, lang: "", barge: true };
 let prefs: Prefs = (() => {
   try { return { ...FALLBACK, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") }; } catch { return FALLBACK; }
 })();
@@ -102,6 +102,7 @@ export type HearOpts = {
   lang: string;
   silenceMs?: number;            // a recording ends by itself after speech and this much quiet
   onWords?: (final: string, interim: string) => void;
+  onVoice?: () => void;          // a recording heard speech by loudness, once (the words come when it ends)
   onState?: (s: "recording" | "transcribing") => void;
   onDone: (text: string, why: "stopped" | "silence" | "ended") => void;
   onFail: (message: string, retryOnModel?: boolean) => void;
@@ -200,7 +201,7 @@ function hearRecording(o: HearOpts): Hear {
       an.fftSize = 1024;
       ctx.createMediaStreamSource(s).connect(an);
       const buf = new Float32Array(an.fftSize);
-      let v = VAD_START;
+      let v = VAD_START, told = false;
       // Not the page's clock: a conversation goes on while the window is behind another.
       let beat: ReturnType<typeof setTimeout>;
       const listen = () => {
@@ -208,6 +209,7 @@ function hearRecording(o: HearOpts): Hear {
         let sum = 0;
         for (const x of buf) sum += x * x;
         v = vadStep(v, Math.sqrt(sum / buf.length), Date.now(), o.silenceMs!);
+        if (!told && voiced(v)) { told = true; o.onVoice?.(); }
         if (v.ended) end("silence");
         else beat = setTimeout(listen, 100);
       };

@@ -77,13 +77,15 @@ function listen() {
     way, lang: langOf(),
     silenceMs: way.source === "model" ? getPrefs().silenceMs : undefined,
     onWords: (f, i) => { if (mine === gen) dispatch({ t: "words", final: join(carry, f), interim: i, at: Date.now() }); },
+    onVoice: () => { if (mine === gen) dispatch({ t: "voice" }); },
     onState: (s) => { if (mine !== gen) return; publish({ recording: s }); if (s === "transcribing") dispatch({ t: "captured" }); },
     onDone: (text, why) => {
       if (mine !== gen) return;
       h = null;
       if (way.source === "model") return dispatch({ t: "said", text });
       // The browser's recognizer ended on its own (it does, after a while): its words are kept and it starts again.
-      carry = join(carry, text);
+      // (Over a reply it kept the reply's own words coming back: none of them are the owner's.)
+      if (talk.phase !== "speaking") carry = join(carry, text);
       quick = Date.now() - started < 1000 ? quick + 1 : 0;
       if (quick >= 5) return dispatch({ t: "failed", why: "The browser's recognizer keeps stopping." });
       void why;
@@ -164,7 +166,7 @@ function watch() {
   sentSeq = null;
   // The owner stopped the turn: that is the end of the conversation too.
   if (r.reason === "interrupted" && STOPPERS[String(ended?.data?.stopped_by)]?.owner) return stop();
-  dispatch({ t: "reply", text: r.reason === "end_turn" ? spokenText(r.text) : "" });
+  dispatch({ t: "reply", text: r.reason === "end_turn" ? spokenText(r.text) : "", barge: getPrefs().barge && !!listenWay && !!sayWay });
 }
 
 function away() {
