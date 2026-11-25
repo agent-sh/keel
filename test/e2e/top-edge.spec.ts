@@ -196,7 +196,8 @@ test("a head with a long title and a long reason is still one bar, the brand row
     await page.mouse.move(1000, 700);
     await shoot(page, "top-edge-03-approval-1920");
 
-    // At work on a long command: no card says what it does, so the reason is in the bar, with room.
+    // At work on a long command: the bar is the title, the dot, the word and the timer; what it runs is the word's
+    // tooltip (the transcript shows the command), and the folder is the title's.
     const busy = await make("full-auto", { command: `sleep 30; ${command}` });
     const work = page.getByTestId("station").and(page.locator(`[data-station="${busy.id}"]`));
     // Below 1400 the bar is one too (it once was two rows there, 125px against the brand row's 60).
@@ -206,23 +207,15 @@ test("a head with a long title and a long reason is still one bar, the brand row
       await expect(work).toHaveAttribute("data-watch", "work", { timeout: 15_000 });
       await page.mouse.move(1000, 700);
       const head = work.getByTestId("station-head");
-      await expect(head.getByTestId("station-why")).toBeVisible();
+      await expect(head.getByTestId("station-word")).toContainText("Working");
+      await expect(head.getByTestId("station-clock")).toBeVisible();
+      await expect(head.getByTestId("station-why"), `at ${width} the command is not in the bar`).toHaveCount(0);
+      await expect(head.locator(".k-station-meta"), `at ${width} the folder is not in the bar`).toHaveCount(0);
+      expect(await head.getByTestId("station-word").getAttribute("title"), `at ${width} the command is the word's tooltip`).toContain("top-edge-long-reason.txt");
       const h = (await head.boundingBox())!, brand = (await page.locator(".k-rail-brand").boundingBox())!;
       const t = (await work.getByTestId("session-header").boundingBox())!;
       expect(Math.abs(t.y - h.y), `at ${width} the tools are a row under the head`).toBeLessThan(1);
       expect(Math.abs(h.y + h.height - (brand.y + brand.height)), `at ${width} the bar and the brand row end apart`).toBeLessThanOrEqual(1);
-      // The reason has room for about twenty characters at least: beside a title shown whole, or on the
-      // line under it with the head's width (this title is too long to leave it room beside).
-      const why = (await head.getByTestId("station-why").boundingBox())!, name = (await head.getByTestId("station-title").boundingBox())!;
-      // (Whole, or cut no shorter than about twenty characters.)
-      const chars = await head.getByTestId("station-why").evaluate((el) => el.scrollWidth <= el.clientWidth ? Infinity : el.getBoundingClientRect().width / (parseFloat(getComputedStyle(el).fontSize) * 0.5));
-      expect(chars, `at ${width} the reason is cut to about ${Math.round(chars)} characters`).toBeGreaterThan(20);
-      const beside = Math.abs(why.y + why.height / 2 - (name.y + name.height / 2)) < 4;
-      if (beside) expect(await head.getByTestId("station-title").evaluate((el) => el.scrollWidth <= el.clientWidth), `at ${width} the reason is beside a cut title`).toBe(true);
-      else {
-        expect(why.y, `at ${width} the reason is under the title`).toBeGreaterThan(name.y + name.height - 2);
-        if (chars !== Infinity) expect(why.width, `at ${width} the reason under the title is cut short of the head`).toBeGreaterThan(h.width * 0.5);
-      }
       if (width === 1440 || width === 1050) await shoot(page, `top-edge-03-long-${width}`);
     }
   } finally {

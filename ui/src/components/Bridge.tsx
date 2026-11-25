@@ -28,13 +28,14 @@ import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, ta
 import { getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
 import { getUI, keepPanels, navigate, savePref, setUI, stationPanels, useUI } from "../lib/ui.ts";
+import { usePhoneWidth } from "../lib/list-hold.ts";
 import { watchPanes } from "../lib/automation.ts";
 import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
 import { askSuffix } from "../../../src/core/watch.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
-import { COUNTERS, OFFLINE, STATE_WORD, asOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
+import { COUNTERS, OFFLINE, STATE_WORD, asOf, backgroundOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { soloWindow } from "../lib/shell.ts";
@@ -156,7 +157,12 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const carded = (w === "need" && CARDED.has(st.why ?? "")) || w === "declined";
   // The head does not say the card's words again, but the reason a session needs the owner stays in view: a faint line after the folder.
   const ask = !offline && carded && w === "need" ? askSuffix(st) : "";
-  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : carded ? "" : st.text ? briefText(st, now) : "";
+  // A session at work: the bar keeps the title, the dot, the word and the timer; what it runs is the word's tooltip and the
+  // folder is the title's (the transcript shows the command).
+  // (A phone has no tooltip: there the reason stays in the bar, wrapped under the word.)
+  const touchWidth = usePhoneWidth();
+  const working = w === "work" && !offline && !touchWidth && !backgroundOf(st);
+  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : carded || working ? "" : st.text ? briefText(st, now) : "";
   // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
   // Alone there is nothing for them to do that the session's menu and the keys do not (focus changes nothing,
   // a close only empties the pane): they rest only where there are panes to choose between. A pinned session
@@ -164,7 +170,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const tools = panes > 1 ? 3 : pinned ? 1 : 0;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}
-      style={{ "--k-tools": tools } as CSSProperties} data-whole={why || (carded && told) ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
+      style={{ "--k-tools": tools } as CSSProperties} data-whole={why || ((carded || working) && told) ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
       {/* The title first, in the width it needs. The state and its reason beside it when they fit, else on the line under it. */}
       <div className="k-station-row k-station-identity">
         {/* An agent's way up its tree, before its own title: the root and each agent between, each a link. */}
@@ -175,16 +181,16 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
         <span className="k-station-state">
-          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={carded && told ? told : undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
+          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
           {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
           {timed(st) && !offline && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
           {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}
         </span>
-        <span className="k-station-meta" title={s.workspace} data-ask={ask ? "" : undefined}>
+        {!working && <span className="k-station-meta" title={s.workspace} data-ask={ask ? "" : undefined}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>
           {/* What it waits on you for, faint after the folder, cut to the room left (the card says the rest). */}
           {ask && <span className="k-station-ask" data-testid="station-ask" title={told}>{ask}</span>}
-        </span>
+        </span>}
         {(panes > 1 || pinned) && <StationTools id={s.id} helm={helm} pinned={pinned} focus={focus} panes={panes} />}
         </div>
       </div>

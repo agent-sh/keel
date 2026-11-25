@@ -1047,7 +1047,7 @@ test("the row tab is said, stays out of the bar's way and points at a pane out o
   const ws = folder("ps");
   const reader = await long(request, "Spike: full-text search", ws);
   const coord = await create(request, "Coordinator: release train 2.4", ws);
-  // At work on a long command: no card says what it does, so its header has a reason to fit.
+  // At work on a long command.
   await request.put(`/api/sessions/${coord}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
   await request.post(`/api/sessions/${coord}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 300; echo release train notes for the 2.4 branch > release.txt" } }]) } });
   await expect.poll(() => phase(request, coord), { timeout: 30_000 }).toBe("working");
@@ -1059,30 +1059,26 @@ test("the row tab is said, stays out of the bar's way and points at a pane out o
   const head = (i: number) => slot(page, i).getByTestId("station-head").first();
   const oneLine = async (i: number) => { const t = (await head(i).getByTestId("station-title").boundingBox())!, w = (await head(i).getByTestId("station-word").boundingBox())!; return Math.abs(t.y + t.height / 2 - (w.y + w.height / 2)) < 6; };
   expect(await oneLine(0), "the state stands under a short title in a wide pane").toBe(true);
-  // The coordinator: title whole; where room is short the folder gives way before the reason is cut.
-  const cut = await head(1).evaluate((h) => {
-    const why = h.querySelector<HTMLElement>('[data-testid="station-why"]')!, meta = h.querySelector<HTMLElement>(".k-station-meta")!, title = h.querySelector<HTMLElement>('[data-testid="station-title"]')!;
-    return { title: title.scrollWidth > title.clientWidth + 1, why: why.scrollWidth > why.clientWidth + 1, meta: Math.round(meta.getBoundingClientRect().width) };
-  });
-  expect(cut.title).toBe(false);
-  expect(cut.why && cut.meta > 0, "the reason is cut while the folder still shows").toBe(false);
-  // The coordinator's pane worked in, from a narrow pane to a wide one: a wider pane is never the taller one, the
-  // title is whole, and the reason shows sixteen characters or all it has (beside the title when that much fits,
-  // else on the line under it).
+  // The coordinator at work: the bar is the title, the dot, the word and the timer. The command is the word's tooltip and
+  // the folder the title's, so neither is drawn beside them.
+  await expect(head(1).getByTestId("station-why")).toHaveCount(0);
+  await expect(head(1).locator(".k-station-meta")).toHaveCount(0);
+  expect(await head(1).getByTestId("station-word").getAttribute("title")).toContain("release train notes");
+  expect(await head(1).getByTestId("station-title").evaluate((t) => t.scrollWidth > t.clientWidth + 1), "the title is cut").toBe(false);
+  // The coordinator's pane worked in, from a narrow pane to a wide one: a wider pane is never the taller one and the title is whole.
   await slot(page, 1).getByTestId("composer").click();
   await expect(slot(page, 1)).toHaveAttribute("data-helm", "true");
-  const sweep: { pane: number; height: number; why: number; whole: number; title: boolean }[] = [];
+  const sweep: { pane: number; height: number; title: boolean }[] = [];
   for (let width = 1240; width <= 1900; width += 30) {
     await page.setViewportSize({ width, height: 1040 });
     sweep.push(await head(1).evaluate((h) => {
-      const why = h.querySelector<HTMLElement>('[data-testid="station-why"]')!, title = h.querySelector<HTMLElement>('[data-testid="station-title"]')!;
-      return { pane: Math.round(h.getBoundingClientRect().width), height: Math.round(h.getBoundingClientRect().height), why: why.clientWidth, whole: why.scrollWidth, title: title.scrollWidth <= title.clientWidth + 1 };
+      const title = h.querySelector<HTMLElement>('[data-testid="station-title"]')!;
+      return { pane: Math.round(h.getBoundingClientRect().width), height: Math.round(h.getBoundingClientRect().height), title: title.scrollWidth <= title.clientWidth + 1 };
     }));
   }
-  const said = sweep.map((x) => `${x.pane}: ${x.height} px, reason ${x.why} of ${x.whole}`).join("; ");
+  const said = sweep.map((x) => `${x.pane}: ${x.height} px`).join("; ");
   for (const [i, x] of sweep.entries()) {
     expect(x.title, `the title is cut at ${x.pane} px`).toBe(true);
-    expect(x.why, `the reason has no room at ${x.pane} px (${said})`).toBeGreaterThanOrEqual(Math.min(x.whole, 96) - 1);
     if (i) expect(x.height, `a wider pane has the taller header (${said})`).toBeLessThanOrEqual(sweep[i - 1]!.height + 1);
   }
   await page.setViewportSize({ width: 1920, height: 1040 });
