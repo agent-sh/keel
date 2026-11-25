@@ -938,8 +938,8 @@ test("the first pane is drawn once, a double click places only the row it began 
   await page.evaluate(() => { localStorage.removeItem("keel.panes"); localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.workbench", "true"); });
   await page.goto(`/s/${reader}`);
   await expect(slot(page, 0).locator(".k-reading")).toContainText("lorem ipsum");
-  await page.waitForTimeout(1500);
-  expect(asked.length, "the session was asked for more than once").toBe(1);
+  await expect(slot(page, 0).getByTestId("sync-state")).toHaveCount(0);
+  expect(asked, "the first view takes only one session snapshot").toHaveLength(1);
 
   // The list moved between the two clicks of a double click: the second hit another row. Nothing is placed; that row is a look.
   await open(page, [reader, coord]);

@@ -967,6 +967,9 @@ export const useStaleSince = () => useStore(staleSince);
 let preload: { id: string; p: Promise<void> } | null = null;
 const opening = new Map<string, Promise<void>>();
 export function preloadSession(id: string) {
+  // The session view can mount before the app's boot effect. Its read is
+  // already on the way, so there is nothing left to preload.
+  if (opening.has(id)) return;
   const p = actions.loadSession(id);
   p.catch(() => {}); // its view takes this promise and reports a failure
   preload = { id, p };
