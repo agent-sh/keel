@@ -14,6 +14,8 @@ import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine, WENT_ON
 import { cursorGiven, CursorError, offered, scrub, tail } from "../../integrations/import/offer.ts";
 import { inDatabase, type Found, type Harness, type Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, proven } from "../../fleet/link.ts";
+import { Listings, type Answer, type Listed, type Query } from "../../fleet/listing.ts";
+import type { MachineRow } from "../../fleet/db.ts";
 import { contains } from "../../core/paths.ts";
 import { attachmentPath, dropAttachment, saveAttachment } from "../../engine/attachments.ts";
 import { fleet } from "./fleet.ts";
@@ -113,6 +115,33 @@ export const importRoutes: RouteModule = (deps) => {
     }
   };
 
+  // The last lists of each machine, and the one place that asks a machine for them.
+  const listings = new Listings(store, (mid, path) => fleet!.handsJson<Listed>(mid, path, { timeout: 30_000, idempotent: true }), (mid) => {
+    const m = fleet!.row(mid);
+    return m?.state === "offline" ? m.reason ?? "it does not answer" : undefined;
+  });
+  const queryOf = (u: URLSearchParams): Query => ({
+    harness: u.get("harness") || undefined, q: u.get("q") ?? undefined, show: u.get("show") ?? undefined, sort: u.get("sort") ?? undefined,
+    cursor: u.get("cursor") ?? undefined, limit: u.has("limit") ? Number(u.get("limit")) : undefined, peek: u.has("peek"), refresh: u.has("refresh"),
+  });
+  // A machine's row of the list: with the copy of it made here and the resume that waits for it.
+  const rowOf = (m: MachineRow, f: Found) => {
+    const l = imports.links(f.harness, f.id, undefined, m.id)[0];
+    return {
+      ...f,
+      imported: l ? { session_id: l.session_id, synced_ms: l.synced_ms, grew: f.size_bytes !== l.source_size || Math.round(f.updated_ms) !== l.source_mtime, went_on: imports.wentOn(l.session_id) } : undefined,
+      // A resume that waits for the original to be idle shows on its row.
+      wait: resumes?.waitOf(m.id, f.harness, f.id),
+    };
+  };
+  const shaped = (m: MachineRow, a: Answer, none: boolean) => ({
+    machine_id: m.id, machine: m.name, has_agent_view: false, tools_present: a.body.tools_present, transport: fleet!.isSsh(m) ? "ssh" : "daemon",
+    sessions: a.body.sessions.map((f) => rowOf(m, f)),
+    total: a.body.total, next_cursor: a.body.next_cursor, changed: a.body.changed, index: a.body.index ?? { complete: true, building: false }, harnesses: a.body.harnesses ?? [],
+    // From the kept list: when the machine gave it, and why the live one was not read.
+    cached_ms: a.cached_ms, stale: a.stale?.reason, ...(none ? { none: true } : {}),
+  });
+
   const fleetRoutes = {
     "/api/fleet/hands/transcripts": {
       GET: paired(async (req) => {
@@ -145,28 +174,43 @@ export const importRoutes: RouteModule = (deps) => {
       }),
     },
 
-    // This daemon's view of one machine's transcripts.
+    // This daemon's view of one machine's transcripts. `cached`: only the last list kept, with no word to
+    // the machine (a sheet that is opening shows it at once, then asks for the live one). A machine that
+    // does not answer gives its last list, dated (`cached_ms`, `stale`).
     "/api/fleet/machines/:id/transcripts": {
       GET: async (req: any) => {
         const m = machineOf(req.params.id);
         if (m instanceof Response) return m;
         const u = new URL(req.url).searchParams;
         if (u.has("limit") && !(Number(u.get("limit")) > 0)) return bad("limit must be a number above 0");
-        const r = await ask<any>(m.id, `/api/fleet/hands/transcripts?${u}`);
-        if (r instanceof Response) return r;
-        return json({
-          machine_id: m.id, machine: m.name, has_agent_view: false, tools_present: r.tools_present, transport: fleet!.isSsh(m) ? "ssh" : "daemon",
-          sessions: r.sessions.map((f: Found) => {
-            const l = imports.links(f.harness, f.id, undefined, m.id)[0];
-            return {
-              ...f,
-              imported: l ? { session_id: l.session_id, synced_ms: l.synced_ms, grew: f.size_bytes !== l.source_size || Math.round(f.updated_ms) !== l.source_mtime, went_on: imports.wentOn(l.session_id) } : undefined,
-              // A resume that waits for the original to be idle shows on its row.
-              wait: resumes?.waitOf(m.id, f.harness, f.id),
-            };
-          }),
-          total: r.total, next_cursor: r.next_cursor, changed: r.changed, index: r.index, harnesses: r.harnesses,
-        });
+        const q = queryOf(u);
+        try {
+          const a = u.has("cached") ? listings.cached(m.id, q) ?? { body: { sessions: [], total: 0 } as Listed } : await listings.list(m.id, q);
+          return json(shaped(m, a, u.has("cached") && !listings.last(m.id, q)));
+        } catch (e) {
+          if (!(e instanceof LinkError)) throw e;
+          // The machine answered and refused what was asked (a cursor it did not give): the caller's mistake, in its words.
+          if ((e as { status?: number }).status === 400) return bad((e as Error).message);
+          return bad(`${m.name} did not answer: ${(e as Error).message}`, 409);
+        }
+      },
+    },
+    // What runs now on a machine reached over ssh: the sessions its Claude Code and Codex hold open, each
+    // with what it does (the same rows as the list, which says on each what runs it). One that is not
+    // reached shows none, with the reason: a running list is never old news.
+    "/api/fleet/machines/:id/running": {
+      GET: async (req: any) => {
+        const m = machineOf(req.params.id);
+        if (m instanceof Response) return m;
+        if (!fleet!.isSsh(m)) return json({ machine_id: m.id, machine: m.name, sessions: [], supported: false });
+        if (m.state === "offline") return json({ machine_id: m.id, machine: m.name, sessions: [], supported: true, offline: m.reason ?? "it does not answer" });
+        try {
+          const r = await fleet!.handsJson<Listed>(m.id, "/api/fleet/hands/transcripts?running=1&peek=1&limit=50", { timeout: 20_000, idempotent: true });
+          return json({ machine_id: m.id, machine: m.name, supported: true, sessions: r.sessions.map((f) => rowOf(m, f)) });
+        } catch (e) {
+          if (!(e instanceof LinkError)) throw e;
+          return json({ machine_id: m.id, machine: m.name, sessions: [], supported: true, offline: (e as Error).message });
+        }
       },
     },
     "/api/fleet/machines/:id/transcripts/preview": {

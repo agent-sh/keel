@@ -1,6 +1,7 @@
 // Fleet records: this daemon's identity, the machines it knows, the daemons it
 // gave a key to, cross-daemon messages and placement rules. All in keel.db.
 import type { Store } from "../core/store.ts";
+import { LISTING_SCHEMA } from "./listing.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS fleet_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -57,6 +58,7 @@ export type MachineRow = {
 
 export function migrate(store: Store) {
   store.migrate(SCHEMA);
+  store.migrate(LISTING_SCHEMA);
   if (!store.columnExists("sessions", "machine")) store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
   // What the receiving daemon called the session of a refused outbox message.
   if (!store.columnExists("fleet_messages", "to_title")) store.migrate("ALTER TABLE fleet_messages ADD COLUMN to_title TEXT");

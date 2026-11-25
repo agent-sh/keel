@@ -416,6 +416,10 @@
 .k-machine-sep-reach { color: var(--st-fail-ink); }
 .k-machine-sep[data-reach="offline"] { --where: var(--faint); }
 .k-machine-sep[data-reach="connecting"] svg { animation: var(--animate-pulse-dot); }
+.k-machine-sep-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--faint); }
+/* In the import sheet: a band across the list, not the sidebar's gap between groups. */
+.k-machine-sep.k-machine-sep-band { margin: 0; padding: 0.375rem 0.75rem; border-top: 0; border-bottom: 1px solid var(--line); background: var(--sunken); position: sticky; top: 0; z-index: 1; }
+.k-machine-sep.k-machine-sep-band[data-machine]:not([data-machine="local"]) { border-bottom-color: color-mix(in oklab, var(--where) 55%, transparent); }
 .k-machine-sep-count { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--faint); }
 /* A folded rail's mark: a pip in the machine's colour at the code's corner. */
 .k-where-pip { --where: var(--muted); position: absolute; right: 0.25rem; top: 0.25rem; width: 0.375rem; height: 0.375rem; border-radius: 1px; background: var(--where); box-shadow: 0 0 0 1.5px var(--panel); }

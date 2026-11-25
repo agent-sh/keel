@@ -238,6 +238,7 @@ export class Fleet {
     this.unlink(id);
     this.setRules(this.rules().filter((r) => r.machine !== id)); // a rule for a machine that is gone sends nothing
     this.store.db.query("DELETE FROM fleet_machines WHERE id = ?").run(id);
+    this.store.db.query("DELETE FROM fleet_listing WHERE machine_id = ?").run(id);
   }
 
   private unlink(id: string) {

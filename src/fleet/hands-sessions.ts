@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { pidHolds } from "../core/pid.ts";
 import { readText } from "../core/proc.ts";
 import { classify, groupsUnder, tailReader, type Activity, type Group, type Proc, type Signals, type Tail } from "../integrations/import/activity.ts";
+import { agyHome, agySessions, readAgy } from "../integrations/import/agy.ts";
 import { claudeFiles, claudeFound, claudeRoot, readClaude } from "../integrations/import/claude.ts";
 import { codexFiles, codexFound, codexHome, readCodex } from "../integrations/import/codex.ts";
 import { linesBack } from "../integrations/import/files.ts";
@@ -29,9 +30,11 @@ import { ownerEnv, ownerHome } from "../core/paths";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
-const LABEL = { claude: "Claude Code", codex: "Codex" } as const;
+const LABEL = { claude: "Claude Code", codex: "Codex", agy: "Antigravity" } as const;
 type Here = keyof typeof LABEL;
-const isHere = (h: unknown): h is Here => h === "claude" || h === "codex";
+const isHere = (h: unknown): h is Here => h === "claude" || h === "codex" || h === "agy";
+// Only Claude Code and Codex are known by a process the owner can wait for or end; Antigravity's sessions are listed and copied.
+const readOf = (f: Found) => (f.harness === "claude" ? readClaude(f.path) : f.harness === "agy" ? readAgy(f) : readCodex(f.path));
 const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
 
 // ---- the transcripts: a walk of the stores, a file read again only when it
@@ -62,6 +65,15 @@ function walk(): Promise<void> {
         if (++read % 100 === 0) await pause();
       }
     }
+    // Antigravity keeps its list in a database: each walk reads it whole (a few hundred rows at most).
+    try {
+      for (const f of agySessions()) {
+        live.add(f.path);
+        const k = seen.get(f.path);
+        if (k && k.size === f.size_bytes && k.mtime === f.updated_ms) continue;
+        seen.set(f.path, { size: f.size_bytes, mtime: f.updated_ms, found: f });
+      }
+    } catch {}
     for (const p of seen.keys()) if (!live.has(p)) seen.delete(p);
     complete = true;
     walkedAt = Date.now();
@@ -81,6 +93,7 @@ async function find(harness: Here, id: string): Promise<Found | undefined> {
   let f = hit();
   if (!f) { await walk(); f = hit(); }
   if (!f) return undefined;
+  if (harness === "agy") return f;
   try {
     const st = statSync(f.path);
     const k = seen.get(f.path);
@@ -196,6 +209,33 @@ function harnessOf(f: Found, { procs, claude }: Now): { proc: Proc; status?: Sig
   return p ? { proc: p } : null;
 }
 
+// The transcripts a harness holds open now, found from the harnesses' side: the
+// sessions Claude Code lists as live, the files a Codex process has open, and
+// a process started with a session's id. Only these few are then looked at
+// as a transcript's own row is (harnessOf), however many a store holds.
+export function runningOf(all: Found[], at: Now): Found[] {
+  const mine = all.filter((f) => f.harness === "claude" || f.harness === "codex");
+  const byId = new Map<string, Found[]>();
+  const byPath = new Map<string, Found>();
+  for (const f of mine) { byPath.set(f.path, f); (byId.get(f.id) ?? byId.set(f.id, []).get(f.id)!).push(f); }
+  const found = new Set<Found>();
+  for (const r of at.claude) for (const f of byId.get(r.sessionId) ?? []) if (f.harness === "claude") found.add(f);
+  for (const p of at.procs) {
+    const [bin, flag, value] = p.args.trim().split(/\s+/);
+    const name = bin?.split("/").at(-1);
+    if (name !== "claude" && name !== "codex") continue;
+    if (value && (name === "codex" ? flag === "resume" : ["--resume", "-r", "--session-id"].includes(flag ?? ""))) for (const f of byId.get(value) ?? []) if (f.harness === name) found.add(f);
+    if (name === "codex") {
+      try {
+        for (const fd of readdirSync(`/proc/${p.pid}/fd`)) {
+          try { const f = byPath.get(readlinkSync(`/proc/${p.pid}/fd/${fd}`)); if (f) found.add(f); } catch {}
+        }
+      } catch {}
+    }
+  }
+  return [...found].filter((f) => harnessOf(f, at)).sort((a, b) => b.updated_ms - a.updated_ms);
+}
+
 // Processes that carry a Claude Code session in their environment (Linux): a
 // job that outlived the shell that started it is no longer under the harness.
 function carrying(sessionId: string, procs: Proc[]): number[] {
@@ -219,7 +259,7 @@ function tailSince(f: Found, since: number): Tail {
   const had = tails.get(f.path);
   if (had?.key === key) return had.tail;
   const reader = tailReader(f.harness, since);
-  const telling = TELLING[f.harness as Here].map((w) => Buffer.from(w));
+  const telling = TELLING[f.harness as "claude" | "codex"].map((w) => Buffer.from(w));
   let read = 0;
   linesBack(f.path, (line) => {
     // A long session's old records are not read through: a job older than this still shows, as a process under it.
@@ -236,10 +276,11 @@ export type Running = { pid: number; started_ms: number; status?: string };
 export type Seen = Activity & { blocked?: string; revision?: string; process?: Running; groups: Group[]; checked_ms: number };
 
 export async function activityOf(f: Found, at?: Now): Promise<Seen> {
+  const none: Tail = { open: [], background: [], shells: [], turn: "unknown" };
+  if (f.harness === "agy") return { ...classify({ alive: false, tail: none, groups: [] }), groups: [], checked_ms: Date.now() };
   at ??= await now();
   const { procs } = at;
   const h = harnessOf(f, at);
-  const none: Tail = { open: [], background: [], shells: [], turn: "unknown" };
   if (!h) return { ...classify({ alive: false, tail: none, groups: [] }), groups: [], checked_ms: Date.now() };
   const groups = groupsUnder(procs, h.proc.pid, f.harness === "claude" ? carrying(f.id, procs) : []);
   const a = classify({ alive: true, status: h.status, waiting_for: h.waiting_for, tail: tailSince(f, h.proc.started_ms), groups });
@@ -317,6 +358,17 @@ export function sessionRoutes() {
         const index = { complete, building: !!walking };
         if (harness && !isHere(harness)) return json({ sessions: [], total: 0, index, harnesses: harnesses(transcripts()), tools_present: tools() });
         const all = transcripts();
+        // `running`: only what a harness holds open now (the sheet's running list, asked every few seconds).
+        if (u.has("running")) {
+          const at = await now();
+          const held = runningOf(all, at).slice(0, Math.min(Number(u.get("limit") ?? 50) || 50, 200));
+          const page = [];
+          for (const f of held) {
+            const a = await activityOf(f, at);
+            page.push({ ...scrub(f), ...(a.state === "ended" ? {} : { original: { state: a.state, why: a.why, brief: a.brief, in_flight: a.in_flight.length, jobs: a.in_flight.filter((i) => i.kind === "job").length } }) });
+          }
+          return json({ sessions: page.filter((r) => r.original), total: page.length, index, harnesses: [], tools_present: tools() });
+        }
         let rows;
         try {
           rows = pageOf(all, { harness: harness as Harness | undefined, q: u.get("q") ?? undefined, show: u.get("show") ?? undefined, sort: (u.get("sort") as any) || undefined, limit: Number(u.get("limit") ?? 50) || 50, cursor: u.get("cursor") ?? undefined }, { max: 200, scope: "offered" });
@@ -337,7 +389,7 @@ export function sessionRoutes() {
       GET: async (req: Request) => {
         const f = await target(req);
         if (f instanceof Response) return f;
-        const r = f.harness === "claude" ? await readClaude(f.path) : await readCodex(f.path);
+        const r = await readOf(f);
         const full = new URL(req.url).searchParams.has("full");
         return json({ session: { ...scrub(f), cwd_exists: isDir(f.cwd) }, read: full ? r : { counts: r.counts, notes: r.notes, events: [] }, tail: lastMessages(r.events) });
       },
@@ -364,8 +416,8 @@ export function sessionRoutes() {
   } satisfies Record<string, Record<string, (req: Request) => Promise<Response>>>;
 }
 
-const tools = () => ["claude", "codex"].filter((t) => Bun.which(t));
-const harnesses = (all: Found[]) => (["claude", "codex"] as const).map((h) => {
+const tools = () => ["claude", "codex", "agy"].filter((t) => Bun.which(t));
+const harnesses = (all: Found[]) => (["claude", "codex", "agy"] as const).map((h) => {
   const mine = all.filter((f) => f.harness === h);
-  return { harness: h, label: LABEL[h], installed: existsSync(h === "claude" ? claudeRoot() : codexHome()), total: mine.length, interactive: mine.filter((f) => f.kind === "interactive").length };
+  return { harness: h, label: LABEL[h], installed: existsSync(h === "claude" ? claudeRoot() : h === "agy" ? agyHome() : codexHome()), total: mine.length, interactive: mine.filter((f) => f.kind === "interactive").length };
 });
