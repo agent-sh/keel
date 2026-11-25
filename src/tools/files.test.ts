@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeTools } from "./claude.ts";
-import { applyEdit, editFile, GLOB_SCAN_MAX, globFiles, lineRange, readFile } from "./files.ts";
+import { applyEdit, editFile, fileId, GLOB_SCAN_MAX, globFiles, hold, lineRange, readFile, writeFile, writeHeld } from "./files.ts";
 import { geminiTools } from "./gemini.ts";
 import { notFound, similar } from "./missing.ts";
 
@@ -247,4 +247,39 @@ test("a negative limit and a start past the end read the same for a small file a
     expect([input, r.content, r.is_error ?? false]).toEqual([input, `${empty} exists but is empty.`, false]);
   }
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("a write is held to the names its file had at the check: a hard link made before the open or after it stops the write", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "links-"));
+  try {
+    const p = join(root, "notes.md");
+    const judged = () => { writeFileSync(p, "before\n"); return { seen: new Map(), cwd: root, judged: [p], looked: { [p]: fileId(p) }, links: { [p]: 1 } } as any; };
+    // One name at the check and at the write: written, the same file with its mode.
+    let ctx = judged();
+    chmodSync(p, 0o640);
+    const ino = statSync(p).ino;
+    expect(await writeFile(p, "after\n", ctx)).toBeUndefined();
+    expect([readFileSync(p, "utf8"), statSync(p).ino, statSync(p).mode & 0o777]).toEqual(["after\n", ino, 0o640]);
+    // A name made between the check and the open.
+    ctx = judged();
+    linkSync(p, join(root, "twin.txt"));
+    expect(await writeFile(p, "after\n", ctx)).toContain("the number of names it has changed");
+    expect(readFileSync(p, "utf8")).toBe("before\n");
+    rmSync(join(root, "twin.txt"));
+    // A name made between the open and the write: read on the descriptor the write goes through.
+    ctx = judged();
+    const h = await hold(p, ctx, "write");
+    if ("refused" in h) throw new Error(h.refused);
+    linkSync(p, join(root, "twin.txt"));
+    try { expect(await writeHeld(h, "after\n")).toContain("the number of names it has changed"); } finally { h.close(); }
+    expect(readFileSync(p, "utf8")).toBe("before\n");
+    // A file the check saw with two names and that has one now is not the one judged either.
+    ctx = { ...judged(), links: { [p]: 2 } };
+    rmSync(join(root, "twin.txt"));
+    expect(await writeFile(p, "after\n", ctx)).toContain("the number of names it has changed");
+    // A new file is made with one name.
+    const fresh = join(root, "new.md");
+    expect(await writeFile(fresh, "x\n", { seen: new Map(), cwd: root, judged: [fresh], looked: { [fresh]: null }, links: { [fresh]: 0 } } as any)).toBeUndefined();
+    expect(readFileSync(fresh, "utf8")).toBe("x\n");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

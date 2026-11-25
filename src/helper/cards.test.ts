@@ -141,7 +141,7 @@ test("the helper answers only a card sent to it while it is with it: one never s
   const second = run(s, "handed-back", "back-2");
   const back = await open(s.id);
   expect(cards.take(back.id)).toBe(true);
-  cards.toOwner(back.id, "The Helper did not answer it in time.");
+  expect(cards.toOwner(back.id, "The Helper did not answer it in time.")).toBe(true);
   expect(raised.at(-1)).toEqual({ id: back.id, note: "The Helper did not answer it in time." });
   expect(cards.open().find((c) => c.a.id === back.id)).toMatchObject({ mine: false });
   expect(cards.answer(back.id, "allow", "fine", { session: ctxOf(back.id) })).toMatchObject({ error: expect.stringContaining("went back to the owner") });
@@ -234,8 +234,10 @@ test("a card whose owner's alert could not be filed keeps its row, and the next 
   const first = new HelperCards(helper, () => gate, failing);
   expect(first.take(card.id)).toBe(true);
   const row = () => store.db.query("SELECT 1 AS x FROM helper_told WHERE key = ?").get(`offered:${card.id}`);
-  // Gone back to the owner, but filing his alert failed: the helper has it no more, and the row stays.
-  first.toOwner(card.id, "The Helper did not answer it in time.");
+  // Left to the owner, but filing his alert failed: the helper is told it is pending, not that he was told; it has it
+  // no more, and the row stays.
+  expect(first.answer(card.id, "owner", "a call for the owner", { session: ctxOf(card.id) }))
+    .toEqual({ ok: "Left to the owner. Pending: the alert to the owner could not be filed, so it goes to the owner at the next start." });
   expect(first.open().find((c) => c.a.id === card.id)).toMatchObject({ mine: false });
   expect(row()).toEqual({ x: 1 });
   first.stop();

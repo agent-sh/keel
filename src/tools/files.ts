@@ -2,7 +2,7 @@
 // PDFs and notebooks; exact-string edits with the quote and line-ending
 // tolerance models need; the read-before-overwrite guard; glob and ripgrep.
 import { closeSync, constants, existsSync, fstat as fstatCb, lstatSync, open as openCb, readlinkSync, statSync, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { atCwd, canonical, canonicalOf, contains, realOf } from "../core/paths.ts";
 import { heldFile, heldFileOf, heldWrite, heldWriteOf } from "../core/store-files.ts";
@@ -62,8 +62,9 @@ export const mtimeOf = (p: string) => stat(p).then((st) => st.mtimeMs, () => -1)
 // Where /proc is missing (not Linux) the path is checked to be canonical
 // and judged, the name's kind is read without following a link, and it is
 // then opened by its name: the gap is narrowed there, not closed.
-type Judged = { path: string; id?: string | null };
-export type Held = { path: string; io: string; existed: boolean; beside(name: string): string; close(): void };
+type Judged = { path: string; id?: string | null; links?: number };
+// `links`: how many names the held file has (a file made here has one): a write through it is held to that (writeHeld).
+export type Held = { path: string; io: string; existed: boolean; links: number; beside(name: string): string; close(): void };
 const PROC = existsSync("/proc/self/fd");
 const O_PATH = 0o10000000;
 // (By this process's id: a program the tool starts is given the same path.)
@@ -92,26 +93,28 @@ const latestLook = (path: string): string | null | undefined => { const l = look
 // does (read or write). A caller that runs a tool for a session without the context the gate's hook made (no
 // `judged`) is held to these: a tool run for a session opens nothing its gate did not just clear for that.
 const LATELY_MS = 30_000;
-const lately = new Map<string, Map<string, { until: number; id?: string | null }>>();
-export function noteJudged(sessionId: string, cls: "read" | "write", judged: { path: string; id?: string | null }[]) {
+const lately = new Map<string, Map<string, { until: number; id?: string | null; links?: number }>>();
+export function noteJudged(sessionId: string, cls: "read" | "write", judged: { path: string; id?: string | null; links?: number }[]) {
   const now = Date.now();
   let m = lately.get(sessionId);
   if (!m) { if (lately.size > 512) lately.clear(); lately.set(sessionId, (m = new Map())); }
   if (m.size > 256) for (const [k, v] of m) if (v.until < now) m.delete(k);
-  for (const j of judged) m.set(`${cls}\0${j.path}`, { until: now + LATELY_MS, id: j.id });
+  for (const j of judged) m.set(`${cls}\0${j.path}`, { until: now + LATELY_MS, id: j.id, ...(j.links !== undefined ? { links: j.links } : {}) });
 }
 // The judged entry that clears a path: itself, or a folder that holds it. Nothing when none does.
 function clearedBy(ctx: HoldContext, p: string, cls: "read" | "write"): Judged | "open" | undefined {
   const find = (list: Judged[]) => list.find((j) => j.path === p) ?? list.find((j) => contains(j.path, p));
   // (A path with no look recorded for it is held to its name alone.)
-  if (ctx.judged) return find(ctx.judged.map((path) => ({ path, ...(ctx.looked && path in ctx.looked ? { id: ctx.looked[path] } : {}) })));
+  if (ctx.judged) return find(ctx.judged.map((path) => ({ path, ...(ctx.looked && path in ctx.looked ? { id: ctx.looked[path] } : {}), ...(ctx.links && path in ctx.links ? { links: ctx.links[path] } : {}) })));
   // (No gate has judged a file for this session in this process: nothing to hold the call to.)
   const m = ctx.sessionId ? lately.get(ctx.sessionId) : undefined;
   if (!m) return "open";
   const now = Date.now(), head = `${cls}\0`;
-  return find([...m].filter(([k, v]) => v.until >= now && k.startsWith(head)).map(([k, v]) => ({ path: k.slice(head.length), id: v.id })));
+  return find([...m].filter(([k, v]) => v.until >= now && k.startsWith(head)).map(([k, v]) => ({ path: k.slice(head.length), id: v.id, ...(v.links !== undefined ? { links: v.links } : {}) })));
 }
-export type HoldContext = { judged?: string[]; looked?: Record<string, string | null>; sessionId?: string; signal?: AbortSignal };
+// `links`: how many names each judged file had at the gate's look: a write is held to it (a hard link made since lands
+// under a name nobody judged).
+export type HoldContext = { judged?: string[]; looked?: Record<string, string | null>; links?: Record<string, number>; sessionId?: string; signal?: AbortSignal };
 
 // The kernel's answers to a hold's opens come from the thread pool, never from the loop: a mount that stops
 // answering stalls the call (which a Stop ends), not the daemon. A descriptor is a number, as the hold keeps them.
@@ -189,7 +192,7 @@ async function holdWith(given: string, ctx: HoldContext, how: "read" | "write" |
   const absent = (): Held => {
     const names = [...new Set([p, given])];
     for (const n of names) held.set(n, [...(held.get(n) ?? []), NOWHERE]);
-    return { path: p, io: NOWHERE, existed: false, beside: () => NOWHERE, close() { for (const n of names) { const l = held.get(n); if (l) { const i = l.lastIndexOf(NOWHERE); if (i >= 0) l.splice(i, 1); if (!l.length) held.delete(n); } } } };
+    return { path: p, io: NOWHERE, existed: false, links: 0, beside: () => NOWHERE, close() { for (const n of names) { const l = held.get(n); if (l) { const i = l.lastIndexOf(NOWHERE); if (i >= 0) l.splice(i, 1); if (!l.length) held.delete(n); } } } };
   };
   const entry = clearedBy(ctx, p, how === "read" ? "read" : "write");
   // (Also for a name that is not there: what the tool would say of it, a hint of near names among it, is about a
@@ -197,6 +200,9 @@ async function holdWith(given: string, ctx: HoldContext, how: "read" | "write" |
   if (!entry) return moved(p, "the path it names changed between the check and the open");
   // The file the gate saw under this name: the look the call carries, else the gate's latest look at the path.
   const judged = entry === "open" ? undefined : entry.path !== p ? undefined : entry.id !== undefined ? entry.id : latestLook(p);
+  // How many names the file had at that look: a write lands under every name it has, and only those were judged.
+  const judgedLinks = how === "write" && entry !== "open" && entry.path === p ? entry.links : undefined;
+  const relinked = (n: number) => judgedLinks !== undefined && judgedLinks > 0 && n !== judgedLinks ? moved(p, "the number of names it has changed (a hard link was made or removed)") : undefined;
   if (!PROC) {
     // No descriptor's path to read: the name's kind, without following a link, and then the name.
     let st: ReturnType<typeof lstatSync> | undefined;
@@ -205,9 +211,10 @@ async function holdWith(given: string, ctx: HoldContext, how: "read" | "write" |
     const odd = st && KINDS.find(([is]) => is(st!));
     if (odd) return { refused: `${p} is ${odd[1]}, not a file: nothing is read from it or written to it.` };
     if (st && typeof judged === "string" && `${st.dev}:${st.ino}` !== judged) return moved(p, "another file has its name now");
+    { const no = st && relinked(Number(st.nlink)); if (no) return no; }
     if (!st && how === "read") return absent();
     if (how !== "read") await mkdir(dirname(p), { recursive: true });
-    return { path: p, io: p, existed: !!st, beside: (name) => join(dirname(p), name), close() {} };
+    return { path: p, io: p, existed: !!st, links: st ? Number(st.nlink) : 1, beside: (name) => join(dirname(p), name), close() {} };
   }
   const dir = dirname(p), base = basename(p);
   const fds: number[] = [];
@@ -220,7 +227,7 @@ async function holdWith(given: string, ctx: HoldContext, how: "read" | "write" |
     if ("missing" in folder) return absent();
     if ("moved" in folder) return ctx.signal?.aborted ? (stopped() ?? moved(p, folder.moved)) : moved(p, folder.moved);
     const beside = (name: string) => `${fdPath(folder.fd)}/${name}`;
-    let io = beside(base), existed = true;
+    let io = beside(base), existed = true, links = 1;
     if (how !== "folder") {
       let fd: number | undefined;
       // A bare handle on whatever has the name, a link itself included: nothing is followed, nothing blocks.
@@ -249,13 +256,15 @@ async function holdWith(given: string, ctx: HoldContext, how: "read" | "write" |
         // The file the gate saw under this name, when it saw one: another file moved there (a hard link of one) is not it.
         if (typeof judged === "string" && `${st.dev}:${st.ino}` !== judged) { close(); return moved(p, "another file has its name now"); }
         if (judged === null) { close(); return moved(p, "it was not there when the call was checked"); }
+        { const no = relinked(st.nlink); if (no) { close(); return no; } }
+        links = st.nlink;
       }
       io = fdPath(fd);
     }
     const names = [...new Set([p, given])];
     for (const n of names) held.set(n, [...(held.get(n) ?? []), io]);
     return {
-      path: p, io, existed, beside,
+      path: p, io, existed, links, beside,
       close() {
         for (const n of names) {
           const l = held.get(n);
@@ -553,12 +562,25 @@ export async function writeFile(p: string, content: string, ctx: ToolContext): P
   // (A call stopped while its file was held writes nothing.)
   if (ctx.signal?.aborted) { h.close(); return `${p} was not written: the call was stopped.`; }
   try {
-    let mode: number | undefined;
-    if (h.existed) try { mode = (await stat(h.io)).mode; } catch {}
-    await Bun.write(h.io, content);
-    if (mode !== undefined) await chmod(h.io, mode & 0o7777);
+    const no = await writeHeld(h, content);
+    if (no) return no;
   } finally { h.close(); }
   ctx.seen.set(p, await mtimeOf(p));
+  return undefined;
+}
+
+// Writes a held file through one descriptor, after its number of names is read on that descriptor: a file that has
+// gained or lost a name since it was held (a hard link made meanwhile) is not written, since the write would land
+// under a name nobody judged. Words when it was refused. The file stays the same file, its mode with it.
+export async function writeHeld(h: Held, content: string | Uint8Array): Promise<string | undefined> {
+  const made = h.io === h.path && !h.existed;
+  const fh = await open(h.io, made ? constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW : constants.O_WRONLY);
+  try {
+    const st = await fh.stat();
+    if (st.nlink !== (made ? 1 : h.links)) return moved(h.path, "the number of names it has changed (a hard link was made or removed)").refused;
+    await fh.truncate(0);
+    await fh.writeFile(content);
+  } finally { await fh.close(); }
   return undefined;
 }
 

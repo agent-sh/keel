@@ -27,10 +27,10 @@
 // alone). A v2 connection has no client file or terminal methods: the agent runs those itself.
 import { heldFile, heldWrite } from "../core/store-files.ts";
 import type { AgentConfinement, Give } from "./confine.ts";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { atCwd, realOf } from "../core/paths.ts";
-import { hold } from "../tools/files.ts";
+import { hold, writeHeld } from "../tools/files.ts";
 import type { Store } from "../core/store.ts";
 import { emptyUsage, type Session, type StoredEvent, type ToolResultBlock, type Usage } from "../core/types.ts";
 import type { ExternalIO } from "../engine/hooks.ts";
@@ -1113,7 +1113,7 @@ export class AcpRunner {
         { const held = heldWrite(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
         const h = await hold(path, { judged: [path] }, "write");
         if ("refused" in h) throw Object.assign(new Error(h.refused), { code: -32000 });
-        try { await writeFile(h.io, String(p.content ?? "")); } finally { h.close(); }
+        try { const no = await writeHeld(h, String(p.content ?? "")); if (no) throw Object.assign(new Error(no), { code: -32000 }); } finally { h.close(); }
         return null;
       }
       case "terminal/create":

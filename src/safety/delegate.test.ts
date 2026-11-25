@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { patchSettings, settings } from "../admin/settings.ts";
@@ -201,66 +201,25 @@ const placed = () => {
   symlinkSync(join(root, "elsewhere"), join(ws, "out-link"));
   symlinkSync(join(ws, "a.txt"), join(ws, "a-link"));
   symlinkSync(join(ws, "src", "a.ts"), join(ws, "code-link.md"));
+  linkSync(join(ws, "notes.txt"), join(ws, "twin.md"));
   const place = localPlace(ws);
   const shell = (summary: string, at?: CardIn["at"], p: Place | undefined = place) => offList({ tool: "Bash", kind: "shell", summary, input: { command: summary }, risk: "low", ...(at ? { at } : {}) }, p);
   const edit = (path: string, input: Record<string, unknown> = { content: "x" }) => offList({ tool: "Write", kind: "edit", summary: path, input: { file_path: path, ...input }, risk: "low" }, place);
   return { root, ws, place, shell, edit };
 };
 
-test("the allow-list: one plain command of a program that reads, every word read by its grammar, paths in the folder", () => {
-  const { shell } = placed();
-  for (const line of [
-    "ls", "ls -la", "ls -lh --sort=size src", "cat a.txt", "cat -n a.txt notes.txt", "head -5 a.txt", "head -n 3 a.txt", "tail -n +2 a.txt", "tail -c 10 a.txt",
-    "wc -l a.txt notes.txt", "stat a.txt", "stat -c '%s %n' a.txt", "diff -u a.txt notes.txt", "diff --unified=5 a.txt notes.txt",
-    "grep -n x a.txt", "grep -rn 'a|b' src", "grep -e x -- a.txt", "grep -c --include='*.ts' x src", "grep -A 2 x a.txt",
-    "rg -n foo src", "rg --files src", "rg -g '*.ts' foo", "rg -t ts --max-depth 2 foo src", "rg -uu foo",
-    "find . -name '*.ts' -type f", "find src -maxdepth 2 '(' -name a -o -name b ')' -print", "find", "cat a-link",
-  ]) expect([line, shell(line)]).toEqual([line, null]);
-});
-
-test("the allow-list: every other command is the owner's, by its class where one is known", () => {
+test("the allow-list holds no command: every one is the owner's, still named by its class where one is known", () => {
   const { shell, ws } = placed();
-  const cases: [string, string][] = [
-    // More than one command, or one that is not plain: a list, pipe, subshell, group, background, redirect, comment, escape.
-    ["ls src && cat src/a.ts", "unseen"], ["cat a.txt | grep x", "unseen"], ["ls; cat a.txt", "unseen"], ["ls;", "unseen"], ["ls &", "unseen"], ["(ls)", "unseen"],
-    ["{ ls; }", "unseen"], ["ls 2>&1", "unseen"], ["ls > x", "unseen"], ["cat < a.txt", "unseen"], ["ls # note", "unseen"], ["time ls", "unseen"], ["! ls", "unseen"],
-    ["cat a\\ b", "unseen"], ["ls $(pwd)", "unseen"], ["ls $HOME", "unseen"], ["ls *.ts", "unseen"], ["ls {a,b}", "unseen"], ["FOO=1 ls", "unseen"], ["nice ls", "unseen"],
-    ["/bin/ls", "unseen"], ["./run.sh", "unseen"], ["coproc ls", "unseen"],
-    // Programs off the list, whatever their arguments: they write, run code or read configuration the card does not show.
-    ["sort a.txt", "unseen"], ["sort -o out a.txt", "unseen"], ["sort --outp=x a.txt", "unseen"], ["sort --compress-program=gzip a.txt", "unseen"],
-    ["file a.txt", "unseen"], ["file -C -m x", "unseen"], ["jq .x a.json", "unseen"], ["sed -n 1p a.txt", "unseen"], ["awk '{print $1}' a.txt", "unseen"],
-    ["mkdir out", "unseen"], ["cp a.txt b.txt", "unseen"], ["mv notes.txt b.txt", "unseen"], ["git status", "unseen"], ["curl -sI https://example.com/", "unseen"],
-    ["npm install left-pad", "unseen"], ["pytest -q", "unseen"], ["make", "unseen"], ["echo hi", "unseen"],
-    // A listed program with a word its grammar does not read: by exact spelling, no abbreviation, each value by its form.
-    ["grep --inc='*.ts' x src", "unseen"], ["grep -R x .", "unseen"], ["grep -f pats a.txt", "unseen"], ["grep -A x y a.txt", "unseen"], ["cat -", "unseen"],
-    ["tail -f a.txt", "unseen"], ["tail --follow a.txt", "unseen"], ["head -n x a.txt", "unseen"], ["ls -L", "unseen"], ["ls --color", "unseen"], ["ls --sort=evil", "unseen"],
-    ["stat -L a.txt", "unseen"], ["diff -r src src", "unseen"], ["diff a.txt", "unseen"], ["cat", "unseen"], ["wc --files0-from=list", "unseen"],
-    ["rg --pre ./x foo", "unseen"], ["rg --pre-glob='*' foo", "unseen"], ["rg -z foo", "unseen"], ["rg -nz foo", "unseen"], ["rg --search-zip foo", "unseen"],
-    ["rg -L foo", "unseen"], ["rg --follow foo", "unseen"], ["rg --hostname-bin=x foo", "unseen"], ["rg --type-add 'x:*.x' foo", "unseen"], ["rg --no-conf foo", "unseen"],
-    ["find . -exec cat '{}' +", "unseen"], ["find . -delete", "unseen"], ["find . -fprint out", "unseen"], ["find -L .", "unseen"], ["find . -follow", "unseen"],
-    ["find . -newer a.txt", "unseen"], ["find . -printf x", "unseen"], ["find . -maxdepth x", "unseen"],
-    // Paths outside the folder, where their links lead.
-    ["cat ../x", "authority"], ["cat out-link/x", "authority"], ["cat ~/x", "authority"], ["ls /", "authority"], ["find .. -name x", "authority"],
-    ["grep -r x out-link", "authority"], ["cat out-link/../a.txt", "authority"], ["cat ~root/x", "unseen"],
-    // git: a push reaches another machine.
-    ["git push origin main", "authority"],
-  ];
-  for (const [line, cls] of cases) expect([line, shell(line)?.cls]).toEqual([line, cls]);
-  // Through the card's classes first: a pushed tag with git's own options before its command, a tag with no dot.
+  // What a command does depends on what the card does not show (its program's configuration, the shell's startup,
+  // the session's environment): the plainest read is the owner's too.
+  for (const line of ["ls", "ls -la", "cat a.txt", "head -5 a.txt", "wc -l a.txt", "stat a.txt", "diff a.txt notes.txt", "grep -n x a.txt", "rg --no-config foo", "find . -name x", "mkdir out"])
+    expect([line, shell(line)?.cls]).toEqual([line, "unseen"]);
   const at = (line: string) => ownerClass({ tool: "Bash", kind: "shell", summary: line, input: { command: line }, risk: "low" }, false, localPlace(ws))?.cls;
-  expect([at("git -C . push --tags"), at("git push origin v1"), at("cat a.txt")]).toEqual(["publish", "authority", undefined]);
-  // Where it runs: another shell, a folder outside the session's, another machine, no place at all.
-  expect(shell("ls", { shell: "zsh" })?.cls).toBe("unseen");
-  expect(shell("ls", { cwd: "/", away: true })?.cls).toBe("authority");
+  expect([at("git -C . push --tags"), at("git push origin v1"), at("cat a.txt"), at("curl -sX POST https://api.example.com/x"), at("curl http://10.0.0.5/"), at("git status")])
+    .toEqual(["publish", "authority", "unseen", "authority", "authority", "unseen"]);
+  // Where it runs is still said first: another machine; with no place at all, nothing is on the list.
   expect(shell("ls", undefined, { ...localPlace(ws), far: true })?.cls).toBe("authority");
   expect(offList({ tool: "Bash", kind: "shell", summary: "ls", input: { command: "ls" }, risk: "low" })?.cls).toBe("unseen");
-  // Off the list, a command is still named by its class: a request that writes to a service, a private host.
-  expect([at("curl -sX POST https://api.example.com/x"), at("curl http://10.0.0.5/"), at("git status")]).toEqual(["authority", "authority", "unseen"]);
-  // An options file the daemon's environment names for rg: off the list unless rg is told to read none, by an option
-  // before `--` (after it, the same word is a pattern or a path).
-  const rc = { ...localPlace(ws), rgConfig: join(ws, "rgrc") };
-  expect(["rg foo", "rg --no-config foo", "rg -- --no-config a.txt", "rg foo -- --no-config", "rg -e --no-config"].map((l) => shell(l, undefined, rc)?.cls ?? null))
-    .toEqual(["unseen", null, "unseen", "unseen", "unseen"]);
 });
 
 test("the allow-list: edits of inert files in the folder by type; source, configuration and manifests are the owner's", () => {
@@ -276,8 +235,10 @@ test("the allow-list: edits of inert files in the folder by type; source, config
     "requirements.txt", "requirements-dev.txt", "CMakeLists.txt", "AGENTS.md", "CLAUDE.md", "docs/SKILL.md", ".github/workflows/ci.yml", ".github/notes.md", ".keel/checks.json",
     "node_modules/x/readme.md"])
     expect([f, edit(join(ws, f))?.cls]).toEqual([f, "unseen"]);
-  // A link named as text that leads to source; an executable; outside the folder.
+  // A link named as text that leads to source; a file with another name (a hard link, by either name); an executable;
+  // outside the folder.
   expect(edit(join(ws, "code-link.md"))?.cls).toBe("unseen");
+  expect([edit(join(ws, "a.txt")), edit(join(ws, "notes.txt"))?.cls, edit(join(ws, "twin.md"))?.cls]).toEqual([null, "unseen", "unseen"]);
   expect(edit(join(ws, "run.sh"))?.cls).toBe("unseen");
   expect(edit(join(root, "elsewhere", "a.txt"))?.cls).toBe("authority");
   expect(edit(join(ws, "out-link", "a.txt"))?.cls).toBe("authority");
@@ -292,22 +253,18 @@ test("the allow-list: edits of inert files in the folder by type; source, config
   expect([codeFile("src/app.ts"), codeFile("src/conftest.py"), inertFile("a.md"), inertFile("a.ts") !== null]).toEqual([null, "conftest.py", null, true]);
 });
 
-test("the allow-list: an MCP tool its server says only reads and does not say may destroy; no other tool", async () => {
+test("the allow-list holds no MCP call: a server's hint that it only reads is its own claim; no other tool either", async () => {
   const { g, s, card } = rig();
   const here = localPlace(s.workspace);
   const done = async (c: { a: Approval; out: Promise<unknown> }) => { g.resolve(c.a.id, s.id, { choice: "deny" }); await c.out; };
-  const target = (hint: boolean): Tool => ({ ...mcp("mcp_call"), target: async (input: any) => ({ name: String(input.tool), readOnly: false, input: input.arguments ?? {}, ...(hint ? { read_hint: true as const } : {}) }) });
-  const read = await card(target(true), { tool: "files__list", arguments: { dir: "x" } });
-  expect(read.a.facts?.read_hint).toBe(true);
-  expect(ownerClass(read.a, false, here)).toBeNull();
+  const target: Tool = { ...mcp("mcp_call"), target: async (input: any) => ({ name: String(input.tool), readOnly: false, input: input.arguments ?? {} }) };
+  const read = await card(target, { tool: "files__list", arguments: { dir: "x" } });
+  expect(ownerClass(read.a, false, here)?.cls).toBe("unseen");
   await done(read);
-  const plain = await card(target(false), { tool: "notes__save", arguments: { text: "x" } });
-  expect(ownerClass(plain.a, false, here)?.cls).toBe("unseen");
-  await done(plain);
-  // A read-hinted tool whose name says it deletes is the owner's all the same.
-  const named = await card(target(true), { tool: "files__delete", arguments: { id: "1" } });
+  // A tool whose name says it deletes is named by that.
+  const named = await card(target, { tool: "files__delete", arguments: { id: "1" } });
   expect(ownerClass(named.a, false, here)?.cls).toBe("delete");
   await done(named);
-  // A built-in tool that is not an edit or a command: off the list.
+  // A built-in tool that is not an edit: off the list.
   expect(offList({ tool: "WebFetch", kind: "send", summary: "https://example.com/?q=1", input: {}, risk: "low" }, here)?.cls).toBe("unseen");
 });

@@ -16,9 +16,6 @@ export type CatalogTool = {
   // Its server's own readOnlyHint (the server's word: it never makes a call a read, src/mcp/manager.ts). A rewind reads it to say
   // which calls it cannot take back.
   hinted_read?: true;
-  // Its server says it only reads (readOnlyHint) and does not say it may destroy (destructiveHint): the helper may
-  // answer its card (src/safety/delegate.ts). The server's word, so it never makes a call a read either.
-  read_hint?: true;
   // What its MCP server says it does, for the gate (policy.ts ToolHints) and for a failure's words (`idempotent`).
   hints?: ToolHints & { idempotent?: boolean };
   hidden?: boolean;        // not offered by search, still answered by mcp_call (a server turned off says so)

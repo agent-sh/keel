@@ -314,15 +314,17 @@ function asAddress(word: string): string | null {
 }
 // The folders looked through for a call, which its judgments share (credential-reads.ts).
 const lookKept = new WeakMap<object, LookKept>();
-const lookedAt = new WeakMap<object, { path: string; id: string | null; linked: boolean }[]>();
-// (One stat for both answers: two would be two moments.)
-function look(path: string): { path: string; id: string | null; linked: boolean } {
-  let seen: { path: string; id: string | null; linked: boolean };
+// `links`: how many names the file had (0: none, it was not there), which a write's descriptor is held to (files.ts writeHeld).
+type Look = { path: string; id: string | null; linked: boolean; links: number };
+const lookedAt = new WeakMap<object, Look[]>();
+// (One stat for every answer: two would be two moments.)
+function look(path: string): Look {
+  let seen: Look;
   try {
     const st = lstatSync(path);
-    seen = { path, id: `${st.dev}:${st.ino}`, linked: (st.isFile() && st.nlink > 1) || !!heldFile(path) };
+    seen = { path, id: `${st.dev}:${st.ino}`, linked: (st.isFile() && st.nlink > 1) || !!heldFile(path), links: st.nlink };
   } catch {
-    seen = { path, id: null, linked: !!heldFile(path) };
+    seen = { path, id: null, linked: !!heldFile(path), links: 0 };
   }
   // (Kept a moment by path: a caller that holds the file without this look beside it is held to it all the same.)
   noteLook(path, seen.id);
@@ -1694,10 +1696,11 @@ export class Gate {
     // The files the call was judged for, where they are: a file tool opens nothing else (src/tools/files.ts hold).
     // A name can change between this look and the tool's open; what is opened is compared with this.
     // (Each with the file it is now: a name that is another file by the time of the open is not what was judged.)
-    const looks = !session.machine && (r.cls.kind === "edit" || r.cls.kind === "read" || r.cls.kind === "other") && r.cls.paths?.length ? lookedAt.get(r.cls) ?? r.cls.paths.map((path) => ({ path, id: fileId(path) })) : undefined;
+    const looks: { path: string; id: string | null; links?: number }[] | undefined = !session.machine && (r.cls.kind === "edit" || r.cls.kind === "read" || r.cls.kind === "other") && r.cls.paths?.length ? lookedAt.get(r.cls) ?? r.cls.paths.map((path) => ({ path, id: fileId(path) })) : undefined;
     // (Also kept for a moment by session and by what the call does: a caller that runs the tool without this context is held to it too.)
     if (looks) {
-      ctx = { ...ctx, judged: looks.map((l) => l.path), looked: Object.fromEntries(looks.map((l) => [l.path, l.id])) };
+      const links = looks.filter((l) => l.links !== undefined);
+      ctx = { ...ctx, judged: looks.map((l) => l.path), looked: Object.fromEntries(looks.map((l) => [l.path, l.id])), ...(links.length ? { links: Object.fromEntries(links.map((l) => [l.path, l.links!])) } : {}) };
       noteJudged(session.id, r.cls.kind === "read" ? "read" : "write", looks);
     }
     // A reading tool's search of a folder leaves out what holds credentials, by the same list the gate reads (files.ts).
@@ -1961,7 +1964,7 @@ export class Gate {
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
-    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice: notice ?? d.ask.notice, bind: target?.source, cut, readHint: target?.read_hint })) ?? { cls };
+    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice: notice ?? d.ask.notice, bind: target?.source, cut })) ?? { cls };
   }
 
   // The private words a command sends to a public place, or null: none, a private repository, or a check that could
@@ -2018,7 +2021,7 @@ export class Gate {
     };
     if (ask.ownerOnly) {
       const shown = invocation ? `${summary}\n\nStarting directory: ${invocation.path}\nInterpreter: ${invocation.interpreter}` : summary;
-      const deny = await this.card(session, call, name, cls, shown, { ...ask, bind: target?.source, autoOwner: true, cut, readHint: target?.read_hint });
+      const deny = await this.card(session, call, name, cls, shown, { ...ask, bind: target?.source, autoOwner: true, cut });
       return deny ?? (await valid() ? { cls, authorization } : changedReview);
     }
     // Auto refusals and one-off retries are separate from Full auto's
@@ -2202,7 +2205,7 @@ export class Gate {
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
     ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true; mine?: string; readTool?: { server: string; tool: string }; part?: AskedPart;
-      ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy; readHint?: true }, once = false): Promise<{ deny: string } | void> {
+      ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy }, once = false): Promise<{ deny: string } | void> {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
@@ -2532,9 +2535,8 @@ function placeOf(session: Session, cls: CallClass): { at?: Approval["at"] } {
 
 // How long an input was, kept only when the card holds its start alone.
 // What the gate knew of why it asked, kept with a card for whoever answers it (src/safety/delegate.ts).
-function factsOf(ask: { ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy; readHint?: true }): { facts?: CardFacts } {
+function factsOf(ask: { ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy }): { facts?: CardFacts } {
   const f: CardFacts = {
-    ...(ask.readHint ? { read_hint: true as const } : {}),
     ...(ask.ownerOnly ? { owner_only: true as const } : {}), ...(ask.account !== undefined ? { account: ask.account } : {}),
     ...(ask.risks?.length ? { risks: [...new Set(ask.risks.map((r) => r.rule))] } : {}), ...(ask.held ? { held: ask.held } : {}),
   };

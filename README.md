@@ -1995,24 +1995,21 @@ card. Its answer is taken only from that context, only for a card sent there
 and not gone back to the owner. It allows the one call, denies it with a
 reason the session reads, or leaves it to the owner.
 
-The helper answers only a card on an allow-list, decided in code from what
-the gate stored with the card and what the disk says of the session's folder
-(`src/safety/delegate.ts`), whatever the helper answers: a card that shows the
-whole effect, where the effect stays in the session's folder on this machine.
-The list holds one plain command (no list, pipe, subshell, group, redirect,
-background, wrapper, variable or expansion) of a program that reads and shows
-(ls, cat, head, tail, wc, stat, diff, grep, rg, find), every word read by that
-program's grammar written in code: its options by their exact spelling, each
-with its value form, then plain paths in the session's folder where their
-links lead (rg counts --no-config only before `--`, and without it an options
-file named by `RIPGREP_CONFIG_PATH` makes the card the owner's); edits of
-inert files in the folder by type (.md, .markdown, .txt, .rst, .csv, .tsv,
+The helper answers only edits of plain text files, and relays the owner's
+typed answers (below); every command, every MCP call and every other card is
+the owner's. That is decided in code from what the gate stored with the card
+and what the disk says of the session's folder (`src/safety/delegate.ts`),
+whatever the helper answers: an edit or a write in the session's folder on
+this machine of inert files by type (.md, .markdown, .txt, .rst, .csv, .tsv,
 .log, and .json, .yaml or .toml whose name is no tool's configuration or
-manifest), not executable and not a file a runner reads as code
-(requirements, agent instructions, CI and the like); and MCP tools whose
-server says they only read (readOnlyHint, and no destructiveHint). Source
-files are the owner's, and so are git, curl, wget, sed, awk, sort, file, jq,
-mkdir, cp and mv.
+manifest), not executable, not a file a runner reads as code (requirements,
+agent instructions, CI and the like), and with one name: a file with another
+hard link is the owner's, checked when the card is decided and again on the
+descriptor the write goes through, which refuses the write when the file's
+link count changed. A command is not on the list because what it does
+depends on what the card does not show (its program's configuration, the
+shell's startup, the session's environment), and an MCP call is not because
+its server's hints are only its own claim.
 Every other card
 reaches the owner at once, as before, named by its class where one is known: a
 target outside content named first, what only the owner allows, spending,
@@ -2022,7 +2019,8 @@ show. The card's text the helper reads has `&`, `<` and `>` written as
 entities, so nothing in it can end the card. A card the helper
 leaves to him, or does not answer in its turn or within two minutes, reaches
 him then, with a notification. Until then its alert waits in the inbox and is
-told nowhere. After the helper denied three of a session's cards in a row, that
+told nowhere. When his alert cannot be filed, the helper is told the card is
+pending, and it reaches him at the next start. After the helper denied three of a session's cards in a row, that
 session's next cards are the owner's.
 
 An allow covers that one call: no rule and no grant for the session. The card

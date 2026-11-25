@@ -4,27 +4,23 @@
 // The owner can let the helper answer other sessions' approval cards on his
 // standing instruction (Settings > Helper > Answer approvals, on by default):
 // allow what they ask unless it is really risky. The helper answers only a card
-// on the allow-list (`offList`): one whose card shows its whole effect, and
+// on the allow-list (`offList`): one whose whole effect Keel itself can see, and
 // that effect stays in the session's folder on this machine. A list of what to
 // refuse always misses a form; a list of what may pass does not grow by itself.
-// The list needs no trust in configuration the card does not show. The list, and nothing else:
+// The list, and nothing else:
 //
-// - one plain command (no list, pipe, subshell, group, redirect, background,
-//   wrapper, variable or expansion) of a program that reads and shows: ls,
-//   cat, head, tail, wc, stat, diff, grep, rg, find. Every word is read by that
-//   program's grammar written here (`GRAMMARS`, `findOffList`): its options by
-//   their exact spelling and each one's value form, then plain paths in the
-//   session's folder where their links lead. rg is on it only with --no-config
-//   before `--` when the daemon's environment names an options file. Every
-//   other program is off it: git, curl, wget, sed, awk, sort, file, jq, mkdir,
-//   cp, mv and the rest;
 // - an edit or a write of inert files in the folder by type (`inertFile`: .md,
 //   .markdown, .txt, .rst, .csv, .tsv, .log, and .json, .yaml or .toml whose
-//   name is no tool's configuration or manifest), not executable, and that no
-//   runner reads as code (`codeFile`: tests, build and package files,
-//   requirements, hooks, CI, agent instructions, installed packages). Source
-//   files are the owner's;
-// - an MCP tool whose server says readOnlyHint and does not say destructiveHint.
+//   name is no tool's configuration or manifest), not executable, with one
+//   name only (a hard link is checked when the card is decided and again on
+//   the descriptor the write goes through), and that no runner reads as code
+//   (`codeFile`: tests, build and package files, requirements, hooks, CI,
+//   agent instructions, installed packages). Source files are the owner's.
+//
+// Every command is the owner's: what it does depends on what the card does not
+// show (the program's own configuration, the shell's startup files, the
+// session's environment). Every MCP call is too: its server's hints are its
+// own claim of what it does.
 //
 // Every other card is the owner's, named by its class where one is known and
 // `unseen` otherwise. The classes, which come first whatever the list says:
@@ -52,13 +48,13 @@
 // The card as stored and the session's place in, a class or null out
 // (delegate.test.ts). The place (`localPlace`) is what this machine's disk says
 // of the paths: where links lead, which file is executable, what a path names.
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { basename, relative } from "node:path";
 import { name as base, unwrap, type RiskRule } from "./risk-words.ts";
 import { splitCommand, type Simple } from "./shell.ts";
 import { isOwnPort } from "./net-proxy.ts";
 import { privateHost } from "../core/hosts.ts";
-import { contains, homeDir, realOf } from "../core/paths.ts";
+import { contains, realOf } from "../core/paths.ts";
 
 // What made a one-call card (gate.ts askOnce): outside content named the target, a tool that confirms
 // each call, private words in a public place, a hook of the owner's that asks.
@@ -66,8 +62,7 @@ export type Held = "provenance" | "confirm" | "words" | "hook";
 // What the gate knew of why it asked, kept with the card (gate.ts card()).
 // `owner_only`: the policy's onlyOwner. `account`: a write with the owner's account beyond his namespaces.
 // `risks`: the classes of what makes a command high risk (risk-words.ts). `held`: a one-call card and what made it.
-// `read_hint`: an MCP tool whose server says it only reads (readOnlyHint) and does not say it may destroy (destructiveHint).
-export type CardFacts = { owner_only?: true; account?: string; risks?: RiskRule[]; held?: Held; read_hint?: true };
+export type CardFacts = { owner_only?: true; account?: string; risks?: RiskRule[]; held?: Held };
 
 export type OwnerClass = "provenance" | "owner-only" | "spend" | "publish" | "delete" | "authority" | "unseen" | "helper";
 export const CLASS_WORDS: Record<OwnerClass, string> = {
@@ -470,30 +465,34 @@ export function toolClass(words: string[]): Hit {
 
 // What this machine's disk says of a session's paths, for the list. `localPlace` reads the disk; a test may give its own.
 // `workspace`: the session's folder where its links lead. `far`: its calls run on another machine. `real`: a path where
-// its links lead, each part resolved before the `..` after it. `exec`: an existing file someone may execute.
-// `rgConfig`: the ripgrep options file the daemon's environment names, which every rg it starts reads.
-export type Place = { workspace: string; far?: boolean; home: string; rgConfig?: string; real(p: string): string; exec(p: string): boolean };
+// its links lead, each part resolved before the `..` after it. `exec`: an existing file someone may execute. `links`:
+// how many names a file has (0: none, it is not there); a write to a file of more than one lands under every name.
+export type Place = { workspace: string; far?: boolean; real(p: string): string; exec(p: string): boolean; links(p: string): number };
 
 export function localPlace(workspace: string, far = false): Place {
   return {
-    workspace: far ? workspace : realOf(workspace), far, home: homeDir(),
-    ...(process.env.RIPGREP_CONFIG_PATH ? { rgConfig: process.env.RIPGREP_CONFIG_PATH } : {}),
+    workspace: far ? workspace : realOf(workspace), far,
     real: realOf,
     exec: (p) => { try { const st = statSync(p); return st.isFile() && (st.mode & 0o111) !== 0; } catch { return false; } },
+    links: (p) => { try { return lstatSync(p).nlink; } catch { return 0; } },
   };
 }
 
 const off = (cls: OwnerClass, what: string): Hit => ({ cls, what });
 const unseen = (what: string): Hit => off("unseen", what);
 
-// Null: the card is on the list. Else why it is not, with the class that names it.
+// Null: the card is on the list. Else why it is not, with the class that names it. Only an edit or a write of plain
+// text files in the session's folder is: a command's effect depends on what its program reads beside the card (its
+// configuration, the shell's startup files, the session's environment), and an MCP tool's on what its server does,
+// which its own hints only claim. Both are the owner's.
 export function offList(a: CardIn, place?: Place): Hit {
   if (!place) return unseen("the session's folder is not known, so nothing can be shown to stay in it");
   if (place.far) return off("authority", "it runs on another machine");
-  if (a.kind === "shell") return shellOffList(a.summary, a.at, place);
   if (a.kind === "edit") return editOffList(a, place);
-  if (a.kind === "other" && a.facts?.read_hint) return null;
-  return unseen(`${a.tool} is not among the tools whose whole effect a card shows`);
+  // (A push is named by what it reaches: a repository on another machine.)
+  if (a.kind === "shell" && partsOf(a.summary)?.some((p) => p.run[0] === "git" && gitCommand(p.run.slice(1)).verb === "push")) return off("authority", "git push changes a repository on another machine");
+  if (a.kind === "shell") return unseen("a command's effect depends on what it reads beside the card (its configuration, the shell's startup, the session's environment): every command is the owner's");
+  return unseen(`${a.tool} is not an edit of plain text files, the only cards the helper answers`);
 }
 
 // --- files
@@ -556,6 +555,8 @@ function writeOffList(path: string, place: Place): Hit {
   const code = codeFile(relative(place.workspace, real)) ?? codeFile(basename(path));
   if (code) return unseen(`the edit writes ${code}, which a runner reads as code`);
   if (place.exec(real)) return unseen(`the edit writes an executable file (${path})`);
+  // (Checked again on the descriptor the write goes through: src/tools/files.ts writeHeld.)
+  if (place.links(real) > 1) return unseen(`the edit writes a file with another name (a hard link), where the write lands too (${path})`);
   return null;
 }
 
@@ -583,207 +584,4 @@ function editOffList(a: CardIn, place: Place): Hit {
   if (/^(new file mode|new mode|old mode) \d*7[0-7][0-7]\b|^(new file mode|new mode) 1007/m.test(text) || /^(new file mode|new mode) 12/m.test(text)) return unseen("the edit makes a file executable or a link");
   if (/(^|\n)\+?#!/.test(text)) return unseen("the edit writes a script line (#!), which makes it a program");
   return null;
-}
-
-// --- commands
-
-// A command is on the list only as one simple command of a program below, nothing around it (no list, pipe,
-// subshell, group, redirect, background or expansion), every word of it read by that program's grammar here: its
-// options by their exact spelling with each one's value form, then plain paths in the session's folder. Anything the
-// grammar does not name is the owner's: a list of what may pass, never of what to refuse.
-
-// A value's form: any text on one line, a count, a type name, a choice of words.
-const ANY = /^[^\n]*$/;
-const NUM = /^\d{1,9}$/;
-const TYPE = /^[A-Za-z0-9_+-]{1,32}$/;
-const WHEN = /^(never|always|auto)$/;
-type Grammar = {
-  // Short options with no value, and the ones that take one (the rest of the word, or the next word).
-  bool: string; val?: Record<string, RegExp>;
-  // Long options with no value, with a required value (`=v` or the next word), and with an optional `=v` only.
-  long?: string[]; longVal?: Record<string, RegExp>; longOpt?: Record<string, RegExp>;
-  // -NUM as a count (head -5).
-  digits?: RegExp;
-  // The first operand is a pattern, unless an option named here gives one or says there is none.
-  pattern?: { given: string[]; none?: string[] };
-  // How many paths it takes.
-  paths: [number, number];
-};
-const COUNT = /^\d{1,9}$/;
-const GRAMMARS: Record<string, Grammar> = {
-  ls: {
-    bool: "aAlhRtrS1dFpisnogcuUvxm",
-    long: ["all", "almost-all", "human-readable", "recursive", "reverse", "classify", "directory", "inode", "size", "numeric-uid-gid", "group-directories-first", "full-time"],
-    longVal: { sort: /^(none|size|time|version|extension|width|name)$/ }, longOpt: { color: WHEN },
-    paths: [0, 64],
-  },
-  cat: { bool: "AbeEnstTuv", long: ["show-all", "number-nonblank", "number", "squeeze-blank", "show-ends", "show-tabs", "show-nonprinting"], paths: [1, 64] },
-  head: { bool: "qvz", val: { n: /^-?\d{1,12}$/, c: /^-?\d{1,12}$/ }, long: ["quiet", "silent", "verbose", "zero-terminated"], longVal: { lines: /^-?\d{1,12}$/, bytes: /^-?\d{1,12}$/ }, digits: /^-\d{1,9}$/, paths: [1, 64] },
-  tail: { bool: "qvz", val: { n: /^\+?\d{1,12}$/, c: /^\+?\d{1,12}$/ }, long: ["quiet", "silent", "verbose", "zero-terminated"], longVal: { lines: /^\+?\d{1,12}$/, bytes: /^\+?\d{1,12}$/ }, digits: /^-\d{1,9}$/, paths: [1, 64] },
-  wc: { bool: "clwmL", long: ["lines", "words", "bytes", "chars", "max-line-length"], paths: [1, 64] },
-  stat: { bool: "ft", val: { c: ANY }, long: ["file-system", "terse"], longVal: { format: ANY, printf: ANY }, paths: [1, 64] },
-  diff: {
-    bool: "uqsiwbBEyNa", val: { U: NUM },
-    long: ["brief", "report-identical-files", "ignore-case", "ignore-all-space", "ignore-space-change", "ignore-blank-lines", "side-by-side", "new-file", "text", "unified"],
-    longOpt: { unified: NUM, color: WHEN },
-    paths: [2, 2],
-  },
-  grep: {
-    bool: "iyvwxclLnhHoqsrEFGPIaZz", val: { e: ANY, m: COUNT, A: COUNT, B: COUNT, C: COUNT },
-    long: ["ignore-case", "invert-match", "word-regexp", "line-regexp", "count", "files-with-matches", "files-without-match", "line-number", "no-filename", "with-filename",
-      "only-matching", "quiet", "silent", "no-messages", "recursive", "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp", "text", "null", "null-data", "color", "colour"],
-    longVal: { regexp: ANY, "max-count": COUNT, "after-context": COUNT, "before-context": COUNT, context: COUNT, include: ANY, exclude: ANY, "exclude-dir": ANY },
-    longOpt: { color: WHEN, colour: WHEN },
-    pattern: { given: ["e", "regexp"] },
-    paths: [0, 64],
-  },
-  rg: {
-    bool: "iSsFwxvnNlcoHIaUu.p", val: { e: ANY, g: ANY, t: TYPE, T: TYPE, m: COUNT, A: COUNT, B: COUNT, C: COUNT, d: COUNT, M: COUNT },
-    long: ["ignore-case", "smart-case", "case-sensitive", "fixed-strings", "word-regexp", "line-regexp", "invert-match", "line-number", "no-line-number", "files-with-matches",
-      "count", "count-matches", "only-matching", "with-filename", "no-filename", "hidden", "no-ignore", "no-ignore-vcs", "no-ignore-parent", "no-ignore-dot", "text", "multiline",
-      "files", "no-heading", "heading", "column", "vimgrep", "json", "no-config", "no-messages", "trim", "stats", "type-list", "byte-offset", "null", "pretty"],
-    longVal: { regexp: ANY, glob: ANY, iglob: ANY, type: TYPE, "type-not": TYPE, "max-count": COUNT, "after-context": COUNT, "before-context": COUNT, context: COUNT,
-      "max-depth": COUNT, "max-columns": COUNT, sort: /^(path|modified|accessed|created|none)$/, sortr: /^(path|modified|accessed|created|none)$/, color: WHEN, "max-filesize": /^\d{1,12}[KMG]?$/ },
-    pattern: { given: ["e", "regexp"], none: ["files", "type-list"] },
-    paths: [0, 64],
-  },
-};
-// find's expression: the tests and actions that only match and print, with the form of each one's value.
-const FIND_BARE = new Set(["-empty", "-print", "-print0", "-prune", "-not", "!", "-a", "-and", "-o", "-or", "(", ")", "-true", "-false", "-readable", "-writable", "-executable", "-depth", "-ls", "-xdev", "-mount", "-quit"]);
-const FIND_VALUED: Record<string, RegExp> = {
-  "-name": ANY, "-iname": ANY, "-path": ANY, "-ipath": ANY, "-wholename": ANY, "-iwholename": ANY, "-regex": ANY, "-iregex": ANY,
-  "-type": /^[bcdpflsD](,[bcdpflsD])*$/, "-maxdepth": COUNT, "-mindepth": COUNT, "-size": /^[+-]?\d{1,12}[bcwkMG]?$/,
-  "-mtime": /^[+-]?\d{1,9}$/, "-atime": /^[+-]?\d{1,9}$/, "-ctime": /^[+-]?\d{1,9}$/, "-mmin": /^[+-]?\d{1,9}$/, "-amin": /^[+-]?\d{1,9}$/, "-cmin": /^[+-]?\d{1,9}$/,
-};
-export const LIST_PROGRAMS = [...Object.keys(GRAMMARS), "find"];
-
-// Quoted text taken out of a line, so what is left shows the shell's own characters. Null: a quote does not close.
-function unquoted(line: string): string | null {
-  let out = "";
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i]!;
-    if (c === "'") { const j = line.indexOf("'", i + 1); if (j < 0) return null; out += " "; i = j; continue; }
-    if (c === '"') {
-      let j = i + 1;
-      for (; j < line.length && line[j] !== '"'; j++) if (line[j] === "\\") j++;
-      if (j >= line.length) return null;
-      out += " "; i = j; continue;
-    }
-    out += c;
-  }
-  return out;
-}
-
-function shellOffList(line: string, at: CardIn["at"], place: Place): Hit {
-  if (at?.shell) return unseen(`it runs in ${at.shell}, which the rules do not read as bash`);
-  if (at?.away) return off("authority", "it runs outside the session's folder");
-  const cwd = at?.cwd ? place.real(at.cwd) : place.workspace;
-  if (!contains(place.workspace, cwd)) return off("authority", "it runs outside the session's folder");
-  const parts = partsOf(line);
-  if (!parts) return unseen("the rules cannot split the command into what it runs");
-  if (parts.length !== 1) return unseen("it is more than one command: only one command of a listed program is on the list");
-  const [{ s, run, pre, deep }] = parts as [Part];
-  const shown = s.text.slice(0, 120);
-  if (s.heredoc || s.unknown || s.nested || s.flow || s.sep || deep || pre.length || s.redirects || s.dyn?.length || s.text !== line.trim())
-    return unseen(`it is not one plain command: a list, pipe, subshell, group, redirect, background, wrapper, variable or expansion (${shown})`);
-  // The shell's own characters outside quotes (a redirect the parser keeps no word of, a comment, an escape) are not
-  // a plain command's.
-  const bare = unquoted(line);
-  if (bare === null || /[;&|<>(){}$`\\!#*?[\]\n]/.test(bare)) return unseen(`it holds the shell's own characters (${shown})`);
-  if (!run.length) return unseen("it runs nothing of the list");
-  const p = run[0]!;
-  if (p === "find") return findOffList(run.slice(1), cwd, place);
-  const g = Object.hasOwn(GRAMMARS, p) ? GRAMMARS[p]! : undefined;
-  // (Off the list either way; a push is named by what it reaches: a repository on another machine.)
-  if (!g && p === "git" && gitCommand(run.slice(1)).verb === "push") return off("authority", `git push changes a repository on another machine (${shown})`);
-  if (!g) return unseen(`${p} is not among the programs on the list (${LIST_PROGRAMS.join(", ")}), named as they are`);
-  const read = readArgs(p, g, run.slice(1));
-  if (typeof read === "string") return unseen(read);
-  if (p === "rg" && place.rgConfig && !read.flags.has("no-config")) return unseen(`rg reads its options from ${place.rgConfig}, which the card does not show (no --no-config before --)`);
-  return pathsOffList(p, read.paths, g.paths, cwd, place);
-}
-
-// The words of a command by its grammar: the options it gave (by name, before any `--`) and its paths. A string: the
-// word the grammar does not read.
-function readArgs(p: string, g: Grammar, args: string[]): { flags: Set<string>; paths: string[] } | string {
-  const flags = new Set<string>();
-  const ops: string[] = [];
-  let dd = false;
-  for (let k = 0; k < args.length; k++) {
-    const a = args[k]!;
-    if (dd || !a.startsWith("-")) { ops.push(a); continue; }
-    if (a === "--") { dd = true; continue; }
-    if (a === "-") return `${p} reads its input, which the card does not show`;
-    if (a.startsWith("--")) {
-      const eq = a.indexOf("=");
-      const name = eq < 0 ? a.slice(2) : a.slice(2, eq);
-      const given = eq < 0 ? undefined : a.slice(eq + 1);
-      const has = (r?: Record<string, RegExp>) => !!r && Object.hasOwn(r, name);
-      if (given === undefined && g.long?.includes(name)) { flags.add(name); continue; }
-      if (given !== undefined && has(g.longOpt)) { if (!g.longOpt![name]!.test(given)) return `${p}'s --${name} is given a value of a form it does not take (${given})`; flags.add(name); continue; }
-      if (has(g.longVal)) {
-        const v = given ?? args[++k];
-        if (v === undefined || !g.longVal![name]!.test(v)) return `${p}'s --${name} is given a value of a form it does not take (${v ?? "none"})`;
-        flags.add(name);
-        continue;
-      }
-      return `${p}'s option --${name}${given !== undefined ? "=" : ""} is not in its grammar on the list`;
-    }
-    if (g.digits?.test(a)) continue;
-    for (let j = 1; j < a.length; j++) {
-      const c = a[j]!;
-      if (g.bool.includes(c)) { flags.add(c); continue; }
-      if (g.val && Object.hasOwn(g.val, c)) {
-        const v = a.slice(j + 1) || args[++k];
-        if (v === undefined || !g.val[c]!.test(v)) return `${p}'s -${c} is given a value of a form it does not take (${v ?? "none"})`;
-        flags.add(c);
-        break;
-      }
-      return `${p}'s option -${c} is not in its grammar on the list`;
-    }
-  }
-  const pat = g.pattern;
-  if (pat && !pat.given.some((f) => flags.has(f)) && !pat.none?.some((f) => flags.has(f))) {
-    if (!ops.length) return `${p} is given no pattern`;
-    ops.shift();
-  }
-  return { flags, paths: ops };
-}
-
-// Plain paths in the session's folder where their links lead: no `~user`, none empty.
-function pathsOffList(p: string, paths: string[], [min, max]: [number, number], cwd: string, place: Place): Hit {
-  if (paths.length < min || paths.length > max) return unseen(`${p} is given ${paths.length} paths, and its grammar on the list takes ${min === max ? min : `${min} to ${max}`}`);
-  for (const o of paths) {
-    const at = o ? pathAt(cwd, o, place) : null;
-    if (!at) return unseen(`${p} names a path the rules cannot place (${o})`);
-    if (!contains(place.workspace, place.real(at))) return off("authority", `${p} reaches outside the session's folder (${o})`);
-  }
-  return null;
-}
-
-// find: its starting points, then an expression of the tests and actions that only match and print. No option before
-// the paths (-H, -L, -P follow links), nothing that runs, writes or deletes.
-function findOffList(args: string[], cwd: string, place: Place): Hit {
-  let k = 0;
-  const starts: string[] = [];
-  for (; k < args.length && !args[k]!.startsWith("-") && !FIND_BARE.has(args[k]!) && args[k] !== ","; k++) starts.push(args[k]!);
-  for (; k < args.length; k++) {
-    const a = args[k]!;
-    if (FIND_BARE.has(a)) continue;
-    if (Object.hasOwn(FIND_VALUED, a)) {
-      const v = args[++k];
-      if (v === undefined || !FIND_VALUED[a]!.test(v)) return unseen(`find's ${a} is given a value of a form it does not take (${v ?? "none"})`);
-      continue;
-    }
-    return unseen(`find's ${a} is not in its grammar on the list`);
-  }
-  return pathsOffList("find", starts, [0, 64], cwd, place);
-}
-
-// A path as a command gives it, absolute: `~` is the home folder; `~user` is not read.
-function pathAt(cwd: string, p: string, place: Place): string | null {
-  if (p === "~" || p.startsWith("~/")) return place.home + p.slice(1);
-  if (p.startsWith("~")) return null;
-  // (Not normalised: `link/..` is the folder above where the link leads, which `real` finds; a lexical `..` would not.)
-  return p.startsWith("/") ? p : `${cwd}/${p}`;
 }

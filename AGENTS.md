@@ -295,23 +295,23 @@ under `~/.cache/keel-work/bun/research/`.
   loses its process again (`stopIdle`); not one with a call under way, resources it is told about, a channel
   the owner takes, `keep_running` set, or a browser the owner did not choose to close when idle. A server
   with no kept listing connects at start, as before.
-- The owner's helper answers another session's approval card only when the
-  card is on the allow-list in `src/safety/delegate.ts` (`offList`): the card
-  shows the whole effect, and the effect stays in the session's folder on this
-  machine. The list is positive and small: one plain command (no list, pipe,
-  subshell, group, redirect, background, wrapper, variable or expansion) of
-  ls, cat, head, tail, wc, stat, diff, grep, rg or find, every word read by
-  that program's grammar in code (`GRAMMARS`: options by exact spelling, each
-  value by its form, then plain paths in the folder where their links lead;
-  rg's --no-config counts only as an option before `--`, and an options file
-  the daemon's environment names sends rg to the owner without it); edits of
-  inert files in the folder by type (`inertFile`: .md, .markdown, .txt, .rst,
+- The owner's helper answers only edits of plain text files and relays the
+  owner's typed answers (`src/helper/relay.ts`); every command, MCP call and
+  other card is the owner's. A card is the helper's only when it is on the
+  allow-list in `src/safety/delegate.ts` (`offList`), which holds what Keel
+  itself can see whole: an edit or a write in the session's folder on this
+  machine of inert files by type (`inertFile`: .md, .markdown, .txt, .rst,
   .csv, .tsv, .log, and .json, .yaml or .toml whose name is no tool's
-  configuration or manifest), with `codeFile` as a second check; and MCP
-  tools whose server says readOnlyHint and not destructiveHint. Source files,
-  git, curl, wget, sed, awk, sort, file, jq, mkdir, cp and mv are off it.
-  Nothing else: every other card is the owner's, decided in code whatever
-  the helper says, named by its class or `unseen`. A form is added to the list, never a form to a list of refusals.
+  configuration or manifest), with `codeFile` as a second check, not
+  executable, and with one name: a file with more than one hard link is the
+  owner's, checked when the card is decided and again on the descriptor the
+  write goes through (`writeHeld` in `src/tools/files.ts`, which refuses a
+  write whose file's link count changed since the gate's look). A command's
+  effect depends on what the card does not show (its program's configuration,
+  login shell startup, the session's environment), and an MCP server's hints
+  are its own claim, so neither is on the list. Nothing else: every other card
+  is the owner's, decided in code whatever the helper says, named by its class
+  or `unseen`. A form is added to the list, never a form to a list of refusals.
   The text of a card the helper reads is escaped (`cardText`), and a card the
   helper had at a restart that the owner has not seen goes to a fresh context
   once before it goes to him (`restored` in `src/helper/cards.ts`); its row
