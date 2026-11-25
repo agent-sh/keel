@@ -112,7 +112,8 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
         facts={[
           ["State", LABEL[s.state]],
           ["Tools", <span data-testid="mcp-tool-count">{toolCount(s)}</span>],
-          ...(s.held ? [["Held", <span className="text-st-need" data-testid="mcp-held-count">{s.held.changes.length + (s.held.instructions ? 1 : 0)} not accepted</span>] as [string, React.ReactNode]] : []),
+          ...(s.skills !== undefined ? [["Skills", <span data-testid="mcp-skill-count">{s.skills} offered to sessions</span>] as [string, React.ReactNode]] : []),
+          ...(s.held ? [["Held", <span className="text-st-need" data-testid="mcp-held-count">{s.held.changes.length + (s.held.instructions ? 1 : 0) + (s.held.skills?.length ?? 0)} not accepted</span>] as [string, React.ReactNode]] : []),
           ["Transport", s.sse ? "http, SSE (older)" : s.transport],
           ...(s.bundled ? [["Source", <span data-testid="mcp-bundled">Built in · {s.bundled}</span>] as [string, React.ReactNode]] : []),
           ...(s.plugin ? [["Source", <button type="button" className="underline decoration-line-strong underline-offset-2 hover:text-accent" data-testid="mcp-plugin" onClick={() => navigate({ name: "customize", section: "plugins" })}>Plugin · {s.plugin}</button>] as [string, React.ReactNode]] : []),
@@ -312,16 +313,21 @@ const fieldText = (d: ToolDef | undefined, f: ToolField) => {
 // What a server lists that the owner has not accepted (src/mcp/pins.ts): each
 // tool new or changed, its accepted text beside the listed one, and one
 // acceptance for the set as shown. Until then sessions get the accepted ones.
+// A held set of nothing but skills the owner has not allowed (src/mcp/skills.ts).
+const skillsOnly = (s: McpServerState) => !!s.held && !s.held.changes.length && !s.held.instructions;
+
 function ToolChanges({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
   const held = s.held!;
   return (
     <div className="k-issue" data-tone="need" data-testid="mcp-held" data-digest={held.digest}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <div className="min-w-0 flex-1 font-semibold">{s.name} changed its {held.changes.length ? `tools${held.instructions ? " and instructions" : ""}` : "instructions"}</div>
-        <button type="button" className="k-btn" data-ink data-testid="mcp-accept" onClick={() => act(`${base}/accept`, { digest: held.digest })}>Accept the change</button>
+        <div className="min-w-0 flex-1 font-semibold">{!held.changes.length && !held.instructions ? `${s.name} serves skills you have not allowed` : `${s.name} changed its ${held.changes.length ? `tools${held.instructions ? " and instructions" : ""}` : "instructions"}`}</div>
+        <button type="button" className="k-btn" data-ink data-testid="mcp-accept" onClick={() => act(`${base}/accept`, { digest: held.digest })}>{!held.changes.length && !held.instructions ? "Allow its skills" : "Accept the change"}</button>
       </div>
       <p className="mt-0.5 text-muted">
-        They differ from what you accepted{s.pinned_at ? ` on ${when(s.pinned_at)}` : ""}. Sessions are offered the accepted definitions and instructions, and a new tool not at all, until you accept the change. To stop using the server, remove it.
+        {!held.changes.length && !held.instructions ? "Sessions are offered none of its skills until you allow them. To stop using the server, remove it."
+          : `They differ from what you accepted${s.pinned_at ? ` on ${when(s.pinned_at)}` : ""}. Sessions are offered the accepted definitions and instructions, and a new tool not at all, until you accept the change. To stop using the server, remove it.`}
+        {held.skills && " A skill is the server's own text for the model, read only when the model loads it; allowing it binds to the files it lists now, and a change of them asks again."}
       </p>
       <ul className="mt-2.5 flex flex-col gap-2.5">
         {held.instructions && (
@@ -342,6 +348,15 @@ function ToolChanges({ s, base, act }: { s: McpServerState; base: string; act: A
             </div>
           </li>
         )}
+        {held.skills?.map((k) => (
+          <li key={k.uri} data-testid="mcp-held-skill" data-skill={k.name} data-kind={k.kind}>
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-mono text-micro text-fg">{k.name}</span>
+              <span className="text-micro text-faint">{k.kind === "added" ? "new skill" : "its files changed since you allowed it"} · {k.files} {k.files === 1 ? "file" : "files"}, {k.bytes} bytes · {k.uri}</span>
+            </div>
+            <p className="mt-0.5 text-muted">{k.description}</p>
+          </li>
+        ))}
         {held.changes.map((c: ToolChange) => (
           <li key={c.name} data-testid="mcp-held-tool" data-tool={c.name} data-kind={c.kind}>
             <div className="flex flex-wrap items-baseline gap-x-2">
@@ -823,7 +838,7 @@ export default function McpServers() {
     }
   };
   const all = servers ?? [];
-  const entry = (s: McpServerState) => ({ id: s.name, name: s.name, desc: s.bundled ?? tilde(s.target), mark: s.held ? "need" as const : mcpMark(s), markLabel: s.held ? "Tools changed" : s.pinned_at_upgrade ? "Pinned at upgrade" : LABEL[s.state], aside: s.held ? "changed" : s.pinned_at_upgrade ? "pinned at upgrade" : s.state === "ready" || s.state === "idle" ? `${s.tools}` : LABEL[s.state].toLowerCase(), testid: "mcp-entry" });
+  const entry = (s: McpServerState) => ({ id: s.name, name: s.name, desc: s.bundled ?? tilde(s.target), mark: s.held ? "need" as const : mcpMark(s), markLabel: s.held ? (skillsOnly(s) ? "Skills not allowed" : "Tools changed") : s.pinned_at_upgrade ? "Pinned at upgrade" : LABEL[s.state], aside: s.held ? (skillsOnly(s) ? "skills" : "changed") : s.pinned_at_upgrade ? "pinned at upgrade" : s.state === "ready" || s.state === "idle" ? `${s.tools}` : LABEL[s.state].toLowerCase(), testid: "mcp-entry" });
   const groups: Group[] = [
     { id: "yours", title: "Yours", path: "mcp.json", entries: all.filter((s) => !s.bundled && !s.plugin).map(entry) },
     { id: "plugins", title: "From plugins", entries: all.filter((s) => s.plugin).map((s) => ({ ...entry(s), desc: `${s.plugin} · ${tilde(s.target)}` })) },

@@ -38,6 +38,7 @@ import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
 import { runMode } from "../core/runmode.ts";
 import { serverName } from "../plugins/manifest.ts";
 import { changeDigest, defOf, diffTools, instructionsChange, offered, readPins, type InstructionsChange, type Pin, type ToolChange } from "./pins.ts";
+import { allowedSkill, allowRecord, bodyOf, bytesOf, entriesOf, entryOf, fileIn, labelsOf, skillChanges, verifyFile, verifyFrontmatter, type SkillChange, type SkillEntry } from "./skills.ts";
 import { envHint, maskProxy, proxyCredentials, serverEnv } from "./env.ts";
 import { classify, type ClassKey, type ServerClass } from "./class.ts";
 import { registerSettings, settings } from "../admin/settings.ts";
@@ -130,7 +131,9 @@ export type McpServerState = {
   // Tools it lists that the owner has not accepted (src/mcp/pins.ts): held from the model, a changed one
   // offered as accepted meanwhile. `digest` names this set of changes; accepting names it back.
   // `instructions`: its instructions changed too (the system prompt keeps the accepted ones meanwhile).
-  held?: { digest: string; changes: ToolChange[]; instructions?: InstructionsChange };
+  // `skills`: the skills it serves (src/mcp/skills.ts) that the owner has not allowed, or allowed under another manifest.
+  held?: { digest: string; changes: ToolChange[]; instructions?: InstructionsChange; skills?: SkillChange[] };
+  skills?: number; // the skills it serves that sessions are offered (allowed as they are)
   // Other entries of the owner's list that are this server under another name: the same command and
   // arguments (or address), or the same tools. One server configured twice.
   same_as?: string[];
@@ -272,7 +275,10 @@ type Entry = {
   // What the model is offered of `tools` (src/mcp/pins.ts), made again when the listing or a pin changes.
   view?: { from: McpTool[]; rev: number; tools: McpTool[] };
   // What of `tools` and `instr` the owner has not accepted, made again on the same terms (the panel asks every second or two).
-  diff?: { from: McpTool[]; rev: number; instr: string | null; changes: ToolChange[]; instructions?: InstructionsChange };
+  diff?: { from: McpTool[]; rev: number; instr: string | null; changes: ToolChange[]; instructions?: InstructionsChange; skills?: SkillChange[]; sk?: SkillEntry[] };
+  // The skills the server serves, as the entries it gave are retained (src/mcp/skills.ts): from its list at connect,
+  // and any it was asked for by URI. A command server's are kept with its tools while it has no process.
+  skills?: SkillEntry[];
   // The instructions it gave at its last connect, as a prompt would carry them (concealed); null: none.
   instr?: string | null;
   // Its first call since it connected has not ended yet: a failure of it says what of the environment it went without.
@@ -289,7 +295,7 @@ type Entry = {
 
 // What is kept of a command server's last listing: for the config it was listed under (`key`), what its tools,
 // instructions and capabilities were and its prompts as last listed.
-type Kept = { key: string; tools: McpTool[]; instructions: string | null; caps: { resources: boolean; prompts: boolean }; prompts?: any[] };
+type Kept = { key: string; tools: McpTool[]; instructions: string | null; caps: { resources: boolean; prompts: boolean }; prompts?: any[]; skills?: SkillEntry[] };
 
 // What a session's own server is: the session, the name it knows it by, the editor's name for it, who holds it.
 type Own = { session: string; label: string; given: string; holder?: string; project?: string; spec?: string };
@@ -317,7 +323,7 @@ const keptKey = (c: McpServerConfig) => digest(canon({ command: c.command, args:
 
 // What a kept listing is signed over: its server's name and everything it holds, with Keel's own key (the one that
 // binds an app to its server). A listing that was edited, or moved to another name, no longer matches its signature.
-const keptSig = (key: Uint8Array, name: string, k: Kept) => createHmac("sha256", key).update(canon({ name, key: k.key, tools: k.tools, instructions: k.instructions, caps: k.caps, prompts: k.prompts ?? null })).digest("hex");
+const keptSig = (key: Uint8Array, name: string, k: Kept) => createHmac("sha256", key).update(canon({ name, key: k.key, tools: k.tools, instructions: k.instructions, caps: k.caps, prompts: k.prompts ?? null, ...(k.skills ? { skills: k.skills } : {}) })).digest("hex");
 
 // The kept listings as a file holds them, whole or not at all (a file that is not this build's gives none); a listing
 // whose signature does not match is left out, so that server connects as one with no kept listing does.
@@ -328,7 +334,7 @@ function readKept(text: string, key: Uint8Array): Record<string, Kept> {
   for (const [name, k] of Object.entries<any>(f.servers)) {
     const ok = k && typeof k.key === "string" && Array.isArray(k.tools) && k.tools.every((t: any) => t && typeof t.name === "string")
       && (k.instructions === null || typeof k.instructions === "string") && k.caps && typeof k.caps.resources === "boolean" && typeof k.caps.prompts === "boolean"
-      && (k.prompts === undefined || Array.isArray(k.prompts)) && typeof k.sig === "string";
+      && (k.prompts === undefined || Array.isArray(k.prompts)) && (k.skills === undefined || (Array.isArray(k.skills) && !entriesOf(k.skills.map((x: SkillEntry) => ({ uri: x?.uri, frontmatter: x?.frontmatter, resources: x?.files }))).problems.length)) && typeof k.sig === "string";
     if (!ok) continue;
     const { sig, ...kept } = k as Kept & { sig: string };
     const want = Buffer.from(keptSig(key, name, kept));
@@ -966,6 +972,7 @@ export class McpManager {
     e.tools = k.tools;
     e.instr = k.instructions;
     e.caps = k.caps;
+    if (k.skills) e.skills = k.skills;
     e.cold = true;
     e.state = "idle";
   }
@@ -982,7 +989,7 @@ export class McpManager {
     const caps = { resources: !!e.client.capabilities.resources, prompts: !!e.client.capabilities.prompts };
     const was = this.kept[at];
     const key = keptKey(e.config);
-    const next: Kept = { key, tools: e.tools, instructions: e.instr ?? null, caps, ...((prompts ?? (was?.key === key ? was.prompts : undefined)) ? { prompts: prompts ?? was!.prompts } : {}) };
+    const next: Kept = { key, tools: e.tools, instructions: e.instr ?? null, caps, ...(e.skills?.length ? { skills: e.skills.filter((k) => !k.fetched) } : {}), ...((prompts ?? (was?.key === key ? was.prompts : undefined)) ? { prompts: prompts ?? was!.prompts } : {}) };
     if (was && canon(was) === canon(next)) return;
     // (A session's lists are the newest ones: the oldest go past SESSION_KEPT.)
     if (e.session) placeKept(this.kept, at, next, SESSION_KEPT);
@@ -1226,6 +1233,7 @@ export class McpManager {
         }
         if (gone !== undefined || client.isClosed) throw new Error(`${name} closed during discovery: ${gone ?? "the connection is closed"}`);
         e.tools = tools;
+        e.skills = await this.skillsListed(name, client);
         e.cold = false;
         e.firstCall = true;
         this.settle(e, client.instructions);
@@ -2123,7 +2131,7 @@ export class McpManager {
   // Goes up with every change of a pin: an offered view of an older one is made again.
   private pinsRev = 0;
   // The owner is told of a set of changes once (the daemon's route raises the alert).
-  onToolsHeld?: (server: string, changes: ToolChange[], instructions?: InstructionsChange) => void;
+  onToolsHeld?: (server: string, changes: ToolChange[], instructions?: InstructionsChange, skills?: SkillChange[]) => void;
   // Servers set up before this build were pinned as they are: told once a batch.
   onUpgradePinned?: (servers: string[]) => void;
 
@@ -2210,20 +2218,21 @@ export class McpManager {
       if (!p && this.pinsBroken) p = this.pins[e.name] = { ident, at: Date.now(), tools: [], instructions: null };
       else {
         const upgrade = this.upgradePending.delete(e.name) || (this.upgradeRun && !p && !this.ownerAdded.has(e.name));
-        this.pins[e.name] = { ident, at: Date.now(), tools: e.tools.map(defOf), instructions: instr, ...(upgrade ? { upgrade: "untold" as const } : {}) };
+        p = this.pins[e.name] = { ident, at: Date.now(), tools: e.tools.map(defOf), instructions: instr, ...(upgrade ? { upgrade: "untold" as const } : {}) };
         this.writePins(e.name);
         if (upgrade) this.tellUpgrade();
-        return;
+        // (Its tools and instructions are accepted with the server; its skills are the owner's to allow, once.)
+        if (!this.changesOf(e).skills?.length) return;
       }
     }
-    const { changes, instructions: changed } = this.changesOf(e);
-    const told = changes.length || changed ? changeDigest(changes, changed) : undefined;
+    const { changes, instructions: changed, skills } = this.changesOf(e);
+    const told = changes.length || changed || skills?.length ? changeDigest(changes, changed, skills) : undefined;
     if (told === p.told) return;
     if (told) p.told = told;
     else delete p.told;
     this.writePins(e.name);
     if (told) {
-      try { this.onToolsHeld?.(e.name, changes, changed); } catch (err) { this.errors.capture("server", err, { at: "mcp tools held", mcp: e.name }); }
+      try { this.onToolsHeld?.(e.name, changes, changed, skills?.length ? skills : undefined); } catch (err) { this.errors.capture("server", err, { at: "mcp tools held", mcp: e.name }); }
     }
   }
 
@@ -2273,16 +2282,18 @@ export class McpManager {
     return this.pinsBroken ? undefined : this.lastPublished(e)?.instructions;
   }
 
-  private changesOf(e: Entry): { changes: ToolChange[]; instructions?: InstructionsChange } {
+  private changesOf(e: Entry): { changes: ToolChange[]; instructions?: InstructionsChange; skills?: SkillChange[] } {
     // Asleep it lists what the owner accepted (that is the only listing that sleeps): nothing it could change is read from a file.
     if (e.cold) return { changes: [] };
     const instr = e.instr ?? null;
-    if (e.diff && e.diff.from === e.tools && e.diff.rev === this.pinsRev && e.diff.instr === instr) return e.diff;
+    if (e.diff && e.diff.from === e.tools && e.diff.rev === this.pinsRev && e.diff.instr === instr && e.diff.sk === e.skills) return e.diff;
     const p = this.pinOf(e);
     const changes = p ? diffTools(p.tools, e.tools).changes : [];
     // (Instructions are compared once it has connected: before that there is nothing of its own to compare.)
     const instructions = p && e.instr !== undefined ? instructionsChange(p.instructions, instr) : undefined;
-    e.diff = { from: e.tools, rev: this.pinsRev, instr, changes, ...(instructions ? { instructions } : {}) };
+    // (The skills of a server asleep are the kept ones, the owner's to allow once it runs.)
+    const skills = p && e.skills?.length ? skillChanges(p.skills, e.skills) : [];
+    e.diff = { from: e.tools, rev: this.pinsRev, instr, changes, ...(instructions ? { instructions } : {}), ...(skills.length ? { skills } : {}), sk: e.skills };
     return e.diff;
   }
   // The owner's entries that are one server under several names (what the page says, and what one alert names):
@@ -2309,11 +2320,12 @@ export class McpManager {
   private heldOf(e: Entry): Pick<McpServerState, "held" | "pinned_at" | "pinned_at_upgrade"> {
     const p = this.pinOf(e);
     if (!p) return {};
-    const { changes, instructions } = this.changesOf(e);
+    const { changes, instructions, skills } = this.changesOf(e);
     return {
       pinned_at: p.at,
       ...(p.upgrade ? { pinned_at_upgrade: true } : {}),
-      ...(changes.length || instructions ? { held: { digest: changeDigest(changes, instructions), changes, ...(instructions ? { instructions } : {}) } } : {}),
+      ...(changes.length || instructions || skills?.length ? { held: { digest: changeDigest(changes, instructions, skills), changes, ...(instructions ? { instructions } : {}), ...(skills?.length ? { skills } : {}) } } : {}),
+      ...(e.skills?.length ? { skills: this.offeredSkills(e).length } : {}),
     };
   }
 
@@ -2350,11 +2362,12 @@ export class McpManager {
       this.ensure(name).catch(() => {});
       throw Object.assign(new Error(`${name} has no process: it is starting, look at its tools again`), { status: 409 });
     }
-    const { changes, instructions } = this.changesOf(e);
-    if (!changes.length && !instructions) return;
+    const { changes, instructions, skills } = this.changesOf(e);
+    if (!changes.length && !instructions && !skills?.length) return;
     if (!digest) throw Object.assign(new Error("an acceptance names the change set the owner was shown (held.digest)"), { status: 400 });
-    if (changeDigest(changes, instructions) !== digest) throw Object.assign(new Error(`${name} changed its tools again since: look at them again`), { status: 409 });
-    this.pins[name] = { ident: this.pinIdent(e), at: Date.now(), tools: e.tools.map(defOf), instructions: e.instr ?? null };
+    if (changeDigest(changes, instructions, skills) !== digest) throw Object.assign(new Error(`${name} changed its tools again since: look at them again`), { status: 409 });
+    // Allowing its skills binds the allow to the manifests as they are now (a skill it stops serving is no longer allowed).
+    this.pins[name] = { ident: this.pinIdent(e), at: Date.now(), tools: e.tools.map(defOf), instructions: e.instr ?? null, ...(e.skills?.length ? { skills: allowRecord(e.skills) } : {}) };
     this.writePins(name);
   }
 
@@ -2860,6 +2873,147 @@ export class McpManager {
   private lastPublished(e: Entry): { instructions?: string } | undefined {
     const p = this.published[e.name];
     return p && p.key === this.configKey(e) ? { instructions: p.instructions ?? undefined } : undefined;
+  }
+
+  // ---- skills the servers serve (src/mcp/skills.ts) ----
+
+  // The skills a server that declares the extension serves: one skills/list, made when it connects. No file is read.
+  // An entry that cannot be used (a manifest that is missing or dynamic) is told once and left out.
+  private async skillsListed(name: string, client: McpClient): Promise<SkillEntry[] | undefined> {
+    if (!client.skills) return undefined;
+    try {
+      const { entries, problems } = entriesOf(await client.listSkills());
+      if (problems.length) this.errors.capture("server", new Error(`MCP server ${name} lists skills Keel does not use: ${problems.slice(0, 3).join("; ")}${problems.length > 3 ? ` and ${problems.length - 3} more` : ""}`), { mcp: name, at: "skills/list" });
+      return entries;
+    } catch (err) {
+      this.errors.capture("server", err, { mcp: name, at: "skills/list" });
+      return [];
+    }
+  }
+
+  // The skills of a server the owner allowed as they are now (a new one, or one with another manifest, is held).
+  private offeredSkills(e: Entry): SkillEntry[] {
+    const allowed = this.pinOf(e)?.skills;
+    return (e.skills ?? []).filter((k) => allowedSkill(allowed, k));
+  }
+
+  // The skills sessions are offered, each with the name the model loads it by: the owner's servers' skills the owner allowed,
+  // in one order. A server still connecting for the first time is waited for, as `configured` does.
+  async skills(waitMs = 0): Promise<{ server: string; label: string; entry: SkillEntry }[]> {
+    await this.configured(waitMs);
+    const out: { server: string; label: string; entry: SkillEntry }[] = [];
+    for (const e of this.entries.values()) {
+      if (!this.leashed(e) || e.state === "disabled" || e.state === "missing" || !e.skills?.length) continue;
+      const labels = labelsOf(e.name, e.skills);
+      for (const entry of this.offeredSkills(e)) out.push({ server: e.name, label: labels.get(entry.uri)!, entry });
+    }
+    return out.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+  }
+
+  // The skill a name means: `mcp:<server>:<name>` as it was offered, or `mcp:<server>:<uri>` for one asked for by its URI.
+  // The longest server name wins, so a server named `a` and one named `a:b` do not take each other's skills.
+  private skillNamed(name: string): { e: Entry; label?: string; entry?: SkillEntry; uri?: string } | undefined {
+    if (!name.startsWith("mcp:")) return;
+    const rest = name.slice(4);
+    const e = [...this.entries.values()].filter((x) => this.leashed(x) && rest.startsWith(`${x.name}:`) && (x.skills?.length || x.client?.skills)).sort((a, b) => b.name.length - a.name.length)[0];
+    if (!e) return;
+    const what = rest.slice(e.name.length + 1);
+    const labels = labelsOf(e.name, e.skills ?? []);
+    const hit = (e.skills ?? []).find((k) => labels.get(k.uri) === name);
+    if (hit) return { e, label: name, entry: hit };
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(what) ? { e, uri: what, entry: (e.skills ?? []).find((k) => k.uri === what) } : { e };
+  }
+
+  // The entry the server gives for a skill now (skills/get), kept in place of the one held. A manifest that differs
+  // from the allowed one is held at once and the owner told (settle).
+  private async skillRefreshed(e: Entry, c: McpClient, uri: string, signal?: AbortSignal): Promise<{ entry: SkillEntry } | { problem: string }> {
+    let raw: unknown;
+    try { raw = await c.getSkill(uri, signal); } catch (err) {
+      return { problem: err instanceof RpcError && err.code === -32602 ? `${e.name} has no skill ${uri}` : `${e.name} did not give the skill ${uri}: ${(err as Error).message}` };
+    }
+    const got = entryOf(raw);
+    if ("problem" in got) return { problem: `${e.name} gave an entry Keel cannot use: ${got.problem}` };
+    if (got.entry.uri !== uri) return { problem: `${e.name} answered for ${got.entry.uri}, not ${uri}` };
+    const was = (e.skills ?? []).find((k) => k.uri === uri);
+    const entry: SkillEntry = was && !was.fetched ? got.entry : { ...got.entry, fetched: true };
+    if (e.client === c) {
+      e.skills = [...(e.skills ?? []).filter((k) => k.uri !== uri), entry];
+      this.settle(e, c.instructions);
+      if (e.client === c) this.keep(e);
+    }
+    return { entry };
+  }
+
+  // One file of a skill, read from its server and checked against the retained manifest: its raw size and sha256.
+  // A file that is not what the manifest says is not used; the entry is asked for again, and a changed manifest is not allowed.
+  private async skillRead(e: Entry, c: McpClient, entry: SkillEntry, file: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; entry: SkillEntry } | { problem: string }> {
+    const f = entry.files.find((x) => x.uri === file);
+    if (!f) return { problem: `${file} is not a file of the skill ${entry.uri}: its manifest names ${entry.files.map((x) => x.uri).join(", ")}` };
+    this.used(e.name);
+    const r = await c.readResource(f.uri, signal);
+    const items: any[] = Array.isArray(r?.contents) ? r.contents : [];
+    const item = items.find((i) => i?.uri === f.uri) ?? (items.length === 1 ? items[0] : undefined);
+    const bytes = item ? bytesOf(item) : undefined;
+    const bad = !bytes ? `${f.uri} came back with no content` : verifyFile(bytes, f);
+    if (!bad) return { bytes: bytes!, entry };
+    const fresh = await this.skillRefreshed(e, c, entry.uri, signal);
+    const word = "problem" in fresh ? `, and its entry could not be read again: ${fresh.problem}` : !allowedSkill(this.pinOf(e)?.skills, fresh.entry) ? ". Its manifest changed since you allowed it: it is held until you allow it again in Customize > MCP servers" : ". Its entry still says the same, so the server's files do not match its own manifest";
+    return { problem: `${bad}${word}. Nothing of it is used.` };
+  }
+
+  // A skill as the model asked for it by name (the skill tool): the checked SKILL.md under its origin, and the files it may read.
+  // None when the name is not an MCP skill's.
+  async loadSkill(name: string, signal?: AbortSignal): Promise<{ text: string } | { error: string } | undefined> {
+    const at = this.skillNamed(name);
+    if (!at) return name.startsWith("mcp:") ? { error: `No skill named "${name}": it is not one an MCP server offers.` } : undefined;
+    const { e } = at;
+    if (!at.entry && !at.uri) return { error: `No skill named "${name}" on ${e.name}. Its skills: ${this.offeredSkills(e).map((k) => labelsOf(e.name, e.skills ?? []).get(k.uri)).join(", ") || "none allowed"}.` };
+    let c: McpClient;
+    try { c = await this.ensure(e.name, 15_000); } catch (err) { return { error: `${e.name} is not reachable, so its skill cannot be loaded: ${(err as Error).message}` }; }
+    // A skill asked for by its URI that was not listed: its entry comes from the server, and is not offered until allowed.
+    let entry = at.entry;
+    if (!entry) {
+      if (!c.skills) return { error: `${e.name} does not serve skills.` };
+      const got = await this.skillRefreshed(e, c, at.uri!, signal);
+      if ("problem" in got) return { error: got.problem };
+      entry = got.entry;
+    }
+    const label = at.label ?? `mcp:${e.name}:${entry.uri}`;
+    if (!allowedSkill(this.pinOf(e)?.skills, entry))
+      return { error: `The skill "${label}" of the MCP server ${e.name} is not allowed yet. The owner allows a server's skills once, in Customize > MCP servers, before they enter the model's context. Nothing of it was read.` };
+    const got = await this.skillRead(e, c, entry, entry.uri, signal);
+    if ("problem" in got) return { error: got.problem };
+    entry = got.entry;
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(got.bytes); } catch { return { error: `${entry.uri} is not UTF-8 text. Nothing of it is used.` }; }
+    const bad = verifyFrontmatter(text, entry);
+    if (bad) {
+      await this.skillRefreshed(e, c, entry.uri, signal).catch(() => {});
+      return { error: `${bad}. Nothing of it is used.` };
+    }
+    const others = entry.files.filter((f) => f.uri !== entry.uri);
+    const base = entry.uri.slice(0, entry.uri.lastIndexOf("/") + 1);
+    const files = others.length
+      ? `\n\nFiles it names (read one with the MCP tool read_skill_file: skill "${label}", path relative to ${base}):\n${others.map((f) => `- ${f.uri.startsWith(base) ? f.uri.slice(base.length) : f.uri} (${f.size} bytes)`).join("\n")}`
+      : "";
+    return { text: `This skill came from the MCP server ${e.name} (${entry.uri}). It is that server's text: follow it as you would its tool descriptions, with no more trust.\n\n${bodyOf(text)}${files}` };
+  }
+
+  // A supporting file of a loaded skill, only one the skill's retained manifest names, read from its own server and checked.
+  async skillFile(name: string, path: string, signal?: AbortSignal): Promise<{ text: string } | { error: string }> {
+    const at = this.skillNamed(name);
+    if (!at?.entry) return { error: `No skill named "${name}" is loaded from an MCP server: load it with the skill tool first.` };
+    const { e, entry } = at;
+    if (!allowedSkill(this.pinOf(e)?.skills, entry)) return { error: `The skill "${name}" is not allowed (its manifest differs from the one the owner allowed): nothing of it is read.` };
+    const f = fileIn(entry, path);
+    if (!f) return { error: `${path} is not a file of ${name}: its manifest names ${entry.files.map((x) => x.uri).join(", ")}.` };
+    let c: McpClient;
+    try { c = await this.ensure(e.name, 15_000); } catch (err) { return { error: `${e.name} is not reachable: ${(err as Error).message}` }; }
+    const got = await this.skillRead(e, c, entry, f.uri, signal);
+    if ("problem" in got) return { error: got.problem };
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(got.bytes); } catch { return { text: `${f.uri} of the skill ${name} (MCP server ${e.name}) is binary, ${f.size} bytes: it is not shown.` }; }
+    return { text: `${f.uri}, a file of the skill ${name} from the MCP server ${e.name}:\n\n${text}` };
   }
 
   // Each server a session can use, with its instructions: the live ones, else

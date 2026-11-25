@@ -4,6 +4,7 @@ import { McpManager } from "../../mcp/manager.ts";
 import { changeDigest } from "../../mcp/pins.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
 import { bindMcpCalls } from "../../automation/mcp-calls.ts";
+import { installMcpSkills } from "../../mcp/skill-tools.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
@@ -62,17 +63,18 @@ export const mcpRoutes: RouteModule = (deps) => {
   g.__keelMcp = m;
   // A server that changed its tools is told to the owner once a change (src/mcp/pins.ts); the model is offered what the owner accepted.
   const list = (n: string[]) => (n.length > 4 ? `${n.slice(0, 4).join(", ")} and ${n.length - 4} more` : n.join(", "));
-  m.onToolsHeld = (name, changes, instructions) => {
+  m.onToolsHeld = (name, changes, instructions, skills) => {
     const added = changes.filter((c) => c.kind === "added").map((c) => c.name), changed = changes.filter((c) => c.kind === "changed").map((c) => c.name);
-    const what = [changed.length ? `changed ${list(changed)}` : "", added.length ? `added ${list(added)}` : "", instructions ? "rewrote its instructions" : ""].filter(Boolean);
+    const what = [changed.length ? `changed ${list(changed)}` : "", added.length ? `added ${list(added)}` : "", instructions ? "rewrote its instructions" : "", skills?.length ? `serves skills you have not allowed (${list(skills.map((k) => k.name))})` : ""].filter(Boolean);
     const said = what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0];
     // Entries that are one server (the same command, or the same tools) each report the change: one notice names them all.
     const names = [name, ...m.twinsOf(name)].sort();
     const who = names.length > 1 ? `${list(names.slice(0, -1))} and ${names.at(-1)}` : name;
-    const accept = "Sessions keep the definitions and instructions you accepted, and a new tool is not offered, until you accept the change in Customize > MCP servers.";
-    alertHook.raise?.("mcp", null, names.length > 1 ? `${who} changed their tools` : `${name} changed its tools`,
+    const accept = `Sessions keep the definitions and instructions you accepted, and a new tool${skills?.length ? " or skill" : ""} is not offered, until you accept the change in Customize > MCP servers.`;
+    const only = !changes.length && !instructions && !!skills?.length;
+    alertHook.raise?.("mcp", null, only ? `${name} serves skills` : names.length > 1 ? `${who} changed their tools` : `${name} changed its tools`,
       names.length > 1 ? `The MCP servers ${who} are one server configured twice. It ${said}. ${accept}` : `The MCP server ${name} ${said}. ${accept}`,
-      { mcp_server: name, ...(names.length > 1 ? { mcp_servers: names } : {}), mcp_change: changeDigest(changes, instructions) });
+      { mcp_server: name, ...(names.length > 1 ? { mcp_servers: names } : {}), mcp_change: changeDigest(changes, instructions, skills) });
   };
   // Servers set up before pins were kept are pinned as they list now: the owner is told once, to look them over.
   m.onUpgradePinned = (names) => {
@@ -81,6 +83,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   };
   installMcpTools(m);
   bindMcpCalls(m);
+  installMcpSkills(m);
   // A call whose server asked the owner a question waits on the owner: a
   // drain does not wait for it, and a restart asks again on the same card.
   registerHooks({

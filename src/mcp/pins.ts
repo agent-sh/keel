@@ -19,6 +19,7 @@
 // the flag if either the accepted definition or the listing carries it.
 import { createHash } from "node:crypto";
 import type { McpTool } from "./client.ts";
+import type { SkillChange } from "./skills.ts";
 
 export type ToolDef = Pick<McpTool, "name" | "title" | "description" | "inputSchema" | "annotations"> & { requiresUserInteraction?: true };
 export const INTERACTION = "anthropic/requiresUserInteraction";
@@ -102,14 +103,16 @@ export const instructionsChange = (was: string | null, now: string | null): Inst
 // One change set as a short key: the owner is told of each once, and an
 // acceptance names the one it was given (a server that changed again
 // meanwhile is not accepted on the strength of what the owner saw before).
-export const changeDigest = (changes: ToolChange[], instructions?: InstructionsChange): string =>
-  createHash("sha256").update(canon([changes.map((c) => [c.name, c.now]), instructions ? instructions.now ?? "" : null])).digest("hex").slice(0, 16);
+// The skills a server serves that the owner has not allowed (src/mcp/skills.ts) are part of the set: each by its URI and manifest digest.
+export const changeDigest = (changes: ToolChange[], instructions?: InstructionsChange, skills?: SkillChange[]): string =>
+  createHash("sha256").update(canon([changes.map((c) => [c.name, c.now]), instructions ? instructions.now ?? "" : null, ...(skills?.length ? [skills.map((k) => [k.uri, k.digest])] : [])])).digest("hex").slice(0, 16);
 
 // What the state keeps of each server's pin: what the server is (`ident`, its
 // endpoint's digest), when, its tools and instructions as accepted, the change
 // the owner was last told of, and whether it was pinned as it was when this
-// build first ran (`upgrade`: not looked at yet, told or not).
-export type Pin = { ident: string; at: number; tools: ToolDef[]; instructions: string | null; told?: string; upgrade?: "untold" | "told" };
+// build first ran (`upgrade`: not looked at yet, told or not). `skills`: the skills of the server the owner allowed,
+// each URI with the digest of the manifest it was allowed under (none: its skills were never allowed).
+export type Pin = { ident: string; at: number; tools: ToolDef[]; instructions: string | null; skills?: Record<string, string>; told?: string; upgrade?: "untold" | "told" };
 // `upgrade` names the servers that were set up before pins were kept and have not listed yet.
 export type PinsFile = { version: 1; servers: Record<string, Pin>; upgrade?: string[] };
 
@@ -120,7 +123,8 @@ export function readPins(text: string): PinsFile {
   if (!f || typeof f !== "object" || f.version !== 1 || !f.servers || typeof f.servers !== "object" || Array.isArray(f.servers)) throw new Error("it is not a pins file of this build");
   for (const [name, p] of Object.entries(f.servers as Record<string, any>)) {
     const ok = p && typeof p.ident === "string" && typeof p.at === "number" && Array.isArray(p.tools) && p.tools.every((t: any) => t && typeof t.name === "string")
-      && (p.instructions === null || typeof p.instructions === "string");
+      && (p.instructions === null || typeof p.instructions === "string")
+      && (p.skills === undefined || (p.skills && typeof p.skills === "object" && !Array.isArray(p.skills) && Object.values(p.skills).every((d) => typeof d === "string")));
     if (!ok) throw new Error(`its pin of ${name} is damaged`);
   }
   if (f.upgrade !== undefined && !(Array.isArray(f.upgrade) && f.upgrade.every((n: unknown) => typeof n === "string"))) throw new Error("its list of servers set up before the upgrade is damaged");

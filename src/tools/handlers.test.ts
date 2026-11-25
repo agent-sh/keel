@@ -288,7 +288,7 @@ const FAILS_EMPTY: Record<string, string[]> = {
   keel__send_files: ["agent_id"], mail__read: ["id"], mcp_call: ["tool"], keel__verdict: ["commit"], request_secret: ["name"],
   Write: ["content"], Edit: ["old_string", "new_string"], WebFetch: ["url"], WebSearch: ["query"],
   replace: ["old_string", "new_string"], write_todos: ["todos"], google_web_search: ["query"], ask_user: ["questions"],
-  websearch: ["query"], webfetch: ["url"],
+  websearch: ["query"], webfetch: ["url"], read_skill_file: ["skill", "path"],
 };
 
 test("every required field a tool's run defaults is declared optional or reviewed", () => {

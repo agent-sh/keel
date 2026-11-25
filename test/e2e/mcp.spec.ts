@@ -721,3 +721,61 @@ test("a server that changes its tools is held until the owner accepts the change
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Feature: skills MCP servers serve (the io.modelcontextprotocol/skills extension). They are listed when the
+// server connects and wait for the owner's allow, once a server; a session is offered them, under the server's
+// name, only after it, and the model loads one on demand with the skill tool.
+test("a server's skills are offered to sessions once the owner allows them, and loaded on demand", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "needs the scripted stand-in: script:find says what the model's request carries");
+  const SKILLS = `${import.meta.dirname}/fixtures/skills-mcp.ts`;
+  const label = "mcp:skills:code-review";
+  await request.delete("/api/mcp/servers/skills").catch(() => {});
+  const sessions: string[] = [];
+  try {
+    expect((await request.post("/api/mcp/servers", { data: { name: "skills", command: "bun", args: [SKILLS] } })).ok()).toBe(true);
+    const session = async () => {
+      const { session: s } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Skills" } })).json();
+      sessions.push(s.id);
+      await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "full-auto" } });
+      const events = async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events as any[];
+      const say = async (text: string) => {
+        const ends = (await events()).filter((e) => e.kind === "turn_end").length;
+        await request.post(`/api/sessions/${s.id}/messages`, { data: { text } });
+        await expect.poll(async () => (await events()).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(ends + 1);
+        return (await events()).filter((e) => e.kind === "assistant").map((e) => (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("")).at(-1)!;
+      };
+      return { say, results: async () => (await events()).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data.results[0].content)) };
+    };
+
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "skills" }).first().click();
+    const row = panel.locator('[data-testid="mcp-server"][data-name="skills"]');
+    await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+    // Listed, not allowed: the card says what it serves, and a session is offered none of it.
+    const held = row.getByTestId("mcp-held");
+    await expect(held).toBeVisible({ timeout: 20_000 });
+    await expect(held.locator('[data-testid="mcp-held-skill"][data-skill="code-review"]')).toHaveAttribute("data-kind", "added");
+    await expect(row.getByTestId("mcp-held-count")).toHaveText("1 not accepted");
+    await shoot(page, "mcp-17-skills-held");
+    const a = await session();
+    expect(await a.say(`script:find ${label}`)).toContain("Not in the request.");
+
+    // Allowed once: the next session lists it, and the model loads it by name.
+    await row.getByTestId("mcp-accept").click();
+    await expect(held).toHaveCount(0);
+    await expect(row.getByTestId("mcp-skill-count")).toHaveText("1 offered to sessions");
+    await shoot(page, "mcp-18-skills-allowed");
+    const b = await session();
+    expect(await b.say(`script:find ${label}`)).not.toContain("Not in the request.");
+    await b.say(`script:calls ${JSON.stringify([{ name: "Skill", input: { skill: label } }])}`);
+    const loaded = (await b.results()).at(-1)!;
+    expect(loaded).toContain("# Code review");
+    expect(loaded).toContain("MCP server skills");
+  } finally {
+    for (const id of sessions) await request.delete(`/api/sessions/${id}`).catch(() => {});
+    await request.delete("/api/mcp/servers/skills").catch(() => {});
+  }
+});

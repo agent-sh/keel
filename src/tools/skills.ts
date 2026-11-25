@@ -499,7 +499,13 @@ function peerHooksSaid(raw: string, machine: string, vars: Record<string, string
   return (hooks ? `Its hooks are not registered: the skill is on ${machine}, and hooks run on this machine.` : "") + (hooks ? said : said.trim());
 }
 
+// Skills MCP servers serve (src/mcp/skill-tools.ts): the daemon sets how a name `mcp:<server>:<skill>` is loaded.
+// Their text is the server's, checked and under its origin, and grants nothing: no tool, model, hook or fork.
+export const mcpSkills: { load?: (name: string, signal?: AbortSignal) => Promise<{ text: string } | { error: string } | undefined> } = {};
+
 export async function loadSkill(name: string, args: string, ctx: ToolContext): Promise<ToolOutput> {
+  const viaMcp = await mcpSkills.load?.(name, ctx.signal);
+  if (viaMcp) return "error" in viaMcp ? fail(viaMcp.error) : ok(viaMcp.text);
   const r = await findSkill(ctx, name);
   if ("error" in r) return fail(r.error);
   const { skill, raw, vars, grantable, machine, held } = r.found;

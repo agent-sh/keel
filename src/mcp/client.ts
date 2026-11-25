@@ -10,6 +10,7 @@
 import { chunks, pumpLines, pumpText } from "../core/proc.ts";
 import { CHANNEL_CAP, CHANNEL_METHOD } from "./channel.ts";
 import { APP_MIME, UI_EXTENSION } from "./apps.ts";
+import { SKILLS_EXTENSION } from "./skills.ts";
 import { vault } from "../safety/secrets.ts";
 import { maskProxy } from "./env.ts";
 
@@ -43,8 +44,9 @@ const ELICITATION = { elicitation: { form: {}, url: {} }, sampling: {} };
 export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
 // MCP Apps (src/mcp/apps.ts): the host draws a tool's ui:// page, in both eras.
 const APPS = { [UI_EXTENSION]: { mimeTypes: [APP_MIME] } };
+// Skills over MCP (src/mcp/skills.ts): a modern server that declares the extension is asked for its skills.
 const offered = (t: Transport, era: "modern" | "legacy"): Record<string, object> =>
-  era === "modern" ? { ...ELICITATION, extensions: { [TASKS_EXTENSION]: {}, ...APPS } }
+  era === "modern" ? { ...ELICITATION, extensions: { [TASKS_EXTENSION]: {}, [SKILLS_EXTENSION]: {}, ...APPS } }
   : t.kind === "stdio" ? { ...ELICITATION, roots: { listChanged: true }, extensions: APPS } : { ...ELICITATION, extensions: APPS };
 // How long Keel waits between two looks at a task whose server suggests no
 // interval: the reference TypeScript SDK's default (shared/protocol.ts,
@@ -956,6 +958,16 @@ export class McpClient {
   listResources(signal?: AbortSignal, from?: string) { return this.page<any>("resources/list", "resources", signal, from); }
   listResourceTemplates(signal?: AbortSignal, from?: string) { return this.page<any>("resources/templates/list", "resourceTemplates", signal, from); }
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
+  // The skills extension as the server declared it (only a modern server does, and it must serve resources too):
+  // skills/list and skills/get are sent only once this is seen (ext-skills, Capability Negotiation).
+  get skills(): { directoryRead: boolean } | undefined {
+    const x = this.era === "modern" && this.capabilities.resources ? this.capabilities.extensions?.[SKILLS_EXTENSION] : undefined;
+    return x && typeof x === "object" ? { directoryRead: (x as any).directoryRead === true } : undefined;
+  }
+  listSkills(signal?: AbortSignal) { return this.list<unknown>("skills/list", "skills", signal); }
+  async getSkill(uri: string, signal?: AbortSignal): Promise<unknown> {
+    return (await this.rpc("skills/get", { uri }, { signal }))?.skill;
+  }
   // Suggestions for an argument of a prompt or a resource template (server/utilities/completion).
   complete(ref: { type: "ref/prompt"; name: string } | { type: "ref/resource"; uri: string }, argument: { name: string; value: string }, context?: Record<string, string>, signal?: AbortSignal) {
     return this.rpc("completion/complete", { ref, argument, ...(context && Object.keys(context).length ? { context: { arguments: context } } : {}) }, { signal });
