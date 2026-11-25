@@ -128,3 +128,37 @@ for (const [what, ask] of [["a question", colors], ["an approval", { name: "Bash
     });
   }
 }
+
+// Feature (UX-M65): at a large text size a working session's bar is its title, its dot and the menu: the step's clock stays in
+// the running line of the conversation (the bar had no room for it, and the title was cut to a few letters).
+for (const scale of [1, 1.5]) {
+  test.describe(`on a phone, a session at work at ${scale * 100}% text`, () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    test.setTimeout(60_000);
+    test("the title takes the room of the clock at a large text size", async ({ page, request }) => {
+      const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+      test.skip(!models.includes(MODEL), "requires the scripted provider");
+      await page.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+      const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title: LONG } })).json();
+      try {
+        await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+        await request.post(`/api/sessions/${session.id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 60", description: "Building the cache" } }]) } });
+        await page.goto(`/s/${session.id}`);
+        const pane = page.locator(".k-station[data-helm]");
+        await expect(pane).toHaveAttribute("data-watch", "work", { timeout: 30_000 });
+        const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+        const title = (await pane.getByTestId("station-title").boundingBox())!;
+        if (scale > 1.25) {
+          await expect(pane.getByTestId("station-clock")).toHaveCount(0);
+          expect(title.width / rem, "the title has the room the clock left").toBeGreaterThanOrEqual(7);
+        } else {
+          await expect(pane.getByTestId("station-clock")).toBeVisible();
+        }
+        await shoot(page, `phone-head-work-${scale}`);
+      } finally {
+        await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+        await request.delete(`/api/sessions/${session.id}`).catch(() => {});
+      }
+    });
+  });
+}

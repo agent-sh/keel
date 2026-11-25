@@ -27,7 +27,7 @@ import { usePanelBesideShown } from "./SidePanel.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
 import { actions, getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
-import { getUI, keepPanels, navigate, savePref, setUI, stationPanels, useUI } from "../lib/ui.ts";
+import { getUI, keepPanels, navigate, savePref, setUI, stationPanels, useCrowded, useUI } from "../lib/ui.ts";
 import { watchPanes } from "../lib/automation.ts";
 import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
@@ -161,6 +161,9 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // folder is the title's. What it does now is the line over the message box (DockNow.tsx): a reason here would change with
   // each step and move the conversation under the bar a line at every one, on a phone too.
   const working = w === "work" && !offline && !backgroundOf(st);
+  // Where the bar has no room for it (a phone at a large text size) a working session's step clock is the line over the
+  // box's alone, so the title has the width.
+  const crowded = useCrowded();
   const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : carded || working ? "" : st.text ? briefText(st, now) : "";
   // The pane's tools rest in its head's line and take their room there (bridge.css counts them): pin, focus, close.
   // Alone there is nothing for them to do that the session's menu and the keys do not (focus changes nothing,
@@ -182,7 +185,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         <span className="k-station-state">
           <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined} title={(carded || working) && told ? told : undefined}><Mark w={w} /><span className="k-station-word-text">{offline ? OFFLINE : stateLabel(st)}</span></span>
           {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
-          {timed(st) && !offline && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
+          {timed(st) && !offline && !(crowded && working) && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
           {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}
         </span>
         {!working && <span className="k-station-meta" title={s.workspace} data-ask={ask ? "" : undefined}>
