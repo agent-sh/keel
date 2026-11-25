@@ -2,7 +2,9 @@
 // that only reads, after a call that can write (a command, an edit, a tool that acts outside Keel) in the same
 // reply, is the model's next step in the same message: a command that makes a file and the read of that file.
 // Run at once, the read found no file. It starts when the calls before it that can write have ended.
-// The calls that can write do not wait for each other: independent commands overlap as they always did.
+// A command after an edit in the same reply waits for the edit too: it names the file the edit makes (a cat, a
+// build, a chmod of it) and ran beside the edit, with the edit not yet written. Commands do not wait for each
+// other, nor an edit for a command: independent calls overlap as they always did.
 import type { ToolUseBlock } from "../core/types.ts";
 import type { Tool } from "../tools/types.ts";
 
@@ -13,20 +15,28 @@ export const writes = (t: Pick<Tool, "readOnly" | "kind"> | undefined): boolean 
 
 export class StepOrder {
   private before: Promise<unknown>[] = [];
+  private edits: Promise<unknown>[] = [];
   constructor(private tools: readonly Pick<Tool, "name" | "readOnly" | "kind">[], private signal: AbortSignal) {}
 
-  // `start` begins the call: at once, or for a read after the writes before it, when they have ended or the
-  // turn was stopped (the call then answers the stop itself).
+  // `start` begins the call: at once, or for a read after the writes before it (a command, after the edits before
+  // it), when they have ended or the turn was stopped (the call then answers the stop itself).
   run<T>(u: Pick<ToolUseBlock, "name">, start: () => Promise<T>): Promise<T> {
     const tool = this.tools.find((t) => t.name === u.name);
-    if (tool?.readOnly && this.before.length && !this.signal.aborted) {
-      const ahead = this.before.slice();
+    // A read comes after every call that can write; a command, after the edits.
+    const behind = tool?.readOnly ? this.before : tool?.kind === "shell" ? this.edits : [];
+    let run: Promise<T>;
+    if (behind.length && !this.signal.aborted) {
+      const ahead = behind.slice();
       let release = () => {};
       const stopped = new Promise<void>((r) => { release = r; this.signal.addEventListener("abort", release, { once: true }); });
-      return Promise.race([Promise.allSettled(ahead), stopped]).finally(() => this.signal.removeEventListener("abort", release)).then(start);
+      run = Promise.race([Promise.allSettled(ahead), stopped]).finally(() => this.signal.removeEventListener("abort", release)).then(start);
+    } else run = start();
+    // (A command that waited is a write the reads after it wait for, from the moment it was asked for.)
+    if (writes(tool)) {
+      const done = run.then(() => {}, () => {});
+      this.before.push(done);
+      if (tool?.kind === "edit") this.edits.push(done);
     }
-    const run = start();
-    if (writes(tool)) this.before.push(run.then(() => {}, () => {}));
     return run;
   }
 }

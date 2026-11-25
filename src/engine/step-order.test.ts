@@ -47,3 +47,56 @@ test("a read before the command in the reply does not wait for it", async () => 
   expect(read?.is_error).toBe(true);
   store.db.close();
 });
+
+// The order itself, with calls that take as long as the test says: no clock decides who started first.
+const tools = [
+  { name: "Write", readOnly: false, kind: "edit" as const },
+  { name: "Bash", readOnly: false, kind: "shell" as const },
+  { name: "Read", readOnly: true, kind: undefined },
+];
+const gated = () => { let open = () => {}; const gate = new Promise<void>((r) => { open = r; }); return { gate, open }; };
+
+test("a command after an edit in the reply starts when the edit has ended; commands and edits before it do not hold it", async () => {
+  const { StepOrder } = await import("./step-order.ts");
+  const order = new StepOrder(tools, new AbortController().signal);
+  const log: string[] = [];
+  const edit = gated();
+  const w = order.run({ name: "Write" }, async () => { log.push("write start"); await edit.gate; log.push("write end"); });
+  const first = order.run({ name: "Bash" }, async () => { log.push("bash start"); });
+  const read = order.run({ name: "Read" }, async () => { log.push("read start"); });
+  const second = order.run({ name: "Bash" }, async () => { log.push("bash2 start"); });
+  await Promise.resolve(); await Promise.resolve();
+  expect(log).toEqual(["write start"]);
+  edit.open();
+  await Promise.all([w, first, read, second]);
+  expect(log.indexOf("bash start")).toBeGreaterThan(log.indexOf("write end"));
+  expect(log.indexOf("bash2 start")).toBeGreaterThan(log.indexOf("write end"));
+  expect(log.indexOf("read start")).toBeGreaterThan(log.indexOf("bash start"));
+});
+
+test("a command before the edit, or with no edit before it, starts at once; an edit does not wait for a command", async () => {
+  const { StepOrder } = await import("./step-order.ts");
+  const order = new StepOrder(tools, new AbortController().signal);
+  const log: string[] = [];
+  const cmd = gated();
+  const b = order.run({ name: "Bash" }, async () => { log.push("bash start"); await cmd.gate; });
+  const w = order.run({ name: "Write" }, async () => { log.push("write start"); });
+  await Promise.resolve(); await Promise.resolve();
+  expect(log).toEqual(["bash start", "write start"]);
+  cmd.open();
+  await Promise.all([b, w]);
+});
+
+test("a stop ends a command's wait for an edit", async () => {
+  const { StepOrder } = await import("./step-order.ts");
+  const stop = new AbortController();
+  const order = new StepOrder(tools, stop.signal);
+  const edit = gated();
+  const log: string[] = [];
+  order.run({ name: "Write" }, async () => { await edit.gate; });
+  const b = order.run({ name: "Bash" }, async () => { log.push("bash start"); });
+  stop.abort();
+  await b;
+  expect(log).toEqual(["bash start"]);
+  edit.open();
+});
