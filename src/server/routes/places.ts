@@ -91,6 +91,7 @@ export function imageKind(head: Uint8Array): string | null {
   return null;
 }
 
+type AgentMove = { id: string; title: string; why: string };
 const FORWARDED = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip"];
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
@@ -111,6 +112,24 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
     if (contains(store.stateDir, real)) return bad("that is the daemon's own state", 403);
     if (!statSync(real).isFile()) return bad("not a file");
     return real;
+  };
+
+  // The agents below a session that a move of its folder takes along: those
+  // working in the folder it leaves (they were started with no worktree or
+  // place of their own, so they took their parent's). The others stay, with
+  // the reason: a worktree, another machine, or a folder of their own.
+  const agentsOfMove = (id: string, from: string): { moved: AgentMove[]; stayed: AgentMove[] } => {
+    const out = { moved: [] as AgentMove[], stayed: [] as AgentMove[] };
+    for (const d of store.descendants(id)) {
+      const a = store.session(d);
+      if (!a) continue;
+      const m = { id: a.id, title: a.title };
+      if (a.machine) out.stayed.push({ ...m, why: "on another machine" });
+      else if (wts.get(a.id)?.state === "active") out.stayed.push({ ...m, why: "in its worktree" });
+      else if (a.workspace === from) out.moved.push({ ...m, why: "same folder" });
+      else out.stayed.push({ ...m, why: "in its own folder" });
+    }
+    return out;
   };
 
   // A copy of the session's current branch as a new session (`clone`), in
@@ -182,17 +201,31 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
           const p = gitSync(to, ["init", "--quiet"], { mode: "plain", env: toolEnv(s.id) });
           if (p.code !== 0) return bad(`git init failed: ${p.err.trim()}`, 409);
         }
+        let agents: { moved: AgentMove[]; stayed: AgentMove[] } = { moved: [], stayed: [] };
         if (to !== from) {
+          // The agents that share the folder (started with no worktree or place of their own) go with it.
+          agents = agentsOfMove(s.id, from);
           store.updateSession(s.id, { workspace: to });
           const inst = newInstructions(to, from);
+          const names = (l: AgentMove[]) => l.map((a) => `${a.title} (${a.id})`).join(", ");
+          const said = (agents.moved.length ? ` Its agents that shared the folder moved with it: ${names(agents.moved)}.` : "") + (agents.stayed.length ? ` Its agents that kept their own folders: ${agents.stayed.map((a) => `${a.title} (${a.id}, ${a.why})`).join(", ")}.` : "");
+          const shortSaid = (agents.moved.length ? `, ${agents.moved.length} agent${agents.moved.length > 1 ? "s" : ""} moved with it` : "") + (agents.stayed.length ? `, ${agents.stayed.length} stayed in their own folder${agents.stayed.length > 1 ? "s" : ""}` : "");
           note(s.id, {
-            kind: "folder", model: true, from, to, short: `Moved from ${from} to ${to}${copied ? `, ${copied} files copied` : ""}${b.init_git ? ", made a git repository" : ""}`,
-            text: `[harness] The owner moved this session from ${from} to ${to}${copied ? `, with ${copied} files copied from there` : ""}. Work in ${to} now: run commands and read and write files there.${inst ? `\n\nInstructions from the owner's files there:\n\n${inst}` : ""}`,
+            kind: "folder", model: true, from, to, short: `Moved from ${from} to ${to}${copied ? `, ${copied} files copied` : ""}${b.init_git ? ", made a git repository" : ""}${shortSaid}`,
+            text: `[harness] The owner moved this session from ${from} to ${to}${copied ? `, with ${copied} files copied from there` : ""}. Work in ${to} now: run commands and read and write files there.${said}${inst ? `\n\nInstructions from the owner's files there:\n\n${inst}` : ""}`,
           });
+          for (const a of agents.moved) {
+            store.updateSession(a.id, { workspace: to });
+            note(a.id, {
+              kind: "folder", model: true, from, to, short: `Moved from ${from} to ${to}, with the session that started it`,
+              text: `[harness] The owner moved the session that started you from ${from} to ${to}, and you with it. Work in ${to} now: run commands and read and write files there.${inst ? `\n\nInstructions from the owner's files there:\n\n${inst}` : ""}`,
+            });
+            emit(a.id);
+          }
         } else if (b.init_git) {
           note(s.id, { kind: "folder", model: true, short: `Made ${to} a git repository`, text: `[harness] The owner made ${to} a git repository.` });
         }
-        return json({ session: emit(s.id), files_copied: copied });
+        return json({ session: emit(s.id), files_copied: copied, agents });
       },
     },
 
