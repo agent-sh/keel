@@ -758,10 +758,11 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 /* A reply's row (its actions, its time, tokens and cost) shows when the reply or the row is
    pointed at, or the keyboard is in it (Tab reaches every action, as before): every reply carried
    it, and two panes held a hundred controls nobody was reaching for. What a turn ended on (stopped,
-   failed, waits) and Resume stay. The row keeps its height, so nothing moves when it shows. */
+   failed, waits) and Resume stay, and the last reply keeps its actions (the one a next step is taken from); its
+   figures show on the pointer like the others. The row keeps its height, so nothing moves when it shows. */
 /* (A block's mark may stand between a reply and its footer: lib/window.ts.) */
-.row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) > :not(.k-turn-resume, .k-turn-end),
-.row-cv:not(:hover) + .k-block-mark + .k-turn-foot:not(:hover, :focus-within) > :not(.k-turn-resume, .k-turn-end),
+.row-cv:not(:hover) + .k-turn-foot[data-quiet]:not(:hover, :focus-within) > :not(.k-turn-resume, .k-turn-end),
+.row-cv:not(:hover) + .k-block-mark + .k-turn-foot[data-quiet]:not(:hover, :focus-within) > :not(.k-turn-resume, .k-turn-end),
 .row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason),
 .row-cv:not(:hover) + .k-block-mark + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason) { opacity: 0; }
 .k-turn-foot > *, .k-turn-end > * { transition: opacity var(--dur-quick) var(--ease-out); }

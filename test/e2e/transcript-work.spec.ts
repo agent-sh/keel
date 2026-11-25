@@ -1029,6 +1029,14 @@ test("a reply's row of actions and counts shows on the pointer or the keyboard",
     await page.mouse.move(5, 1000);
     await copy.focus();
     await expect.poll(() => opacity(copy)).toBe("1");
+    // The last reply keeps its actions with nothing pointed at (its figures wait for the pointer, like the others').
+    await page.mouse.move(5, 1000);
+    await copy.blur();
+    const last = page.locator(".k-turn-foot").last();
+    await expect.poll(() => opacity(last.getByTestId("copy-reply"))).toBe("1");
+    await expect.poll(() => opacity(last.getByTestId("turn-end").locator("span").first())).toBe("0");
+    await expect.poll(() => opacity(copy)).toBe("0");
+    await shoot(page, "transcript-reply-row-last");
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
   }
