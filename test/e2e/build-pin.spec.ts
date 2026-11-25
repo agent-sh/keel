@@ -24,8 +24,8 @@ function daemon(state: string, build?: unknown, extra: Record<string, string> = 
   const env = specEnv(state, {
     KEEL_RESUME_GAP_MS: "0", KEEL_SCRIPTED_LOG: join(state, "requests.jsonl"), KEEL_SCRIPTED_CACHE: "prefix", TACIT_BIN: TACIT_STANDIN,
     KEEL_TEST_BUILD: build ? JSON.stringify(build) : undefined, ...extra,
-  }, join(state, "work"));
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], { env, stdio: ["ignore", "pipe", "pipe"] });
+  }, join(state, "home", "work"));
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "home", "work")], { env, stdio: ["ignore", "pipe", "pipe"] });
   return new Promise((done, reject) => {
     let out = "";
     const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
@@ -44,7 +44,7 @@ type Sent = { session: string; purpose: string; system: string; tools: string[];
 // A scratch state folder and its daemon, started again as another build by `restart`.
 async function rig(name: string, env: Record<string, string> = {}, before?: (state: string) => void) {
   const state = join(ROOT, `${name}-${Date.now()}`);
-  for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
+  for (const d of ["state", "home/work", "config"]) mkdirSync(join(state, d), { recursive: true });
   before?.(state);
   const log = join(state, "requests.jsonl");
   let d = await daemon(state, undefined, env);
@@ -243,11 +243,13 @@ test("a session behind too long takes the build's, and every session can take it
 test("a deferred tool the conversation loaded keeps its definition across an upgrade", async () => {
   test.setTimeout(240_000);
   const fake = await startFakeMessages();
+  const outside = "An instruction outside the daemon's home.";
   const r = await rig("build-loaded", {}, (state) => {
     writeFileSync(join(state, "config", "providers.toml"),
       `[[endpoint]]\nid = "fanth"\nlabel = "Stand-in"\nwire = "anthropic_messages"\nbase_url = "${fake.url}"\nbilling = "free"\nmodels = ["claude-fake-1"]\n\n[endpoint.model."claude-fake-1"]\ncontext = 200000\noutput = 8000\ntools = true\nimages = false\n`);
     writeFileSync(join(state, "config", "mcp.json"), JSON.stringify({ servers: { echo: { command: "bun", args: [resolve("test/e2e/fixtures/echo-mcp.ts")] } } }));
-    writeFileSync(join(state, "work", "AGENTS.md"), "# Rules\n\nAlways answer in one line.\n");
+    writeFileSync(join(state, "CLAUDE.md"), `${outside}\n`);
+    writeFileSync(join(state, "home", "work", "AGENTS.md"), "# Rules\n\nAlways answer in one line.\n");
   });
   const { call, turn, open, restart } = r;
   const ready = () => expect.poll(async () => (await call("/api/mcp/servers")).servers.find((s: any) => s.name === "echo")?.state, { timeout: 30_000 }).toMatch(/^(ready|idle)$/); // (a command server asleep from its kept listing is there too)
@@ -267,6 +269,7 @@ test("a deferred tool the conversation loaded keeps its definition across an upg
     // session's own (its artifacts folder), which carries no breakpoint.
     await open("fanth:claude-fake-1", ["TAG-second hello"]);
     const [mine, theirs] = [before.system as any[], of("TAG-second").at(-1)!.system as any[]];
+    expect(mine.map((b) => b.text).join("\n")).not.toContain(outside);
     expect(mine.map((b) => !!b.cache_control)).toEqual([true, true, false]);
     expect(mine[1].text).toContain("Always answer in one line.");
     expect(JSON.stringify(mine.slice(0, 2)), "the shared and the folder's blocks are the same bytes").toBe(JSON.stringify(theirs.slice(0, 2)));
@@ -299,7 +302,7 @@ test("a deferred tool the conversation loaded keeps its definition across an upg
 test("an edited instruction file reaches a warm session at its tail and is folded in at a compaction", async ({ page }) => {
   test.setTimeout(240_000);
   const RULE = "Never touch the live daemon.";
-  const r = await rig("build-told", {}, (state) => writeFileSync(join(state, "work", "AGENTS.md"), "# Rules\n\nAlways answer in one line.\nKeep it lean.\n"));
+  const r = await rig("build-told", {}, (state) => writeFileSync(join(state, "home", "work", "AGENTS.md"), "# Rules\n\nAlways answer in one line.\nKeep it lean.\n"));
   const { call, turn, sent, open, restart } = r;
   const notes = async (id: string) => ((await call(`/api/sessions/${id}`)).events as any[]).filter((e) => e.kind === "note" && e.data.kind === "prompt_update");
   try {
@@ -317,7 +320,7 @@ test("an edited instruction file reaches a warm session at its tail and is folde
     expect(sent(child).at(-1)!.system).toBe(before.system);
 
     // The owner adds a rule while the daemon runs: the next request notices it by the file's mark on disk.
-    writeFileSync(join(r.state, "work", "AGENTS.md"), `# Rules\n\nAlways answer in one line.\n${RULE}\nKeep it lean.\n`);
+    writeFileSync(join(r.state, "home", "work", "AGENTS.md"), `# Rules\n\nAlways answer in one line.\n${RULE}\nKeep it lean.\n`);
     await turn(id, "hello after the edit");
     expect(sent(id).at(-1)!.system, "the prompt after the edit is the one before it").toBe(before.system);
     const told = await notes(id);

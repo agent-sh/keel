@@ -80,6 +80,9 @@ export const bareEnv = (home: string): Record<string, string> => {
 export function specEnv(root: string, more: Record<string, string | undefined> = {}, workspace = sessionsFolder(root)): Record<string, string> {
   const env: Record<string, string | undefined> = {
     ...bareEnv(dirname(workspace)), ...standIns(root),
+    // Claude's instruction walk stops at the native harness home, not at HOME
+    // when KEEL_IMPORT_HOME is set. Both must enclose the test workspace.
+    KEEL_IMPORT_HOME: dirname(workspace),
     KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in",
     // Nothing leaves the machine: no models.dev catalog, and the ACP registry is a saved
     // copy beside the state (one with no agents unless a spec writes its own).
