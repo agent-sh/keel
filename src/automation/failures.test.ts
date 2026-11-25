@@ -65,10 +65,10 @@ const to = (id: string) => sends.filter((s) => s.id === id).map((s) => s.text);
 const misses = (sessionId: string, n: number) => {
   const s = store.session(sessionId)!;
   for (let i = 0; i < n; i++)
-    failures.hooks.toolRan!(s, { id: `c${i}`, tool: { name: "Read" } } as any, { type: "tool_result", tool_use_id: `c${i}`, content: `File does not exist: /work/f${i}.txt`, is_error: true }, { ms: 1, outcome: "error" });
+    failures.hooks.toolRan!(s, { id: `c${i}`, tool: { name: "Read" } } as any, { type: "tool_result", tool_use_id: `c${i}`, content: `Could not open: /work/f${i}.txt`, is_error: true }, { ms: 1, outcome: "error" });
 };
 const miss = (sessionId: string, path: string) =>
-  failures.hooks.toolRan!(store.session(sessionId)!, { id: "c", tool: { name: "Read" } } as any, { type: "tool_result", tool_use_id: "c", content: `File does not exist: ${path}`, is_error: true }, { ms: 1, outcome: "error" });
+  failures.hooks.toolRan!(store.session(sessionId)!, { id: "c", tool: { name: "Read" } } as any, { type: "tool_result", tool_use_id: "c", content: `Could not open: ${path}`, is_error: true }, { ms: 1, outcome: "error" });
 // The lines of a notice's entries, and its last line.
 const entries = (text: string) => text.slice(text.indexOf("<failures>\n") + 11, text.indexOf("\n</failures>")).split("\n");
 const owedRows = (sessionId: string) => store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM session_failures WHERE session_id = ? AND owed > 0").get(sessionId)!.n;
@@ -266,16 +266,16 @@ test("a cause shared by the session and its agents is told per agent, each with 
   expect(got).toHaveLength(1);
   expect(entries(got[0]!)).toEqual([
     "- Read failed 3 times on one cause in 1 agent; 7 by this session and all its agents in the last minute",
-    `    ${loop.id} "Loop lane", 3 times: File does not exist: /loop/c.txt`,
+    `    ${loop.id} "Loop lane", 3 times: Could not open: /loop/c.txt`,
   ]);
   expect(got[0]).toContain(`\nkeel__session_timeline with session: ${loop.id} tells what that agent did and where it failed.`);
   for (const other of ["/own/earlier.txt", "/early/one.txt", "/twice/", twice.id, far.id]) expect(got[0]!.slice(got[0]!.indexOf("<failures>"))).not.toContain(other);
   // The record: one cause, every occurrence counted, each ref with its own latest failure.
   const [g] = failures.groupsOf(store, p.id).filter((x) => x.kind === "tool");
-  expect([g!.count, g!.owed, g!.told, g!.sample]).toEqual([7, 0, 7, "File does not exist: /own/earlier.txt"]);
+  expect([g!.count, g!.owed, g!.told, g!.sample]).toEqual([7, 0, 7, "Could not open: /own/earlier.txt"]);
   expect(g!.refs.map((r) => [r.id, r.n, r.eg])).toEqual([
-    ["self", 1, "File does not exist: /own/earlier.txt"], [early.id, 1, "File does not exist: /early/one.txt"],
-    [twice.id, 2, "File does not exist: /twice/b2.txt"], [loop.id, 3, "File does not exist: /loop/c.txt"],
+    ["self", 1, "Could not open: /own/earlier.txt"], [early.id, 1, "Could not open: /early/one.txt"],
+    [twice.id, 2, "Could not open: /twice/b2.txt"], [loop.id, 3, "Could not open: /loop/c.txt"],
   ]);
 
   // Two more repeat it: one whose session is then deleted, one on another machine. The daemon
@@ -293,7 +293,7 @@ test("a cause shared by the session and its agents is told per agent, each with 
   expect(got).toHaveLength(2);
   expect(entries(got[1]!)).toEqual([
     "- Read failed 6 times on one cause in 2 agents; 11 by this session and all its agents in the last minute",
-    `    ${far.id} "Far lane" on Build box, 3 times: File does not exist: /srv/far/d.txt`,
+    `    ${far.id} "Far lane" on Build box, 3 times: Could not open: /srv/far/d.txt`,
     `    ${twice.id} "Twice lane" (its session was deleted), 3 times: …/twice/b3.txt`,
   ]);
   // The timeline that can be read is the far agent's: the deleted one has none.

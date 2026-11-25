@@ -102,8 +102,16 @@ const firstLines = (message: string) => message.split("\n").map((l) => l.trim())
 // paths, then numbers and longer ids. More than the first line, since a
 // command's failure starts with its exit code and says what failed after it.
 const noIds = (text: string) => text.replace(/\b[a-z]+_[A-Za-z0-9]{10,}\b/g, "<id>").replace(/\b(?=[0-9a-f]*\d)[0-9a-f]{8,}\b/gi, "<hex>");
-export const normalize = (message: string) =>
-  fingerprint(noIds(firstLines(message).join("\n")).replace(/(?:[\w.~-]*\/)+[\w.~@%+-]*/g, "<path>"));
+// A read of a file that is not there is the exception: its path is part of the cause. An agent that looks for
+// a file, then makes it or finds it elsewhere, did not fail; one that asks for the same path again is stuck.
+// Folded across paths, three different misses of one agent would read as one repeated failure.
+const MISSING = /^File does not exist: (\S.*)$/;
+export const normalize = (message: string) => {
+  const lines = firstLines(message);
+  const missing = lines.length ? MISSING.exec(lines[0]!) : null;
+  if (missing) return fingerprint(`missing ${missing[1]}`);
+  return fingerprint(noIds(lines.join("\n")).replace(/(?:[\w.~-]*\/)+[\w.~@%+-]*/g, "<path>"));
+};
 
 export const fingerprintOf = (kind: FailureKind, cls: string, message: string) => Bun.hash(`${kind}\0${cls}\0${normalize(message)}`).toString(36);
 

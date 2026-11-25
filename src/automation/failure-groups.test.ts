@@ -6,7 +6,7 @@ import { acked, add, AGENTS_NAMED, BODY_CHARS, classOf, DETAIL_CHARS, due, examp
 const QUOTA = "HTTP 402: your credit balance is too low to make this request (request 0b7c9d2e4f6a8b1c).";
 // `task`: which of the agent's tasks failed; its report id is `a<i>:<task>`.
 const agent = (i: number, message = QUOTA, task = 1): Failure => ({ kind: "agent", cls: classOf(message), message, ref: { id: `a${i}`, label: `Lane ${i}`, report: `a${i}:${task}` }, tell: "wake" });
-const read = (path: string, who = "p1"): Failure => ({ kind: "tool", cls: "Read", message: `File does not exist: ${path}\n\nThe folder does not exist.`, ref: { id: who, label: "Probe" }, tell: "ride" });
+const read = (path: string, who = "p1"): Failure => ({ kind: "tool", cls: "Read", message: `Could not open: ${path}\n\nThe folder does not exist.`, ref: { id: who, label: "Probe" }, tell: "ride" });
 const MIN = 60_000;
 // The lines of a notice's entries, without its frame.
 const entries = (text: string) => text.slice(text.indexOf("<failures>\n") + 11, text.indexOf("\n</failures>")).split("\n");
@@ -97,6 +97,21 @@ test("an agent the list cannot name is counted and nothing is owed for it: it ke
 });
 
 // P2-2, P2-3: a tool cause is owed only once one agent repeated it.
+test("misses of different files are not a repeat; the same file asked for again is", () => {
+  const miss = (path: string, who = "p1"): Failure => ({ ...read(path, who), message: `File does not exist: ${path}\n\nThe folder does not exist.` });
+  const groups = new Map<string, FailureGroup>();
+  // One agent looks for four files and makes or finds each: no cause of its own reaches a repeat.
+  for (const path of ["/w/a.ts", "/w/b.ts", "/w/c.ts", "/w/d.ts"]) put(groups, miss(path));
+  expect(groups.size).toBe(4);
+  expect(render([...groups.values()], 1000)).toBeUndefined();
+  // Two agents that miss one file are one cause, still short of a repeat each.
+  put(groups, miss("/w/a.ts", "p2"));
+  expect(render([...groups.values()], 1000)).toBeUndefined();
+  // One agent asking for the same path again and again is stuck: told.
+  for (let i = 1; i < REPEAT; i++) put(groups, miss("/w/a.ts"));
+  expect(entries(render([...groups.values()], 1000)!.text!)[1]).toBe(`    p1 "Probe", ${REPEAT} times: File does not exist: /w/a.ts`);
+});
+
 test("a tool failure is a line once one agent repeated it, with the paths that vary folded", () => {
   let g: FailureGroup | undefined;
   for (let i = 1; i < REPEAT; i++) g = add(g, read(`/work/a${i}.txt`), 1000);
@@ -108,13 +123,13 @@ test("a tool failure is a line once one agent repeated it, with the paths that v
   const r = render([g], 1000)!;
   expect(r.wake).toBe(false);
   // The agent's line shows its own latest miss, not the first of the cause.
-  expect(entries(r.text!)).toEqual([`- Read failed ${REPEAT} times on one cause in 1 agent`, `    p1 "Probe", ${REPEAT} times: File does not exist: /other/place/b.txt`]);
-  expect(g.sample).toBe("File does not exist: /work/a1.txt\nThe folder does not exist.");
+  expect(entries(r.text!)).toEqual([`- Read failed ${REPEAT} times on one cause in 1 agent`, `    p1 "Probe", ${REPEAT} times: Could not open: /other/place/b.txt`]);
+  expect(g.sample).toBe("Could not open: /work/a1.txt\nThe folder does not exist.");
   // Told once, a single miss after it is not a repeat; three more are.
   g = add(settled(g), read("/work/later.txt"), 2000);
   expect(render([g], 2000)).toBeUndefined();
   for (let i = 0; i < REPEAT - 1; i++) g = add(g, read(`/work/more${i}.txt`), 2000);
-  expect(entries(render([g], 2000)!.text!)).toEqual([`- Read failed ${REPEAT} times on one cause in 1 agent; ${2 * REPEAT} by all its agents in the last minute`, `    p1 "Probe", ${REPEAT} times: File does not exist: /work/more${REPEAT - 2}.txt`]);
+  expect(entries(render([g], 2000)!.text!)).toEqual([`- Read failed ${REPEAT} times on one cause in 1 agent; ${2 * REPEAT} by all its agents in the last minute`, `    p1 "Probe", ${REPEAT} times: Could not open: /work/more${REPEAT - 2}.txt`]);
   // A command's failure starts with its exit code: what it said after it tells two failures apart.
   expect(fingerprintOf("tool", "Bash", "Exit code 1\nerror: no such remote")).not.toBe(fingerprintOf("tool", "Bash", "Exit code 1\n3 tests failed"));
   expect(fingerprintOf("tool", "Bash", "Exit code 1\n3 tests failed")).toBe(fingerprintOf("tool", "Bash", "Exit code 2\n14 tests failed"));
@@ -133,7 +148,7 @@ test("three agents that each missed one file are not a repeat", () => {
   // One of them repeating it is: only that agent is named.
   for (let i = 0; i < REPEAT - 1; i++) g = add(g, read(`/work/again${i}.txt`, "p2"), 1000);
   const text = render([g!], 1000)!.text!;
-  expect(entries(text)).toEqual([`- Read failed ${REPEAT} times on one cause in 1 agent; ${REPEAT + 2} by all its agents in the last minute`, `    p2 "Probe", ${REPEAT} times: File does not exist: /work/again${REPEAT - 2}.txt`]);
+  expect(entries(text)).toEqual([`- Read failed ${REPEAT} times on one cause in 1 agent; ${REPEAT + 2} by all its agents in the last minute`, `    p2 "Probe", ${REPEAT} times: Could not open: /work/again${REPEAT - 2}.txt`]);
   expect(text).not.toContain("p1");
 });
 
@@ -184,7 +199,7 @@ test("a tool failure of an agent whose report is in the same input gets no line,
   // Another agent that repeated it keeps its line, without the one that reports.
   for (let i = 0; i < REPEAT; i++) g = add(g, read(`/work/g${i}.txt`, "p2"), 1000);
   const mixed = render([g!], 1000, new Set(["p1"]))!.text!;
-  expect(mixed).toContain(`Read failed ${REPEAT} times on one cause in 1 agent; ${2 * REPEAT} by all its agents in the last minute\n    p2 "Probe", ${REPEAT} times: File does not exist: /work/g${REPEAT - 1}.txt`);
+  expect(mixed).toContain(`Read failed ${REPEAT} times on one cause in 1 agent; ${2 * REPEAT} by all its agents in the last minute\n    p2 "Probe", ${REPEAT} times: Could not open: /work/g${REPEAT - 1}.txt`);
   expect(mixed).not.toContain("p1");
 });
 
@@ -276,7 +291,7 @@ test("what a notice told is taken off by ref: a failure that landed after it sta
 test("an agent is shown its own failure, its own count and when, never another one's", () => {
   const T = 10 * 60 * MIN;
   // The session missed a file of its own first, hours before; then an early agent once, another twice.
-  let g = add(undefined, { kind: "tool", cls: "Read", message: "File does not exist: /own/earlier.txt" }, 0);
+  let g = add(undefined, { kind: "tool", cls: "Read", message: "Could not open: /own/earlier.txt" }, 0);
   g = add(g, read("/early/lane/one.txt", "early"), 60 * MIN);
   g = add(g, read("/twice/b1.txt", "twice"), T - 50 * MIN);
   g = add(g, read("/twice/b2.txt", "twice"), T - 40 * MIN);
@@ -286,7 +301,7 @@ test("an agent is shown its own failure, its own count and when, never another o
   const r = render([g], T)!;
   expect(entries(r.text!)).toEqual([
     "- Read failed 3 times on one cause in 1 agent; 7 by this session and all its agents over the last 10 h",
-    '    loop "Probe", 3 times in 4 min, last 2 min ago: File does not exist: /loop/c.txt',
+    '    loop "Probe", 3 times in 4 min, last 2 min ago: Could not open: /loop/c.txt',
   ]);
   for (const other of ["/own/earlier.txt", "/early/lane", "/twice/", "early", "twice"]) expect(r.text).not.toContain(other);
   expect(r.text!.split("\n").at(-1)).toBe("keel__session_timeline with session: loop tells what that agent did and where it failed.");
@@ -296,12 +311,12 @@ test("an agent is shown its own failure, its own count and when, never another o
   const next = render([g], T + 6 * MIN)!;
   expect(entries(next.text!)).toEqual([
     "- Read failed 3 times on one cause in 1 agent; 8 by this session and all its agents over the last 10 h",
-    '    twice "Probe", 3 times in 55 min, last 1 min ago: File does not exist: /twice/b3.txt',
+    '    twice "Probe", 3 times in 55 min, last 1 min ago: Could not open: /twice/b3.txt',
   ]);
   expect(next.text).not.toContain("loop");
   // A miss of the one already told starts a new span for it.
   g = add(settled(g), read("/loop/d.txt", "loop"), T + 20 * MIN);
-  expect(g.refs.find((x) => x.id === "loop")).toMatchObject({ n: 4, told: 3, owed: 0, from: T + 20 * MIN, eg: "File does not exist: /loop/d.txt" });
+  expect(g.refs.find((x) => x.id === "loop")).toMatchObject({ n: 4, told: 3, owed: 0, from: T + 20 * MIN, eg: "Could not open: /loop/d.txt" });
 });
 
 test("a cause many agents repeated names three, the last to fail first, and stays a few lines", () => {
@@ -311,7 +326,7 @@ test("a cause many agents repeated names three, the last to fail first, and stay
   const lines = entries(r.text!);
   expect(lines).toEqual([
     `- Read failed ${12 * REPEAT} times on one cause in 12 agents`,
-    `    ag12 "Lane 12 of the twelve", ${REPEAT} times: File does not exist: /lanes/lane-12/src/module/file-12.ts`,
+    `    ag12 "Lane 12 of the twelve", ${REPEAT} times: Could not open: /lanes/lane-12/src/module/file-12.ts`,
     // Under the first, a line shows what differs from it: the path from where it parts.
     ...[11, 10].map((i) => `    ag${i} "Lane ${i} of the twelve", ${REPEAT} times: …/lane-${i}/src/module/file-${i}.ts`),
     `    and 9 more agents, ${9 * REPEAT} times: ag9, ag8, ag7, ag6, ag5, ag4, ag3, ag2, ag1`,
@@ -348,7 +363,7 @@ test("a deleted agent is said to be gone and is not where the timeline points; a
   const known = (id: string) => (id === "gone" ? { gone: true } : id === "far" ? { where: "Build box" } : undefined);
   const r = render([g!], 4000, new Set(), known)!;
   expect(entries(r.text!).slice(1)).toEqual([
-    `    gone "Probe" (its session was deleted), ${REPEAT} times: File does not exist: /w/gone.txt`,
+    `    gone "Probe" (its session was deleted), ${REPEAT} times: Could not open: /w/gone.txt`,
     `    far "Probe" on Build box, ${REPEAT} times: …/far.txt`,
     `    here "Probe", ${REPEAT} times: …/here.txt`,
   ]);
@@ -377,7 +392,7 @@ test("two agents that missed different files are never said to have failed on th
     for (let k = 0; k < REPEAT; k++) g = add(g, read(mine, "a"), 1000);
     for (let k = 0; k < REPEAT; k++) g = add(g, read(theirs, "b"), 2000);
     expect(g!.refs).toHaveLength(2); // one cause: the fold is what groups them
-    expect(entries(render([g!], 3000)!.text!).slice(1)).toEqual([`    b "Probe", ${REPEAT} times: File does not exist: ${theirs}`, `    a "Probe", ${REPEAT} times: ${shown}`]);
+    expect(entries(render([g!], 3000)!.text!).slice(1)).toEqual([`    b "Probe", ${REPEAT} times: Could not open: ${theirs}`, `    a "Probe", ${REPEAT} times: ${shown}`]);
   }
   // The same file is the same.
   let g: FailureGroup | undefined;
@@ -392,7 +407,7 @@ test("two agents that missed different files are never said to have failed on th
 // P2: the session's own failures stay its own however many agents share the cause.
 test("the session's own entry is never dropped, so a total says whose it is", () => {
   let g: FailureGroup | undefined;
-  for (let k = 0; k < 5; k++) g = add(g, { kind: "tool", cls: "Read", message: "File does not exist: /own/x.txt" }, 1000);
+  for (let k = 0; k < 5; k++) g = add(g, { kind: "tool", cls: "Read", message: "Could not open: /own/x.txt" }, 1000);
   for (let i = 1; i <= MAX_REFS; i++) for (let k = 0; k < REPEAT; k++) g = add(g, read(`/l${i}/f.ts`, `ag${i}`), 2000 + i);
   expect(g!.refs.find((r) => r.id === SELF)).toMatchObject({ n: 5, owed: 0 });
   expect(entries(render([g!], 3000)!.text!)[0]).toBe(`- Read failed ${MAX_REFS * REPEAT} times on one cause in ${MAX_REFS} agents; ${MAX_REFS * REPEAT + 5} by this session and all its agents in the last minute`);
@@ -415,7 +430,7 @@ test("forty agents taking turns on one cause are all told", () => {
   const r = render([g!], 5000)!;
   const lines = entries(r.text!);
   expect(lines[0]).toBe(`- Read failed ${40 * REPEAT} times on one cause in ${MAX_REFS} agents and others`);
-  expect(lines[1]).toBe(`    ag20 "Probe", ${REPEAT} times: File does not exist: /lane-20/f${REPEAT - 1}.ts`);
+  expect(lines[1]).toBe(`    ag20 "Probe", ${REPEAT} times: Could not open: /lane-20/f${REPEAT - 1}.ts`);
   expect(lines[4]).toStartWith(`    and 17 more agents, ${17 * REPEAT} times: ag17, ag16, `);
   expect(lines[5]).toBe(`    agents past the ${MAX_REFS} a cause names, ${20 * REPEAT} times`);
   expect(lines).toHaveLength(6);
@@ -441,23 +456,23 @@ test("a span starts at the first failure that was not told, and is not said when
   expect(old!.owed).toBe(0);
   old = { ...old!, refs: old!.refs.map(({ eg: _eg, ts: _ts, from: _from, late: _late, quiet: _quiet, ...r }) => r) };
   old = add(add(old, read("/a/f4.ts", "a"), 5 * H), read("/a/f5.ts", "a"), 5 * H + 10 * MIN);
-  expect(entries(render([old], 5 * H + 10 * MIN)!.text!)[1]).toBe('    a "Probe", 6 times: File does not exist: /a/f5.ts');
+  expect(entries(render([old], 5 * H + 10 * MIN)!.text!)[1]).toBe('    a "Probe", 6 times: Could not open: /a/f5.ts');
   // Told, its next failures have a span of their own.
   old = settled(old);
   for (const at of [0, 2, 7]) old = add(old, read("/a/later.ts", "a"), 6 * H + at * MIN);
-  expect(entries(render([old], 6 * H + 7 * MIN)!.text!)[1]).toBe('    a "Probe", 3 times in 7 min: File does not exist: /a/later.ts');
+  expect(entries(render([old], 6 * H + 7 * MIN)!.text!)[1]).toBe('    a "Probe", 3 times in 7 min: Could not open: /a/later.ts');
 
   // Three over six hours are told; a fourth lands while that notice is on its way, then two more five minutes apart.
   const T = 100 * H;
   let g: FailureGroup | undefined;
   for (const at of [0, 3 * H, 6 * H]) g = add(g, read("/b/f.ts", "b"), T + at);
   const first = render([g!], T + 6 * H)!;
-  expect(entries(first.text!)[1]).toBe('    b "Probe", 3 times in 6 h: File does not exist: /b/f.ts');
+  expect(entries(first.text!)[1]).toBe('    b "Probe", 3 times in 6 h: Could not open: /b/f.ts');
   g = add(g, read("/b/during.ts", "b"), T + 6 * H + MIN);
   g = fg.settledBy(g, first.told[0]!);
   expect(g.refs[0]).toMatchObject({ owed: 1, told: 3, from: T + 6 * H + MIN });
   g = add(add(g, read("/b/after0.ts", "b"), T + 6 * H + 6 * MIN), read("/b/after1.ts", "b"), T + 6 * H + 11 * MIN);
-  expect(entries(render([g], T + 6 * H + 11 * MIN)!.text!)).toEqual(["- Read failed 3 times on one cause in 1 agent; 6 by all its agents over the last 6 h", '    b "Probe", 3 times in 10 min: File does not exist: /b/after1.ts']);
+  expect(entries(render([g], T + 6 * H + 11 * MIN)!.text!)).toEqual(["- Read failed 3 times on one cause in 1 agent; 6 by all its agents over the last 6 h", '    b "Probe", 3 times in 10 min: Could not open: /b/after1.ts']);
   // More landed in between than are kept by time: the span is not said rather than said wrong.
   let m: FailureGroup | undefined;
   for (let k = 0; k < REPEAT; k++) m = add(m, read("/c/f.ts", "c"), T);
@@ -465,7 +480,7 @@ test("a span starts at the first failure that was not told, and is not said when
   for (let k = 1; k <= 5; k++) m = add(m, read("/c/f.ts", "c"), T + k * H);
   m = fg.settledBy(m!, told);
   expect(m.refs[0]).toMatchObject({ owed: 5, from: 0 });
-  expect(entries(render([m], T + 5 * H)!.text!)[1]).toBe('    c "Probe", 5 times: File does not exist: /c/f.ts');
+  expect(entries(render([m], T + 5 * H)!.text!)[1]).toBe('    c "Probe", 5 times: Could not open: /c/f.ts');
 });
 
 // P3: a tool's error is the tool's text.
