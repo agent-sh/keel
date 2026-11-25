@@ -384,6 +384,36 @@ test("an answered card takes its abort listener off the turn's shared signal", a
   }
 });
 
+// The end of a turn that reaches the gate after the next turn began (a hook that awaited) closes
+// nothing of the next turn: its card stays open and takes one answer.
+test("a late end of turn N leaves the card of turn N+1 open and answerable once", async () => {
+  const { g, session, call } = scratchGate();
+  g.setPerm("s1", { mode: "ask", sandbox: "off" });
+  // Turn N: a call waits on the owner, the turn is stopped.
+  g.turnStarted("s1");
+  const stopN = new AbortController();
+  const askedN = g.beforeTool(session, call(bash, { command: "npm install left-pad" }, stopN.signal));
+  await Bun.sleep(5);
+  const [cardN] = g.approvals({ session: "s1", pending: true });
+  stopN.abort();
+  expect(await askedN).toHaveProperty("deny");
+  expect(g.approvals({ session: "s1" }).find((a) => a.id === cardN!.id)?.state).toBe("cancelled");
+  // Turn N+1 raises card B.
+  g.turnStarted("s1");
+  const askedB = g.beforeTool(session, call(bash, { command: "npm install right-pad" }, new AbortController().signal));
+  await Bun.sleep(5);
+  const [cardB] = g.approvals({ session: "s1", pending: true });
+  expect(cardB?.summary).toContain("right-pad");
+  // Turn N's end arrives now.
+  g.turnEnded("s1");
+  await Bun.sleep(5);
+  expect(g.approvals({ session: "s1", pending: true }).map((a) => a.id)).toEqual([cardB!.id]);
+  expect(g.resolve(cardB!.id, "s1", { choice: "once", seen: "whole" })).toEqual({ ok: true });
+  expect(await askedB).toBeUndefined();
+  // The second answer to the same card is refused.
+  expect(g.resolve(cardB!.id, "s1", { choice: "once", seen: "whole" })).not.toEqual({ ok: true });
+});
+
 test("one answer for several cards covers none that must be read alone", async () => {
   const { g, session, call } = scratchGate();
   g.setPerm("s1", { mode: "ask", sandbox: "off" });
