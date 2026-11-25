@@ -636,6 +636,7 @@ const deleteRun = (input: any, ctx: ToolContext) => guard(() => {
   const l = loops.get(String(input.id));
   if (!l || l.session_id !== ctx.sessionId) return fail(`No scheduled task ${input.id} in this session.`);
   if (l.kind === "webhook") return fail("A webhook loop is the owner's; it is changed in the page.");
+  if (l.kind === "mcp") return fail("A loop that runs on a server's notification is the owner's; it is changed in the page.");
   if (l.created_by !== "model") return fail(`The owner made ${l.id}; only the owner changes it, in the page.`);
   loops.remove(l.id);
   return ok(`Deleted ${l.id}.`);

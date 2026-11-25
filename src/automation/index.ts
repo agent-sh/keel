@@ -680,7 +680,7 @@ export const automationRoutes: RouteModule = (deps) => {
         if (!cmd) return json({ handled: false });
         const { loop } = loops.create({ session_id: s.id, schedule: cmd.schedule, prompt: cmd.prompt, created_by: "owner" });
         // An interval or self-paced loop runs its first iteration now, as /loop does.
-        if (loop.kind !== "cron") loops.start(loop, Date.now(), { note: "First run, started with the loop." });
+        if (loop.kind !== "cron" && loop.kind !== "mcp") loops.start(loop, Date.now(), { note: "First run, started with the loop." });
         return json({ handled: true, loop: loops.get(loop.id) });
       }),
     },

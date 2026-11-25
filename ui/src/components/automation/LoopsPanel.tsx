@@ -198,7 +198,9 @@ function When({ preview, zone }: { preview: ReturnType<typeof previewSchedule>; 
         ? `${preview.text} · next ${preview.next.map((t) => at(t, false)).join(", ")}`
         : preview.kind === "auto"
           ? "self-paced: after each run the model says when the next one comes"
-          : "runs when its webhook is called; the URL is shown once, when it is made";
+          : preview.kind === "mcp"
+            ? `runs when a server's notification comes (${preview.text}); the next ones within ten seconds are part of that run`
+            : "runs when its webhook is called; the URL is shown once, when it is made";
   return (
     <p id="new-loop-when" data-testid="new-loop-when" data-bad={"error" in preview ? "" : undefined} aria-live="polite" className={cn("px-1 text-caption tabular-nums", "error" in preview ? "text-warn" : "text-muted")}>
       {words}
@@ -278,7 +280,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
       {asks && <p className="-mt-1 text-caption text-faint" data-testid="new-loop-asks">In this mode a run that edits or runs a command waits for your approval, and the runs due meanwhile are skipped.</p>}
       <input className={field} placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
       <div className="flex flex-col gap-1">
-        <input className={cn(field, "font-mono")} placeholder="5m, 2h, daily, weekdays 09:30, 0 9 * * 1-5, auto, webhook" value={schedule} onChange={(e) => setSchedule(e.target.value)} data-testid="new-loop-schedule" aria-describedby="new-loop-when" />
+        <input className={cn(field, "font-mono")} placeholder="5m, 2h, daily, weekdays 09:30, 0 9 * * 1-5, auto, webhook, on SERVER resources/updated" value={schedule} onChange={(e) => setSchedule(e.target.value)} data-testid="new-loop-schedule" aria-describedby="new-loop-when" />
         <When preview={preview} zone={zone} />
       </div>
       <textarea className={cn(field, "min-h-28 resize-y")} placeholder="What to do each run" value={prompt} onChange={(e) => setPrompt(e.target.value)} data-testid="new-loop-prompt" />
@@ -329,7 +331,7 @@ function LoopItem({ l, picked, onPick }: { l: LoopRecord; picked: boolean; onPic
       <div className="min-w-0 flex-1">
         <div className={cn("truncate text-ui", !l.enabled && "text-muted")}>{l.name}</div>
         <div className="truncate text-micro text-faint" data-testid="loop-item-state">
-          {waits ? <span className="font-medium text-accent">{waits}</span> : <>{l.schedule_text} · {l.enabled ? (l.next_ms ? inMs(l.next_ms) : l.kind === "webhook" ? "on call" : "running") : (l.disabled_reason ?? "paused")}</>}
+          {waits ? <span className="font-medium text-accent">{waits}</span> : <>{l.schedule_text} · {l.enabled ? (l.next_ms ? inMs(l.next_ms) : l.kind === "webhook" ? "on call" : l.kind === "mcp" ? "on event" : "running") : (l.disabled_reason ?? "paused")}</>}
           {l.gate ? ` · ${countChecks(l)}` : ""}
           {l.last_ms ? ` · ran ${ago(l.last_ms)}` : ""}
         </div>

@@ -8,7 +8,7 @@ import { canon } from "./config.ts";
 import type { McpClient, Transport } from "./client.ts";
 
 // The handlers a holder sets on its client: each view keeps its own, and the connection calls every holder's.
-const HANDLERS = ["onListChanged", "onPrompts", "onLog", "onResources", "onChannel", "onClose", "onAnswerRefused"] as const;
+const HANDLERS = ["onListChanged", "onPrompts", "onLog", "onResources", "onChannel", "onNotification", "onClose", "onAnswerRefused"] as const;
 type Handler = (typeof HANDLERS)[number];
 const isHandler = (p: string | symbol): p is Handler => (HANDLERS as readonly (string | symbol)[]).includes(p);
 
@@ -82,6 +82,7 @@ export class Links {
         c.onLog = (p) => each(mine, "onLog", p);
         c.onResources = (x) => each(mine, "onResources", x);
         c.onChannel = (p) => each(mine, "onChannel", p);
+        c.onNotification = (m, p) => each(mine, "onNotification", m, p);
         c.onAnswerRefused = (r) => [...mine.views][0]?.hooks.onAnswerRefused?.(r); // told once, not once a holder
         c.onClose = (why) => {
           mine.closedWhy = why;
@@ -185,6 +186,6 @@ function turn(s: Shared, c: McpClient, session: string, signal: AbortSignal): Pr
   });
 }
 
-function each(s: Shared, h: Handler, arg?: unknown) {
-  for (const v of [...s.views]) { try { v.hooks[h]?.(arg); } catch { /* a holder's failure is its own */ } }
+function each(s: Shared, h: Handler, ...args: unknown[]) {
+  for (const v of [...s.views]) { try { v.hooks[h]?.(...args); } catch { /* a holder's failure is its own */ } }
 }

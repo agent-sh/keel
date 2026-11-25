@@ -5,7 +5,13 @@ export type Schedule =
   | { kind: "interval"; seconds: number; text: string }
   | { kind: "cron"; expr: string; text: string }
   | { kind: "auto"; text: string }
-  | { kind: "webhook"; text: string };
+  | { kind: "webhook"; text: string }
+  // A connected MCP server's notification: `method` as the server sends it, without the leading "notifications/"; `uri`
+  // narrows a resources/updated to one resource. `canon` is the schedule as it is kept.
+  | { kind: "mcp"; server: string; method: string; uri?: string; canon: string; text: string };
+
+// The method of a notification without the "notifications/" every one of the protocol's carries: the owner may write either.
+export const bareMethod = (m: string) => m.replace(/^notifications\//, "");
 
 const UNIT: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
 const UNIT_WORDS: Record<string, string> = {
@@ -53,6 +59,13 @@ export function parseSchedule(input: string): Schedule {
   const low = s.toLowerCase();
   if (low === "auto") return { kind: "auto", text: "self-paced" };
   if (low === "webhook") return { kind: "webhook", text: "when its webhook is called" };
+  const ev = s.match(/^on\s+(\S+)\s+(\S+)(?:\s+(\S+))?$/i);
+  if (ev) {
+    const server = ev[1]!, method = bareMethod(ev[2]!), uri = ev[3];
+    if (!/^[\w.-]+(\/[\w.-]+)*$/.test(method)) throw new Error(`"${ev[2]}" is not the name of a notification (resources/updated, or the method a server sends)`);
+    if (uri && method !== "resources/updated") throw new Error("a resource address narrows resources/updated only");
+    return { kind: "mcp", server, method, ...(uri ? { uri } : {}), canon: `on ${server} ${method}${uri ? ` ${uri}` : ""}`, text: `when ${server} sends ${method}${uri ? ` for ${uri}` : ""}` };
+  }
   if (low === "hourly") return interval(3600);
   if (low === "daily") return interval(86400);
   if (low === "weekly") return interval(604800);
@@ -72,7 +85,7 @@ export const intervalStepMs = (seconds: number) => (seconds === 300 ? 285_000 : 
 // refused. The times are the ones the made loop shows.
 export type Preview = { kind: Schedule["kind"]; text: string; next: number[] } | { error: string };
 export function previewSchedule(input: string, now: number, n = 3, tz?: string): Preview {
-  if (!input.trim()) return { error: "a schedule is needed: 5m, 2h, daily, weekdays 09:30, a cron expression, auto or webhook" };
+  if (!input.trim()) return { error: "a schedule is needed: 5m, 2h, daily, weekdays 09:30, a cron expression, auto, webhook or on SERVER METHOD" };
   let s: Schedule;
   try { s = parseSchedule(input); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
   if (s.kind === "cron") return { kind: s.kind, text: s.text, next: nextRuns(s.expr, now, n, tz) };
@@ -244,6 +257,9 @@ export function parseLoopCommand(text: string): { schedule: string; prompt: stri
   if (!m) return undefined;
   let rest = m[1]!.trim();
   let schedule = "auto";
+  // `/loop on SERVER METHOD [ADDRESS] [prompt]`: a server's notification starts it; an address (with ://) narrows resources/updated.
+  const ev = rest.match(/^on\s+(\S+)\s+(\S+)(?:\s+([a-z][\w+.-]*:\/\/\S*))?\s*/i);
+  if (ev) return { schedule: `on ${ev[1]} ${ev[2]}${ev[3] ? ` ${ev[3]}` : ""}`, prompt: rest.slice(ev[0].length).trim() };
   const lead = rest.match(/^(\d+)\s*([a-z]+)\b\s*/i);
   if (lead && unitOf(lead[2]!)) {
     schedule = `${lead[1]}${unitOf(lead[2]!)}`;

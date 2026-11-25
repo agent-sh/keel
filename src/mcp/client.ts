@@ -199,6 +199,8 @@ export class McpClient {
   // An event the server pushed (src/mcp/channel.ts), heard only from a server
   // that declared the channel capability, as Claude Code registers its listener.
   onChannel?: (params: unknown) => void;
+  // Any notification the server sends, by its method.
+  onNotification?: (method: string, params: unknown) => void;
   get channel() { return !!this.capabilities.experimental?.[CHANNEL_CAP]; }
   // Set late, it still hears a close that already happened.
   private closeHook?: (why: string) => void;
@@ -373,6 +375,8 @@ export class McpClient {
     // The server asks whether the client is there (2025-11-25 Ping: an empty result, promptly).
     if (msg.method === "ping" && msg.id !== undefined) return this.answer({ jsonrpc: "2.0", id: msg.id, result: {} }, "ping");
     if (msg.method && msg.id !== undefined) return void this.serverRequest(msg, origin);
+    // Every notification is told to a holder that wants them all (a loop waits for a server's own).
+    if (msg.method) this.onNotification?.(msg.method, msg.params);
     if (msg.method === "notifications/tools/list_changed") this.onListChanged?.();
     else if (msg.method === "notifications/prompts/list_changed") this.onPrompts?.();
     else if (msg.method === "notifications/message" && this.capabilities.logging && msg.params && typeof msg.params === "object") this.onLog?.(msg.params);

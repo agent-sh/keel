@@ -74,3 +74,13 @@ test("a malformed list, range or step is refused; the legal forms read as before
   expect([...parseCron("50/5 * * * *").min]).toEqual([50, 55]); // a start with a step runs to the end of the field
   expect([...parseCron("0 0 * * 7").dow]).toEqual([0]);
 });
+
+test("a loop on a server's notification reads as one, and /loop on names it", () => {
+  expect(parseSchedule("on orders resources/updated")).toMatchObject({ kind: "mcp", server: "orders", method: "resources/updated", canon: "on orders resources/updated", text: "when orders sends resources/updated" });
+  expect(parseSchedule("on Orders notifications/acme/ready")).toMatchObject({ server: "Orders", method: "acme/ready" });
+  expect(parseSchedule("on orders resources/updated file:///a")).toMatchObject({ uri: "file:///a" });
+  expect(() => parseSchedule("on orders acme/ready file:///a")).toThrow(/resources\/updated only/);
+  expect(() => parseSchedule("on orders ???")).toThrow(/not the name of a notification/);
+  expect(parseLoopCommand("/loop on orders resources/updated file:///a check it")).toEqual({ schedule: "on orders resources/updated file:///a", prompt: "check it" });
+  expect(parseLoopCommand("/loop on orders acme/ready")).toEqual({ schedule: "on orders acme/ready", prompt: "" });
+});

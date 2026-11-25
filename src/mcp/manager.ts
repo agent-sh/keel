@@ -949,7 +949,7 @@ export class McpManager {
   // A command server of the owner's, a plugin's or a session's that may have no process: not one Keel brings,
   // not one the owner keeps running, not one whose events the owner takes (it must be there to push them).
   private sleeps(e: Entry): boolean {
-    return !e.bundled && (!e.session || !!e.spec) && !!e.config.command && !e.config.url && !e.config.keep_running && !this.channelOn(e);
+    return !e.bundled && (!e.session || !!e.spec) && !!e.config.command && !e.config.url && !e.config.keep_running && !this.channelOn(e) && !this.watched?.(e.label ?? e.name);
   }
 
   // Whether a listing is one the owner already accepted: every tool it names is pinned as it is, and its instructions are
@@ -1181,6 +1181,11 @@ export class McpManager {
           if (this.entries.get(name) !== e || e.state === "disabled") return;
           try { this.onChannel?.(this.channelFrom(e), params); } catch (err) { this.errors.capture("server", err, { mcp: name, at: "mcp channel event" }); }
         };
+        // Any notification, for a loop that waits on this server's own (src/automation/loops.ts).
+        client.onNotification = (method, params) => {
+          if (this.entries.get(name) !== e || e.state === "disabled") return;
+          try { this.onNotification?.({ server: e.label ?? name, entry: name, ...(e.session ? { session: e.session } : {}) }, method, params); } catch (err) { this.errors.capture("server", err, { mcp: name, at: "mcp notification" }); }
+        };
         // Its log, from the start too: what it says while it starts is often why it fails.
         client.onLog = (p) => {
           if (this.entries.get(name) !== e || e.abort !== abort) return;
@@ -1251,6 +1256,8 @@ export class McpManager {
         e.resourcesRev++;
         e.promptsRev++;
         e.subscribed.clear();
+        // What a loop subscribed to went with the old connection: asked again once this one is up.
+        if (this.onReady) setTimeout(() => this.onReady?.(e.label ?? name), 0).unref?.();
         // The latest list wins: an older reply that lands last is dropped.
         let asked = 0;
         client.onListChanged = () => {
@@ -2102,6 +2109,22 @@ export class McpManager {
       this.ensure(e.name).catch(() => {}); // its state says why it failed
     }
     return this.channelFrom(e);
+  }
+  // A loop waits for a server's notifications (src/automation/loops.ts): whether one waits on this server, every
+  // notification a server sends, and a server's connection that came up.
+  watched?: (server: string) => boolean;
+  onNotification?: (from: { server: string; entry: string; session?: string }, method: string, params: unknown) => void;
+  onReady?: (server: string) => void;
+  // The server is started and kept, and a resource a loop names is subscribed to (the server then sends its updates).
+  async watch(server: string, uri?: string, session?: string) {
+    const e = this.named(server, session);
+    if (!e || e.bundled || e.state === "disabled") return;
+    if (e.cold && !this.sleeps(e)) e.cold = false;
+    const c = await this.ensure(e.name, 15_000);
+    if (uri && c.capabilities.resources?.subscribe && !e.subscribed.has(uri)) {
+      e.subscribed.add(uri);
+      await c.rpc("resources/subscribe", { uri }).catch((err) => { e.subscribed.delete(uri); this.errors.capture("server", err, { mcp: e.name, at: "resources/subscribe" }); });
+    }
   }
   // What became of an event, to a server that asked to be told (STATUS_CAP).
   tellChannel(entry: string, params: Record<string, unknown>) {

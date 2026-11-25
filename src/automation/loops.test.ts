@@ -569,3 +569,109 @@ test("a value the vault holds that the gate prints arrives concealed", async () 
   expect(sent[0]!.text).toContain("token is [secret:ab12]");
   expect(sent[0]!.text).not.toContain("hunter2-secret-value");
 });
+
+// --- a connected MCP server's notification starts a loop's run
+
+const from = { server: "orders", entry: "orders" };
+const eventLoop = (schedule: string, o: Partial<loops.CreateInput> = {}) => {
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule, prompt: "look at what changed", ...o });
+  return { s, loop };
+};
+
+test("a server's notification starts one run whose prompt holds the event framed as data; others are not run", () => {
+  const { s, loop } = eventLoop("on orders resources/updated");
+  expect(loop).toMatchObject({ kind: "mcp", schedule: "on orders resources/updated", schedule_text: "when orders sends resources/updated", next_ms: null });
+  loops.mcpEvent({ server: "billing", entry: "billing" }, "notifications/resources/updated", { uri: "x://a" }); // another server
+  loops.mcpEvent(from, "notifications/resources/list_changed", {}); // another kind
+  expect(sent).toHaveLength(0);
+  loops.mcpEvent(from, "notifications/resources/updated", { uri: "file:///a" });
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.text).toContain("look at what changed");
+  expect(sent[0]!.text).toMatch(/<untrusted_mcp_event>\{"server":"orders","method":"resources\/updated","params":\{"uri":"file:\/\/\/a"\}\}<\/untrusted_mcp_event>/);
+  expect(started(loop.id)).toHaveLength(1);
+  step(s.id, 5);
+  end(s.id);
+  expect(loops.get(loop.id)).toMatchObject({ runs: 1, enabled: true, next_ms: null });
+});
+
+test("a server's own method matches with or without notifications/, and an address narrows resources/updated", () => {
+  const { loop } = eventLoop("on orders notifications/acme/order_placed");
+  expect(loop.schedule).toBe("on orders acme/order_placed");
+  loops.mcpEvent(from, "acme/order_placed", { id: 7 });
+  expect(sent).toHaveLength(1);
+  const n = eventLoop("on orders resources/updated file:///only");
+  sent.length = 0;
+  loops.mcpEvent(from, "notifications/resources/updated", { uri: "file:///other" });
+  expect(sent).toHaveLength(0);
+  loops.mcpEvent(from, "notifications/resources/updated", { uri: "file:///only" });
+  expect(sent).toHaveLength(1);
+  expect(n.loop.schedule_text).toBe("when orders sends resources/updated for file:///only");
+});
+
+test("events inside the interval are one run, the latest of them, with their count", () => {
+  const t0 = Date.now();
+  at(t0);
+  const { s, loop } = eventLoop("on orders acme/tick", { min_interval_seconds: 30 });
+  loops.mcpEvent(from, "acme/tick", { n: 1 });
+  step(s.id, 5);
+  end(s.id);
+  at(t0 + 5_000);
+  loops.mcpEvent(from, "acme/tick", { n: 2 });
+  loops.mcpEvent(from, "acme/tick", { n: 3 });
+  expect(sent).toHaveLength(1);
+  at(t0 + 31_000);
+  loops.tick();
+  expect(sent).toHaveLength(2);
+  expect(sent[1]!.text).toContain('"n":3');
+  expect(sent[1]!.text).not.toContain('"n":2');
+  expect(started(loop.id)[0]!.note).toContain("2 events came meanwhile; this is the latest.");
+  expect(skipped(loop.id)).toEqual([]);
+});
+
+test("an event over the cap is not run and the loop stays on; a session the owner stopped, or an archived one, takes none", () => {
+  const { s, loop } = eventLoop("on orders acme/big");
+  loops.mcpEvent(from, "acme/big", { text: "x".repeat(17_000) });
+  expect(sent).toHaveLength(0);
+  expect(skipped(loop.id)).toEqual(["its acme/big event from orders was over 16 KB"]);
+  expect(loops.get(loop.id)).toMatchObject({ enabled: true });
+  (engine as any).isHeld = (id: string) => id === s.id;
+  (engine as any).heldBy = () => "owner";
+  try { loops.mcpEvent(from, "acme/big", { n: 1 }); } finally { delete (engine as any).isHeld; delete (engine as any).heldBy; }
+  expect(sent).toHaveLength(0);
+  expect(skipped(loop.id)).toContainEqual(expect.stringContaining("the session's queue is held"));
+  store.updateSession(s.id, { archived: true });
+  loops.mcpEvent(from, "acme/big", { n: 2 });
+  expect(sent).toHaveLength(0);
+  expect(skipped(loop.id)).toContainEqual(expect.stringContaining("the session is archived"));
+});
+
+test("a loop that is off or deleted takes no event, and only the owner makes or edits one", () => {
+  const { s, loop } = eventLoop("on orders acme/tick");
+  loops.update(loop.id, { enabled: false });
+  loops.mcpEvent(from, "acme/tick", {});
+  expect(sent).toHaveLength(0);
+  loops.update(loop.id, { enabled: true });
+  loops.remove(loop.id);
+  loops.mcpEvent(from, "acme/tick", {});
+  expect(sent).toHaveLength(0);
+  expect(() => loops.create({ session_id: s.id, schedule: "on orders acme/tick", created_by: "model" })).toThrow(/owner's to create/);
+  const made = loops.create({ session_id: s.id, schedule: "on orders acme/tick" }).loop;
+  expect(() => loops.update(made.id, { schedule: "5m" })).toThrow(/cannot change/);
+  expect(loops.update(made.id, { schedule: "on orders acme/other" }).schedule).toBe("on orders acme/other");
+});
+
+test("the server a loop waits on is told to the daemon, and again when it connects", () => {
+  const { loop } = eventLoop("on orders resources/updated file:///a");
+  const kept: string[] = [];
+  loops.mcpHooks.keep = (server, uri) => void kept.push(`${server} ${uri ?? ""}`);
+  try {
+    loops.keepAll();
+    loops.keepAll("other");
+    loops.update(loop.id, { enabled: false });
+    loops.keepAll();
+  } finally { delete loops.mcpHooks.keep; }
+  expect(kept).toEqual(["orders file:///a"]);
+  expect(loops.watchesServer("orders")).toBe(false);
+});

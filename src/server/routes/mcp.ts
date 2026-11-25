@@ -4,6 +4,7 @@ import { McpManager } from "../../mcp/manager.ts";
 import { changeDigest } from "../../mcp/pins.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
 import { bindMcpCalls } from "../../automation/mcp-calls.ts";
+import * as loops from "../../automation/loops.ts";
 import { installMcpSkills } from "../../mcp/skill-tools.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
@@ -185,6 +186,12 @@ export const mcpRoutes: RouteModule = (deps) => {
       .then((p) => m.tellChannel(from.entry, { ...(p.event_id ? { event_id: p.event_id } : {}), outcomes: p.outcomes }))
       .catch((e) => deps.errors.capture("server", e, { at: "mcp channel", mcp: from.entry }));
   };
+  // A loop that runs on a server's notification (src/automation/loops.ts): the server is kept, its notifications are
+  // told to the loops, and what they subscribed to is asked for again when it connects.
+  m.watched = (server) => loops.watchesServer(server);
+  m.onNotification = (from, method, params) => loops.mcpEvent(from, method, params);
+  m.onReady = (server) => loops.keepAll(server);
+  loops.mcpHooks.keep = (server, uri, session) => void m.watch(server, uri, session).catch(() => {}); // (its state says why it failed)
   // Each server with where its events go and what became of the latest ones.
   m.onServerGone = (name) => channels.forget(name);
   // A browser closed for idleness is one line in the activity feed.
