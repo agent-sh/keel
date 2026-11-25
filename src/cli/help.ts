@@ -11,6 +11,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["audit", "the sealed record: verify a session's history is whole, export its receipts as a bundle, check the daily roots"],
     ["safety", "trial: a safety rule change replayed over the stored calls before it is on"],
     ["review", "pull request reviews from GitHub: watch a repository, list, post a draft"],
+    ["experiments", "trials of a change: list, templates, start from a template, stop, report"],
     ["stop", "interrupt a session's running turn"],
   ]],
   ["Sessions", [
@@ -114,6 +115,7 @@ const FIRST: [commands: string[], what: Words][] = [
   [["audit"], "verify export roots"],
   [["mcp"], "list channel"],
   [["review"], "watch unwatch list post"],
+  [["experiments"], "list templates start stop report"],
   [["service"], "install"],
   [["completion"], SHELLS.join(" ")],
   [["help"], "commands"],

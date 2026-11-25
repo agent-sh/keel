@@ -1747,6 +1747,41 @@ describe("client commands against a running daemon", () => {
     expect([hour(Date.now() - 3_600_000), hour(Date.now())]).toContain(text.slice("Sessions, read ".length, "Sessions, read ".length + 13));
   }, 60_000);
 
+  // The trials of a change from a terminal: the templates, a start (one live at a time, the refusal names the one
+  // that runs), the list with its figures, the report and the stop.
+  test("experiments: templates, start, a second live start refused, list, report, stop", async () => {
+    const none = await k(["experiments", "list", "--json"]);
+    expect([none.code, json(none.out)]).toEqual([0, []]);
+    const templates = json((await k(["experiments", "templates", "--json"])).out) as { id: string; mode: string; arms: { name: string }[] }[];
+    const live = templates.filter((t) => t.mode === "live");
+    expect(live.length).toBeGreaterThan(1);
+    expect((await k(["experiments", "templates"])).out).toContain(`${live[0]!.id}  live`);
+    expect((await k(["experiments", "start", "no-such-template"])).err).toContain("no template no-such-template");
+
+    const started = await k(["experiments", "start", live[0]!.id, "--json"]);
+    expect(started.code).toBe(0);
+    const exp = json(started.out);
+    expect([exp.state, exp.mode, exp.arms.map((a: any) => a.name)]).toEqual(["running", "live", live[0]!.arms.map((a) => a.name)]);
+
+    // One live at a time: the refusal says which one runs, and no draft is left behind.
+    const second = await k(["experiments", "start", live[1]!.id]);
+    expect(second.code).toBe(3);
+    expect(second.err).toContain(`${exp.name} (${exp.id.slice(-8)}) is running live: stop it first`);
+    const listed = json((await k(["experiments", "list", "--json"])).out);
+    expect(listed.map((e: any) => [e.id, e.state])).toEqual([[exp.id, "running"]]);
+    const text = await k(["experiments", "list"]);
+    expect(text.out).toMatch(new RegExp(`${exp.id.slice(-8)}  running  live  .*arms: .*0 session families`));
+    expect(text.out).toContain("no figures yet");
+
+    const report = await k(["experiments", "report", exp.id.slice(-8)]);
+    expect([report.code, report.out]).toEqual([0, expect.stringContaining(`${exp.id.slice(-8)}  running`)]);
+    const stopped = await k(["experiments", "stop", exp.id.slice(0, 8), "checked", "from", "the", "terminal"]);
+    expect([stopped.code, stopped.out]).toEqual([0, expect.stringContaining(`stopped ${exp.id.slice(-8)}`)]);
+    const after = json((await k(["experiments", "list", "--json"])).out);
+    expect([after[0].state, after[0].stop_reason]).toEqual(["stopped", "checked from the terminal"]);
+    expect((await k(["experiments", "stop", exp.id])).err).toContain("it is stopped");
+  }, 60_000);
+
   test("audit: a session's history is whole, a bundle is streamed out and verifies alone, an edited one is refused", async () => {
     const id = json((await k(["run", "--json", "seal me"])).out).session_id;
     const whole = await k(["audit", "verify", id]);
