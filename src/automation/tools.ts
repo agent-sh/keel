@@ -468,6 +468,18 @@ async function markedPorts(list: Job[]): Promise<number[]> {
   return [...portsOf(pids).values()].flat().map((p) => p.port).filter((p) => !isOwnPort(p));
 }
 
+// The exact next call after a wait on a loopback port nothing of the session listens on: with a background command of
+// the session running, its output is waited on for the line that says it is up (or the port it does listen on is named);
+// with none, the server is started first. (Pure: the refusal's words, tested by themselves.)
+export function portNext(waitName: string, url: string, running: { id: string; log: string }[], listening: number[]): string {
+  const port = Number(new URL(url).port);
+  if (!running.length) return ` No background command of this session is running. Start the server with the shell tool's run_in_background; the command's own end wakes you. Then call ${waitName} with kind "http" and url ${url}.`;
+  const job = running[0]!;
+  const others = [...new Set(listening)].filter((p) => p !== port).slice(0, 4);
+  return ` Your background command ${job.id} is running` + (others.length ? ` and its processes listen on ${others.join(", ")}: is that the port you meant?` : " and nothing of it listens yet.") +
+    ` To wait for it to come up: ${waitName} with kind "log", path ${JSON.stringify(job.log)}, match "listening|ready|started|up"; then ${waitName} with kind "http" and url ${url}.`;
+}
+
 // `monitorName`: the family's name for the monitor tool (what a refusal names as the other way).
 const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard(async () => {
   if (input.kind === "webhook" || input.spec?.kind === "webhook") return fail("A webhook wait is the owner's to create.");
@@ -494,7 +506,7 @@ const waitRun = (monitorName: string) => (input: any, ctx: ToolContext) => guard
       const probe = `until curl -fsS -o /dev/null ${spec.url}; do ${"sle" + "ep"} 1; done; echo up`;
       const loop = /^(localhost|.*\.localhost)\.?$/i.test(u.hostname) || /^(127\.|\[?::1\]?$)/.test(u.hostname);
       return fail(loop && u.port
-        ? `no process of this session listens on ${u.port} yet: start the server, then wait, or use ${monitorName} with curl (command: ${JSON.stringify(probe)}, match: "up").`
+        ? `no process of this session listens on ${u.port} yet: start the server, then wait, or use ${monitorName} with curl (command: ${JSON.stringify(probe)}, match: "up").` + portNext(monitorName === "Monitor" ? "WaitFor" : "wait_for", spec.url, ownJobs(ctx.sessionId).filter((j) => j.background && running(j)).map((j) => ({ id: j.id, log: j.log })), ownPorts(ctx.sessionId))
         : `${u.hostname} is a local or private address; a wait reaches only a loopback port a process of this session listens on. Start the server with the shell tool's run_in_background, then wait on its URL; or watch it now with ${monitorName} (command: ${JSON.stringify(probe)}, match: "up").`);
     }
   }

@@ -9,7 +9,7 @@ import { Store } from "../core/store.ts";
 import { setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import * as waits from "./waits.ts";
-import { automationTools, bindWait } from "./tools.ts";
+import { automationTools, bindWait, portNext } from "./tools.ts";
 
 const store = new Store(mkdtempSync(join(tmpdir(), "keel-auto-")));
 // The fleet's column, before the first read of a session (a read prepared before it would not see it).
@@ -136,6 +136,17 @@ test("a local http wait names the monitor call that does it", async () => {
   expect(text(other)).toContain("monitor (command:");
 });
 
+// The refusal says the exact next call: start the server when none runs, else wait on its log for the line that says it is up.
+test("a wait on a port nothing listens on says the next call", async () => {
+  const none = await tool("WaitFor").run({ kind: "http", url: "http://127.0.0.1:48556/api/health" }, ctx);
+  expect(text(none)).toContain('No background command of this session is running. Start the server with the shell tool\'s run_in_background');
+  expect(text(none)).toContain('WaitFor with kind "http" and url http://127.0.0.1:48556/api/health');
+  const url = "http://127.0.0.1:3000/x";
+  const up = portNext("wait_for", url, [{ id: "b7", log: "/s/jobs/b7.log" }], [5173, 3000]);
+  expect(up).toContain("Your background command b7 is running and its processes listen on 5173: is that the port you meant?");
+  expect(up).toContain('wait_for with kind "log", path "/s/jobs/b7.log", match "listening|ready|started|up"');
+  expect(portNext("WaitFor", url, [{ id: "b7", log: "/s/jobs/b7.log" }], [])).toContain("nothing of it listens yet");
+});
 
 // A server the session started is its own: a port its process listens on. A port a command only names is not.
 test("an http wait on a loopback port a process of the session listens on is set", async () => {
