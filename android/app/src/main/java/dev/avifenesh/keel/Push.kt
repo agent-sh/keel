@@ -115,17 +115,25 @@ object Notify {
      * `to`: where it leads when it names no session ("errors": a failure with no session to open opens the Errors view).
      */
     fun post(c: Context, kind: String, chat: String?, title: String, body: String, aid: String?, allow: Boolean, to: String = "", m: PushMsg? = null, face: Bitmap? = null) {
-        val high = kind in setOf("approval", "question", "failed", "loop_failed", "limit", "test")
+        val high = m?.urgent ?: (kind in setOf("approval", "question", "failed", "loop_failed", "limit", "test"))
         val b = NotificationCompat.Builder(c, if (high) NEEDS else UPDATES)
             .setSmallIcon(R.drawable.ic_stat).setColor(0xFF0E6A80.toInt())
             .setContentTitle(title.ifBlank { "Keel" }).setContentText(body).setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setContentIntent(open(c, chat, to)).setAutoCancel(true)
+            .setContentIntent(open(c, chat, if (m?.digest == true) m.digestTo else to)).setAutoCancel(true)
             .setCategory(if (kind == "approval") NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_STATUS)
             .setPriority(if (high) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
         // The helper's own: the name the owner gave it and its face, so the notification is known at a glance.
         if (m != null && m.who.isNotBlank()) {
             b.setSubText(m.who)
             face?.let { b.setLargeIcon(Face.round(it)) }
+        }
+        // What the daemon's budget folded together is one notification with a line for each, never one for every item.
+        if (m?.digest == true) {
+            val lines = m.lines
+            b.setStyle(NotificationCompat.InboxStyle().also { s -> lines.forEach(s::addLine); s.setBigContentTitle(title.ifBlank { "Keel" }) })
+                .setContentText(lines.joinToString(", ").ifBlank { body }).setNumber(lines.size).setOnlyAlertOnce(true)
+            runCatching { c.getSystemService(NotificationManager::class.java).notify("keel-digest", idOf("digest"), b.build()) }
+            return
         }
         // A question or a plan is answered in the app: its notification opens the session.
         if (aid != null && !aid.startsWith("q-") && !aid.startsWith("plan-") && kind == "approval") {

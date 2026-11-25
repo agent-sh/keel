@@ -375,6 +375,8 @@
    "open": "string?",
    "f": "string?",
    "to": "string?",
+   "ek": "string?",
+   "pri": "string?",
    "who": "string?",
    "face": "string?"
   },
@@ -2593,6 +2595,17 @@
     "reply": "1",
     "who": "Pip",
     "face": "1k9x2"
+   },
+   {
+    "t": "agent",
+    "c": "",
+    "s": "49",
+    "n": "push_5a1b2c3d4e5f6a7b",
+    "title": "4 more",
+    "body": "4 more: 1 needs you, 1 failed, 2 done",
+    "ek": "digest",
+    "pri": "high",
+    "reply": "0"
    },
    {
     "t": "withdraw",

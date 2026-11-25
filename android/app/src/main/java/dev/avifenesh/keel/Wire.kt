@@ -972,6 +972,8 @@ data class PushMsg(
     val working: Int = 0, val needs: Int = 0, val since: Long = 0, val failed: Int = 0, val to: String = "",
     /** Where its notification leads when it names no session: "errors" for a failure with no session to open. */
     val open: String = "",
+    /** The alert's own kind (`ek`), and how urgent the daemon made it (`pri`). */
+    val ek: String = "", val pri: String = "",
     /** The helper, when the alert is of its conversation: the name the owner gave it and the mark of its picture. */
     val who: String = "", val face: String = "",
 ) {
@@ -985,10 +987,21 @@ data class PushMsg(
             held = !d["hold"].isNullOrBlank(),
             working = d["w"]?.toIntOrNull() ?: 0, needs = d["q"]?.toIntOrNull() ?: 0, since = d["since"]?.toLongOrNull() ?: 0,
             failed = d["f"]?.toIntOrNull() ?: 0, to = d["to"].orEmpty(), open = d["open"].orEmpty(),
-            who = d["who"].orEmpty(), face = d["face"].orEmpty(),
+            ek = d["ek"].orEmpty(), pri = d["pri"].orEmpty(), who = d["who"].orEmpty(), face = d["face"].orEmpty(),
         )
     }
 
+    /** One notification for the pushes the daemon's budget folded together ("4 more: 1 needs you, 2 done"). */
+    val digest get() = ek == DIGEST
+
+    /** The lines of a digest, one for each thing it counts; none for any other push. */
+    val lines: List<String> get() = if (digest) digestLines(body) else emptyList()
+
+    /** Where a digest leads: the list of what needs the owner when it counts any, else the sessions. */
+    val digestTo: String get() = if (digest && NEEDS_WORDS.containsMatchIn(body)) "needs" else open.ifBlank { to }
+
+    /** Whether the notification is of the urgent channel: the kinds that ask something of the owner, or what the daemon marked high. */
+    val urgent get() = kind in URGENT_KINDS || pri == "high"
     /**
      * Whether the notification carries Allow once: the daemon offered it (opts; a push from before
      * opts offered it always) and does not hold the request. Else it leads with Open.
@@ -1191,4 +1204,20 @@ data class LandOutcome(val ok: Boolean, val error: String, val card: LandCard?, 
         }
         fun refused(o: JSONObject) = LandOutcome(false, o.str("error"), o.optJSONObject("card")?.let(LandCard::of))
     }
+}
+
+const val DIGEST = "digest"
+private val NEEDS_WORDS = Regex("""\bneeds? you\b""")
+private val URGENT_KINDS = setOf("approval", "question", "failed", "loop_failed", "limit", "test")
+
+/**
+ * The lines of a digest's body: what follows its first colon, split at its commas and semicolons
+ * ("4 more: 1 needs you, 1 failed, 2 done" is three lines; "2 need you: Which color?; Run rm?" is two).
+ * A body with no colon is the one line.
+ */
+fun digestLines(body: String): List<String> {
+    val at = body.indexOf(": ")
+    val list = if (at < 0) body else body.substring(at + 2)
+    // A budget's needs digest names what asks ("Which color?; Run rm?"), which may hold commas: its semicolons split it.
+    return list.split(if (";" in list) Regex(";\\s*") else Regex(",\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
 }

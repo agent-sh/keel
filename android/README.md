@@ -70,6 +70,15 @@ Approve: each change asks starts it in ask (the one a phone with no screen
 lock offers). Keep planning opens a box for what to change and sends the plan
 back with it. A plan's notification opens the session; it allows nothing.
 
+## Pushes the daemon folds together
+
+The daemon's push budget sends what is over the hour's limit as one push of kind
+`agent` with `ek` `digest` ("4 more: 1 needs you, 2 done"). The app shows it as
+one notification with a line for each count (`PushMsg.lines`), one at a time: a
+newer digest replaces the older. It is on the urgent channel when the daemon
+marked it `pri` high, and a tap opens what needs you when it counts anything
+that does, else the sessions.
+
 ## The helper row
 
 The first row of Sessions asks the helper across your sessions. Hold the
