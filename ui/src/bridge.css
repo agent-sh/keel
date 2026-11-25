@@ -2015,3 +2015,8 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-focus-line:is(:hover, :focus-visible) { color: var(--fg); background: var(--hover); outline: none; }
 @media (prefers-reduced-motion: reduce) { .k-focus-leave { transition: none; } }
 .k-shell[data-mode="focus"] .k-notes:not(:hover, :focus-within) { opacity: 0; }
+/* A finished run of calls in Focus: one line in muted ink between the replies (lib/work-fold.ts). */
+.k-work-fold { display: inline-flex; align-items: center; gap: 0.25rem; align-self: flex-start; padding: 0.125rem 0.375rem; margin-left: -0.375rem; border-radius: var(--radius-md); font-size: var(--text-caption); color: var(--faint); text-align: left; }
+.k-work-fold svg { width: 0.75rem; height: 0.75rem; opacity: 0.7; }
+.k-work-fold:is(:hover, :focus-visible) { color: var(--fg); background: var(--hover); outline: none; }
+.k-work-fold:focus-visible { box-shadow: 0 0 0 2px var(--ring); }

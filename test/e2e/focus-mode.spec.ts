@@ -6,7 +6,7 @@ import { scriptBash, shoot, WORKBENCH } from "./shots.ts";
 // runs: no list, no session tools, no state chip. A card that asks him shows where it belongs, and the
 // other sessions that wait are one line at the bottom edge that goes to the next. The list comes back
 // laid over the page (Ctrl B, or the window's left edge) and goes on Escape or when a session is
-// picked. Ctrl . leaves for the workbench and comes back, and the choice is kept across a reload.
+// picked. A finished run of calls is one quiet line between replies that opens on a press. Ctrl . leaves for the workbench and comes back, and the choice is kept across a reload.
 // And the bar everywhere: the title at the body's size in regular weight, one text line high.
 
 const scripted = async (request: APIRequestContext) => {
@@ -83,6 +83,19 @@ test.describe("Focus is the default", () => {
       await others.click();
       await expect(page).not.toHaveURL(new RegExp(`/s/${b}`));
 
+      // A finished run of calls is one quiet line between the replies; a press opens it.
+      const { session: done } = await (await request.post("/api/sessions", { data: { model, title: "Focus: a finished run" } })).json();
+      made.push(done.id);
+      await request.post(`/api/sessions/${done.id}/messages`, { data: { text: scriptBash("echo focus-run") } });
+      await page.goto(`/s/${done.id}`);
+      const fold = page.getByTestId("work-fold");
+      await expect(fold).toHaveText("Ran commands", { timeout: 30_000 });
+      await expect(page.getByTestId("work")).toHaveCount(0);
+      await shoot(page, "focus-mode-03-run-folded");
+      await fold.click();
+      await expect(page.getByTestId("work")).toBeVisible();
+      await expect(fold).toHaveCount(0);
+
       // Ctrl . leaves for the workbench and comes back; the choice is kept.
       await page.keyboard.press("Control+.");
       await expect(shell).not.toHaveAttribute("data-mode", "focus");
@@ -128,7 +141,7 @@ test.describe("the bar in the workbench", () => {
       const word = page.getByTestId("station-word");
       await expect(word).toHaveAttribute("title", /\S/);
       expect((await word.boundingBox())!.width).toBeLessThan(1.25 * px);
-      await shoot(page, "focus-mode-03-workbench-bar");
+      await shoot(page, "focus-mode-04-workbench-bar");
     } finally {
       await request.delete(`/api/sessions/${session.id}`);
     }

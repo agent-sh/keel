@@ -24,6 +24,8 @@ import { agentSaid } from "./automation/bits.tsx";
 import { AgentLines } from "./automation/AgentLines.tsx";
 import { treeLines } from "../lib/agent-lines.ts";
 import { countWord } from "../../../src/core/state-words.ts";
+import { useFocus } from "../lib/focus.ts";
+import { foldWords, settled } from "../lib/work-fold.ts";
 
 export function Thinking({ text, live }: { text: string; live?: boolean }) {
   // What was thought stays open when the thinking ends, as the reader had it, until it has left the
@@ -320,7 +322,17 @@ export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: s
     e.preventDefault();
     setAll((a) => ({ n: a.n + 1, open: line.getAttribute("aria-expanded") !== "true" }));
   };
+  // In Focus a finished run is one quiet line; a press opens it (lib/work-fold.ts).
+  const calm = useFocus();
+  const [opened, setOpened] = useState(false);
   const table = isTable(row.steps!);
+  if (calm && !opened && settled(row.steps!)) {
+    return (
+      <button type="button" className="k-work-fold" data-testid="work-fold" data-run={row.id} aria-expanded={false} onClick={() => setOpened(true)}>
+        {foldWords(row.steps!)}<ChevronDown aria-hidden="true" />
+      </button>
+    );
+  }
   return (
     <div className="k-work row-cv" data-testid="work" data-run={row.id} data-said={table ? "" : undefined} role="group" aria-label="What the model did" onClickCapture={onAll} onKeyDownCapture={onAll} onKeyDown={lineKeys}>
       {row.steps!.map((st, i) => <StepView key={st.key} step={st} sid={sid} cwd={cwd} remote={remote} all={all} table={table} end={i === row.steps!.length - 1} />)}
