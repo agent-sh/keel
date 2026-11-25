@@ -201,12 +201,14 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
         { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
-    // A third of the new session trees each: their agents are told nothing at a run of reads, are told to send
-    // them in parallel, or are told that and offered an Explore agent on the reader model (src/engine/read-run.ts).
+    // A quarter of the new session trees each: their agents are told nothing at a run of reads, are told to send
+    // them in parallel, are told that and offered an Explore agent on the reader model, or are told that and
+    // offered run_code for the reads they know they need (src/engine/read-run.ts). The last two overlap: compare
+    // them, do not add their savings.
     id: "read_runs", label: "Agents batch their reads",
     make: () => ({ name: "Reads in batches", mode: "live", template: "read_runs",
-      hypothesis: "Agents told at a run of read-only steps what each step costs, and to send the reads they know they need in one step (or to hand a search to an Explore agent on the reader model), cost less per turn and take fewer steps a read, without more errors or failed tool calls.",
-      arms: [{ name: "plain" }, { name: "batch", settings: { read_runs: "batch" } }, { name: "reader", settings: { read_runs: "reader" } }], primary: "cost_usd",
+      hypothesis: "Agents told at a run of read-only steps what each step costs, and to send the reads they know they need in one step (or to hand a search to an Explore agent on the reader model, or to make them in one run_code program that prints only what matters), cost less per turn and take fewer steps a read, without more errors or failed tool calls.",
+      arms: [{ name: "plain" }, { name: "batch", settings: { read_runs: "batch" } }, { name: "reader", settings: { read_runs: "reader" } }, { name: "code", settings: { read_runs: "code" } }], primary: "cost_usd",
       // What a read the agent needed and did not make would show: a turn that fails, more failed calls (an edit
       // of a file it did not read), a context lost to a successor, the owner's Stop, a reply rated down.
       // (steps_per_read is reported: it says whether the agents followed the note. The replay's savings assume they

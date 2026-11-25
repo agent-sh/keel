@@ -167,8 +167,9 @@ export type SessionSettings = {
   compact_share?: number;
   cache_plan?: boolean;
   // An agent told at a run of read-only steps what each step costs and what else there is (src/engine/read-run.ts):
-  // "batch" (parallel reads) or "reader" (that, and an Explore agent on the reader model), for its whole tree, set at the top (a trial's arm).
-  read_runs?: "batch" | "reader";
+  // "batch" (parallel reads), "reader" (that, and an Explore agent on the reader model) or "code" (that, and run_code
+  // for the reads it knows it needs), for its whole tree, set at the top (a trial's arm).
+  read_runs?: "batch" | "reader" | "code";
   // Old tool results become stubs and earlier thinking is left out when the cache has lapsed (src/engine/cold-clear.ts):
   // true or false for its whole tree, set at the top (a trial's arm); absent = off.
   cold_clear?: boolean;

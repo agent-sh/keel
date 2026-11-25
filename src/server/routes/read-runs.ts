@@ -3,10 +3,11 @@
 // a row of one call each gets the note on its result, once a run, with what
 // one step of its context reads and costs; on "reader" the note also offers
 // an Explore agent, which searches on the reader model there
-// (src/automation/agents.ts).
+// (src/automation/agents.ts); on "code" it also names run_code, when the
+// session's tools include it.
 import type { Session } from "../../core/types.ts";
 import { registerHooks } from "../../engine/hooks.ts";
-import { explores, nextRun, readerFor, readNote, readRunsOf, START, type RunState } from "../../engine/read-run.ts";
+import { codeFor, explores, nextRun, readerFor, readNote, readRunsOf, START, type RunState } from "../../engine/read-run.ts";
 import { readRate } from "../../engine/reader.ts";
 import { smallModels } from "../../engine/readers.ts";
 import type { RouteModule } from "../app.ts";
@@ -60,7 +61,7 @@ export const readRunRoutes: RouteModule = ({ store, providers }) => {
         const own = readRate(info, listPrice), r = reader ? readRate(reader, listPrice) : undefined;
         if (start && reader && r !== undefined && own) offer = { start, model: reader.name, share: r / own };
       }
-      const note = readNote(p.context, rate, offer);
+      const note = readNote(p.context, rate, offer, codeFor(arm(s), call.ctx.offers, call.tool.name));
       if (typeof result.content === "string") result.content = `${result.content}\n\n${note}`;
       else result.content = [...result.content, { type: "text", text: note }];
     },

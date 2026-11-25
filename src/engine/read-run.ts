@@ -15,7 +15,9 @@
 // whether it stays and in which form (src/admin/experiments.ts, "Agents
 // batch their reads"): a tree runs it when the session at its top has
 // `read_runs` ("batch": the note asks for parallel reads; "reader": it also
-// offers an Explore agent, which then searches on the reader model).
+// offers an Explore agent, which then searches on the reader model; "code":
+// it also names run_code, one program that makes the reads and prints only
+// what matters, where the session's tools include it).
 import type { Session, StoredEvent } from "../core/types.ts";
 import type { ModelInfo, Price } from "../providers/types.ts";
 import { readerChoices, readRate } from "./reader.ts";
@@ -23,8 +25,8 @@ import { readOnlyCommand } from "../safety/shell.ts";
 import { shellText } from "../safety/policy.ts";
 import { toolKind } from "../core/tool-line.ts";
 
-export type ReadRuns = "batch" | "reader";
-export const READ_RUNS: readonly ReadRuns[] = ["batch", "reader"];
+export type ReadRuns = "batch" | "reader" | "code";
+export const READ_RUNS: readonly ReadRuns[] = ["batch", "reader", "code"];
 
 // The step of a run the note comes on: the second read-only step in a row,
 // each of one call. The first read of a run is often the only one (the median
@@ -104,11 +106,20 @@ export function readerFor(models: ModelInfo[], current: ModelInfo, env: Record<s
   return pick && own !== undefined && rate !== undefined && rate < own ? pick : undefined;
 }
 
+// The program the "code" arm names: the tool that runs it (run_code, src/tools/codemode.ts), and the
+// name of the tool the agent just read with, which a program calls as `tools.<name>`. Only a session whose
+// tools include run_code is offered it (a profile without it, or a session with it turned off, gets the
+// "batch" note).
+export const RUN_CODE = "run_code";
+export function codeFor(arm: ReadRuns | undefined, offers: ((name: string) => boolean) | undefined, readTool: string): { tool: string } | undefined {
+  return arm === "code" && offers?.(RUN_CODE) ? { tool: readTool } : undefined;
+}
+
 // The note. `context`: the tokens the step's request carried; `rate`: what a
 // million of them cost to read from the cache on this model, when it has a
 // price. `reader`: the Explore offer, with the tool that starts it in this
 // session's words and the share of this model's read price the reader costs.
-export function readNote(context: number, rate?: number, reader?: { start: string; model: string; share: number }): string {
+export function readNote(context: number, rate?: number, reader?: { start: string; model: string; share: number }, code?: { tool: string }): string {
   const k = context >= 1000 ? `${Math.round(context / 1000)}K` : String(context);
   const usd = rate !== undefined && rate > 0 ? (context * rate) / 1e6 : undefined;
   const price = usd === undefined ? "" : `, about $${usd >= 0.01 ? usd.toFixed(2) : usd.toFixed(4)}`;
@@ -119,6 +130,11 @@ export function readNote(context: number, rate?: number, reader?: { start: strin
   if (reader) {
     const share = reader.share >= 0.1 ? `${Math.round(reader.share * 100)}%` : `1/${Math.round(1 / reader.share)}`;
     lines.push(`For a search whose text you need only as an answer, ${reader.start} searches in its own context on ${reader.model}, which reads at ${share} of this model's price, and returns what it found; read a file yourself when you will edit it.`);
+  }
+  if (code) {
+    const call = /^\w+$/.test(code.tool) ? `tools.${code.tool}(input)` : `tools[${JSON.stringify(code.tool)}](input)`;
+    const cost = usd === undefined ? "one step of this context" : `one step of this context (about $${usd >= 0.01 ? usd.toFixed(2) : usd.toFixed(4)})`;
+    lines.push(`For the reads you already know you need, one ${RUN_CODE} call makes them all: a program that calls \`await ${call}\` for each, filters in code and prints only what you need (the matching lines, the head of a file, counts). It costs ${cost}, where the same reads one at a time cost one each, and the text it read stays out of your context. Read directly what you will edit.`);
   }
   return lines.join(" ");
 }

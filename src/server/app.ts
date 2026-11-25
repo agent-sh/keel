@@ -456,7 +456,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             if (settings.compact_share !== undefined && !(typeof settings.compact_share === "number" && settings.compact_share > 0 && settings.compact_share <= 1)) return bad("compact_share is a share of the window above 0 and at most 1");
             if (settings.cache_plan !== undefined && typeof settings.cache_plan !== "boolean") return bad("cache_plan is true or false");
             if (settings.cold_clear !== undefined && typeof settings.cold_clear !== "boolean") return bad("cold_clear is true or false");
-            if (settings.read_runs !== undefined && settings.read_runs !== "batch" && settings.read_runs !== "reader") return bad("read_runs is batch or reader");
+            if (settings.read_runs !== undefined && !["batch", "reader", "code"].includes(settings.read_runs as string)) return bad("read_runs is batch, reader or code");
           }
           const mine = [...patchers.values()].filter((p) => p.fields.some((f) => body[f] !== undefined));
           for (const p of mine) await p.check?.(s, body);
