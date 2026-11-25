@@ -45,7 +45,7 @@ export function goneCwd(ctx: ToolContext, dir: string): string | undefined {
 
 export type ShellRun =
   | { state: "done"; output: string; exitCode: number | null; signal?: string | null; cwdNote?: string; job: Job }
-  | { state: "running"; job: Job; output: string }
+  | { state: "running"; job: Job; output: string; movedBy?: "owner" }   // movedBy: the owner moved it, no timeout
   | { state: "refused"; error: string };   // nothing started (see goneCwd)
 
 export type ShellOpts = {
@@ -100,7 +100,13 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   }, slot);
   if (o.background) return { state: "running", job, output: said };
 
-  const finished = await waitJob(job, o.timeoutMs, ctx.signal);
+  // The owner can end this wait early and move the command behind the call (moveToBackground).
+  const mover = new AbortController();
+  job.mover = mover;
+  let finished = await waitJob(job, o.timeoutMs, AbortSignal.any([ctx.signal, mover.signal]));
+  job.mover = undefined;
+  // It ended in the moment of the move (or of the timeout): that is its end, not a move.
+  if (!finished && job.ended !== undefined && !ctx.signal.aborted) finished = true;
   if (!finished) {
     // Every command a tool says it moves is moved, one that starts with sleep
     // too: what follows the sleep still runs.
@@ -109,7 +115,7 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
       return { state: "done", output: said + takeUnread(job), exitCode: job.exitCode ?? null, signal: job.signal, job };
     }
     backgrounded(job);
-    return { state: "running", job, output: said + takeUnread(job) };
+    return { state: "running", job, output: said + takeUnread(job), movedBy: job.movedBy };
   }
   let cwdNote: string | undefined;
   if (track && existsSync(cwdFile)) {

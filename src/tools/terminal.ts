@@ -6,7 +6,7 @@ import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, 
 import { join } from "node:path";
 import { conceal, concealDeep } from "../core/conceal.ts";
 import { SessionMap } from "../core/session-map.ts";
-import { findJob, jobsOf, lastLineOf, type Meta, running, stopJob, toolEnv, waitJob } from "./jobs.ts";
+import { findJob, jobsOf, lastLineOf, type Meta, moveToBackground, running, stopJob, toolEnv, waitJob } from "./jobs.ts";
 import { pool, startHeld } from "./heavy.ts";
 import { removedNote } from "./spill.ts";
 
@@ -198,6 +198,9 @@ export async function stopOne(sessionId: string, jobId: string): Promise<boolean
   await stopJob(j, "was stopped by the owner");
   return true;
 }
+
+// The owner moves a command that runs in front of a tool call behind it (the call returns with its ID).
+export const moveOne = (sessionId: string, which: { job?: string; call?: string } = {}) => moveToBackground(sessionId, which, "owner");
 
 export async function waitOne(spillRoot: string, sessionId: string, jobId: string, ms: number, signal?: AbortSignal): Promise<TermJob | undefined> {
   const j = findJob(sessionId, jobId);

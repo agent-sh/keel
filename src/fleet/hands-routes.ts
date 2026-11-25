@@ -10,7 +10,7 @@ import { dirname, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
 import { readText } from "../core/proc.ts";
 import { vault } from "../safety/secrets.ts";
-import { listJobs, logPath, ownerRun, readJobLog, stopOne, waitOne } from "../tools/terminal.ts";
+import { listJobs, logPath, moveOne, ownerRun, readJobLog, stopOne, waitOne } from "../tools/terminal.ts";
 import type { ToolOutput } from "../tools/types.ts";
 import { localFacts } from "./facts.ts";
 import { execArgv, namedSecrets, runHands } from "./hands.ts";
@@ -118,6 +118,7 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
           case "list": return json({ jobs: listJobs(spillRoot, sid) });
           case "log": return json({ log: readJobLog(spillRoot, sid, String(b.job ?? ""), Number(b.from ?? 0)) });
           case "stop": return json({ stopped: await stopOne(sid, String(b.job ?? "")) });
+          case "background": return json({ moved: moveOne(sid, { job: b.job ? String(b.job) : undefined, call: b.call ? String(b.call) : undefined }) });
           case "run": {
             const cwd = resolve(String(b.cwd ?? ""));
             if (!b.root || !contains(resolve(b.root), cwd) || !existsSync(cwd)) return bad(`not a directory inside the granted one: ${cwd}`);

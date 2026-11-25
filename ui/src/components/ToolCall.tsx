@@ -1,6 +1,8 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
-import { Brain, Check, Circle, CircleDot, FileText, Link2, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { ArrowDownToLine, Brain, Check, Circle, CircleDot, FileText, Link2, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { BACKGROUND_COMMAND_KEYS, MOVABLE, moveToBackground } from "../lib/background.ts";
+import { keyLabel } from "../lib/keys.ts";
 import { useKept } from "../lib/kept.ts";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
@@ -268,7 +270,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // (Not while its approval card is open: the card carries the lines, the call's line says the tool and the path.)
   const small = useMemo(() => (!open && !peek && change && changed && state !== "waiting" ? smallChange(use) : null), [open, peek, change, changed, state, use]);
   return (
-    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-quote-from={`the ${use.name} call`} data-quote-out={`the output of ${use.name}`} data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined}>
+    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-quote-from={`the ${use.name} call`} data-quote-out={`the output of ${use.name}`} data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-movable={isShell && movable(use.name, input) ? "" : undefined} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined}>
       <Collapsible.Trigger className="k-line" title={isShell && input.description ? `The model's note: ${input.description}` : undefined}>
         {/* The line's words, as one run of text: the verb, how it stands, why it is marked, what it was made on.
             A marked call's words wrap, so what it was made on is whole on the page. */}
@@ -334,7 +336,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {marks.length > 0 && <p className="k-mark-why" data-testid="mark-why">{marks.map((m) => m.why).join(" ")}</p>}
           {lead}
           {/* (A stop's or a restart's words are written for the model, not printed by the command.) */}
-          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} held={held && picked === null && !shell.background} failed={state === "error"} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : state === "waiting" ? WAITS_FOR_YOU : undefined} />}
+          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} movable={movable(use.name, input)} held={held && picked === null && !shell.background} failed={state === "error"} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : state === "waiting" ? WAITS_FOR_YOU : undefined} />}
           {plan && plan.length > 0 && <div className={rejected ? "opacity-60" : undefined}><PlanCard items={plan} explanation={input.explanation} /></div>}
           {files && (
             <CallDiff files={files} actions={(f) => (
@@ -461,7 +463,9 @@ const CUT = /\n\n\[\.\.\. (\d+) (?:characters|chars) cut[^\]]*\]\n\n/;
 const WAITS_FOR_YOU = "Not run: waits for your approval";
 // `quiet`: what the output says when the call has ended and printed nothing (who stopped it, if anyone did).
 // `failed`: the command failed: its output opens at the first line that says the error, not at its start or its end.
-function Terminal({ name, input, command, whole: onLine, out, running, held, failed, sessionId, callId, quiet = "No output." }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; held?: boolean; failed?: boolean; sessionId?: string; callId?: string; quiet?: string }) {
+const movable = (name: string, input: any) => MOVABLE.has(name) && !input?.run_in_background && !input?.is_background;
+
+function Terminal({ name, input, command, whole: onLine, out, running, movable: canMove, held, failed, sessionId, callId, quiet = "No output." }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; movable?: boolean; held?: boolean; failed?: boolean; sessionId?: string; callId?: string; quiet?: string }) {
   const body = shellBody(name, out).trimEnd();
   const big = TOO_LARGE.exec(body);
   const cut = big ? null : CUT.exec(body);
@@ -494,6 +498,15 @@ function Terminal({ name, input, command, whole: onLine, out, running, held, fai
             ) : <pre ref={box} className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted"><Ansi text={shown} /></pre>}
           </Copyable>
         ) : !running && <p className="px-2.5 py-2 pr-16 font-sans text-faint" data-testid="no-output">{quiet}</p>}
+      {running && canMove && sessionId && callId && (
+        <div className="k-out-more" data-testid="move-bar">
+          <button type="button" data-testid="move-to-background" className="k-out-link" onClick={(ev) => void moveToBackground(sessionId, { call: callId }, ev.currentTarget)}
+            title="The command goes on behind the call and you are told when it ends">
+            <ArrowDownToLine className="size-3.5" />Move to the background
+          </button>
+          <span className="hidden items-center gap-1 text-micro text-faint md:inline-flex" data-testid="move-keys">{keyLabel(BACKGROUND_COMMAND_KEYS).map((k) => <kbd key={k} className="rounded-sm border border-line px-1 font-sans">{k}</kbd>)}</span>
+        </div>
+      )}
       {/* The command is on the call's line: its copy button stands with the output's. */}
       {!above && command && <CopyButton text={command} label="Copy the command" testid="copy-command" icon={<SquareTerminal />} className="k-copy-corner k-copy-second" />}
       {(big || cut) && !whole && !running && !held && (

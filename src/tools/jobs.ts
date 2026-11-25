@@ -57,6 +57,10 @@ export type Job = {
   // It ran in front of a call a restart cut and was taken back at this start: that call's result says
   // what became of it (cutCommand), so its end is no input of its own unless the call waits on it (`wake`).
   front?: boolean;
+  // A command in front of a call that the owner can move behind it at any time (moveToBackground):
+  // the call waits on this signal as well as on the command and its timeout. `movedBy` says who did.
+  mover?: AbortController;
+  movedBy?: "owner";
   owes?: boolean;        // it ended and the input that says so is not stored yet
   swept?: number;        // processes of it that outlived its terminal and were ended at this start
   looked?: number;       // when what a stop left was last looked for
@@ -484,6 +488,20 @@ export function backgrounded(job: Job) {
   // (Kept in its record: a next daemon tells its end as a background command's, not as a cut call's.)
   if (!job.pty) try { patchMeta(job.log, { background: true }); } catch {}
   jobsChanged.tell?.(job.sessionId);
+}
+
+// The owner moves a command that runs in front of a call behind it, as the timeout does: the call's
+// wait ends at once, the call returns with the command's ID, and the command's end starts the
+// session's next turn like any background command's. False for one that is not in front of a call
+// (already behind, ended, an exec session, or one a restart cut).
+// `which` names it by its ID or by its tool call's, or neither: the newest of the session's that is in front.
+export function moveToBackground(sessionId: string, which: { job?: string; call?: string } = {}, by: "owner" = "owner"): boolean {
+  const mine = [...jobs.values()].filter((x) => x.sessionId === sessionId);
+  const j = which.job ? findJob(sessionId, which.job) : which.call ? mine.findLast((x) => x.callId === which.call) : mine.findLast((x) => x.mover && !x.mover.signal.aborted);
+  if (!j || j.ended !== undefined || j.background || !j.mover || j.mover.signal.aborted) return false;
+  j.movedBy = by;
+  j.mover.abort();
+  return true;
 }
 
 // What a background command's end wakes: its session, which the daemon starts a turn of with `text`

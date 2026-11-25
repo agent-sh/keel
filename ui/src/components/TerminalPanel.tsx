@@ -3,7 +3,8 @@
 // with their output streaming in, and the owner's stop, copy and re-run. A
 // command line at the foot runs the owner's own command in the session's folder.
 import { copyOrSay } from "../lib/copy.ts";
-import { Check, ChevronRight, Copy, Play, RotateCw, Square } from "lucide-react";
+import { ArrowDownToLine, Check, ChevronRight, Copy, Play, RotateCw, Square } from "lucide-react";
+import { MOVABLE, moveToBackground } from "../lib/background.ts";
 import { useEffect, useId, useRef, useState } from "react";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
 import { Ansi } from "./Ansi.tsx";
@@ -148,6 +149,9 @@ function Row({ session, e, now, open, onToggle, onRun }: { session: string; e: E
           </span>
         </button>
         <span className="flex shrink-0 items-center gap-0.5">
+          {e.state === "running" && e.job_id && e.by !== "owner" && MOVABLE.has(e.tool ?? "") && (
+            <button type="button" title="Move to the background" aria-label="Move to the background" data-testid="term-background" onClick={(ev) => void moveToBackground(session, { job: e.job_id }, ev.currentTarget)} className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><ArrowDownToLine className="size-3.5" /></button>
+          )}
           {live(e) && e.job_id && (
             <button type="button" title="Stop" data-testid="term-stop" onClick={stop} className="grid size-6 place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"><Square className="size-3" /></button>
           )}

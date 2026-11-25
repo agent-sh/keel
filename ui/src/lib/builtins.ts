@@ -20,6 +20,7 @@ import { confirmAction } from "../components/Confirm.tsx";
 import { switchSession } from "./switch.ts";
 import { open as openSwitcher } from "./switcher.ts";
 import { stopHere } from "./automation.ts";
+import { BACKGROUND_COMMAND_KEYS, commandInFront, moveToBackground } from "./background.ts";
 import { leaveHome, leaveLook, lookNow, stopHeld, underHome } from "./looks.ts";
 
 const current = () => {
@@ -143,6 +144,7 @@ registerCommand(
   { id: "look-back-card", label: "Leave the look", group: "Bridge", keys: "shift+escape", where: "from one of its cards", inInput: true, words: "leave look return card", when: () => !!lookNow() && !!(document.activeElement?.closest("[data-ask-card]") || document.activeElement?.closest("[data-ask-part]")), run: () => { const l = lookNow(); if (l) leaveLook(l.id); } },
   { id: "home-back", label: "Back to the session the pane holds", group: "Bridge", keys: "escape", where: "from a look or the start page", when: () => !!underHome(), run: () => void leaveHome() },
   { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", where: "while a turn works or a compaction is written", when: () => (current()?.phase === "working" || getState().status[current()?.id ?? ""]?.kind === "compacting") && !current()?.parent_id && !lookNow(), run: () => { if (!stopHeld(current()!.id)) void stopHere(current()!); } },
+  { id: "command-background", label: "Move the running command to the background", group: "Session", keys: BACKGROUND_COMMAND_KEYS, inInput: true, where: "while a command runs in front of a call", words: "shell bash terminal detach job wait", when: () => !!current() && commandInFront(), run: () => void moveToBackground(current()!.id) },
   { id: "to-parent", label: "Back to the session that started this agent", group: "Session", keys: "escape", where: "in an agent's session", when: () => !!current()?.parent_id && !lookNow(), run: () => navigate({ name: "session", id: current()!.parent_id! }) },
   { id: "stop-agent", label: "Stop this agent", group: "Session", when: () => current()?.phase === "working" && !!current()?.parent_id, run: () => void stopHere(current()!) },
   { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { archive(current()!).catch(reportError); navigate({ name: "new" }); } },
