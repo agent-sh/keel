@@ -310,6 +310,8 @@ test("a failure box leads with plain words, links its address and offers what fi
     const foot = page.getByTestId("turn-end").last().locator("xpath=..");
     expect((await box.boundingBox())!.y).toBeLessThan((await foot.boundingBox())!.y);
     await expect(foot.getByTestId("turn-reason")).toHaveText("Failed");
+    // A turn that sent nothing has no figures: no 0.0s, no 0 in, no 0 out under the failure.
+    await expect(foot.getByTestId("turn-end")).toHaveText("Failed");
     await expect(foot.locator('[data-testid^="rowaction-"]')).toHaveCount(0);
     await expect(foot.getByTestId("copy-reply")).toHaveCount(0);
     await expect(foot.getByTestId("resume")).toHaveCount(0);
