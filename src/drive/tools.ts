@@ -25,11 +25,10 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
     input_schema: { type: "object", properties, required, additionalProperties: false }, run,
   });
 
-  // Words a model is about to put at another session's prompt, kept as digests before they go (src/drive/sent.ts):
-  // with the transcript the session writes here, or told to the Keel of the machine it runs on (nothing is sent
-  // when that Keel cannot be told).
+  // Words a model is about to put at another session's prompt, kept as digests before they go (src/drive/sent.ts),
+  // and told to the Keel of the machine the session runs on (nothing is sent when that Keel cannot be told).
   const sent = async (f: Found, text: string) => {
-    const digests = noteSent(store, text, !f.host && typeof f.raw.transcript === "string" ? f.raw.transcript : undefined);
+    const digests = noteSent(store, text);
     if (f.host) {
       try { await farSent(f.host, digests); } catch (e) { throw new DriveError("NOT_SENT", `the Keel on ${f.host} could not be told what is sent (${(e as Error).message}). Nothing was sent.`); }
     }

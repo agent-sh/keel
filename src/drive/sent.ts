@@ -7,41 +7,32 @@
 // The sends made before this record began are read once from the stored history, on the read thread
 // (backfillSent); until that read is done no prompt of a copy counts as typed. A send to a session on another
 // machine is told to that machine's Keel before it goes (farSent), since a copy made there reads its own record.
-// A digest is dropped once the transcript it went into is gone from its store (pruneSent): no copy can be made of
-// it any more. Not by its age alone: a session the owner resumes keeps writing the transcript it began, which can
-// outlive any age (Claude Code removes a transcript only when it was not written for its cleanup period). One whose
-// transcript the drive did not name is kept.
-import { existsSync } from "node:fs";
-import { basename, join } from "node:path";
+// The digests are kept: a few a send, and a transcript the drive sent into can be copied for as long as it lives,
+// wherever its folder moves.
 import type { Store } from "../core/store.ts";
 import { digestsOf, sentBy, type SentAsk } from "./sent-read.ts";
-import { codexHome } from "../integrations/import/codex.ts";
 
-const DAY = 24 * 3600_000;
-
-const SCHEMA = `CREATE TABLE IF NOT EXISTS drive_sends (digest TEXT NOT NULL, transcript TEXT NOT NULL DEFAULT '', sent_ms INTEGER NOT NULL, PRIMARY KEY (digest, transcript));
+const SCHEMA = `CREATE TABLE IF NOT EXISTS drive_sends (digest TEXT PRIMARY KEY, sent_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS drive_sends_state (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`;
 
-function keep(store: Store, digests: string[], transcript: string) {
+function keep(store: Store, digests: string[]) {
   if (!digests.length) return;
   store.migrate(SCHEMA);
-  const q = store.db.query("INSERT INTO drive_sends (digest, transcript, sent_ms) VALUES (?, ?, ?) ON CONFLICT(digest, transcript) DO UPDATE SET sent_ms = excluded.sent_ms");
+  const q = store.db.query("INSERT OR IGNORE INTO drive_sends (digest, sent_ms) VALUES (?, ?)");
   const now = Date.now();
-  store.db.transaction(() => { for (const d of digests) q.run(d, transcript, now); })();
+  store.db.transaction(() => { for (const d of digests) q.run(d, now); })();
 }
 
-// Kept before the words are sent, with the transcript the session writes when the drive names it. Returns the
-// digests, for a far machine's Keel.
-export function noteSent(store: Store, text: string, transcript?: string): string[] {
+// Kept before the words are sent. Returns the digests, for a far machine's Keel.
+export function noteSent(store: Store, text: string): string[] {
   const digests = digestsOf(text);
-  keep(store, digests, transcript ?? "");
-  pruneSent(store);
+  keep(store, digests);
   return digests;
 }
 
 // Digests another machine's Keel sent for a send into a session here (the fleet's paired route).
 export function noteDigests(store: Store, digests: unknown[]) {
-  keep(store, digests.filter((d): d is string => typeof d === "string" && /^\d{1,24}$/.test(d)).slice(0, 4096), "");
+  keep(store, digests.filter((d): d is string => typeof d === "string" && /^\d{1,24}$/.test(d)).slice(0, 4096));
 }
 
 // Whether a recorded prompt is words a model sent through the drive. True while the history's sends are not read
@@ -64,31 +55,12 @@ export async function backfillSent(store: Store, run: (a: SentAsk) => Promise<{ 
   for (const table of ["events", "code_calls"] as const) {
     for (let after = 0; ; ) {
       const r = await run({ after, span, table });
-      keep(store, r.digests, "");
+      keep(store, r.digests);
       if (r.next === null) break;
       after = r.next;
     }
   }
   store.db.query("INSERT OR REPLACE INTO drive_sends_state (k, v) VALUES ('backfilled', ?)").run(Date.now());
-}
-
-// A transcript's file in its store, where its harness may have moved it (Codex moves an archived rollout).
-const present = (path: string) => existsSync(path) || (/\/rollout-[^/]+\.jsonl$/.test(path) && existsSync(join(codexHome(), "archived_sessions", basename(path))));
-
-// Drops the digests whose transcript is gone, at most once a day; a digest sent within the day stays (its file may
-// not be written yet).
-export function pruneSent(store: Store, now = Date.now()) {
-  try {
-    const last = store.db.query<{ v: number }, []>("SELECT v FROM drive_sends_state WHERE k = 'pruned'").get()?.v ?? 0;
-    if (now - last < DAY) return;
-    const paths = store.db.query<{ transcript: string }, [number]>("SELECT DISTINCT transcript FROM drive_sends WHERE transcript != '' AND sent_ms < ?").all(now - DAY).map((r) => r.transcript);
-    const gone = paths.filter((p) => !present(p));
-    const del = store.db.query("DELETE FROM drive_sends WHERE transcript = ? AND sent_ms < ?");
-    store.db.transaction(() => {
-      for (const p of gone) del.run(p, now - DAY);
-      store.db.query("INSERT OR REPLACE INTO drive_sends_state (k, v) VALUES ('pruned', ?)").run(now);
-    })();
-  } catch {} // no table yet: nothing to prune
 }
 
 // Tells the Keel of the machine an outside session runs on (its agent view's host name) the digests of a send,
