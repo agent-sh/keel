@@ -3,7 +3,7 @@ import { shoot } from "./shots.ts";
 
 // Feature: a session row says one state, and the bar above a session says its reason in words.
 // The row's mark is its state. The rows that call the owner (needs you, failed, declined) are in ink
-// and one step heavier; what is new is in ink at the row's own weight (reading it moves
+// and one step heavier; what is new is in ink and a half step heavier, a session at work is in ink, the rest is quiet (reading it moves
 // nothing), says "New" to a reader and has a dot at the row's right end (outside its end slot); the open row is in ink. The row's end is one
 // slot: the age of every row (where its bucket changes, read or not), with the word of a row that waits
 // on the owner (you) or was declined before it. The time and
@@ -59,6 +59,9 @@ test("a row says one state, in one weight, and the line above the list is one qu
     expect(await style(page, fresh, ".k-row-title", "color"), "a row with news is in the ink").not.toBe(await style(page, seen, ".k-row-title", "color"));
     expect(await style(page, asks, ".k-row-title", "color"), "a row that needs the owner is in ink").not.toBe(await style(page, seen, ".k-row-title", "color"));
     expect(await style(page, failed, ".k-row-title", "color")).toBe(await style(page, asks, ".k-row-title", "color"));
+    // News is a half step: a list of many unread rows is not a wall of bold, and what calls the owner is heavier still.
+    expect(Number(await style(page, fresh, ".k-row-title", "fontWeight")), "news is a half step heavier, not a bold").toBeLessThanOrEqual(500);
+    expect(Number(await style(page, asks, ".k-row-title", "fontWeight")), "what calls the owner is heavier than news").toBeGreaterThan(Number(await style(page, fresh, ".k-row-title", "fontWeight")));
     // What calls the owner is never lighter than news.
     expect(Number(await style(page, asks, ".k-row-title", "fontWeight")), "a row that needs the owner is not lighter than news").toBeGreaterThanOrEqual(Number(await style(page, fresh, ".k-row-title", "fontWeight")));
     expect(await style(page, failed, ".k-row-title", "fontWeight")).toBe(await style(page, asks, ".k-row-title", "fontWeight"));
@@ -93,6 +96,14 @@ test("a row says one state, in one weight, and the line above the list is one qu
     // No mark or dot of its own in the sentence: the rows' marks say each state.
     await expect(line.locator(".k-mark")).toHaveCount(0);
     await shoot(page, "quiet-rows-01-list");
+    const working = await make("Quiet rows: one at work");
+    await request.put(`/api/sessions/${working}/permissions`, { data: { mode: "full-auto" } });
+    await request.post(`/api/sessions/${working}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 120" } }])}` } });
+    // A session at work is in ink, not the grey of a row at rest: it reads before the rows that need nothing.
+    await expect(row(page, working)).toHaveAttribute("data-watch", "work", { timeout: 15_000 });
+    expect(await style(page, working, ".k-row-title", "color"), "a row at work is in ink").toBe(await style(page, fresh, ".k-row-title", "color"));
+    expect(await style(page, working, ".k-row-title", "color"), "a row at work is not the grey of one at rest").not.toBe(await style(page, seen, ".k-row-title", "color"));
+    await shoot(page, "quiet-rows-01b-working");
     // Read, the row steps back to the weight and ink of a seen one.
     await request.post(`/api/sessions/${fresh}/marks`, { data: { unread: false } });
     await expect(row(page, fresh)).not.toHaveAttribute("data-unread", "true");

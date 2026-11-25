@@ -421,13 +421,15 @@
 .k-row-title { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-row-name { flex: 1 1 auto; height: 1.5rem; padding: 0 0.375rem; margin: -0.125rem -0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--fg); font-size: inherit; font-weight: inherit; outline: none; box-shadow: 0 0 0 2px var(--ring); }
 /* What calls the owner (needs them, failed, declined) is in ink and one step heavier: the rarest rows
-   stand out first. News at rest is in ink at the row's own weight, so reading it changes no width; the
-   open row is in ink too, and the rest steps back. The row's end then holds one thing. */
+   stand out first. News at rest is in ink and a half step heavier, a session at work is in ink, and the rest
+   steps back, so a list of many unread rows is not a wall. The open row is in ink too. The row's end then holds one thing. */
 .k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); font-weight: 600; }
 .k-row[data-unread]:not([data-gone]):is([data-watch="done"], [data-watch="idle"], [data-watch="stop"]) .k-row-title { color: var(--fg); }
 /* News at rest is the title's weight: a session with something new reads heavier than one you have seen, and no second dot
    stands in the row beside the state's. */
-.k-row[data-news]:not([data-gone]) .k-row-title { font-weight: 600; }
+.k-row[data-news]:not([data-gone]) .k-row-title { font-weight: 500; }
+/* A session at work reads first of the rows that need nothing: its title is in ink, not the quiet grey of a row at rest. */
+.k-row[data-watch="work"]:not([data-gone], [data-offline]) .k-row-title { color: var(--fg); }
 /* A quiet row's time is in its tooltip where it says what the row above said (Sidebar.tsx, calm). */
 .k-row-time[data-calm] { display: none; }
 /* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
