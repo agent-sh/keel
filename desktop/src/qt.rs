@@ -724,10 +724,14 @@ impl Win {
             Some(Asked1::Copying) => {
                 self.gate.borrow_mut().arm(Instant::now());
             }
-            Some(Asked1::Microphone) => {
-                if self.gate.borrow_mut().arm_mic(Instant::now()) {
+            Some(Asked1::Microphone(id)) => {
+                // The engine is told first and the answer follows on the same pipe, so the page
+                // asks the engine only once it can answer.
+                let ok = self.gate.borrow_mut().arm_mic(Instant::now());
+                if ok {
                     self.inner.send(&json!({ "t": "mic", "win": self.id }));
                 }
+                self.tell(&json!({ "mic": { "id": id, "ok": ok } }));
             }
             Some(Asked1::Copy(id, text)) => {
                 let ok = self.gate.borrow_mut().take(Instant::now());

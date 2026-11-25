@@ -731,6 +731,8 @@ public:
                 && p.origin().toString(QUrl::RemoveUserInfo | QUrl::RemovePath | QUrl::RemoveQuery | QUrl::RemoveFragment) == page->origin
                 && QDateTime::currentMSecsSinceEpoch() <= page->micUntil;
             page->micUntil = 0;
+            if (probing)
+                say({{"t", "probe"}, {"s", QString("PERMISSION audio_only=%1 given=%2").arg(p.permissionType() == QWebEnginePermission::PermissionType::MediaAudioCapture ? "true" : "false", mine ? "true" : "false")}});
             if (mine)
                 p.grant();
             else
@@ -1515,6 +1517,10 @@ int main(int argc, char **argv)
         flags += " --enable-blink-features=BlockingFocusWithoutUserActivation";
     // A local page has no use for calls between browsers: they find no address of this machine.
     flags += " --force-webrtc-ip-handling-policy=disable_non_proxied_udp";
+    // The check's own mode (--probe): the engine's fake audio device stands in for a microphone, so the
+    // permission path is proved on a machine that has none. The engine's own prompt stays: only the app answers.
+    if (probing)
+        flags += " --use-fake-device-for-media-stream";
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS", flags);
 
     QApplication::setDesktopFileName(appId);

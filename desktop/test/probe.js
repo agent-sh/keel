@@ -133,6 +133,25 @@
     if (d.copied && d.copied.id >= 9000) say(`COPIED id=${d.copied.id} ok=${d.copied.ok}`);
     if (d.pasted && d.pasted.id >= 9000) say(`PASTED id=${d.pasted.id} refused=${!!d.pasted.refused} text=${JSON.stringify(d.pasted.text ?? null)} images=${(d.pasted.images || []).length}${d.pasted.images && d.pasted.images[0] ? ` size=${d.pasted.images[0].width}x${d.pasted.images[0].height} from=${(d.pasted.from || []).join("x")} chars=${d.pasted.images[0].data.length}` : ""} failed=${!!d.pasted.failed}`);
   });
+  // The microphone: what the page itself asks of the engine (dictation does) and how the engine answered, and the
+  // check's own requests at a press (F2: with no word to the app first; F3: with the word, as a camera too; Shift F3: with the word, twice at once).
+  const gum = navigator.mediaDevices && navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  const kinds = (c) => `audio=${!!(c && c.audio)} video=${!!(c && c.video)}`;
+  const mic = async (tag, c) => {
+    try { const st = await gum(c); say(`MIC ${tag} granted ${kinds(c)} tracks=${st.getTracks().map((t) => t.kind).join("+")}`); st.getTracks().forEach((t) => t.stop()); return true; }
+    catch (err) { say(`MIC ${tag} refused ${kinds(c)} ${err && err.name}`); return false; }
+  };
+  if (gum) navigator.mediaDevices.getUserMedia = (c) => {
+    say(`MIC page asked ${kinds(c)}`);
+    return gum(c).then((st) => { say(`MIC page granted ${kinds(c)} tracks=${st.getTracks().map((t) => t.kind).join("+")}`); return st; }, (err) => { say(`MIC page refused ${kinds(c)} ${err && err.name}`); throw err; });
+  };
+  // The app's answers to the page's own word about the microphone (dictation says it before it asks the engine).
+  addEventListener("keel-shell", (e) => { const m = e.detail && e.detail.mic; if (m && m.id < 9000) say(`MIC told ok=${m.ok}`); });
+  const announce = (id) => new Promise((done) => {
+    const on = (e) => { if (e.detail && e.detail.mic && e.detail.mic.id === id) { removeEventListener("keel-shell", on); say(`MIC announced id=${id} ok=${e.detail.mic.ok}`); done(); } };
+    addEventListener("keel-shell", on);
+    window.keelShell.post({ t: "microphone", id });
+  });
   const copy = (id, text) => { window.keelShell.post({ t: "copying" }); window.keelShell.post({ t: "copy", id, text }); };
   addEventListener("keydown", (e) => {
     // Another origin.
@@ -145,6 +164,12 @@
     else if (e.key === "F10" && raw) { say("OFFERING"); const a = document.createElement("a"); a.href = `${raw}&download=1`; a.download = "shell-probe.html"; document.body.append(a); a.click(); a.remove();
       // And once more by itself, when the owner's press is long past: a script keeps no file.
       setTimeout(() => { say("OFFERING-LATE"); const b = document.createElement("a"); b.href = `${raw}&download=1`; b.download = "shell-probe.html"; document.body.append(b); b.click(); b.remove(); }, 12000); }
+    // The microphone with no word to the app first: refused.
+    if (e.key === "F2") void mic("unannounced", { audio: true });
+    // With the word, a camera as well is refused.
+    if (e.key === "F3" && !e.shiftKey) void (async () => { await announce(9101); await mic("camera", { audio: true, video: true }); })();
+    // With the word, two audio requests at once: the engine that asks every time gives one and refuses the other.
+    if (e.key === "F3" && e.shiftKey) void (async () => { await announce(9102); await Promise.all([mic("first", { audio: true }), mic("second", { audio: true })]); })();
     // A copy at this press, and one four seconds later that no press allowed.
     if (e.key === "F7") { copy(9001, "copied-by-the-check"); setTimeout(() => copy(9002, "planted-without-a-press"), 4000); }
     // A paste at this press, of a picture no larger than the page keeps one.

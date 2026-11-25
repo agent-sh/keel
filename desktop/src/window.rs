@@ -261,6 +261,11 @@ impl Win {
         settings.set_javascript_can_access_clipboard(false);
         // A microphone for the page, only through the permission handler below.
         settings.set_enable_media_stream(true);
+        // The check's own mode (KEEL_DESKTOP_PROBE): the engine's fake audio device stands in for a microphone,
+        // so the permission path is proved on a machine that has none. Nothing else changes.
+        if std::env::var_os("KEEL_DESKTOP_PROBE").is_some() {
+            settings.set_enable_mock_capture_devices(true);
+        }
         if let Some(features) = webkit::Settings::all_features() {
             for f in (0..features.length()).filter_map(|i| features.get(i)) {
                 if f.identifier().as_deref() == Some("AsyncClipboardAPI") {
@@ -354,8 +359,10 @@ impl Win {
                 Some(Asked1::Copying) => {
                     win.gate.borrow_mut().arm(Instant::now());
                 }
-                Some(Asked1::Microphone) => {
-                    win.gate.borrow_mut().arm_mic(Instant::now());
+                Some(Asked1::Microphone(id)) => {
+                    // The answer is told after the arming, and the page asks the engine only on it.
+                    let ok = win.gate.borrow_mut().arm_mic(Instant::now());
+                    win.tell(&serde_json::json!({ "mic": { "id": id, "ok": ok } }));
                 }
                 Some(Asked1::Copy(id, text)) => {
                     let ok = win.gate.borrow_mut().take(Instant::now());
@@ -480,6 +487,9 @@ impl Win {
         win.view.connect_permission_request(move |_, req| {
             let audio_only = req.downcast_ref::<webkit::UserMediaPermissionRequest>().is_some_and(|r| r.is_for_audio_device() && !r.is_for_video_device());
             let given = audio_only && weak.upgrade().is_some_and(|w| w.showing.get() == Showing::App && w.gate.borrow_mut().take_mic(Instant::now()));
+            if std::env::var_os("KEEL_DESKTOP_PROBE").is_some() {
+                println!("PROBE PERMISSION audio_only={audio_only} given={given}");
+            }
             if given {
                 req.allow();
             } else {

@@ -19,6 +19,7 @@
 #   desktop/test/e2e.sh                         an X11 workspace
 #   KEEL_E2E_UNTIL=tray-list desktop/test/e2e.sh   only as far as the tray's list of sessions
 #   KEEL_E2E_UNTIL=panel desktop/test/e2e.sh       only as far as a side panel popped out and docked back
+#   KEEL_E2E_UNTIL=microphone desktop/test/e2e.sh  only as far as the microphone's cases
 #   KEEL_E2E_ROOT=DIR desktop/test/e2e.sh       the same, of a package unpacked in DIR (see below)
 #   KEEL_E2E_BACKEND=kwin desktop/test/e2e.sh   a native Wayland workspace (KWin): also the clipboard's
 #                                               picture and the focus a launch's activation token gives
@@ -484,6 +485,59 @@ fi
 $A key --id "$WS" F6 > /dev/null 2>&1
 check "a paste is read at the owner's press" "wait_for 5 \"grep -aq '^PROBE PASTED id=9003 refused=false' '$D/shell.out'\""
 check "a paste four seconds later, with no press, is refused" "wait_for 8 \"grep -aq '^PROBE PASTED id=9004 refused=true' '$D/shell.out'\""
+
+# --- 5b4. the microphone: dictation asks the engine for one audio-only request at the owner's key, and nothing else is given
+# (The engine's own fake audio device stands in for a microphone, in the check's mode: --probe for Qt, mock
+# capture devices for the system web view. A stand-in provider lists the speech models, so a recording has
+# somewhere to go: its words are the same every time.)
+(bun "$HERE/speech-host.ts" > "$D/speech-host.out" 2>&1 & echo $! > "$D/host-speech.pid")
+if wait_for 20 "grep -q '^READY ' '$D/speech-host.out'"; then
+  speech_url=$(sed -n 's/^READY \([^ ]*\) .*/\1/p' "$D/speech-host.out"); heard=$(sed -n 's/^READY [^ ]* //p' "$D/speech-host.out")
+  api /api/providers/endpoints/speech-e2e "{\"config\":{\"id\":\"speech-e2e\",\"label\":\"Speech E2E\",\"base_url\":\"$speech_url/v1\",\"wire\":\"chat_completions\",\"auth\":\"none\"}}" PUT > /dev/null
+  count_mic() { grep -ac "^PROBE MIC $1" "$D/shell.out" || true; }
+  $A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+  draft() { said AT | sed -n 's/.* draft=\([0-9]*\) .*/\1/p'; }
+  # With no word to the app first, the request of a script is refused; with it, a camera as well is refused,
+  # and of two audio requests at once one is given.
+  $A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+  $A key --id "$WS" F2 > /dev/null 2>&1
+  check "an audio request with no word to the app first is refused" "wait_for 15 \"grep -aq '^PROBE MIC unannounced refused audio=true video=false' '$D/shell.out'\""
+  $A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+  $A key --id "$WS" F3 > /dev/null 2>&1
+  check "with the word, a request for a camera as well is refused" "wait_for 20 \"grep -aq '^PROBE MIC camera refused audio=true video=true' '$D/shell.out'\""
+  was=$(draft); mic_mark=$(lines); granted=$(count_mic 'page granted audio=true video=false'); asked=$(count_mic 'page asked')
+  audio_given() { count_mic 'page granted audio=true video=false'; }
+  audio_refused() { count_mic 'page refused'; }
+  given=$(grep -ac '^PROBE PERMISSION audio_only=true given=true' "$D/shell.out" || true)
+  refused=$(audio_refused)
+  $A key --id "$WS" alt+shift+d > /dev/null 2>&1
+  check "the dictation key makes the page ask the engine for one audio-only request, and the engine gives it" "wait_for 30 '[ \"\$(audio_given)\" = $((granted + 1)) ]' && [ \"\$(audio_refused)\" = $refused ]"
+  # (The page's own word and the app's answer to it come first: the engine is asked only on the answer.)
+  check "the app decided that one request: audio only, given" "[ \"\$(grep -ac '^PROBE PERMISSION audio_only=true given=true' '$D/shell.out')\" = $((given + 1)) ]"
+  check "the page asked the engine only after the app answered its word" "since $mic_mark | grep -a '^PROBE MIC ' | head -2 | tr '\\n' ' ' | grep -q '^PROBE MIC told ok=true PROBE MIC page asked audio=true video=false'"
+  shot 05b4-dictating
+  sleep 3
+  $A key --id "$WS" alt+shift+d > /dev/null 2>&1
+  check "the words of the recording reach the message box (the key again ends it)" "wait_for 30 '[ \"\$(draft)\" -ge $((was + ${#heard})) ]'"
+  # Two audio requests at once, with the word first. Qt WebEngine asks the app for each, so one is given and the other
+  # refused. The system web view keeps a grant for the page it was given to and gives a second request of that page
+  # without asking again (README, The microphone), so there both may be given; never a refusal of the first.
+  two() { grep -ac "^PROBE MIC \(first\|second\) $1" "$D/shell.out" || true; }
+  $A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+  $A key --id "$WS" shift+F3 > /dev/null 2>&1
+  if [ "$ENGINE" = qt ]; then
+    check "of two audio requests at once, with the word, one is given and the other refused" "wait_for 20 '[ \"\$(two granted)\" = 1 ] && [ \"\$(two refused)\" = 1 ]'"
+  else
+    check "of two audio requests at once, with the word, the first is given" "wait_for 20 '[ \"\$(two granted)\" -ge 1 ]' && grep -aq '^PROBE MIC first granted' '$D/shell.out'"
+  fi
+  sig -TERM "$(cat "$D/host-speech.pid")"
+  api /api/providers/endpoints/speech-e2e '' DELETE > /dev/null 2>&1 || true
+else
+  fail "the stand-in speech provider did not start (see $D/speech-host.out)"
+fi
+
+# KEEL_E2E_UNTIL=microphone: stop here (a quick run of the microphone's cases alone).
+if [ "${KEEL_E2E_UNTIL:-}" = microphone ]; then echo "$((n - fails)) of $n passed (stopped after the microphone)"; [ "$fails" = 0 ]; exit; fi
 
 # --- 5c. the main frame stays on the daemon's origin
 (python3 "$HERE/listener.py" "$FOREIGN" 200 12 > "$D/foreign.out" 2>&1 &)

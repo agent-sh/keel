@@ -16,6 +16,7 @@ export type Shell = {
   // { t: "start" }, and the
   // clipboard, which the page reaches only through the app there:
   // { t: "paste", id }, { t: "copying" }, { t: "copy", id, text };
+  // { t: "microphone", id }: the page is about to ask for the microphone, at the owner's press;
   // { t: "can", paste, saving }: what this page does with the app (below), said as it loads;
   // { t: "paste-through" }: the paste the app handed over is the engine's to make;
   // { t: "saving", id, url }: a file the page is about to offer;
@@ -78,9 +79,10 @@ export function hexOf(color: string, ctx: Pick<CanvasRenderingContext2D, "fillSt
 //   pasted, copied: the app's answers to a paste and a copy the page asked for, by number.
 //   paste: the owner pressed the paste keys, which the app took from the engine (lib/paste-key.ts).
 //   saving: the app's answer to a file the page announced: kept or not.
+//   mic: the app's answer to the word that the page is about to ask for the microphone: armed or not.
 // (`failed`: the clipboard held a picture the app could not make ready.)
 export type Pasted = { id: number; text?: string | null; images: { type: string; data: string }[]; refused?: boolean; failed?: boolean };
-export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; says?: string; scale?: "up" | "down" | "reset"; pasted?: Pasted; copied?: { id: number; ok: boolean }; saving?: { id: number; ok: boolean }; paste?: boolean; reloaded?: "stopped" };
+export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; says?: string; scale?: "up" | "down" | "reset"; pasted?: Pasted; copied?: { id: number; ok: boolean }; saving?: { id: number; ok: boolean }; mic?: { id: number; ok: boolean }; paste?: boolean; reloaded?: "stopped" };
 
 // The clipboard in the app. The app's web view gives a page no clipboard of its own (no frame
 // in it may read or write one), so the page asks the app, which answers only at the owner's own
@@ -92,7 +94,7 @@ const waiting = new Map<number, (answer: unknown) => void>();
 if (shell) {
   addEventListener("keel-shell", (e) => {
     const d = (e as CustomEvent<ShellTold>).detail;
-    const answer = d?.pasted ?? d?.copied ?? d?.saving;
+    const answer = d?.pasted ?? d?.copied ?? d?.saving ?? d?.mic;
     if (!answer) return;
     waiting.get(answer.id)?.(answer);
     waiting.delete(answer.id);
@@ -121,11 +123,11 @@ export function pastedFiles(images: Pasted["images"]): File[] {
 export const shellPaste = (edge?: number) => ask<Pasted>({ t: "paste", ...(edge ? { edge } : {}) });
 export const shellCopying = () => shell?.post({ t: "copying" });
 // The page is about to ask for the microphone, at the owner's press: the app gives it once, to this page only.
-// (The word goes first on the app's pipe; a short moment lets it arrive before the engine's own request.)
+// The app answers once the one request is armed, and the page asks the engine only then: no guess at how
+// long the word takes to arrive. (No answer in three seconds, as from an app before this one: ask anyway.)
 export async function shellMicrophone(): Promise<void> {
   if (!shell) return;
-  shell.post({ t: "microphone" });
-  await new Promise((done) => setTimeout(done, 80));
+  await ask<{ id: number; ok: boolean }>({ t: "microphone" }, 3000);
 }
 // A file the page offers. The app keeps a file only when the page itself announced that very
 // address at the owner's press, a moment before: a frame of content, which cannot say anything
