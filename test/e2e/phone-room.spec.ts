@@ -103,6 +103,11 @@ test.describe("on a phone", () => {
       expect(hint).toMatch(/Send steers/);
       // With Stop, the queue button and Send on the right, the effort and the context ring are still whole.
       for (const id of ["effort-picker", "context-meter", "stop", "queue-button", "send"]) await expect(pane.getByTestId(id)).toBeInViewport({ ratio: 1 });
+      // The box is two rows: the ring and the queue button stand in the text's row, the tools row holds the chips, Stop and Send.
+      const rows = await page.evaluate(() => { const r = (id: string) => document.querySelector(`.k-station[data-helm] [data-testid="${id}"]`)!.getBoundingClientRect(); const rem = parseFloat(getComputedStyle(document.documentElement).fontSize); return { box: r("composer-box").height / rem, tools: r("composer-tools").top, ring: r("context-meter").bottom, queue: r("queue-button").bottom }; });
+      expect(rows.box).toBeLessThanOrEqual(7);
+      expect(rows.ring).toBeLessThanOrEqual(rows.tools + 2);
+      expect(rows.queue).toBeLessThanOrEqual(rows.tools + 2);
       // A model change is taken by the running turn too, so the picker stays a tap away: its mark alone,
       // whole in the row (its name showed as its first letters under the row's fade), named for a
       // screen reader, and it opens the menu.

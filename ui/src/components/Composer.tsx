@@ -1112,7 +1112,7 @@ const SessionComposer = memo(function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? "Send steers, the list button queues" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files and sessions" : "Describe the task, / for commands, @ for files and sessions"}
+        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? "Send steers, or queue it" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files and sessions" : "Describe the task, / for commands, @ for files and sessions"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
@@ -1244,7 +1244,7 @@ const SessionComposer = memo(function SessionComposer({
               title={`Queue for after this turn (${queueKeys})`}
               aria-label="Queue for after this turn"
               aria-keyshortcuts={isMac ? "Meta+Shift+Enter" : "Control+Shift+Enter"}
-              className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg disabled:opacity-40"
+              className="k-queue grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg disabled:opacity-40"
             >
               <ListPlus className="size-4" />
             </button>
@@ -1261,7 +1261,7 @@ const SessionComposer = memo(function SessionComposer({
               aria-label={stopLabel ?? "Stop the turn"}
               aria-description={stopLeaves}
               data-leaves={stopLeaves || undefined}
-              className={cn("grid h-8 place-items-center rounded-full border border-line-strong text-fg hover:bg-hover", stopLabel ? "flex gap-1.5 px-3 text-caption font-medium" : "size-8")}
+              className={cn("k-stop grid h-8 place-items-center rounded-full border border-line-strong text-fg hover:bg-hover", stopLabel ? "flex gap-1.5 px-3 text-caption font-medium" : "size-8")}
             >
               <Square className="size-3 fill-current" />
               {stopLabel && <span>{stopLabel}</span>}

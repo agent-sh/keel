@@ -1342,6 +1342,14 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
      effort, the model and the mode, a finger each. The attach button is back when the turn ends (a paste or a drop still attaches). */
   .k-compose-tools[data-busy] .k-attach { display: none; }
   .k-compose-tools[data-busy] .k-compose-send { gap: 0.125rem; }
+  /* The ring and the queue button stand at the right end of the text's own row, so the tools row holds the
+     chips, Stop and Send alone: a running phone box is two rows, not three. The text keeps clear of both. */
+  .k-compose-tools[data-busy] .k-compose-send { display: contents; }
+  .k-compose-tools[data-busy] .k-compose-send > :is(.k-ctx-meter, .k-queue) { position: absolute; top: 0.125rem; }
+  .k-compose-tools[data-busy] .k-compose-send > .k-queue { right: 0.375rem; }
+  .k-compose-tools[data-busy] .k-compose-send > .k-ctx-meter { right: calc(var(--spacing-tap) + 0.375rem); }
+  .k-box:has(> .k-compose-tools[data-busy]) > textarea { padding-right: calc(2 * var(--spacing-tap) + 0.5rem); }
+  .k-compose-tools[data-busy] .k-compose-send > .k-stop { margin-left: auto; }
   .k-station-head { padding: 0.625rem 0.875rem 0.5rem 1rem; }
   .k-station-title { font-size: var(--text-read); }
   .k-station-tools .k-tool-move { display: none; }
