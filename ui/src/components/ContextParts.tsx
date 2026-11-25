@@ -13,7 +13,7 @@ function Section({ id, title, tokens, open, children }: { id: string; title: str
     <details open={open} className="group" data-testid="context-part" data-part={id}>
       <summary className="flex cursor-default list-none items-center gap-1 rounded-md py-0.5 text-caption [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-3 shrink-0 text-faint transition-transform group-open:rotate-90" />
-        <span className="min-w-0 flex-1 truncate font-medium text-fg">{title}</span>
+        <span className="min-w-0 flex-1 truncate font-medium text-fg max-md:whitespace-normal">{title}</span>
         <span className="tabular-nums text-fg" data-testid="context-part-tokens">{tok(tokens)}</span>
       </summary>
       <div className="ml-4 mt-0.5 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 text-caption tabular-nums">{children}</div>
@@ -23,7 +23,7 @@ function Section({ id, title, tokens, open, children }: { id: string; title: str
 
 const Row = ({ label, tokens, id }: { label: string; tokens: number; id: string }) => (
   <div className="contents" data-testid="context-row" data-row={id}>
-    <span className="truncate text-muted" title={label}>{label}</span>
+    <span className="truncate text-muted max-md:whitespace-normal max-md:break-words" title={label}>{label}</span>
     <span className="text-right">{tok(tokens)}</span>
   </div>
 );
@@ -40,7 +40,7 @@ export function ContextPartsView({ parts }: { parts: ContextParts }) {
       <Section id="tools" title="Tool definitions" tokens={tools.tokens} open>
         {live.map((g) => (
           <div key={g.key} className="contents" data-testid="tools-group" data-group={g.key}>
-            <span className="truncate text-muted" title={g.label}>
+            <span className="truncate text-muted max-md:whitespace-normal max-md:break-words" title={g.label}>
               {g.label} <span className="text-faint">{g.kind === "builtin" ? `${g.tools}` : `${g.carried} of ${g.tools}`}</span>
             </span>
             <span className="text-right">{tok(g.tokens)}</span>

@@ -1717,5 +1717,33 @@ for (const size of SIZES) {
         } finally { await ctx.close(); }
       }
     });
+    // MOB-S107
+    test("the context popup names every part of the system prompt and the tools whole, not cut by an ellipsis", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Context popup");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: "hello" } });
+        await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${id}`);
+            await page.getByTestId("composer-open").tap();
+            await page.getByTestId("context-meter").tap();
+            const popup = page.getByTestId("context-popup");
+            await expect(popup.getByTestId("context-part")).toHaveCount(3);
+            // Every part open: the prompt's blocks, the tool sources, the messages.
+            const parts = popup.getByTestId("context-part");
+            for (let i = 0; i < 3; i++) if (!(await parts.nth(i).evaluate((d) => (d as HTMLDetailsElement).open))) await parts.nth(i).locator("summary").tap();
+            await expect(popup.getByTestId("context-row").first()).toBeVisible();
+            expect(await phoneProblems(popup), `the context popup at ${scale * 100}% text`).toEqual([]);
+            await inside(page, popup);
+            await shoot(page, `phone-surfaces-44-context-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }
