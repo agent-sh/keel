@@ -543,8 +543,9 @@ under `~/.cache/keel-work/bun/research/`.
   the prompts a person typed are the owner's words: the reader marks them `typed` from its format's own record
   shapes, the copy keeps the mark only for such a source, in an import the owner started, and never for words
   Keel's drive sent there (`src/drive/sent.ts`: digests of the whole and of each line, the history's sends read
-  once before any mark is kept, a far machine's Keel told before the send), and the gate reads it through `src/safety/imported.ts`; the rest of the copy stays
-  outside. A search result lists an address (a page fetch of that address, or of a page above it with no query, goes on;
+  once before any mark is kept, run_code's calls included, all kept; a far machine's Keel told before the
+  send, or once it can when its build is older), and the gate reads it through `src/safety/imported.ts`; the rest of
+  the copy stays outside. A search result lists an address (a page fetch of that address, or of a page above it with no query, goes on;
   a path or query it did not list, a header, a cookie or a body is a send). A text is read whole, in chunks,
   with a turn of the loop between them; a text past 8 MB, or more than 50,000 targets in a session, leaves the
   session "unbounded" (an agent's report brings it up; a full book drops the model's own sightings before
