@@ -115,6 +115,40 @@
     const box = document.querySelector("textarea");
     say(`LOOP at=${m[1]} box=${box ? box.value.length : -1} frameChars=${frameChars} frameFocus=${frameFocus} offered=${offered} active=${document.activeElement ? document.activeElement.tagName : ""}`);
   }, 500);
+  // What the walk of the owner's daily use reads (e2e-walk.sh): the open side panel, the state dots that work and
+  // whether their glow runs, and where the lines over the message box have their buttons (for the check's pointer).
+  let uiSaid = "";
+  setInterval(() => {
+    const sp = document.querySelector("[data-testid=side-panel]");
+    const work = [...document.querySelectorAll(".k-mark[data-watch=work]")].filter((m) => m.getBoundingClientRect().width > 0);
+    const running = document.getAnimations().filter((a) => a.playState === "running" && /breathe/.test(a.animationName || "")).length;
+    const now = document.querySelector("[data-testid=dock-now]");
+    const at = `UI side=${sp ? sp.dataset.panel : "-"} work=${work.length} breathing=${running} now=${!!now} agents=${!!document.querySelector("[data-testid=background-popup]")}`;
+    if (at !== uiSaid) { uiSaid = at; say(at); }
+  }, 500);
+  let whereSaid = "";
+  setInterval(() => {
+    const ids = ["dock-changes-open", "dock-folder", "dock-agents", "dock-plan", "dock-action-path"];
+    const at = ids.map((id) => {
+      const b = document.querySelector(`[data-testid=${id}]`);
+      if (!b) return `${id}=-`;
+      const r = b.getBoundingClientRect();
+      return `${id}=${Math.round(r.left + r.width / 2)},${Math.round(r.top + r.height / 2)}`;
+    }).join(" ") + ` size=${innerWidth}x${innerHeight}`;
+    if (at !== whereSaid) { whereSaid = at; say(`WHERE ${at}`); }
+  }, 700);
+  // The microphone, as the page asks for it at the owner's press (ui/src/lib/speech.ts): F11 says so to the app and asks
+  // the engine; F12 asks without saying. What the engine answered is said: no device here, so a granted request
+  // ends in "NotFoundError" and a refused one in "NotAllowedError".
+  const mic = async (said, tag) => {
+    if (said && window.keelShell) { window.keelShell.post({ t: "microphone" }); await new Promise((r) => setTimeout(r, 80)); }
+    try { const st = await navigator.mediaDevices.getUserMedia({ audio: true }); st.getTracks().forEach((t) => t.stop()); say(`MIC ${tag} granted`); }
+    catch (e) { say(`MIC ${tag} ${e && e.name}`); }
+  };
+  addEventListener("keydown", (e) => {
+    if (e.key === "F11") mic(true, "said");
+    if (e.key === "F12") mic(false, "unsaid");
+  }, true);
   // Calls between browsers: a local page has no use for them, and they must find no address here.
   setTimeout(() => {
     if (typeof RTCPeerConnection === "undefined") return say("RTC none");

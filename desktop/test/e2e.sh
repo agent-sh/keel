@@ -233,6 +233,11 @@ check "the tray host has the app's mark" "wait_for 10 \"grep -q 'ITEM ' '$D/tray
 sleep 3
 read -r X Y W H _ <<< "$(geometry)"
 check "the window has the remembered size (1920x1040, got ${W}x${H})" "[ \"$W\" = 1920 ] && [ \"$H\" = 1040 ]"
+# A press of the owner's on the page where it holds nothing: the margin between the rail and the conversation's column
+# (a click in the column's top lands on the hover actions of the prompt's row).
+blank_click() { $A click --id "$WS" $((X + 540)) $((Y + 600)) > /dev/null 2>&1; sleep 0.5; }
+# KEEL_E2E_ONLY=walk: the walk through the owner's daily use (e2e-walk.sh) alone, from here.
+if [ "${KEEL_E2E_ONLY:-}" = walk ]; then . "$HERE/e2e-walk.sh"; echo "$((n - fails)) of $n passed (the walk alone)"; [ "$fails" = 0 ]; exit; fi
 shot 01-window-light
 # The page is drawn, not only alive: with the light theme the middle of the window's picture is
 # light. (A window whose engine draws where the window cannot show it is black, and every other
@@ -459,9 +464,6 @@ else
   echo "# note: the paste of a copied picture needs wl-copy and the native Wayland backend"
 fi
 
-# A press of the owner's on the page where it holds nothing: the margin between the rail and the conversation's column
-# (a click in the column's top lands on the hover actions of the prompt's row).
-blank_click() { $A click --id "$WS" $((X + 540)) $((Y + 600)) > /dev/null 2>&1; sleep 0.5; }
 
 # --- 5b3. the clipboard through the app: at the owner's press, and not without one
 blank_click
