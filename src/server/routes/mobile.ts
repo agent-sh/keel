@@ -3,7 +3,7 @@
 import { renderSVG } from "uqr";
 import { atDesk, liveWait, get as alertOf, opensErrors, registerChannel, settings as alertSettings, type Alert } from "../../automation/alerts.ts";
 import { costLine, costs } from "../../core/wait-rank.ts";
-import { digestOf, PushBudget, WINDOW_MS, type Held } from "../../integrations/mobile/budget.ts";
+import { digestOf, needsOf, PushBudget, WINDOW_MS, type Held } from "../../integrations/mobile/budget.ts";
 import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
 import { PhoneShown } from "../../integrations/mobile/shown.ts";
@@ -147,6 +147,17 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { digest: items.length, device: r.device_id });
     if (recs.length) changed();
   };
+  // What needs the owner when the hour has no slot left: the one alone, several in one push of their own.
+  const sendOver = async (items: Due[]) => {
+    if (items.length === 1) return sendAlone(items[0]!.alert);
+    const d = needsOf(items);
+    const recs = await push.send(mobile, mobile.globalSeq(), {
+      kind: "agent", session_id: null, high: true,
+      data: { title: d.title, body: d.body, ek: "digest", pri: "high", reply: "0" },
+    });
+    for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { needs: items.length, device: r.device_id });
+    if (recs.length) changed();
+  };
   // What an earlier run of the daemon pushed in the last hour: the device that got the most of it.
   const pushedBefore = () => {
     const by = new Map<string, number[]>();
@@ -158,6 +169,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     limit: () => alertSettings().push_per_hour,
     alone: (d) => sendAlone(d.alert),
     digest: sendDigest,
+    over: sendOver,
     moot: (d) => !d.open(),
     seed: pushedBefore,
   });
@@ -185,7 +197,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         stillOpen,
         atDesk: async () => atDesk() || (await screenUnlocked()),
         sleep: (ms) => Bun.sleep(ms),
-        send: () => budget.offer({ id: a.id, ts: a.ts, kind: a.kind, wait: a.data?.wait, alert: a, open: stillOpen }),
+        send: () => budget.offer({ id: a.id, ts: a.ts, kind: a.kind, wait: a.data?.wait, label: a.title, alert: a, open: stillOpen }),
       });
     },
     // Nothing in the session is unread any more (answered or read on the

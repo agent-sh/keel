@@ -47,10 +47,11 @@ function PushBudgetRow({ limit }: { limit: number }) {
   };
   const line = !b ? "" : [
     b.limit > 0 ? `${b.sent} of ${b.limit} pushes in the last hour` : `${b.sent} pushes in the last hour, no limit`,
+    b.over ? `${b.over} past the budget for what needs you` : "",
     b.held ? `${b.held} held${b.held_need ? `, ${b.held_need} of them need${b.held_need === 1 ? "s" : ""} you` : ""}${b.next_slot ? `, told at ${clock(b.next_slot)}` : ""}` : "",
   ].filter(Boolean).join(" · ");
   return (
-    <SettingRow label="Pushes an hour" hint="The phone gets at most this many pushes an hour: what needs you first, then failures, reports and finished work. The rest come in one push, such as 4 more: 2 done, 1 failed, 1 report. Nothing that needs you is dropped. 0 is no limit.">
+    <SettingRow label="Pushes an hour" hint="The phone gets at most this many pushes an hour: what needs you first, then failures, reports and finished work. The rest come in one push, such as 4 more: 2 done, 1 failed, 1 report. Nothing that needs you is dropped or held more than 10 minutes: when the hour is spent it comes in one push of its own, past this number. 0 is no limit.">
       <div className="flex items-center gap-3">
         {line && <span role="status" data-testid="push-budget-state" data-sent={b?.sent} data-held={b?.held} className="text-caption text-muted">{line}</span>}
         <input

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { digestOf, freeSlots, nextFree, plan, PushBudget, rank, SETTLE_MS, tierOf, WINDOW_MS, type Held } from "./budget.ts";
+import { digestOf, freeSlots, nextFree, needsOf, NEED_MS, plan, PushBudget, rank, SETTLE_MS, tierOf, WINDOW_MS, type Held } from "./budget.ts";
 
 const row = (id: string, kind: string, ts: number, key?: number): Held => ({ id, ts, kind, ...(key === undefined ? {} : { wait: { key } }) });
 
@@ -29,6 +29,13 @@ test("a plan tells what fits alone, folds the rest in one digest that has the la
   // A done notice goes last: it is what the digest takes first.
   const mixed = [row("d", "finished", 0), ...needs.slice(0, 2)];
   expect(plan(mixed, 2)).toMatchObject({ alone: [{ id: "n0" }], digest: [{ id: "n1" }, { id: "d" }] });
+});
+
+test("the push for what needs you when no slot is free says how many and which", () => {
+  expect(needsOf([{ ...row("a", "question", 1), label: "Which color?" }, { ...row("b", "approval", 2), label: "Run rm?" }]).body).toBe("2 need you: Which color?; Run rm?");
+  const five = Array.from({ length: 5 }, (_, i) => ({ ...row(`q${i}`, "question", i), label: `Q${i}` }));
+  expect(needsOf(five)).toEqual({ title: "5 need you", body: "5 need you: Q0; Q1; Q2; and 2 more" });
+  expect(needsOf([row("x", "approval", 1)]).body).toBe("1 needs you");
 });
 
 test("slots of the hour: a push leaves it an hour later", () => {
@@ -64,6 +71,7 @@ function rig(limit: number, seed: number[] = []) {
     seed: () => seed,
     alone: async (i) => void told.push(i.id),
     digest: async (items) => void told.push(`digest:${items.map((i) => i.id).join("+")}`),
+    over: async (items) => void told.push(`over:${items.map((i) => i.id).join("+")}`),
     moot: (i) => !open.has(i.id),
   });
   const advance = async (ms: number) => {
@@ -82,18 +90,22 @@ function rig(limit: number, seed: number[] = []) {
   return { b, told, open, advance, now: () => now, set: (n: number) => (limit = n) };
 }
 
-test("eight needs trickling in over a minute: six pushes, the other two held and told in one digest when the hour's first push is an hour old", async () => {
+test("eight needs trickling in over a minute: six pushes, the seventh past the budget at once, the eighth ten minutes after it and not an hour", async () => {
   const r = rig(6);
-  const start = r.now();
   const done: Promise<void>[] = [];
   for (let i = 0; i < 8; i++) { r.open.add(`n${i}`); done.push(r.b.offer(row(`n${i}`, "approval", i))); await r.advance(5000); }
   await r.advance(SETTLE_MS);
-  expect(r.told).toEqual(["n0", "n1", "n2", "n3", "n4", "n5"]);
-  expect(r.b.status()).toMatchObject({ limit: 6, sent: 6, held: 2, held_need: 2, next_slot: start + SETTLE_MS + WINDOW_MS });
-  await r.advance(WINDOW_MS);
+  expect(r.told).toEqual(["n0", "n1", "n2", "n3", "n4", "n5", "over:n6"]);
+  const at = r.now();
+  expect(r.b.status()).toMatchObject({ limit: 6, sent: 6, over: 1, held: 1, held_need: 1 });
+  // The eighth is held until ten minutes after the last push past the budget.
+  const next = r.b.status().next_slot!;
+  expect(next - at).toBeLessThan(NEED_MS);
+  expect(next - at).toBeGreaterThan(NEED_MS - 60_000);
+  await r.advance(next - at + 1);
   await Promise.all(done);
-  expect(r.told).toEqual(["n0", "n1", "n2", "n3", "n4", "n5", "digest:n6+n7"]);
-  expect(r.b.status()).toMatchObject({ held: 0 });
+  expect(r.told).toEqual(["n0", "n1", "n2", "n3", "n4", "n5", "over:n6", "over:n7"]);
+  expect(r.b.status()).toMatchObject({ held: 0, over: 2 });
 });
 
 test("a burst that comes at once is ranked together: five alone, one digest of the rest", async () => {
@@ -106,21 +118,28 @@ test("a burst that comes at once is ranked together: five alone, one digest of t
   expect(r.told).toEqual(["n6", "n0", "n1", "n2", "n3", "digest:n4+n5+done"]);
 });
 
-test("with the hour full, what comes is held and told at the next free slot, as one digest, and never longer", async () => {
+test("with the hour full, needs go out at once in one push past the budget, then at most every ten minutes; the rest is held for a slot", async () => {
   const start = 10_000_000;
-  // Three pushes of the hour already, at 10, 20 and 30 minutes before the start would be too old: use minutes inside it.
-  const r = rig(3, [start - 50 * 60_000, start - 40 * 60_000, start - 30 * 60_000]);
+  const r = rig(3, [start - 30 * 60_000, start - 20 * 60_000, start - 10 * 60_000]);
   const all: Promise<void>[] = [];
-  for (const id of ["a", "b", "c"]) { r.open.add(id); all.push(r.b.offer(row(id, "approval", 1))); }
+  const offer = (id: string, kind: string) => { r.open.add(id); all.push(r.b.offer(row(id, kind, 1))); };
+  for (const [id, kind] of [["a", "approval"], ["b", "question"], ["c", "approval"], ["done", "finished"]] as const) offer(id, kind);
   await r.advance(SETTLE_MS);
-  expect(r.told).toEqual([]);
-  expect(r.b.status()).toMatchObject({ sent: 3, held: 3, held_need: 3, next_slot: start - 50 * 60_000 + WINDOW_MS });
-  // One is answered while it waits: nothing is told of it.
-  r.open.delete("b");
-  // The oldest push leaves the hour after ten minutes: one slot, so the two left go in one digest.
-  await r.advance(10 * 60_000 + 1000);
+  expect(r.told).toEqual(["over:a+b+c"]);
+  expect(r.b.status()).toMatchObject({ sent: 3, over: 1, held: 1, held_need: 0, next_slot: start - 30 * 60_000 + WINDOW_MS });
+  // A second need two minutes later waits for the ten minutes; one answered while held is not told.
+  await r.advance(2 * 60_000);
+  offer("d", "approval"); offer("e", "approval");
+  await r.advance(SETTLE_MS);
+  expect(r.told).toEqual(["over:a+b+c"]);
+  expect(r.b.status()).toMatchObject({ held: 3, held_need: 2 });
+  r.open.delete("e");
+  await r.advance(NEED_MS - 2 * 60_000 - SETTLE_MS);
+  expect(r.told).toEqual(["over:a+b+c", "over:d"]);
+  // The finished one waits for the slot: the oldest push of the hour is an hour old 30 minutes from the start.
+  await r.advance(WINDOW_MS);
   await Promise.all(all);
-  expect(r.told).toEqual(["digest:a+c"]);
+  expect(r.told).toEqual(["over:a+b+c", "over:d", "done"]);
   expect(r.b.status()).toMatchObject({ held: 0 });
 });
 

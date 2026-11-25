@@ -1,15 +1,21 @@
 // The budget of interruptions: the phone gets at most N pushes an hour. The
 // ones whose wait costs most go as they are; the rest fold into one digest push
 // ("4 more: 1 needs you, 2 done, 1 failed") that takes the last free slot of the
-// hour. Nothing that needs the owner is dropped: it is told alone while a slot is
-// free, else inside the digest, and when no slot is free it is held until the
-// next one opens (the oldest push of the hour leaves it), never longer.
+// hour. Nothing that needs the owner is dropped, and none waits long: it is told
+// alone while a slot is free, else inside the digest. When no slot is free, what
+// needs the owner is held at most `NEED_MS`: it goes out as one push of its own
+// ("2 need you: ...") at most every `NEED_MS`, counted past the budget, not in it.
+// What does not need the owner is held until the next slot opens (the oldest push
+// of the hour leaves it).
 // The decisions are pure (`plan`, `nextFree`, `digestOf`); `PushBudget` runs them.
 import { byCost } from "../../core/wait-rank.ts";
 
 export const WINDOW_MS = 60 * 60_000;
 // What is told in one go: items that come within this span are ranked together.
 export const SETTLE_MS = 2000;
+// The longest a question or an approval waits for a push when the hour's slots are spent: a turn and
+// its agents wait on it, so it goes out past the budget, at most one push of that kind in this span.
+export const NEED_MS = 10 * 60_000;
 // Six an hour: in the owner's last 30 days of interruptions (128 of them) no hour of the
 // last three days passed 4 and 6 of 46 busy hours passed 6, all of them bursts of approvals.
 export const DEFAULT_PER_HOUR = 6;
@@ -30,7 +36,7 @@ const WORD: Record<Tier, (n: number) => string> = {
   done: (n) => `${n} done`,
 };
 
-export type Held = { id: string; ts: number; kind: string; wait?: { key: number } | null };
+export type Held = { id: string; ts: number; kind: string; wait?: { key: number } | null; label?: string };
 
 // The order of attention: what needs the owner first, then failures, then what an agent says, then
 // what finished; inside a class the costliest wait first, then the one asked first (src/core/wait-rank.ts).
@@ -69,13 +75,29 @@ export function digestOf(items: readonly Held[]): { title: string; body: string;
   return { title: `${items.length} more`, body: `${items.length} more: ${words.join(", ")}`, need: n.need, failed: n.failed };
 }
 
-export type BudgetStatus = { limit: number; sent: number; held: number; held_need: number; next_slot: number | null; window_ms: number };
+// "2 need you: Which color?; Run rm?": the push for what needs the owner when no slot of the hour is free.
+export function needsOf(items: readonly Held[]): { title: string; body: string } {
+  const n = items.length, title = n === 1 ? "1 needs you" : `${n} need you`;
+  const names = items.slice(0, 3).map((x) => x.label?.trim()).filter(Boolean) as string[];
+  const rest = n - Math.min(n, 3);
+  return { title, body: names.length ? `${title}: ${names.join("; ")}${rest ? `; and ${rest} more` : ""}` : title };
+}
+
+export type BudgetStatus = {
+  limit: number; sent: number; held: number; held_need: number;
+  // The pushes of the last hour that went past the budget (what needs the owner, with no slot free).
+  over: number;
+  // When the first of what is held goes out; what needs the owner never later than NEED_MS after its last such push.
+  next_slot: number | null; window_ms: number;
+};
 
 type Hooks<T extends Held> = {
   limit: () => number;
   // One alert, told alone; the digest of what was folded. Each resolves when the push left (a throw is each item's failure).
   alone: (item: T) => Promise<void>;
   digest: (items: T[]) => Promise<void>;
+  // What needs the owner, told past the budget when no slot is free: one alone, or several in one push.
+  over: (items: T[]) => Promise<void>;
   // Answered or read while it waited: nothing is told of it.
   moot: (item: T) => boolean;
   now?: () => number;
@@ -87,6 +109,7 @@ type Hooks<T extends Held> = {
 
 export class PushBudget<T extends Held> {
   private sent: number[] | undefined;
+  private over: number[] = [];
   private queue: { item: T; done: () => void; fail: (e: unknown) => void }[] = [];
   private settle: unknown;
   private later: unknown;
@@ -108,10 +131,18 @@ export class PushBudget<T extends Held> {
   status(): BudgetStatus {
     const now = this.now(), limit = this.h.limit(), live = this.queue.filter((q) => !this.h.moot(q.item));
     const sent = inWindow(this.stamps(), now);
+    const need = live.filter((q) => tierOf(q.item.kind) === "need").length;
+    const slot = limit > 0 ? nextFree(sent, now, limit) : now;
     return {
-      limit, sent: sent.length, held: live.length, held_need: live.filter((q) => tierOf(q.item.kind) === "need").length,
-      next_slot: live.length && limit > 0 ? nextFree(sent, now, limit) : null, window_ms: WINDOW_MS,
+      limit, sent: sent.length, held: live.length, held_need: need, over: inWindow(this.over, now).length,
+      next_slot: live.length ? (need ? Math.min(slot, this.needAt(now)) : slot) : null, window_ms: WINDOW_MS,
     };
+  }
+
+  // When what needs the owner may next go past the budget: now, or NEED_MS after the last such push.
+  private needAt(now: number): number {
+    const last = Math.max(0, ...inWindow(this.over, now, NEED_MS));
+    return last ? last + NEED_MS : now;
   }
 
   private flush() {
@@ -123,10 +154,16 @@ export class PushBudget<T extends Held> {
     for (const q of this.queue) (this.h.moot(q.item) ? q.done() : waiting.push(q));
     this.queue = [];
     const by = new Map(waiting.map((q) => [q.item.id, q]));
-    const { alone, digest, held } = plan(waiting.map((q) => q.item), freeSlots(this.sent, now, limit));
+    const { alone, digest, held: all } = plan(waiting.map((q) => q.item), freeSlots(this.sent, now, limit));
+    // No slot free: what needs the owner goes out past the budget unless such a push left less than NEED_MS ago.
+    const needs = all.filter((i) => tierOf(i.kind) === "need");
+    const past = needs.length && this.needAt(now) <= now ? needs : [];
+    const held = all.filter((i) => !past.includes(i));
     const settle = (items: T[], sending: Promise<void>) => sending.then(() => items.forEach((i) => by.get(i.id)!.done()), (e) => items.forEach((i) => by.get(i.id)!.fail(e)));
     for (const i of alone) { this.sent.push(now); void settle([i], this.h.alone(i)); }
     if (digest.length) { this.sent.push(now); void settle(digest, this.h.digest(digest)); }
+    if (past.length) { this.over.push(now); void settle(past, this.h.over(past)); }
+    this.over = inWindow(this.over, now);
     this.queue = held.map((i) => by.get(i.id)!);
     this.arm();
   }
@@ -136,8 +173,10 @@ export class PushBudget<T extends Held> {
     (this.h.clear ?? clearTimeout)(this.later as never);
     this.later = undefined;
     if (!this.queue.length) return;
-    const at = nextFree(this.stamps(), this.now(), this.h.limit());
-    const ms = Math.max(SETTLE_MS, at - this.now());
+    const now = this.now();
+    let at = nextFree(this.stamps(), now, this.h.limit());
+    if (this.queue.some((q) => tierOf(q.item.kind) === "need")) at = Math.min(at, this.needAt(now));
+    const ms = Math.max(SETTLE_MS, at - now);
     this.later = (this.h.timer ?? setTimeout)(() => { this.later = undefined; this.flush(); }, ms);
     (this.later as { unref?: () => void })?.unref?.();
   }

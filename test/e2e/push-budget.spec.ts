@@ -85,10 +85,35 @@ test("eight questions in a minute give the limit's worth of pushes, the last of 
     expect(alone.length + folded + (await budget()).held).toBe(ASKS);
     expect((await open()).length).toBe(ASKS);
 
+    // The hour is spent. A ninth question is not held for it: it goes out at once, past the budget (the
+    // limit's count stays), and a tenth, right after, waits for the ten minutes since that push, still unanswered.
+    const more = async (i: number) => {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: `Pick ${i}` });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto", sandbox: "off" }, "PUT");
+      await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([asks(i)])}` });
+    };
+    await more(ASKS);
+    await expect.poll(async () => (await budget()).over, { timeout: 60_000 }).toBe(1);
+    const past = sent.map((m) => m.data).filter((p) => p.t !== "live").slice(LIMIT);
+    expect(past).toHaveLength(1);
+    // (One alone is told as itself, with its own words and its session.)
+    expect(past[0].title).toBe("Question: Pick 8");
+    expect(past[0].ek).not.toBe("digest");
+    expect(await budget()).toMatchObject({ sent: LIMIT, over: 1 });
+    await more(ASKS + 1);
+    await expect.poll(async () => (await budget()).held_need, { timeout: 60_000 }).toBe(1);
+    const b = await budget();
+    expect(b).toMatchObject({ sent: LIMIT, over: 1, held: 1 });
+    expect(b.next_slot - Date.now()).toBeLessThan(10 * 60_000);
+    expect(sent.map((m) => m.data).filter((p) => p.t !== "live")).toHaveLength(LIMIT + 1);
+    expect(((await call("/api/alerts")).alerts as any[]).filter((a) => a.kind === "question" && a.open)).toHaveLength(ASKS + 2);
+
     // The page says the limit and the hour's count.
     await page.goto(`${d.url}/settings/alerts`);
     const line = page.getByTestId("push-budget-state");
     await expect(line).toContainText(`${LIMIT} of ${LIMIT} pushes in the last hour`);
+    await expect(line).toContainText("1 past the budget for what needs you");
+    await expect(line).toContainText("1 held, 1 of them needs you");
     await expect(page.getByTestId("push-per-hour")).toHaveValue(String(LIMIT));
     await shoot(page, "push-budget-01-settings");
     // The limit is the owner's to set, in the page.
