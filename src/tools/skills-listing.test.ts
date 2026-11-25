@@ -74,3 +74,28 @@ test("loading a skill does not change the listing block a kept prompt is compare
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A plugin's copy of a skill the owner keeps in a folder too is the same file under another name: the model is
+// offered it once, and the second name still loads.
+test("a second copy of a skill file is not listed, and still loads by its name", async () => {
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { discoverSkills, listable } = await import("./skills.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "skills-same-"));
+  mkdirSync(join(dir, ".git"));
+  const put = (root: string, folder: string, text: string) => {
+    mkdirSync(join(dir, root, folder), { recursive: true });
+    writeFileSync(join(dir, root, folder, "SKILL.md"), text);
+  };
+  const text = "---\ndescription: Plans a release\n---\nSteps\n";
+  try {
+    put(".claude/skills", "release", text);
+    put(".agents/skills", "release-copy", text);
+    put(".agents/skills", "release-other", text.replace("Steps", "Other steps"));
+    const found = discoverSkills(dir).filter((s) => s.scope === "project");
+    expect(found.map((s) => [s.name, s.same])).toEqual([["release", undefined], ["release-copy", "release"], ["release-other", undefined]]);
+    expect(listable(found).map((s) => s.name)).toEqual(["release", "release-other"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

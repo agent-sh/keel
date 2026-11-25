@@ -81,9 +81,11 @@ export const surfaceRoutes: RouteModule = (deps) => {
     user_invocable: s.userInvocable, model_invocable: s.modelInvocable, argument_hint: s.argumentHint,
     trust: s.scope === "project" ? trustOf(cwd, held(s)) : null,
     // What it costs: its line in every session's listing, and its body when loaded (about 4 characters a token).
-    listing_tokens: s.modelInvocable ? Math.ceil((s.name.length + s.description.length + 4) / 4) : 0,
+    // A second copy of a skill file is not listed: the name of the first, and no cost.
+    same: s.same ?? null,
+    listing_tokens: s.modelInvocable && !s.same ? Math.ceil((s.name.length + s.description.length + 4) / 4) : 0,
     // Past the listing's budget its description is left out (the least loaded first).
-    name_only: s.modelInvocable && s.enabled && nameOnly.has(s.name),
+    name_only: s.modelInvocable && s.enabled && !s.same && nameOnly.has(s.name),
   });
   const held = (s: Skill) => (s.kind === "command" ? s.file : s.dir);
   const skillHome = (cwd: string, scope: string) => (scope === "project" ? join(rootOf(cwd) ?? cwd, ".agents", "skills") : join(configDir(), "skills"));

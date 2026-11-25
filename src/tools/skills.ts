@@ -34,6 +34,7 @@ export type Skill = {
   kind: "skill" | "command"; // a SKILL.md folder, or a command file (<name>.md)
   root: string; // the folder it was found in (~/.claude/skills, <repo>/.agents/skills)
   enabled: boolean; // the owner can turn a skill off without deleting it
+  same?: string; // the skill found first whose file is byte for byte this one (a plugin's copy of a folder the owner keeps too): not listed to the model, still loaded by name
   data?: string; // a plugin's folder that outlives its updates (${CLAUDE_PLUGIN_DATA})
   plugin?: string; // the installed plugin it came with
   // Claude Code's frontmatter for how it runs (code.claude.com/docs/en/skills):
@@ -194,6 +195,7 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
   const out = new Map<string, Skill>();
   const off = skillsOff();
   const seenReal = new Set<string>();
+  const firstOf = new Map<string, string>();
   // `held` is what the trust pin decides on: a skill's folder, a command's file.
   const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"], prefix = "", chosen = false, unit?: { id: string; data: string }) => {
     let real: string;
@@ -212,13 +214,17 @@ export function discoverSkills(cwd: string, heldBack?: { name: string; dir: stri
     const desc = skillDescription(data, body);
     // A folder the owner chose (another harness's skills, a plugin) keeps every skill it holds.
     if (scope === "personal" && !chosen && foreignSkill(name, desc, body)) return;
+    const enabled = !off.has(name);
+    const same = enabled ? firstOf.get(`${kind}\0${text}`) : undefined;
+    if (enabled && !same) firstOf.set(`${kind}\0${text}`, name);
     const args = Array.isArray(data.arguments) ? data.arguments : typeof data.arguments === "string" ? data.arguments.split(/\s+/).filter(Boolean) : [];
     out.set(name, {
       name, description: desc, dir: dirname(file), file, scope, kind,
       argumentHint: data["argument-hint"] || undefined,
       arguments: args,
       root,
-      enabled: !off.has(name),
+      enabled,
+      ...(same ? { same } : {}),
       ...(unit ? { data: unit.data, plugin: unit.id } : {}),
       ...frontFields(data),
     });
@@ -634,7 +640,9 @@ export const setSkillUsage = (u: typeof usage) => { const was = usage; usage = u
 
 // `window`: the context window of the session's model, in tokens.
 // `byUse` false: cut as if no skill was ever loaded.
-export function listingOf(cwd: string, window?: number, byUse = true, skills = discoverSkills(cwd).filter((s) => s.modelInvocable && s.enabled)) {
+// What the model is offered: a skill it may load and the owner has on, and not a second copy of one listed (`same`).
+export const listable = (skills: Skill[]) => skills.filter((s) => s.modelInvocable && s.enabled && !s.same);
+export function listingOf(cwd: string, window?: number, byUse = true, skills = listable(discoverSkills(cwd))) {
   const uses = (byUse ? usage?.uses() : undefined) ?? new Map<string, number>();
   return fitListing(skills.map((s) => ({ name: s.name, description: s.description, uses: uses.get(s.name) ?? 0 })), listingBudget(window));
 }
@@ -661,7 +669,7 @@ registerHooks({
   system: (s, model) => {
     const window = model && !model.context_assumed ? model.context : undefined;
     if (s.machine) return peerBlock(s, window);
-    const skills = discoverSkills(s.workspace).filter((k) => k.modelInvocable && k.enabled);
+    const skills = listable(discoverSkills(s.workspace));
     return {
       name: BLOCK,
       text: skillListing(s.workspace, window, true, skills),
@@ -678,7 +686,7 @@ async function peerBlock(s: { id: string; workspace: string }, window: number | 
   if ("error" in r) {
     return { name: BLOCK, text: `The skills on ${where}, where your tools run, could not be read just now, so no skills are offered in this session (this machine's own skills are not used there).`, data: JSON.stringify(["unreadable", where]) };
   }
-  const skills = r.skills.filter((k) => k.modelInvocable && k.enabled);
+  const skills = listable(r.skills);
   return {
     name: BLOCK,
     text: skillListing(s.workspace, window, true, skills, where),
