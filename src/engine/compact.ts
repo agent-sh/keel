@@ -678,9 +678,9 @@ export function excerpt(text: string, budget: number): string | null {
 
 // `capsule`: a fresh start of an agent's follow-up (src/engine/follow-up.ts):
 // its words are the harness's from the agent's records, not a model's summary.
-export function summaryMessage(data: { summary: string; trail_text?: string; fixed?: { key: string; text: string }[]; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[]; capsule?: boolean }): Message {
+export function summaryMessage(data: { summary: string; trail_text?: string; running_text?: string; fixed?: { key: string; text: string }[]; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[]; capsule?: boolean }): Message {
   const fixed = data.fixed?.length ? `\n\n[Instructions loaded before the compaction (instruction files of subfolders, skills, prompts), carried unchanged:]\n${data.fixed.map((f) => f.text).join("\n\n")}` : "";
-  const trail = data.trail_text ? `\n\n${data.trail_text}` : "";
+  const trail = (data.trail_text ? `\n\n${data.trail_text}` : "") + (data.running_text ? `\n\n${data.running_text}` : "");
   const head = data.capsule
     ? `[harness] This agent starts its new work fresh. The capsule of everything before this point:\n\n${data.summary}${trail}${fixed}`
     : `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}${trail}${fixed}`;

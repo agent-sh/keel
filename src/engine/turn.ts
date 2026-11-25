@@ -34,6 +34,7 @@ import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, CAP_SPENT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop, stopSays } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
+import { runningData } from "./running.ts";
 import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
 import { answers, callPaths, stoppedWaiting, unansweredText } from "../tools/fs-bound.ts";
 import { inputProblem } from "../tools/validate.ts";
@@ -3943,7 +3944,8 @@ export class Engine {
       return false;
     }
     this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
-    const ev = this.append(id, "compaction", data);
+    // What runs now (a prepared summary holds no such block: it would be old).
+    const ev = this.append(id, "compaction", { ...data, ...runningData(this.store, id) });
     this.emitSession(id);
     const session = this.store.session(id);
     if (session) void this.compacted(session, ev);
@@ -4277,7 +4279,7 @@ export class Engine {
       }
       if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
-        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(upto, summary, this.wordsBudget(st, opts.next), settled)), focus: opts.focus, auto: !!opts.auto,
+        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(upto, summary, this.wordsBudget(st, opts.next), settled)), ...runningData(this.store, id), focus: opts.focus, auto: !!opts.auto,
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);

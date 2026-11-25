@@ -8,6 +8,7 @@
 import { timed } from "../../admin/stall.ts";
 import type { Message, Session, StoredEvent } from "../../core/types.ts";
 import { checkpointAt, COMPACT_SHARE, contextTokens, headMoved, checkpointData, settle, STATEMENTS_FORMAT } from "../../engine/compact.ts";
+import { runningData } from "../../engine/running.ts";
 import { warmUntil } from "../../admin/telemetry.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { registerShared } from "../../tools/registry.ts";
@@ -159,7 +160,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
       handoffs.delete(s.id);
       const line = engine.lineage(s.id);
       append(s.id, "compaction", {
-        mode: "summary", ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(line, h)), auto: true, trigger: "model",
+        mode: "summary", ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(line, h)), ...runningData(store, s.id), auto: true, trigger: "model",
         tokens_before: contextTokens(line, s.model).used, label: "The model started a fresh context with a handoff note",
       });
       emitSession(s.id);
@@ -239,7 +240,7 @@ export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors
           // what follows stay verbatim after the summary.
           const before = line.slice(0, at);
           head = append(s.id, "compaction", {
-            mode: "summary", ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(before, summary)), focus, auto: false, trigger: "owner",
+            mode: "summary", ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(before, summary)), ...runningData(store, s.id), focus, auto: false, trigger: "owner",
             covered: line[at - 1]!.id, range: "up_to", from_event: ev.id, tokens_before: contextTokens(line, s.model).used, usage, model: res.model_id,
             label: "Summarized everything before a prompt; it and what follows stay as they were",
           });

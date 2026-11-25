@@ -558,3 +558,38 @@ test("a compaction the owner asked for is stopped by Stop: nothing stored, nothi
   await r.idle(id);
   expect(r.store.events(id).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
 });
+
+// A checkpoint names what still runs, from the session's state and not from the model's summary.
+test("a compaction lists the live agents and background commands, and nothing when none run", async () => {
+  const { startJob, stopJob } = await import("../tools/jobs.ts");
+  const { summaryMessage } = await import("./compact.ts");
+  const r = rig();
+  r.store.db.run("CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, parent_id TEXT, session_id TEXT, title TEXT, type TEXT, model TEXT, background INTEGER, status TEXT, created INTEGER)");
+  const history = (id: string) => {
+    r.store.append(id, "user", { text: "read it" });
+    r.store.append(id, "assistant", { blocks: [{ type: "text", text: "done" }], model: SMALL.id, stop: "end_turn", usage: { input: 10, cache_read: 100, cache_write: 0, output: 60 } });
+  };
+  const quiet = r.session(SMALL.id);
+  history(quiet);
+  const none = await r.engine.compactNow(quiet);
+  expect(none.data.running_text).toBeUndefined();
+  expect(JSON.stringify(summaryMessage(none.data))).not.toContain("Still running");
+
+  const id = r.session(SMALL.id);
+  history(id);
+  const add = (n: string, status: string) => r.store.db.run("INSERT INTO agents VALUES (?, ?, ?, ?, 'general', 'm', 1, ?, ?)", [n, id, `s-${n}`, `task of ${n}`, status, Date.now()]);
+  add("ag-one", "running"); add("ag-two", "waiting"); add("ag-done", "completed");
+  const job = startJob({ sessionId: id, command: "sleep 30", cwd: r.dir, logDir: join(r.dir, "jobs"), background: true });
+  const front = startJob({ sessionId: id, command: "sleep 31", cwd: r.dir, logDir: join(r.dir, "jobs"), background: false });
+  try {
+    const cp = await r.engine.compactNow(id);
+    const text = JSON.stringify(summaryMessage(cp.data));
+    expect(cp.data.running_text).toContain("ag-one running: task of ag-one");
+    expect(cp.data.running_text).toContain("ag-two waiting: task of ag-two");
+    expect(cp.data.running_text).toContain(`${job.id} since`);
+    expect(cp.data.running_text).toContain("sleep 30");
+    expect(cp.data.running_text).not.toContain("ag-done");
+    expect(cp.data.running_text).not.toContain("sleep 31");
+    expect(text.split("Still running at this compaction").length).toBe(2);
+  } finally { stopJob(job); stopJob(front); }
+});
