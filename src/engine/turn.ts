@@ -20,6 +20,7 @@ import { conceal } from "../core/conceal.ts";
 import { ownerPrompt, ownersMeta } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
+import { BRANCH_NOTE } from "../safety/branch-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
 import { chainOf, nativeContext, nativeMemory, nativeRoots, withoutPorted, type Native } from "./native-memory.ts";
 import { testBuild } from "../core/build.ts";
@@ -2180,6 +2181,22 @@ export class Engine {
     return false;
   }
 
+  // The first request of a turn on a branch that left turns which changed files: the files they left on
+  // disk are told once, at the tail (src/safety/branch-note.ts). Stored, so later requests carry the same bytes.
+  private async tellBranch(session: Session, events: readonly StoredEvent[]): Promise<boolean> {
+    for (const h of allHooks()) {
+      try {
+        const n = await h.branchNote?.(session, events);
+        if (!n) continue;
+        this.append(session.id, "note", { kind: BRANCH_NOTE, model: true, system: true, short: n.short, text: n.text, turns: n.turns });
+        return true;
+      } catch (e) {
+        this.errors.capture("server", e, { hook: "branchNote", session: session.id });
+      }
+    }
+    return false;
+  }
+
   // The model and effort a step of the turn runs at: the session's, or what an
   // inline skill named for the rest of the turn (Claude Code's skills
   // frontmatter: src/tools/skill-turn.ts). Its model is a listed one, by id or
@@ -3212,6 +3229,7 @@ export class Engine {
         const waits = st.info.id === session.model ? this.pins.waits(id) : undefined;
         if (waits === "now" || (waits && this.coldWhy(id, st.provider, st.info, events))) st = await this.step(session, session.model);
         if (await this.tellSwitch(id, events, st)) events = this.lineage(id);
+        if (steps === 1 && (await this.tellBranch(session, events))) events = this.lineage(id);
         if (st.info.id === session.model && this.tellPrompt(session, events)) events = this.lineage(id);
         const messages = toMessages(events);
         let res: ProviderResult;

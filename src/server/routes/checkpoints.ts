@@ -32,6 +32,7 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
     beforeTool: async (s, call) => void (s.machine || (await quiet("checkpoint before", () => c.before(s, call)))),
     afterTool: async (s, call) => void (s.machine || (await quiet("checkpoint after", () => c.after(s, call)))),
     turnEnd: async (s) => void (s.machine || (await quiet("checkpoint end", () => c.end(s)))),
+    branchNote: async (s, line) => (s.machine ? undefined : c.branchNote(s, line)),
   });
 
   // A restore while the folder is in use would race what writes there: a turn

@@ -175,6 +175,9 @@ export type TurnHooks = {
   // one, a report, a continuation after a restart).
   turnStart?: (s: Session) => void;
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
+  // The first request of a turn: a note for the model about the files that turns off its branch left on
+  // disk (src/safety/branch-note.ts). Asked once a turn; the engine stores the note, `turns` are the ones it tells.
+  branchNote?: (s: Session, line: readonly StoredEvent[]) => Promise<{ short: string; text: string; turns: number[] } | undefined>;
   // The model and effort the rest of the turn runs at in place of the session's
   // (an inline skill's frontmatter: src/tools/skill-turn.ts). `from`: what chose
   // them, said in the note. `wider`: the model may be on another provider.

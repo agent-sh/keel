@@ -8,13 +8,14 @@ import { isAbsolute, join, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import { detached, type ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
-import type { Session } from "../core/types.ts";
+import type { Session, StoredEvent } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { classifyCall } from "./gate.ts";
 import type { CallClass } from "./policy.ts";
 import { Shadow, type DiffResult, type FileChange } from "./shadow.ts";
 import { hunkPatch } from "./patch.ts";
+import { branchNote, leftTurns } from "./branch-note.ts";
 
 // A read, and a tool that acts on what Keel keeps for the session (ToolKind "own"), touch no file of the workspace.
 export const changesNoFiles = (cls: CallClass) => cls.kind === "read" || (cls.kind === "control" && !!cls.own);
@@ -485,6 +486,31 @@ export class Checkpoints {
     ].filter(Boolean).join(" ");
     const short = `Files restored: ${r.files.length}${r.failed.length ? `, ${r.failed.length} could not be` : ""}`;
     this.bus.emit({ t: "event", event: this.store.append(s.id, "note", { kind: "rewind", model: true, short, text }) });
+  }
+
+  // A turn's changed files never change: read once.
+  private turnFiles = new Map<string, string[]>();
+
+  // What the disk holds from turns the branch `line` does not contain, told once (src/safety/branch-note.ts).
+  async branchNote(s: Session, line: readonly StoredEvent[]): Promise<{ short: string; text: string; turns: number[] } | undefined> {
+    const starts = this.here(s).filter((c) => c.at === "start" && c.tree);
+    if (!starts.length) return undefined;
+    const left = leftTurns(starts.map((c) => c.turn), line);
+    if (!left.length) return undefined;
+    const rows = this.here(s);
+    const files = new Set<string>();
+    for (const turn of left) {
+      const start = starts.find((c) => c.turn === turn)!;
+      const end = rows.find((c) => c.turn === turn && c.at === "end" && c.tree);
+      if (!end) continue;
+      let got = this.turnFiles.get(start.id);
+      if (!got) {
+        got = await this.shadow(s.workspace).changed(start.tree, end.tree, start.paths ?? undefined);
+        this.turnFiles.set(start.id, got);
+      }
+      for (const f of got) files.add(f);
+    }
+    return files.size ? { ...branchNote([...files]), turns: left } : undefined;
   }
 
   // Take back one hunk of what the session changed in a file since the start
