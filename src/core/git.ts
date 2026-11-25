@@ -313,7 +313,12 @@ const INTO = "-c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.altern
 const RECEIVE_PACK = `git ${INTO} -c receive.denyCurrentBranch=refuse -c receive.autogc=false receive-pack`;
 const UPLOAD_PACK = `git ${INTO} upload-pack`;
 
-function viewConfig(w: Where): string {
+// Beyond its remotes' addresses, what a repository's own config says of where they lead: `rewrites`, its url
+// rewrites (url.<base>.insteadOf and .pushInsteadOf, as git lists the keys), and `includes`, whether it includes
+// other config files. Neither is in the view: Keel's own git rewrites no address and reads no file a repository
+// names. They are kept for the one read that says where the owner's own git would push (remotesAsRun).
+type Leads = { rewrites: [string, string][]; includes: boolean };
+function viewConfig(w: Where): { config: string; leads: Leads } {
   const all = entries(join(w.common, "config"));
   // A repository with per-worktree config: this checkout's own file applies after the shared one.
   if (all.some(([k, v]) => k === "extensions.worktreeconfig" && /^(true|yes|on|1)$/i.test(v))) all.push(...entries(join(w.gitDir, "config.worktree")));
@@ -347,7 +352,8 @@ function viewConfig(w: Where): string {
     const program = lfsProgram(checkouts(w));
     if (program) out.push('[filter "lfs"]', ...Object.entries(STOCK_LFS).map(([k, v]) => `\t${k.slice("filter.lfs.".length)} = ${quoted(v.replace(/^git-lfs/, shq(program)))}`));
   }
-  return out.join("\n") + "\n";
+  const leads: Leads = { rewrites: all.filter(([k]) => /^url\..+\.(insteadof|pushinsteadof)$/.test(k)), includes: all.some(([k]) => /^include(if\..*)?\.path$/.test(k)) };
+  return { config: out.join("\n") + "\n", leads };
 }
 
 // What a view was made from (the two config files and which of the shared
@@ -355,7 +361,7 @@ function viewConfig(w: Where): string {
 // again when one of those changed, or when its config is not what was written
 // (a session that is not confined can write the state folder). Files that
 // come and go at the top of a git directory (FETCH_HEAD, a lock) change nothing.
-const made = new Map<string, { from: string; config: string }>();
+const made = new Map<string, { from: string; config: string; leads: Leads }>();
 const textOf = (p: string) => { try { return readFileSync(p, "utf8"); } catch { return undefined; } };
 const stamp = (p: string) => { try { const st = statSync(p, { bigint: true }); return `${st.ino}:${st.size}:${st.mtimeNs}`; } catch { return "-"; } };
 
@@ -395,7 +401,7 @@ function viewOf(w: Where): string {
   link(join(w.common, "info/exclude"), join(view, "info/exclude"));
   // Whole or not at all: a call that reads the view meanwhile sees the old file or the new one.
   const tmp = join(view, `config.${process.pid}.${Math.random().toString(36).slice(2, 8)}.lock`);
-  const config = viewConfig(w);
+  const { config, leads } = viewConfig(w);
   // A repository that uses Git LFS and has stored no object yet has no `lfs`
   // folder to link. git-lfs would then make one inside the view and keep its
   // objects there, where the repository never finds them. So the folder is
@@ -406,7 +412,7 @@ function viewOf(w: Where): string {
   }
   writeFileSync(tmp, config, { mode: 0o600 });
   renameSync(tmp, join(view, "config"));
-  made.set(view, { from: [stamp(join(w.common, "config")), stamp(join(w.gitDir, "config.worktree")), stamp(join(w.common, "worktrees")), names.join("/")].join("|"), config });
+  made.set(view, { from: [stamp(join(w.common, "config")), stamp(join(w.gitDir, "config.worktree")), stamp(join(w.common, "worktrees")), names.join("/")].join("|"), config, leads });
   if (made.size > 512) made.delete(made.keys().next().value!);
   return view;
 }
@@ -657,6 +663,18 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
     return { code, out, err: `${err.trim()}\nKeel does not push into a branch that is checked out in the repository it pushes to (updating the files there would run that repository's own programs): check out another branch there, or push to a bare repository.` };
   }
   return { code: proc.signalCode ? -1 : code, out, err };
+}
+
+// `git remote -v` in `dir` as the owner's own git prints it there: the remotes of the view, their addresses rewritten
+// by the repository's own url.<base>.insteadOf and .pushInsteadOf as well as the owner's (git applies them: the
+// repository's are this read's own keys, after the owner's as in a repository's config, and a listing connects
+// nowhere). `includes`: the repository's config includes other files, which Keel does not read, so the listing may
+// not be the one his git uses.
+export async function remotesAsRun(dir: string, timeout: number): Promise<GitResult & { includes?: true }> {
+  let leads: Leads | undefined;
+  try { const w = locate(dir); if (w) leads = made.get(viewOf(w))?.leads; } catch {} // the listing below says what failed
+  const r = await git(dir, ["remote", "-v"], { read: true, timeout, ...(leads?.rewrites.length ? { config: leads.rewrites } : {}) });
+  return leads?.includes ? { ...r, includes: true } : r;
 }
 
 // The entries a listing prints (with -z), handed to `each` a pipe's chunk at a time as they come, so the

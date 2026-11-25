@@ -4,7 +4,8 @@ import { afterAll, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addAll, git, gitEach, GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitSync, innerWork, locate, setGitReach, setGitViews } from "./git.ts";
+import { addAll, git, gitEach, GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitSync, innerWork, locate, remotesAsRun, setGitReach, setGitViews } from "./git.ts";
+import { remotesIn } from "../safety/looked.ts";
 import { handsRoutes } from "../fleet/hands-routes.ts";
 import { Shadow } from "../safety/shadow.ts";
 import { Store } from "./store.ts";
@@ -834,4 +835,43 @@ test("a session with no managed worktree is diffed against the local base, not a
   expect(d.commits).toBe(1);
   expect(d.files.map((f) => f.path)).toEqual(["mine"]);
   expect((await wts.changeDiff({ id: "l1", workspace: dir } as any, "branch")).files.map((f) => f.path)).toEqual(["mine"]);
+});
+
+test("the remotes are listed as the owner's own git lists them: the repository's url rewrites applied, in no other call", async () => {
+  const mk = (name: string, ...config: [string, string][]) => {
+    const dir = repo(name);
+    must(dir, "remote", "add", "origin", "https://forge.example/me/app.git");
+    for (const [k, v] of config) must(dir, "config", k, v);
+    return dir;
+  };
+  const listed = async (dir: string) => (await remotesAsRun(dir, 10_000)).out.trim();
+  const own = (dir: string) => must(dir, "remote", "-v");
+  const instead = mk("rw-instead", ["url.https://forge.example/them/.insteadOf", "https://forge.example/me/"]);
+  const push = mk("rw-push", ["url.https://forge.example/them/.pushInsteadOf", "https://forge.example/me/"]);
+  const both = mk("rw-both", ["remote.origin.pushurl", "https://forge.example/me/other.git"], ["url.ssh://git@forge.example/them/.insteadOf", "https://forge.example/me/"], ["url.https://nowhere.example/.pushInsteadOf", "https://forge.example/"]);
+  const plain = mk("rw-plain");
+  for (const dir of [instead, push, both, plain]) expect(await listed(dir)).toBe(own(dir));
+  expect(await listed(instead)).toContain("forge.example/them/app.git (push)");
+  expect(await listed(push)).toContain("forge.example/me/app.git (fetch)");
+  expect(await listed(push)).toContain("forge.example/them/app.git (push)");
+  // With a rewrite of the owner's own: git picks the longest match among both, as in his shell.
+  const global = readFileSync(GLOBAL, "utf8");
+  try {
+    writeFileSync(GLOBAL, `${global}[url "https://mirror.example/"]\n\tinsteadOf = https://forge.example/\n`);
+    for (const dir of [instead, push, both, plain]) expect(await listed(dir)).toBe(own(dir));
+    expect(await listed(plain)).toContain("mirror.example/me/app.git");
+    expect(await listed(instead)).toContain("forge.example/them/app.git");
+  } finally {
+    writeFileSync(GLOBAL, global);
+  }
+  // Keel's own git still rewrites nothing: a fetch or a push of its own goes to the address the remote names.
+  expect((await git(instead, ["remote", "-v"], { read: true })).out).not.toContain("them");
+  expect((await git(push, ["remote", "get-url", "--push", "origin"], { read: true })).out.trim()).toBe("https://forge.example/me/app.git");
+  // A config that includes another file: the listing says so, since that file is not read.
+  writeFileSync(join(root, "rw-included"), `[remote "origin"]\n\tpushurl = https://forge.example/them/app.git\n`);
+  must(plain, "config", "include.path", join(root, "rw-included"));
+  expect((await remotesAsRun(plain, 10_000)).includes).toBe(true);
+  expect((await remotesAsRun(instead, 10_000)).includes).toBeUndefined();
+  expect(await remotesIn(plain)).toBe("late");
+  expect(((await remotesIn(push)) as { push: Record<string, string[]> }).push.origin).toEqual(["https://forge.example/them/app.git"]);
 });

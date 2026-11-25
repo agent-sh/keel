@@ -15,7 +15,7 @@
 // again with the same ones.
 import { lstat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { git, gitNames } from "../core/git.ts";
+import { git, gitNames, remotesAsRun } from "../core/git.ts";
 import { contains } from "../core/paths.ts";
 import { chunks } from "../core/proc.ts";
 import type { Answer, Manifest, Remotes } from "./accounts.ts";
@@ -135,13 +135,18 @@ async function textOf(file: string): Promise<string | null> {
   }
 }
 
-// The remotes of the repository `dir` is in, through Keel's own view of its config (src/core/git.ts): the
-// addresses as git rewrites them for a fetch and for a push, what gh marked, and where a bare push goes.
+// The remotes of the repository `dir` is in, as the owner's own git lists them there (`git remote -v`): each
+// address as git rewrites it for a fetch and for a push, what gh marked, and where a bare push goes. Keel's view of
+// the repository's config (src/core/git.ts) holds the remotes and no url rewrite, so the repository's own
+// url.<base>.insteadOf and .pushInsteadOf are given to this one listing (remotesAsRun); the owner's own apply by
+// themselves. A repository whose config includes other files is not read ("late"): what those files add, the
+// view does not hold.
 export async function remotesIn(dir: string): Promise<Remotes | null | "late"> {
   const run = (args: string[]) => git(dir, args, { read: true, timeout: 1_500 });
-  const [verbose, config, branch] = await Promise.all([run(["remote", "-v"]), run(["config", "--get-regexp", "^(remote\\..+\\.gh-resolved|remote\\.pushdefault|branch\\..+\\.(remote|pushremote))$"]), run(["symbolic-ref", "-q", "--short", "HEAD"])]);
+  const [verbose, config, branch] = await Promise.all([remotesAsRun(dir, 1_500), run(["config", "--get-regexp", "^(remote\\..+\\.gh-resolved|remote\\.pushdefault|branch\\..+\\.(remote|pushremote))$"]), run(["symbolic-ref", "-q", "--short", "HEAD"])]);
   if (verbose.code === -1 || config.code === -1) return "late";
   if (verbose.code !== 0) return null;
+  if (verbose.includes) return "late";
   const r: Remotes = { push: {}, fetch: {}, resolved: {} };
   for (const line of verbose.out.split("\n")) {
     const m = /^(\S+)\s+(\S+)\s+\((fetch|push)\)$/.exec(line.trim());
