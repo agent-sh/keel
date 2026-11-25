@@ -18,12 +18,23 @@ import { newestTurn } from "../../admin/marks.ts";
 import { deliver, withdraw } from "../../automation/core.ts";
 import { onJob as waitsOnJob } from "../../automation/waits.ts";
 import { cutCommandLine, sayAt } from "../../admin/daemon-log.ts";
+import { acpJobs } from "../../acp/jobs-hook.ts";
+import { concealDeep } from "../../core/conceal.ts";
+import type { BackgroundView } from "../../acp/v2.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+
+// What an ACP agent runs apart from its foreground work, in the shape of a session's command: nothing of it is a
+// process of Keel's, so it has no log, and Stop asks the agent to end that one item (`external` says whose it is).
+const agentJob = (v: BackgroundView, session: string) => concealDeep({
+  id: v.id, num: 0, command: v.title, description: undefined, cwd: "", pty: false, log: "", started: v.since, background: true, bytes: 0,
+  running: true, last: v.last, external: `agent ${v.kind}`, can_stop: v.can_stop,
+}, session);
 
 export const toolRoutes: RouteModule = (deps) => {
   // A page shows a session's background commands above its box: it is told when the list changed.
   jobsChanged.tell = (sessionId) => deps.bus.emit({ t: "feature", name: "jobs", session_id: sessionId, data: {} });
+  acpJobs.changed = jobsChanged.tell;
   // A command a cut call was waiting on has ended: that is what its session's turn waited for, so
   // it starts one (an agent's too: it is not done while such a command runs, src/automation/agents.ts).
   // After the step that found the end: at a start the commands are taken back before the turns
@@ -173,10 +184,15 @@ export const toolRoutes: RouteModule = (deps) => {
       },
     },
     "/api/sessions/:id/jobs": {
-      GET: (req: any) => json({ jobs: jobsOf(req.params.id).map(jobView) }),
+      GET: (req: any) => json({ jobs: [...jobsOf(req.params.id).map(jobView), ...acpJobs.list(req.params.id).map((v) => agentJob(v, req.params.id))] }),
     },
     "/api/sessions/:id/jobs/:job/stop": {
       POST: async (req: any) => {
+        // An item of an ACP agent's background list: the agent is asked to end that one.
+        if (/^(terminal|tool_call|subagent|work):/.test(req.params.job)) {
+          const why = acpJobs.stop(req.params.id, req.params.job);
+          return why ? json({ error: why }, 409) : json({ ok: true });
+        }
         const j = findJob(req.params.id, req.params.job);
         if (!j) return json({ error: "no such job" }, 404);
         if (running(j)) await stopJob(j, "was stopped by the owner");

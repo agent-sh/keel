@@ -6,6 +6,7 @@ import { agentFolders, checkFolder, confineAgent, readFolders, writeFolders } fr
 import { allHooks, registerHooks, type TurnHooks } from "../../engine/hooks.ts";
 import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { AcpProvider, readCustom, writeCustom } from "../../acp/agents.ts";
+import { acpJobs } from "../../acp/jobs-hook.ts";
 import { AcpRunner, agentOf, isAcpModel, type ChildHost, type Judge } from "../../acp/external.ts";
 import * as agents from "../../automation/agents.ts";
 import type { Terminals } from "../../acp/external.ts";
@@ -64,6 +65,9 @@ export const acpRoutes: RouteModule = (deps) => {
   deps.engine.inputRefusals.set("acp-child", (id) => { const by = agents.externalAgentOf(id); return by ? `${by} runs this agent: it reads no message from here` : undefined; });
   // The owner's Stop on a child's row is the agent's cancel of that child.
   agents.outside.stop = (a, by) => (a.external ? g.__keelAcp?.cancelChild(a.id, by) : undefined);
+  // What an agent runs apart from its foreground work (ACP v2) is among the session's background jobs.
+  acpJobs.list = (session) => g.__keelAcp?.background(session) ?? [];
+  acpJobs.stop = (session, id) => g.__keelAcp?.stopBackground(session, id, "owner");
   // Registered once per hook list (a hot reload may make a new one); it calls the runner of now.
   g.__keelAcpHook ??= { external: (s) => (g.__keelAcp?.claims(s) ? (io) => g.__keelAcp!.turn(s, io) : undefined) };
   if (!allHooks().includes(g.__keelAcpHook)) registerHooks(g.__keelAcpHook);

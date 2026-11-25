@@ -140,6 +140,7 @@ function JobRow({ sessionId, j, cut }: { sessionId: string; j: JobView; cut: Set
       <span className="k-job-meta">
         <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint max-md:whitespace-normal max-md:break-all" title={j.last} data-testid="dock-job-last">{j.last}</span>
         {/* Its id is the tooltip of its name at a desk; a phone opens no tooltip, so there it is a word. */}
+        {j.external && <span className="shrink-0 text-micro text-faint" data-testid="dock-job-external">{j.external}</span>}
         <span className="shrink-0 font-mono text-micro text-faint md:hidden" data-testid="dock-job-id">{j.id}</span>
         <span className="k-face-figure shrink-0 text-micro text-faint">
           {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}`
@@ -148,10 +149,10 @@ function JobRow({ sessionId, j, cut }: { sessionId: string; j: JobView; cut: Set
             : j.exit_code == null ? "ended, exit unknown" : `exit ${j.exit_code}`}
         </span>
       </span>
-      {j.running && (
+      {j.running && j.can_stop !== false && (
         <button
           type="button"
-          title={`Stop ${j.id}`}
+          title={`Stop ${j.external ?? j.id}`}
           data-testid="dock-job-stop"
           onClick={() => actions.stopJob(sessionId, j.id).catch(reportError)}
           className="k-job-stop -mr-1 grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"

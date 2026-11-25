@@ -2872,6 +2872,7 @@ export class Engine {
     this.openTurn(id, { model: session.model });
     let reason = "end_turn";
     let usage: Usage = emptyUsage();
+    let extra: Record<string, unknown> | undefined;
     try {
       const r = await run({
         signal,
@@ -2897,6 +2898,7 @@ export class Engine {
       });
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : r.reason;
       if (r.usage) { usage = r.usage; this.store.addUsage(id, usage); this.emitSession(id); }
+      extra = r.extra;
       // (It answered: an account problem its route had is over. A test's stand-in registry may keep none.)
       if (!signal.aborted) this.providers.turnAnswered?.(session.model);
     } catch (e) {
@@ -2908,7 +2910,7 @@ export class Engine {
       this.deltas.end(id);
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);
-      this.store.appendOrLater(id, "turn_end", { reason, usage, ms: Date.now() - t0, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) }, (e) => this.emitEvent(e));
+      this.store.appendOrLater(id, "turn_end", { reason, usage, ms: Date.now() - t0, ...(by && reason === "interrupted" ? { stopped_by: by } : {}), ...(extra ?? {}) }, (e) => this.emitEvent(e));
       for (const h of allHooks()) await (async () => h.turnEnd?.(session, reason))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
     }
   }

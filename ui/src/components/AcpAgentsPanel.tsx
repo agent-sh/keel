@@ -2,6 +2,7 @@
 // Protocol (from the ACP registry and the owner's own entries), a new session
 // with one, adding one, and how an editor drives Keel itself.
 import { useEffect, useState } from "react";
+import { Switch } from "@base-ui/react/switch";
 import { actions, api, reportError } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { Card, SettingRow } from "./Settings.tsx";
@@ -38,6 +39,23 @@ function AgentFolders({ agent, busy, save }: { agent: Agent; busy: boolean; save
         {agent.folders!.own && <button type="button" className={btn} disabled={busy} onClick={() => save(null)} data-testid="acp-folder-reset">Use the guess</button>}
       </form>
     </span>
+  );
+}
+
+// ACP v2 is a Preview: Keel asks each agent for it first only when this is on, and speaks v1 to an agent that does not offer it.
+function ProtocolRow() {
+  const [auto, setAuto] = useState<boolean | null>(null);
+  useEffect(() => { api<{ settings: { acp?: { protocol?: string } } }>("/api/settings").then((r) => setAuto(r.settings.acp?.protocol === "auto")).catch(reportError); }, []);
+  const put = (on: boolean) => {
+    setAuto(on);
+    api("/api/settings", { method: "PATCH", body: JSON.stringify({ acp: { protocol: on ? "auto" : "v1" } }) }).catch((e) => { setAuto(!on); reportError(e); });
+  };
+  return (
+    <SettingRow label="Ask agents for ACP v2 (Preview)" hint="ACP v2 is a Preview and may still change. With this on, Keel asks each agent for v2 when it connects: the agent's background terminals and tool calls show among the session's commands, and each can be stopped alone where the agent allows it. An agent that does not offer v2 is spoken to in v1. Agents already running keep the version they have until their session starts them again. v2 has no file or terminal requests to Keel: the agent runs those itself, and what it asks permission for still goes through Keel's gate.">
+      <Switch.Root checked={!!auto} disabled={auto === null} onCheckedChange={put} aria-label="Ask agents for ACP v2" data-testid="acp-v2-switch" className="k-switch">
+        <Switch.Thumb className="k-switch-thumb" />
+      </Switch.Root>
+    </SettingRow>
   );
 }
 
@@ -108,6 +126,9 @@ export function AcpAgentsSettings() {
               : <span className="text-caption text-faint">Not installed here</span>}
           </SettingRow>
         ))}
+      </Card>
+      <Card>
+        <ProtocolRow />
       </Card>
       <Card>
         <SettingRow label="Keel in an editor" hint="Zed and other ACP clients drive Keel itself: add this to Zed's agent_servers.">

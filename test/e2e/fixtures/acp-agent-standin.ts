@@ -7,6 +7,16 @@
 // reasoning levels are config options; "which model" names the current ones.
 // "keel tools" starts the MCP server the client passed in session/new, lists
 // its tools and calls one; "terminal" runs a command in a client terminal.
+//
+// With the argument `v2` it is also an ACP v2 (Preview) agent: asked for protocol 2 it speaks it, asked for 1 it
+// is the agent above. In v2 a prompt is answered with the id of the message it inserted, and the work ends with an
+// idle state_update. `session/prompt` honours its idempotencyKey (the keys and the work done are kept in files of
+// the session's folder, so they outlive the process): a key it knows is answered with the message it already
+// inserted, and nothing runs again. Prompts: "slow" works until session/cancel; "background" ends its turn leaving
+// a terminal (that can be cancelled), a tool call (that can be cancelled) and a terminal that cannot be cancelled
+// in the background list; "boom" ends in an error; anything else is a thought, a tool call and a reply.
+const V2 = process.argv.includes("v2");
+let v2Mode = false;
 const out = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 let next = 1;
 const waiting = new Map<number, (m: any) => void>();
@@ -164,6 +174,114 @@ async function prompt(id: number, p: any) {
   out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: { inputTokens: 900, outputTokens: 60, totalTokens: 960 } } });
 }
 
+
+// --- ACP v2 (Preview) ---
+type Bg = { type: string; terminalId?: string; toolCallId?: string };
+const V2_SESSION = "standin-v2";
+let fg = "idle";
+let background: Bg[] = [];
+let heldCancel: (() => void) | null = null;
+const files = () => ({ keys: `${cwd}/.v2-keys.json`, runs: `${cwd}/.v2-runs.log` });
+const readKeys = (): Record<string, string> => { try { return JSON.parse(require("node:fs").readFileSync(files().keys, "utf8")); } catch { return {}; } };
+const state = (state: string, more: Record<string, unknown> = {}) => { fg = state; update(V2_SESSION, { sessionUpdate: "state_update", state, background, ...more }); };
+const snapshot = () => update(V2_SESSION, { sessionUpdate: "state_update", state: fg, background });
+const terms = new Map<string, { command: string; cancel: boolean; live: boolean }>();
+const termUpdate = (id: string, more: Record<string, unknown>) => update(V2_SESSION, { sessionUpdate: "terminal_update", terminalId: id, ...more });
+const v2Options = () => [{ configId: "model", name: "Model", category: "model", type: "select", currentValue: config.model, options: [{ groupId: "main", name: "Main", options: [{ value: "fast", name: "Fast" }, { value: "deep", name: "Deep" }] }] }];
+
+function v2Prompt(id: number, p: any) {
+  const text = (p.prompt ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ");
+  const key = typeof p.idempotencyKey === "string" ? p.idempotencyKey : undefined;
+  const keys = readKeys();
+  // A key it knows: the message it inserted, and nothing else.
+  if (key && keys[key]) return out({ jsonrpc: "2.0", id, result: { messageId: keys[key] } });
+  const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  if (key) { keys[key] = messageId; require("node:fs").writeFileSync(files().keys, JSON.stringify(keys)); }
+  require("node:fs").appendFileSync(files().runs, JSON.stringify({ key: key ?? null, text, messageId }) + "\n");
+  out({ jsonrpc: "2.0", id, result: { messageId } });
+  update(V2_SESSION, { sessionUpdate: "user_message", messageId, content: [{ type: "text", text }] });
+  void v2Work(text);
+}
+
+async function v2Work(text: string) {
+  state("running");
+  update(V2_SESSION, { sessionUpdate: "agent_thought", messageId: "th-1", content: [{ type: "text", text: "Thinking about it." }] });
+  if (/slow/.test(text)) {
+    update(V2_SESSION, { sessionUpdate: "tool_call_update", toolCallId: "call-slow", title: "sleep 600", kind: "execute", status: "in_progress", rawInput: { command: "sleep 600" } });
+    await new Promise<void>((r) => (heldCancel = r));
+    heldCancel = null;
+    update(V2_SESSION, { sessionUpdate: "tool_call_update", toolCallId: "call-slow", status: "cancelled" });
+    return state("idle", { stopReason: "cancelled" });
+  }
+  if (/boom/.test(text)) return state("idle", { stopReason: "error", error: { code: -32603, message: "The model service failed." } });
+  if (/background/.test(text)) {
+    for (const [id, command, cancel] of [["term-dev", "npm run dev", true], ["term-log", "tail -f server.log", false]] as const) {
+      terms.set(id, { command, cancel, live: true });
+      termUpdate(id, { command, cwd, output: { data: Buffer.from(`${command}: listening\r\n`).toString("base64") }, ...(cancel ? { capabilities: { cancel: {} } } : {}) });
+    }
+    update(V2_SESSION, { sessionUpdate: "tool_call_update", toolCallId: "call-start", title: "Start the dev server", kind: "execute", status: "completed", content: [{ type: "terminal", terminalId: "term-dev" }] });
+    update(V2_SESSION, { sessionUpdate: "tool_call_update", toolCallId: "call-watch", title: "Watch the build", kind: "other", status: "in_progress", capabilities: { cancel: {} } });
+    background = [{ type: "terminal", terminalId: "term-dev" }, { type: "terminal", terminalId: "term-log" }, { type: "tool_call", toolCallId: "call-watch" }];
+    update(V2_SESSION, { sessionUpdate: "agent_message", messageId: "ag-1", content: [{ type: "text", text: "The dev server runs in the background." }] });
+    return state("idle", { stopReason: "end_turn" });
+  }
+  // A call, a permission request in v2's shape, a reply in chunks.
+  update(V2_SESSION, { sessionUpdate: "tool_call_update", toolCallId: "call-ls", title: "mkdir -p build", kind: "execute", status: "pending", rawInput: { command: "mkdir -p build" } });
+  state("requires_action");
+  const perm = await ask("session/request_permission", { sessionId: V2_SESSION, title: "Run mkdir?", subject: { type: "tool_call", toolCall: { toolCallId: "call-ls" } },
+    options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }, { optionId: "no", name: "Reject", kind: "reject_once" }] });
+  state("running");
+  const allowed = perm.result?.outcome?.outcome === "selected" && perm.result.outcome.optionId === "yes";
+  update(V2_SESSION, { sessionUpdate: "tool_call_update", toolCallId: "call-ls", status: allowed ? "completed" : "cancelled", content: [{ type: "content", content: { type: "text", text: allowed ? "made" : "refused" } }] });
+  update(V2_SESSION, { sessionUpdate: "agent_message_chunk", messageId: "ag-2", content: { type: "text", text: "Done: " } });
+  update(V2_SESSION, { sessionUpdate: "agent_message", messageId: "ag-2", content: [{ type: "text", text: `Done: ${allowed ? "allowed" : "refused"}` }] });
+  state("idle", { stopReason: "end_turn" });
+}
+
+// True when the message was answered here (a v2 connection).
+function v2(m: any): boolean {
+  switch (m.method) {
+    case "initialize":
+      if (!(m.params?.protocolVersion >= 2)) return false;
+      out({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: 2, info: { name: "standin", version: "1" }, capabilities: { session: { mcp: { stdio: {} } } }, authMethods: [] } });
+      return true;
+    case "session/new": case "session/resume": {
+      if (m.params.cwd) cwd = m.params.cwd;
+      mcpServers = m.params.mcpServers ?? [];
+      if (m.method === "session/resume") snapshot();
+      out({ jsonrpc: "2.0", id: m.id, result: { ...(m.method === "session/new" ? { sessionId: V2_SESSION } : {}), configOptions: v2Options(), availableCommands: [{ type: "command", name: "test", description: "Run the project's tests" }] } });
+      return true;
+    }
+    case "session/prompt": v2Prompt(m.id, m.params); return true;
+    case "session/cancel": heldCancel?.(); return true;
+    case "tool_call/cancel": {
+      const live = background.some((b) => b.toolCallId === m.params.toolCallId);
+      if (!live || m.params.toolCallId !== "call-watch") out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "not cancellable" } });
+      else {
+        out({ jsonrpc: "2.0", id: m.id, result: {} });
+        update(V2_SESSION, { sessionUpdate: "tool_call_update", toolCallId: "call-watch", status: "cancelled", capabilities: null });
+        background = background.filter((b) => b.toolCallId !== "call-watch");
+        snapshot();
+      }
+      return true;
+    }
+    case "terminal/cancel": {
+      const t = terms.get(m.params.terminalId);
+      if (!t?.live || !t.cancel) out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "not cancellable" } });
+      else {
+        out({ jsonrpc: "2.0", id: m.id, result: {} });
+        t.live = false;
+        termUpdate(m.params.terminalId, { exitStatus: { exitCode: null, signal: "SIGTERM" }, capabilities: null });
+        background = background.filter((b) => b.terminalId !== m.params.terminalId);
+        snapshot();
+      }
+      return true;
+    }
+    case "session/close": out({ jsonrpc: "2.0", id: m.id, result: {} }); return true;
+    default: return false;
+  }
+}
+
 let buf = "";
 process.stdin.on("data", (d) => {
   buf += d.toString();
@@ -173,7 +291,9 @@ process.stdin.on("data", (d) => {
     if (!line.trim()) continue;
     const m = JSON.parse(line);
     if (m.method === undefined) { waiting.get(m.id)?.(m); waiting.delete(m.id); continue; }
-    if (m.method === "initialize") clientCaps = m.params?.clientCapabilities ?? {};
+    // (A v2 connection is answered by v2(); an initialize that asks for 1 is answered as before.)
+    if (V2 && (m.method === "initialize" ? m.params?.protocolVersion >= 2 : v2Mode) && v2(m)) { if (m.method === "initialize") v2Mode = true; continue; }
+    if (m.method === "initialize") { clientCaps = m.params?.clientCapabilities ?? {}; v2Mode = false; }
     if (m.method === "initialize") out({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: false, sessionCapabilities: { close: {} } }, agentInfo: { name: "standin", version: "1" }, authMethods: [] } });
     else if (m.method === "session/new") {
       cwd = m.params.cwd; mcpServers = m.params.mcpServers ?? [];

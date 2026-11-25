@@ -20,6 +20,11 @@
 // resume, prompt, cancel, close; session/update, session/request_permission,
 // fs/read_text_file, fs/write_text_file, terminal/* toward the client;
 // docs/protocol/v1/subagents.mdx).
+//
+// ACP v2 is a Preview and may still change. When the owner turns it on (settings `acp.protocol` "auto"), the agent is
+// asked for v2 first and spoken to in v1 when it answers 1 (src/acp/v2.ts: the turn ends at its idle state, the
+// prompt carries an idempotency key, its background work is among the session's commands and one item is stopped
+// alone). A v2 connection has no client file or terminal methods: the agent runs those itself.
 import { heldFile, heldWrite } from "../core/store-files.ts";
 import type { AgentConfinement, Give } from "./confine.ts";
 import { readFile, writeFile } from "node:fs/promises";
@@ -39,6 +44,8 @@ import { AcpTerminals } from "./terminals.ts";
 import { fitted, noted, unrename } from "../providers/wires/schema-fit.ts";
 import { clip, messageText, MESSAGE_MAX, patchChild, readState, turnReason, type ChildState, type Reading } from "./children.ts";
 import { ownerStop } from "../core/stoppers.ts";
+import { acpJobs } from "./jobs-hook.ts";
+import { addedText, Book, foreground, legacyPermission, negotiated, PromptKeys, protocolSetting, RECOGNIZED_MS, turnStop, v2Init, v2Server, Watch, type Foreground, type Version } from "./v2.ts";
 import type { AgentStatus, ExternalInfo, StopBy } from "../automation/agents.ts";
 import type { TurnStatus } from "../core/types.ts";
 
@@ -129,24 +136,34 @@ export function resultOf(tc: Json, terminal: (id: string) => string | undefined 
     else if (c?.type === "terminal") out.push({ type: "text", text: terminal(String(c.terminalId)) ?? `[terminal ${c.terminalId}]` });
   }
   if (!out.length && tc.rawOutput !== undefined) out.push({ type: "text", text: typeof tc.rawOutput === "string" ? tc.rawOutput : JSON.stringify(tc.rawOutput) });
-  const failed = tc.status === "failed";
-  return { type: "tool_result", tool_use_id: tc.toolCallId, content: out.length ? out : failed ? "Failed." : "Done.", is_error: failed || undefined };
+  const failed = tc.status === "failed" || tc.status === "cancelled";
+  return { type: "tool_result", tool_use_id: tc.toolCallId, content: out.length ? out : tc.status === "cancelled" ? "Cancelled." : failed ? "Failed." : "Done.", is_error: failed || undefined };
 }
 
 // The owner's words since the agent last answered: the user events after the last turn_end.
 export function promptOf(events: readonly StoredEvent[]): Json[] {
+  return promptParts(events).blocks;
+}
+
+// The same with the events it was made of (their seqs). `only`: those events alone, wherever they stand (a prompt
+// sent again after a restart is made of the events it was first made of, and no restart note).
+export function promptParts(events: readonly StoredEvent[], only?: ReadonlySet<number>): { blocks: Json[]; seqs: number[] } {
   let from = events.length;
-  while (from > 0 && events[from - 1]!.kind !== "turn_end") from--;
+  if (!only) while (from > 0 && events[from - 1]!.kind !== "turn_end") from--;
+  else from = 0;
   const blocks: Json[] = [];
+  const seqs: number[] = [];
   for (const e of events.slice(from)) {
     if (e.kind !== "user" || e.data.origin === "harness") continue;
+    if (only ? !only.has(e.seq) : false) continue;
+    seqs.push(e.seq);
     for (const b of e.data.images ?? []) {
       if (b?.type === "image" && b.data) blocks.push({ type: "image", mimeType: b.media_type, data: b.data });
       else if (b?.type === "attachment") blocks.push({ type: "text", text: `[attached file ${b.name}: not sent to this agent]` });
     }
     if (e.data.text) blocks.push({ type: "text", text: String(e.data.text) });
   }
-  return blocks;
+  return { blocks, seqs };
 }
 
 // A call that says what it does: its input or a place. Content while it runs
@@ -188,6 +205,10 @@ type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; sid: str
   // The offered tools whose parameters were renamed to fit (by the name the agent calls), with the server's names.
   renamed?: Map<string, Record<string, string>>;
   plans?: Map<string, Json[]>;  // the agent's plans by id ("" is the legacy checklist), each as the steps it shows
+  // The protocol this connection speaks (src/acp/v2.ts: 2 is a Preview), what the agent last said of its foreground
+  // state, its background work, and the words of each message it sent whole (a whole message replaces its chunks).
+  v: Version; fg?: Foreground; book: Book; texts: Map<string, string>;
+  pending: Map<number | string, AbortController>;  // the agent's permission requests that wait, by their ids ($/cancel_request)
   closed: AbortController };  // aborted when the agent's connection ends
 // How many finished children one connection may show for each one that may be at work (see `room`), and how many
 // messages it may send in pieces at once (they are put together and shown when the next update comes).
@@ -208,6 +229,9 @@ type TurnState = {
   cost?: number;              // the agent's cumulative cost when the turn began
   lastCost?: number;
   last?: string;              // the newest reply text stored
+  watch?: Watch;              // v2: what ends this turn (an idle state), told by the agent's state updates
+  ended?: (r: { stop: string; error?: { code?: number; message?: string } }) => void;
+  seen?: Set<string>;         // v2: the user messages the agent reported for this prompt (a recognized retry reports none)
 };
 
 const STEP = /^\s*(?:[-*+]|\d+[.)])\s+(?:\[([ xX])\]\s+)?(.+?)\s*$/;
@@ -240,6 +264,7 @@ export function applyPlan(plans: Map<string, Json[]>, u: Json): Json[] | null {
 
 export class AcpRunner {
   private live = new Map<string, Live>();
+  private keys: PromptKeys;
   private starting = new Map<string, Promise<Live>>();
 
   // `confine`: how the agent's process starts, with what Keel gives it besides its own folders (the served tools' folder
@@ -249,6 +274,7 @@ export class AcpRunner {
     private shell?: Terminals, private kids?: ChildHost) {
     // (No agent of an earlier daemon runs now: the folders it served tools in go.)
     try { clearServed(store.stateDir); } catch (e) { capture(e, { at: "acp served tools" }); }
+    this.keys = new PromptKeys(store.db);
     store.migrate("CREATE TABLE IF NOT EXISTS acp_links (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, acp_session TEXT NOT NULL, ts INTEGER NOT NULL)");
   }
 
@@ -274,7 +300,7 @@ export class AcpRunner {
     const agent = this.agents.get(id);
     if (!agent?.run) throw Object.assign(new Error(`the ACP agent ${id} is not installed here`), { expected: true });
     // Keel's tools, served on a socket of the session's own: a server that cannot listen leaves the agent without them, said once.
-    const live = { agent, acpSession: "", sid: s.id, caps: {}, choices: {}, offered: new Set<string>(), terms: new AcpTerminals(this.store.stateDir), closed: new AbortController(), children: new Map(), chunks: new Map() } as Live;
+    const live = { agent, acpSession: "", sid: s.id, caps: {}, choices: {}, offered: new Set<string>(), terms: new AcpTerminals(this.store.stateDir), closed: new AbortController(), children: new Map(), chunks: new Map(), v: 1, book: new Book(), texts: new Map(), pending: new Map() } as Live;
     const served = new ServedTools(this.store.stateDir, s.id, {
       list: () => this.offer(s, live),
       call: (name, args, callId) => live.turn
@@ -288,28 +314,40 @@ export class AcpRunner {
     }
     // Its own process is confined as Keel's commands are; the session is told how.
     const c = this.confine(s, agent, live.served ? { own: [live.served.dir, live.served.relayDir], programs: [[process.execPath]] } : { own: [], programs: [] });
-    const conn = new AcpConnection(c.argv, { cwd: s.workspace, env: agent.run.env, pass: agent.run.env_vars }, (m) => this.capture(new Error(m), { session: s.id, agent: id }));
     io.append("note", { kind: "acp", sandbox: c.confined ? "on" : "off", text: c.note });
-    live.conn = conn;
-    conn.onNotification = (method, params) => { if (method === "session/update") this.update(live, params); };
-    conn.onRequest = (method, params) => this.request(live, method, params);
-    conn.onOversize = (n) => this.odd(live, `a message of ${n} characters`);
-    void conn.exited.then(() => { this.closeLive(live); if (this.live.get(s.id) === live) this.live.delete(s.id); });
+    const spawn = () => {
+      const conn = new AcpConnection(c.argv, { cwd: s.workspace, env: agent.run!.env, pass: agent.run!.env_vars }, (m) => this.capture(new Error(m), { session: s.id, agent: id }));
+      live.conn = conn;
+      conn.onNotification = (method, params) => { if (conn !== live.conn) return; if (method === "session/update") this.update(live, params); else if (method === "$/cancel_request") live.pending.get(params?.requestId)?.abort(); };
+      conn.onRequest = (method, params, rid) => this.request(live, method, params, rid);
+      conn.onOversize = (n) => this.odd(live, `a message of ${n} characters`);
+      void conn.exited.then(() => { if (conn !== live.conn) return; this.closeLive(live); if (this.live.get(s.id) === live) this.live.delete(s.id); });
+      return conn;
+    };
+    let conn = spawn();
     try {
-      const init = await conn.request("initialize", {
-        protocolVersion: 1,
-        // (Boolean config options are shown: session-config-options.)
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell, session: { configOptions: { boolean: {} } }, plan: {}, ...(this.kids ? { subagents: {} } : {}) },
-        clientInfo: { name: "keel", title: "Keel", version: "0.1.0" },
-      });
-      live.caps = init?.agentCapabilities ?? {};
+      // Version 2 (a Preview) is asked for first only when the owner turned it on (settings: acp.protocol "auto"); an agent
+      // that answers 1 is spoken to in v1, on the same connection when it takes a second initialize, else started again.
+      let init: Json;
+      if (protocolSetting() === "auto") {
+        try { init = await conn.request("initialize", v2Init()); } catch (e) { if (!conn.alive) throw e; init = undefined; }
+        const got = negotiated(init);
+        if (got === 2) live.v = 2;
+        else {
+          if (got === 1) { try { init = await conn.request("initialize", this.initV1()); } catch { init = undefined; } }
+          if (!init || negotiated(init) !== 1) { conn.close(); live.conn = undefined as any; conn = spawn(); init = await conn.request("initialize", this.initV1()); }
+        }
+      } else init = await conn.request("initialize", this.initV1());
+      live.caps = (live.v === 2 ? init?.capabilities : init?.agentCapabilities) ?? {};
       const link = this.store.db.query<{ agent: string; acp_session: string }, [string]>("SELECT agent, acp_session FROM acp_links WHERE session_id = ?").get(s.id);
-      const base = { cwd: s.workspace, mcpServers: live.served ? [live.served.config()] : [] };
+      const mcp = live.served ? [live.v === 2 ? v2Server(live.served.config()) : live.served.config()] : [];
+      const base = { cwd: s.workspace, mcpServers: mcp };
       if (link && link.agent === id) {
         // The same conversation again after a restart: resumed without replay where offered, else loaded (its replay is not stored again).
         try {
           let r: Json;
-          if (live.caps.sessionCapabilities?.resume) r = await conn.request("session/resume", { ...base, sessionId: link.acp_session });
+          if (live.v === 2) { live.acpSession = link.acp_session; r = await conn.request("session/resume", { ...base, sessionId: link.acp_session }); }
+          else if (live.caps.sessionCapabilities?.resume) r = await conn.request("session/resume", { ...base, sessionId: link.acp_session });
           else if (live.caps.loadSession) { live.acpSession = "loading"; r = await conn.request("session/load", { ...base, sessionId: link.acp_session }); }
           else throw new Error("the agent keeps no sessions");
           this.setup(live, r);
@@ -330,12 +368,21 @@ export class AcpRunner {
         this.store.db.run("INSERT OR REPLACE INTO acp_links (session_id, agent, acp_session, ts) VALUES (?, ?, ?, ?)", [s.id, id, live.acpSession, Date.now()]);
       }
     } catch (e) {
-      conn.close();
+      live.conn?.close();
       this.closeLive(live);
       throw e;
     }
     this.live.set(s.id, live);
     return live;
+  }
+
+  private initV1() {
+    return {
+      protocolVersion: 1,
+      // (Boolean config options are shown: session-config-options.)
+      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell, session: { configOptions: { boolean: {} } }, plan: {}, ...(this.kids ? { subagents: {} } : {}) },
+      clientInfo: { name: "keel", title: "Keel", version: "0.1.0" },
+    };
   }
 
   // What the agent is offered of Keel's tools: the MCP servers' tools this session reaches, by their full names.
@@ -360,6 +407,9 @@ export class AcpRunner {
     }
     live.children.clear();
     live.closed.abort();
+    for (const c of live.pending.values()) c.abort();
+    live.pending.clear();
+    if (live.book.listed?.length) { live.book.snapshot({ state: "unknown", background: null }); this.tellJobs(live); }
     live.served?.close();
     live.served = undefined;
     void live.terms.closeAll().catch((e) => this.capture(e, { agent: live.agent.id, at: "acp terminals" }));
@@ -372,6 +422,8 @@ export class AcpRunner {
     const stated = Array.isArray(r?.configOptions) || Array.isArray(r?.modes?.availableModes);
     live.choices = stated ? mergeChoices(live.choices, r) : unknownCurrent(mergeChoices(this.agents.learned(live.agent.id) ?? {}, {}));
     this.agents.learn(live.agent, r);
+    // v2: the setup response carries the session's commands.
+    if (live.v === 2 && Array.isArray(r?.availableCommands)) { live.commands = commandsOf(r.availableCommands); this.agents.learnCommands(live.agent, live.commands); }
   }
 
   // The agent's session brought to the model (or mode) and effort the Keel
@@ -401,7 +453,7 @@ export class AcpRunner {
   }
 
   // One turn: the owner's new words to the agent, its stream into keel events.
-  async turn(s: Session, io: ExternalIO): Promise<{ reason: string; usage?: Usage }> {
+  async turn(s: Session, io: ExternalIO): Promise<{ reason: string; usage?: Usage; extra?: Record<string, unknown> }> {
     const prompt = promptOf(io.events());
     if (!prompt.length) return { reason: "end_turn" };
     io.status({ kind: "model", since: Date.now(), model: s.model });
@@ -421,6 +473,7 @@ export class AcpRunner {
     };
     io.signal.addEventListener("abort", cancel, { once: true });
     try {
+      if (live.v === 2) return await this.turnV2(live, s, io, t);
       const answer = live.conn.request("session/prompt", { sessionId: live.acpSession, prompt });
       // After a stop the agent answers "cancelled"; one that does not is ended.
       const stopped = new Promise<Json>((res) => io.signal.addEventListener("abort", () => setTimeout(() => res({ stopReason: "cancelled", forced: true }), 10_000), { once: true }));
@@ -443,6 +496,93 @@ export class AcpRunner {
     }
   }
 
+  // One turn on a v2 connection. The prompt is acknowledged with the id of the message the agent inserted; the work it
+  // starts ends with an idle state (src/acp/v2.ts Watch). The prompt carries an idempotency key kept with the events it
+  // was made of, so one sent again after a restart cut this one is not run twice: it goes with the same key and the same
+  // words, and what the agent answers to it is read as the spec says (a message it recognizes is not inserted again).
+  private async turnV2(live: Live, s: Session, io: ExternalIO, t: TurnState): Promise<{ reason: string; usage?: Usage; extra?: Record<string, unknown> }> {
+    const events = io.events();
+    let row = this.keys.get(s.id);
+    if (row && row.acp_session !== live.acpSession) { this.keys.clear(s.id); row = undefined; }
+    // (A prompt first made of events a branch no longer has is a new submission.)
+    const first = row ? promptParts(events, new Set(row.seqs)) : undefined;
+    const resent = !!row && !!first && first.blocks.length > 0 && first.seqs.length === row.seqs.length;
+    let sub: { key: string; blocks: Json[]; seqs: number[] };
+    if (resent) sub = { key: row!.key, blocks: first!.blocks, seqs: first!.seqs };
+    else { const { blocks, seqs } = promptParts(events); sub = { key: crypto.randomUUID(), blocks, seqs }; this.keys.put(s.id, live.acpSession, sub.key, seqs); }
+    const before = live.fg?.state;
+    let r = await this.submit(live, s, io, t, sub, resent, before);
+    // What the owner typed after the prompt that was sent again is a prompt of its own.
+    if (resent && !r.cut && r.stop !== "cancelled") {
+      const have = new Set(sub.seqs);
+      const rest = promptParts(events.filter((e) => !have.has(e.seq) && e.data?.origin !== "restart"));
+      if (rest.blocks.length) {
+        const next = { key: crypto.randomUUID(), blocks: rest.blocks, seqs: rest.seqs };
+        this.keys.put(s.id, live.acpSession, next.key, next.seqs);
+        r = await this.submit(live, s, io, t, next, false, live.fg?.state);
+      }
+    }
+    // A prompt that was stopped or answered with an end is finished; a try the connection cut stays, to be sent again.
+    if (!r.cut) this.keys.clear(s.id);
+    this.flush(t);
+    for (const [cid, tc] of t.calls) if (!t.done.has(cid) && !live.book.isBackground(cid)) this.finish(t, { ...tc, status: "failed", content: [{ type: "content", content: { type: "text", text: r.stop === "cancelled" ? "Interrupted by the user while this tool ran." : "The agent ended its turn without finishing this call." } }] });
+    if (r.stop === "error") throw Object.assign(new Error(r.error?.message ?? `${live.agent.name} reported an error`), r.error?.code === -32000 ? { expected: true } : {});
+    const usage = emptyUsage();
+    if (t.lastCost !== undefined) usage.cost = Math.max(0, t.lastCost - (t.cost ?? 0));
+    return { reason: turnStop(r.stop), usage, ...(r.messageId ? { extra: { acp_message_id: r.messageId } } : {}) };
+  }
+
+  // One prompt: sent with its key, answered with its message's id, and over at an idle state of the agent.
+  private async submit(live: Live, s: Session, io: ExternalIO, t: TurnState, sub: { key: string; blocks: Json[]; seqs: number[] }, resent: boolean, before?: string):
+    Promise<{ stop: string; error?: { code?: number; message?: string }; messageId?: string; cut?: boolean }> {
+    const watch = new Watch(resent, before);
+    t.watch = watch;
+    t.seen = new Set();
+    let finish: (r: { stop: string; error?: { code?: number; message?: string }; cut?: boolean }) => void = () => {};
+    const ended = new Promise<{ stop: string; error?: { code?: number; message?: string }; cut?: boolean }>((res) => { finish = res; });
+    t.ended = finish;
+    const conn = live.conn;
+    void conn.exited.then((code) => finish({ stop: "error", error: { message: `the agent exited (code ${code})` }, cut: true }));
+    // After a stop the agent says it stopped; one that does not is ended.
+    let forced: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => { forced = setTimeout(() => { finish({ stop: "cancelled", cut: false }); conn.close(); this.live.delete(s.id); }, 10_000); };
+    io.signal.addEventListener("abort", onAbort, { once: true });
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    try {
+      let messageId: string | undefined;
+      const answer = conn.request("session/prompt", { sessionId: live.acpSession, prompt: sub.blocks, idempotencyKey: sub.key }).then((r: Json) => {
+        messageId = typeof r?.messageId === "string" ? r.messageId : undefined;
+        if (messageId) this.keys.answered(s.id, messageId);
+        watch.answer();
+        // A prompt sent again that starts no work, and reports no new message, was taken before: it is not run again.
+        if (resent) grace = setTimeout(() => { if (watch.recognized && !t.seen?.size) finish({ stop: "recognized" }); }, RECOGNIZED_MS);
+        // (An idle state that came before the answer ended the work already.)
+        if (watch.ended) finish(watch.ended);
+        return r;
+      });
+      let end: Awaited<typeof ended>;
+      try { [, end] = await Promise.all([answer, ended]); } catch (e) {
+        // -32800: the agent cancelled the prompt before it was inserted (a stop, or a close).
+        if ((e as any)?.code === -32800) return { stop: "cancelled" };
+        // A stop (or a restart that parks the turn) ended the connection: the work was cancelled, nothing is sent again.
+        if (io.signal.aborted) return { stop: "cancelled" };
+        // A connection that ended before the answer: the prompt may or may not have gone in. It stays with its key.
+        throw e;
+      }
+      if (end.stop === "recognized") {
+        t.io.append("note", { kind: "acp", text: `${live.agent.name} had already taken this message before Keel's connection to it was cut, and did not start it again. What it did while Keel was away is not shown here: ask again if the work is not done.` });
+        return { stop: "end_turn", messageId };
+      }
+      // A connection that ended while the work ran: the turn fails and keeps its key, to be sent again.
+      if (end.cut) throw new Error(end.error?.message ?? "the agent's connection ended");
+      return { ...end, messageId };
+    } finally {
+      clearTimeout(forced); clearTimeout(grace);
+      io.signal.removeEventListener("abort", onAbort);
+      t.watch = undefined; t.ended = undefined;
+    }
+  }
+
   // Text and thinking so far as one assistant event, with the calls that follow it.
   private flush(t: TurnState, calls: Json[] = []) {
     const blocks: Json[] = [];
@@ -462,11 +602,11 @@ export class AcpRunner {
     if (t.done.has(tc.toolCallId)) return;
     if (!t.stored.has(tc.toolCallId)) this.flush(t, [tc]);
     t.done.add(tc.toolCallId);
-    t.io.append("tool_result", { results: [resultOf(tc, (id) => this.live.get(t.session.id)?.terms.shown(id))] });
+    const live = this.live.get(t.session.id);
+    t.io.append("tool_result", { results: [resultOf(tc, (id) => live?.terms.shown(id) ?? live?.book.shown(id))] });
   }
 
   private update(live: Live, p: Json) {
-    const t = live.turn;
     const u = p?.update;
     // (Commands may come before the setup's answer names the conversation, or with a load's replay.)
     if (u?.sessionUpdate === "available_commands_update" && (p.sessionId === live.acpSession || live.acpSession === "" || live.acpSession === "loading")) {
@@ -476,11 +616,97 @@ export class AcpRunner {
     }
     // What the agent says of its children: their announcements, the messages between sessions, and their own work.
     if (u?.sessionUpdate !== "session_message_chunk") this.endChunks(live);
+    if (live.v === 2 && u?.sessionUpdate === "subagent_update" && p.sessionId === live.acpSession) { live.book.kid(u); this.tellJobs(live); }
     if (u?.sessionUpdate === "subagent_update") return this.announce(live, String(p.sessionId), u);
     if (u?.sessionUpdate === "session_message" || u?.sessionUpdate === "session_message_chunk") return this.said(live, String(p.sessionId), u);
     const kid = u && p.sessionId !== live.acpSession ? live.children.get(p.sessionId) : undefined;
     if (kid) return this.kidUpdate(kid, u);
     if (!u || p.sessionId !== live.acpSession) return; // a load's replay, or another conversation
+    if (live.v === 2) { const v = this.updateV2(live, u); if (!v) return; return this.updateV1(live, v); }
+    this.updateV1(live, u);
+  }
+
+  // The updates only v2 has. Background work is kept whether or not a turn runs; the rest reaches the turn as the
+  // v1 update it is equivalent to (or none: null).
+  private updateV2(live: Live, u: Json): Json | null {
+    const id = String(u.messageId ?? "");
+    switch (u.sessionUpdate) {
+      case "state_update": this.stateUpdate(live, u); return null;
+      case "terminal_update": live.book.terminal(u); this.tellJobs(live); return null;
+      case "terminal_output_chunk": live.book.output(u); return null;
+      case "user_message": case "user_message_chunk": live.turn?.seen?.add(id); return null;
+      case "replay_complete": return null;
+      case "notice": {
+        const text = [u.title, u.description].filter((x) => typeof x === "string" && x).join(": ");
+        if (text && live.turn) live.turn.io.append("note", { kind: "acp", text: clip(text, 1000) });
+        return null;
+      }
+      case "agent_message": case "agent_thought": {
+        const thought = u.sessionUpdate === "agent_thought";
+        const add = addedText(live.texts, `${thought ? "t" : "m"}:${id}`, u.content);
+        return add ? { sessionUpdate: thought ? "agent_thought_chunk" : "agent_message_chunk", content: { type: "text", text: add } } : null;
+      }
+      case "agent_message_chunk": case "agent_thought_chunk": {
+        // (What the message showed so far, so that a whole message that follows adds only what is new.)
+        if (u.content?.type === "text") {
+          const k = `${u.sessionUpdate === "agent_thought_chunk" ? "t" : "m"}:${id}`;
+          live.texts.set(k, (live.texts.get(k) ?? "") + u.content.text);
+          if (live.texts.size > 256) live.texts.delete(live.texts.keys().next().value!);
+        }
+        return u;
+      }
+      case "tool_call_update": live.book.call(u); this.tellJobs(live); return u;
+      default: return u;
+    }
+  }
+
+  // A foreground state of the agent: kept, its background list shown as the session's jobs, and a turn that waits for
+  // an idle state is told.
+  private stateUpdate(live: Live, u: Json) {
+    const f = foreground(u);
+    live.fg = f;
+    live.book.snapshot(f);
+    this.tellJobs(live);
+    const t = live.turn;
+    if (t?.watch?.state(f)) t.ended?.(t.watch.ended!);
+  }
+
+  private tellJobs(live: Live) {
+    try { acpJobs.changed?.(live.sid); } catch (e) { this.capture(e, { session: live.sid, agent: live.agent.id, at: "acp background" }); }
+  }
+
+  // The protocol a session's agent connection speaks, while it runs.
+  protocol(session: string): Version | undefined {
+    return this.live.get(session)?.v;
+  }
+
+  // The session's background work as the agent last listed it (ACP v2).
+  background(session: string) {
+    return this.live.get(session)?.book.views() ?? [];
+  }
+
+  // Stops one listed item alone, with `tool_call/cancel` or `terminal/cancel` (or the child's own cancel): nothing
+  // when the request was sent, else why it was not (the spec lets a client send it only to an item that offered it).
+  stopBackground(session: string, id: string, by: StopBy = "owner"): string | void {
+    const live = this.live.get(session);
+    if (!live || live.v !== 2 || !live.conn.alive) return "its agent is not running now";
+    const c = live.book.cancel(id);
+    if ("refused" in c) return c.refused;
+    if (c.method === "session/cancel") {
+      const kid = live.children.get(c.params.sessionId);
+      if (!kid) return "its agent has not announced it as a child here";
+      this.stopChild(live, kid, by);
+      return;
+    }
+    // The agent answers when it accepted; the item's own update says when it ended (the list is not touched here).
+    live.conn.request(c.method, { sessionId: live.acpSession, ...c.params }).catch((e: Error) => {
+      // (-32602: it ended or cannot be stopped now; its update says which.)
+      if ((e as any).code !== -32602) this.capture(e, { session, agent: live.agent.id, at: "acp background cancel" });
+    });
+  }
+
+  private updateV1(live: Live, u: Json) {
+    const t = live.turn;
     // The agent changed a choice itself, in a turn or between them: what is current follows it.
     if (u.sessionUpdate === "config_option_update" && Array.isArray(u.configOptions)) live.choices = withOptions(live.choices, u.configOptions);
     if (u.sessionUpdate === "current_mode_update" && live.choices.modes?.via === "mode" && typeof u.currentModeId === "string") live.choices.modes = { ...live.choices.modes, current: u.currentModeId };
@@ -506,12 +732,18 @@ export class AcpRunner {
         if (tc.status === "completed" || tc.status === "failed") this.finish(t, tc);
         break;
       }
+      case "tool_call_content_chunk": {
+        // v2: one content item appended to the call's content.
+        const prev = t.calls.get(u.toolCallId) ?? { toolCallId: u.toolCallId };
+        if (u.content && typeof u.content === "object") t.calls.set(u.toolCallId, { ...prev, content: [...(prev.content ?? []), u.content] });
+        break;
+      }
       case "tool_call_update": {
         const prev = t.calls.get(u.toolCallId) ?? { toolCallId: u.toolCallId };
         const tc = { ...prev, ...Object.fromEntries(Object.entries(u).filter(([, v]) => v != null)) };
         t.calls.set(tc.toolCallId, tc);
         if (!t.stored.has(tc.toolCallId) && described(tc)) this.flush(t, [tc]);
-        if (tc.status === "completed" || tc.status === "failed") { this.finish(t, tc); t.io.status({ kind: "model", since: Date.now(), model: t.session.model }); }
+        if (tc.status === "completed" || tc.status === "failed" || tc.status === "cancelled") { this.finish(t, tc); t.io.status({ kind: "model", since: Date.now(), model: t.session.model }); }
         break;
       }
       case "plan":
@@ -801,28 +1033,39 @@ export class AcpRunner {
   }
 
   // The agent's requests: permission and files, all judged by keel's gate.
-  private async request(live: Live, method: string, p: Json): Promise<Json> {
+  private async request(live: Live, method: string, p: Json, rid?: number | string): Promise<Json> {
     // A terminal's output, end and release are asked for also between turns: they judge nothing.
-    if (this.shell && p?.sessionId === live.acpSession) {
+    if (this.shell && live.v === 1 && p?.sessionId === live.acpSession) {
       if (method === "terminal/output") return live.terms.output(p);
       if (method === "terminal/kill") return live.terms.kill(p);
       if (method === "terminal/release") return live.terms.release(p);
       if (method === "terminal/wait_for_exit") return live.terms.waitForExit(p, live.turn?.io.signal ?? live.closed.signal);
     }
+    // v2 states the call a permission is for as its subject; background work asks while no turn runs.
+    if (live.v === 2 && method === "session/request_permission") p = legacyPermission(p);
     // A child's request is judged in the child's session, as its own parent's would be, and stays its own.
     const kid = p?.sessionId !== live.acpSession ? live.children.get(p?.sessionId) : undefined;
     if (kid) kid.turn.session = this.store.session(kid.session) ?? kid.turn.session;
+    const quiet = live.v === 2 && !kid && !live.turn && method === "session/request_permission" && p.sessionId === live.acpSession;
     const t = kid ? kid.turn : live.turn;
-    const s = t?.session;
-    if (!t || !s || (!kid && p.sessionId !== live.acpSession)) throw Object.assign(new Error("no turn is running in this session"), { code: -32002 });
-    const signal = kid ? kid.abort.signal : t.io.signal;
+    const s = t?.session ?? (quiet ? this.store.session(live.sid) : undefined);
+    if (!s || (!t && !quiet) || (!kid && p.sessionId !== live.acpSession)) throw Object.assign(new Error("no turn is running in this session"), { code: -32002 });
+    // The agent may cancel the request (`$/cancel_request`, v2): the signal is the turn's, the child's or the agent's own.
+    const own = new AbortController();
+    if (rid !== undefined) live.pending.set(rid, own);
+    const signal = AbortSignal.any([kid ? kid.abort.signal : t ? t.io.signal : live.closed.signal, own.signal]);
+    try { return await this.answer(live, method, p, { kid, t, s, signal }); } finally { if (rid !== undefined) live.pending.delete(rid); }
+  }
+
+  private async answer(live: Live, method: string, p: Json, c: { kid?: Child; t?: TurnState; s: Session; signal: AbortSignal }): Promise<Json> {
+    const { kid, t, s, signal } = c;
     switch (method) {
       case "session/request_permission": {
-        const prev = t.calls.get(p.toolCall?.toolCallId) ?? {};
+        const prev = t?.calls.get(p.toolCall?.toolCallId) ?? {};
         // The call as announced, with what the request adds; its input as the agent streamed it when the request has none.
         const tc = { ...prev, ...(p.toolCall ?? {}), content: prev.content ?? p.toolCall?.content };
         if (!described(tc)) { const g = streamedInput(prev); if (g) tc.rawInput = g; }
-        if (tc.toolCallId) { t.calls.set(tc.toolCallId, tc); if (!t.stored.has(tc.toolCallId)) this.flush(t, [tc]); }
+        if (t && tc.toolCallId) { t.calls.set(tc.toolCallId, tc); if (!t.stored.has(tc.toolCallId)) this.flush(t, [tc]); }
         const options: Json[] = p.options ?? [];
         if (signal.aborted) return { outcome: { outcome: "cancelled" } };
         // A call of Keel's own tools is judged when it reaches Keel (served.ts): asked here too, the owner would answer twice.
@@ -876,6 +1119,7 @@ export class AcpRunner {
       case "terminal/create":
         if (!this.shell) break;
         if (kid) throw Object.assign(new Error("Keel runs no terminal for a child agent"), { code: -32601 });
+        if (!t) break;
         return live.terms.create(s, p, (tool, input, id) => t.io.runTool(tool, input, id));
     }
     throw Object.assign(new Error(`method not found: ${method}`), { code: -32601 });
@@ -887,7 +1131,7 @@ export class AcpRunner {
     if (!l) return;
     this.live.delete(sessionId);
     this.closeLive(l);
-    if (l.caps.sessionCapabilities?.close) void l.conn.request("session/close", { sessionId: l.acpSession }).catch(() => {}).finally(() => l.conn.close());
+    if (l.v === 2 || l.caps.sessionCapabilities?.close) void l.conn.request("session/close", { sessionId: l.acpSession }).catch(() => {}).finally(() => l.conn.close());
     else l.conn.close();
   }
 

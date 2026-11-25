@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { AcpRunner, type ChildHost, type ChildPatch } from "./external.ts";
+import { Book } from "./v2.ts";
 import { MESSAGE_MAX, TITLE_MAX, DESCRIPTION_MAX } from "./children.ts";
 
 // The runner's handling of what an agent says of its children, with no process: updates are fed to it as the
@@ -33,7 +34,7 @@ function world(limit = 2) {
   const runner = new AcpRunner(store, { learn() {}, learned: () => undefined } as any, (async () => undefined) as any, (e) => errors.push(e), undefined, undefined, kids);
   const notified: { method: string; params: any }[] = [];
   const conn: any = { alive: true, notify: (method: string, params: any) => notified.push({ method, params }), request: async () => ({}), close() { this.alive = false; } };
-  const live: any = { agent: { id: "x", name: "Codex" }, terms: { closeAll: async () => {}, stopRunning: async () => {} }, conn, acpSession: "root", sid: parent.id, caps: {}, choices: {}, offered: new Set(), children: new Map(), chunks: new Map(), closed: new AbortController() };
+  const live: any = { agent: { id: "x", name: "Codex" }, terms: { closeAll: async () => {}, stopRunning: async () => {} }, conn, acpSession: "root", sid: parent.id, caps: {}, choices: {}, offered: new Set(), children: new Map(), chunks: new Map(), v: 1, book: new Book(), texts: new Map(), pending: new Map(), closed: new AbortController() };
   (runner as any).live.set(parent.id, live);
   const feed = (sessionId: string, update: any) => (runner as any).update(live, { sessionId, update });
   const announce = (id: string, more: any = {}, outer = "root") => feed(outer, { sessionUpdate: "subagent_update", sessionId: id, ...more });

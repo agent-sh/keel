@@ -53,7 +53,8 @@ export class AcpConnection {
   // A line the agent wrote that is longer than LINE_MAX is dropped unread (told here and in the log with its length).
   onOversize: (chars: number) => void = () => {};
   onNotification: (method: string, params: Json) => void = () => {};
-  onRequest: (method: string, params: Json) => Promise<Json> = async (m) => { throw Object.assign(new Error(`method not found: ${m}`), { code: -32601 }); };
+  // `id`: the request's own id, which the agent's `$/cancel_request` names (ACP v2 cancels a permission request that way).
+  onRequest: (method: string, params: Json, id: number | string) => Promise<Json> = async (m) => { throw Object.assign(new Error(`method not found: ${m}`), { code: -32601 }); };
 
   constructor(argv: string[], opts: { cwd: string; env?: Record<string, string>; pass?: string[] }, private log: (m: string) => void = () => {}) {
     this.proc = Bun.spawn(argv, { cwd: opts.cwd, env: opts.pass ? scrubbedEnv(process.env, opts.pass, opts.env) : { ...process.env, ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -120,7 +121,7 @@ export class AcpConnection {
       return;
     }
     if (msg.id === undefined) return this.onNotification(msg.method, msg.params ?? {});
-    this.onRequest(msg.method, msg.params ?? {}).then(
+    this.onRequest(msg.method, msg.params ?? {}, msg.id).then(
       (result) => this.write({ jsonrpc: "2.0", id: msg.id, result: result ?? null }),
       (e: RpcFailure) => this.write({ jsonrpc: "2.0", id: msg.id, error: { code: e.code ?? -32603, message: e.message } }),
     );

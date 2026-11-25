@@ -257,7 +257,8 @@ export type ExternalIO = {
   // result is the agent's to show; nothing of the call is stored here.
   runTool(tool: string | Tool, input: unknown, id: string): Promise<ToolResultBlock>;
 };
-export type ExternalTurn = (io: ExternalIO) => Promise<{ reason: string; usage?: Usage }>;
+// `extra`: facts of the turn the agent gave (an ACP agent's message id for the prompt), kept on the turn's end.
+export type ExternalTurn = (io: ExternalIO) => Promise<{ reason: string; usage?: Usage; extra?: Record<string, unknown> }>;
 
 // What the ledger found of a turn request's cache, set by its requestDone
 // (src/admin/telemetry.ts cacheBreak): the cause it counts a break by, or

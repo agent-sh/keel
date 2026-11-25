@@ -42,6 +42,9 @@ export type JobView = {
   id: string; num: number; command: string; description?: string; cwd: string; pty: boolean; log: string;
   started: number; ended?: number; exit_code?: number | null; signal?: string | null; background: boolean; bytes: number; running: boolean; last?: string; stop_reason?: string;
   call_id?: string; // the tool call that started it
+  // Work an ACP agent runs apart from its foreground work (ACP v2): what it is ("agent terminal"), and whether the agent
+  // offered to stop it alone. It is not a process of Keel's: it has no log.
+  external?: string; can_stop?: boolean;
 };
 
 export type DraftBlock = { kind: "text" | "thinking" | "tool_input"; text: string; name?: string };
