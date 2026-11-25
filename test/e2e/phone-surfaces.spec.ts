@@ -997,7 +997,8 @@ for (const size of SIZES) {
         await expect(board.getByTestId("board-checks")).toHaveCount(0);
         await expect(board.getByTestId("board-head")).toHaveCount(0);
         await expect(agent(1).getByTestId("board-land")).toBeVisible();
-        await expect(agent(2).getByTestId("board-open")).toBeVisible();
+        // A refused review holds the landing: Land is the row's one action, held.
+        await expect(agent(2).getByTestId("board-land")).toBeDisabled();
         await expect(agent(3).getByTestId("board-answer")).toBeVisible();
         expect(await phoneProblems(board), "the board's rows").toEqual([]);
         // A tap on a row opens its facts, and a second closes them.

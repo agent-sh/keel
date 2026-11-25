@@ -1,8 +1,15 @@
-import { expect, test } from "./isolate.ts";
+import { expect, test, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, SCRIPTED, ask, openPanel, shoot } from "./shots.ts";
+
+// A card's facts open under its chevron: open every card that has them, once the board shows its cards.
+const expandAll = async (page: Page) => {
+  const board = page.getByTestId("work-board");
+  await expect(board.getByTestId("board-row").first()).toBeVisible();
+  for (const t of await board.getByTestId("board-toggle").all()) if ((await t.getAttribute("aria-expanded")) === "false") await t.click();
+};
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
 
@@ -161,6 +168,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   // The Board panel, at the desktop size and the phone's, in both themes.
   await page.goto(`/s/${coord}`);
   await openPanel(page, "board");
+  await expandAll(page);
   const panel = page.getByTestId("work-board");
   const card = (id: string) => panel.locator(`[data-testid="board-row"][data-agent="${id}"]`);
   await expect(card(alpha.id).getByTestId("board-landed")).toHaveAttribute("data-state", "yes");
@@ -213,6 +221,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect((await (await request.get(`/api/sessions/${coord}/board?fresh=1`)).json() as any).rows.find((r: any) => r.id === gamma.id).work.uncommitted).toMatchObject({ files: 47, more: true });
   await page.reload();
   await openPanel(page, "board");
+  await expandAll(page);
   await expect(card(gamma.id).getByTestId("board-uncommitted")).toHaveText("47+ files+41+-1+uncommitted");
   await page.setViewportSize({ width: 390, height: 844 });
   const work = card(gamma.id).getByTestId("board-work");
@@ -229,6 +238,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "changes");
   await page.goto(`/s/${coord}`);
   await openPanel(page, "board");
+  await expandAll(page);
 
   // Gamma ends when the spec lets it, then starts a child that approves gamma's own head: the board does not take it for a review.
   writeFileSync(gate, "");
@@ -245,6 +255,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const child = await own();
   await page.reload();
   await openPanel(page, "board");
+  await expandAll(page);
   await expect(card(child.id)).toHaveAttribute("data-indent", "1");
   await expect(card(gamma.id)).toHaveAttribute("data-indent", "0");
   const order = await panel.locator('[data-testid="board-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-agent")));
@@ -258,6 +269,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(await told()).toContain("review words only (no structured verdict");
   await page.reload();
   await openPanel(page, "board");
+  await expandAll(page);
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "words");
   await expect(card(gamma.id).getByTestId("board-verdict")).toContainText("LAND: yes");
   // One action leads a card: gamma ended with no refusal, so it is Land, and Open changes gives way to it. The
@@ -267,7 +279,9 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(panel.getByTestId("board-summary")).toHaveText(/^1 to land · /);
   await expect(panel.getByTestId("board-summary")).not.toHaveText(/\b[0-9a-f]{9}\b|\b0 /);
   await expect(panel.getByTestId("board-summary")).toHaveAttribute("title", /^Base main at [0-9a-f]{9}/);
-  await expect(card(beta.id).getByTestId("board-land")).toHaveCount(0);
+  // Beta's reviewer refused it: Land is there, held, with the reason, and Open changes stays beside it.
+  await expect(card(beta.id).getByTestId("board-land")).toBeDisabled();
+  await expect(card(beta.id).getByTestId("board-held")).toContainText("review is refused");
   await expect(card(beta.id).getByTestId("board-open-changes")).toBeVisible();
   await expect(card(alpha.id).getByTestId("board-land")).toHaveCount(0);
   let queued: string[] = [];
@@ -294,6 +308,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(rowOf(await board(), gamma.id).review).toMatchObject({ line: "Second pass: line 6 lost its number.", against: { line: "Line 6 reads right to me." } });
   await page.reload();
   await openPanel(page, "board");
+  await expandAll(page);
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "disputed");
   await expect(card(gamma.id).getByTestId("board-verdict")).toContainText("Second pass: line 6 lost its number.");
   await expect(card(gamma.id).getByTestId("board-verdict-against")).toContainText("Line 6 reads right to me.");
@@ -307,6 +322,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(rowOf(await board(), gamma.id).review).toMatchObject({ current: false, of: gammaHead });
   await page.reload();
   await openPanel(page, "board");
+  await expandAll(page);
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "stale");
   expect(keyWarnings).toEqual([]);
 });
@@ -331,6 +347,7 @@ test("a one-line board row has a verb for what waits and the class of what faile
   const asker = named("Asker"), broken = named("Broken");
   await page.goto(`/s/${coord}`);
   await openPanel(page, "board");
+  await expandAll(page);
   const row = async (get: typeof asker) => page.getByTestId("work-board").locator(`[data-testid="board-row"][data-agent="${(await get()).id}"]`);
   const ask_ = await row(asker), bad = await row(broken);
   await expect(ask_).toBeVisible();
@@ -360,7 +377,65 @@ test("a one-line board row has a verb for what waits and the class of what faile
   // A press on the failed row's own words opens that agent.
   await page.goto(`/s/${coord}`);
   await openPanel(page, "board");
+  await expandAll(page);
   await (await row(broken)).getByTestId("board-lasted").click();
   await expect(page).toHaveURL(new RegExp(`/s/${(await broken()).session_id}$`));
   await request.delete(`/api/sessions/${coord}`);
+});
+
+// Feature: a card of the board is one line: the agent, its branch, what it changes, a mark for each fact and its one
+// action. Its facts open under it on a press of its chevron. Where a failing pair of branches holds the landing, Land
+// is there, held, and says why.
+test("a work board card is one line, with its facts under a chevron, and Land held with its reason", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "needs the scripted provider");
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `board-card-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const id = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: ws, title: "Board one line" } })).json()).session.id as string;
+  const head = "b3166396dd37cfd55fb0fd54b7bafd8f0457e17c";
+  const row = (n: number, extra: Record<string, unknown>) => ({
+    id: `${n}`.repeat(12), session_id: `s-${n}`, parent_id: id, depth: 1, title: `Lane ${n} with a title that goes on for a while`, type: "general-purpose", model: HAIKU, state: "completed", created: Date.now() - 600_000, ended: Date.now(), machine: null,
+    branch: `keel/lane-${n}`, repo: "/r", base: "main", head, ahead: 1, behind: 0, worktree: "here",
+    checks: { state: "known", passed: ["notes"], failed: [], notRun: [] }, reviews: [], queue: null, live: null, together: [],
+    work: { uncommitted: null, branch: { files: 2, added: 5, removed: 1 } }, landed: { state: "no", missing: 1 }, review: null, ...extra,
+  });
+  const pair = { with: "keel/lane-1", with_agent: "111111111111", head, with_head: head, base_tip: head, state: "red", why: "", detail: null, checks: [{ name: "unit", tests: ["stamp keeps a provenance"] }], error: null, at: Date.now() };
+  const rows = [row(1, {}), row(2, { together: [pair] }), row(3, { checks: { state: "known", passed: [], failed: ["typecheck"], notRun: [] } })];
+  await page.route(`**/api/sessions/${id}/board*`, (route) => route.fulfill({ json: { session_id: id, rows, total: rows.length, repos: [{ repo: "/r", base: "main", base_tip: head, deploys: [] }], at: Date.now(), took_ms: 3 } }));
+  try {
+    await page.goto(`/s/${id}`);
+    await openPanel(page, "board");
+    const board = page.getByTestId("work-board");
+    const card = (n: number) => board.locator(`[data-testid="board-row"][data-agent="${`${n}`.repeat(12)}"]`);
+    await expect(board.getByTestId("board-row")).toHaveCount(3);
+    const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+    for (const n of [1, 2, 3]) {
+      const c = card(n);
+      expect((await c.boundingBox())!.height, `card ${n} is one line`).toBeLessThanOrEqual(3.5 * rem);
+      await expect(c.getByTestId("board-delta")).toHaveText("+5-1");
+      await expect(c.getByTestId("board-marks")).toBeVisible();
+      await expect(c.locator('[data-testid="board-answer"], [data-testid="board-land"], [data-testid="board-open"]')).toHaveCount(1);
+      await expect(c.getByTestId("board-checks")).toHaveCount(0);
+      await expect(c.getByTestId("board-head")).toHaveCount(0);
+    }
+    await expect(card(1).getByTestId("board-branch")).toHaveText("lane-1");
+    await expect(card(1).getByTestId("board-land")).toBeEnabled();
+    // A pair that fails together, and a check that failed on the head, hold the landing: Land is there, disabled, with the reason.
+    await expect(card(2).getByTestId("board-land")).toBeDisabled();
+    await expect(card(2).locator("span[title]").filter({ has: page.getByTestId("board-land") })).toHaveAttribute("title", /fails its checks together with lane-1/i);
+    await expect(card(3).getByTestId("board-land")).toBeDisabled();
+    await page.mouse.move(0, 0);
+    await shoot(page, "work-board-07-one-line");
+    // The facts open on the chevron, and close on a second press.
+    await card(2).getByTestId("board-toggle").click();
+    await expect(card(2).getByTestId("board-toggle")).toHaveAttribute("aria-expanded", "true");
+    await expect(card(2).getByTestId("board-checks")).toBeVisible();
+    await expect(card(2).getByTestId("board-held")).toContainText("lane-1");
+    await expect(card(2).getByTestId("board-together-red")).toBeVisible();
+    await shoot(page, "work-board-08-one-line-open");
+    await card(2).getByTestId("board-toggle").click();
+    await expect(card(2).getByTestId("board-checks")).toHaveCount(0);
+  } finally {
+    await page.unroute(`**/api/sessions/${id}/board*`);
+    await request.delete(`/api/sessions/${id}`);
+  }
 });

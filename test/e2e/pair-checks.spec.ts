@@ -95,6 +95,7 @@ test("two branches that merge clean and fail together are said on both cards and
     const panel = page.getByTestId("work-board");
     const card = (id: string) => panel.locator(`[data-testid="board-row"][data-agent="${id}"]`);
     for (const [id, other, mine, theirs] of [[acc.id, prov.branch, accTip, provTip], [prov.id, acc.branch, provTip, accTip]] as const) {
+      await card(id).getByTestId("board-toggle").click();
       const red = card(id).getByTestId("board-together-red");
       await expect(red).toHaveAttribute("data-with", other);
       await expect(red.getByTestId("board-together-test")).toHaveText("stamp keeps a bot's provenance");

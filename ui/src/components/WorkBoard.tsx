@@ -3,7 +3,7 @@
 // the latest review of its branch, whether the base holds it, and whether what runs holds it. A
 // reviewer's words (its verdict's why, or its LAND line) are quoted under its card as its own.
 import { Check, ChevronDown, ChevronRight, CircleDashed, FileDiff, GitBranch, GitMerge, GitPullRequestArrow, Loader2, Minus, RefreshCw, X } from "lucide-react";
-import { lazy, Suspense, useState, useSyncExternalStore, type ReactNode } from "react";
+import { lazy, Suspense, useState, useSyncExternalStore, type ReactElement, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
 import { listedOnItsOwn, useFold, useNow } from "../lib/agent-fold.ts";
@@ -11,7 +11,7 @@ import { useAgentsSeen } from "../lib/agent-seen.ts";
 import { EarlierRow } from "./automation/Earlier.tsx";
 import { treeOrder } from "../lib/board-order.ts";
 import { rememberPanel } from "../lib/ui.ts";
-import { branchGone, canLand, toLand, type Change } from "../../../src/board/rules.ts";
+import { branchGone, canLand, landBlock, landHeld, toLand, type Change } from "../../../src/board/rules.ts";
 import { loadBoard, useBoard, type Board, type BoardRow } from "../lib/board.ts";
 import { checksWords } from "../lib/check-words.ts";
 import { queueBranches } from "../lib/landing.ts";
@@ -51,7 +51,8 @@ function Mark({ tone }: { tone: Tone }) {
 }
 
 // One fact of a card: its name over its value, the value's tone by what it says.
-function Fact({ name, tone, value, title, testid, state }: { name: string; tone: Tone; value: ReactNode; title?: string; testid: string; state: string }) {
+type FactProps = { name: string; tone: Tone; value: ReactNode; title?: string; testid: string; state: string };
+function Fact({ name, tone, value, title, testid, state }: FactProps) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5 rounded-md bg-sunken px-2 py-1.5" data-testid={testid} data-state={state} title={title}>
       <span className="k-label">{name}</span>
@@ -210,6 +211,29 @@ function Line({ r, indent, w, st }: { r: BoardRow; indent: number; w: Watch; st:
   );
 }
 
+// What a card says in its one line about the files it changes: the committed change, else the uncommitted one.
+function Delta({ r }: { r: BoardRow }) {
+  const c = r.work?.branch ?? r.work?.uncommitted;
+  if (!c) return null;
+  const more = c.more ? "+" : "";
+  return (
+    <span className="inline-flex shrink-0 items-baseline gap-1 font-mono text-micro tabular-nums" data-testid="board-delta" title={[r.work?.branch && `${r.work.branch.files} files on the branch`, r.work?.uncommitted && `${r.work.uncommitted.files} files uncommitted`].filter(Boolean).join(", ")}>
+      <span className="text-ok">+{c.added}{more}</span><span className="text-danger">-{c.removed}{more}</span>
+    </span>
+  );
+}
+
+// The card's facts as one mark each in its line (the tiles below say them in words): green where it holds, red where it does not.
+function Marks({ facts, held }: { facts: FactProps[]; held: string | null }) {
+  const all = held ? [...facts, { name: "Landing", tone: "bad" as Tone, value: held, title: held }] : facts;
+  if (!all.length) return null;
+  return (
+    <span className="flex shrink-0 items-center gap-1" data-testid="board-marks">
+      {all.map((f) => <span key={f.name} className="inline-flex" data-tone={f.tone} title={`${f.name}: ${typeof f.value === "string" ? f.value : f.title ?? ""}`}><Mark tone={f.tone} /></span>)}
+    </span>
+  );
+}
+
 function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch; st: SessionState | undefined; coord: string }) {
   const [landing, setLanding] = useState(false);
   const [err, setErr] = useState("");
@@ -217,9 +241,10 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
   const [open, setOpen] = useState(false);
   if (compact(r)) return <Line r={r} indent={indent} w={w} st={st} />;
   // One action leads the card: Answer when its agent waits on the owner, else Land when its branch can land.
-  // Without either, the card's one act is to open what it changed (below, in the line of its changes).
+  // Where something holds the landing (a failing pair, a failed check, a refusal) Land is there, held, with the reason.
   const answers = w === "need" && CARD_ASKS.has(st?.why ?? "");
   const lands = !answers && canLand(r);
+  const held = !answers && landHeld(r) ? landBlock(r) : null;
   const land = () => {
     setLanding(true);
     setErr("");
@@ -231,9 +256,14 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
   const reviewing = r.reviews.length > 0;
   const changes = !!(r.work && (r.work.uncommitted || r.work.branch));
   // A tile shows only a fact: a check the repository names, a review, a landing, a live record.
-  const facts = [checksFact(r), reviewFact(r), landedFact(r), liveFact(r)].filter(Boolean);
+  const facts = [checksFact(r), reviewFact(r), landedFact(r), liveFact(r)].filter(Boolean) as ReactElement<FactProps>[];
+  const marks = facts.map((f) => f.props);
+  const toggle = (
+    <ChevronDown className={cn("size-4 shrink-0 text-faint transition-transform", open && "rotate-180")} aria-hidden="true" />
+  );
   return (
-    <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent} data-watch={w}>
+    <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised px-2.5 py-2" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent} data-watch={w} data-open={open}>
+      {/* One line: the agent, its branch, what it changes, a mark a fact, its one action. The facts open under it. */}
       <div className="flex min-w-0 items-center gap-2">
         <StateMark w={w} />
         {phone ? (
@@ -243,21 +273,27 @@ function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["r
               <span className="k-whole text-ui font-medium text-fg" data-testid="board-title">{r.title}</span>
               <span className="text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
             </span>
-            <ChevronDown className={cn("size-4 shrink-0 text-faint transition-transform", open && "rotate-180")} aria-hidden="true" />
+            {toggle}
           </button>
         ) : (
           <>
             <button type="button" onClick={() => openSession(r.session_id)} className="k-whole min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
-            <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
+            {r.branch && <span className="k-whole hidden min-w-0 max-w-[30%] shrink truncate font-mono text-micro text-muted @[30rem]:inline" title={r.branch} data-testid="board-branch">{short(r.branch)}</span>}
+            <Delta r={r} />
+            <Marks facts={marks} held={held} />
+            <span className="hidden shrink-0 text-micro text-muted @[26rem]:inline" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
           </>
         )}
         {answers && <button type="button" className="k-btn" data-ink="" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it">Answer</button>}
         {lands && <button type="button" className="k-btn" data-ink="" disabled={landing} onClick={land} data-testid="board-land" title={`Queue ${short(r.branch!)} to land on ${r.base ?? "the base"}`}><GitMerge /> Land</button>}
-        {phone && !answers && !lands && <button type="button" className="k-btn" onClick={() => { if (changes) rememberPanel(r.session_id, "changes"); openSession(r.session_id); }} data-testid="board-open" title={changes ? "Open what it changed" : "Open the agent"}>Open</button>}
+        {held && <span title={held} className="inline-flex shrink-0"><button type="button" className="k-btn" data-ink="" disabled data-testid="board-land" data-held="" aria-describedby={`held-${r.id}`}><GitMerge /> Land</button></span>}
+        {phone && !answers && !lands && !held && <button type="button" className="k-btn" onClick={() => { if (changes) rememberPanel(r.session_id, "changes"); openSession(r.session_id); }} data-testid="board-open" title={changes ? "Open what it changed" : "Open the agent"}>Open</button>}
+        {!phone && <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label={open ? "Hide its facts" : "Show its facts"} title={open ? "Hide its facts" : "Show its facts"} className="grid size-6 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg" data-testid="board-toggle">{toggle}</button>}
       </div>
       {err && <p className="text-caption text-danger" data-testid="board-land-error">{err}</p>}
-      {(!phone || open) && (
+      {open && (
         <>
+        {held && <p id={`held-${r.id}`} className="text-caption text-danger" data-testid="board-held">Land is held: {held}</p>}
         {r.branch ? (
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption">
             <GitBranch className="size-3.5 shrink-0 text-faint" aria-hidden="true" />

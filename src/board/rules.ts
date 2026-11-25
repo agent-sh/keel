@@ -450,15 +450,23 @@ export function rowLine(r: BoardRow, full = false): string {
 export const branchGone = (r: BoardRow) => !!r.branch && !r.head && r.worktree === "gone" && !live(r.state);
 // Work a coordinator still owes a landing: a branch not landed, or one git could not read.
 export const toLand = (r: BoardRow) => !!r.landed && r.landed.state !== "yes" && r.landed.state !== "nothing" && !branchGone(r);
-// A branch the card offers Land for: its agent has ended, the base lacks its commits, no check failed on its head, no
-// reviewer refused it, it is not in the queue, and no pair of branches fails together with it. The queue still says
-// no where git does (a conflict); this only decides which one action a card leads with.
+// Why a branch that could land is held back, in words: a pair of branches that fails together (the landing would
+// conflict in what runs), a check that failed on its head, or a reviewer's refusal. null: nothing holds it back.
+export const landBlock = (r: BoardRow): string | null => {
+  const pair = (r.together ?? []).find((p) => p.state === "red");
+  if (pair) return `Fails its checks together with ${pair.with.replace(/^keel\//, "")}: land one of them first`;
+  if (r.checks?.state === "known" && r.checks.failed.length) return `${r.checks.failed.join(", ")} failed on its head`;
+  if (r.review?.verdict === "refused" || r.review?.verdict === "disputed") return `Its review is ${r.review.verdict}`;
+  return null;
+};
+// A branch that is ready for a landing but for what landBlock says: the card shows its Land disabled with that reason.
+export const landHeld = (r: BoardRow) => toLand(r) && r.landed?.state === "no" && !!r.head && !live(r.state) && !inQueue(r) && landBlock(r) !== null;
+const inQueue = (r: BoardRow) => !!(r.queue?.current && ["queued", "building", "checking", "resolving"].includes(r.queue.state));
+// A branch the card offers Land for: its agent has ended, the base lacks its commits, nothing in landBlock holds it,
+// and it is not in the queue. The queue still says no where git does (a conflict); this only decides which one
+// action a card leads with.
 export const canLand = (r: BoardRow) =>
-  toLand(r) && r.landed?.state === "no" && !!r.head && !live(r.state)
-  && !(r.checks?.state === "known" && r.checks.failed.length)
-  && r.review?.verdict !== "refused" && r.review?.verdict !== "disputed"
-  && !(r.queue?.current && ["queued", "building", "checking", "resolving"].includes(r.queue.state))
-  && !(r.together ?? []).some((p) => p.state === "red");
+  toLand(r) && r.landed?.state === "no" && !!r.head && !live(r.state) && !inQueue(r) && landBlock(r) === null;
 
 // A branch with nothing left but the landing: not landed, no agent at work on it, its named checks all passed on its head,
 // nothing uncommitted in its worktree, and no reviewer's refusal. (A worktree not read is not known clean.)

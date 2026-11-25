@@ -105,6 +105,7 @@ test("a branch that changes the page gets before and after pictures with the cha
   await page.goto(`/s/${coord}`);
   await openPanel(page, "board");
   const row = page.getByTestId("work-board").locator(`[data-testid="board-row"][data-agent="${card.id}"]`);
+  await row.getByTestId("board-toggle").click();
   const fact = row.getByTestId("board-pictures");
   await expect(fact).toHaveAttribute("data-state", "none");
   await expect(page.getByTestId("work-board").locator(`[data-testid="board-row"][data-agent="${spec.id}"]`).getByTestId("board-pictures")).toHaveCount(0);
