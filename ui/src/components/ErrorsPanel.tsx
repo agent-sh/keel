@@ -7,7 +7,7 @@ import type { ErrorRecord, ErrorSite } from "../../../src/core/types.ts";
 import { elsewhere, ERROR_STATE, errorState, healedWords } from "../../../src/admin/error-rows.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
-import { ago, clock, cn, when } from "../lib/utils.ts";
+import { ago, cn, when } from "../lib/utils.ts";
 import { footSheet } from "./ui.tsx";
 import { HelperLook } from "./HelperLook.tsx";
 import { modelOf } from "./Mark.tsx";
@@ -16,9 +16,6 @@ import { FailureActions } from "./TurnFailure.tsx";
 import { IncidentList } from "./IncidentBand.tsx";
 import type { Cause } from "../../../src/admin/stall-cause.ts";
 import { CAUSE_LABEL, ownDoing, secs } from "../../../src/admin/stall-rows.ts";
-
-// A row's time: 20:05:34, and the day before it when that was not today.
-const lastAt = (ts: number) => clock(ts, { seconds: true, date: new Date(ts).toDateString() !== new Date().toDateString() });
 
 // One row per kind of failure (the daemon folds repeats into a count), with
 // every session it happened in (each with its own count, latest time, and a
@@ -148,6 +145,8 @@ function Row({ e }: { e: ErrorRecord }) {
   const state = errorState(e);
   const sited = (e.sites?.length ?? 0) > 0;
   const target = { error_id: e.id };
+  // The tooltip of the row: the session it happened in and the model it ran on.
+  const where = e.session_id ? `in ${session?.title || e.sites?.[0]?.title || "its session"}${session ? ` · ${modelName ?? modelOf(session.model)}` : ""}${(e.sites?.length ?? 0) > 1 ? ` and ${e.sites!.length - 1} more ${e.sites!.length === 2 ? "session" : "sessions"}` : ""}` : undefined;
   const named = got && got.id === e.span_id ? got.span : undefined;
   const find = async () => {
     const id = e.span_id;
@@ -175,8 +174,9 @@ function Row({ e }: { e: ErrorRecord }) {
   };
   return (
     <div>
-    <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
-      <summary className="flex cursor-default list-none flex-col gap-1.5 text-ui [&::-webkit-details-marker]:hidden">
+    <details className="group relative rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
+      {/* Where it happened (the session and its model) is the row's tooltip; a touch screen has no tooltip, so there it is a line. */}
+      <summary className="flex cursor-default list-none flex-col gap-1.5 text-ui [&::-webkit-details-marker]:hidden" title={where} data-testid="error-head">
         <span className="flex items-baseline gap-2 max-sm:flex-wrap max-sm:items-center max-sm:gap-y-0">
         {/* The row opens: a marker of its own says so, and turns when it has. */}
         <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
@@ -191,8 +191,8 @@ function Row({ e }: { e: ErrorRecord }) {
             {n}x
           </span>
         )}
-        {/* When it last happened on the reader's clock (with the day when not today), and how long ago. */}
-        <span className="text-micro text-faint tabular-nums" title={when(e.ts)} data-testid="error-time">{lastAt(e.ts)} · {ago(e.ts)}</span>
+        {/* One age: how long ago it last happened; the time itself is its tooltip. */}
+        <span className="shrink-0 text-micro text-faint tabular-nums" title={when(e.ts)} data-testid="error-time">{ago(e.ts)}</span>
         {state === "open" && (
           <button
             type="button"
@@ -209,7 +209,7 @@ function Row({ e }: { e: ErrorRecord }) {
         {/* The acts of the row, on the row: buttons and links here do not fold or unfold it. */}
         {/* Where it happened: the session as a link, and the model it ran on. */}
         {e.session_id && (
-          <span className="ml-[1.375rem] flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-caption text-muted" data-testid="error-where">
+          <span className="ml-[1.375rem] hidden min-w-0 flex-wrap items-baseline gap-x-1.5 text-caption text-muted max-sm:flex pointer-coarse:flex" data-testid="error-where">
             <span>in</span>
             <button type="button" onClick={(ev) => { ev.preventDefault(); goTo(); }} className="min-w-0 max-w-full truncate rounded-sm text-accent-ink hover:underline focus-visible:ring-2 focus-visible:ring-accent/40" data-testid="error-where-session" title="Open the session at this failure">
               {session?.title || e.sites?.[0]?.title || "its session"}
@@ -219,7 +219,9 @@ function Row({ e }: { e: ErrorRecord }) {
           </span>
         )}
         {(acts || fixable) && (
-          <span className="ml-[1.375rem] flex flex-wrap items-center gap-1.5" data-testid="error-acts">
+          // Where there is a pointer the acts appear on the row when it is hovered or a key is in it (they are in the tab
+          // order meanwhile); on a touch screen they are a line of their own.
+          <span className={cn("ml-[1.375rem] flex flex-wrap items-center gap-1.5", "sm:pointer-fine:absolute sm:pointer-fine:right-10 sm:pointer-fine:top-1.5 sm:pointer-fine:z-10 sm:pointer-fine:ml-0 sm:pointer-fine:rounded-md sm:pointer-fine:bg-raised sm:pointer-fine:pl-2 sm:pointer-fine:opacity-0 sm:pointer-fine:shadow-sm sm:pointer-fine:group-hover:bg-[image:linear-gradient(var(--hover),var(--hover))] sm:pointer-fine:group-hover:opacity-100 sm:pointer-fine:group-focus-within:opacity-100")} data-testid="error-acts">
             {acts && <FailureActions f={failure!} s={session} retry={live} quiet />}
             {fixable && (
               <button

@@ -24,8 +24,9 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   const row = panel.getByTestId("error-row").filter({ hasText: tag });
   await expect(row).toHaveCount(1);
   await expect(row.getByTestId("error-count")).toHaveText("3x");
-  // When it last happened, on the clock, beside how long ago (it read "now" or "1h" alone).
-  await expect(row.getByTestId("error-time")).toHaveText(/^\d\d:\d\d:\d\d · now$/);
+  // One age a row, no clock beside it; the time itself is its tooltip.
+  await expect(row.getByTestId("error-time")).toHaveText(/^now$/);
+  await expect(row.getByTestId("error-time")).toHaveAttribute("title", /\d\d:\d\d/);
   // The row says it opens: a marker in a token color, turned once it has.
   const marker = row.getByTestId("error-marker");
   const isOpen = () => row.evaluate((d) => (d as HTMLDetailsElement).open);
@@ -377,9 +378,21 @@ test("a row offers the acts that fit its failure, and Fix this only where an age
     const filled = (loc: import("@playwright/test").Locator) => loc.evaluate((el) => [...el.querySelectorAll<HTMLElement>("a, button")].filter((b) => { const c = getComputedStyle(b).backgroundColor; return c !== "rgba(0, 0, 0, 0)" && c !== "transparent"; }).map((b) => b.dataset.testid));
     await page.mouse.move(0, 0);
     expect(await filled(acts)).toEqual(["failure-fix"]);
-    await expect(row.getByTestId("error-where-session")).toHaveText(`Nightly report ${tag}`);
-    await expect(row.getByTestId("error-where-model")).toHaveText(/\S/);
-    expect(await row.getByTestId("error-where-session").evaluate((b) => b.tagName)).toBe("BUTTON");
+    // The session and the model are the row's tooltip, not a line of it.
+    await expect(row.getByTestId("error-head")).toHaveAttribute("title", new RegExp(`^in Nightly report ${tag} · \\S`));
+    await expect(row.getByTestId("error-where")).toBeHidden();
+    // The acts show on the row when it is hovered or a key is in it, and are in the tab order meanwhile.
+    const shown = () => acts.evaluate((el) => getComputedStyle(el).opacity);
+    expect(await shown()).toBe("0");
+    await row.hover();
+    await expect.poll(shown).toBe("1");
+    await shoot(page, "errors-acts-00-hover");
+    await page.mouse.move(0, 0);
+    await expect.poll(shown).toBe("0");
+    await acts.getByTestId("try-again").focus();
+    await expect.poll(shown).toBe("1");
+    await acts.getByTestId("try-again").blur();
+    await page.mouse.move(0, 0);
     // A failure of the page's own code is an agent's to fix: Fix this on its row, folded.
     const own = panel.getByTestId("error-row").filter({ hasText: broken });
     await expect(own.getByTestId("error-fix")).toBeVisible();
@@ -461,8 +474,10 @@ test("under three open errors the panel is a popover with no empty tabs", async 
     const at = (await panel.boundingBox())!, from = (await page.getByTestId("errors-button").boundingBox())!;
     expect(at.x).toBeLessThan(from.x + from.width);
     expect(at.y + at.height).toBeLessThanOrEqual(from.y);
-    // The row names its session, and the link goes there.
-    await expect(panel.getByTestId("error-where-session")).toHaveText(`Popover check ${tag}`);
+    // The row names its session in its tooltip, and opens a link to it.
+    await expect(panel.getByTestId("error-head")).toHaveAttribute("title", new RegExp(`^in Popover check ${tag}`));
+    // It stands clear of the label that opened it: a gap, not touching.
+    expect(from.y - (at.y + at.height), "the popover is above the Errors button with a gap").toBeGreaterThanOrEqual(4);
     await page.mouse.move(0, 0);
     await shoot(page, "errors-popover-01-one");
     await page.setViewportSize({ width: 390, height: 844 });
@@ -483,7 +498,8 @@ test("under three open errors the panel is a popover with no empty tabs", async 
     await expect(panel.getByTestId("errors-note")).toBeVisible();
     await shoot(page, "errors-popover-03-three");
     // The session link opens the session.
-    await panel.getByTestId("error-where-session").first().click();
+    await panel.getByTestId("error-row").first().locator("summary").click();
+    await panel.getByTestId("error-site-open").first().click();
     await expect(page).toHaveURL(new RegExp(`/s/${session.id}`));
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
