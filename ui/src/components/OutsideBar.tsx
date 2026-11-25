@@ -19,7 +19,7 @@ import { useSessionState } from "../lib/watch.ts";
 import { Mark } from "./Mark.tsx";
 
 type Send = { id: string; text: string; state: "stored" | "started" | "delivered" | "lost" | "failed" | "cut"; said: string | null };
-type Route = "resume" | "steer" | "held" | "missing" | "none";
+type Route = "resume" | "steer" | "held" | "missing" | "unlocked" | "none";
 type Details = {
   harness: string; label: string; source_id: string; path: string; live: boolean; files: string[]; usage: { model: string; usage: Usage; cost: number | null }[];
   holder?: Holder; route?: Route; turn?: boolean; sends?: Send[];
@@ -64,7 +64,7 @@ export function OutsideBar({ session }: { session: Session }) {
     }
   };
   // What a send does now, from who holds it: Keel resumes it, adds to the turn Keel runs, or nothing.
-  const route: Route = o.harness !== "codex" ? "none" : holder?.kind === "keel" ? "steer" : holder && holder.kind !== "free" ? "held" : d?.route === "missing" ? "missing" : "resume";
+  const route: Route = o.harness !== "codex" ? "none" : holder?.kind === "keel" ? "steer" : holder && holder.kind !== "free" ? "held" : d?.route === "missing" || d?.route === "unlocked" ? d.route : "resume";
   const send = async (words: string, again?: string) => {
     if (!words.trim()) return;
     setNote("");
@@ -91,6 +91,7 @@ export function OutsideBar({ session }: { session: Session }) {
   const placeholder = route === "steer" ? `Add to the turn Keel runs in ${where}` : `Answer here: Keel resumes this session in ${where}`;
   const quiet = route === "held" ? `${holderSaid(holder, where)}: answer it there. Keel sends nothing while another process holds it.`
     : route === "missing" ? `No codex program here: Keel answers a ${where} session with the codex on your PATH.`
+    : route === "unlocked" ? `This ${where} keeps no writer locks, so Keel cannot tell whether a terminal has it open: answer it there, or update ${where}.`
     : route === "none" ? `Read-only here: Keel sends nothing to ${where}. Copy into Keel makes a copy you work on here; the session there keeps running.`
     : `Sent to this same session in ${where}: its reply comes here, and what it asks comes as cards. Copy into Keel makes a copy instead.`;
   return (

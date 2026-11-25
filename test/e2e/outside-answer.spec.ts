@@ -28,6 +28,8 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
   const sessionOf = async () => ((await (await request.get("/api/sessions")).json()).sessions as any[]).find((s) => s.outside?.source_id === thread);
   let sid: string | undefined;
   try {
+    // A Codex that keeps writer locks (0.172 and later): their folder is in its home.
+    mkdirSync(join(home!, "thread-writer-locks"), { recursive: true });
     const before = await watches();
     mkdirSync(day, { recursive: true });
     await expect.poll(watches, { timeout: 10_000 }).toBeGreaterThan(before);

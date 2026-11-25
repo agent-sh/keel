@@ -38,6 +38,7 @@ import { allPendingQuestions, askFor, DECLINED, type Answers } from "../../tools
 import type { Tool, ToolContext } from "../../tools/types.ts";
 import { headTail } from "../import/files.ts";
 import { splitGrown } from "./facts.ts";
+import { codexKeepsLocks } from "./writer.ts";
 
 type Json = any;
 
@@ -61,6 +62,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS outside_sends_key ON outside_sends(session_id,
 // turn it started stopped with a restart of Keel's (Keel's child ended with the daemon), said until put away.
 export type SendState = "stored" | "started" | "delivered" | "lost" | "failed" | "cut";
 const CUT = "Keel restarted while Codex worked: the turn stopped there";
+const UNLOCKED = "this Codex keeps no writer locks (a Codex before 0.172), so Keel cannot tell whether a terminal has the session open: it sends nothing. Answer it in Codex, or update Codex";
 export type Send = { id: string; session_id: string; key: string; text: string; state: SendState; offset: number | null; said: string | null; created: number };
 
 // What of the gate the driver uses: the one-call card, and the open cards it closes at a start.
@@ -216,10 +218,12 @@ export class CodexApp {
   }
 
   // What a send does now: resume the thread (free), steer the turn Keel runs, nothing (another process
-  // holds it, or there is no codex program here).
-  route(sessionId: string, holder = this.d.outside.holderNow(sessionId)): "resume" | "steer" | "held" | "missing" {
+  // holds it, there is no codex program here, or the Codex home keeps no writer locks: an older Codex, whose
+  // open terminal nothing shows, so a thread that reads as free may not be).
+  route(sessionId: string, holder = this.d.outside.holderNow(sessionId)): "resume" | "steer" | "held" | "missing" | "unlocked" {
     if (this.ours(sessionId)) return "steer";
     if (!this.d.bin()) return "missing";
+    if (!codexKeepsLocks(this.d.home())) return "unlocked";
     return !holder || holder.kind === "free" ? "resume" : "held";
   }
 
@@ -260,6 +264,7 @@ export class CodexApp {
     const mine = holder.kind === "keel";
     if (!mine && holder.kind !== "free") return { error: `${holderSaid(holder, "Codex")}: answer it there. Keel sends nothing to a session another process holds.`, status: 409, holder };
     if (!mine && !this.d.bin()) return { error: "no codex program here: Keel answers a Codex session with the codex on your PATH (or KEEL_CODEX_BIN)", status: 409 };
+    if (!mine && !codexKeepsLocks(this.d.home())) return { error: UNLOCKED, status: 409 };
     const send: Send = { id: Bun.randomUUIDv7(), session_id: sessionId, key, text, state: "stored", offset: null, said: null, created: Date.now() };
     this.d.store.db.transaction(() => {
       if (again) this.d.store.db.query("DELETE FROM outside_sends WHERE id = ? AND session_id = ? AND state IN ('lost', 'failed')").run(again, sessionId);

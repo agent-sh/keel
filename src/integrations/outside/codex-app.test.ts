@@ -33,7 +33,7 @@ const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> =
 };
 
 let k = 0;
-function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean } = {}) {
+function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; locks?: false } = {}) {
   const dir = join(top, String(k++));
   const codex = join(dir, "codex");
   const cwd = join(dir, "work");
@@ -44,6 +44,8 @@ function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean } = {
   const now = new Date();
   const day = join(codex, "sessions", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0"));
   mkdirSync(day, { recursive: true });
+  // A Codex that keeps writer locks (0.172 and later): their folder is there.
+  if (opts.locks !== false) mkdirSync(join(codex, "thread-writer-locks"), { recursive: true });
   const store = new Store(join(dir, "state"));
   const bus = new Bus();
   const frames: Frame[] = [];
@@ -228,6 +230,18 @@ describe("a Codex session answered in place", () => {
       expect(r.app().route(s.id, { kind: "terminal", pid: 4242 })).toBe("held");
       const got = r.app().send(s.id, "hello", "k1");
       expect(got).toEqual({ error: "Open in a terminal (pid 4242): answer it there. Keel sends nothing to a session another process holds.", status: 409, holder: { kind: "terminal", pid: 4242 } });
+      expect(r.store.db.query("SELECT * FROM outside_sends").all()).toEqual([]);
+    } finally { r.done(); }
+  });
+
+  test("a Codex that keeps no writer locks is not answered in place: Keel could not tell a terminal has it open", async () => {
+    const r = rig({ locks: false });
+    try {
+      const s = await r.session();
+      expect(r.app().route(s.id)).toBe("unlocked");
+      const got = r.app().send(s.id, "hello", "k1");
+      expect(got).toMatchObject({ status: 409 });
+      expect("error" in got && got.error).toContain("keeps no writer locks");
       expect(r.store.db.query("SELECT * FROM outside_sends").all()).toEqual([]);
     } finally { r.done(); }
   });
