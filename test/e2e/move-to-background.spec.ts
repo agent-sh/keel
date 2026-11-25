@@ -46,7 +46,14 @@ test("a running command moves behind its call from the card, the key and the ter
   await card.locator(".k-line").click();
   const control = card.getByTestId("move-to-background");
   await expect(control).toBeVisible();
-  await expect(card.getByTestId("move-keys")).toContainText("Alt");
+  // Its key is in its tooltip: no key caps stand beside a running command. With nothing printed yet it is one quiet
+  // line, not an empty box.
+  await expect(control).toHaveAttribute("title", /\(Ctrl Alt B\)$/);
+  await expect(card.getByTestId("move-keys")).toHaveCount(0);
+  const silent = card.getByTestId("live-output");
+  await expect(silent).toHaveText("No output yet");
+  expect(await card.getByTestId("terminal").evaluate((el) => getComputedStyle(el).borderTopColor), "no box around it").toBe("rgba(0, 0, 0, 0)");
+  expect(await silent.evaluate((el) => getComputedStyle(el).fontFamily), "in the text face, not the code face").not.toMatch(/mono/i);
   await shoot(page, "move-bg-01-running-card");
   const t0 = Date.now();
   await control.click();

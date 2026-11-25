@@ -328,6 +328,12 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-tool-body { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0.25rem 0.625rem 0.375rem; min-width: 0; }
 .k-out { margin: 0; padding: 0.5rem 2.25rem 0.5rem 0.625rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--code-bg); font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
 .k-terminal { border-radius: var(--radius-sm); }
+/* A running command that has printed nothing yet is one quiet line: no box, its words and its one act in the text face. */
+.k-out-silent { display: inline-block; margin: 0 0.5rem 0 0; padding: 0.125rem 0; vertical-align: middle; font-family: var(--font-sans); font-size: var(--text-caption); line-height: var(--spacing-ctl-sm); color: var(--faint); }
+.k-terminal:has(> .k-out-silent) { border-color: transparent; background: transparent; }
+.k-terminal:has(> .k-out-silent) > .k-out-more { display: inline-flex; padding: 0; border: 0; vertical-align: middle; }
+.k-terminal:has(> .k-out-silent) .k-out-link { color: var(--muted); }
+.k-terminal:has(> .k-out-silent) .k-out-link:hover { color: var(--fg); background: var(--hover); }
 /* The command's copy button beside the output's. */
 .k-copy-corner.k-copy-second { right: 2.25rem; }
 /* An output shown in part: what is shown, and the way to the whole. */

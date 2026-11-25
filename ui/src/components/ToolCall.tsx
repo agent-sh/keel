@@ -543,11 +543,11 @@ function Terminal({ name, input, command, onLine, out, running, movable: canMove
         ) : !running && <p className="px-2.5 py-2 pr-16 font-sans text-faint" data-testid="no-output">{quiet}</p>}
       {running && canMove && sessionId && callId ? (
         <div className="k-out-more" data-testid="move-bar">
+          {/* Its key is in its tooltip, where the owner looks for it: no key caps standing beside every running command. */}
           <button type="button" data-testid="move-to-background" className="k-out-link" onClick={(ev) => void moveToBackground(sessionId, { call: callId }, ev.currentTarget)}
-            title="The command goes on behind the call and you are told when it ends">
+            aria-keyshortcuts={BACKGROUND_COMMAND_KEYS} title={`The command goes on behind the call and you are told when it ends${matchMedia("(pointer: coarse)").matches ? "" : ` (${keyLabel(BACKGROUND_COMMAND_KEYS).join(" ")})`}`}>
             <ArrowDownToLine className="size-3.5" />Move to the background
           </button>
-          <span className="hidden items-center gap-1 text-micro text-faint md:inline-flex" data-testid="move-keys">{keyLabel(BACKGROUND_COMMAND_KEYS).map((k) => <kbd key={k} className="rounded-sm border border-line px-1 font-sans">{k}</kbd>)}</span>
         </div>
       ) : !running && held && barred.current && (
         <div className="k-out-more" data-testid="move-ended"><span className="k-out-link text-faint">The command ended.</span></div>
@@ -646,9 +646,10 @@ function CallLog({ sessionId, callId, follow, ended, failed, onLeave, quiet }: {
           {onLeave && <button type="button" data-testid="output-leave" className="k-out-link" onClick={onLeave}>Show less</button>}
         </div>
       )}
-      <pre ref={pre} data-testid={follow ? "live-output" : "whole-output"} aria-live={follow ? "off" : undefined} className={cn("overflow-auto px-2.5 py-2 pr-9 whitespace-pre-wrap break-all text-muted", follow ? "max-h-56" : "max-h-96")}>
+      {/* A command that has printed nothing yet is one quiet line, not an empty box. */}
+      {follow && !ended && !text && !part ? <p data-testid="live-output" data-silent="" className="k-out-silent">No output yet</p> : <pre ref={pre} data-testid={follow ? "live-output" : "whole-output"} aria-live={follow ? "off" : undefined} className={cn("overflow-auto px-2.5 py-2 pr-9 whitespace-pre-wrap break-all text-muted", follow ? "max-h-56" : "max-h-96")}>
         {text ? <Ansi text={text} /> : <span className="text-faint">{follow ? (ended ? quiet ?? "No output." : "No output yet.") : part ? "Nothing here." : "Reading the log."}</span>}
-      </pre>
+      </pre>}
     </>
   );
 }
