@@ -1376,7 +1376,7 @@ export class Gate {
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch: named.length ? [...scratch, ...named] : scratch, real: facts?.real, looked: facts?.looked,
+      mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: !(cls.kind === "shell" && cls.unconfined) && this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch: named.length ? [...scratch, ...named] : scratch, real: facts?.real, looked: facts?.looked,
       // The owner's namespaces: a write with his accounts beyond them is his alone (accounts.ts).
       accounts: { names: accountNames(), ...(session.parent_id ? { agent: true as const } : {}) },
       // An agent in a worktree Keel made: what it shares with the other checkouts (shared-branches.ts).
@@ -1413,7 +1413,7 @@ export class Gate {
   // For a command that runs in the session's sandbox: whether the sandbox shows it a path. Nothing for a command that
   // leaves the sandbox, for a session without one and for a session on another machine.
   private confinedView(session: Session, cls: CallClass, p: SessionPerm, workspace: string): ((path: string) => { shown: boolean }) | undefined {
-    if (session.machine || cls.kind !== "shell" || cls.escalate || p.sandbox === "off" || !this.sandboxed(session, p)) return undefined;
+    if (session.machine || cls.kind !== "shell" || cls.escalate || cls.unconfined || p.sandbox === "off" || !this.sandboxed(session, p)) return undefined;
     return (path: string) => shownTo(path, workspace, this.readOpts(session, p.sandbox), this.spills(session), true);
   }
 
@@ -1608,7 +1608,7 @@ export class Gate {
       return !session.machine && cls.paths.every((x) => ownPath(x, f));
     }
     // (A command the rules read as a read never asks, so there is nothing of it to answer.)
-    if (cls.kind === "shell") return !cls.escalate && p.sandbox !== "off" && this.sandboxed(session, p);
+    if (cls.kind === "shell") return !cls.escalate && !cls.unconfined && p.sandbox !== "off" && this.sandboxed(session, p);
     return false;
   }
 
@@ -1644,7 +1644,7 @@ export class Gate {
     }
     const p = this.perm(session.id);
     let ctx: Partial<ToolCall["ctx"]> | undefined =
-      !(r.cls.kind === "shell" && r.cls.escalate) && this.sandboxed(session, p) && p.sandbox !== "off"
+      !(r.cls.kind === "shell" && (r.cls.escalate || r.cls.unconfined)) && this.sandboxed(session, p) && p.sandbox !== "off"
         ? { wrapSpawn: (argv) => confine(argv, p, session.workspace, this.writable(session, call.ctx.spillDir, p.sandbox), this.readOpts(session, p.sandbox)), confined: { sandbox: p.sandbox, network: p.network, since: Date.now() } }
         : undefined;
     // A confined command in a linked worktree can write the refs it shares
@@ -1856,7 +1856,7 @@ export class Gate {
     if ("deny" in d) return { deny: d.deny };
     if (mode === "auto" && cls.kind !== "read" && hasSecret([call.input, target?.input, cls, dir?.path])) return secretReview;
     const checkShell = mode === "auto" && (cls.kind === "shell" || !!call.tool.autoShell);
-    const shell = checkShell ? call.tool.autoShell?.(call.input ?? {}) : undefined;
+    const shell = checkShell ? target?.shell ?? call.tool.autoShell?.(call.input ?? {}) : undefined;
     if (checkShell && (cls.kind !== "shell" || !shell || shell.command !== cls.command || !dir))
       return { deny: 'Refused: Auto cannot verify this shell invocation. Use a supported local non-login Bash command (for exec_command, shell: "bash" and login: false), or use Ask.' };
     const invocation = dir && shell ? { ...dir, interpreter: shell.interpreter } : undefined;
@@ -1969,7 +1969,7 @@ export class Gate {
             ((exactDispatch || invocation) && now.ctx.dispatch !== dispatch) || JSON.stringify(input) !== originalInput) return false;
         const c = asJudged(callClass(now, currentTarget));
         const dir = invocation ? localShellDir(session, now, currentTarget, c) : undefined;
-        const shell = invocation ? tool.autoShell?.(now.input ?? {}) : undefined;
+        const shell = invocation ? currentTarget?.shell ?? tool.autoShell?.(now.input ?? {}) : undefined;
         return before === signature(now, currentTarget, c,
           dir && shell && c.kind === "shell" && shell.command === c.command ? { ...dir, interpreter: shell.interpreter } : undefined);
       },

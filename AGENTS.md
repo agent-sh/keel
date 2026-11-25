@@ -488,6 +488,14 @@ under `~/.cache/keel-work/bun/research/`.
   and a cell outside them is a change. Each side's result is kept in the row:
   a restart goes on at the unfinished side. Only tests changed, or no page
   file: no run.
+- A write to a terminal is judged as what it types when the terminal runs with no sandbox
+  (`src/tools/typed.ts`): a job records that it started unwrapped (its launch left the sandbox, or the
+  session has none). Each line a write completes is a command to the gate, in every mode, read by the
+  same rules and the provenance gate; a write that completes no line, a poll, Ctrl-C and arrow keys pass,
+  and so does any write to a sandboxed terminal. The program in the terminal's foreground
+  (`src/tools/foreground.ts`) decides the reading: a shell takes commands, an interpreter or remote login
+  is code and asks, any other program is answered at its prompt. A line edited by keys whose result Keel
+  cannot follow (history, completion) asks (`src/tools/typed-lines.ts`).
 - A session's agent slots are its tree's and count the agents that work. An
   agent that waits on a wait of its own holds none. Its wake, and an agent
   asked for while every slot works, wait in line as owed and take the next

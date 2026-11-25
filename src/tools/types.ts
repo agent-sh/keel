@@ -94,7 +94,9 @@ export type ToolOutput = { content: string | (TextBlock | ImageBlock | ToolRefBl
 // ("other": it asks, and a grant names it).
 //   shell: runs the command in its input here; edit: writes the paths in its
 //   input; control: input to, or the stop of, a process an allowed call
-//   started; remote: acts on another machine; own: acts, but only on what
+//   started (input to a terminal that runs with no sandbox is judged as the
+//   lines it types: the tool's `target`, src/tools/typed.ts); remote: acts
+//   on another machine; own: acts, but only on what
 //   Keel keeps for this session, its agents and the owner (starts or messages
 //   an agent of its tree, sets or cancels a wait, keeps a todo, a verdict or a
 //   memory record, alerts the owner). It runs in every mode with no
@@ -148,7 +150,9 @@ export type Tool = ToolSpec & {
   // source. `shape` is the tool's name, description, schema and read flag as
   // judged: a remembered refusal or retry is for that shape on that source.
   // `session`: the session that calls, for a tool only it is offered.
-  target?(input: any, session?: string): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass; source?: string; shape?: string } | null>;
+  // `shell`: how Auto's reviewer is told the invocation, for a target judged as a shell command that is no call of
+  // the tool's own shell (the line typed into a terminal, src/tools/typed.ts).
+  target?(input: any, session?: string): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass; source?: string; shape?: string; shell?: { command: string; interpreter: string; options?: unknown } } | null>;
   // The running build's own input schema, when the definition a request
   // carries is one the session was sent before (src/tools/pin.ts): what the
   // permission gate reads, never the pinned one.

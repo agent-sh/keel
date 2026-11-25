@@ -12,6 +12,7 @@ import { cleanTerm, findJob, hasUnread, running, takeUnread, waitJob, writeJob, 
 import { ABORTED_TEXT, startHeld, takeFor, waitedLine } from "./heavy.ts";
 import { goneCwd, logDir, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
+import { typedTarget, typedWrite, typedWrote } from "./typed.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
 import { applyPatch, extractShellApplyPatch, patchTargetPaths } from "./v4a.ts";
 
@@ -119,10 +120,13 @@ const exec_command: Tool = {
 
 const write_stdin: Tool = {
   name: "write_stdin",
-  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
+  // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts); a write to a terminal
+  // that runs with no sandbox is judged as the lines it types (src/tools/typed.ts), under the same input schema.
+  urgent: "wait-poll,typed-lines-judged",
   resultCap: EXEC_CAP,
   readOnly: false,
   kind: "control",
+  target: typedTarget,
   description: "Writes characters to an existing unified exec session and returns recent output.",
   input_schema: obj({
     session_id: { type: "number", description: "Identifier of the running unified exec session." },
@@ -134,9 +138,10 @@ const write_stdin: Tool = {
     const job = findJob(ctx.sessionId, Number(input.session_id));
     if (!job || (!running(job) && !hasUnread(job))) return fail(`write_stdin failed: Unknown process id ${input.session_id}${job ? `: it has ended${job.exitCode != null ? ` (exit code ${job.exitCode})` : ""}` : ""}`);
     const chars = String(input.chars ?? "");
+    if (chars && job.pty) { const changed = typedWrite(job, chars); if (changed) return fail(`write_stdin failed: ${changed}`); }
     if (chars && !writeJob(job, chars)) {
       if (!job.pty) return fail("write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open");
-    }
+    } else if (chars) typedWrote(job, chars);
     const t0 = Date.now();
     const wait = chars ? clamp(input.yield_time_ms, 250, 0, 30_000) : clamp(input.yield_time_ms, 5_000, 5_000, 300_000);
     await waitJob(job, wait, ctx.signal);

@@ -94,7 +94,9 @@ export type CallClass =
   | { kind: "read"; paths?: string[]; unnamed?: true; fetches?: string[] }
   // `interpreter`: the program that runs the command when it is not bash. The
   // rules read a command as bash does, so none of it is then taken for a read.
-  | { kind: "shell"; command: string; escalate?: boolean; cwd?: string; interpreter?: string }
+  // `unconfined`: the command is typed into a terminal that runs with no sandbox around it (its launch was allowed
+  // out of the sandbox, or the session has none): it runs unconfined whatever the session's sandbox is now.
+  | { kind: "shell"; command: string; escalate?: boolean; unconfined?: true; cwd?: string; interpreter?: string }
   // input to, or the stop of, a process an allowed call started; `own`: an act on what Keel keeps for the
   // session (ToolKind "own"), which is no read: it changes things, only none the modes guard.
   | { kind: "control"; own?: true }

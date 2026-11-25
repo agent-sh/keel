@@ -68,6 +68,12 @@ export type Job = {
   // used then (ms), and the latest sample that saw it (serving, sampleServing).
   serve?: { from: number; cpu: number; at: number };
   by?: "owner";          // the owner ran it from the terminal pane
+  // It was started with no sandbox around it (the session's sandbox is off, or the call left it): what is typed into
+  // its terminal is judged as the commands it is (src/tools/typed.ts). `typed`: the line being typed into it now (an
+  // immutable value, replaced by each write); `typedJudged`: the numbers of the values a write was judged from.
+  unconfined?: true;
+  typed?: object;
+  typedJudged?: Set<number>;
   // Where the shell reports the commands it runs (a check's run, src/checks), and what it reported.
   traceFile?: string;
   trace?: string;
@@ -288,7 +294,8 @@ export function startJob(o: StartOpts): Job {
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
-    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, traceFile: o.traceFile, slot: o.slot, stateId } as Job;
+    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, traceFile: o.traceFile, slot: o.slot, stateId,
+    ...(o.wrap ? {} : { unconfined: true as const }) } as Job;
   startedHere.add(id);
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
