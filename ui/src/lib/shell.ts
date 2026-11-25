@@ -110,6 +110,13 @@ export function pastedFiles(images: Pasted["images"]): File[] {
 // size, so what crosses is never larger than the page would keep. Null: the app did not answer.
 export const shellPaste = (edge?: number) => ask<Pasted>({ t: "paste", ...(edge ? { edge } : {}) });
 export const shellCopying = () => shell?.post({ t: "copying" });
+// The page is about to ask for the microphone, at the owner's press: the app gives it once, to this page only.
+// (The word goes first on the app's pipe; a short moment lets it arrive before the engine's own request.)
+export async function shellMicrophone(): Promise<void> {
+  if (!shell) return;
+  shell.post({ t: "microphone" });
+  await new Promise((done) => setTimeout(done, 80));
+}
 // A file the page offers. The app keeps a file only when the page itself announced that very
 // address at the owner's press, a moment before: a frame of content, which cannot say anything
 // to the app, saves nothing. Null: the app did not answer (one from before this was asked).

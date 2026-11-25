@@ -208,6 +208,10 @@ export type ProviderStatus = {
   server?: string;     // the server kind an endpoint's metadata names (Ollama, vLLM, llama.cpp)
 };
 
+// Where an OpenAI-style provider takes audio: its base (it holds /audio/transcriptions, /audio/speech
+// and /models) and the headers that sign a call, with every secret named so an error can scrub it.
+export type SpeechAccess = { base: string; headers: Record<string, string>; secrets: string[] };
+
 export interface Provider {
   readonly id: string;
   // An environment-configured address of an HTTP provider. Not a credential source.
@@ -246,6 +250,8 @@ export interface Provider {
   identity?(): string;
   status?(): ProviderStatus;
   list(): Promise<ListedModel[]>;
+  // Where this provider takes speech in and out, when it speaks the OpenAI audio routes (src/speech/speech.ts).
+  speech?(): Promise<SpeechAccess | null>;
   stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult>;
   // The account's usage windows, from an endpoint that states them.
   usage?(): Promise<import("./limits.ts").WindowReading[]>;

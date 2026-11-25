@@ -21,6 +21,7 @@ pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
         // (`edge`: the longer side the page keeps a picture at.)
         "paste" => Some(Asked1::Paste(id(), m.get("edge").and_then(Value::as_i64).filter(|e| (64..=16384).contains(e)).map(|e| e as i32))),
         "copying" => Some(Asked1::Copying),
+        "microphone" => Some(Asked1::Microphone),
         "copy" => Some(Asked1::Copy(id(), s("text"))),
         "can" => {
             let b = |k: &str| m.get(k).and_then(Value::as_bool).unwrap_or(false);
@@ -56,6 +57,8 @@ pub enum Asked1 {
     Paste(u64, Option<i32>),
     /// A copy is coming, said at the owner's press.
     Copying,
+    /// The page is about to ask for the microphone, at the owner's press (dictation, conversation mode).
+    Microphone,
     Copy(u64, String),
     /// What the page in the window does with the app: it pastes where the owner is when the
     /// app hands it the paste keys, and it announces a file before it offers one. The app's
@@ -90,6 +93,7 @@ mod tests {
             r#"{"t":"start"}"#,
             r#"{"t":"paste","id":1}"#,
             r#"{"t":"copying"}"#,
+            r#"{"t":"microphone"}"#,
             r#"{"t":"copy","id":2,"text":"planted"}"#,
             r#"{"t":"window","path":"/s/abc","key":"guess"}"#,
             r#"{"t":"window","path":"/s/abc","key":""}"#,
@@ -120,6 +124,7 @@ mod tests {
         assert!(matches!(m(r#"{"t":"paste","id":7,"edge":1568,"key":"k-123"}"#), Some(Asked1::Paste(7, Some(1568)))));
         assert!(matches!(m(r#"{"t":"paste","id":7,"edge":1,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
         assert!(matches!(m(r#"{"t":"copying","key":"k-123"}"#), Some(Asked1::Copying)));
+        assert!(matches!(m(r#"{"t":"microphone","key":"k-123"}"#), Some(Asked1::Microphone)));
         assert!(matches!(m(r#"{"t":"copy","id":8,"text":"words","key":"k-123"}"#), Some(Asked1::Copy(8, t)) if t == "words"));
         assert!(matches!(m(r#"{"t":"look","dark":true,"bg":"red","key":"k-123"}"#), Some(Asked1::Ask(Ask::Look(l))) if l.dark && l.bg == Look::of(true).bg));
         // No message opens the browser: only the owner's click on a link does.

@@ -200,7 +200,7 @@ settingsSections.add(
 // (lib/customize-ids.ts): Settings' rail leaves them out, and a search in Settings finds
 // them under their own group and opens them there.
 const SETTINGS_GROUPS: [string, string[]][] = [
-  ["Basics", ["general", "models", "providers", "safety", "routes", "network", "alerts", "usage", "keyboard"]],
+  ["Basics", ["general", "models", "providers", "safety", "routes", "network", "alerts", "usage", "speech", "keyboard"]],
   ["Customize", CUSTOMIZE_GROUPS.flatMap(([, ids]) => ids)],
   ["Connections", ["machines", "phone", "integrations", "pull-requests", "elsewhere", "acp-agents", "helper"]],
   ["This computer", ["health", "resources", "storage", "leftovers", "logs", "daemon"]],

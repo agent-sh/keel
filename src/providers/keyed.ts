@@ -5,7 +5,7 @@ import { configured, fingerprint, forget, key, look, recheck, shown, sourceIdent
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { notChat } from "./family.ts";
 import { allPages, getJson, NoKey } from "./http.ts";
-import type { Delta, Family, ListedModel, Provider, ProviderRequest, ProviderResult, ProviderStatus, Wire } from "./types.ts";
+import type { Delta, Family, ListedModel, Provider, ProviderRequest, ProviderResult, ProviderStatus, SpeechAccess, Wire } from "./types.ts";
 import { geminiWire } from "./wires/gemini.ts";
 import { responsesWire } from "./wires/responses.ts";
 
@@ -61,6 +61,11 @@ export class OpenAIProvider extends KeyedProvider {
   protected src = { env: "OPENAI_API_KEY", cred: "openai-api-key" };
   readonly broker = new BrokerAddress("OPENAI_BASE_URL", process.env.OPENAI_BASE_URL);
   protected get base() { return (this.broker.value ?? "https://api.openai.com/v1").replace(/\/$/, ""); }
+
+  async speech(): Promise<SpeechAccess | null> {
+    const k = await this.key();
+    return { base: this.base, headers: { authorization: `Bearer ${k}` }, secrets: [k] };
+  }
 
   async list(): Promise<ListedModel[]> {
     const k = await this.key();

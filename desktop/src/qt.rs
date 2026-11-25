@@ -724,6 +724,11 @@ impl Win {
             Some(Asked1::Copying) => {
                 self.gate.borrow_mut().arm(Instant::now());
             }
+            Some(Asked1::Microphone) => {
+                if self.gate.borrow_mut().arm_mic(Instant::now()) {
+                    self.inner.send(&json!({ "t": "mic", "win": self.id }));
+                }
+            }
             Some(Asked1::Copy(id, text)) => {
                 let ok = self.gate.borrow_mut().take(Instant::now());
                 if ok {

@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 pub const GESTURE: Duration = Duration::from_secs(1);
 /// How long a copy the press allowed may take to arrive (its text may have to be fetched first).
 pub const PERMIT: Duration = Duration::from_secs(30);
+/// How long the microphone stays allowed after the owner's press said the page is about to ask for it
+/// (the page asks as the press is handled; the engine's own prompt may take a moment). The Qt engine's
+/// program has the same time (MIC_MS in ../qt/main.cpp).
+pub const MIC: Duration = Duration::from_secs(10);
 /// How long after the owner's press in a window a file the page offers is kept (the daemon has
 /// to answer first). The Qt engine's program has the same time (KEEP_MS in ../qt/main.cpp).
 pub const KEEP: Duration = Duration::from_secs(10);
@@ -38,6 +42,8 @@ pub fn picture_format<'a>(mimes: impl Iterator<Item = &'a str>) -> Option<&'a st
 pub struct Gate {
     input: Option<Instant>,
     permit: Option<Instant>,
+    /// Until when the microphone may be given, once.
+    mic: Option<Instant>,
     /// The file the page announced, and until when it may arrive.
     saving: Option<(String, Instant)>,
     /// The page of this load announces its files (said.rs `Can`).
@@ -62,6 +68,19 @@ impl Gate {
         if !on {
             self.saving = None;
         }
+    }
+
+    /// The page says it is about to ask for the microphone, at the owner's press: one request is allowed for a while.
+    pub fn arm_mic(&mut self, now: Instant) -> bool {
+        if self.pressed(now) {
+            self.mic = Some(now + MIC);
+        }
+        self.pressed(now)
+    }
+
+    /// The engine's request for the microphone: allowed once, by the press that announced it.
+    pub fn take_mic(&mut self, now: Instant) -> bool {
+        self.mic.take().is_some_and(|until| now <= until)
     }
 
     /// The page announced a file at `url`: taken at the owner's own press, for one file.
@@ -132,6 +151,22 @@ mod tests {
         assert_eq!(picture_format(["text/plain", "image/x-xcf"].into_iter()), Some("image/x-xcf"));
         assert_eq!(picture_format(["text/plain", "text/html", "UTF8_STRING"].into_iter()), None);
         assert_eq!(picture_format(std::iter::empty()), None);
+    }
+
+    // A script in a frame asked for the microphone with no press of the owner's: refused. With one, once.
+    #[test]
+    fn the_microphone_is_given_once_at_the_owners_press_and_not_after_it_lapsed() {
+        let t0 = Instant::now();
+        let mut g = Gate::default();
+        assert!(!g.arm_mic(t0));
+        assert!(!g.take_mic(t0));
+        g.input(t0);
+        assert!(g.arm_mic(t0 + Duration::from_millis(200)));
+        assert!(g.take_mic(t0 + Duration::from_secs(1)));
+        assert!(!g.take_mic(t0 + Duration::from_secs(2)), "once");
+        g.input(t0 + Duration::from_secs(30));
+        assert!(g.arm_mic(t0 + Duration::from_secs(30)));
+        assert!(!g.take_mic(t0 + Duration::from_secs(41)), "lapsed");
     }
 
     // The review's case: a script in a preview frame saved a file with no press.

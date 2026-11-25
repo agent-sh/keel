@@ -22,6 +22,9 @@ import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { PASTED } from "../lib/paste-key.ts";
 import { registerBox, withQuote } from "../lib/quote.ts";
+import { registerDictation } from "../lib/dictation.ts";
+import { dictated, type Base } from "../lib/talk-core.ts";
+import { SpeechBand, SpeechButtons } from "./Speech.tsx";
 import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
 import { appSaysNow, useAppSays } from "./Stale.tsx";
 import { cn, fmtSize, scrollMotion } from "../lib/utils.ts";
@@ -852,8 +855,9 @@ const SessionComposer = memo(function SessionComposer({
     return registerBox(sid, {
       say: (text, queue) => {
         const why = blocked([]);
-        if (why) return setNotice(why);
+        if (why) return setNotice(why), false;
         void attempt({ id: crypto.randomUUID(), text, images: [], queue: queue && !!working && !!onQueue, state: "sending" }, false);
+        return true;
       },
       quote: (selected) => {
         const next = withQuote(draft.current.text, selected);
@@ -869,6 +873,34 @@ const SessionComposer = memo(function SessionComposer({
       },
     });
   });
+
+  // Dictation (lib/dictation.ts) puts words at the caret as they are heard: what stood before and after the
+  // caret when it began is kept, and each update is made from that, so the words replace each other.
+  const dictating = useRef<Base | null>(null);
+  useEffect(() => registerDictation(sid ?? "start", {
+    holds: (el) => !!el && el === ref.current,
+    begin: () => {
+      const el = ref.current;
+      const t = draft.current.text;
+      dictating.current = el ? { before: t.slice(0, el.selectionStart), after: t.slice(el.selectionEnd) } : { before: t, after: "" };
+      el?.focus();
+    },
+    show: (words) => { if (dictating.current) setText(dictated(dictating.current, words).text); },
+    end: (words) => {
+      const base = dictating.current;
+      dictating.current = null;
+      if (!base) return;
+      const r = dictated(base, words);
+      setText(r.text);
+      setMenu(null);
+      requestAnimationFrame(() => {
+        const el = ref.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(r.caret, r.caret);
+      });
+    },
+  }));
 
   const retry = (id: string) => {
     const entry = sendDrafts(shelf).find((d) => d.id === id);
@@ -1028,6 +1060,7 @@ const SessionComposer = memo(function SessionComposer({
           ))}
         </div>
       )}
+      <SpeechBand sid={sid} />
       {info?.tools === false && (
         <div className="px-4 pt-1.5 text-caption text-warn" data-testid="model-no-tools" role="status">
           {info.name} cannot use tools{info.known_from?.tools ? ` (${TOOLS_FROM[info.known_from.tools]})` : ""}: it answers in text only, without reading files or running commands.
@@ -1145,6 +1178,7 @@ const SessionComposer = memo(function SessionComposer({
               <Paperclip className="size-4" />
             </button>
             <FileInput at={fileInput} take={takeFiles} />
+            <SpeechButtons sid={sid} />
             {/* The mode, the model, the effort and the context stand in one row: what the next turn may do is read where it is asked for. */}
             {sid && <Pickers.Mode sessionId={sid} openSignal={modeOpen} />}
             <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />

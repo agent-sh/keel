@@ -91,6 +91,9 @@ static const int HEAP_MB = 256;
 // A file the page offers is kept when the owner pressed a key or a button in that window this
 // long before, at most (the same time ../src/clip.rs gives the other engine).
 static const qint64 KEEP_MS = 10000;
+// How long the microphone may be given after the page said, at the owner's press, that it is about to ask
+// (the same time as MIC in ../src/clip.rs).
+static const qint64 MIC_MS = 10000;
 
 // The pipe to the app. It is this program's alone: `main` moves it off descriptor 1 before the
 // engine starts, with close-on-exec, so no process the engine starts (a renderer runs the page's
@@ -298,6 +301,8 @@ public:
     Mode mode = Nothing;
     // The daemon's origin the page is loaded from; the main frame stays there.
     QString origin;
+    // Until when the microphone may be given, once (MIC_MS).
+    qint64 micUntil = 0;
     int win;
     bool devtools, probing;
 
@@ -719,7 +724,18 @@ public:
         page->setWebChannel(channel);
 
         // The engine grants content nothing: not the clipboard, not a device, not a place.
-        connect(page, &QWebEnginePage::permissionRequested, this, [](QWebEnginePermission p) { p.deny(); });
+        // The one exception is the microphone (audio capture only), for the page of the daemon's own origin, once, after
+        // the page said at the owner's press that it is about to ask (the "mic" line, ../src/qt.rs).
+        connect(page, &QWebEnginePage::permissionRequested, this, [this](QWebEnginePermission p) {
+            const bool mine = p.permissionType() == QWebEnginePermission::PermissionType::MediaAudioCapture && page->mode == Page::App && !page->origin.isEmpty()
+                && p.origin().toString(QUrl::RemoveUserInfo | QUrl::RemovePath | QUrl::RemoveQuery | QUrl::RemoveFragment) == page->origin
+                && QDateTime::currentMSecsSinceEpoch() <= page->micUntil;
+            page->micUntil = 0;
+            if (mine)
+                p.grant();
+            else
+                p.deny();
+        });
         // No window opens by itself: the app is told the address and whether the owner asked.
         connect(page, &QWebEnginePage::newWindowRequested, this, [this](QWebEngineNewWindowRequest &r) {
             say({{"t", "nav"}, {"win", id}, {"kind", "new-window"}, {"url", r.requestedUrl().toString(QUrl::FullyEncoded)}, {"gesture", r.isUserInitiated()}});
@@ -1099,6 +1115,8 @@ public:
             w->announces = m["saving"].toBool();
             if (!w->announces)
                 w->savingUntil = 0;
+        } else if (t == "mic") {
+            w->page->micUntil = QDateTime::currentMSecsSinceEpoch() + MIC_MS;
         } else if (t == "saving") {
             w->saving = QUrl(m["url"].toString());
             w->savingUntil = QDateTime::currentMSecsSinceEpoch() + m["ms"].toInt();

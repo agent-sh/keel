@@ -14,6 +14,7 @@ import { resourceRoutes } from "./resources.ts";
 import { mcpRoutes } from "./mcp.ts";
 import { mcpAppRoutes } from "./mcp-apps.ts";
 import { voiceRoutes } from "./voice.ts";
+import { speechRoutes } from "./speech.ts";
 import { mobileRoutes } from "./mobile.ts";
 import { permissionRoutes } from "./permissions.ts";
 import { secretRoutes } from "./secrets.ts";
@@ -104,6 +105,7 @@ const modules: Record<string, RouteModule> = {
   mcpRoutes,
   mcpAppRoutes, // after mcpRoutes: it gives the manager its app keeper
   voiceRoutes, // after mcp: it bundles the say tool
+  speechRoutes,
   toolRoutes,
   searchRoutes,
   providersRoutes,

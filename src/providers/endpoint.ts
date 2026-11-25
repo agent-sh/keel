@@ -9,7 +9,7 @@ import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { familyOf, notChat } from "./family.ts";
 import { allPages, getJson, NoKey, ProviderError } from "./http.ts";
 import { fromOpenRouterKey, type WindowReading } from "./limits.ts";
-import type { Billing, Delta, ListedModel, Price, Provider, ProviderRequest, ProviderResult, ProviderStatus, Wire } from "./types.ts";
+import type { Billing, Delta, ListedModel, Price, Provider, ProviderRequest, ProviderResult, ProviderStatus, SpeechAccess, Wire } from "./types.ts";
 import { anthropicWire } from "./wires/anthropic.ts";
 import { chatWire } from "./wires/chat.ts";
 import { geminiWire } from "./wires/gemini.ts";
@@ -141,6 +141,13 @@ export class EndpointProvider implements Provider {
     if (this.wire === "anthropic_messages") headers["anthropic-version"] = API_VERSION;
     if (sessionKey && this.cfg.session_header) headers[this.cfg.session_header] = sessionKey;
     return { headers, secrets };
+  }
+
+  // An OpenAI-style endpoint may take speech: its base and its signed headers. Another wire has no such routes.
+  async speech(): Promise<SpeechAccess | null> {
+    if (this.wire !== "chat_completions" && this.wire !== "openai_responses") return null;
+    const a = await this.auth();
+    return { base: this.base, ...a };
   }
 
   // OpenRouter states a key's limit and spend at /key.

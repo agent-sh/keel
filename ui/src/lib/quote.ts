@@ -33,7 +33,8 @@ export function lineWords(lines: number[], removed = false): string {
 }
 
 // A message box that takes what the selection bar hands it, by the session it belongs to.
-export type Box = { say: (text: string, queue: boolean) => void; quote: (selected: string) => void };
+// `say` answers whether the message went (false: the box refused it and said why).
+export type Box = { say: (text: string, queue: boolean) => boolean; quote: (selected: string) => void };
 const boxes = new Map<string, Box>();
 export function registerBox(sid: string, box: Box): () => void {
   boxes.set(sid, box);

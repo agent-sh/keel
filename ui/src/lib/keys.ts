@@ -65,7 +65,7 @@ export const BACKGROUND_KEYS = "alt+enter";
 // What sends and what makes a new line, by the owner's "Send with" setting.
 export const SEND_KEYS = (enterSends: boolean) => (enterSends ? { send: "enter", newline: "shift+enter" } : { send: "mod+enter", newline: "enter" });
 
-function matches(e: KeyboardEvent, spec: string): boolean {
+export function matches(e: KeyboardEvent, spec: string): boolean {
   const parts = spec.toLowerCase().split("+");
   const key = parts.pop()!;
   const mod = parts.includes("mod");

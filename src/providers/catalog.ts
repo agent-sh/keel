@@ -19,6 +19,9 @@ export type CatalogEntry = {
   tools?: boolean;
   images?: boolean;
   pdf?: boolean;
+  // A model that only turns speech into text ("stt") or text into speech ("tts"), by the
+  // catalog's modalities (src/speech/speech.ts reads it).
+  speech?: "stt" | "tts";
   price?: Price;
   speeds?: SpeedOffer[];
   // The message field the model reads its earlier reasoning from when it
@@ -60,6 +63,16 @@ function speedsOf(m: any): SpeedOffer[] | undefined {
 const URL_ = process.env.KEEL_MODELS_DEV_URL ?? "https://models.dev/api.json";
 const MAX_AGE = 24 * 3600_000;
 
+// models.dev `modalities`: audio in and text out, nothing else in, is speech to text; audio out and
+// no text out, with no tool calls, is text to speech. A chat model that also takes audio is neither.
+function speechOf(m: any): "stt" | "tts" | undefined {
+  const i: string[] = m.modalities?.input ?? [], o: string[] = m.modalities?.output ?? [];
+  if (m.tool_call === true) return undefined;
+  if (i.length === 1 && i[0] === "audio" && o.length === 1 && o[0] === "text") return "stt";
+  if (o.length === 1 && o[0] === "audio") return "tts";
+  return undefined;
+}
+
 function entry(id: string, m: any): CatalogEntry {
   const c = m.cost;
   return {
@@ -74,6 +87,7 @@ function entry(id: string, m: any): CatalogEntry {
     tools: m.tool_call,
     images: m.modalities?.input?.includes("image"),
     pdf: m.modalities?.input?.includes("pdf"),
+    speech: speechOf(m),
     price: priceOf(c),
     speeds: speedsOf(m),
     interleaved: typeof m.interleaved?.field === "string" ? m.interleaved.field : undefined,
@@ -92,7 +106,7 @@ function providerOf(id: string, p: any): CatalogProvider {
 // The full document to its sections, first-party providers first so their
 // entry wins over resellers' (section order is kept in the saved copy).
 type Sections = Record<string, Record<string, CatalogEntry>>;
-const SHAPE = String(Bun.hash(entry.toString() + priceOf.toString() + speedsOf.toString() + providerOf.toString()));
+const SHAPE = String(Bun.hash(entry.toString() + speechOf.toString() + priceOf.toString() + speedsOf.toString() + providerOf.toString()));
 
 function compactProviders(doc: Record<string, any>): CatalogProvider[] {
   return Object.entries(doc).map(([id, p]) => providerOf(id, p));
