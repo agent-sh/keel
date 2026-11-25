@@ -139,6 +139,9 @@ type ComposerProps = {
   // answer): Enter says it and the draft stays in the box.
   hold?: string;
   autoFocus?: boolean;
+  // A box with no session that rests as one line on a phone until it is tapped (the start box, while something waits above
+  // the sessions' rows: the first answer is then in view).
+  resting?: boolean;
   // The station that has the keys (several message boxes can be on screen): only it answers Alt+M.
   focus?: boolean;
   // The session's cards above the box (its plan and jobs, held messages):
@@ -164,7 +167,7 @@ export function Composer(props: ComposerProps) {
 }
 
 const SessionComposer = memo(function SessionComposer({
-  session, onSend, onQueue, onStart, onSendBackground, onStop, onEscape, stopLabel, stopLeaves, working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
+  session, onSend, onQueue, onStart, onSendBackground, onStop, onEscape, stopLabel, stopLeaves, working, model, onModel, workspace, autoFocus, resting, focus = true, hold, above, asks,
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
@@ -416,7 +419,8 @@ const SessionComposer = memo(function SessionComposer({
       // A tap beside a menu the box opened (the model list's sheet) closes that menu: it is not a
       // tap away from the box. The tools stay, with the control the menu hangs from.
       if (boxEl.current?.querySelector('[aria-expanded="true"]')) return;
-      if (t && !boxEl.current?.contains(t) && !t.closest?.('[role="listbox"], [role="menu"], [role="dialog"], [data-base-ui-portal]')) setTapped(false);
+      // (The start box's own pickers are part of it: the folder's list opens from them while the box is open.)
+      if (t && !boxEl.current?.contains(t) && !t.closest?.('[role="listbox"], [role="menu"], [role="dialog"], [data-base-ui-portal], [data-keeps-box]')) setTapped(false);
     };
     document.addEventListener("pointerdown", away, true);
     return () => document.removeEventListener("pointerdown", away, true);
@@ -456,10 +460,10 @@ const SessionComposer = memo(function SessionComposer({
   // A large text size on a phone leaves the hint room for two short words: the queue button names itself.
   const crowded = useCrowded();
   // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
-  const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
+  const rest = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !working && !notice && synced;
   // Untouched and holding nothing, whatever runs: while a card waits above it on a phone, the box rests as its
   // one line then, Stop included, until a tap brings its tools (bridge.css).
-  const calm = narrow && !!session && !tapped && !text && !images.length && !notice;
+  const calm = narrow && (!!session || !!resting) && !tapped && !text && !images.length && !notice;
   // Whether the window is low changes with the window and the text size, never with what is
   // typed: it is not asked at every key (the question makes the browser style the whole page
   // on the spot, a reply that streams above included).
@@ -1116,7 +1120,7 @@ const SessionComposer = memo(function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? (crowded ? "Steer it" : "Steer or queue") : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files and sessions" : "Describe the task, / for commands, @ for files and sessions"}
+        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? (crowded ? "Steer it" : "Steer or queue") : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? (session ? "Reply" : "Start a session") : session ? "Reply, / for commands, @ for files and sessions" : "Describe the task, / for commands, @ for files and sessions"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}

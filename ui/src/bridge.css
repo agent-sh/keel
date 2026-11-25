@@ -1399,6 +1399,10 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-dock-need-n { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0 0.5rem; font-weight: 600; font-size: var(--text-caption); line-height: 1.5rem; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--fg); }
   .k-dock-need:active { background: var(--hover); }
 }
+/* The start box folded (a phone, something waits): its heading and pickers come back once the box is tapped. */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
+  .k-start-more[data-folded]:has(~ .k-start-box .k-box[data-calm]) { display: none; }
+}
 /* A phone on its side has no height to give a bar: the dock goes, and its work is the head's list button (the sessions)
    and the cards and lines in the conversation (what waits). The conversation takes the whole height. */
 @media (pointer: coarse) and (max-height: 499px) {

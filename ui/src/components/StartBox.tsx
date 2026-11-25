@@ -16,7 +16,7 @@ import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { usePhoneWidth } from "../lib/list-hold.ts";
 import { HelperAsk } from "./HelperAsk.tsx";
 import { NewModelNews } from "./NewModels.tsx";
-import { WatchHeadline, WatchLists, openWaiting, useAttended } from "./HomeWatch.tsx";
+import { WatchHeadline, WatchLists, openWaiting, useAttended, useHome } from "./HomeWatch.tsx";
 import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
 import { MachineBlocked, MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
 import { fleet, useFleet } from "../lib/fleet.ts";
@@ -68,6 +68,9 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
   const rail = useRail();
   const phone = usePhoneWidth();
   const listed = !phone && rail.list;
+  // On a phone, while something waits on the owner, the start box rests as one line (its pickers come with the
+  // tap): at a large text size the box took the screen and the first answer was a screen and more below.
+  const folded = phone && useHome().attention.length > 0;
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !attended.has(s.id)).sort((a, b) => b.updated - a.updated), [sessions, attended]);
   const watches = useWatches(live);
   // The six newest, and any failed session older than those: a red mark in the list has its row here, whatever its age.
@@ -115,6 +118,8 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
           <WatchHeadline />
           <NewModelNews />
           {beside && !autoThere && <WatchLists className="min-w-0" />}
+          {/* (Folded, the heading and the pickers show once the box is tapped: bridge.css, .k-start-more.) */}
+          <div className="k-start-more" data-folded={folded || undefined} data-keeps-box="">
           <h2 className={cn("k-pane-title mb-2.5", beside ? "mt-8" : "mt-5")}>Start a session{machine && <span>{autoThere ? `on ${place!.machine}, in its granted directory` : sshMachine ? `on ${sshMachine.name}` : machine !== "auto" ? `on ${pickedName ?? "the machine you picked"}, in its granted directory` : ""}</span>}</h2>
           {/* Where it starts, as one line of quiet pickers whose words line up with the box (styles.css, .k-chip-pick). */}
           <div className="-ml-2 mb-2 flex flex-wrap items-center gap-x-1 gap-y-0.5">
@@ -133,14 +138,16 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
               <span className="truncate text-faint">· {place.reason}</span>
             </p>
           )}
+          </div>
           {blocked && <MachineBlocked blocked={blocked} />}
           {noModels && <SetupProviders />}
-          <div data-testid="new-composer">
+          <div data-testid="new-composer" className="k-start-box">
             <Composer
               model={model}
               onModel={(id) => setUI({ newModel: id })}
               workspace={workspace}
-              autoFocus
+              autoFocus={!folded}
+              resting={folded}
               onEscape={onBack}
               hold={blocked ? "Not sent: the note above the box says why." : undefined}
               onSend={(t, images) => start(t, images)}

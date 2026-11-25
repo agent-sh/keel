@@ -230,6 +230,8 @@ test.describe("on a phone", () => {
       await page.goto("/");
       await expect(page.getByTestId("home-open").first()).toBeVisible();
       await check("start page");
+      // (Something waits, so the start box rests as a line: a tap on it brings its pickers.)
+      await page.getByTestId("new-composer").locator("textarea").tap();
       await page.getByTestId("workspace-picker").tap();
       await expect(page.getByRole("dialog").or(page.getByRole("menu")).first()).toBeVisible();
       await check("folder picker");
