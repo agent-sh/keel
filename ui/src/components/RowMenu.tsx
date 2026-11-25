@@ -3,7 +3,7 @@
 // folders, archive; a pinned row can be moved among the pinned. A session is filed from here in
 // whatever way the list is grouped: no switch to "By my folders" and no drag.
 import { Menu } from "@base-ui/react/menu";
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronRight, Columns2, FolderInput, FolderMinus, FolderPlus, MailOpen, Pencil, Pin, PinOff } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronRight, Columns2, FolderInput, FolderMinus, FolderPlus, ListChecks, MailOpen, Pencil, Pin, PinOff } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import { folders, getFolders, loadFolders, tree, useFolders } from "../lib/folders.ts";
 import { listActed } from "../lib/list-hold.ts";
@@ -12,13 +12,15 @@ import { Kbd } from "./Kbd.tsx";
 import { itemClass, popupClass } from "./ui.tsx";
 
 export type RowMenuAt = { x: number; y: number };
-export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, onUnread, onRename, session }: {
+export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, onUnread, onRename, onSelect, session }: {
   at: RowMenuAt; onClose: () => void; pinned: boolean; archived: boolean; beside: boolean;
   onPin: () => void; onMove?: (by: -1 | 1) => void; onBeside: () => void; onArchive: () => void;
   // Set where the row can be marked unread (a row that is read, of a session of this machine's own, not an agent's).
   onUnread?: () => void;
   // Set where the owner may name the session (one of Keel's own): F2 on the row does the same.
   onRename?: () => void;
+  // Marks the row to act on with others (lib/select.ts).
+  onSelect?: () => void;
   session?: { id: string; folder?: string | null };
 }) {
   // The owner's folders are read when a menu first needs them (a list grouped another way has not).
@@ -41,6 +43,7 @@ export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, 
             {!archived && item("row-menu-pin", pinned ? <PinOff /> : <Pin />, pinned ? "Unpin" : "Pin to the top", onPin)}
             {pinned && onMove && item("row-menu-up", <ArrowUp />, "Move up", () => onMove(-1), "alt+arrowup")}
             {pinned && onMove && item("row-menu-down", <ArrowDown />, "Move down", () => onMove(1), "alt+arrowdown")}
+            {onSelect && !archived && item("row-menu-select", <ListChecks />, "Select", onSelect, "space")}
             {beside && item("row-menu-beside", <Columns2 />, "Open beside", onBeside)}
             {onUnread && !archived && item("row-menu-unread", <MailOpen />, "Mark as unread", onUnread)}
             {session && !archived && <MoveTo id={session.id} at={session.folder ?? null} />}

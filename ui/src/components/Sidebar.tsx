@@ -58,9 +58,13 @@ import { openHelper } from "../lib/helper.ts";
 import { HelperFace, useHelperName } from "./HelperFace.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { StuckStrip } from "./Stuck.tsx";
+import { selected, selectRange, toggleSelected, useIsSelected } from "../lib/select.ts";
+import { SelectBar } from "./SelectBar.tsx";
 import { calls, useSettled, useSettledState, useSettledStates } from "../lib/settle.ts";
 import { afterSize } from "../lib/after-size.ts";
 
+// How long a finger rests on a row before it is marked.
+const LONG_PRESS_MS = 450;
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 // The filter box draws again only when its words or its width change, not with every change of the list
 // under it (a field drawn again is written again: React sets its name, many times a second in a busy list).
@@ -272,6 +276,10 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const row = useRef<HTMLDivElement>(null);
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
   const pinned = !!s.settings.pinned_ms && !restore;
+  // Marked with others to act on together (lib/select.ts): Ctrl or Shift click, Space, a long press on a phone.
+  const picked = useIsSelected(s.id) && !gone;
+  const longPress = useRef<{ x: number; y: number; timer: number; fired: boolean } | null>(null);
+  const orderOf = () => [...(row.current?.closest('[data-testid="session-list"]')?.querySelectorAll<HTMLElement>('[data-testid="session-row"]') ?? [])].map((r) => r.dataset.session!);
   // It, or an agent of it, needs the owner while its pane shows another session for now (a look lies over it).
   const under = useUnderLook(s.id);
   // Who a row that calls the owner waits on, in the time's place on a row of one line: the owner, or the
@@ -326,6 +334,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       data-dotword={dotWords ? (backgroundOf(st) ? "long" : "short") : undefined}
       data-gone={gone || undefined}
       data-pinned={pinned || undefined}
+      data-selected={picked || undefined}
       data-under={under || undefined}
       // In a list too narrow for words beside the title, a row that calls the owner keeps its reason on a
       // line of its own. Decided by the state the list holds: no row grows under the hand.
@@ -334,9 +343,25 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       aria-current={active ? "page" : undefined}
       aria-haspopup="menu"
       {...(over ? {} : card)}
-      draggable
+      draggable={!phone()}
       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
-      onClick={(e) => { card.onClick?.(e); open(e.ctrlKey || e.metaKey); }}
+      onPointerDown={(e) => {
+        if (e.pointerType !== "touch" || left) return;
+        const p = { x: e.clientX, y: e.clientY, fired: false, timer: 0 };
+        p.timer = window.setTimeout(() => { p.fired = true; toggleSelected(s.id); }, LONG_PRESS_MS);
+        longPress.current = p;
+      }}
+      onPointerMove={(e) => { const p = longPress.current; if (p && !p.fired && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 10) clearTimeout(p.timer); }}
+      onPointerUp={() => clearTimeout(longPress.current?.timer)}
+      onPointerCancel={() => clearTimeout(longPress.current?.timer)}
+      // The press that marked the row is not an open.
+      onClickCapture={(e) => { if (longPress.current?.fired) { longPress.current = null; e.stopPropagation(); e.preventDefault(); } }}
+      onClick={(e) => {
+        card.onClick?.(e);
+        // Ctrl or Shift click marks the row (Shift: every row from the last marked one); with rows marked, a click marks or unmarks.
+        if (!left && (e.shiftKey || e.ctrlKey || e.metaKey || selected().size > 0)) return e.shiftKey ? selectRange(s.id, orderOf()) : toggleSelected(s.id);
+        open(false);
+      }}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openBeside(s.id); } }}
       onContextMenu={(e) => {
         // The row's own menu (Shift keeps the browser's, as elsewhere). From the keyboard it opens at the row.
@@ -349,6 +374,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         if (e.target !== e.currentTarget) return;
         if (e.key === "F2" && canRename) { e.preventDefault(); e.stopPropagation(); return setRenaming(true); }
         if (e.altKey && pinned && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); e.stopPropagation(); return move(e.key === "ArrowUp" ? -1 : 1); }
+        if (e.key === " " && !e.altKey && !e.ctrlKey && !e.metaKey && !left) { e.preventDefault(); return toggleSelected(s.id); }
         if (e.key !== "Enter") return;
         // Shift Enter: the menu of panes, to place the session in one of them.
         if (e.shiftKey && panes > 1 && !restore && !phone()) { e.preventDefault(); return setPlacing(true); }
@@ -422,7 +448,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           </button>
         )}
         {!left && !restore && !shown && !phone() && (
-          <button type="button" tabIndex={-1} title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
+          <button type="button" tabIndex={-1} title="Open beside, in a new pane" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
             <Columns2 />
           </button>
         )}
@@ -467,6 +493,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           onRename={canRename ? () => setRenaming(true) : undefined}
           onArchive={() => { listActed(s.id); archive(s, !restore).catch(reportError); }}
           // The same mark the row's dot reads (the command and the session menu set it too): kept until the session is opened again.
+          onSelect={() => toggleSelected(s.id)}
           onUnread={!unread && !s.machine && !s.parent_id ? () => { listActed(s.id); auto.unreadSession(s.id).catch(reportError); } : undefined}
           session={s.machine ? undefined : { id: s.id, folder: s.settings.folder_id ?? null }}
         />
@@ -1362,6 +1389,7 @@ function Index({ current }: { current: string | null }) {
       </div>
       <div className="k-list-foot" data-testid="list-foot">
         {sections.length > 1 && <MachinesBelow nav={nav} machines={sections.filter((x) => x.machine).map((x) => ({ machine: x.machine!, list: x.list }))} />}
+        <SelectBar />
         <NeedStrip nav={nav} open={(id) => { navigate({ name: "session", id }); if (getStations().shown.includes(id)) intoBox(id); }} />
         {/* They are below what the list shows: said at its foot, and a press goes to them. */}
         {waits && !lateSeen && <LateLine n={late.length} to={lateBox} />}

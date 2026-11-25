@@ -85,3 +85,36 @@ export async function archive(s: Session, on = true) {
     if (ok) { const r = await actions.patch(s.id, { archived: true, stop_shells: true } as any); back(); return r; }
   }
 }
+
+// Several sessions archived at once, offered back as one act. A session that still runs background commands
+// is named in one question, and archived with them stopped only when the owner says so; the others are
+// archived either way. Says how many were archived.
+export async function archiveMany(list: Session[]): Promise<number> {
+  const slots = new Map(list.map((s) => [s.id, getStations().slots.indexOf(s.id)]));
+  const done: Session[] = [], busy: { s: Session; jobs: string[] }[] = [];
+  for (const s of list) {
+    listActed(s.id);
+    try {
+      await actions.patch(s.id, { archived: true });
+      done.push(s);
+    } catch (e) {
+      const jobs = (e as { body?: { jobs?: { command: string }[] } }).body?.jobs;
+      if ((e as { status?: number }).status !== 409 || !jobs?.length) throw e;
+      busy.push({ s, jobs: jobs.map((j) => j.command.slice(0, 60)) });
+    }
+  }
+  if (busy.length && await confirmAction({
+    title: "Stop their background commands?",
+    body: `${busy.map((b) => `"${b.s.title || "New session"}" still runs ${b.jobs.join(", ")}`).join("; ")}. Archiving stops them.`,
+    action: "Stop and archive",
+    danger: true,
+  })) {
+    for (const b of busy) { await actions.patch(b.s.id, { archived: true, stop_shells: true } as any); done.push(b.s); }
+  }
+  if (done.length) {
+    offerUndo(`Archived ${done.length} ${done.length === 1 ? "session" : "sessions"}`, async () => {
+      for (const s of done) { listActed(s.id); await actions.patch(s.id, { archived: false }); stations.refill(slots.get(s.id) ?? -1, s.id); }
+    });
+  }
+  return done.length;
+}

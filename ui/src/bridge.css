@@ -519,6 +519,22 @@
 .k-pinned { position: relative; }
 .k-drop-line { position: absolute; left: 0.25rem; right: 0.25rem; height: 2px; margin-top: -1px; border-radius: 1px; background: var(--ring); pointer-events: none; }
 /* Sessions that arrived while the list was held, below what it shows: said at the list's foot. */
+/* The bar at the list's foot while rows are marked (SelectBar.tsx): the count, the sessions that still work, the acts. */
+.k-sel-bar { display: flex; flex-direction: column; gap: 0.25rem; flex-shrink: 0; margin: 0 0.625rem; padding: 0.375rem 0 0.375rem; border-top: 1px solid var(--line); font-size: var(--text-caption); color: var(--muted); }
+.k-sel-head { display: flex; align-items: center; gap: 0.5rem; }
+.k-sel-count { flex: 1; min-width: 0; font-weight: 600; color: var(--fg); }
+.k-sel-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
+.k-sel-acts { display: flex; flex-wrap: wrap; gap: 0.125rem 0.25rem; }
+.k-sel-act { display: inline-flex; align-items: center; gap: 0.3125rem; height: var(--spacing-ctl-sm); padding: 0 0.5rem; border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-sel-act svg { width: 0.875rem; height: 0.875rem; color: var(--muted); }
+.k-sel-act:hover:not(:disabled) { background: var(--hover); }
+.k-sel-act:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.k-sel-act:disabled { opacity: 0.45; }
+.k-sel-send { display: flex; align-items: center; gap: 0.25rem; }
+.k-sel-field { flex: 1; min-width: 0; height: var(--spacing-ctl-sm); padding: 0 0.5rem; border-radius: var(--radius-sm); background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-caption); color: var(--fg); outline: none; }
+.k-sel-field:focus { box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* A marked row: the raised ground of the open one, with the accent's bar at its left edge. */
+.k-row[data-selected] { background: var(--hover); color: var(--fg); box-shadow: inset 0.1875rem 0 0 var(--accent); }
 /* The names of what calls the owner and is out of the list's view, at its foot. */
 /* It never takes the list's own room: at most a quarter of it. It holds as many names as fit there,
    and the rest behind "+N" (Sidebar.tsx, NeedStrip): nothing in it scrolls out of sight. */
