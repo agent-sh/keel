@@ -179,6 +179,8 @@ test("loops: the form reads the schedule as it is typed, with a model and an eff
   test.skip(!backup?.efforts?.includes("low"), "requires the scripted backup model with its efforts");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Form host" } })).json();
+  // Only the browser's preview uses this clock. The last interval crosses midnight.
+  await page.clock.setFixedTime(new Date(2026, 10, 23, 19, 12));
   await page.goto(`/s/${session.id}`);
   await page.getByTestId("loops-button").click();
   await page.getByTestId("new-loop-button").click();
@@ -193,7 +195,7 @@ test("loops: the form reads the schedule as it is typed, with a model and an eff
   await expect(when).toContainText("is not a schedule");
   await expect(page.getByRole("button", { name: "Create loop" })).toBeDisabled();
   await page.getByTestId("new-loop-schedule").fill("2h");
-  await expect(when).toContainText(/every 2 hours · next \d\d:\d\d, \d\d:\d\d, \d\d:\d\d/);
+  await expect(when).toContainText("every 2 hours · next 21:12, 23:12, Tue 01:12");
   await expect(when).not.toHaveAttribute("data-bad", "");
 
   // The model and the effort, offered as the model lists them.
