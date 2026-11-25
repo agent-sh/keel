@@ -21,7 +21,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
 import { offerUndo } from "../lib/undo.ts";
 import { AIMS, keepLook, leaveHome, leaveLook, lookNow, noteLook, paneMove, paneSay, paneUnsay, setAim, tellSwap, useAim, useAimed, useNeedUnderLooks, usePaneNote, type Aim } from "../lib/looks.ts";
-import { callsigns, paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
+import { paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { useSeenFailure } from "./Attention.tsx";
 import { usePanelBesideShown } from "./SidePanel.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
@@ -541,9 +541,7 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
   const need = useNeedCount();
   // Errors not yet read: one tap opens them here, as the list's foot does at a desk (two taps away on a phone).
   const errors = useStore((x) => x.errors.filter((e) => !e.resolved_ts && !e.read_ts).length);
-  // Each mark carries the session's short code, the one the folded rail gives it.
-  const sessions = useStore((x) => x.sessions);
-  const codes = useMemo(() => callsigns(Object.values(sessions).filter((s) => !s.archived && !s.settings.helper)), [sessions]);
+  // Each mark carries the first word of the session's title beside its dot: two letters did not say which was which.
   // The mark of the session on screen is in view: the dock's row scrolls sideways to it (only the row).
   const row = useRef<HTMLOListElement>(null);
   useEffect(() => {
@@ -578,7 +576,7 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
           <li key={s.id}>
             <button type="button" className="k-dock-mark" data-watch={watches[s.id]} aria-current={helm === s.id ? "page" : undefined} aria-label={`${s.title || "New session"}, ${label(s.id, watches[s.id]!)}${whereWords(s)}`} onClick={() => navigate({ name: "session", id: s.id })}>
               <Mark w={watches[s.id]!} />
-              <span className="k-dock-code" data-testid="dock-code" aria-hidden="true">{codes[s.id]}</span>
+              <span className="k-dock-code" data-testid="dock-code" aria-hidden="true">{(s.title || "New").trim().split(/\s+/)[0]}</span>
             </button>
           </li>
         ))}

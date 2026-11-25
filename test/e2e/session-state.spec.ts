@@ -544,7 +544,7 @@ test("the tab title counts each waiting thing once", async ({ page, request }) =
   }
 });
 
-test("the phone strip says how many need the owner, in plain words to a reader, and its marks carry names", async ({ page, request }) => {
+test("the phone strip says how many need the owner, in plain words to a reader, and its marks carry the first word of a title", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const made: string[] = [];
   try {
@@ -564,13 +564,10 @@ test("the phone strip says how many need the owner, in plain words to a reader, 
     await expect(dock.getByTestId("dock-need")).toHaveAccessibleName("1 needs you");
     await expect(dock.getByTestId("dock-need")).toHaveAttribute("title", "1 needs you");
     await expect(dock.getByTestId("dock-need").locator(".k-dock-need-n")).toHaveText("1");
-    // Every mark has the session's short code beside its state.
-    // (The letters are the initials of the title unless another session on the daemon took them.)
-    await expect(dock.locator('.k-dock-mark[data-watch="need"]').getByTestId("dock-code")).toHaveText(/^[A-Z0-9]{2}$/);
-    await expect(dock.locator(".k-dock-mark[aria-current]").getByTestId("dock-code")).toHaveText(/^[A-Z0-9]{2}$/);
-    const codes = await dock.getByTestId("dock-code").allInnerTexts();
-    expect(codes.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(codes).size).toBe(codes.length);
+    // Every mark has the first word of the session's title beside its state.
+    await expect(dock.locator('.k-dock-mark[data-watch="need"]').getByTestId("dock-code")).toHaveText("Clean");
+    await expect(dock.locator(".k-dock-mark[aria-current]").getByTestId("dock-code")).toHaveText("Explain");
+    expect((await dock.getByTestId("dock-code").allInnerTexts()).length).toBeGreaterThanOrEqual(2);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await shoot(page, "session-state-10-phone-strip");
   } finally {

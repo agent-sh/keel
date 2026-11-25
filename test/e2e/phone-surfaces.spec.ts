@@ -1337,5 +1337,39 @@ for (const size of SIZES) {
         await drop(request, ...made);
       }
     });
+    test("the tab strip's marks say which session is which: the dot and the first word of its title, whole inside a mark a finger can press", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const ids = [await start(request, "Billing exporter fix"), await start(request, "Migrate the orders table"), await start(request, "Billing report layout")];
+      try {
+        for (const id of ids) await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say hello" } });
+        for (const id of ids) await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${ids[1]}`);
+            const dock = page.locator(".k-dock");
+            await expect(dock.getByTestId("dock-code").first()).toBeVisible({ timeout: 30_000 });
+            // Each mark of these sessions names its first word: two of them share one, and the dot beside it still tells them from the rest.
+            const words = await dock.getByTestId("dock-code").allInnerTexts();
+            for (const w of ["Billing", "Migrate"]) expect(words, `the strip's words at ${scale * 100}% text`).toContain(w);
+            // The word is whole (no letters cut by the mark's edge) and the mark is a target.
+            const bad = await dock.evaluate((el) => {
+              const out: string[] = [];
+              for (const c of el.querySelectorAll<HTMLElement>('[data-testid="dock-code"]')) {
+                const m = c.closest<HTMLElement>(".k-dock-mark")!, a = c.getBoundingClientRect(), b = m.getBoundingClientRect();
+                if (c.scrollWidth > c.clientWidth + 1 || a.left < b.left - 0.5 || a.right > b.right + 0.5) out.push(`${c.textContent} is cut`);
+              }
+              return out;
+            });
+            expect(bad, `words cut at ${scale * 100}% text`).toEqual([]);
+            expect(await small(dock.locator(".k-dock-list")), "the marks are a finger's targets").toEqual([]);
+            await noSideScroll(page);
+            await shoot(page, `phone-surfaces-34-tab-words-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, ...ids);
+      }
+    });
   });
 }
