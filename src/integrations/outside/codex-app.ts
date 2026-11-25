@@ -29,7 +29,8 @@ import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "
 import { AcpConnection } from "../../acp/rpc.ts";
 import type { Bus } from "../../core/bus.ts";
 import type { Store } from "../../core/store.ts";
-import type { Holder, Session } from "../../core/types.ts";
+import type { Holder } from "../../core/types.ts";
+import type { Gate } from "../../safety/gate.ts";
 import { holderSaid } from "../../core/watch.ts";
 import { homeDir } from "../../core/paths.ts";
 import type { ToolCall } from "../../engine/hooks.ts";
@@ -60,7 +61,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS outside_sends_key ON outside_sends(session_id,
 export type SendState = "stored" | "started" | "delivered" | "lost" | "failed";
 export type Send = { id: string; session_id: string; key: string; text: string; state: SendState; offset: number | null; said: string | null; created: number };
 
-export type CardGate = { askOnce(session: Session, call: ToolCall, name: string, why: string, shown?: string): Promise<{ deny: string } | void> };
+// What of the gate the driver uses: the one-call card, and the open cards it closes at a start.
+export type CardGate = Pick<Gate, "askOnce" | "approvals" | "settled">;
 
 export type CodexAppDeps = {
   store: Store;
@@ -367,7 +369,7 @@ export class CodexApp {
     const asks = (reason: unknown) => `asked by Codex${typeof reason === "string" && reason ? `: ${reason}` : ""}`;
     const ask = async (tool: Partial<Tool> & { name: string }, input: Json, name: string, why: string, shown?: string) => {
       if (!s || !gate) return false;
-      const v = await gate.askOnce(s, call(tool, input), name, why, shown);
+      const v = await gate.askOnce(s, call(tool, input), name, why, "harness", shown);
       return !v && !signal.aborted;
     };
     try {

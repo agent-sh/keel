@@ -57,8 +57,9 @@ import { privateHost } from "../core/hosts.ts";
 import { contains, realOf } from "../core/paths.ts";
 
 // What made a one-call card (gate.ts askOnce): outside content named the target, a tool that confirms
-// each call, private words in a public place, a hook of the owner's that asks.
-export type Held = "provenance" | "confirm" | "words" | "hook";
+// each call, private words in a public place, a hook of the owner's that asks, another harness's own
+// request in a session Keel answers in place (src/integrations/outside/codex-app.ts).
+export type Held = "provenance" | "confirm" | "words" | "hook" | "harness";
 // What the gate knew of why it asked, kept with the card (gate.ts card()).
 // `owner_only`: the policy's onlyOwner. `account`: a write with the owner's account beyond his namespaces.
 // `risks`: the classes of what makes a command high risk (risk-words.ts). `held`: a one-call card and what made it.
@@ -96,7 +97,7 @@ export function ownerClass(a: CardIn, isHelperSession = false, place?: Place): {
   if (isHelperSession) return say("helper");
   if (f.held === "provenance") return say("provenance", a.why);
   if (f.held === "words") return say("publish", a.why);
-  if (f.held === "confirm" || f.held === "hook" || a.once) return say("owner-only", a.why);
+  if (f.held === "confirm" || f.held === "hook" || f.held === "harness" || a.once) return say("owner-only", a.why);
   if (f.owner_only || a.autoOwner) return say("owner-only", a.why);
   if (f.account !== undefined || a.mine) return say("owner-only", `a write beyond your accounts${f.account ? ` (${f.account})` : ""}`);
   if (a.input_len !== undefined || a.cut || isClipped(a.input)) return say("unseen");

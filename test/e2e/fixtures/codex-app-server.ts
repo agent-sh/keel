@@ -7,6 +7,8 @@
 // and asks the client what Codex asks. No model: the prompt says what it does.
 //   - "ask me ...": one question with two choices, then a reply naming the pick.
 //   - "wait ...": works until turn/interrupt, then the turn is interrupted.
+//   - "edit ...": a file change it asks to make (a.ts in its folder), then a
+//     reply naming the decision.
 //   - anything else: a command it asks to run (make test), then a reply naming
 //     the decision.
 // Every request it got is appended to <rollout>.standin.log, one JSON line each.
@@ -66,6 +68,15 @@ async function run(turnId: string, text: string) {
     const r = await ask("item/tool/requestUserInput", { threadId: thread, turnId, itemId: "q1", isBlocking: true, autoResolutionMs: null, questions: [{ id: "color", header: "Color", question: "Which color should the button be?", isOther: true, isSecret: false, options: [{ label: "Blue", description: "The brand color" }, { label: "Green", description: "" }] }] });
     const picked = r?.answers?.color?.answers?.join(", ") || "nothing";
     await reply(turnId, "m2", `You picked ${picked}.`);
+    return finish(turnId, "completed");
+  }
+  if (/^edit\b/i.test(text)) {
+    const changes = [{ path: join(process.cwd(), "a.ts"), kind: { type: "update", move_path: null }, diff: "@@ -1 +1 @@\n-const a = 1;\n+const a = 2;" }];
+    note("item/started", { threadId: thread, turnId, item: { type: "fileChange", id: "f1", changes, status: "inProgress" } });
+    const r = await ask("item/fileChange/requestApproval", { threadId: thread, turnId, itemId: "f1", startedAtMs: Date.now(), reason: "It fixes the constant", grantRoot: null });
+    const decision = typeof r?.decision === "string" ? r.decision : "decline";
+    if (decision === "cancel") return finish(turnId, "interrupted");
+    await reply(turnId, "m4", `The change was ${decision === "accept" ? "allowed" : "declined"}: ${text}`);
     return finish(turnId, "completed");
   }
   await reply(turnId, "m1", "Running the tests first.");

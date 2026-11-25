@@ -14,6 +14,7 @@ import { ownEnv } from "../../../test/env.ts";
 import { answer, allPendingQuestions } from "../../tools/interact.ts";
 import { Outside } from "./service.ts";
 import { OUTSIDE_DEFAULTS } from "./settings.ts";
+import { Gate } from "../../safety/gate.ts";
 import { CodexApp, holdsMessage, threadFacts, type CardGate } from "./codex-app.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-codex-app-"));
@@ -32,7 +33,7 @@ const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> =
 };
 
 let k = 0;
-function rig(opts: { holder?: () => Holder | undefined } = {}) {
+function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean } = {}) {
   const dir = join(top, String(k++));
   const codex = join(dir, "codex");
   const cwd = join(dir, "work");
@@ -53,7 +54,9 @@ function rig(opts: { holder?: () => Holder | undefined } = {}) {
   o.start();
   const cards: { name: string; input: any; why: string; shown?: string }[] = [];
   let decide: (name: string) => { deny: string } | void = () => undefined;
-  const gate: CardGate = { askOnce: async (_s, call, name, why, shown) => { cards.push({ name, input: call.input, why, shown }); return decide(name); } };
+  const stub = { askOnce: async (_s, call, name, why, _held, shown) => { cards.push({ name, input: call.input, why, shown }); return decide(name); }, approvals: () => [], settled: () => {} } as CardGate;
+  const real = opts.realGate ? new Gate(store, bus) : undefined;
+  const gate: CardGate = real ?? stub;
   const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => opts.holder?.() ?? o.holderNow(id), retell: (id: string) => o.retell(id) };
   const make = () => (app = new CodexApp({ store, bus, outside, gate: () => gate, bin: () => STANDIN, home: () => codex, trouble: (e) => { throw e; } }));
   make();
@@ -73,7 +76,7 @@ function rig(opts: { holder?: () => Holder | undefined } = {}) {
     rec("event_msg", { type: "task_complete", turn_id: "t0" });
     return until(() => store.sessions({ outside: true }).find((s) => s.outside?.source_id === thread));
   };
-  return { dir, codex, cwd, store, bus, frames, o, app: () => app!, make, cards, setDecide: (f: typeof decide) => { decide = f; }, thread, rollout, rec, session, done };
+  return { dir, codex, cwd, store, bus, frames, o, gate: real, app: () => app!, make, cards, setDecide: (f: typeof decide) => { decide = f; }, thread, rollout, rec, session, done };
 }
 
 describe("a Codex session answered in place", () => {
@@ -121,6 +124,21 @@ describe("a Codex session answered in place", () => {
       r.setDecide(() => ({ deny: "no" }));
       r.app().send(s.id, "try again", "k2");
       await until(() => readFileSync(r.rollout, "utf8").includes("The command was declined: try again"), 15_000);
+      await until(() => !r.app().ours(s.id));
+    } finally { r.done(); }
+  }, 30_000);
+
+  test("a file change is the gate's one-call card: the owner's alone, showing the diff Codex will write", async () => {
+    const r = rig({ realGate: true });
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "edit the constant", "k1");
+      const a = await until(() => r.gate!.approvals({ session: s.id, pending: true })[0], 15_000);
+      expect(a).toMatchObject({ tool: "Codex file change", kind: "edit", once: true, risk: "high", facts: { held: "harness" } });
+      expect(a.summary).toContain("+const a = 2;");
+      expect(a.summary).toContain(join(r.cwd, "a.ts"));
+      expect(r.gate!.resolve(a.id, s.id, { choice: "deny" })).toEqual({ ok: true });
+      await until(() => readFileSync(r.rollout, "utf8").includes("The change was declined: edit the constant"), 15_000);
       await until(() => !r.app().ours(s.id));
     } finally { r.done(); }
   }, 30_000);
