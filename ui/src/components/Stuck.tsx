@@ -2,7 +2,8 @@
 // progress for too long (src/core/stuck.ts), agents' included, the longest
 // first. The daemon marks such a session's state, so this reads the states
 // the rows read and asks nothing more, and it is there only while something
-// is stuck. Folded, it is a count that opens the list.
+// is stuck. Folded, it is a count that opens the list. An entry is one line, as a row is: the dot, the title, how
+// long; what it has not done and whose agent it is are in its tooltip. It is in the colour of what needs the owner.
 import { TriangleAlert } from "lucide-react";
 import { useMemo } from "react";
 import type { Session } from "../../../src/core/types.ts";
@@ -11,7 +12,7 @@ import { toggleList } from "../lib/rail.ts";
 import { useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { useSessionStates } from "../lib/watch.ts";
-import { span, useNow } from "./Mark.tsx";
+import { Mark, span, useNow } from "./Mark.tsx";
 
 type Item = StuckMark & { s: Session; parent?: Session; elapsed: number };
 
@@ -47,9 +48,9 @@ export function StuckStrip({ open }: { open: boolean }) {
     <section className="k-stuck" data-testid="stuck" aria-label={label}>
       <h2 className="k-stuck-head"><TriangleAlert /><span>No progress</span><span className="tabular-nums">{items.length}</span></h2>
       {items.map((i) => (
-        <button key={i.s.id} type="button" className="k-stuck-item" data-testid="stuck-item" data-session={i.s.id} data-what={i.what} onClick={() => navigate({ name: "session", id: i.s.id })}>
-          <span className="k-stuck-title">{i.s.title || "New session"}{i.parent && <span className="k-stuck-of"> · agent of {i.parent.title || "a session"}</span>}</span>
-          <span className="k-stuck-what" title={SAID(i)}>{SAID(i)}</span>
+        <button key={i.s.id} type="button" className="k-stuck-item" data-testid="stuck-item" data-session={i.s.id} data-what={i.what} title={`${i.s.title || "New session"}${i.parent ? `, agent of ${i.parent.title || "a session"}` : ""}: ${SAID(i)}`} onClick={() => navigate({ name: "session", id: i.s.id })}>
+          <Mark w="need" />
+          <span className="k-stuck-title">{i.s.title || "New session"}</span>
           <span className="k-stuck-time tabular-nums">{span(i.elapsed)}</span>
         </button>
       ))}

@@ -233,9 +233,17 @@ test("is anything stuck: a held stream, a silent command and a stalled agent are
     await page.goto(`/s/${parent}`);
     const strip = page.getByTestId("stuck");
     await expect(strip).toBeVisible({ timeout: 15_000 });
-    await expect(strip.locator(`[data-session="${stream}"]`)).toContainText("no output");
-    await expect(strip.locator(`[data-session="${tool}"]`)).toContainText(/Running until .+, no output/);
-    await expect(strip.locator(`[data-session="${agent}"]`)).toContainText("agent of Audit the three services");
+    // One line an entry (the dot, the title, how long) in the colour of what needs the owner; what it has not done and
+    // whose agent it is are in the tooltip.
+    await expect(strip.locator(`[data-session="${stream}"]`)).toHaveAttribute("title", /no output/);
+    await expect(strip.locator(`[data-session="${tool}"]`)).toHaveAttribute("title", /Running until .+, no output/);
+    await expect(strip.locator(`[data-session="${agent}"]`)).toHaveAttribute("title", /agent of Audit the three services/);
+    for (const id of [stream, tool, agent]) {
+      const item = strip.locator(`[data-session="${id}"]`);
+      await expect(item.locator(".k-mark"), "the needs-you dot").toHaveAttribute("data-watch", "need");
+      expect(await item.evaluate((el) => el.getBoundingClientRect().height), "one line").toBeLessThan(32);
+      await expect(item.locator(".k-stuck-what")).toHaveCount(0);
+    }
     await expect(strip.locator(`[data-session="${chatty}"]`)).toHaveCount(0);
     await expect(strip.locator(`[data-session="${parent}"]`)).toHaveCount(0);
     await shoot(page, "session-state-04-stuck");
