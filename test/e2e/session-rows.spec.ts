@@ -324,14 +324,23 @@ test("what needs you is named in a long list, and keeps its reason in a narrow o
 test("on a phone at a large text size, the find, the list and the names at its foot each keep their place", async ({ browser, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const made: string[] = [];
-  const turns = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length;
+  const waiting: string[] = [];
   try {
     for (let i = 0; i < 14; i++) {
-      const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: `Large text ${String(i).padStart(2, "0")}${i % 3 === 0 ? " fails" : ""}`, workspace: WS } })).json();
+      // This test runs no command. Use the daemon's own workspace, not a
+      // directory that another test in this file would have made.
+      const madeSession = await request.post("/api/sessions", { data: { model: STAND_IN, title: `Large text ${String(i).padStart(2, "0")}` } });
+      await expect(madeSession).toBeOK();
+      const { session } = await madeSession.json();
       made.push(session.id);
-      if (i % 3 === 0) await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:billing" } });
+      // Looking at a failure can acknowledge it. An unanswered approval
+      // still needs attention across both browser contexts.
+      if (i % 3 === 0) {
+        waiting.push(session.id);
+        await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
+        await request.post(`/api/sessions/${session.id}/messages`, { data: { text: script([{ name: "Bash", input: { command: "echo review > drawer-review.txt" } }]) } });
+      }
     }
-    for (const id of made.filter((_, i) => i % 3 === 0)) await expect.poll(() => turns(id), { timeout: 30_000 }).toBe(1);
     for (const [scale, height, keyboard] of [[1.5, 600, 0], [1.2, 600, 300]] as const) {
       const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width: 390, height }, hasTouch: true, isMobile: true });
       await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
@@ -339,6 +348,7 @@ test("on a phone at a large text size, the find, the list and the names at its f
       try {
         await page.goto(`/s/${made[1]}`);
         await page.getByRole("button", { name: "All sessions" }).first().tap();
+        await expect(row(page, waiting[0]!)).toHaveAttribute("data-watch", "need", { timeout: 30_000 });
         const find = page.getByTestId("list-filter");
         const strip = page.getByTestId("need-strip");
         await expect(strip).toBeVisible();
@@ -351,6 +361,7 @@ test("on a phone at a large text size, the find, the list and the names at its f
           await page.setViewportSize({ width: 390, height: height - keyboard });
           await expect(find).toBeInViewport({ ratio: 1 });
         }
+        await expect(page.getByTestId("session-list")).not.toHaveAttribute("data-held", "true");
         // The find is where a tap lands, not under the strip or the rail's foot.
         await expect.poll(() => find.evaluate((el) => { const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)); })).toBe(true);
         // The list keeps room for rows of its own: two rows or more fit between the find and the list's foot.

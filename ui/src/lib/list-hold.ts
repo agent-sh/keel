@@ -84,7 +84,11 @@ export function useHand() {
     else a.timer = setTimeout(() => { letGo(); setHeld(false); }, LEAVE_MS);
   }, []);
   // The pointer is a hand while it moves: at rest for IDLE_MS it holds nothing until it moves again.
-  const stir = useCallback((e?: { currentTarget: EventTarget | null }) => {
+  const stir = useCallback((e?: { currentTarget: EventTarget | null; pointerType?: string; buttons?: number }) => {
+    // Touch has no hover. Opening the filter can move rows under a completed
+    // tap; those pointer events must not pin the drawer's old contents.
+    if (e?.pointerType === "touch" && !e.buttons) return;
+    if (e && !e.buttons && matchMedia(PHONE_QUERY).matches && document.activeElement?.closest(".k-find")) return;
     const a = at.current;
     if (e?.currentTarget instanceof HTMLElement) a.list = e.currentTarget;
     a.moved = performance.now();
@@ -106,7 +110,12 @@ export function useHand() {
     set({ pointer: false });
   }, [set]);
   useEffect(() => {
-    const look = () => { if (at.current.focus) set({}); };
+    const look = (e: Event) => {
+      // Focusing the filter can hide the tapped button above the list. The
+      // row newly under that touch does not take over from the filter.
+      if (e.target instanceof Element && e.target.closest(".k-find") && matchMedia(PHONE_QUERY).matches) rest();
+      else if (at.current.focus) set({});
+    };
     // The pointer is somewhere else now. The list's own leave can be lost: when what was under the pointer
     // is taken out of the page (a pin's icon drawn anew under it) the browser tells no one it left.
     const away = (e: PointerEvent) => { const l = at.current.list; if (at.current.pointer && l && !(e.target instanceof Node && l.contains(e.target))) rest(); };
@@ -118,6 +127,8 @@ export function useHand() {
     onPointerEnter: stir,
     onPointerMove: stir,
     onPointerDown: stir,
+    onPointerUp: (e: { pointerType: string }) => { if (e.pointerType === "touch") rest(); },
+    onPointerCancel: (e: { pointerType: string }) => { if (e.pointerType === "touch") rest(); },
     onWheel: stir,
     onPointerLeave: rest,
     // On a phone the drawer puts the keyboard on the open session's row as it opens (App.tsx), with no
