@@ -7,6 +7,7 @@ import { stoppingShells } from "../lib/shells.ts";
 import { ago, cn, scrollMotion } from "../lib/utils.ts";
 import { DiffView, FileList, RevertButton, type FileChange } from "./DiffView.tsx";
 import { Seg, tabId } from "./Seg.tsx";
+import { useViewed } from "../lib/viewed.ts";
 
 type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
 type Diff = { files: FileChange[]; diff: string; truncated: boolean; partial?: string; scope: "tree" | "written"; incomplete?: boolean };
@@ -15,6 +16,7 @@ type RewindResult = {
   blocked?: { path: string; uncaptured: string }[];
   versions: Record<string, string>; incomplete: boolean; undo: string | null; scope: string;
 };
+const NO_FILES: FileChange[] = [];
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 type Pending = { title: string; body: { turn?: number; paths?: string[] }; preview: RewindResult };
 
@@ -32,6 +34,8 @@ export function ChangesPanel({ session }: { session: Session }) {
   const [done, setDone] = useState<RewindResult | null>(null);
   const [err, setErr] = useState("");
   const [tab, setTab] = useState<string>("session");
+  // Per-file "Viewed" marks of the session diff, kept in this browser (lib/viewed.ts).
+  const viewed = useViewed(sessionId, "changes", all?.files ?? NO_FILES, all?.diff ?? "");
   const panel = useId();
   const sessionBox = useRef<HTMLDivElement>(null);
   // A path of the file list: its diff, at the top of the panel.
@@ -173,7 +177,7 @@ export function ChangesPanel({ session }: { session: Session }) {
             </div>
           )}
           {all && all.files.length > 1 && (
-            <FileList files={all.files} onJump={jump} actions={(f) => canRevert && <RevertButton path={f.path} onClick={() => ask(`Revert ${f.path}?`, { turn: firstTurn, paths: [f.path] })} />} />
+            <FileList files={all.files} onJump={jump} viewed={viewed} actions={(f) => canRevert && <RevertButton path={f.path} onClick={() => ask(`Revert ${f.path}?`, { turn: firstTurn, paths: [f.path] })} />} />
           )}
           {all && (
             <DiffView
@@ -182,6 +186,7 @@ export function ChangesPanel({ session }: { session: Session }) {
               empty="The session has not changed any files yet."
               truncated={all.truncated}
               partial={all.partial}
+              viewed={viewed}
               loadFile={firstTurn === undefined ? undefined : fileDiff(`from=${firstTurn}`)}
               actions={(f) => canRevert && <RevertButton path={f.path} onClick={() => ask(`Revert ${f.path}?`, { turn: firstTurn, paths: [f.path] })} />}
               onHunk={!canRevert ? undefined : async (h) => {

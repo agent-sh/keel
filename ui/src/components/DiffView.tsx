@@ -1,10 +1,11 @@
-import { ChevronRight, MessageSquarePlus, Undo2 } from "lucide-react";
+import { Check, ChevronRight, MessageSquarePlus, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { parsePatch, type FilePatch, type PatchLine } from "../../../src/safety/patch.ts";
 import { cn, scrollMotion } from "../lib/utils.ts";
 import { langOf } from "../lib/lang.ts";
 import { foldOver, foldsOf } from "../lib/diff-folds.ts";
 import { reportError } from "../lib/store.ts";
+import type { Viewed } from "../lib/viewed.ts";
 
 export { parsePatch };
 export type FileChange = { path: string; status: string; added: number; removed: number; outside?: boolean };
@@ -40,7 +41,7 @@ const lineName = (path: string, l: PatchLine) => `${path}, ${l.kind === "del" ? 
 // cut to fit; `loadFile` fetches one file's whole diff in its place.
 export type HunkRef = { path: string; index: number; header: string; body: string };
 export function DiffView({
-  files, patch, truncated, partial, loadFile, actions, comments, onComment, onHunk, empty,
+  files, patch, truncated, partial, loadFile, actions, comments, onComment, onHunk, empty, viewed,
 }: {
   files: FileChange[];
   patch: string;
@@ -52,6 +53,8 @@ export function DiffView({
   onComment?: (c: Omit<Comment, "id">) => void;
   onHunk?: (h: HunkRef) => void;
   empty?: string;
+  // Per-file "Viewed" marks (lib/viewed.ts): a marked file folds and is counted.
+  viewed?: Viewed;
 }) {
   const parsed = useMemo(() => new Map(parsePatch(patch).map((p) => [p.path, p])), [patch]);
   const [whole, setWhole] = useState<Record<string, FilePatch>>({});
@@ -63,10 +66,11 @@ export function DiffView({
   });
   return (
     <div className="flex flex-col gap-2" data-testid="diff-view">
+      {viewed && <p className="px-1 text-caption text-muted tabular-nums" data-testid="viewed-count" aria-live="polite">{viewed.count} of {viewed.total} viewed</p>}
       {files.map((f) => {
         const p = whole[f.path] ?? parsed.get(f.path);
         const cut = !whole[f.path] && truncated ? (p ? (partial === f.path ? "partial" : null) : "omitted") : null;
-        return <FileBlock key={f.path} f={f} p={p} cut={cut} load={load} actions={actions} comments={comments?.filter((c) => c.path === f.path && !c.outdated)} onComment={onComment} onHunk={onHunk} />;
+        return <FileBlock key={f.path} f={f} p={p} cut={cut} load={load} actions={actions} comments={comments?.filter((c) => c.path === f.path && !c.outdated)} onComment={onComment} onHunk={onHunk} viewed={viewed ? viewed.is(f.path) : undefined} onViewed={viewed ? () => viewed.toggle(f.path) : undefined} />;
       })}
     </div>
   );
@@ -114,12 +118,16 @@ function modeNote(p?: FilePatch): string | null {
 
 // `bare`: the block stands under a line that already names its file and its counts
 // (a call of the transcript): no head, and what the head would offer sits in its corner.
-function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk, bare }: {
+function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk, bare, viewed, onViewed }: {
   bare?: boolean;
+  viewed?: boolean; onViewed?: () => void;
   f: FileChange; p?: FilePatch; cut: "partial" | "omitted" | null; load?: (path: string) => Promise<void>;
   actions?: (f: FileChange) => ReactNode; comments?: Comment[]; onComment?: (c: Omit<Comment, "id">) => void; onHunk?: (h: HunkRef) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(!viewed);
+  // A file marked viewed folds; one whose diff changed loses its mark and opens again.
+  const seenViewed = useRef(viewed);
+  useEffect(() => { if (seenViewed.current !== viewed) { seenViewed.current = viewed; setOpen(!viewed); } }, [viewed]);
   // Drafts by line: moving to another line keeps what was typed on this one.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [flash, setFlash] = useState<{ line: number; end: number } | null>(null);
@@ -231,6 +239,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk, bare
         <span className="ml-auto font-mono text-micro tabular-nums">
           <span className="text-ok">+{f.added}</span> <span className="text-danger">-{f.removed}</span>
         </span>
+        {onViewed && <ViewedMark path={f.path} on={!!viewed} onClick={onViewed} />}
         {actions?.(f)}
       </header>}
       {open && (
@@ -378,6 +387,16 @@ function CommentForm({ l, side, text, label, onText, onClose, onAdd }: { l: Patc
   );
 }
 
+// A file's "Viewed" mark: a checkbox in the file's header.
+export function ViewedMark({ path, on, onClick }: { path: string; on: boolean; onClick: () => void }) {
+  return (
+    <button type="button" role="checkbox" aria-checked={on} data-testid="diff-viewed" aria-label={`Viewed ${path}`} title={on ? "Viewed. It opens again when this file's diff changes." : "Mark this file viewed: it folds, and opens again when its diff changes"} onClick={onClick}
+      className={cn("inline-flex h-ctl-sm shrink-0 items-center gap-1 rounded-md px-1.5 font-sans text-micro font-medium hover:bg-hover", on ? "text-accent" : "text-muted hover:text-fg")}>
+      <span className={cn("grid size-3 place-items-center rounded-sm border", on ? "border-accent bg-accent text-accent-fg" : "border-line-strong")} aria-hidden="true">{on && <Check className="size-2.5" strokeWidth={3} />}</span>Viewed
+    </button>
+  );
+}
+
 // A file's revert, said in words: the button reads "Revert" and names its file to a screen reader.
 export function RevertButton({ path, onClick }: { path: string; onClick: () => void }) {
   return (
@@ -389,7 +408,7 @@ export function RevertButton({ path, onClick }: { path: string; onClick: () => v
 }
 
 // The changed files as a list above their diffs: a path goes to its diff, `actions` stand at each row's end.
-export function FileList({ files, onJump, actions }: { files: FileChange[]; onJump: (path: string) => void; actions?: (f: FileChange) => ReactNode }) {
+export function FileList({ files, onJump, actions, viewed }: { files: FileChange[]; onJump: (path: string) => void; actions?: (f: FileChange) => ReactNode; viewed?: Viewed }) {
   return (
     <ul className="mb-3 overflow-hidden rounded-xl border border-line bg-raised" data-testid="changes-files" aria-label="Changed files">
       {files.map((f) => {
@@ -407,6 +426,7 @@ export function FileList({ files, onJump, actions }: { files: FileChange[]; onJu
               <span className="ml-auto shrink-0 font-mono text-micro tabular-nums">
                 <span className="text-ok">+{f.added}</span> <span className="text-danger">-{f.removed}</span>
               </span>
+              {viewed?.is(f.path) && <span className="shrink-0 text-accent" data-testid="file-viewed" title="Viewed"><Check className="size-3" strokeWidth={3} aria-label="Viewed" /></span>}
             </button>
             {actions?.(f)}
           </li>

@@ -7,7 +7,9 @@ import { DiffView, parsePatch, type Comment, type FileChange } from "./DiffView.
 import { ReviewFindings } from "./ReviewFindings.tsx";
 import { FailsBefore } from "./FailsBefore.tsx";
 import { SessionPictures } from "./Pictures.tsx";
+import { useViewed } from "../lib/viewed.ts";
 
+const NO_FILES: FileChange[] = [];
 type Branch = { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number; files: FileChange[]; diff: string; truncated: boolean; partial?: string };
 
 // Unsent feedback per session, kept in this browser the way the message box
@@ -50,6 +52,8 @@ export function BranchReview({ session }: { session: Session }) {
   const [sendErr, setSendErr] = useState("");
   const [loading, setLoading] = useState(false);
   const seq = useRef(0);
+  // Per-file "Viewed" marks, kept in this browser beside the draft (lib/viewed.ts).
+  const viewed = useViewed(sessionId, "branch", b?.files ?? NO_FILES, b?.diff ?? "");
 
   useEffect(() => {
     if (comments.length || note) localStorage.setItem(draftKey(sessionId), JSON.stringify({ comments, note }));
@@ -152,6 +156,7 @@ export function BranchReview({ session }: { session: Session }) {
         truncated={b.truncated}
         partial={b.partial}
         loadFile={fileDiff}
+        viewed={viewed}
         empty={b.base ? "The branch carries no changes over its base." : "No default branch to compare with."}
         comments={comments}
         onComment={(c) => setComments((l) => [...l, { ...c, id: crypto.randomUUID() }])}
