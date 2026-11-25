@@ -9,7 +9,8 @@ import type { Session, StoredEvent } from "../../core/types.ts";
 import { folderUse, inUse } from "../inuse.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
-import { rewindReach } from "./rewind-reach.ts";
+import * as agents from "../../automation/agents.ts";
+import { rewindReach, type StartedAgent } from "./rewind-reach.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -23,6 +24,14 @@ const guard = async (f: () => Promise<Response>) => {
 };
 
 export let checkpoints: Checkpoints | undefined;
+
+// What the rewound note says of the agents the turns had started and what became of them.
+export function startedWords(titles: string[], stopped: number): string {
+  const n = titles.length, names = titles.slice(0, 4).join(", ") + (n > 4 ? ` and ${n - 4} more` : "");
+  if (!stopped) return `${n === 1 ? "An agent it had started was" : `${n} agents it had started were`} left ${n === 1 ? "as it was" : "as they were"}: ${names}.`;
+  if (stopped === n) return `${n === 1 ? "An agent it had started was" : `${n} agents it had started were`} stopped: ${names}.`;
+  return `${n} agents it had started: ${stopped} stopped, ${n - stopped} left as they were: ${names}.`;
+}
 
 export const checkpointRoutes: RouteModule = (deps: Deps) => {
   const { store, engine, errors, bus } = deps;
@@ -70,9 +79,9 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
     if (!prompt || !shownAsPrompt(prompt)) return bad("not a prompt of the branch shown");
     const turn = mode === "chat" && !b.preview ? undefined : c.fileTurn(s, prompt.seq);
     if (b.preview) {
-      // What the files would do (nothing, when no turn from this prompt on changed any), and what the turns did that
-      // no restore takes back.
-      const said = await reach.fromPrompt(s, prompt.seq).catch((e) => (void errors.capture("server", e, { at: "rewind not undone" }), { not_undone: [] }));
+      // What the files would do (nothing, when no turn from this prompt on changed any), what the turns did that
+      // no restore takes back, and the agents they started.
+      const said = await reach.fromPrompt(s, prompt.seq).catch((e) => (void errors.capture("server", e, { at: "rewind not undone" }), { not_undone: [], agents: [] }));
       if (turn === undefined) return json({ files: [], failed: [], skipped: [], outside: [], merged: [], conflicts: [], blocked: [], removes: [], uncaptured: [], versions: {}, incomplete: false, undo: null, scope: c.shadow(s.workspace).mode, turn: null, ...said });
       return json({ ...(await c.rewind(s, { turn, preview: true, includeOutside: !!b.include_outside, paths })), turn, ...said });
     }
@@ -88,13 +97,20 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
       bus.emit({ t: "session", session: next });
       for (const n of notes) bus.emit({ t: "event", event: store.append(s.id, "note", n) });
     }
+    // The agents the rewound turns started: left as they are, or the ones that still work stopped (the owner's stop;
+    // what an agent leaves behind is settled as every stop settles it, src/automation/leftovers.ts, and a worktree
+    // that holds work stays). The chat going back leaves them out of its history; the note says what became of them.
+    const seen = mode === "files" ? [] : (await reach.fromPrompt(s, prompt.seq).catch(() => ({ agents: [] as StartedAgent[] }))).agents;
+    const stopped = b.agents === "stop" ? seen.filter((a) => a.running) : [];
+    for (const a of stopped) agents.stop(a.id, "owner");
     const words = String(prompt.data.text ?? "").split("\n")[0]!.slice(0, 80);
     const what = mode === "both" ? "the chat and the files" : mode === "chat" ? "the chat" : "the files";
-    const mark = store.append(s.id, "note", { kind: "rewound", model: false, mode, from: prompt.id, prompt: words, undo: res?.undo ?? null, files: res?.files.length ?? 0, text: `You rewound ${what} to before "${words}".` });
+    const told = seen.length ? ` ${startedWords(seen.map((x) => x.title), stopped.length)}` : "";
+    const mark = store.append(s.id, "note", { kind: "rewound", model: false, mode, from: prompt.id, prompt: words, undo: res?.undo ?? null, files: res?.files.length ?? 0, ...(seen.length ? { agents: seen.map((a) => a.id), stopped: stopped.map((a) => a.id) } : {}), text: `You rewound ${what} to before "${words}".${told}` });
     bus.emit({ t: "event", event: mark });
     const head = mode === "files" ? undefined : prompt.parent;
     return json({
-      files: res, note: mark.id,
+      files: res, note: mark.id, stopped: stopped.map((a) => a.id),
       chat: mode === "files" ? null : { head, prompt_text: String(prompt.data.text ?? ""), prompt_images: prompt.data.images?.length ? prompt.data.images : undefined },
     });
   };

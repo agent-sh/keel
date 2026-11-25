@@ -15,17 +15,30 @@ import { stoppingShells } from "../lib/shells.ts";
 import { api, failed, useStore } from "../lib/store.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
+import { STATE_WORD, agentState } from "../../../src/core/state-words.ts";
 import { NotUndoneList, type NotUndone } from "./NotUndone.tsx";
 import { Seg } from "./Seg.tsx";
 
 type Ask = { sessionId: string; eventId?: string };
 type Mode = "both" | "chat" | "files";
+// An agent the turns being rewound started: where it stands, and where its work is.
+type Started = {
+  id: string; title: string; status: string; stopped_by: string | null; end_reason: string | null; running: boolean;
+  worktree: string | null; branch: string | null; landed: "yes" | "no" | "nothing" | "unknown" | null; ahead: number | null; uncommitted: boolean | null; n: number;
+};
 type Preview = {
   files: string[]; skipped: string[]; merged: string[]; removes: string[]; versions: Record<string, string>; turn: number | null; uncaptured: string[];
-  not_undone?: NotUndone[];
+  not_undone?: NotUndone[]; agents?: Started[];
 };
 type Done = { chat: { prompt_text: string; prompt_images?: PromptBlock[] } | null };
 
+const LANDED: Record<string, string> = { yes: "landed", no: "not landed", nothing: "no commit of its own", unknown: "landing not known" };
+// What an agent says of its work, from the daemon's records.
+const workOf = (a: Started) => [
+  a.branch ? a.branch : "no branch",
+  a.landed ? LANDED[a.landed] : null,
+  a.uncommitted ? "uncommitted edits" : null,
+].filter(Boolean).join(" · ");
 
 let current: Ask | null = null;
 const subs = new Set<() => void>();
@@ -64,6 +77,7 @@ function RewindDialog({ ask, onClose }: { ask: Ask; onClose: () => void }) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState("");
   const [outside, setOutside] = useState(false);
+  const [agentsWay, setAgentsWay] = useState<"leave" | "stop">("leave");
   const [busy, setBusy] = useState(false);
   const list = useRef<HTMLDivElement>(null);
 
@@ -85,13 +99,15 @@ function RewindDialog({ ask, onClose }: { ask: Ask; onClose: () => void }) {
     setPreview(null);
     setError("");
     api<Preview>(`/api/sessions/${sid}/rewind`, { method: "POST", body: JSON.stringify({ prompt_event: chosen, preview: true }) })
-      .then((p) => { if (!live) return; setPreview(p); setOutside(false); }, (e) => { if (live) { setPreview({ files: [], skipped: [], merged: [], removes: [], versions: {}, turn: null, uncaptured: [] }); setError(failed(e, { at: "rewind preview" })); } });
+      .then((p) => { if (!live) return; setPreview(p); setOutside(false); setAgentsWay("leave"); }, (e) => { if (live) { setPreview({ files: [], skipped: [], merged: [], removes: [], versions: {}, turn: null, uncaptured: [] }); setError(failed(e, { at: "rewind preview" })); } });
     return () => { live = false; };
   }, [sid, chosen]);
   const changes = !!preview && preview.turn !== null && preview.files.length + preview.skipped.length + preview.merged.length > 0;
   const files = preview ? [...preview.files, ...preview.merged, ...(outside ? preview.skipped : [])] : [];
   // Without files to put back only the chat can go; a choice of files meanwhile falls back to it.
   const way: Mode = preview && !changes ? "chat" : mode;
+  const started = preview?.agents ?? [];
+  const running = started.filter((a) => a.running);
 
   useEffect(() => { list.current?.querySelector<HTMLElement>("[aria-checked=true]")?.scrollIntoView({ block: "nearest" }); }, [rows.length, chosen]);
 
@@ -102,6 +118,7 @@ function RewindDialog({ ask, onClose }: { ask: Ask; onClose: () => void }) {
     try {
       const body = (stop: boolean) => JSON.stringify({
         prompt_event: chosen, mode: way, include_outside: outside, stop_shells: stop || undefined,
+        ...(way !== "files" && running.length && agentsWay === "stop" ? { agents: "stop" } : {}),
         ...(way !== "chat" && preview ? { confirm: { paths: files, versions: preview.versions } } : {}),
       });
       const r = await stoppingShells((stop) => api<Done>(`/api/sessions/${sid}/rewind`, { method: "POST", body: body(stop) }), { verb: "Rewind", where: "this folder" });
@@ -192,6 +209,32 @@ function RewindDialog({ ask, onClose }: { ask: Ask; onClose: () => void }) {
             )}
             {preview && (preview.not_undone?.length ?? 0) > 0 && (
               <NotUndoneList items={preview.not_undone!} testid="rewind-not-undone" className="mt-3" />
+            )}
+            {preview && way !== "files" && started.length > 0 && (
+              <div className="mt-3 rounded-lg border border-line bg-sunken px-3 py-2" data-testid="rewind-agents">
+                <p className="text-caption font-medium text-warn">{plural(started.length, "agent")} started by what you go back over</p>
+                <ul className="mt-1 flex flex-col gap-1.5">
+                  {started.map((a) => (
+                    <li key={a.id} className="flex min-w-0 flex-col" data-testid="rewind-agent" data-status={a.status} data-landed={a.landed ?? ""}>
+                      <span className="flex min-w-0 items-baseline gap-2 text-caption">
+                        <span className="min-w-0 truncate font-medium">{a.title}</span>
+                        <span className="shrink-0 text-micro text-muted" data-testid="rewind-agent-state">{STATE_WORD[agentState(a).watch]}</span>
+                      </span>
+                      <span className="min-w-0 break-words font-mono text-micro text-muted" title={a.worktree ?? undefined} data-testid="rewind-agent-work">{workOf(a)}</span>
+                    </li>
+                  ))}
+                </ul>
+                {running.length > 0 ? (
+                  <Seg
+                    rows kind="choice" label="What happens to the agents that still work" testid="rewind-agents-way" className="mt-2"
+                    value={agentsWay} onChange={setAgentsWay}
+                    options={[
+                      { value: "leave", testid: "rewind-agents-leave", name: "Leave them going", className: "flex w-full flex-col items-start gap-0.5 rounded-lg border border-transparent px-3 py-1.5 text-left hover:bg-hover aria-checked:border-line-strong aria-checked:bg-raised", label: (<><span className="text-ui font-medium">Leave them going</span><span className="text-caption text-muted">They keep working and report here as before.</span></>) },
+                      { value: "stop", testid: "rewind-agents-stop", name: `Stop ${plural(running.length, "agent")}`, className: "flex w-full flex-col items-start gap-0.5 rounded-lg border border-transparent px-3 py-1.5 text-left hover:bg-hover aria-checked:border-line-strong aria-checked:bg-raised", label: (<><span className="text-ui font-medium">Stop the {running.length === 1 ? "one that works" : `${running.length} that work`}</span><span className="text-caption text-muted">A worktree with work in it stays, and is listed in Settings under Leftovers.</span></>) },
+                    ]}
+                  />
+                ) : <p className="mt-1 text-caption text-muted">None works now. Their branches and worktrees stay as they are.</p>}
+              </div>
             )}
             {error && <p className="mt-2 text-caption text-danger" role="alert" data-testid="rewind-error">{error}</p>}
           </div>

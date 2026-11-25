@@ -266,3 +266,14 @@ test("the prompt typed after a rewind is a version of the one it replaced, wheth
     expect(step!.map.get(fresh.parent)!.map((e) => e.id)).toEqual([old.id, fresh.id]);
   }
 });
+
+test("a rewind can still be undone after what agents report, and not after a prompt", () => {
+  const from = all.length;
+  ev("user", { text: "before" });
+  ev("note", { kind: "rewound", model: false, mode: "chat", text: "You rewound the chat." });
+  ev("user", { text: "an agent's report", origin: "harness" });
+  const undoable = (events: StoredEvent[]) => flat(buildRows(undefined, events, nextSiblings(undefined, all).map, false, input)).find((r) => r.kind === "checkpoint")!.undoable;
+  expect(undoable(all.slice(from))).toBe(true);
+  ev("user", { text: "a new message" });
+  expect(undoable(all.slice(from))).toBe(false);
+});

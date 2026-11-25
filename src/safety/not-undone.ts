@@ -18,7 +18,7 @@ import { risksOf } from "./risk.ts";
 import { name as base, unwrap } from "./risk-words.ts";
 import { splitCommand } from "./shell.ts";
 
-export type UndoneKind = "remote" | "git" | "mcp" | "outside" | "ignored" | "skipped";
+export type UndoneKind = "remote" | "git" | "mcp" | "outside" | "ignored" | "skipped" | "agent";
 // `n`: the turn's place among the session's turns (its first is 1), `turn`: its start's seq.
 export type Undone = { n: number; turn: number; seq: number; call: string; tool: string; kind: UndoneKind; line: string };
 // A path inside the folder a call deleted or wrote: whether it is "not undone" depends on whether the snapshot held it.
@@ -26,6 +26,8 @@ export type Touched = { n: number; turn: number; seq: number; call: string; tool
 export type McpFact = MarkMcp & { hinted?: boolean };
 export type LedgerAsk = Pick<MarkArgs, "session" | "workspace" | "scope" | "machine" | "home" | "tools" | "runCode" | "mcpCall" | "shell" | "jobs"> & {
   mcp: McpFact[];
+  // The calls that started an agent (the agents' records name them): each is an "agent" item, its words the caller's.
+  spawned: string[];
   // The events from this seq on (inclusive).
   from: number;
 };
@@ -161,8 +163,11 @@ export function ledgerOf(db: Database, a: LedgerAsk): Ledger {
   const folders = a.jobs && !a.machine ? foldersOf(a.jobs) : new Map<string, string>();
   const own = [a.workspace, a.scope.workspace, ...a.scope.scratch];
   const items: Undone[] = [], touched: Touched[] = [];
+  const spawned = new Set(a.spawned);
   for (const u of uses) {
     const at = { n: u.n, turn: u.turn, seq: u.seq, call: u.id };
+    // (An agent exists whatever its call's result said: its record is the fact.)
+    if (spawned.has(u.id)) items.push({ ...at, tool: u.name, kind: "agent", line: "" });
     if (failed.has(u.id) || items.length >= ITEMS_MAX) continue;
     const { cls, name } = classOf(u, a, tools, folders);
     const say = (kind: UndoneKind, line: string) => { if (!items.some((i) => i.call === u.id && i.line === line)) items.push({ ...at, tool: name, kind, line }); };

@@ -3,6 +3,7 @@
 // itself only, and a row whose content did not change stays the same object,
 // so the page renders it once (Transcript.tsx keeps rows in memo components).
 // Pure: the same inputs give the same rows.
+import { shownAsPrompt } from "../../../src/core/owner.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import type { StoredEvent, ToolResultBlock } from "../../../src/core/types.ts";
 import { addCall, addMeta, byFamily, isAside, sameStep, setResult, type Step } from "./work.ts";
@@ -52,6 +53,7 @@ export type Built = {
   uses: Map<string, string>; // tool call id -> the id of its row
   work: string | null; // the run of tool calls the next call joins: the newest row, while it is one
   checkpoint: string | null; // the last checkpoint row while it may still be undone
+  rewind: string | null; // the last rewind row while it may still be undone
   refusal: string | null; // the refusal the previous event was
   failed: string | null; // the footer of a failed turn while its failures follow it
   // The footer of a restart while nothing was said since: the next restart's footer stands for it too.
@@ -86,7 +88,7 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
   const append = !!prev && common === prev.events.length && (events.length > common || prev.siblings === siblings);
   const b: Built = append
     ? { ...prev!, events, siblings, blocks: prev!.blocks.slice(), reply: prev!.reply.slice(), pending: prev!.pending.slice() }
-    : { events, siblings, previewing, blocks: [], at: new Map(), pending: [], reply: [], uses: new Map(), work: null, checkpoint: null, refusal: null, failed: null, restart: null };
+    : { events, siblings, previewing, blocks: [], at: new Map(), pending: [], reply: [], uses: new Map(), work: null, checkpoint: null, rewind: null, refusal: null, failed: null, restart: null };
   const owned = new Set<number>(); // blocks this build made or copied
   const own = (j: number) => {
     if (!owned.has(j)) { b.blocks[j] = (b.blocks[j] ?? []).slice(); owned.add(j); }
@@ -121,6 +123,11 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
     if (b.checkpoint && !(e.kind === "note" && !e.data.model)) {
       patch(b.checkpoint, (r) => (r.undoable ? { undoable: false } : null));
       b.checkpoint = null;
+    }
+    // A rewind is undone until a prompt is sent (the daemon's rule): what agents report meanwhile does not end it.
+    if (b.rewind && shownAsPrompt(e)) {
+      patch(b.rewind, (r) => (r.undoable ? { undoable: false } : null));
+      b.rewind = null;
     }
     // The failures of a turn follow its end in the record; anything else ends the run.
     if (e.kind !== "error") b.failed = null;
@@ -220,11 +227,11 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
       // Memory and hook notes fold into the turn's notes on its footer: quiet at six stations.
       if (e.data.hook || e.data.memory) b.pending.push(e);
       else if (e.data.kind === "summary") row("checkpoint", { undoable: false });
-      // A rewind is undone while nothing the model reads came after it.
+      // A rewind is undone while no prompt came after it.
       else if (e.data.kind === "rewound") {
         const undoable = !previewing;
         row("checkpoint", { undoable });
-        if (undoable) b.checkpoint = e.id;
+        if (undoable) b.rewind = e.id;
       }
       else if (e.data.kind === "fork") row("fork");
       else if (e.data.kind === "peer_refused") row("peer_refused");
