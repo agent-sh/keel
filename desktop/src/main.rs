@@ -176,7 +176,7 @@ impl Shell {
 
     fn show_tray(&self) {
         if let Some(t) = self.tray.borrow().as_ref() {
-            t.show(Shown { needs: self.needs.get(), list: self.listed.borrow().clone(), unread: self.unread.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get(), keys: self.keys() });
+            t.show(Shown { needs: self.needs.get(), list: self.listed.borrow().clone(), unread: self.unread.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get(), keys: self.keys(), panel: t.shown().panel });
             self.note_done("tray", serde_json::json!({ "needs": self.needs.get(), "listed": self.listed.borrow().iter().map(|l| l.id.clone()).collect::<Vec<_>>(), "unread": self.unread.get(), "paused": self.paused(), "headline": tray::headline(&t.shown()) }));
         }
     }

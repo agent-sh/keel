@@ -292,6 +292,9 @@ check "the window stayed: the page was not loaded again" "[ \"\$(logged load)\" 
 # --- 2b. the tray lists the sessions that need the owner, from the frame the count comes in
 # (The menu's lines are read from the stand-in host's side: the items the app offers over the menu protocol.)
 sessions_lines() { menu | grep -o "'label': <'[^']*'>" | sed "s/^'label': <'//; s/'>\$//" | grep -F ' · ' || true; }
+# The dot before a menu line: its picture as the menu protocol carries it ("icon-data", a PNG; see dot.py).
+# Prints "W x H #middle #ring #corner" and keeps the PNG in the shots folder as tray-dot-NAME.png; nothing for a line with no picture.
+dot_of() { menu | python3 "$HERE/dot.py" "$1" "$D/shots/tray-dot-$2.png"; }
 item_of() { menu | py 'import re,sys
 t = sys.stdin.read()
 m = re.search(r"\((\d+), \{[^}]*?\x27label\x27: <\x27" + re.escape(sys.argv[1]) + r"[^\x27]*\x27>", t)
@@ -305,6 +308,10 @@ for t in "Desktop: first to answer" "Desktop: second to answer"; do
 done
 check "two sessions that need an answer show two lines with their titles and the state word, and the count says two" "wait_for 30 \"tray ToolTip | grep -q '2 need you'\" && wait_for 10 '[ \"\$(sessions_lines | grep -c \"Needs you\$\")\" = 2 ]' && sessions_lines | grep -q '^Desktop: first to answer · Needs you\$' && sessions_lines | grep -q '^Desktop: second to answer · Needs you\$'"
 shot 02b-tray-list-light
+# The dot before each line: the state's color, from the palette (the stand-in host tells no panel theme here,
+# so the light theme's set: a yellow with its amber ring). The lines that are not sessions have none.
+check "each session that needs an answer has the state's yellow dot, 32 by 32, with its amber ring" "[ \"\$(dot_of 'Desktop: first to answer' need-first)\" = '32 x 32 #ebb500/255 #966800/255 #000000/0' ] && [ \"\$(dot_of 'Desktop: second to answer' need-second)\" = '32 x 32 #ebb500/255 #966800/255 #000000/0' ]"
+check "the menu's other lines have no dot" "[ -z \"\$(dot_of 'Open Keel' none)\" ] && [ -z \"\$(dot_of 'New Session' none)\" ]"
 mark=$(logged present)
 pick "$(item_of 'Desktop: second to answer')"
 check "a click on a line shows the window on that session" "wait_for 15 \"last present | grep -q '/s/$second'\" && wait_for 10 \"geometry | grep -q 'second to answer'\""
@@ -319,6 +326,7 @@ left=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: left un
 wait_for 20 "tray ToolTip | grep -q 'Nothing needs you'"
 api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$left\"}" POST > /dev/null
 check "what is unread is listed, with its own word, and Mark All as Read is offered" "wait_for 20 'sessions_lines | grep -q \"^Desktop: left unread · Unread\$\"' && menu | grep -q 'Mark All as Read'"
+check "the unread session's dot is not the yellow of one that needs an answer: the neutral grey" "[ \"\$(dot_of 'Desktop: left unread' unread)\" = '32 x 32 #8a909b/255 #8a909b/255 #000000/0' ]"
 pick "$(item_of 'Mark All as Read')"
 check "Mark All as Read reads them all: no line is left and the item is gone" "wait_for 15 '! sessions_lines | grep -q \"left unread\"' && ! menu | grep -q 'Mark All as Read'"
 shot 02b-tray-list-after-light

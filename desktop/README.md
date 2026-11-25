@@ -80,7 +80,14 @@ started: the first page says so.
   session in the window. Mark All as Read is there while something is unread.
   The list comes in the same frame as the count (the daemon's `needs` event),
   so the two never differ, and it changes when that frame does. A title is
-  shown as one plain line, cut at 60 characters. Below the list the menu opens the
+  shown as one plain line, cut at 60 characters. Each line has the dot of its
+  state in front, in the colors of the page's state palette (yellow needs you,
+  blue works, the ink of the theme is unread): a small PNG per state and
+  panel theme, made once and sent as the menu's `icon-data`. The panel's theme
+  is read from the settings portal's color scheme and followed; where the
+  desktop does not say it, the yellow and blue of the light theme and a grey
+  for unread are used, which stand off both. `src/desktop-palette.test.ts`
+  holds the colors in `tray.rs` to the stylesheet's tokens. Below the list the menu opens the
   window, starts a session, pauses notifications for an hour, and quits. A
   press on the mark shows the window; the middle button starts a session. On a
   desktop with no tray host (GNOME without the AppIndicator extension) there

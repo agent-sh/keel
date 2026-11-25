@@ -4,7 +4,7 @@
 //! AppIndicator extension) shows nothing; `available` says which it is, and
 //! the shell then quits with its last window instead of hiding where no one
 //! can find it.
-use crate::daemon::{Link, Listed};
+use crate::daemon::{Dot, Link, Listed};
 use crate::shortcut::Keys;
 use gtk::prelude::*;
 use gtk::{cairo, gio, glib};
@@ -15,6 +15,9 @@ use std::rc::Rc;
 const ITEM_PATH: &str = "/StatusNotifierItem";
 const MENU_PATH: &str = "/StatusNotifierItem/Menu";
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
+const PORTAL: &str = "org.freedesktop.portal.Desktop";
+const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+const SETTINGS: &str = "org.freedesktop.portal.Settings";
 
 const ITEM_XML: &str = r#"<node><interface name="org.kde.StatusNotifierItem">
 <property name="Category" type="s" access="read"/><property name="Id" type="s" access="read"/>
@@ -67,6 +70,35 @@ pub enum Pick {
     QuitAll,
 }
 
+/// The panel's theme where the desktop tells it (the settings portal's color scheme), else unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Panel {
+    Unknown,
+    Light,
+    Dark,
+}
+
+impl Panel {
+    /// The portal's `color-scheme`: 1 is dark, 2 is light, 0 no preference.
+    pub fn of(scheme: u32) -> Self {
+        match scheme {
+            1 => Panel::Dark,
+            2 => Panel::Light,
+            _ => Panel::Unknown,
+        }
+    }
+}
+
+/// The dot before a session's line: its state, drawn for the panel it stands in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Icon {
+    pub dot: Dot,
+    pub panel: Panel,
+}
+
+/// One line of the menu: id, label (empty for a line), enabled, what it picks, the dot before it.
+pub type Item = (i32, String, bool, Option<Pick>, Option<Icon>);
+
 /// What the mark and its menu show.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shown {
@@ -83,6 +115,8 @@ pub struct Shown {
     pub elsewhere: bool,
     /// What the owner can do about the app's global shortcuts on this desktop.
     pub keys: Keys,
+    /// The panel's theme, which the dots are drawn for.
+    pub panel: Panel,
 }
 
 /// The first line of the menu and the mark's tooltip.
@@ -136,47 +170,119 @@ fn item_id(id: &str, taken: &[i32]) -> i32 {
 }
 
 /// The menu, top to bottom: id, label (empty for a line), enabled, what it picks.
-pub fn menu(s: &Shown) -> Vec<(i32, String, bool, Option<Pick>)> {
-    let mut m = vec![(1, headline(s), false, None), (2, String::new(), true, None)];
+pub fn menu(s: &Shown) -> Vec<Item> {
+    let mut m: Vec<Item> = vec![(1, headline(s), false, None, None), (2, String::new(), true, None, None)];
     // The sessions that wait, from the frame the count came in; none while the daemon is away.
     if s.link == Link::Up && !s.list.is_empty() {
         let mut taken: Vec<i32> = Vec::new();
         for l in &s.list {
             let id = item_id(&l.id, &taken);
             taken.push(id);
-            m.push((id, line(l), true, Some(Pick::Session(l.id.clone()))));
+            m.push((id, line(l), true, Some(Pick::Session(l.id.clone())), l.state.map(|dot| Icon { dot, panel: s.panel })));
         }
         if s.unread > 0 {
-            m.push((15, "Mark All as Read".into(), true, Some(Pick::MarkRead)));
+            m.push((15, "Mark All as Read".into(), true, Some(Pick::MarkRead), None));
         }
-        m.push((16, String::new(), true, None));
+        m.push((16, String::new(), true, None, None));
     }
-    m.push((3, "Open Keel".into(), true, Some(Pick::Open)));
+    m.push((3, "Open Keel".into(), true, Some(Pick::Open), None));
     match s.link {
         Link::Up => {
-            m.push((4, "New Session".into(), true, Some(Pick::New)));
-            m.push((5, String::new(), true, None));
-            m.push(if s.paused { (6, "Resume Notifications".into(), true, Some(Pick::Resume)) } else { (7, "Pause Notifications for an Hour".into(), true, Some(Pick::Pause)) });
+            m.push((4, "New Session".into(), true, Some(Pick::New), None));
+            m.push((5, String::new(), true, None, None));
+            m.push(if s.paused { (6, "Resume Notifications".into(), true, Some(Pick::Resume), None) } else { (7, "Pause Notifications for an Hour".into(), true, Some(Pick::Pause), None) });
             if s.elsewhere {
-                m.push((12, "Another Keel app shows the notifications".into(), false, None));
+                m.push((12, "Another Keel app shows the notifications".into(), false, None, None));
             }
         }
-        Link::Down if !s.refused => m.push((8, "Start Keel".into(), true, Some(Pick::Start))),
+        Link::Down if !s.refused => m.push((8, "Start Keel".into(), true, Some(Pick::Start), None)),
         Link::Down => {}
         Link::Restarting => {}
     }
     // The desktop's dialog for the app's global shortcuts: asked for, or shown to be changed.
     match s.keys {
-        Keys::Offer => m.push((13, "Set Global Shortcuts…".into(), true, Some(Pick::Shortcuts))),
-        Keys::Change => m.push((14, "Change Global Shortcuts…".into(), true, Some(Pick::Shortcuts))),
+        Keys::Offer => m.push((13, "Set Global Shortcuts…".into(), true, Some(Pick::Shortcuts), None)),
+        Keys::Change => m.push((14, "Change Global Shortcuts…".into(), true, Some(Pick::Shortcuts), None)),
         Keys::None | Keys::Held => {}
     }
-    m.push((9, String::new(), true, None));
-    m.push((10, "Quit".into(), true, Some(Pick::Quit)));
+    m.push((9, String::new(), true, None, None));
+    m.push((10, "Quit".into(), true, Some(Pick::Quit), None));
     if s.link == Link::Up {
-        m.push((11, "Quit and Stop the Daemon".into(), true, Some(Pick::QuitAll)));
+        m.push((11, "Quit and Stop the Daemon".into(), true, Some(Pick::QuitAll), None));
     }
     m
+}
+
+/// The state palette of ui/src/styles.css as sRGB (its --dot-* tokens, converted from oklch;
+/// src/desktop-palette.test.ts holds the two to each other). The first is the fill, the second the
+/// ring around it where the theme gives one (the light theme's yellow, which the rail's grey does not
+/// set off by its fill alone). The unread dot is the ink of the theme.
+fn dot_colors(i: Icon) -> ([u8; 3], Option<[u8; 3]>) {
+    let hex = |v: u32| [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+    match (i.dot, i.panel) {
+        (Dot::Work, Panel::Dark) => (hex(DARK_WORK), None),
+        (Dot::Need, Panel::Dark) => (hex(DARK_NEED), None),
+        (Dot::Unread, Panel::Dark) => (hex(DARK_UNREAD), None),
+        (Dot::Work, _) => (hex(LIGHT_WORK), None),
+        (Dot::Need, _) => (hex(LIGHT_NEED), Some(hex(LIGHT_NEED_EDGE))),
+        (Dot::Unread, Panel::Light) => (hex(LIGHT_UNREAD), None),
+        // A panel that does not say its theme: a grey that stands off both.
+        (Dot::Unread, Panel::Unknown) => (hex(NEUTRAL_UNREAD), None),
+    }
+}
+const LIGHT_WORK: u32 = 0x0071e0; // --dot-work
+const LIGHT_NEED: u32 = 0xebb500; // --dot-need
+const LIGHT_NEED_EDGE: u32 = 0x966800; // --dot-need-edge
+const LIGHT_UNREAD: u32 = 0x11161f; // --dot-unread (the ink, --fg)
+const DARK_WORK: u32 = 0x49a9ff; // --dot-work at night
+const DARK_NEED: u32 = 0xefcc36; // --dot-need at night
+const DARK_UNREAD: u32 = 0xf8f8f8; // --dot-unread at night
+const NEUTRAL_UNREAD: u32 = 0x8a909b;
+
+/// The dot's picture's side, in pixels: the menu draws its icons 16 wide, so twice that for a sharp screen.
+const DOT: i32 = 32;
+
+/// A dot as a PNG, which is what the menu's `icon-data` is. Made once for each state and panel.
+fn dot_png(i: Icon) -> Vec<u8> {
+    thread_local! { static MADE: RefCell<HashMap<Icon, Vec<u8>>> = RefCell::new(HashMap::new()); }
+    MADE.with(|m| m.borrow_mut().entry(i).or_insert_with(|| draw_dot(i).unwrap_or_default()).clone())
+}
+
+fn draw_dot(i: Icon) -> Option<Vec<u8>> {
+    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, DOT, DOT).ok()?;
+    {
+        let c = cairo::Context::new(&surface).ok()?;
+        let (fill, ring) = dot_colors(i);
+        let (mid, r) = (DOT as f64 / 2.0, DOT as f64 * 0.3);
+        let rgb = |c: &cairo::Context, v: [u8; 3]| c.set_source_rgb(v[0] as f64 / 255.0, v[1] as f64 / 255.0, v[2] as f64 / 255.0);
+        if let Some(edge) = ring {
+            rgb(&c, edge);
+            c.arc(mid, mid, r, 0.0, std::f64::consts::TAU);
+            c.fill().ok()?;
+            rgb(&c, fill);
+            c.arc(mid, mid, r - 2.0, 0.0, std::f64::consts::TAU);
+        } else {
+            rgb(&c, fill);
+            c.arc(mid, mid, r, 0.0, std::f64::consts::TAU);
+        }
+        c.fill().ok()?;
+    }
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let data = surface.data().ok()?;
+    // Cairo's premultiplied pixels in the machine's order, as the straight RGBA a PNG holds.
+    let mut rgba = Vec::with_capacity((DOT * DOT * 4) as usize);
+    for y in 0..DOT as usize {
+        for x in 0..DOT as usize {
+            let p = &data[y * stride + x * 4..y * stride + x * 4 + 4];
+            let px = u32::from_ne_bytes([p[0], p[1], p[2], p[3]]);
+            let a = (px >> 24) & 0xff;
+            let un = |v: u32| if a == 0 { 0 } else { ((v * 255 + a / 2) / a).min(255) as u8 };
+            rgba.extend_from_slice(&[un((px >> 16) & 0xff), un((px >> 8) & 0xff), un(px & 0xff), a as u8]);
+        }
+    }
+    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(&glib::Bytes::from_owned(rgba), gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, DOT, DOT, DOT * 4);
+    pixbuf.save_to_bufferv("png", &[]).ok()
 }
 
 /// The mark's name in the icon theme: a symbolic icon, so the panel paints it
@@ -270,7 +376,7 @@ pub struct Tray {
 
 impl Tray {
     pub fn new(conn: &gio::DBusConnection, symbolic: bool, on_pick: impl Fn(Pick) + 'static, on_host: impl Fn(bool) + 'static) -> Result<Self, glib::Error> {
-        let shown = Rc::new(RefCell::new(Shown { needs: 0, list: Vec::new(), unread: 0, paused: false, link: Link::Down, refused: false, elsewhere: false, keys: Keys::None }));
+        let shown = Rc::new(RefCell::new(Shown { needs: 0, list: Vec::new(), unread: 0, paused: false, link: Link::Down, refused: false, elsewhere: false, keys: Keys::None, panel: Panel::Unknown }));
         let revision = Rc::new(Cell::new(1u32));
         let available = Rc::new(Cell::new(false));
         let on_pick = Rc::new(on_pick);
@@ -310,13 +416,16 @@ impl Tray {
 
         let menu_info = gio::DBusNodeInfo::for_xml(MENU_XML)?.lookup_interface("com.canonical.dbusmenu").expect("the menu's interface");
         let (s, rev) = (shown.clone(), revision.clone());
-        let props = |label: &str, enabled: bool| -> HashMap<String, glib::Variant> {
+        let props = |label: &str, enabled: bool, icon: Option<Icon>| -> HashMap<String, glib::Variant> {
             let mut p = HashMap::new();
             if label.is_empty() {
                 p.insert("type".to_string(), "separator".to_variant());
             } else {
                 p.insert("label".to_string(), label.to_variant());
                 p.insert("enabled".to_string(), enabled.to_variant());
+                if let Some(icon) = icon.map(dot_png).filter(|png| !png.is_empty()) {
+                    p.insert("icon-data".to_string(), icon.to_variant());
+                }
             }
             p.insert("visible".to_string(), true.to_variant());
             p
@@ -329,27 +438,27 @@ impl Tray {
                     "GetLayout" => {
                         let parent = params.child_value(0).get::<i32>().unwrap_or(0);
                         let children: Vec<glib::Variant> = if parent == 0 {
-                            items.iter().map(|(id, label, on, _)| (*id, props(label, *on), Vec::<glib::Variant>::new()).to_variant()).collect()
+                            items.iter().map(|(id, label, on, _, icon)| (*id, props(label, *on, *icon), Vec::<glib::Variant>::new()).to_variant()).collect()
                         } else {
                             Vec::new()
                         };
                         let mut root = HashMap::new();
                         root.insert("children-display".to_string(), "submenu".to_variant());
                         let node = match items.iter().find(|i| i.0 == parent) {
-                            Some((id, label, on, _)) => (*id, props(label, *on), children),
+                            Some((id, label, on, _, icon)) => (*id, props(label, *on, *icon), children),
                             None => (0, root, children),
                         };
                         inv.return_value(Some(&(rev.get(), node).to_variant()));
                     }
                     "GetGroupProperties" => {
                         let ids = params.child_value(0).get::<Vec<i32>>().unwrap_or_default();
-                        let all: Vec<(i32, HashMap<String, glib::Variant>)> = items.iter().filter(|i| ids.is_empty() || ids.contains(&i.0)).map(|(id, label, on, _)| (*id, props(label, *on))).collect();
+                        let all: Vec<(i32, HashMap<String, glib::Variant>)> = items.iter().filter(|i| ids.is_empty() || ids.contains(&i.0)).map(|(id, label, on, _, icon)| (*id, props(label, *on, *icon))).collect();
                         inv.return_value(Some(&(all,).to_variant()));
                     }
                     "GetProperty" => {
                         let id = params.child_value(0).get::<i32>().unwrap_or(0);
                         let name = params.child_value(1).get::<String>().unwrap_or_default();
-                        let v = items.iter().find(|i| i.0 == id).and_then(|(_, label, on, _)| props(label, *on).remove(&name)).unwrap_or_else(|| "".to_variant());
+                        let v = items.iter().find(|i| i.0 == id).and_then(|(_, label, on, _, icon)| props(label, *on, *icon).remove(&name)).unwrap_or_else(|| "".to_variant());
                         inv.return_value(Some(&(v,).to_variant()));
                     }
                     "Event" => {
@@ -406,6 +515,11 @@ impl Tray {
                 on_host2(false);
             },
         );
+        let (c, sh, rev) = (conn.clone(), shown.clone(), revision.clone());
+        watch_panel(conn, move |panel| {
+            let now = sh.borrow().clone();
+            apply(&c, &sh, &rev, Shown { panel, ..now });
+        });
         Ok(Self { conn: conn.clone(), shown, revision, available })
     }
 
@@ -419,12 +533,48 @@ impl Tray {
     }
 
     pub fn show(&self, next: Shown) {
-        if *self.shown.borrow() == next {
+        // The panel's theme is the portal's to say, not the caller's.
+        let panel = self.shown.borrow().panel;
+        apply(&self.conn, &self.shown, &self.revision, Shown { panel, ..next });
+    }
+}
+
+/// Reads the desktop's color scheme from the settings portal and follows its changes. A desktop
+/// with no portal, or one that does not say, leaves the panel unknown.
+fn watch_panel(conn: &gio::DBusConnection, on: impl Fn(Panel) + 'static) {
+    let on = Rc::new(on);
+    let scheme = |v: &glib::Variant| -> Option<u32> {
+        let mut v = v.clone();
+        while v.type_().is_variant() {
+            v = v.as_variant()?;
+        }
+        v.get::<u32>()
+    };
+    let (read, again) = (on.clone(), on.clone());
+    conn.call(Some(PORTAL), PORTAL_PATH, SETTINGS, "Read", Some(&("org.freedesktop.appearance", "color-scheme").to_variant()), None, gio::DBusCallFlags::NONE, 3000, gio::Cancellable::NONE, move |r| {
+        if let Some(n) = r.ok().and_then(|v| v.child_value(0).as_variant()).and_then(|v| scheme(&v)) {
+            read(Panel::of(n));
+        }
+    });
+    #[allow(deprecated)]
+    let _ = conn.signal_subscribe(Some(PORTAL), Some(SETTINGS), Some("SettingChanged"), Some(PORTAL_PATH), Some("org.freedesktop.appearance"), gio::DBusSignalFlags::NONE, move |_, _, _, _, _, p| {
+        if p.child_value(1).get::<String>().as_deref() == Some("color-scheme") {
+            if let Some(n) = scheme(&p.child_value(2)) {
+                again(Panel::of(n));
+            }
+        }
+    });
+}
+
+/// Puts `next` on show: the mark and the menu are told what changed.
+fn apply(conn: &gio::DBusConnection, shown: &RefCell<Shown>, revision: &Cell<u32>, next: Shown) {
+    {
+        if *shown.borrow() == next {
             return;
         }
-        let before = self.shown.replace(next.clone());
+        let before = shown.replace(next.clone());
         let emit = |path: &str, iface: &str, name: &str, v: Option<glib::Variant>| {
-            let _ = self.conn.emit_signal(None, path, iface, name, v.as_ref());
+            let _ = conn.emit_signal(None, path, iface, name, v.as_ref());
         };
         let item = "org.kde.StatusNotifierItem";
         emit(ITEM_PATH, item, "NewIcon", None);
@@ -433,8 +583,8 @@ impl Tray {
         emit(ITEM_PATH, item, "NewToolTip", None);
         emit(ITEM_PATH, item, "NewStatus", Some((if next.needs > 0 && next.link == Link::Up { "NeedsAttention" } else { "Active" },).to_variant()));
         if menu(&before) != menu(&next) {
-            self.revision.set(self.revision.get() + 1);
-            emit(MENU_PATH, "com.canonical.dbusmenu", "LayoutUpdated", Some((self.revision.get(), 0i32).to_variant()));
+            revision.set(revision.get() + 1);
+            emit(MENU_PATH, "com.canonical.dbusmenu", "LayoutUpdated", Some((revision.get(), 0i32).to_variant()));
         }
     }
 }
@@ -444,11 +594,11 @@ mod tests {
     use super::*;
 
     fn s(needs: u32, paused: bool, link: Link) -> Shown {
-        Shown { needs, list: Vec::new(), unread: 0, paused, link, refused: false, elsewhere: false, keys: Keys::None }
+        Shown { needs, list: Vec::new(), unread: 0, paused, link, refused: false, elsewhere: false, keys: Keys::None, panel: Panel::Unknown }
     }
 
     fn listed(id: &str, title: &str, word: &str) -> Listed {
-        Listed { id: id.into(), title: title.into(), word: word.into() }
+        Listed { id: id.into(), title: title.into(), state: Some(Dot::Need), word: word.into() }
     }
 
     #[test]
@@ -477,8 +627,8 @@ mod tests {
         assert_eq!(picks(&s(2, false, Link::Restarting)), [Pick::Open, Pick::Quit]);
         // Another program attached first and takes the alerts: the menu says so, on a line that does nothing.
         let told = menu(&Shown { elsewhere: true, ..s(0, false, Link::Up) });
-        assert!(told.iter().any(|(_, label, enabled, pick)| label == "Another Keel app shows the notifications" && !enabled && pick.is_none()));
-        assert!(!menu(&s(0, false, Link::Up)).iter().any(|(_, label, _, _)| label.starts_with("Another")));
+        assert!(told.iter().any(|(_, label, enabled, pick, _)| label == "Another Keel app shows the notifications" && !enabled && pick.is_none()));
+        assert!(!menu(&s(0, false, Link::Up)).iter().any(|(_, label, _, _, _)| label.starts_with("Another")));
         // The desktop's global shortcuts: offered where it has them, shown to be changed once held, with the daemon up or not.
         assert_eq!(picks(&Shown { keys: Keys::Offer, ..s(0, false, Link::Up) }), [Pick::Open, Pick::New, Pick::Pause, Pick::Shortcuts, Pick::Quit, Pick::QuitAll]);
         assert_eq!(picks(&Shown { keys: Keys::Change, ..s(0, false, Link::Down) }), [Pick::Open, Pick::Start, Pick::Shortcuts, Pick::Quit]);
@@ -515,6 +665,55 @@ mod tests {
         let id = |l: Vec<Listed>, sid: &str| menu(&some(l, 0, Link::Up)).into_iter().find(|i| i.3 == Some(Pick::Session(sid.into()))).map(|i| i.0);
         assert_eq!(id(vec![listed("a", "A", "w"), listed("b", "B", "w")], "b"), id(vec![listed("b", "B", "w")], "b"));
         assert_ne!(item_id("a", &[]), item_id("a", &[item_id("a", &[])]));
+    }
+
+    #[test]
+    fn a_session_line_has_the_dot_of_its_state_and_nothing_else_has() {
+        let line = |state: Option<Dot>, panel: Panel| {
+            let l = Listed { state, ..listed("s1", "Fix the build", "w") };
+            menu(&Shown { list: vec![l], panel, ..s(1, false, Link::Up) })
+        };
+        let m = line(Some(Dot::Work), Panel::Dark);
+        assert_eq!(m.iter().filter_map(|i| i.4).collect::<Vec<_>>(), [Icon { dot: Dot::Work, panel: Panel::Dark }]);
+        assert!(m.iter().find(|i| i.3 == Some(Pick::Session("s1".into()))).is_some_and(|i| i.4.is_some()));
+        // A state this app does not know has no dot, and the panel's theme changes the menu, so a host draws it again.
+        assert!(line(None, Panel::Dark).iter().all(|i| i.4.is_none()));
+        assert_ne!(line(Some(Dot::Need), Panel::Dark), line(Some(Dot::Need), Panel::Light));
+        assert_eq!(Panel::of(1), Panel::Dark);
+        assert_eq!(Panel::of(2), Panel::Light);
+        assert_eq!(Panel::of(0), Panel::Unknown);
+        assert_eq!(Dot::of("unread"), Some(Dot::Unread));
+        assert_eq!(Dot::of("fail"), None);
+    }
+
+    // The dot as a host reads it: a PNG of the menu's size, in the palette's colour of the state.
+    #[test]
+    fn the_dots_are_pngs_in_the_colours_of_the_state_palette() {
+        let loader = |png: &[u8]| {
+            let pb = gtk::gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(png.to_vec())).expect("a PNG");
+            (pb.width(), pb.height(), pb.pixel_bytes().expect("pixels").to_vec(), pb.n_channels())
+        };
+        let at = |px: &[u8], ch: i32, x: i32, y: i32| px[((y * DOT + x) * ch) as usize..][..ch as usize].to_vec();
+        for (dot, panel, want) in [
+            (Dot::Work, Panel::Light, [0x00, 0x71, 0xe0]),
+            (Dot::Work, Panel::Dark, [0x49, 0xa9, 0xff]),
+            (Dot::Need, Panel::Light, [0xeb, 0xb5, 0x00]),
+            (Dot::Need, Panel::Dark, [0xef, 0xcc, 0x36]),
+            (Dot::Unread, Panel::Light, [0x11, 0x16, 0x1f]),
+            (Dot::Unread, Panel::Dark, [0xf8, 0xf8, 0xf8]),
+        ] {
+            let (w, h, px, ch) = loader(&dot_png(Icon { dot, panel }));
+            assert_eq!((w, h), (DOT, DOT));
+            assert_eq!(&at(&px, ch, DOT / 2, DOT / 2)[..3], want, "{dot:?} on {panel:?}");
+            // Round: the corner is clear.
+            assert_eq!(at(&px, ch, 0, 0)[3], 0);
+        }
+        // The light theme's yellow has its amber ring, where the rail's grey does not set the fill off.
+        let (_, _, px, ch) = loader(&dot_png(Icon { dot: Dot::Need, panel: Panel::Light }));
+        assert_eq!(&at(&px, ch, DOT / 2 + (DOT as f64 * 0.3) as i32 - 1, DOT / 2)[..3], [0x96, 0x68, 0x00]);
+        // Made once: the same bytes each time.
+        let i = Icon { dot: Dot::Work, panel: Panel::Unknown };
+        assert_eq!(dot_png(i), dot_png(i));
     }
 
     #[test]

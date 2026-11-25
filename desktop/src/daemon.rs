@@ -60,11 +60,35 @@ impl Link {
     }
 }
 
-/// A session the tray's menu lists: its id, its title and the word for its state, as the daemon says them.
+/// The state of a listed session, as the frame says it: the three the list is made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Dot {
+    /// It waits on the owner.
+    Need,
+    /// An alert of it is unread.
+    Unread,
+    /// It works.
+    Work,
+}
+
+impl Dot {
+    pub fn of(state: &str) -> Option<Self> {
+        match state {
+            "need" => Some(Dot::Need),
+            "unread" => Some(Dot::Unread),
+            "work" => Some(Dot::Work),
+            _ => None,
+        }
+    }
+}
+
+/// A session the tray's menu lists: its id, its title, its state and the word for it, as the daemon says them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Listed {
     pub id: String,
     pub title: String,
+    /// None for a state this app does not know: the line has no dot.
+    pub state: Option<Dot>,
     pub word: String,
 }
 
@@ -76,7 +100,7 @@ fn listed(v: &Value) -> Vec<Listed> {
     let s = |l: &Value, k: &str| l.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     v.get("list")
         .and_then(Value::as_array)
-        .map(|a| a.iter().map(|l| Listed { id: s(l, "id"), title: s(l, "title"), word: s(l, "word") }).filter(|l| crate::links::page_path(&format!("/s/{}", l.id)).is_some()).take(LISTED).collect())
+        .map(|a| a.iter().map(|l| Listed { id: s(l, "id"), title: s(l, "title"), state: Dot::of(&s(l, "state")), word: s(l, "word") }).filter(|l| crate::links::page_path(&format!("/s/{}", l.id)).is_some()).take(LISTED).collect())
         .unwrap_or_default()
 }
 
@@ -615,7 +639,7 @@ mod tests {
         match told("needs", &format!(r#"{{"n":2,"unread":4,"list":[{{"id":"../x","title":"bad","word":"w"}},{many}]}}"#), "") {
             Some(Event::Needs { n, unread, list }) => {
                 assert_eq!((n, unread, list.len()), (2, 4, 5));
-                assert_eq!(list[0], Listed { id: "s0".into(), title: "T0".into(), word: "Needs you".into() });
+                assert_eq!(list[0], Listed { id: "s0".into(), title: "T0".into(), state: Some(Dot::Need), word: "Needs you".into() });
             }
             other => panic!("{other:?}"),
         }
