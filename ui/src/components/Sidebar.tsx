@@ -11,7 +11,7 @@
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sun, SunMoon, Tag, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, ListFilter, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sun, SunMoon, Tag, X } from "lucide-react";
 import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { composing, runCommand } from "../lib/keys.ts";
@@ -613,7 +613,7 @@ function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } })
 // (the band of the panel's color under it is paint, not cover: a row whose edge it touches is read whole).
 const coverOf = (root: HTMLElement) => {
   const find = root.querySelector<HTMLElement>(":scope > .k-find");
-  if (!find || getComputedStyle(find).position !== "sticky") return "0px";
+  if (!find || !find.offsetHeight || getComputedStyle(find).position !== "sticky") return "0px";
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
   return `${-Math.ceil(find.offsetHeight + 0.25 * rem)}px 0px 0px 0px`;
 };
@@ -664,6 +664,18 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
   const narrowScreen = usePhoneWidth();
   // The find's height, which the observer leaves out on a phone, goes with the text size.
   const scale = useUI((x) => x.scale);
+  // ... and with the find's coming and going: a slim drawer keeps it behind an icon (it has no height then).
+  const [cover, setCover] = useState("0px");
+  useEffect(() => {
+    const root = scrollerOf(nav.current);
+    const find = root?.querySelector<HTMLElement>(":scope > .k-find");
+    if (!root || !find) return setCover("0px");
+    const look = () => setCover(coverOf(root));
+    look();
+    const ro = new ResizeObserver(look);
+    ro.observe(find);
+    return () => ro.disconnect();
+  }, [nav, narrowScreen, scale]);
   useEffect(() => {
     const root = scrollerOf(nav.current);
     if (!root || !ids.length) return setOut([]);
@@ -673,7 +685,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
     const seen = new Map<Element, boolean>();
     let at: (Element | null)[] = [], frame = 0;
     const say = () => { const next = ids.filter((_, i) => (at[i] ? seen.get(at[i]!) === false : true)); setOut((was) => (was.join(" ") === next.join(" ") ? was : next)); };
-    const io = new IntersectionObserver((es) => { for (const e of es) seen.set(e.target, e.intersectionRatio > 0.99); say(); }, { root, rootMargin: coverOf(root), threshold: [0, 1] });
+    const io = new IntersectionObserver((es) => { for (const e of es) seen.set(e.target, e.intersectionRatio > 0.99); say(); }, { root, rootMargin: cover, threshold: [0, 1] });
     // The rows are looked for again when the list draws others (a fold, a group, a row that came).
     const watch = () => {
       frame = 0;
@@ -688,7 +700,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
     const mo = new MutationObserver(() => { if (!frame) frame = requestAnimationFrame(watch); });
     mo.observe(root, { childList: true, subtree: true });
     return () => { io.disconnect(); mo.disconnect(); cancelAnimationFrame(frame); };
-  }, [key, nav, narrowScreen, scale]);
+  }, [key, nav, narrowScreen, scale, cover]);
   // While the hand is on the list the strip stands as it was: it never grows over the row under the pointer.
   const held = useContext(HandCtx).held;
   const kept = useRef(found);
@@ -1384,6 +1396,10 @@ function useFootFit(open: boolean) {
   return ref;
 }
 
+// The room, in fingers' heights, a phone's drawer keeps for its list before it slims its chrome: the find, the
+// counts and the folder's head, and eight rows.
+const SLIM_TAPS = 11;
+
 export function Sidebar({ open }: { open: boolean }) {
   const foot = useFootFit(open);
   const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts && !e.read_ts).length);
@@ -1416,10 +1432,14 @@ export function Sidebar({ open }: { open: boolean }) {
     el.style.overflow = "clip";
     return () => { el.style.height = ""; el.style.overflow = ""; };
   }, [hand.held]);
-  // A phone's drawer with little room for its rows: room for the find and three rows is the least it
-  // keeps, and below that its acts become a row of icons (bridge.css, data-short). It stays so until
-  // the drawer is taller than it was when it folded them.
+  // A phone's drawer with little room for its rows: room for the find, the counts and eight rows is the
+  // least it keeps, and below that its chrome is slim (bridge.css, data-short): the acts are a row of
+  // icons with the filter behind one of them, the brand is gone and the foot is one row. It stays so
+  // until the drawer is taller than it was when it slimmed.
   const [short, setShort] = useState<number | null>(null);
+  // The filter, asked for from its icon while the drawer is slim (a filter in use stays in view by itself).
+  const [finding, setFinding] = useState(false);
+  useEffect(() => { if (short === null) setFinding(false); }, [short]);
   useLayoutEffect(() => {
     const el = aside.current;
     if (!el || !open || !phone()) return setShort(null);
@@ -1427,7 +1447,7 @@ export function Sidebar({ open }: { open: boolean }) {
       const list = el.querySelector<HTMLElement>(".k-list-scroll");
       if (!list || el.querySelector(".k-find:focus-within")) return;
       const tap = parseFloat(getComputedStyle(el).getPropertyValue("--spacing-tap")) * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
-      setShort((was) => (was !== null ? (el.clientHeight > was ? null : was) : list.clientHeight < 4 * tap ? el.clientHeight : null));
+      setShort((was) => (was !== null ? (el.clientHeight > was ? null : was) : list.clientHeight < SLIM_TAPS * tap ? el.clientHeight : null));
     };
     look();
     const ro = new ResizeObserver(look);
@@ -1452,7 +1472,7 @@ export function Sidebar({ open }: { open: boolean }) {
   );
 
   return (
-    <aside ref={aside} className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-narrow={(open && rail.narrow) || undefined} data-short={short !== null || undefined} data-testid="sidebar" aria-label="Sessions" style={open && !phone() ? { width: rail.over ? listWidth() : rail.width } : undefined}>
+    <aside ref={aside} className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-narrow={(open && rail.narrow) || undefined} data-short={short !== null || undefined} data-find={(short !== null && finding) || undefined} data-testid="sidebar" aria-label="Sessions" style={open && !phone() ? { width: rail.over ? listWidth() : rail.width } : undefined}>
       <div className="k-rail-brand">
         <span className="k-logo" data-live={link.live || undefined} title={link.word}><Logo /></span>
         <span className="k-brand-name">Keel</span>
@@ -1487,6 +1507,13 @@ export function Sidebar({ open }: { open: boolean }) {
           <Search /><span className="k-act-label">Search and commands</span>{open && <Kbd keys="mod+k" className="k-act-key ml-auto" />}
         </button>
         {/* The helper: one conversation kept above the sessions (src/helper/). */}
+        {/* Where the drawer is slim the filter is behind this icon until it is used (bridge.css, k-act-filter). */}
+        <button type="button" className="k-act k-act-filter" data-testid="open-filter" aria-label="Filter or switch to Archived" aria-pressed={finding} title="Filter sessions, or show the archived ones" onClick={() => {
+          setFinding(!finding);
+          if (!finding) requestAnimationFrame(() => aside.current?.querySelector<HTMLInputElement>('[data-testid="list-filter"]')?.focus());
+        }}>
+          <ListFilter /><span className="k-act-label">Filter sessions</span>
+        </button>
         <button type="button" className="k-act" data-testid="open-helper" aria-label={helperName} title={`${helperName} (Ctrl J)`} aria-current={onHelper ? "page" : undefined} onClick={() => void openHelper().catch(reportError)}>
           <HelperFace size="rail" testid="helper-rail-face" /><span className="k-act-label" data-testid="helper-rail-name">{helperName}</span>{open && <Kbd keys="mod+j" className="k-act-key ml-auto" />}
         </button>

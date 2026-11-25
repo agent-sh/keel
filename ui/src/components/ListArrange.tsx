@@ -79,7 +79,7 @@ export function ListFind({ q, setQ, narrow }: { q: string; setQ: (q: string) => 
   const changed = a.group !== DEFAULT.group || a.sort !== DEFAULT.sort || a.hideDone !== DEFAULT.hideDone || a.lines !== DEFAULT.lines;
   const radio = (on: boolean) => <span className="grid w-3.5 shrink-0 place-items-center">{on && <Check className="size-3.5 text-accent" />}</span>;
   return (
-    <div className="k-find" data-testid="list-find">
+    <div className="k-find" data-testid="list-find" data-on={q ? "" : undefined}>
       <Search aria-hidden="true" className="k-find-icon" />
       <input
         value={q}

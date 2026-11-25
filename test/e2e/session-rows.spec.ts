@@ -344,6 +344,10 @@ test("on a phone at a large text size, the find, the list and the names at its f
         const find = page.getByTestId("list-filter");
         const strip = page.getByTestId("need-strip");
         await expect(strip).toBeVisible();
+        // A slim drawer keeps the find behind an icon until it is asked for.
+        const opener = page.getByTestId("open-filter");
+        if (await opener.isVisible()) await opener.tap();
+        await expect(find).toBeVisible();
         if (keyboard) {
           await find.tap();
           await page.setViewportSize({ width: 390, height: height - keyboard });

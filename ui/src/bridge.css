@@ -106,6 +106,7 @@
 .k-act.k-alert { color: var(--st-fail-ink); }
 /* A row's shortcut is said where the hand is: three chips on three rows read as a column of noise
    every second the list is open. They keep their room, so nothing moves when one shows. */
+.k-rail .k-rail-acts .k-act-filter { display: none; }
 .k-rail-acts .k-act-key { opacity: 0; transition: opacity var(--dur-quick); }
 .k-rail-acts .k-act:hover .k-act-key, .k-rail-acts .k-act:focus-visible .k-act-key { opacity: 1; }
 .k-act-label { display: none; }
@@ -310,13 +311,29 @@
      find, the rows and the names at their foot: its head and its foot step aside until it lets go. */
   .k-rail[data-short] { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; }
   .k-rail[data-short] > * { grid-column: 1 / -1; }
-  .k-rail[data-short] > .k-rail-brand { grid-area: 1 / 1; padding-right: 0; }
-  .k-rail[data-short] .k-brand-name { display: none; }
-  .k-rail[data-short] > .k-rail-acts { grid-area: 1 / 2; align-self: center; flex-direction: row; padding: 0 0.625rem 0 0.25rem; }
+  .k-rail[data-short] > .k-rail-brand { grid-area: 1 / 1; height: auto; padding: var(--spacing-band) 0 0 0.375rem; }
+  .k-rail[data-short] .k-brand-name, .k-rail[data-short] .k-logo { display: none; }
+  .k-rail[data-short] > .k-rail-acts { grid-area: 1 / 2; align-self: end; flex-direction: row; padding: var(--spacing-band) 0.375rem 0 0; }
   .k-rail[data-short] > .k-rail-body { grid-row: 3; min-height: 0; }
   .k-rail[data-short] .k-rail-acts .k-act { flex: 1 1 0; justify-content: center; min-width: 2rem; padding: 0; }
   .k-rail[data-short] .k-rail-acts :is(.k-act-label, .k-act-key) { display: none; }
+  .k-rail[data-short] .k-rail-acts .k-act-filter { display: inline-flex; }
   .k-rail[data-short] .k-rail-acts .k-act-mark { position: absolute; right: 0.25rem; top: 0.25rem; width: 0.5rem; height: 0.5rem; padding: 0; border-radius: 50%; overflow: hidden; color: transparent; }
+  /* The filter and the tabs are behind its icon until used: it stays while it holds words, has the keyboard or was asked for. */
+  .k-rail[data-short]:not([data-find]) .k-find:not(:focus-within, [data-on]) { display: none; }
+  /* The Sessions and Archived tabs go with it, unless Archived is the one shown. */
+  .k-rail[data-short]:not([data-find]) .k-list-tabs:not(:has([role="tab"]:last-child[aria-selected="true"])) { display: none; }
+  /* The foot is one row of icons: the theme is Settings' to change, and the drawer is as wide as five fingers need. */
+  .k-rail[data-short] > .k-rail-foot, .k-rail[data-short] > .k-rail-acts { gap: 0; }
+  .k-rail[data-short] > .k-rail-foot { flex-wrap: nowrap; padding-block: 0.125rem max(0.125rem, env(safe-area-inset-bottom)); padding-inline: 0.375rem; }
+  .k-rail[data-short] > .k-rail-foot > .k-act { flex: 1 1 0; justify-content: center; padding-inline: 0; }
+  .k-rail[data-short] > .k-rail-foot > .k-act svg { width: 1.25rem; height: 1.25rem; }
+  /* The rows keep their room: a calm list says nothing in a line of its own, and a row's two lines stand closer. */
+  .k-rail[data-short] .k-sum:has(> .k-sum-calm:not([hidden])) { display: none; }
+  .k-rail[data-short] .k-index[data-lines="two"] .k-row { row-gap: 0; padding-block: 0.1875rem; }
+  .k-rail[data-short] > .k-rail-foot :is(.k-act-label, .k-foot-word) { display: none; }
+  .k-rail[data-short] > .k-rail-foot .k-theme-toggle { display: none; }
+  .k-rail-wrap .k-rail[data-short] { width: min(calc(100vw - 0.75rem), max(min(86vw, 20rem), 5 * var(--spacing-tap) + 1rem)); }
   .k-rail:has(.k-find:focus-within) > .k-rail-brand, .k-rail:has(.k-find:focus-within) > .k-rail-acts,
   .k-rail:has(.k-find:focus-within) > .k-rail-top, .k-rail:has(.k-find:focus-within) > .k-rail-foot { display: none; }
 }
@@ -1454,6 +1471,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-station:not([data-question]) .k-top-in > .k-session-header { position: static; flex: 0 1 auto; max-width: 60%; min-width: 0; height: auto; padding-left: 0; padding-right: 0.25rem; border-bottom: 0; container-type: normal; }
   .k-station[data-watch="need"] .k-top-in > .k-session-header { background: color-mix(in oklch, var(--st-need) 7%, transparent); }
   .k-station[data-card] .k-top-in > .k-list-button { display: none; }
+  /* A large text size on a narrow screen (SessionHeader: useCrowded): the bar's buttons stand as close as fingers allow and
+     the Panels button is in the menu, so the title has the width. */
+  .k-top-in > .k-session-header[data-crowded] { gap: 0; padding-inline: 0 0.125rem; }
+  .k-top-in > .k-session-header[data-crowded] > [data-flex] { gap: 0; padding-left: 0; }
+  .k-top-in > .k-list-button { margin-left: 0; }
 }
 
 /* The Errors panel on a phone: its note has a line of its own under the title, read whole. */

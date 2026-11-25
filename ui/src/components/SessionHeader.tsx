@@ -6,7 +6,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
 import { commandKeys, composing, runCommand } from "../lib/keys.ts";
 import { actions, getState, reportError } from "../lib/store.ts";
-import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
+import { navigate, phone, savePref, useCrowded, useUI } from "../lib/ui.ts";
 import { openPlaced } from "../lib/looks.ts";
 import { useStations } from "../lib/stations.ts";
 import { later, useAway } from "../lib/later.ts";
@@ -16,7 +16,7 @@ import { archive, isPinned } from "../lib/sessops.ts";
 import { auto } from "../lib/automation.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
-import { openPanel, PanelsButton, useHandPanels } from "./SidePanel.tsx";
+import { openPanel, PanelsButton, usePanelRows } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
 import { putAwayCount, stateLabel } from "../../../src/core/state-words.ts";
 import { whyText } from "../../../src/core/watch.ts";
@@ -55,7 +55,7 @@ const ROW_TOOLS = 3; // the tools the row shows at most; the rest are in More
 // bar, at most TOOLS_MAX rem (bridge.css gives the row the same max-width): the head takes the rest.
 const TOOLS_SHARE = 0.5, TOOLS_MAX = 44;
 
-function useFit(tools: Tool[], reserve: number) {
+function useFit(tools: Tool[], reserve: number, fold = false) {
   const head = useRef<HTMLElement>(null);
   const list = useRef<HTMLElement | null>(null); // the More menu's rows, while it has any
   const widths = useRef<Record<string, number>>({});
@@ -120,6 +120,8 @@ function useFit(tools: Tool[], reserve: number) {
     // the rest are in More, by name. (A head of nine controls a pane read as noise, and each pane has its own.)
     let kept = 0;
     for (const id of ranked) if (!next.includes(id) && cost(id) > 0 && ++kept > ROW_TOOLS) next.push(id);
+    // A bar with no room for any (a large text size on a narrow phone): they are all in the menu, the title keeps the width.
+    if (fold) for (const id of ranked) if (!next.includes(id)) next.push(id);
     setOut((prev) => (prev.join() === next.join() ? prev : next));
   };
   // Every render measures before paint. A resize of the row or of a tool, or a
@@ -140,7 +142,7 @@ function useFit(tools: Tool[], reserve: number) {
   const shape = useRef("");
   useLayoutEffect(() => {
     const el = head.current;
-    const now = `${reserve}|${tools.map((t) => t.id).join()}|${out.join()}|${el ? [...el.children].map((c) => (c as HTMLElement).dataset.tool ?? c.tagName).join() : ""}|${el?.querySelectorAll("[data-tools] > *").length ?? 0}|${list.current?.childElementCount ?? 0}`;
+    const now = `${reserve}|${fold}|${tools.map((t) => t.id).join()}|${out.join()}|${el ? [...el.children].map((c) => (c as HTMLElement).dataset.tool ?? c.tagName).join() : ""}|${el?.querySelectorAll("[data-tools] > *").length ?? 0}|${list.current?.childElementCount ?? 0}`;
     if (now === shape.current) return;
     shape.current = now;
     fit.current();
@@ -338,8 +340,10 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   const tools = session.outside ? every.filter((t) => t.id === "usage") : every;
   const state = useSessionState(session);
   const said = { word: stateLabel(state), why: state.text ? whyText(state, Date.now()) : "" };
-  const { head, list, out, later } = useFit(tools, editing ? TITLE_ROOM : 0);
-  const hand = useHandPanels(session);
+  // Where the bar has no room for the Panels button and the tools (a large text size on a phone) they are in the menu.
+  const crowded = useCrowded();
+  const { head, list, out, later } = useFit(tools, editing ? TITLE_ROOM : 0, crowded);
+  const { hand, rest } = usePanelRows(session);
   const folded = tools.filter((t) => out.includes(t.id));
   const bg = useBackgroundLive(session.id);
   // The background work folded into the menu, in words: the menu's name and tooltip say it.
@@ -368,6 +372,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
     ...(phone() ? [
       ...(session.phase === "working" ? [{ id: "menu-stop", label: "Stop the turn", icon: <Square />, run: () => void actions.interrupt(session.id).catch(reportError) }] : []),
       ...hand.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "Panels", gap: true } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })),
+      ...(crowded ? rest.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "More panels", gap: !hand.length } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })) : []),
     ] : []),
     { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) },
     { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },
@@ -384,7 +389,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   ];
 
   return (
-    <header ref={head} className="k-session-header relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line bg-bg/85 px-2 backdrop-blur-md md:px-4" data-testid="session-header">
+    <header ref={head} className="k-session-header relative flex h-12 shrink-0 items-center gap-1.5 border-b border-line bg-bg/85 px-2 backdrop-blur-md md:px-4" data-crowded={crowded || undefined} data-testid="session-header">
       {!bar && <SidebarButton />}
       <div data-flex="" className="flex min-w-0 flex-1 items-center gap-2.5 pl-1">
         {editing ? (
@@ -424,7 +429,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
       <div data-tools="" className="k-head-tools">
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}
       </div>
-      <PanelsButton session={session} />
+      {!crowded && <PanelsButton session={session} />}
       <SessionMenu tools={folded} live={live} list={list} changed={later} acts={acts} button={menuButton} said={said} />
       {session.phase === "working" && <div className="k-wake-line" aria-hidden="true" data-testid="wake-line" />}
     </header>

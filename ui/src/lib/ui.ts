@@ -1,6 +1,6 @@
 // Page state that is not daemon state: the route, theme, which overlays are
 // open, and the owner's local preferences. Components read it with useUI.
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import type { PromptBlock } from "../../../src/core/types.ts";
 import { opened } from "./self-focus.ts";
 import { isCustomize } from "./customize-ids.ts";
@@ -186,6 +186,20 @@ export function setScale(v: number) {
   setUI({ scale });
   // Layout that measures the window (how many panes fit) follows.
   dispatchEvent(new Event("resize"));
+}
+// A phone whose width, in the text's own rem, is too small for a bar of full-size controls (a large text size on a narrow
+// screen): what a bar can give up (a button the menu also holds) does, so the title keeps its room.
+export const CROWDED_REM = 19;
+export const crowded = () => phone() && innerWidth / (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16) < CROWDED_REM;
+export function useCrowded(): boolean {
+  useUI((s) => s.scale);
+  const [, again] = useState(0);
+  useEffect(() => {
+    const look = () => again((n) => n + 1);
+    addEventListener("resize", look);
+    return () => removeEventListener("resize", look);
+  }, []);
+  return crowded();
 }
 // One step up (+1) or down (-1) the sizes.
 export const stepScale = (by: -1 | 1) => setScale(SCALES[Math.min(SCALES.length - 1, Math.max(0, SCALES.indexOf(nearest(state.scale) as (typeof SCALES)[number]) + by))]!);

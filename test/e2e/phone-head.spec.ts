@@ -44,7 +44,7 @@ for (const size of SIZES) {
             expect(b.x + b.width, `${id} is inside the page`).toBeLessThanOrEqual(size.width);
           }
           expect(word!.y + word!.height, "the state is in the bar with the title").toBeLessThanOrEqual(bar!.y + bar!.height);
-          expect(Math.abs(title!.x - word!.x), "the state starts under or beside the title").toBeLessThan(size.width / 2);
+          expect(word!.x, "the state starts under or beside the title, not before it").toBeGreaterThanOrEqual(title!.x - 1);
 
           // The first message starts under the bar, and its actions are not a row of its own.
           const message = pane.getByTestId("user-message").first();

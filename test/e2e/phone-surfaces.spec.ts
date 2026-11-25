@@ -1524,6 +1524,81 @@ for (const size of SIZES) {
         await drop(request, ...ids);
       }
     });
+    test("at a large text size the drawer keeps eight session rows beside its slim chrome, and the top bar gives the title sixteen characters", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(120_000);
+      const ids: string[] = [];
+      for (let i = 0; i < 12; i++) ids.push(await start(request, `Phone large text row ${i + 1}`));
+      const long = await start(request, "Phone large text title that is much too long for the room the bar leaves it");
+      try {
+        for (const scale of [1, 1.3, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${long}`);
+            const station = page.locator(".k-station[data-helm]");
+            const title = station.getByTestId("station-title");
+            await expect(title).toBeVisible({ timeout: 30_000 });
+            // The title's room, in characters of its own font: a sample of sixteen.
+            const room = await title.evaluate((el) => {
+              const probe = document.createElement("span");
+              probe.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap";
+              probe.style.font = getComputedStyle(el).font;
+              probe.textContent = "Phone large text";
+              document.body.append(probe);
+              const one = probe.getBoundingClientRect().width / probe.textContent.length;
+              probe.remove();
+              return { chars: Math.floor(el.clientWidth / one), width: Math.round(el.clientWidth) };
+            });
+            if (scale >= 1.5) expect.soft(room.chars, `characters of the title the top bar shows at ${scale * 100}% text: ${JSON.stringify(room)}`).toBeGreaterThanOrEqual(16);
+            await noSideScroll(page);
+            await shoot(page, `phone-surfaces-38-title-room-${size.width}-${scale}`);
+            // The drawer: rows of sessions at a finger's height, whole and in view, with the find, the acts and the foot.
+            await station.getByTestId("show-sidebar").tap();
+            const rail = page.getByTestId("sidebar");
+            await expect(rail).toBeVisible();
+            // The one-time note about rows keeping their place is read, as it is after the first look.
+            const note = rail.getByTestId("list-note-dismiss");
+            if (await note.count()) await note.tap();
+            // A folder shows six rows and folds the rest behind "more": the sessions are unfolded so the room is what counts.
+            const more = rail.locator(".k-more").first();
+            if (await more.count()) await more.tap();
+            await page.waitForTimeout(500);
+            const seen = await rail.evaluate((el) => {
+              const box = el.querySelector<HTMLElement>(".k-list-scroll")!.getBoundingClientRect();
+              const rows = [...el.querySelectorAll<HTMLElement>('[data-testid="session-row"]')].filter((r) => {
+                const b = r.getBoundingClientRect();
+                return b.height > 0 && b.top >= box.top - 1 && b.bottom <= box.bottom + 1;
+              });
+              const foot = el.querySelector<HTMLElement>('[data-testid="rail-foot"]')!.getBoundingClientRect();
+              return { rows: rows.length, box: Math.round(box.height), foot: Math.round(foot.height), head: Math.round(box.top - el.getBoundingClientRect().top), short: el.hasAttribute("data-short") };
+            });
+            if (scale >= 1.5) expect.soft(seen.rows, `session rows whole in the drawer at ${scale * 100}% text: ${JSON.stringify(seen)}`).toBeGreaterThanOrEqual(8);
+            await shoot(page, `phone-surfaces-38-drawer-${size.width}-${scale}`);
+            if (scale >= 1.5) {
+              // The filter and the tabs are behind one icon while the drawer is slim, and it brings them back.
+              await expect(rail.getByTestId("list-filter")).toBeHidden();
+              await rail.getByTestId("open-filter").tap();
+              await expect(rail.getByTestId("list-filter")).toBeVisible();
+              await expect(rail.getByTestId("tab-archived")).toBeVisible();
+              await shoot(page, `phone-surfaces-38-drawer-filter-${size.width}-${scale}`);
+              // The head steps aside while the filter has the keyboard; once it lets go, the icon puts it away again.
+              await rail.getByTestId("list-filter").evaluate((el) => (el as HTMLInputElement).blur());
+              await rail.getByTestId("open-filter").tap();
+              await expect(rail.getByTestId("list-filter")).toBeHidden();
+              // Every panel is a row of the session's menu where the bar has no room for the Panels button.
+              await page.keyboard.press("Escape");
+              await page.goto(`/s/${long}`);
+              await expect(page.locator(".k-station[data-helm]").getByTestId("panel-menu")).toHaveCount(0);
+              await page.locator(".k-station[data-helm]").getByTestId("session-menu").tap();
+              await expect(page.getByTestId("header-more").locator('[data-testid^="menu-panel-"]').first()).toBeVisible();
+              await shoot(page, `phone-surfaces-38-menu-panels-${size.width}-${scale}`);
+            }
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, ...ids, long);
+      }
+    });
     test("Customize is a press away in the list's foot at a large text size too, where the foot has no room for its word", async ({ browser }) => {
       for (const scale of [1, 1.5]) {
         const { ctx, page } = await atScale(browser, size, scale);
