@@ -33,6 +33,8 @@ test("an agent's approval names the worktree and branch it runs in", async ({ pa
     const mine = ((await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as { worktree?: string; branch?: string }[])[0]!;
     expect(mine.worktree).toBeTruthy();
     await expect(where).toHaveText(`in ${mine.worktree!.split("/").at(-1)}, branch ${mine.branch}`);
+    // A fact in the head's quiet ink, not a pill: no border around it.
+    expect(await where.evaluate((e) => getComputedStyle(e).borderTopWidth)).toBe("0px");
     await shoot(page, "approval-where-01-agent");
   } finally {
     await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });

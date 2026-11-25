@@ -1105,12 +1105,13 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
     }
   };
 
+  // (Where it runs, which machine and which call are words in the head's quiet ink: no pill around a fact.)
   // A command for another machine of the fleet says which, and where there: the same text is a
   // different act on another machine. (The names are the model's words: shown with nothing hidden.)
   const far = a.kind === "shell" && a.input && typeof a.input === "object" && !("_clipped" in a.input) && typeof a.input.machine === "string" && a.input.machine
     ? { machine: a.input.machine as string, cwd: typeof a.input.cwd === "string" && a.input.cwd ? (a.input.cwd as string) : "" } : null;
   const machine = far && (
-    <span className="rounded-full border border-line-strong px-2 py-0.5 text-micro font-medium text-warn" dir="ltr" data-testid="approval-machine">
+    <span className="text-micro text-warn" dir="ltr" data-testid="approval-machine">
       on <Spelled text={far.machine} />{far.cwd && <>, in <Spelled text={far.cwd} /></>}
     </span>
   );
@@ -1121,13 +1122,13 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
   // model's or the repository's: shown with nothing hidden.)
   const runsIn = runsAt(a.at, where, a.kind === "shell" || !!a.at);
   const place = runsIn && (
-    <span className={cn("max-w-full truncate rounded-full border px-2 py-0.5 text-micro font-medium", a.at?.away ? "border-line-strong text-warn" : "border-line text-muted")} dir="ltr" title={`${runsIn.folder}${runsIn.branch ? `, branch ${runsIn.branch}` : ""}`} data-testid="approval-where">
+    <span className={cn("max-w-full truncate text-micro", a.at?.away ? "text-warn" : "text-muted")} dir="ltr" title={`${runsIn.folder}${runsIn.branch ? `, branch ${runsIn.branch}` : ""}`} data-testid="approval-where">
       in <Spelled text={runsIn.folder.split("/").filter(Boolean).at(-1) ?? runsIn.folder} />{runsIn.branch && <>, branch <Spelled text={runsIn.branch} /></>}
     </span>
   );
   // Which of its reply's calls this is, when the reply made several: "1 of 4".
   const call = at && (
-    <span className={cn("rounded-full border border-line px-2 py-0.5 text-micro font-medium tabular-nums text-muted", dense && plain && "sr-only")} aria-label={`Call ${at.at} of ${at.of} of the model's reply`} data-testid="approval-call">
+    <span className={cn("text-micro tabular-nums text-muted", dense && plain && "sr-only")} aria-label={`Call ${at.at} of ${at.of} of the model's reply`} data-testid="approval-call">
       {at.at} of {at.of}
     </span>
   );
