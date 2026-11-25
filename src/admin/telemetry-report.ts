@@ -133,6 +133,13 @@ function failedIn(db: Database, where: string, args: (string | number)[]): Map<s
   return by;
 }
 
+// Failed calls by tool and class, the most first: one query on the ledger's class column. `example`: the newest line of the class.
+function failureClasses(db: Database, where: string, args: (string | number)[]) {
+  return db.query<{ tool: string; class: string; count: number; last_ms: number; example: string | null }, any[]>(
+    `SELECT tool, error_class AS class, COUNT(*) AS count, MAX(ts) AS last_ms, error AS example
+     FROM telemetry_tools t WHERE ${where} AND is_error = 1 AND error_class IS NOT NULL GROUP BY tool, error_class ORDER BY count DESC, last_ms DESC LIMIT 50`).all(...args);
+}
+
 export function reportOf(db: Database, q: Filter, limits: Limits) {
   const { calls, tools, since, until, bucket, where, args } = rows(db, q);
   const failures = failedIn(db, where, args);
@@ -185,6 +192,7 @@ export function reportOf(db: Database, q: Filter, limits: Limits) {
         return { provider: providerOf(model), model, class: cls, count, calls: list.length, rate: count / list.length, last_ms: of.at(-1)!.ts, last_error: of.findLast((c) => c.error)?.error ?? null };
       })).sort((a, b) => b.count - a.count),
     spend: spendOf(db, limits),
+    tool_failure_classes: failureClasses(db, where, args),
     error_kinds: [...errorKinds.entries()].map(([message, list]) => ({ message, count: list.length, last_ms: list.at(-1)!.ts })).sort((a, b) => b.count - a.count).slice(0, 10),
   };
 }

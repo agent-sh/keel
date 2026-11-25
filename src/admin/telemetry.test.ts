@@ -328,6 +328,30 @@ test("a failed call's reason is kept as the cause line, scrubbed like any error 
   expect(store.db.query<{ error: string }, []>("SELECT error FROM telemetry_tools").all().map((r) => r.error)).toEqual(["error: Authorization: Bearer [secret:test] was rejected (exit code 1)"]);
 }));
 
+test("a failed call is kept with its class, old rows get theirs once, and the report ranks tool failures by class", () => withStore(async (store) => {
+  const s = store.createSession({ model: "p:main", workspace: store.stateDir });
+  new PromptStore(store);
+  const t = new Telemetry(store, new Bus());
+  const hooks = allHooks().at(-1)!;
+  const fail = (id: string, tool: string, content: string) => hooks.toolRan!(store.session(s.id)!, { id, tool: { name: tool }, input: {} } as any,
+    { type: "tool_result", tool_use_id: id, is_error: true, content } as any, { ms: 1, outcome: "error" });
+  fail("a", "Read", "File does not exist: /w/one.ts");
+  fail("b", "Read", "File does not exist: /w/two.ts");
+  fail("c", "Edit", "The old_string was not found in the file.");
+  // A failure that names no cause has no class.
+  fail("d", "Bash", "Exit code 1");
+  hooks.toolRan!(store.session(s.id)!, { id: "e", tool: { name: "Read" }, input: {} } as any, { type: "tool_result", tool_use_id: "e", content: "ok" } as any, { ms: 1, outcome: "ok" });
+  const ranked = () => t.report({}, true).then((r) => r.tool_failure_classes.map((c) => [c.tool, c.class, c.count]));
+  expect(await ranked()).toEqual([["Read", "File does not exist: <path>", 2], ["Edit", "The old_string was not found in the file.", 1]]);
+  // Rows from before the column: the class is set again from the kept line, once.
+  store.db.exec("UPDATE telemetry_tools SET error_class = NULL");
+  store.db.exec("DELETE FROM admin_meta WHERE key = 'telemetry_tool_class'");
+  const again = new Telemetry(store, new Bus());
+  expect(await again.report({}, true).then((r) => r.tool_failure_classes.map((c) => [c.tool, c.class, c.count]))).toEqual(await ranked());
+  expect(store.db.query("SELECT COUNT(*) AS n FROM telemetry_tools WHERE error_class IS NOT NULL").get()).toEqual({ n: 3 });
+  expect(t.examples({ tool: "Edit" })[0]).toMatchObject({ error_class: "The old_string was not found in the file." });
+}));
+
 // The report on a ledger that takes long to read is answered from what is kept, and the kept numbers are the full
 // read's. The ledger here is small; the times that make a read "long" are set to nothing for the test.
 test("a report is answered from the kept one while the ledger is read again, and its numbers are the full read's", () => withStore(async (store) => {
