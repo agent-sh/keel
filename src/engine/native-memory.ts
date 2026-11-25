@@ -342,4 +342,3 @@ export function notesOf(dir: string): { notes: NoteFile[]; index: { lines: numbe
   const index = idx === null ? null : { lines: idx.replace(/\n+$/, "").split("\n").length, bytes: Buffer.byteLength(idx), over: memoryHead(idx).cut, missing: [...linked].filter((f) => !names.includes(f)) };
   return { notes, index };
 }
-

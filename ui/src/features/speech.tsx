@@ -65,4 +65,3 @@ window.addEventListener("keydown", (e) => {
   e.stopImmediatePropagation();
   stopDictation();
 }, true);
-
