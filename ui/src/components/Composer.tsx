@@ -1151,7 +1151,7 @@ const SessionComposer = memo(function SessionComposer({
           // (Escape right after the pane was uncovered, a look or the start page left, stops nothing: lib/looks.ts.)
           if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); if (onEscape) onEscape(); else if (!session || !stopHeld(session.id)) onStop?.(); }
         }}
-        className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 text-read leading-relaxed outline-none placeholder:text-faint", rest ? "k-rest-text pb-3 pr-2" : "pb-1.5")}
+        className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-2.5 text-read leading-normal outline-none placeholder:text-faint max-md:pt-3 max-md:leading-relaxed", rest ? "k-rest-text pb-3 pr-2" : "pb-0.5 max-md:pb-2")}
       />
       {/* At rest a context that is nearly full still shows its ring: it is the one tool that warns. */}
       {rest && sid && <span className="k-rest-ring absolute right-11 top-1/2 -translate-y-1/2" data-testid="rest-meter"><ContextMeter sessionId={sid} above={REST_RING} /></span>}
@@ -1164,7 +1164,7 @@ const SessionComposer = memo(function SessionComposer({
       )}
       {/* The tools wrap onto more rows in a narrow box. In a short window they keep one row: the ones on the left scroll sideways, Send and Stop stay. */}
       {short && status}
-      <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-2", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && busy) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
+      <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-1.5", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && busy) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
         <div className={short ? "k-compose-scroll -my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
           <span className={cn("k-compose-lead flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
             <button

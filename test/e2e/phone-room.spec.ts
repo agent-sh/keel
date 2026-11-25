@@ -30,9 +30,10 @@ test.describe("on a phone", () => {
       await expect(pane.getByTestId("dock-plan")).toBeVisible();
       await expect(pane.getByTestId("assistant-text").last()).toBeVisible();
 
-      // At rest: the plan line and the box together take under a seventh of the screen.
+      // At rest: the two lines (the plan above, what the turn does and where below, each a finger tall) and the box
+      // together take under a fifth of the screen.
       const under = async () => { const a = (await pane.getByTestId("session-dock").boundingBox())!, b = (await box.boundingBox())!; return Math.round(b.y + b.height - a.y); };
-      expect(await under()).toBeLessThanOrEqual(112);
+      expect(await under()).toBeLessThanOrEqual(160);
       await expect(tools).toBeHidden();
       await shoot(page, "phone-01-rest");
       // A context that is nearly full shows its ring on the resting box; an emptier one keeps out of the way.

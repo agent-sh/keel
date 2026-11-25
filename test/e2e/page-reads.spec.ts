@@ -37,6 +37,9 @@ test("a session at work reads its background commands when they change, not per 
   // A command started in the background shows above the box at once, its last line follows, and its end is said.
   await composer.fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo step-1-of-2; sleep 3; echo job-finished", run_in_background: true } }])}`);
   await composer.press("Enter");
+  // (The commands are one chip in the line of the plan and the agents; it opens each one.)
+  await expect(page.getByTestId("dock-jobs")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("dock-jobs").click();
   const job = page.getByTestId("dock-job");
   await expect(job).toHaveCount(1, { timeout: 15_000 });
   await expect(job.getByTestId("dock-job-last")).toHaveText("job-finished", { timeout: 15_000 });

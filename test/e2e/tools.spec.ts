@@ -49,10 +49,12 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   await expect(page.locator('[data-tool="Edit"] [data-testid="diff"]')).toBeVisible();
   await expect(page.locator('[data-tool="Edit"]')).toContainText("+1");
   await expect(page.locator('[data-tool="Bash"]').getByTestId("tool-background")).toBeVisible();
+  await page.getByTestId("dock-jobs").click();
   await expect(page.getByTestId("dock-job").first()).toBeVisible();
   // The dock shows the job's last printed line, so progress needs no question.
   await expect(page.getByTestId("dock-job-last").first()).toHaveText(/step-1-of-3|job-finished/);
   await shoot(page, "tools-01-plan-diff-job");
+  await page.keyboard.press("Escape");
 
   await page.locator('[data-tool="Write"]').click();
   await expect(page.locator('[data-tool="Write"]')).toContainText("alpha");

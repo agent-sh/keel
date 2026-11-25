@@ -1,6 +1,8 @@
-// Above the composer: the session's current plan, its background jobs, and what it changed (with Review, and the
-// landing when its branch is ready).
+// Above the composer, two lines. The first: the session's plan, its agents and its background commands. The second
+// (DockNow.tsx): what the turn does now, its folder and project, and what it changed (with the landing when its
+// branch is ready).
 import { Collapsible } from "@base-ui/react/collapsible";
+import { Popover } from "@base-ui/react/popover";
 import { ChevronRight, FileDiff, ListChecks, Square, SquareTerminal } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
@@ -18,6 +20,7 @@ import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
 import { useUI } from "../lib/ui.ts";
 import { PlanCard } from "./ToolCall.tsx";
 import { openPanel } from "./SidePanel.tsx";
+import { DockNow } from "./DockNow.tsx";
 
 // The tree review (land, send back or drop each area), the one action the work board offers for landing.
 const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
@@ -63,41 +66,96 @@ function useJobs(sessionId: string, working: boolean) {
 }
 
 
-// The line above the box for what the session changed: its files and lines, and Review (the Changes panel). Where the
-// session is in a tree with agents and its branch has nothing left but the landing (its own, or every branch of a
+// What the session changed, as the last part of the bottom line: its files and lines, which open the Changes panel.
+// Where the session is in a tree with agents and its branch has nothing left but the landing (its own, or every branch of a
 // coordinator's tree that waits to land), it says so and offers the board's own action: the tree review.
-function ChangesLine({ changed, ready, land }: { changed: Changed | null; ready: boolean; land?: Session }) {
+function ChangesPart({ changed, ready, land }: { changed: Changed | null; ready: boolean; land?: Session }) {
   const [landing, setLanding] = useState(false);
   if (!changed && !ready) return null;
   return (
-    <div className="k-docket-line" data-testid="dock-changes" data-ready={ready || undefined}>
-      <FileDiff className="k-docket-glyph" />
+    <span className="k-now-changes" data-testid="dock-changes" data-ready={ready || undefined}>
       {changed && (
-        <span className="flex min-w-0 shrink items-baseline gap-1.5 truncate max-md:flex-wrap" data-testid="dock-changes-count">
-          <span className="whitespace-nowrap text-fg">{changed.files} {changed.files === 1 ? "file" : "files"}</span>
-          <span className="font-mono text-micro text-ok">+{changed.added}</span>
-          <span className="font-mono text-micro text-danger">-{changed.removed}</span>
-        </span>
+        <button type="button" className="k-now-seg" data-testid="dock-changes-open" title="The files this session changed, with a revert for each" aria-label={`${changed.files} ${changed.files === 1 ? "file" : "files"} changed, ${changed.added} lines added, ${changed.removed} removed: open the changes`} onClick={() => openPanel("changes")}>
+          <FileDiff className="k-docket-glyph" aria-hidden="true" />
+          <span className="k-now-count" data-testid="dock-changes-count">
+            <span className="k-now-files">{changed.files} {changed.files === 1 ? "file" : "files"}</span>
+            <span className="font-mono text-micro text-ok">+{changed.added}</span>
+            <span className="font-mono text-micro text-danger">-{changed.removed}</span>
+          </span>
+        </button>
       )}
-      {ready && <span className="shrink-0 whitespace-nowrap font-medium text-ok" data-testid="dock-ready">Ready to land</span>}
-      <span className="ml-auto flex shrink-0 items-center gap-0.5">
-        {changed && <button type="button" className="k-docket-act" data-testid="dock-review" title="The files this session changed, with a revert for each" onClick={() => openPanel("changes")}>Review</button>}
-        {ready && land && <button type="button" className="k-docket-act" data-testid="dock-land" title="Every agent's branch as one diff by area: land, send back or drop each area" onClick={() => setLanding(true)}>Land</button>}
-      </span>
+      {ready && <span className="k-now-ready" data-testid="dock-ready">Ready to land</span>}
+      {ready && land && <button type="button" className="k-docket-act" data-testid="dock-land" title="Every agent's branch as one diff by area: land, send back or drop each area" onClick={() => setLanding(true)}>Land</button>}
       {landing && land && <Suspense fallback={null}><TreeReviewDialog session={land} onClose={() => setLanding(false)} /></Suspense>}
-    </div>
+    </span>
   );
 }
 
-// The line with the work board's say: read only where the session has agents in its tree (or is one), as the Board
-// panel reads it, so a session with none costs no board.
-function BoardChangesLine({ sessionId, root, changed }: { sessionId: string; root: string; changed: Changed | null }) {
+// The work board's say, read only where the session has agents in its tree (or is one), as the Board panel reads
+// it, so a session with none costs no board.
+function BoardChangesPart({ sessionId, root, changed }: { sessionId: string; root: string; changed: Changed | null }) {
   const b = useBoard(root);
   const rootSession = useStore((s) => s.sessions[root]);
   // An agent's own branch; a coordinator's whole tree (what is left to land, and all of it ready).
   const rows = b ? (root === sessionId ? b.rows.filter((r) => toLand(r)) : b.rows.filter((r) => r.session_id === sessionId)) : [];
   const ready = rows.length > 0 && rows.every((r) => readyToLand(r));
-  return <ChangesLine changed={changed} ready={ready} land={rootSession} />;
+  return <ChangesPart changed={changed} ready={ready} land={rootSession} />;
+}
+
+// The session's background commands: one chip in the line of the plan and the agents that opens each command, its
+// last line and its end, with Stop for one that runs.
+function JobsChip({ sessionId, jobs, cut }: { sessionId: string; jobs: JobView[]; cut: Set<string> }) {
+  const running = jobs.filter((j) => j.running).length;
+  const words = `${jobs.length} ${jobs.length === 1 ? "command" : "commands"}`;
+  return (
+    <Popover.Root>
+      <Popover.Trigger className="k-docket-line k-docket-jobs" data-testid="dock-jobs" data-running={running > 0 || undefined} aria-label={`${words}${running ? `, ${running} running` : ""}`} title={words}>
+        <SquareTerminal className="k-docket-glyph" aria-hidden="true" />
+        <span className="k-docket-jobs-n k-face-figure">{jobs.length}</span>
+        <span className="k-docket-jobs-word">{jobs.length === 1 ? "command" : "commands"}</span>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner sideOffset={8} align="end" side="top" className="z-50 outline-none">
+          <Popover.Popup data-testid="dock-jobs-popup" className="w-[min(30rem,calc(100vw-1rem))] max-h-[70vh] overflow-y-auto rounded-lg border border-line bg-raised py-1 shadow-3 outline-none">
+            {jobs.map((j) => <JobRow key={j.id} sessionId={sessionId} j={j} cut={cut} />)}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function JobRow({ sessionId, j, cut }: { sessionId: string; j: JobView; cut: Set<string> }) {
+  return (
+    <div className="k-docket-line k-docket-job" data-testid="dock-job" data-running={j.running || undefined}>
+      {/* A command at work is drawn in work's color; one that ended steps back. */}
+      <SquareTerminal className="k-docket-glyph" />
+      <span className="min-w-0 max-w-[40%] shrink-0 truncate text-fg max-md:max-w-none max-md:shrink max-md:flex-1 max-md:whitespace-normal max-md:break-words" title={j.id}>{j.description ?? j.command}</span>
+      {/* On a phone what it last wrote, its id and its time are a line under its name. */}
+      <span className="k-job-meta">
+        <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint max-md:whitespace-normal max-md:break-all" title={j.last} data-testid="dock-job-last">{j.last}</span>
+        {/* Its id is the tooltip of its name at a desk; a phone opens no tooltip, so there it is a word. */}
+        <span className="shrink-0 font-mono text-micro text-faint md:hidden" data-testid="dock-job-id">{j.id}</span>
+        <span className="k-face-figure shrink-0 text-micro text-faint">
+          {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}`
+            // Its call was cut by a restart and the command went on without it: said as that, not as a bare exit code beside "cut".
+            : j.call_id && cut.has(j.call_id) ? (j.exit_code == null ? "went on after the restart, then ended" : j.exit_code === 0 ? "went on after the restart and finished" : `went on after the restart and failed (exit ${j.exit_code})`)
+            : j.exit_code == null ? "ended, exit unknown" : `exit ${j.exit_code}`}
+        </span>
+      </span>
+      {j.running && (
+        <button
+          type="button"
+          title={`Stop ${j.id}`}
+          data-testid="dock-job-stop"
+          onClick={() => actions.stopJob(sessionId, j.id).catch(reportError)}
+          className="k-job-stop -mr-1 grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
+        >
+          <Square className="size-3" />
+        </button>
+      )}
+    </div>
+  );
 }
 
 // `panel`: this pane has the side panel. While its Tasks tab is open the plan
@@ -153,65 +211,44 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
   const known = held?.plan ? { at: held.at, turns: events ? turnsSince(events, held.at) : 0 } : older?.key === key && older.at ? { at: older.at, turns: older.turns + (events ? turnsSince(events, 0) : 0) } : null;
   const state = plan && known ? planState({ ...known, now: clock, working, items: plan, endedAt: archived ? Number.MAX_SAFE_INTEGER : doneMs }) : "live";
   const active = !inPanel && plan && plan.some((p) => p.status !== "completed" && p.status !== "cancelled") && state !== "ended";
-  if (!active && !jobs.length && !changed && !tree && !agents) return null;
   const done = plan?.filter((p) => p.status === "completed").length ?? 0;
   const now = plan?.find((p) => p.status === "in_progress");
-  return (
-    // A quiet ledger over the box: a line a thing, set on the page, its words lined up with the box's.
-    // Only the plan, opened, is a surface of its own (styles.css, .k-docket).
-    <div className="k-docket" data-testid="session-dock">
+  const planLineEl = active && plan ? (
+    <Collapsible.Trigger className="k-docket-line k-docket-planline" data-testid="dock-plan">
+      <ListChecks className="k-docket-glyph" />
+      {state === "stale" && known ? (
+        <span className="min-w-0 truncate text-faint max-md:whitespace-normal max-md:break-words" data-testid="dock-plan-stale">{planLine("stale", { ...known, now: clock, items: plan })}</span>
+      ) : (
+        <>
+          <span className="k-face-figure k-docket-n">{done}/{plan.length}</span>
+          <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words">{now ? (now.active ?? now.text) : "Plan"}</span>
+          <span className="k-docket-track" aria-hidden="true"><span style={{ width: `${(100 * done) / plan.length}%` }} /></span>
+        </>
+      )}
+      <ChevronRight className="k-docket-more transition-transform group-data-[open]/plan:rotate-90" />
+    </Collapsible.Trigger>
+  ) : null;
+  const row = (planLineEl || agents || jobs.length > 0) ? (
+    <div className="k-docket-row">
+      {planLineEl}
       {agents && <AgentsDock sessionId={sessionId} />}
-      {active && plan && (
-        <Collapsible.Root className="k-docket-plan group/plan">
-          <Collapsible.Trigger className="k-docket-line" data-testid="dock-plan">
-            <ListChecks className="k-docket-glyph" />
-            {state === "stale" && known ? (
-              <span className="min-w-0 truncate text-faint max-md:whitespace-normal max-md:break-words" data-testid="dock-plan-stale">{planLine("stale", { ...known, now: clock, items: plan })}</span>
-            ) : (
-              <>
-                <span className="k-face-figure k-docket-n">{done}/{plan.length}</span>
-                <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words">{now ? (now.active ?? now.text) : "Plan"}</span>
-                <span className="k-docket-track" aria-hidden="true"><span style={{ width: `${(100 * done) / plan.length}%` }} /></span>
-              </>
-            )}
-            <ChevronRight className="k-docket-more transition-transform group-data-[open]/plan:rotate-90" />
-          </Collapsible.Trigger>
+      {jobs.length > 0 && <JobsChip sessionId={sessionId} jobs={jobs} cut={cut} />}
+    </div>
+  ) : null;
+  return (
+    // A quiet ledger over the box, two lines set on the page with their words lined up with the box's: the plan and the
+    // agents (and the commands that run on their own) above; below, what the turn does now, where, and what it changed.
+    // Only the plan, opened, is a surface of its own (styles.css, .k-docket-top).
+    <div className="k-docket" data-testid="session-dock">
+      {active && plan ? (
+        <Collapsible.Root className="k-docket-top group/plan" data-testid="dock-top">
+          {row}
           <Collapsible.Panel className="k-docket-panel">
             <PlanCard items={plan} live />
           </Collapsible.Panel>
         </Collapsible.Root>
-      )}
-      {jobs.map((j) => (
-        <div key={j.id} className="k-docket-line k-docket-job" data-testid="dock-job" data-running={j.running || undefined}>
-          {/* A command at work is drawn in work's color; one that ended steps back. */}
-          <SquareTerminal className="k-docket-glyph" />
-          <span className="min-w-0 max-w-[40%] shrink-0 truncate text-fg max-md:max-w-none max-md:shrink max-md:flex-1 max-md:whitespace-normal max-md:break-words" title={j.id}>{j.description ?? j.command}</span>
-          {/* On a phone what it last wrote, its id and its time are a line under its name. */}
-          <span className="k-job-meta">
-            <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint max-md:whitespace-normal max-md:break-all" title={j.last} data-testid="dock-job-last">{j.last}</span>
-            {/* Its id is the tooltip of its name at a desk; a phone opens no tooltip, so there it is a word. */}
-            <span className="shrink-0 font-mono text-micro text-faint md:hidden" data-testid="dock-job-id">{j.id}</span>
-            <span className="k-face-figure shrink-0 text-micro text-faint">
-              {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}`
-                // Its call was cut by a restart and the command went on without it: said as that, not as a bare exit code beside "cut".
-                : j.call_id && cut.has(j.call_id) ? (j.exit_code == null ? "went on after the restart, then ended" : j.exit_code === 0 ? "went on after the restart and finished" : `went on after the restart and failed (exit ${j.exit_code})`)
-                : j.exit_code == null ? "ended, exit unknown" : `exit ${j.exit_code}`}
-            </span>
-          </span>
-          {j.running && (
-            <button
-              type="button"
-              title={`Stop ${j.id}`}
-              data-testid="dock-job-stop"
-              onClick={() => actions.stopJob(sessionId, j.id).catch(reportError)}
-              className="k-job-stop -mr-1 grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
-            >
-              <Square className="size-3" />
-            </button>
-          )}
-        </div>
-      ))}
-      {tree ? <BoardChangesLine sessionId={sessionId} root={root} changed={changed} /> : <ChangesLine changed={changed} ready={false} />}
+      ) : row && <div className="k-docket-top" data-testid="dock-top">{row}</div>}
+      <DockNow sessionId={sessionId} changes={tree ? <BoardChangesPart sessionId={sessionId} root={root} changed={changed} /> : <ChangesPart changed={changed} ready={false} />} />
     </div>
   );
 }

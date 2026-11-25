@@ -77,9 +77,11 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     await expect(cutCall).not.toContainText("failed");
     await shoot(page, "restart-01-resumed-after-crash");
     // Its command outlived the daemon: the dock says it went on, not a bare "exit 0" beside "cut".
+    await page.getByTestId("dock-jobs").click({ timeout: 45_000 });
     await expect(page.getByTestId("dock-job").first()).toContainText("went on after the restart and finished", { timeout: 45_000 });
     await expect(page.getByTestId("dock-job").first()).not.toContainText("exit 0");
     await shoot(page, "restart-14-cut-command-went-on");
+    await page.keyboard.press("Escape");
 
     // A graceful stop while the tool runs: parked, then continued.
     await page.getByTestId("composer").fill("script:long-tool");
