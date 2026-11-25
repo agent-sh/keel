@@ -62,6 +62,7 @@ import { reportUsage } from "./reported.ts";
 import { REWORD_SYSTEM } from "../automation/successor.ts";
 import { RULING_SYSTEM, standInMatch } from "../automation/ruling-match.ts";
 import { KIND_SYSTEM, LESSON_SYSTEM, standInDraft, standInKind } from "../automation/lesson-draft.ts";
+import { LOOK_SYSTEM } from "../helper/error-look.ts";
 import { cartoon } from "./scripted-art.ts";
 import type { Delta, ImageRequest, ImageRow, ListedModel, MadeImage, Provider, ProviderRequest, ProviderResult, Wire } from "./types.ts";
 import { anthropicBody } from "./wires/anthropic.ts";
@@ -382,6 +383,10 @@ export class ScriptedProvider implements Provider {
       const named = prompts.map((p) => p.match(/script:title[ \t]+([^\n]+)/)?.[1]?.trim()).filter(Boolean).at(-1);
       return reply(named ?? (prompts[0] ?? "").split("\n").find((l) => l.trim()) ?? "");
     }
+
+    // The helper's look at an error (src/helper/error-look.ts): it answers with the `script:say` line the error's own
+    // text carries, else a look that blames nothing.
+    if (req.system === LOOK_SYSTEM) return reply(lastText.match(/script:say[ \t]+([^\n]+)/)?.[1]?.trim() ?? '{"what":"Scripted look.","blame":"unknown"}');
 
     // A reader whose request says `script:quote`: it quotes the first line it
     // was given at that line and the second at a line four further on, and the

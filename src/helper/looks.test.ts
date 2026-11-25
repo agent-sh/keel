@@ -79,3 +79,12 @@ test("a look that was under way when the daemon stopped is said to have failed",
   const again = new Looks({ ...t.looks["deps"] } as any, { session: () => t.session, on: () => true, isHelper: () => false }, () => {});
   expect(again.get("c1")).toMatchObject({ state: "failed" });
 });
+
+test("a row of the cause that comes while its look is under way stays on the finished look", async () => {
+  const t = setup();
+  const a = t.row("ENOENT: no such file, open '/home/a/one/y.json'");
+  const b = t.row("ENOENT: no such file, open '/home/b/two/y.json'");
+  const [first] = await Promise.all([t.looks.settle(a.id, false), t.looks.settle(b.id, false)]);
+  expect(t.asked.length).toBe(1);
+  expect(t.looks.get(first!.cause)!.error_ids).toEqual([a.id, b.id]);
+});

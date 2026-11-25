@@ -128,11 +128,13 @@ export class Looks {
       const info = this.deps.providers.cachedModel(r.model);
       const price = info?.price ?? this.deps.providers.catalog.lookup(info?.model ?? r.model)?.price;
       const cost = info && info.billing !== "per_token" ? null : priceOf(r.usage, price) ?? null;
-      const done: Look = { ...look, ...said, state: "done", ts: Date.now(), model: info?.name ?? r.model, cost, tokens: r.usage.input + r.usage.output + r.usage.cache_read + r.usage.cache_write };
+      // Rows of its cause that came while it was read are on the look kept: they stay.
+      const now = this.get(look.cause);
+      const done: Look = { ...look, error_ids: [...new Set([...look.error_ids, ...(now?.error_ids ?? [])])].slice(-20), ...said, state: "done", ts: Date.now(), model: info?.name ?? r.model, cost, tokens: r.usage.input + r.usage.output + r.usage.cache_read + r.usage.cache_write };
       this.put(done);
       return done;
     } catch (e) {
-      const failed: Look = { ...look, state: "failed", ts: Date.now(), error: String((e as Error)?.message ?? e).slice(0, 300) };
+      const failed: Look = { ...look, error_ids: [...new Set([...look.error_ids, ...(this.get(look.cause)?.error_ids ?? [])])].slice(-20), state: "failed", ts: Date.now(), error: String((e as Error)?.message ?? e).slice(0, 300) };
       this.put(failed);
       return failed;
     }
