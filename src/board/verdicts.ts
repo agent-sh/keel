@@ -38,3 +38,15 @@ export function recordVerdict(db: Database, v: { agent: string; commit: string; 
   db.query("INSERT OR REPLACE INTO review_verdicts (agent_id, commit_sha, branches, land, why, at) VALUES (?, ?, ?, ?, ?, ?)")
     .run(v.agent, v.commit, JSON.stringify(v.branches), v.land, v.why, v.at ?? Date.now());
 }
+
+// What a reviewer's `land` says, in the forms models send it: yes or no, true or false (a boolean or its text),
+// approve or refuse. Anything else says nothing.
+const YES = new Set(["yes", "y", "true", "approve", "approved", "land", "lgtm"]);
+const NO = new Set(["no", "n", "false", "refuse", "refused", "reject", "rejected", "block", "blocked"]);
+export function landOf(v: unknown): "yes" | "no" | undefined {
+  if (v === true) return "yes";
+  if (v === false) return "no";
+  if (typeof v !== "string") return undefined;
+  const w = v.trim().toLowerCase();
+  return YES.has(w) ? "yes" : NO.has(w) ? "no" : undefined;
+}

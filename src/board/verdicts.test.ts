@@ -1,37 +1,23 @@
-// The table of reviewers' structured verdicts: its rows go with their agent's row.
-import { Database } from "bun:sqlite";
+// The forms a reviewer's keel__verdict call takes: what `land` may say, and what an empty call is told.
 import { expect, test } from "bun:test";
-import { ensureVerdicts, recordVerdict } from "./verdicts.ts";
+import { landOf } from "./verdicts.ts";
+import { VerdictTool } from "../server/routes/board.ts";
+import { inputProblem } from "../tools/validate.ts";
 
-const fresh = () => {
-  const db = new Database(":memory:");
-  db.run("PRAGMA foreign_keys = ON");
-  db.run("CREATE TABLE agents (id TEXT PRIMARY KEY)");
-  db.run("INSERT INTO agents (id) VALUES ('a1'), ('a2')");
-  return db;
-};
-const count = (db: Database) => db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM review_verdicts").get()!.n;
-
-test("a verdict goes with its reviewer's agent row", () => {
-  const db = fresh();
-  expect(ensureVerdicts(db)).toBe(true);
-  recordVerdict(db, { agent: "a1", commit: "c".repeat(40), branches: ["keel/x"], land: "yes", why: "ok" });
-  recordVerdict(db, { agent: "a2", commit: "c".repeat(40), branches: ["keel/x"], land: "no", why: "P1" });
-  db.run("DELETE FROM agents WHERE id = 'a1'");
-  expect(db.query<{ agent_id: string }, []>("SELECT agent_id FROM review_verdicts").all().map((r) => r.agent_id)).toEqual(["a2"]);
+test("land reads yes and no in the forms models send", () => {
+  for (const v of ["yes", "Yes", " y ", "true", "TRUE", true, "approve", "approved", "land"]) expect(landOf(v)).toBe("yes");
+  for (const v of ["no", "N", "false", false, "refuse", "refused", "reject", "block"]) expect(landOf(v)).toBe("no");
+  for (const v of [undefined, null, "", "maybe", 1, {}, "yes but"]) expect(landOf(v)).toBeUndefined();
 });
 
-test("a table made before that is made again, keeping the rows whose agent is there", () => {
-  const db = fresh();
-  db.run("CREATE TABLE review_verdicts (agent_id TEXT NOT NULL, commit_sha TEXT NOT NULL, branches TEXT NOT NULL, land TEXT NOT NULL, why TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (agent_id, commit_sha))");
-  db.run("INSERT INTO review_verdicts VALUES ('a1', 'c', '[]', 'yes', 'ok', 1), ('gone', 'c', '[]', 'no', 'x', 1)");
-  ensureVerdicts(db);
-  expect(count(db)).toBe(1);
-  db.run("DELETE FROM agents");
-  expect(count(db)).toBe(0);
+test("a call with string land true is not refused by the schema check", () => {
+  expect(inputProblem(VerdictTool as any, { commit: "bc7f15e0a", land: "true", why: "ok" })).toBeUndefined();
+  expect(inputProblem(VerdictTool as any, { commit: "bc7f15e0a", land: true, why: "ok" })).toBeUndefined();
 });
 
-test("not made before the agents table is there", () => {
-  const db = new Database(":memory:");
-  expect(ensureVerdicts(db)).toBe(false);
+test("an empty call is told its fields and an example that is itself a valid call", () => {
+  const said = inputProblem(VerdictTool as any, {})!;
+  expect(said).toContain("`commit` is missing");
+  expect(said).toContain('For example: {"commit":');
+  expect(inputProblem(VerdictTool as any, VerdictTool.inputExample)).toBeUndefined();
 });

@@ -4,7 +4,7 @@ import { byChild, rootSession } from "../../automation/agents.ts";
 import { WorkBoard } from "../../board/board.ts";
 import { agentCounts, sessionState } from "../../automation/state.ts";
 import { agentState } from "../../core/state-words.ts";
-import { ensureVerdicts, recordVerdict } from "../../board/verdicts.ts";
+import { ensureVerdicts, landOf, recordVerdict } from "../../board/verdicts.ts";
 import { boardText } from "../../board/rules.ts";
 import { buildInfo } from "../../core/build.ts";
 import { git } from "../../core/git.ts";
@@ -71,7 +71,7 @@ const WorkBoardTool: Tool = {
   },
 };
 
-const VerdictTool: Tool = {
+export const VerdictTool: Tool = {
   name: "keel__verdict",
   readOnly: false, kind: "own",
   description:
@@ -79,6 +79,7 @@ const VerdictTool: Tool = {
     "LAND lines in your report are shown as your words only, never as approved or refused. Call it once for each commit you judge, after you have judged it: " +
     "commit (the full hash, or seven or more of its first digits), land yes or no, why in one line. A later call for the same commit replaces the earlier one; " +
     "the board shows it while the branch's head is that commit, and as stale once the branch moves on.",
+  inputExample: { commit: "0123abc", land: "yes", why: "the checks pass and the change does what the task asked" },
   input_schema: {
     type: "object",
     properties: {
@@ -95,8 +96,8 @@ const VerdictTool: Tool = {
     if (!a) return fail("keel__verdict records the verdict of an agent of a tree; this session is not one. The owner's verdict is the Review panel's.");
     const commit = String(input?.commit ?? "").trim().toLowerCase();
     if (!/^[0-9a-f]{7,40}$/.test(commit)) return fail("commit: the commit you reviewed, as its full hash or seven or more of its first hex digits.");
-    const land = input?.land === "yes" || input?.land === true ? "yes" : input?.land === "no" || input?.land === false ? "no" : undefined;
-    if (!land) return fail('land: "yes" (it may land as it is) or "no".');
+    const land = landOf(input?.land);
+    if (!land) return fail('land: "yes" (it may land as it is) or "no". For example: {"commit":"<hash>","land":"yes","why":"<one line>"}.');
     const why = typeof input?.why === "string" ? input.why.replace(/\s+/g, " ").trim().slice(0, 600) : "";
     if (!why) return fail("why: one line on what decided it.");
     const { store } = current;

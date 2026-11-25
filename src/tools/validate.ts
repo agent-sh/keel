@@ -38,6 +38,8 @@ export type Checked = {
   inputOptional?: string[];
   // Names it accepts that its schema does not list and that stand for no field.
   inputAlso?: string[];
+  // An example input, said in the refusal of a call that lacks a required field.
+  inputExample?: Record<string, unknown>;
 };
 
 type Plan = {
@@ -177,7 +179,8 @@ export function inputProblem(tool: Checked, input: unknown): string | undefined 
   }
   if (!problems.length) return undefined;
   const fields = known.slice(0, 14).map((k) => (plan.required.includes(k) ? `${k} (required)` : k)).join(", ") + (known.length > 14 ? ", ..." : "");
-  return `${tool.name} did not run, its input is invalid: ${problems.join("; ")}. Its fields: ${fields || "none"}. Send the call again with the right fields.`;
+  const example = missing.length && tool.inputExample ? ` For example: ${JSON.stringify(tool.inputExample)}.` : "";
+  return `${tool.name} did not run, its input is invalid: ${problems.join("; ")}. Its fields: ${fields || "none"}.${example} Send the call again with the right fields.`;
 }
 
 // The input with each name the tool reads in a field's place moved to the field, when the field is not

@@ -122,6 +122,9 @@ export type Tool = ToolSpec & {
   inputAlso?: string[];
   // Fields the schema requires that the run does without (an unused field of another harness's shape).
   inputOptional?: string[];
+  // A call that names a required field it lacks is answered with the fields and this one example call's input, for a tool
+  // whose calls models send empty (src/tools/validate.ts).
+  inputExample?: Record<string, unknown>;
   // A shell tool whose shell reports each command it runs to the check ledger
   // when asked (ctx.checkRun, src/tools/shell.ts): a check behind a wait, or
   // with commands after it, is known to have started and by its own status.
