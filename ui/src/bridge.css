@@ -336,11 +336,10 @@
 .k-index[data-lines="two"] .k-row-unread { top: 0.875rem; }
 .k-rail[data-narrow] .k-row-unread { right: 0.125rem; }
 /* The chevron of a session that started agents: it opens their tree under the row. */
-.k-row .k-row-kids-toggle { display: grid; width: 1.125rem; }
+.k-row .k-row-kids-toggle { display: grid; width: 1rem; margin: 0 -0.3125rem 0 -0.25rem; }
 .k-row-kids-fold { transition: transform var(--dur-quick) var(--ease-out); }
 .k-row-kids-toggle[aria-expanded="true"] .k-row-kids-fold { transform: rotate(90deg); }
-.k-rail[data-narrow] .k-row-end:has(> .k-row-kids-toggle) { display: flex; }
-.k-rail[data-narrow] .k-row-end > :not(.k-row-kids-toggle) { display: none; }
+.k-rail[data-narrow] .k-row-end { display: none; }
 /* Two lines: the title over its line, the line as wide as the row (the time column is the first line's). */
 .k-index[data-lines="two"] .k-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem 1rem; column-gap: 0.5625rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
 .k-index[data-lines="two"] .k-row-main { display: contents; overflow: visible; }
@@ -378,12 +377,13 @@
 /* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
 .k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1.25rem; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); font-weight: 500; }
-/* Who it waits on, in the time's place (Sidebar.tsx, `on`): the owner in the need ink, a failure's class
-   in the failure's. The state word on the row's line would say it twice: the reason has that room. */
-.k-row-on { min-width: 0; max-width: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+/* The word before the age, for a row that waits on the owner (you) or was declined (Sidebar.tsx, `on`): the owner in the need ink,
+   a declined one in the failure's. The state word on the row's line would say it twice: the reason has that room. */
+.k-row-time { white-space: nowrap; }
+.k-row-on { display: inline-block; vertical-align: bottom; min-width: 0; max-width: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .k-row-on[data-on="need"] { color: var(--st-need-ink); }
 .k-row-on:is([data-on="fail"], [data-on="declined"]) { color: var(--st-fail-ink); }
-.k-row:has(> .k-row-end > .k-row-on) .k-row-sub > .k-row-state { display: none; }
+.k-row:has(> .k-row-end .k-row-on) .k-row-sub > .k-row-state { display: none; }
 /* Where a session runs when that is not here (Where.tsx): a tag tinted with the
    machine's colour, its server glyph in that colour; one that does not answer
    loses the tint and says offline in the failure colour. A local session has none. */

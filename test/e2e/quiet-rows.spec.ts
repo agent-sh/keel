@@ -5,8 +5,8 @@ import { shoot } from "./shots.ts";
 // The row's mark is its state. The rows that call the owner (needs you, failed, declined) are in ink
 // and one step heavier; what is new is in ink at the row's own weight (reading it moves
 // nothing), says "New" to a reader and has a dot at the row's right end (outside its end slot); the open row is in ink. The row's end is one
-// slot: who a row that calls the owner waits on (you, the failure's class, declined), else its
-// time where its bucket changes, read or not. The time and
+// slot: the age of every row (where its bucket changes, read or not), with the word of a row that waits
+// on the owner (you) or was declined before it. The time and
 // the counts above the list are in the text face, quiet. The note that the
 // list's order changed is a hint for one load. A background command with no description of its own
 // is named in words in the bar, its shell text in the tooltip.
@@ -61,17 +61,21 @@ test("a row says one state, in one weight, and the line above the list is one qu
     // What calls the owner is the heavier row, never lighter than news.
     expect(Number(await style(page, asks, ".k-row-title", "fontWeight")), "a row that needs the owner is not heavier than news").toBeGreaterThan(Number(await style(page, fresh, ".k-row-title", "fontWeight")));
     expect(await style(page, failed, ".k-row-title", "fontWeight")).toBe(await style(page, asks, ".k-row-title", "fontWeight"));
-    // Who it waits on, in the time's place: the owner, or what failed. The time is the word's tooltip.
-    await expect(row(page, asks).getByTestId("row-on")).toBeVisible();
-    await expect(row(page, asks).getByTestId("row-on")).toHaveText("Needs you");
-    await expect(row(page, asks).getByTestId("row-time")).toHaveCount(0);
-    await expect(row(page, failed).locator(".k-row-end").getByTestId("row-class")).toHaveText("billing");
-    await expect(row(page, failed).locator(".k-row-end").getByTestId("row-class")).toBeVisible();
-    await expect(row(page, failed).getByTestId("row-time")).toHaveCount(0);
+    // The row's end is one slot and it holds the age of every row. Before the age, the word of a row that waits on the
+    // owner (you) or was declined; a failure's class is not in the slot (it is on the row's line and in the tooltip).
+    const slot = (id: string) => row(page, id).locator(".k-row-end").getByTestId("row-time");
+    await expect(slot(asks)).toHaveCount(1);
+    await expect(slot(asks).getByTestId("row-on")).toBeVisible();
+    await expect(slot(asks).getByTestId("row-on")).toHaveText("Needs you");
+    await expect(slot(asks)).toHaveText(/^Needs you (now|\d+[smh])$/);
+    await expect(slot(failed)).toHaveText(/^(now|\d+[smh])$/);
+    await expect(slot(failed)).toHaveAttribute("title", /^Failed: billing, /);
+    await expect(slot(failed).getByTestId("row-on")).toHaveCount(0);
+    await expect(row(page, failed).locator(".k-row-end").getByTestId("row-class")).toHaveCount(0);
     // A declined row says so in the same slot, in the failure's ink.
     await expect(row(page, declined)).toHaveAttribute("data-watch", "declined");
-    await expect(row(page, declined).getByTestId("row-on")).toHaveText("declined");
-    await expect(row(page, declined).getByTestId("row-time")).toHaveCount(0);
+    await expect(slot(declined).getByTestId("row-on")).toHaveText("declined");
+    await expect(slot(declined)).toHaveText(/^declined (now|\d+[smh])$/);
     expect(await style(page, declined, ".k-row-title", "fontWeight")).toBe(await style(page, asks, ".k-row-title", "fontWeight"));
     // Each row's end shows one thing.
     const slots = await page.evaluate((ids) => ids.map((id) => document.querySelector<HTMLElement>(`[data-testid="session-row"][data-session="${id}"]`)!).map((r) => [...r.querySelectorAll<HTMLElement>(".k-row-end > *")].filter((e) => e.getClientRects().length && getComputedStyle(e).visibility !== "hidden" && !e.classList.contains("sr-only")).length), made);

@@ -215,7 +215,8 @@ test("a row red for its agents says how many failed, and a calm list says a time
     await page.goto("/");
     const coord = await make("Rest bar: a coordinator", `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "Fails at once\nscript:billing", isolation: "none" } }])}`);
     await expect(row(page, coord)).toHaveAttribute("data-watch", "fail", { timeout: 30_000 });
-    await expect(row(page, coord).getByTestId("row-on")).toHaveText("1 failed");
+    await expect(row(page, coord).getByTestId("row-on")).toHaveCount(0);
+    await expect(row(page, coord).getByTestId("row-time")).toHaveAttribute("title", /^Failed: 1 failed, /);
 
     // Two quiet rows read side by side, both within the hour: the lower one keeps its time in its tooltip.
     const one = await make("Rest bar: calm one", "script:say Done.");

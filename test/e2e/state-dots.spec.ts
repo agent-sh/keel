@@ -214,6 +214,9 @@ test("the sidebar counts no agents: the row's chevron opens their tree, and the 
     const toggle = row(page, lead).getByTestId("children-toggle");
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await expect(toggle).toHaveAttribute("aria-label", "Show agents");
+    // The chevron is left of the title, not in the row's end, which is one slot.
+    expect((await toggle.boundingBox())!.x + (await toggle.boundingBox())!.width, "the chevron is left of the title").toBeLessThanOrEqual((await row(page, lead).locator(".k-row-title").boundingBox())!.x);
+    await expect(row(page, lead).locator(".k-row-end").getByTestId("children-toggle")).toHaveCount(0);
     await expect(wrap.getByTestId("children-total")).toHaveCount(0);
     await expect(wrap.getByTestId("children-summary")).toHaveCount(0);
     expect(await wrap.innerText(), "the sidebar says no number of agents").not.toMatch(/\b\d+ agents?\b/);

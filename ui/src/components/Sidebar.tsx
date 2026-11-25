@@ -33,7 +33,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, timeBucket, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, WAITS_ON_YOU, FAILED_WORD, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, stateWords, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, WAITS_ON_YOU, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, stateWords, wentWrongWord } from "../../../src/core/state-words.ts";
 import { OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
@@ -225,8 +225,10 @@ function AgentsToggle({ id }: { id: string }) {
 // its queue) tell it. The list draws again with every change of any session and asks none of
 // its rows to follow: a new session object with the same id and the same archive mark is the same row.
 const Row = memo(RowOf, (a, b) => a.s.id === b.s.id && !!a.s.archived === !!b.s.archived && a.active === b.active && a.where === b.where && a.gone === b.gone && a.calm === b.calm && a.said === b.said);
-// The row's end is one slot: who a row that calls the owner waits on (you, the failure, declined), else
-// its time. News is the title's ink (bridge.css) and a word for a reader, not a dot in that slot.
+// The row's end is one slot, and it always holds the row's age; before it, the word of a row that waits on the
+// owner (you) or was declined. A failure's class is on the row's line and in the slot's tooltip. The chevron of a
+// session that started agents stands left of its title. News is the title's ink (bridge.css) and a word for a
+// reader, not a dot in that slot.
 // `calm`: a session at rest whose time says nothing the quiet row above it did not (the same bucket,
 // timeBucket): its time is in its tooltip only.
 // `said`: the time the row says at rest, read on the page's clock by the list (the row is drawn again when the words change).
@@ -272,7 +274,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   // A row red for its agents says how many failed; a failure with no class still says so in a word.
   const cls = failWord(st.cls);
   const agents = w === "fail" && st.why === "agents" ? agentsFailedWord(st.agents_failed ?? 1) : "";
-  const on = !narrow && lines === "one" && !offline && !gone ? (w === "need" ? WAITS_ON_YOU : w === "fail" ? agents || cls || FAILED_WORD : w === "declined" ? DECLINED_WORD : "") : "";
+  const on = !narrow && lines === "one" && !offline && !gone ? (w === "need" ? WAITS_ON_YOU : w === "declined" ? DECLINED_WORD : "") : "";
   // A menu of the row is the hand on the list: the list is held while one is open.
   const keep = useContext(HandCtx).keep;
   const over = placing || !!menu;
@@ -341,6 +343,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       className="k-row group"
     >
       <Mark w={w} st={st} />
+      <AgentsToggle id={s.id} />
       {/* The title and the row's own line: the state with why (and the folder, where the list is not
           grouped by it). In a row of one line the words follow the title where it leaves them room,
           and are on the card beside the row where it does not; in a row of two they are the second
@@ -364,7 +367,6 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       </span>
       {/* The first line's end: the tag, the marks, the time, and under the pointer the row's actions in the time's place. */}
       <span className="k-row-end">
-        <AgentsToggle id={s.id} />
         {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
         {s.outside && <OutsideTag o={s.outside} />}
         <SessionBadges sessionId={s.id} />
@@ -379,18 +381,13 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           ? <span className="k-row-time" data-testid="row-gone" data-offline title="It left the list while your hand was on it, and goes when your hand has left">{left}</span>
           : offline
           ? <span className="k-row-time group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-offline title={`Its machine does not answer: this is the last it told, ${when(toldAt)}`}>{OFFLINE}</span>
-          : on
+          // One slot: the age of every row, and before it the word of a row that waits on the owner or was declined.
           // (A reader hears the state before the word: the line's own state word gives way to it.)
-          ? <>
-              {w === "fail" && cls && !agents && <span className="sr-only">{STATE_WORD.fail}: </span>}
-              <span className="k-row-time k-row-on group-hover:hidden group-focus-within:hidden" data-testid={w === "fail" && cls && !agents ? "row-class" : "row-on"} data-on={w}
-                title={w === "need" && st.since ? `${STATE_WORD.need} since ${when(st.since)}` : `${STATE_WORD[w]} ${when(st.since ?? s.updated)}`}>{w === "need" && <span className="sr-only">{STATE_WORD.need.slice(0, -WAITS_ON_YOU.length - 1)}</span>}{w === "need" && " "}{on}</span>
-            </>
-          : timed(st)
-          ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{rowClock(st, now)}</span>
-          : <>
-              <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-calm={calm || undefined} title={when(s.updated)}>{said ?? ago(s.updated)}</span>
-            </>}
+          : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live={timed(st) || undefined} data-calm={(!timed(st) && !SPELLED.includes(w) && calm) || undefined} data-on={on || undefined}
+              title={timed(st) ? (st.until ? `Due ${when(st.until)}` : on && w === "need" ? `${STATE_WORD.need} since ${when(st.since!)}` : `Since ${when(st.since!)}`) : on ? `${STATE_WORD[w]} ${when(st.since ?? s.updated)}` : w === "fail" ? `${[STATE_WORD.fail, agents || cls].filter(Boolean).join(": ")}, ${when(s.updated)}` : when(s.updated)}>
+              {on && <span className="k-row-on" data-testid="row-on" data-on={w}>{w === "need" && <span className="sr-only">{STATE_WORD.need.slice(0, -WAITS_ON_YOU.length - 1)} </span>}{on}</span>}{on && " "}
+              {timed(st) ? rowClock(st, now) : said ?? ago(s.updated)}
+            </span>}
         {/* (A row whose session left has no actions: there is nothing to act on.) */}
         {/* (Pressed with the pointer, it leaves the keyboard where it was: a focus the owner did not give
             the row would hold the list after the pointer left, and the pinned row would not take its place.) */}
