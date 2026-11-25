@@ -42,7 +42,7 @@ function Item({ m }: { m: MemoryRecord }) {
   return (
     <li className="group border-b border-line py-2 last:border-0" data-testid="memory-item" data-key={m.key} data-kind={m.kind}>
       <div className="flex items-center gap-2">
-        <code className="min-w-0 flex-1 truncate font-mono text-micro text-accent-ink" data-testid="memory-key" title={m.key}>{m.key}</code>
+        <code className="min-w-0 flex-1 truncate font-mono text-micro text-accent-ink max-md:whitespace-normal max-md:break-all" data-testid="memory-key" title={m.key}>{m.key}</code>
         <span className="shrink-0 rounded-xs bg-sunken px-1.5 py-px text-micro text-muted">{m.kind}</span>
         <span className={cn("flex shrink-0 gap-0.5", !edit && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100")}>
           {!edit ? (
