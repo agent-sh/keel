@@ -35,9 +35,10 @@
 import { resolve } from "node:path";
 import { ownerPrompt } from "../core/owner.ts";
 import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
-import { name as baseName, unwrap } from "./risk-words.ts";
+import { name as baseName, unwrap, type Run } from "./risk-words.ts";
 import { groupOf, readerAnswered, withScheme } from "./addresses.ts";
 import { bareFetch } from "./bare-fetch.ts";
+import { familyOf, readCode } from "./interp-code.ts";
 
 export type TargetKind = "host" | "email" | "remote" | "branch";
 // `pathq`: for a target a web address named, what follows its host (path and query, never the fragment), so a fetch of
@@ -324,13 +325,16 @@ export function shellReaches(command: string, f: ShellFacts): Reach[] {
 // Programs that run the code they are given as a word (-c, -e), and the words of such code that open a connection.
 const CODE_FLAG = /^(?:-[a-zA-Z]*[ceErp]|--eval|--print)$/;
 const RUNS_CODE = /^(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php)$/;
-const NET_CODE = /\b(?:urllib|urlopen|requests\.|httpx|http\.client|httplib|socket|aiohttp|websockets?|ftplib|smtplib|telnetlib|pycurl|fetch\s*\(|XMLHttpRequest|https?\.(?:request|get)|node:https?|node:net|net\.(?:connect|Socket|createConnection)|createConnection|Net::HTTP|open-uri|URI\.open|LWP|HTTP::Tiny|IO::Socket|curl_init|fsockopen|file_get_contents|Deno\.connect|Bun\.connect|WebSocket)/i;
 // The options that name a file of addresses for a fetcher to read.
 const FILE_FED: Record<string, RegExp> = {
-  wget: /^(?:-[A-Za-z]*i|--input-file(?:=.*)?)$/,
-  curl: /^(?:-[A-Za-z]*K|--config(?:=.*)?)$/,
+  curl: /^(?:-[A-Za-z]*K|--config(?:=.*)?|--url-file(?:=.*)?)$/,
+  wget: /^(?:-[A-Za-z]*i|--input-file(?:=.*)?|--config(?:=.*)?)$/,
   aria2c: /^(?:-i|--input-file(?:=.*)?)$/,
 };
+// The openssl commands that connect somewhere, and the options that name the place.
+const OPENSSL_PLACE: Record<string, RegExp> = Object.assign(Object.create(null), {
+  s_client: /^-(?:connect|host|proxy)$/, s_time: /^-(?:connect|proxy)$/, ocsp: /^-(?:url|host)$/, cmp: /^-(?:server|proxy)$/, ts: /^-(?:url)$/,
+});
 // socat's address types that open a connection, and git's options that take a value (the repository is the first word that is none).
 const SOCAT_NET = /^(?:TCP[46]?(?:-CONNECT)?|UDP[46]?(?:-(?:CONNECT|SENDTO|DATAGRAM))?|UDPLITE[46]?(?:-(?:CONNECT|SENDTO|DATAGRAM))?|SCTP[46]?(?:-CONNECT)?|IP[46]?(?:-(?:SENDTO|DATAGRAM))?|SSL|OPENSSL(?:-CONNECT|-DTLS-CLIENT)?|SOCKS4A?|SOCKS5-CONNECT|PROXY|VSOCK-CONNECT):/i;
 // What socat runs: the program or the shell line an EXEC or SYSTEM address names.
@@ -341,6 +345,171 @@ const GIT_CLONE_VALUED = /^-u$/;
 // What a call to an address it cannot read is held on: a spelled place may not carry a `$`, a substitution or a glob.
 const spelledPlace = (w: string) => !/[$`*{}\\]/.test(w);
 
+// ---- code given to a program that runs it ----
+
+const SHELLS = /^(?:bash|sh|zsh|dash)$/;
+// What a variable is given by the plain `name=value` parts before part `at` (null: given something the text does not say).
+// Nothing is known past a loop, a group, a read or an eval, or in a pipeline.
+const MODIFIES = /^(?:read|mapfile|readarray|eval|source|\.|declare|typeset|local|getopts|let|unset|printf|export|readonly|coproc)$/;
+function assigned(parts: Simple[], at: number): Map<string, string | null> {
+  const known = new Map<string, string | null>();
+  let all = false;
+  for (let k = 0; k < at && k < parts.length; k++) {
+    const p = parts[k]!;
+    if (p.nested) continue;
+    if (p.flow || p.unknown) { all = true; continue; }
+    const set = p.words.length > 0 && p.words.every((w) => /^[A-Za-z_]\w*=/.test(w));
+    if (!set) {
+      const w0 = p.words[0] ?? "";
+      if (MODIFIES.test(w0) && !(w0 === "export" && p.words.slice(1).every((w) => /^[A-Za-z_]\w*=/.test(w)))) all = true;
+      if (w0 === "export") for (const w of p.words.slice(1)) { const n = /^([A-Za-z_]\w*)=/.exec(w)?.[1]; if (n) known.set(n, p.dyn?.length || p.sep === "|" ? null : w.slice(n.length + 1)); }
+      continue;
+    }
+    p.words.forEach((w, i) => {
+      const n = w.slice(0, w.indexOf("="));
+      known.set(n, p.dyn?.includes(i) || p.sep === "|" || p.sep === "&" || p.sep === "|&" ? null : w.slice(n.length + 1));
+    });
+  }
+  if (all) for (const n of known.keys()) known.set(n, null);
+  return known;
+}
+
+// The text of a shell word as a part of the line spells it, with the variables whose value is written out put in.
+function devText(text: string, known: Map<string, string | null>): string {
+  const put = text.includes("$") ? text.replace(/\$(?:\{(\w+)\}|(\w+))/g, (m, a, b) => known.get(a ?? b) ?? m) : text;
+  return put.replace(/['"\\]/g, "");
+}
+
+// The value of the word at `idx` of a part: as written, or with its variables put in where the line gave them a value.
+// null: not known from the text.
+function wordValue(p: Simple, idx: number, known: Map<string, string | null>): string | null {
+  const k = p.dyn?.indexOf(idx) ?? -1;
+  const w = p.words[idx];
+  if (w === undefined) return null;
+  if (k < 0) return w;
+  const m = p.how?.[k];
+  if (!m || p.flow || m.rest || m.subs.length || !m.vars.length) return null;
+  let v = w;
+  for (let i = m.vars.length - 1; i >= 0; i--) {
+    const val = known.get(m.vars[i]!.name);
+    if (val === undefined || val === null) return null;
+    v = v.slice(0, m.vars[i]!.at) + val + v.slice(m.vars[i]!.at + m.vars[i]!.len);
+  }
+  return v;
+}
+
+// Where an unquoted <<< stands in a command's text.
+function hereString(text: string): number {
+  let q = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (q) { if (c === "\\" && q === '"') i++; else if (c === q) q = ""; continue; }
+    if (c === "\\") { i++; continue; }
+    if (c === "'" || c === '"') q = c;
+    else if (c === "<" && text.startsWith("<<<", i)) return i;
+  }
+  return -1;
+}
+
+// What a program that reads its code from its input is given: the here-document after it, a here-string, or what the command
+// before it in a pipeline prints. `blind`: it is given something the text does not say.
+function stdinCode(parts: Simple[], at: number, positional: boolean, known: Map<string, string | null>): { texts: string[]; blind: boolean } {
+  const p = parts[at]!;
+  const texts: string[] = [];
+  let blind = false;
+  const next = parts[at + 1];
+  if (next?.heredoc && next.doc !== undefined) texts.push(next.doc);
+  const h = hereString(p.text);
+  if (h >= 0) {
+    const sub = splitCommand(`x ${p.text.slice(h + 3)}`);
+    const first = sub?.[0];
+    const v = first ? wordValue(first, 1, known) : null;
+    if (v === null) blind = true; else texts.push(v);
+  }
+  const prev = parts[at - 1];
+  if (!positional && at > 0 && prev && (prev.sep === "|" || prev.sep === "|&") && !prev.heredoc) {
+    const w = unwrap(prev.words);
+    const prog = baseName(w.words[0]);
+    if ((prog === "echo" || prog === "printf") && !prev.unknown) {
+      const vals = w.words.slice(1).map((_, i) => wordValue(prev, w.at + 1 + i, known));
+      if (vals.some((v) => v === null)) blind = true;
+      else texts.push(vals.filter((v): v is string => v !== null && !(prog === "echo" && /^-[neE]+$/.test(v))).join(" "));
+    } else blind = true;
+  } else if (!positional && !texts.length && p.inputs?.length) blind = true;
+  return { texts, blind };
+}
+
+// The reaches of a program that runs code it is given: a shell (-c, or the lines on its input) and an interpreter (-c, -e, the
+// code on its input, a module it is told to run, a program it is told to fetch). A command the code starts is read as a command
+// of the line; a place the code opens a connection to is read from the addresses it spells; what the text does not say is unread.
+function interpreterReaches(parts: Simple[], at: number, run: Run, prog: string, f: ShellFacts, dir: string, depth: number, known: Map<string, string | null>, unread: (text: string) => void, add: (ts: Target[], how: Reach["how"], word?: string) => void): Reach[] {
+  const p = parts[at]!;
+  const args = run.words.slice(1);
+  const out: Reach[] = [];
+  const idx = (j: number) => run.at + 1 + j;
+  const inner = (line: string) => {
+    const ps = depth < 3 ? splitCommand(line) : null;
+    if (ps) out.push(...reachesOf(resolveVariables(ps), { ...f, cwd: dir }, depth + 1, false)); else unread(p.text);
+  };
+  if (SHELLS.test(prog)) {
+    const k = args.indexOf("-c");
+    if (k >= 0) {
+      const v = args[k + 1] === undefined ? undefined : wordValue(p, idx(k + 1), known);
+      if (v === null) unread(p.text);
+      else if (v !== undefined) {
+        const ps = depth < 2 ? splitCommand(v) : null;
+        if (ps) out.push(...reachesOf(resolveVariables(ps), { ...f, cwd: dir }, depth + 1, run.fed === "xargs")); else unread(p.text);
+      }
+    } else {
+      const { texts, blind } = stdinCode(parts, at, args.some((a) => !a.startsWith("-")), known);
+      for (const t of texts) inner(t);
+      if (blind) unread(p.text);
+    }
+    return out;
+  }
+  const fam = familyOf(prog);
+  const codes: string[] = [];
+  let blind = false;
+  let modArgs: string[] = [];
+  const positional: { a: string; j: number }[] = [];
+  for (let j = 0; j < args.length; j++) {
+    const a = args[j]!;
+    const take = (v: string | null) => { if (v === null) blind = true; else codes.push(v); };
+    let m: RegExpExecArray | null;
+    if (CODE_FLAG.test(a) && j + 1 < args.length) { take(wordValue(p, idx(j + 1), known)); j++; }
+    else if ((m = /^--(?:eval|print)=(.*)$/s.exec(a))) take(wordValue(p, idx(j), known) === null ? null : m[1]!);
+    else if (fam === "python" && (m = /^-c(.+)$/s.exec(a))) take(wordValue(p, idx(j), known) === null ? null : m[1]!);
+    else if (fam === "perl" && (m = /^-[Mm](.+)$/s.exec(a))) codes.push(`use ${m[1]};`);
+    else if (fam === "ruby" && (m = /^-r(.+)$/s.exec(a))) codes.push(`require "${m[1]}"`);
+    else if (fam === "python" && a === "-m" && args[j + 1] !== undefined) { codes.push(`import ${args[j + 1]}`); modArgs = args.slice(j + 2); break; }
+    else if (!a.startsWith("-") || a === "-") positional.push({ a, j });
+  }
+  if (fam === "js" && args[0] === "eval") for (const q of positional.slice(1)) { const v = wordValue(p, idx(q.j), known); if (v === null) blind = true; else codes.push(v); }
+  // A program given as an address (deno run URL): fetched and run, a send to the address.
+  if (fam === "js") for (const { a } of positional) if (/^https?:\/\//i.test(a)) { const ts = spelledPlace(a) ? wholeTargets(a, true) : []; if (ts.length) add(ts, "send"); else unread(p.text); }
+  // Code on the input.
+  const script = positional.some(({ a }) => a !== "-" && !(fam === "js" && (a === "eval" || a === "run" || a === "repl")));
+  const s = stdinCode(parts, at, script || codes.length > 0 || blind, known);
+  codes.push(...s.texts);
+  blind ||= s.blind;
+  let net = false;
+  let opaque = blind;
+  for (const c of codes) {
+    const r = readCode(c, fam);
+    net ||= r.net;
+    opaque ||= r.opaque;
+    if (r.net || r.opaque) for (const t of r.text) for (const x of extractTargets(t)) if (x.kind === "host" || x.kind === "remote") out.push({ target: x, how: "send" });
+    for (const line of r.lines) inner(line);
+  }
+  if (net) {
+    // The addresses a module run by name is given.
+    for (const a of modArgs) add(spelledPlace(a) ? wholeTargets(a) : [], "send");
+    opaque = true;
+  }
+  if (opaque) unread(p.text);
+  return out;
+}
+
 function reachesOf(parts: Simple[], f: ShellFacts, depth: number, fed = false): Reach[] {
   const out: Reach[] = [];
   const add = (ts: Target[], how: Reach["how"], word?: string) => { for (const target of ts) out.push({ target, how, ...(how === "fetch" && word !== undefined ? { word } : {}) }); };
@@ -349,13 +518,21 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number, fed = false): 
   let dir = f.cwd;
   // Remotes the line itself names (`git remote add o URL && git fetch o`): the address is the one it was given.
   const lineRemotes = new Map<string, string>();
+  const assigns = new Map<number, Map<string, string | null>>();
+  const known = (at: number) => { let k = assigns.get(at); if (!k) assigns.set(at, k = assigned(parts, at)); return k; };
   for (const [at, p] of parts.entries()) {
-    // A socket the shell opens: /dev/tcp/HOST/PORT, in any command of the line.
-    if (!p.unknown && p.text.includes("/dev/")) {
-      for (const m of p.text.matchAll(/\/dev\/(?:tcp|udp)\/([^/\s"'`;|&)]+)\/[0-9$]/g)) {
-        const ts = spelledPlace(m[1]!) ? wholeTargets(m[1]!) : [];
-        if (ts.length) add(ts, "send"); else if (!LOOPBACK_WORD.test(m[1]!)) unread(p.text);
+    // A socket the shell opens: /dev/tcp/HOST/PORT, in any command of the line (read as the shell reads the word: quotes taken
+    // off, the variables the line gave a written-out value put in).
+    if (!p.unknown && /\/|\$/.test(p.text)) {
+      const flat = devText(p.text, known(at));
+      if (flat.includes("/dev/")) {
+        for (const m of flat.matchAll(/\/dev\/(?:tcp|udp)\/([^/\s"'`;|&)]+)\//g)) {
+          const ts = spelledPlace(m[1]!) ? wholeTargets(m[1]!) : [];
+          if (ts.length) add(ts, "send"); else if (!LOOPBACK_WORD.test(m[1]!)) unread(p.text);
+        }
       }
+      // A variable that may hold the device, then a host and a port.
+      if (p.redirects && /\$\{?\w+\}?\/[^\s/]+\/(?:\d+|\$)/.test(flat)) unread(p.text);
     }
     if (p.heredoc || !p.words.length || p.unknown) continue;
     const run = unwrap(p.words);
@@ -363,23 +540,16 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number, fed = false): 
     const prog = baseName(words[0]);
     const args = words.slice(1);
     if (prog === "cd") { if (args[0] && !/[$`*?~]/.test(args[0])) dir = resolve(dir, args[0]); continue; }
-    if ((prog === "bash" || prog === "sh" || prog === "zsh" || prog === "dash") && depth < 2) {
-      const k = args.indexOf("-c");
-      const inner = k >= 0 && args[k + 1] ? splitCommand(args[k + 1]!) : null;
-      if (inner) out.push(...reachesOf(resolveVariables(inner), { ...f, cwd: dir }, depth + 1, run.fed === "xargs"));
-    } else if (RUNS_CODE.test(prog)) {
-      // Code given to an interpreter (a -c or -e word, or the here-document after it) that opens a connection: it sends to
-      // what the code computes. The addresses it spells are read as sends; the place is unread beside them.
-      const code = [...args.flatMap((a, k) => (CODE_FLAG.test(a) && args[k + 1] !== undefined ? [args[k + 1]!] : [])), ...(parts[at + 1]?.heredoc && parts[at + 1]!.doc !== undefined ? [parts[at + 1]!.doc!] : [])].join("\n");
-      if (code && NET_CODE.test(code)) {
-        for (const t of extractTargets(code)) if (t.kind === "host" || t.kind === "remote") out.push({ target: t, how: "send" });
-        unread(p.text);
+    if (SHELLS.test(prog) || RUNS_CODE.test(prog)) {
+      out.push(...interpreterReaches(parts, at, run, prog, f, dir, depth, known(at), unread, add));
+    } else if (prog === "openssl" && OPENSSL_PLACE[args[0] ?? ""]) {
+      // The place a client of openssl connects to: where there is no default place, a call that names none reads its input.
+      const k = args.findIndex((a) => OPENSSL_PLACE[args[0]!]!.test(a));
+      if (k >= 0 || args[0] === "s_client") {
+        const to = k >= 0 ? args[k + 1] : undefined;
+        const ts = to !== undefined && spelledPlace(to) ? wholeTargets(to) : [];
+        if (ts.length) add(ts, "send"); else unread(p.text);
       }
-    } else if (prog === "openssl" && args[0] === "s_client") {
-      const k = args.findIndex((a) => /^-(?:connect|host|proxy)$/.test(a));
-      const to = k >= 0 ? args[k + 1] : undefined;
-      const ts = to !== undefined && spelledPlace(to) ? wholeTargets(to) : [];
-      if (ts.length) add(ts, "send"); else unread(p.text);
     } else if (prog === "socat") {
       for (const a of args) {
         if (SOCAT_RUNS.test(a) && depth < 2) {
@@ -446,6 +616,18 @@ function reachesOf(parts: Simple[], f: ShellFacts, depth: number, fed = false): 
       if (args[i] === "remote" && /^(add|set-url)$/.test(args[i + 1] ?? "")) {
         const named = args.slice(i + 2).filter((a) => !a.startsWith("-"));
         if (named.length >= 2 && !lineRemotes.has(named[0]!)) lineRemotes.set(named[0]!, named[1]!);
+      }
+      // git archive --remote asks a repository somewhere else for a tree: a send to it.
+      if (args[i] === "archive") {
+        const rest = args.slice(i + 1);
+        const k = rest.findIndex((a) => a === "--remote" || a.startsWith("--remote="));
+        const from = k < 0 ? undefined : rest[k]!.startsWith("--remote=") ? rest[k]!.slice(9) : rest[k + 1];
+        if (from !== undefined) {
+          const here = at;
+          const url = /^(ext|fd)::/.test(from) ? undefined : /^[a-z][a-z0-9+.-]*:\/\//i.test(from) || from.includes("@") ? from : lineRemotes.get(from) ?? f.remoteUrl?.(from, here);
+          if (url !== undefined && spelledPlace(url)) add(wholeTargets(url, true), "send");
+          else if (url !== undefined || !/^[./~]/.test(from)) unread(p.text);
+        }
       }
       // A repository read from an address (or from a remote that has one): read as a fetch of it, as curl's is.
       if (args[i] === "clone" || args[i] === "fetch" || args[i] === "pull" || args[i] === "ls-remote") {
