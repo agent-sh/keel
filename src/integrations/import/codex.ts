@@ -103,6 +103,7 @@ const HISTORY_ONLY = "Shown as they were then; history only, not tools available
 // read converts them all, a rollout followed as it grows converts what it gained.
 // Codex's own clients a person types into: the terminal (codex-tui; codex_cli_rs before it), the editor extension and
 // the desktop app. Not codex_exec (a prompt a program passed), nor another writer of the format (Keel's own is "keel").
+const V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PEOPLE_CLIENTS = new Set(["codex-tui", "codex_cli_rs", "codex_vscode", "Codex Desktop"]);
 
 export class CodexConvert {
@@ -115,6 +116,13 @@ export class CodexConvert {
   // (`external-import-...`) holds that session's records, whatever they were there.
   private people = false;
   private importTurn = false;
+  // A forked or a subagent's rollout replays the history of the thread it came from first (that thread's
+  // session_meta and turns), and only the turns this thread started are its own. Codex's thread and turn ids are
+  // time-ordered (UUID v7): a turn this thread started has an id after the thread's. Where an id is not one, a
+  // rollout that is a fork counts no turn as its own.
+  private thread: string | undefined;
+  private fork = false;
+  private ownTurn = true;
   // Why each skipped item was left out, counted per reason for the report.
   skips = new Map<string, number>();
   // A native tool search, kept as a note for the model: its query, then the
@@ -129,8 +137,20 @@ export class CodexConvert {
     const ts = Date.parse(r.timestamp) || fallbackTs;
     const p = r.payload ?? {};
     if (r.type === "turn_context" && p.model) this.model = p.model;
-    if (r.type === "session_meta") this.people = PEOPLE_CLIENTS.has(p.originator) && (p.source === "cli" || p.source === "vscode") && p.thread_source === "user";
-    if ((r.type === "event_msg" && p.type === "task_started") || (r.type === "turn_context" && typeof p.turn_id === "string")) this.importTurn = String(p.turn_id ?? "").startsWith("external-import");
+    if (r.type === "session_meta") {
+      // The first is this thread's; one after it is the replayed thread's.
+      if (this.thread === undefined) {
+        this.thread = String(p.id ?? "");
+        this.people = PEOPLE_CLIENTS.has(p.originator) && (p.source === "cli" || p.source === "vscode") && p.thread_source === "user";
+        this.fork = !!p.forked_from_id;
+      } else this.fork = true;
+      this.ownTurn = !this.fork;
+    }
+    if ((r.type === "event_msg" && p.type === "task_started") || (r.type === "turn_context" && typeof p.turn_id === "string")) {
+      const turn = String(p.turn_id ?? "");
+      this.importTurn = turn.startsWith("external-import");
+      this.ownTurn = V7.test(turn) && V7.test(this.thread ?? "") ? turn >= this.thread! : !this.fork;
+    }
     if (r.type === "compacted") {
       // Codex replaces the model's history here: with its summary (`message`)
       // and the owner's messages it kept, else with the items it names. The
@@ -159,7 +179,7 @@ export class CodexConvert {
           const media = resultText((Array.isArray(p.content) ? p.content : []).filter((c: any) => c?.type && !TEXT_PARTS.has(c.type)));
           const parts = Array.isArray(media) ? media : media ? [{ type: "text", text: media }] : [];
           for (const m of parts) if (m.type === "text") missing.push(m.text);
-          b.user(text, ts, parts.filter((m) => m.type === "image"), this.people && !this.importTurn && textOnly(p.content).filter((t) => t.trim()).every((t) => typedWords(t) && !injected(t)));
+          b.user(text, ts, parts.filter((m) => m.type === "image"), this.people && !this.importTurn && this.ownTurn && textOnly(p.content).filter((t) => t.trim()).every((t) => typedWords(t) && !injected(t)));
         } else if (p.role === "assistant" && text.trim()) b.assistant([{ type: "text", text }], ts, model);
         else if (p.role === "assistant" && p.encrypted_content) b.assistant([{ type: "text", text: UNAVAILABLE }], ts, model);
         else if (p.role === "assistant") skip("an empty assistant message");

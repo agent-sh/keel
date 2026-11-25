@@ -128,6 +128,18 @@ test("Codex: a user message of a thread the user started in Codex's own client c
   expect(codex(tui, said("typed words", "# AGENTS.md instructions\n\nrules"), said("<codex_delegation>x</codex_delegation>"), said("[helper digest] news"))).toEqual([["typed words\n# AGENTS.md instructions\n\nrules", false], ["<codex_delegation>x</codex_delegation>", false], ["[helper digest] news", false]]);
 });
 
+test("Codex: a forked thread counts only the prompts of turns it started, not the history it replays", () => {
+  const own = "01a20ccd-19e1-7700-9e0b-962174f7f0a8", parent = "01a20ccc-83ab-79e2-acc1-0eb493ef27b2";
+  const before = "01a20ccc-86cb-7701-bf59-b7f9a5981c04", after = "01a20ccd-19ff-7d70-bc82-c11efb4e71cd";
+  const user = { originator: "Codex Desktop", source: "vscode", thread_source: "user" };
+  // A fork the person made: its meta names the thread it came from, then that thread's history is replayed.
+  expect(codex(meta({ ...user, id: own, forked_from_id: parent }), meta({ ...user, id: parent }), turn(before), said("typed in the thread it came from"), turn(after), said("typed in the fork"))).toEqual([["typed in the thread it came from", false], ["typed in the fork", true]]);
+  // A replay with no fork mark: the second session_meta is the replayed thread's.
+  expect(codex(meta({ ...user, id: own }), meta({ ...user, id: parent }), turn(before), said("replayed"), turn(after), said("its own"))).toEqual([["replayed", false], ["its own", true]]);
+  // Turn ids that are not time-ordered: a fork counts none of its prompts.
+  expect(codex(meta({ ...user, id: own, forked_from_id: parent }), turn("t1"), said("cannot tell"))).toEqual([["cannot tell", false]]);
+});
+
 test("Antigravity: no prompt counts, since a script's `agy -p` prompt is recorded as the IDE's typed one is", async () => {
   const dir = join(root, "agy-shape", "brain", "c1", ".system_generated", "logs");
   mkdirSync(dir, { recursive: true });
