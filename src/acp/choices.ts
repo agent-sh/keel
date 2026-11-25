@@ -23,9 +23,10 @@ export type ChoiceSet = { via: "config"; configId: string; name: string; current
 // `current` is unknown after a resume that stated nothing.
 export type Switch = { id: string; name: string; description?: string; current?: boolean };
 export type AgentChoices = { models?: ChoiceSet; modes?: ChoiceSet; efforts?: ChoiceSet; switches?: Switch[] };
-// What was learned of one agent: under which program (`key`), when, and what failed if it did.
+// What was learned of one agent: under which program (`key`), when, and what failed if it did
+// (`fails`: how many probes in a row, for the retry's back-off).
 // `commands`: the slash commands it last advertised.
-export type Learned = AgentChoices & { key: string; at: number; error?: string; commands?: SlashCommand[] };
+export type Learned = AgentChoices & { key: string; at: number; error?: string; fails?: number; commands?: SlashCommand[] };
 
 // An agent's slash commands as it advertised them (ACP v1 slash-commands): a name the message box can take
 // (`/name`, then free text), what it does, and the hint for its input.

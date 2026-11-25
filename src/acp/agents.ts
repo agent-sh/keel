@@ -85,11 +85,16 @@ export function writeCustom(agents: Record<string, CustomAgent>, path = agentsPa
 // How long a probe of an agent's choices is given: its start, initialize and
 // session/new. An agent run through npx or uvx downloads its package on its
 // first start, which takes a minute or more on a slow link; past this the
-// probe is a failure. A failure holds until the agent's program changes or RETRY_MS
-// passes: the owner signs an agent in, or its package finishes downloading, with no
-// change to the program's file, and its models should then appear on their own.
+// probe is a failure. A failure holds until the agent's program changes or the retry
+// time passes: the owner signs an agent in, or its package finishes downloading, with no
+// change to the program's file, and its models should then appear on their own. The
+// retry time doubles with each failure in a row (an agent that stays offline starts
+// its program less and less often), up to RETRY_MOST_MS; a success or a changed
+// program starts it again from RETRY_MS.
 const PROBE_MS = 180_000;
 export const RETRY_MS = 10 * 60_000;
+export const RETRY_MOST_MS = 6 * 3_600_000;
+export const retryAfter = (fails: number): number => Math.min(RETRY_MOST_MS, RETRY_MS * 2 ** Math.max(0, Math.min(fails, 30) - 1));
 const COMMANDS_GRACE_MS = 1_000;
 
 // Which program an agent is now: its command, arguments and the command's
@@ -155,11 +160,11 @@ export class AcpAgents {
   // process of its own).
   ask(agents: AcpAgent[]) {
     // (One learned before commands were kept is asked once more for them.)
-    // (One whose last probe failed is asked again after RETRY_MS.)
+    // (One whose last probe failed is asked again after retryAfter(its failures in a row).)
     const now = Date.now();
     for (const a of agents) {
       const k = this.known[a.id];
-      if (a.run && (k?.key !== programKey(a.run) || (!k?.error && !k?.commands) || (k?.error && now - k.at >= RETRY_MS)) && this.asking !== a.id && !this.queue.some((q) => q.id === a.id)) this.queue.push(a);
+      if (a.run && (k?.key !== programKey(a.run) || (!k?.error && !k?.commands) || (k?.error && now - k.at >= retryAfter(k.fails ?? 1))) && this.asking !== a.id && !this.queue.some((q) => q.id === a.id)) this.queue.push(a);
     }
     if (!this.probing) void this.drain();
   }
@@ -210,8 +215,9 @@ export class AcpAgents {
     } catch (e) {
       // A probe that failed takes nothing away: what the agent offered before stays listed.
       const code = (e as any)?.code;
-      const { error: _, ...prev } = this.known[a.id] ?? ({} as Learned);
-      this.keep(a.id, { ...prev, key, at: Date.now(), error: code === -32000 ? "it needs its own sign-in first" : (e as Error).message });
+      const { error: _, fails, ...prev } = this.known[a.id] ?? ({} as Learned);
+      const was = this.known[a.id];
+      this.keep(a.id, { ...prev, key, at: Date.now(), fails: was?.key === key && was.error ? (fails ?? 1) + 1 : 1, error: code === -32000 ? "it needs its own sign-in first" : (e as Error).message });
     } finally {
       clearTimeout(timer);
       conn?.close();
