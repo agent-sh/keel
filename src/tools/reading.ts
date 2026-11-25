@@ -41,7 +41,10 @@ export type Span = { from: number; to: number };
 // with what, as a hash). A file the session has seen whole
 // (`ctx.seen`: a raw read, a command that printed it, its own Write) has no
 // entry: nothing is held back from it. Kept with `ctx.seen`, for as long.
-export type Known = { mtime: number; lines: Span[]; refused?: string };
+// `reads`: the readings the session got of the file, each by its call, with the page it covered and the lines
+// of that page read raw since: a reading whose whole page was read raw after it saved nothing (rereadOf).
+type Reading = Span & { call: string; raw: Span[] };
+export type Known = { mtime: number; lines: Span[]; refused?: string; reads?: Reading[] };
 type Book = { files: Map<string, Known>; restUntil: number; said: boolean };
 const books = new WeakMap<Map<string, number>, Book>();
 const bookOf = (ctx: Pick<ToolContext, "seen">): Book => {
@@ -186,13 +189,22 @@ export function edited(ctx: Pick<ToolContext, "seen">, p: string, before: string
 }
 
 // A raw read of a text file: seen whole, it is the session's as any file it read; a range of a file it has a
-// reading of adds those lines to the ones it has.
-export function sawText(ctx: Pick<ToolContext, "seen">, p: string, mtime: number, lines?: Span & { whole: boolean }): void {
+// reading of adds those lines to the ones it has. Returns the calls of the readings whose whole page has now
+// been read raw as well: the session carries the page after all, and the reading saved it nothing.
+export function sawText(ctx: Pick<ToolContext, "seen">, p: string, mtime: number, lines?: Span & { whole: boolean }): string[] {
   const b = books.get(ctx.seen);
   const k = b?.files.get(p);
-  if (!k || !lines || lines.whole) { b?.files.delete(p); ctx.seen.set(p, mtime); return; }
+  if (!k || !lines || lines.whole) { b?.files.delete(p); ctx.seen.set(p, mtime); return (k?.reads ?? []).map((r) => r.call); }
   if (k.mtime !== mtime) { k.lines = []; k.mtime = mtime; }
   k.lines = merge([...k.lines, { from: lines.from, to: lines.to }]);
+  const again: string[] = [];
+  k.reads = (k.reads ?? []).filter((r) => {
+    r.raw = merge([...r.raw, { from: Math.max(r.from, lines.from), to: Math.min(r.to, lines.to) }]);
+    const all = r.raw.length === 1 && r.raw[0]!.from <= r.from && r.raw[0]!.to >= r.to;
+    if (all) again.push(r.call);
+    return !all;
+  });
+  return again;
 }
 
 // A command that ran to its end with status 0 and printed lines of a file the session has a reading of: the
@@ -405,7 +417,9 @@ export async function throughReader(p: string, ctx: ToolContext, page: Page, o: 
   // Seen whole already and unchanged since: the reading takes nothing back.
   if (ctx.seen.get(p) !== o.mtime) {
     ctx.seen.delete(p);
-    book.files.set(p, { mtime: o.mtime, lines: quoted });
+    const had = book.files.get(p);
+    const reads = [...(had?.mtime === o.mtime ? had.reads ?? [] : []), ...(ctx.callId ? [{ call: ctx.callId, from: page.first, to: page.last, raw: [] }] : [])];
+    book.files.set(p, { mtime: o.mtime, lines: quoted, reads });
   }
   const usage = addUsage(emptyUsage(), o2.usage);
   return {

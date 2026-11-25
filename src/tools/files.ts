@@ -289,7 +289,8 @@ const BINARY = new Set([".zip", ".gz", ".tgz", ".xz", ".zst", ".7z", ".tar", ".x
 const IMAGE = /^image\/(png|jpeg|gif|webp)$/;
 
 // `compiled`: the text is a reader's compiled reading of the page, not the page (src/tools/reading.ts);
-// `shown`: what such a read leaves for the transcript and the savings ledger.
+// `shown`: what such a read leaves for the transcript and the savings ledger; of a raw read, the readings it
+// read again whole (`reread`).
 export type ReadResult = { content: string | (TextBlock | ImageBlock)[]; error?: boolean; partial?: boolean; compiled?: boolean; shown?: unknown };
 
 // A page of a text file as the read answers it: a reader's compiled reading of it by default, the page itself
@@ -302,8 +303,9 @@ export async function textPage(p: string, ctx: ToolContext, mtime: number, r: { 
   const page = pageOf(note ? body.slice(0, body.length - note.length - 2) : body, o.numbered !== false, Math.max(1, o.first ?? 1), o.total, note);
   const via = await throughReader(p, ctx, page, { raw: o.raw, aim: o.aim, mtime, form: o.form });
   if ("content" in via) return { content: via.content, partial, compiled: true, shown: via.shown };
-  sawText(ctx, p, mtime, { from: page.first, to: page.last, whole: page.first <= 1 && !partial && o.total !== undefined && page.last >= o.total });
-  return { content: via.note ? `${via.note}\n${body}` : body, partial };
+  const again = sawText(ctx, p, mtime, { from: page.first, to: page.last, whole: page.first <= 1 && !partial && o.total !== undefined && page.last >= o.total });
+  // (The readings of these lines that this read made worth nothing: what the savings ledger takes back, src/admin/outcomes.ts.)
+  return { content: via.note ? `${via.note}\n${body}` : body, partial, ...(again.length ? { shown: { reread: { of: again } } } : {}) };
 }
 
 // Lines `offset`.. of a text file, numbered from 1 (`N<tab>line`), cut to one

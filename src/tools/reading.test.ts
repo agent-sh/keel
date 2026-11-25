@@ -266,6 +266,20 @@ describe("an edit after a reading", () => {
     expect(knownOf(ctx, join(dir, "seen.ts"))).toBeUndefined();
   });
 
+  test("a raw read says which readings it read again whole: a part of the page is none, the whole page is", async () => {
+    const { ctx } = rig();
+    const p = file();
+    await Read.run({ file_path: p }, { ...ctx, callId: "reading-1" });
+    expect((await Read.run({ file_path: p, raw: true, offset: 300, limit: 5 }, ctx)).shown).toBeUndefined();
+    expect((await Read.run({ file_path: p, raw: true, offset: 1, limit: 400 }, ctx)).shown).toBeUndefined();
+    expect((await Read.run({ file_path: p, raw: true, offset: 390, limit: 211 }, ctx)).shown).toEqual({ reread: { of: ["reading-1"] } });
+    // Said once: a later raw read has no reading left to take back.
+    expect((await Read.run({ file_path: p, raw: true }, ctx)).shown).toBeUndefined();
+    const q = file();
+    await read_file.run({ file_path: q }, { ...ctx, callId: "reading-2" });
+    expect((await read_file.run({ file_path: q, raw: true }, ctx)).shown).toEqual({ reread: { of: ["reading-2"] } });
+  });
+
   test("the known lines follow the session's own edits", async () => {
     const { ctx } = rig();
     const p = file();

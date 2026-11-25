@@ -134,6 +134,10 @@ export class Outcomes {
 
   private saving(sessionId: string, ts: number, data: any) {
     for (const [callId, shown] of Object.entries((data?.shown ?? {}) as Record<string, any>)) {
+      // A raw read of all the lines an earlier reading stood for (src/tools/reading.ts): the session carries
+      // them after all, so that reading's saving is taken back. Only a reading not read again raw is booked.
+      const again: unknown = shown?.reread?.of;
+      if (Array.isArray(again)) for (const call of again) if (typeof call === "string") this.store.db.query("DELETE FROM telemetry_savings WHERE session_id = ? AND feature = 'readers' AND call_id = ?").run(sessionId, call);
       const r = shown?.readers;
       if (!r || r.whole || !r.working) continue;
       const tag = armOf(this.store, sessionId);

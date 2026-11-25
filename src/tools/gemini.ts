@@ -117,7 +117,7 @@ const read_file: Tool = {
     }
     const r = await readFile(p, ctx, asked);
     // (A reading keeps the numbers of the lines it shows: they say which lines are the file's own.)
-    if (typeof r.content === "string" && !r.error && !r.compiled) return ok(r.content.replace(/^ *\d+\t/gm, ""));
+    if (typeof r.content === "string" && !r.error && !r.compiled) return { ...ok(r.content.replace(/^ *\d+\t/gm, "")), ...(r.shown ? { shown: r.shown } : {}) };
     return { content: r.content, is_error: r.error, ...(r.shown ? { shown: r.shown } : {}) };
   },
 };

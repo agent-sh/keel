@@ -9,6 +9,8 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { allHooks } from "./hooks.ts";
+import { Outcomes } from "../admin/outcomes.ts";
+import { Telemetry } from "../admin/telemetry.ts";
 import { patchSettings, settings } from "../admin/settings.ts";
 import { AIM_PART, namedIn, readAim } from "./read-aim.ts";
 import { Engine } from "./turn.ts";
@@ -27,6 +29,7 @@ function rig(models = [BIG, SMALL]) {
   writeFileSync(join(dir, "values.ts"), Array.from({ length: 500 }, (_, i) => line(i + 1)).join("\n") + "\n");
   const store = new Store(dir);
   const sent: { model: string; purpose?: string; text: string }[] = [];
+  let reads: object[] = [{}];
   const provider = {
     id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
     stream: async (req: any) => {
@@ -34,9 +37,10 @@ function rig(models = [BIG, SMALL]) {
       const text = (last.content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n");
       sent.push({ model: req.model, purpose: req.purpose, text });
       if (req.purpose === "reader") return { model: req.model, blocks: [{ type: "text", text: "A file of exported constants, one a line.\n- lines 1-500: the constants\n@@ 240-241" }], stop: "end_turn", usage: { input: 9_000, cache_read: 0, cache_write: 0, output: 40 } };
-      const results = (last.content as any[]).filter((b) => b.type === "tool_result");
-      if (results.length) return { model: req.model, blocks: [{ type: "text", text: "Read." }], stop: "end_turn", usage: { input: 10, cache_read: 0, cache_write: 0, output: 2 } };
-      return { model: req.model, blocks: [{ type: "text", text: "I will read values.ts to find where v240 is set." }, { type: "tool_use", id: "read-1", name: "Read", input: { file_path: join(dir, "values.ts") } }],
+      // The reads the test asked for, one a step (`reads`: each call's input besides the file), then the turn's end.
+      const done = (req.messages as any[]).flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result").length;
+      if (done >= reads.length) return { model: req.model, blocks: [{ type: "text", text: "Read." }], stop: "end_turn", usage: { input: 10, cache_read: 0, cache_write: 0, output: 2 } };
+      return { model: req.model, blocks: [...(done ? [] : [{ type: "text", text: "I will read values.ts to find where v240 is set." }]), { type: "tool_use", id: `read-${done + 1}`, name: "Read", input: { file_path: join(dir, "values.ts"), ...reads[done] } }],
         stop: "tool_use", usage: { input: 100, cache_read: 0, cache_write: 0, output: 30 } };
     },
   };
@@ -46,7 +50,8 @@ function rig(models = [BIG, SMALL]) {
   };
   const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }), recovered: () => {} } as any, join(dir, "spill"));
   (engine as any).systemOf = async () => ({ text: "A stand-in system prompt.", split: 0 });
-  const run = async (settings = {}, prompt = "Look at the values file and say where v240 is set.", parent?: string) => {
+  const run = async (settings = {}, prompt = "Look at the values file and say where v240 is set.", parent?: string, calls: object[] = [{}]) => {
+    reads = calls;
     const s = store.createSession({ model: BIG.id, workspace: dir, settings });
     // (An agent: the column is the agents module's, which this rig does not load.)
     if (parent) {
@@ -157,4 +162,22 @@ test("the owner's defaults: a session he talks to reads through a reader, an age
     patchSettings(before);
     r.store.db.close();
   }
+});
+
+test("the savings ledger books a reading, and takes it back when all its lines are read raw after it", async () => {
+  const r = rig();
+  // (The ledgers' tables, then the savings ledger itself; their hooks go with this file's.)
+  new Telemetry(r.store, new Bus());
+  new Outcomes(r.store);
+  const booked = (id: string) => r.store.db.query<{ call_id: string }, [string]>("SELECT call_id FROM telemetry_savings WHERE session_id = ? AND feature = 'readers'").all(id);
+  // A reading: one row, for the reader's call.
+  const kept = await r.run();
+  expect(booked(kept.id)).toHaveLength(1);
+  expect(booked(kept.id)[0]!.call_id).toBe("read-1");
+  // A few of its lines read raw after it (the lines an edit needs): the reading still stood for the rest.
+  expect(booked((await r.run({}, undefined, undefined, [{}, { raw: true, offset: 300, limit: 5 }])).id)).toHaveLength(1);
+  // The whole file raw after it, and the page in two raw halves: the session carries the page after all.
+  expect(booked((await r.run({}, undefined, undefined, [{}, { raw: true }])).id)).toHaveLength(0);
+  expect(booked((await r.run({}, undefined, undefined, [{}, { raw: true, offset: 1, limit: 260 }, { raw: true, offset: 250, limit: 300 }])).id)).toHaveLength(0);
+  r.store.db.close();
 });
