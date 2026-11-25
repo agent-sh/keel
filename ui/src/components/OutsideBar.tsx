@@ -18,7 +18,7 @@ import { clock, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { useSessionState } from "../lib/watch.ts";
 import { Mark } from "./Mark.tsx";
 
-type Send = { id: string; text: string; state: "stored" | "started" | "delivered" | "lost" | "failed"; said: string | null };
+type Send = { id: string; text: string; state: "stored" | "started" | "delivered" | "lost" | "failed" | "cut"; said: string | null };
 type Route = "resume" | "steer" | "held" | "missing" | "none";
 type Details = {
   harness: string; label: string; source_id: string; path: string; live: boolean; files: string[]; usage: { model: string; usage: Usage; cost: number | null }[];
@@ -120,9 +120,9 @@ export function OutsideBar({ session }: { session: Session }) {
             <li key={x.id} className="k-outside-send" data-state={x.state} data-testid="outside-send-row">
               <span className="k-outside-send-text" title={x.text}>{x.text}</span>
               <span className="k-outside-send-said">{x.state === "stored" ? `Going to ${where}` : x.state === "started" ? `Given to ${where}` : x.said ?? "Not delivered"}</span>
-              {(x.state === "lost" || x.state === "failed") && (
+              {(x.state === "lost" || x.state === "failed" || x.state === "cut") && (
                 <>
-                  {answering && <button type="button" className="k-btn" data-testid="outside-send-again" onClick={() => void send(x.text, x.id)}>Send again</button>}
+                  {answering && x.state !== "cut" && <button type="button" className="k-btn" data-testid="outside-send-again" onClick={() => void send(x.text, x.id)}>Send again</button>}
                   <button type="button" className="k-btn" data-quiet="" aria-label="Put it away" data-testid="outside-send-dismiss" onClick={() => void dismiss(x.id)}><X aria-hidden="true" /></button>
                 </>
               )}

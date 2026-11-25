@@ -55,8 +55,8 @@ function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean } = {
   const cards: { name: string; input: any; why: string; shown?: string }[] = [];
   let decide: (name: string) => { deny: string } | void = () => undefined;
   const stub = { askOnce: async (_s, call, name, why, _held, shown) => { cards.push({ name, input: call.input, why, shown }); return decide(name); }, approvals: () => [], settled: () => {} } as CardGate;
-  const real = opts.realGate ? new Gate(store, bus) : undefined;
-  const gate: CardGate = real ?? stub;
+  let real = opts.realGate ? new Gate(store, bus) : undefined;
+  let gate: CardGate = real ?? stub;
   const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => opts.holder?.() ?? o.holderNow(id), retell: (id: string) => o.retell(id) };
   const make = () => (app = new CodexApp({ store, bus, outside, gate: () => gate, bin: () => STANDIN, home: () => codex, trouble: (e) => { throw e; } }));
   make();
@@ -76,7 +76,9 @@ function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean } = {
     rec("event_msg", { type: "task_complete", turn_id: "t0" });
     return until(() => store.sessions({ outside: true }).find((s) => s.outside?.source_id === thread));
   };
-  return { dir, codex, cwd, store, bus, frames, o, gate: real, app: () => app!, make, cards, setDecide: (f: typeof decide) => { decide = f; }, thread, rollout, rec, session, done };
+  // The gate of the next daemon (its constructor parks every card still open).
+  const nextGate = () => (gate = real = new Gate(store, bus));
+  return { dir, codex, cwd, store, bus, frames, o, gate: () => real, nextGate, app: () => app!, make, cards, setDecide: (f: typeof decide) => { decide = f; }, thread, rollout, rec, session, done };
 }
 
 describe("a Codex session answered in place", () => {
@@ -133,11 +135,11 @@ describe("a Codex session answered in place", () => {
     try {
       const s = await r.session();
       r.app().send(s.id, "edit the constant", "k1");
-      const a = await until(() => r.gate!.approvals({ session: s.id, pending: true })[0], 15_000);
+      const a = await until(() => r.gate()!.approvals({ session: s.id, pending: true })[0], 15_000);
       expect(a).toMatchObject({ tool: "Codex file change", kind: "edit", once: true, risk: "high", facts: { held: "harness" } });
       expect(a.summary).toContain("+const a = 2;");
       expect(a.summary).toContain(join(r.cwd, "a.ts"));
-      expect(r.gate!.resolve(a.id, s.id, { choice: "deny" })).toEqual({ ok: true });
+      expect(r.gate()!.resolve(a.id, s.id, { choice: "deny" })).toEqual({ ok: true });
       await until(() => readFileSync(r.rollout, "utf8").includes("The change was declined: edit the constant"), 15_000);
       await until(() => !r.app().ours(s.id));
     } finally { r.done(); }
@@ -184,22 +186,39 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   });
 
-  test("after a restart a send that started is looked for in the rollout, never sent again", async () => {
-    const r = rig();
+  test("after a restart a send that started is looked for in the rollout, never sent again; a turn it cut and its cards say so", async () => {
+    const r = rig({ realGate: true });
     try {
       const s = await r.session();
       const size = readFileSync(r.rollout).length;
       const put = r.store.db.query("INSERT INTO outside_sends (id, session_id, key, text, state, offset, said, created) VALUES (?, ?, ?, ?, 'started', ?, NULL, ?)");
       put.run("a", s.id, "ka", "it went", size, Date.now());
       put.run("b", s.id, "kb", "it did not", size, Date.now());
+      put.run("c", s.id, "kc", "it was cut", size, Date.now());
       r.rec("event_msg", { type: "user_message", message: "it went" });
+      r.rec("event_msg", { type: "task_complete", turn_id: "t1" });
+      r.rec("event_msg", { type: "user_message", message: "it was cut" });
+      // The daemon ended while Codex waited on a card: the card is still open in the store.
+      const call = { id: "codex-x-c1-c1", tool: { name: "Codex command", kind: "shell", description: "", readOnly: false, input_schema: { properties: { command: {} } }, run: async () => ({ content: "" }) }, input: { command: "make" }, ctx: { sessionId: s.id, cwd: r.cwd, signal: new AbortController().signal, spillDir: "", seen: new Map() } } as any;
+      void r.gate()!.askOnce(r.store.session(s.id)!, call, "Codex command", "Codex asks", "harness");
+      const card = await until(() => r.gate()!.approvals({ session: s.id, pending: true })[0]);
       r.app().stop();
+      r.nextGate();
       r.make().start();
-      expect(r.store.db.query<{ id: string; state: string }, []>("SELECT id, state FROM outside_sends ORDER BY id").all()).toEqual([{ id: "a", state: "delivered" }, { id: "b", state: "lost" }]);
-      expect(r.app().sends(s.id).map((x) => x.said)).toEqual(["Keel restarted while it went, and the session does not hold it: send it again"]);
+      expect(r.gate()!.approval(card.id)).toMatchObject({ state: "cancelled", reason: "Keel restarted while Codex worked: the turn stopped there" });
+      expect(r.store.db.query<{ id: string; state: string }, []>("SELECT id, state FROM outside_sends ORDER BY id").all()).toEqual([{ id: "a", state: "delivered" }, { id: "b", state: "lost" }, { id: "c", state: "cut" }]);
+      expect(r.app().sends(s.id).map((x) => x.said)).toEqual(["Keel restarted while it went, and the session does not hold it: send it again", "Keel restarted while Codex worked: the turn stopped there"]);
+      expect(r.app().dismiss(s.id, "c")).toBe(true);
       expect(readFileSync(r.rollout, "utf8").match(/it did not/g)).toBeNull();
       // Sent again by the owner, it replaces the lost one.
-      r.app().send(s.id, "it did not", "kc", "b");
+      const again = r.app().send(s.id, "it did not", "kd", "b");
+      expect("send" in again ? again.send.state : again).toBe("stored");
+      const asked = await until(() => {
+        const gone = r.app().sends(s.id).find((x) => x.key === "kd" && (x.state === "lost" || x.state === "failed"));
+        if (gone) throw new Error(`the send did not go: ${gone.said}`);
+        return r.gate()!.approvals({ session: s.id, pending: true })[0];
+      }, 15_000);
+      r.gate()!.resolve(asked.id, s.id, { choice: "once", seen: "whole" });
       await until(() => readFileSync(r.rollout, "utf8").includes("The command was allowed: it did not"), 15_000);
       await until(() => !r.app().ours(s.id));
       expect(r.store.db.query<{ id: string }, []>("SELECT id FROM outside_sends WHERE id = 'b'").all()).toEqual([]);

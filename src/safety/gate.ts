@@ -2290,13 +2290,14 @@ export class Gate {
   // A call was dispatched, or its result is stored: a card of it that a
   // restart left parked and nothing took back (a hook that asked before the
   // restart and not after it) would stay open and answer nothing. It closes.
-  settled(sessionId: string, callId: string) {
+  // `reason`: why it closed, when the caller knows better (a harness's turn a restart stopped).
+  settled(sessionId: string, callId: string, reason = "the call went on without this question") {
     const key = callKey(sessionId, callId);
     const id = this.parked.get(key);
     if (id === undefined) return;
     this.parked.delete(key);
     const a = this.approval(id);
-    if (a?.state === "pending") this.finish(a, { state: "cancelled", reason: "the call went on without this question" });
+    if (a?.state === "pending") this.finish(a, { state: "cancelled", reason });
   }
 
   // A parked card of this call (a one-call card only for askOnce), taken back.

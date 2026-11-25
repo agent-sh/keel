@@ -57,8 +57,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS outside_sends_key ON outside_sends(session_id,
 
 // stored: taken, not yet given to Codex. started: given (turn/start or turn/steer written). delivered: the
 // rollout holds it. lost: it was given and the rollout does not hold it, or Codex refused it: sent again
-// only by the owner. failed: refused before it went (`said` says why).
-export type SendState = "stored" | "started" | "delivered" | "lost" | "failed";
+// only by the owner. failed: refused before it went (`said` says why). cut: the rollout holds it and the
+// turn it started stopped with a restart of Keel's (Keel's child ended with the daemon), said until put away.
+export type SendState = "stored" | "started" | "delivered" | "lost" | "failed" | "cut";
+const CUT = "Keel restarted while Codex worked: the turn stopped there";
 export type Send = { id: string; session_id: string; key: string; text: string; state: SendState; offset: number | null; said: string | null; created: number };
 
 // What of the gate the driver uses: the one-call card, and the open cards it closes at a start.
@@ -112,6 +114,12 @@ export function holdsMessage(records: Json[], text: string): boolean {
     if (r?.type === "response_item" && p?.type === "message" && p.role === "user") return texts(p.content).trim() === want;
     return false;
   });
+}
+
+// Whether the turn the message is in ended in the records: a task_complete or turn_aborted after it.
+export function turnEnded(records: Json[], text: string): boolean {
+  const at = records.findIndex((r) => holdsMessage([r], text));
+  return at >= 0 && records.slice(at + 1).some((r) => r?.type === "event_msg" && (r.payload?.type === "task_complete" || r.payload?.type === "turn_aborted"));
 }
 
 // The records of a file from a byte offset on (the bytes a send started at): what the thread gained since.
@@ -220,7 +228,7 @@ export class CodexApp {
 
   // A lost or refused send, put away by the owner.
   dismiss(sessionId: string, id: string): boolean {
-    const n = this.d.store.db.query("DELETE FROM outside_sends WHERE id = ? AND session_id = ? AND state IN ('lost', 'failed')").run(id, sessionId).changes;
+    const n = this.d.store.db.query("DELETE FROM outside_sends WHERE id = ? AND session_id = ? AND state IN ('lost', 'failed', 'cut')").run(id, sessionId).changes;
     if (n) this.told(sessionId);
     return n > 0;
   }
@@ -452,11 +460,17 @@ export class CodexApp {
   // At the daemon's start: a send a restart cut after it started is looked for in the rollout (never sent
   // again by itself); one that never started goes now if the thread is free.
   start() {
+    // A card Codex raised before the restart answers nothing now: the child that asked ended with the daemon.
+    const gate = this.d.gate();
+    for (const a of gate?.approvals({ pending: true }) ?? []) {
+      if (a.call_id.startsWith("codex-") && this.d.store.session(a.session_id)?.outside) gate!.settled(a.session_id, a.call_id, CUT);
+    }
     for (const s of this.d.store.db.query<Send, []>("SELECT * FROM outside_sends WHERE state IN ('stored', 'started') ORDER BY created").all()) {
       const row = this.d.outside.row(s.session_id);
       if (!row) { this.set(s.id, "lost", { said: "its session is no longer followed" }); continue; }
       if (s.state === "started") {
-        if (holdsMessage(recordsFrom(row.path, s.offset ?? 0), s.text)) this.set(s.id, "delivered");
+        const after = recordsFrom(row.path, s.offset ?? 0);
+        if (holdsMessage(after, s.text)) this.set(s.id, turnEnded(after, s.text) ? "delivered" : "cut", turnEnded(after, s.text) ? {} : { said: CUT });
         else this.set(s.id, "lost", { said: "Keel restarted while it went, and the session does not hold it: send it again" });
         continue;
       }
