@@ -2020,3 +2020,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-work-fold svg { width: 0.75rem; height: 0.75rem; opacity: 0.7; }
 .k-work-fold:is(:hover, :focus-visible) { color: var(--fg); background: var(--hover); outline: none; }
 .k-work-fold:focus-visible { box-shadow: 0 0 0 2px var(--ring); }
+/* A phone's bar is quiet too: the title at the body's size, regular weight, muted ink. */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
+  .k-station .k-station-identity .k-station-title { font-size: var(--text-base); font-weight: 400; color: var(--muted); letter-spacing: 0; }
+}
