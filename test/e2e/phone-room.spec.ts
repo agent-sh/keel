@@ -696,7 +696,7 @@ test.describe("on a phone, what waits", () => {
 // no scroll. (390x844 at 150%: the heads took 245 px, the title cut to 10 characters.)
 test.describe("on a phone at a large text size, the head", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
-  test("leaves the room to what waits, and the title reads whole", async ({ browser, request }) => {
+  test("leaves the room to what waits, and the title is one line", async ({ browser, request }) => {
     const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
     test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
     const tag = Math.random().toString(36).slice(2, 6);
@@ -713,8 +713,8 @@ test.describe("on a phone at a large text size, the head", () => {
           await page.goto(`/s/${session.id}`);
           const pane = page.locator(".k-station[data-helm]");
           await expect(pane.getByTestId("deny")).toBeAttached();
-          // The title whole, the head with no tools of its own.
-          await expect.poll(() => pane.getByTestId("station-title").evaluate((el) => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+          // The title one line (cut to the room by an ellipsis: the bar is one row, its full title the tooltip's), the head with no tools of its own.
+          await expect.poll(() => pane.getByTestId("station-title").evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
           await expect(pane.getByTestId("station-focus")).toBeHidden();
           // The three answers whole in the region, with no scroll.
           const shown = () => pane.evaluate((el) => {
