@@ -185,6 +185,14 @@ export function says(path: string, body?: unknown): void {
   fetch(path, { method: "POST", headers: body === undefined ? undefined : { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), keepalive: true, signal: reads.signal }).catch(() => {});
 }
 
+// The signal of a request that is only worth sending while the daemon is heard and is sent again
+// later when it did not go (the owner's presses): given up with the link like a read, so a batch
+// sent into a silent link never holds a connection the catch-up needs, nor the sender's one batch
+// at a time. Null while the page knows the daemon is not heard.
+export function whileLinked(): AbortSignal | null {
+  return opened && !state.connected ? null : reads.signal;
+}
+
 export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   const asks = !init?.method || init.method === "GET";
   const cut = reads.signal;

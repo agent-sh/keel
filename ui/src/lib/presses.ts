@@ -15,6 +15,7 @@ import { every } from "./clock.ts";
 import { Batcher, isDrawn, nameOf, type Body } from "./press-batch.ts";
 import { keyRan } from "./keys.ts";
 import { shell } from "./shell.ts";
+import { whileLinked } from "./store.ts";
 import { getUI, onUI, phone } from "./ui.ts";
 
 const CONTROL = "button, a[href], summary, [role=button], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=radio], [role=switch], [role=checkbox], [role=option], input[type=checkbox], input[type=radio], input[type=button], input[type=submit]";
@@ -38,7 +39,10 @@ export const controlName = (el: Element): string | null => {
 const disabled = (el: Element) => (el as HTMLButtonElement).disabled === true || el.getAttribute("aria-disabled") === "true";
 
 async function send(b: Body, last: boolean): Promise<{ record: boolean } | void> {
-  const r = await fetch("/api/presses", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b), keepalive: last });
+  // Not into a link that says nothing: a batch that cannot go waits for the next beat.
+  const signal = whileLinked();
+  if (!signal) throw new Error("Keel is not heard");
+  const r = await fetch("/api/presses", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b), keepalive: last, signal });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
