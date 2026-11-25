@@ -30,13 +30,17 @@ const USAGE = `keel safety trial [--days N] [CHANGE...] [--calls] [--json]
       --revoke ID             a standing grant revoked (any unique prefix of its id)
       --mode MODE             every session judged in this mode
       --patch FILE            a unified diff of the rule modules (src/safety/...), applied to a copy of
-                              the Keel source checkout this folder is in; the replay runs in this
-                              command's process, not the daemon's, and reads the store read-only
+                              a Keel source checkout. Run from that checkout or one of its subfolders,
+                              or pass --repo. The installed binary's location does not matter.
+                              Requires git and the daemon's store on this machine. Only use trusted patches:
+                              this command loads the patched code in its own process, not the daemon's.
+      --repo DIR              with --patch, name the root of the Keel source checkout explicitly
   --calls                     list the calls that would change, with a link to each`;
 
+const trialSource = (d: string) => join(d, "src", "safety", "trial-rules.ts");
 function repoOf(from: string): string | undefined {
   for (let d = resolve(from); ; d = dirname(d)) {
-    if (existsSync(join(d, "src", "safety", "trial-rules.ts"))) return d;
+    if (existsSync(trialSource(d))) return d;
     if (dirname(d) === d) return undefined;
   }
 }
@@ -58,8 +62,8 @@ async function patchTrial(c: Client, repo: string, patch: string, days: number, 
     // config is in force: "plain", through the one helper that runs git.)
     const p = await git(join(dir, "cand"), ["apply", "--whitespace=nowarn", join(dir, "change.patch")], { mode: "plain", env: { GIT_CEILING_DIRECTORIES: dir }, timeout: 60_000 });
     if (p.code !== 0) return `the patch does not apply to ${repo}: ${p.err.trim().slice(0, 400)}`;
-    const base: Rules = await import(join(dir, "base", "src", "safety", "trial-rules.ts"));
-    const cand: Rules = await import(join(dir, "cand", "src", "safety", "trial-rules.ts"));
+    const base: Rules = await import(trialSource(join(dir, "base")));
+    const cand: Rules = await import(trialSource(join(dir, "cand")));
     const { trialRead } = await import("../safety/trial-read.ts");
     const db = new Database(dbPath, { readonly: true });
     try {
@@ -80,9 +84,10 @@ const table = (title: string, rows: Row[]) => {
 export const safetyCmd = command("safety", USAGE, {
   days: { type: "string" }, "add-namespace": { type: "string", multiple: true }, "remove-namespace": { type: "string", multiple: true },
   grant: { type: "string", multiple: true }, revoke: { type: "string", multiple: true }, mode: { type: "string" },
-  patch: { type: "string" }, calls: { type: "boolean" },
+  patch: { type: "string" }, repo: { type: "string" }, calls: { type: "boolean" },
 }, async (v, pos, c) => {
   if (pos[0] !== "trial") return usageError("safety", pos[0] ? `no subcommand ${pos[0]}` : "name a subcommand: trial", USAGE);
+  if (v.repo !== undefined && !v.patch) return usageError("safety", "--repo requires --patch", USAGE);
   const days = v.days === undefined ? 7 : Number(v.days);
   if (!Number.isInteger(days) || days < 1) return usageError("safety", "--days is a whole number of days", USAGE);
   const change: RuleChange = {};
@@ -107,8 +112,10 @@ export const safetyCmd = command("safety", USAGE, {
   const some = Object.keys(change).length ? change : undefined;
   let r: TrialReport;
   if (v.patch) {
-    const repo = repoOf(process.cwd());
-    if (!repo) return usageError("safety", "--patch is run in the Keel source checkout the patch is of: this folder is in none", USAGE);
+    const cwd = process.cwd();
+    const repo = v.repo === undefined ? repoOf(cwd) : resolve(v.repo);
+    if (!repo) return usageError("safety", `no Keel source checkout above ${cwd}; change directory or pass --repo DIR`, USAGE);
+    if (!existsSync(trialSource(repo))) return usageError("safety", `--repo ${repo} does not contain src/safety/trial-rules.ts`, USAGE);
     const got = await patchTrial(c, repo, readFileSync(resolve(v.patch), "utf8"), days, some);
     if (typeof got === "string") { console.error(`keel safety: ${got}`); return EXIT.error; }
     r = got;

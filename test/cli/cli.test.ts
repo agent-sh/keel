@@ -1832,6 +1832,26 @@ async function daemonAt(state: string) {
   return { d, url, api, idle };
 }
 
+test("the installed CLI replays a safety patch from its working directory or --repo", async () => {
+  const state = join(SCRATCH, "state-trial");
+  const patch = join(SCRATCH, "trial.patch");
+  const file = "src/safety/trial-rules.ts";
+  const first = readFileSync(join(ROOT, file), "utf8").split("\n")[0];
+  writeFileSync(patch, `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1,2 @@\n+// Test patch.\n ${first}\n`);
+  const { d, url } = await daemonAt(state);
+  try {
+    const args = ["safety", "trial", "--url", url, "--patch", patch, "--days", "1", "--json"];
+    for (const [extra, cwd] of [[[], join(ROOT, "src", "cli")], [["--repo", ROOT], WS]] as const) {
+      const report = await keel([...args, ...extra], { state, cwd });
+      expect([report.code, report.err]).toEqual([0, ""]);
+      expect(json(report.out)).toMatchObject({ days: 1, calls: 0 });
+    }
+  } finally {
+    d.kill("SIGTERM");
+    await d.exited;
+  }
+}, 30_000);
+
 // An address in front of the daemon: every HTTP call passes `on`, which may
 // answer itself or act before the daemon does. It opens no WebSocket, so a
 // command that follows a session through it reads the stored events only.
