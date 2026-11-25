@@ -673,7 +673,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (body.mode && !["send", "steer", "queue"].includes(body.mode)) return bad(`unknown mode ${body.mode}`);
           // A prompt to a session that is not in memory: its pages are read off the loop before the loop reads its branch.
           await store.warm(s.id, false);
-          if (body.edit_of) return json(await engine.edit(s.id, String(body.edit_of), text), 201);
+          if (body.edit_of) return json(await engine.edit(s.id, String(body.edit_of), text, { files: !!body.restore_files, stopShells: !!body.stop_shells }), 201);
           // `client_id` names the send, made by the page and kept with the
           // message until an answer arrives. The same id again (the answer was
           // lost, or the daemon was away) gets the receipt of the prompt it

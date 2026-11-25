@@ -38,6 +38,7 @@ import { SpeedPicker } from "./SpeedPicker.tsx";
 import { LimitChip } from "./Limits.tsx";
 import { SETTLE_MS } from "../lib/settle.ts";
 
+
 // The box's tools draw again only when what they show changes, not with every render of the box (a
 // turn that starts or ends, a key): a field drawn again is written again (React sets its name and
 // type), and a list of panes that follow busy sessions changed many times a second for nothing.
@@ -367,6 +368,7 @@ const SessionComposer = memo(function SessionComposer({
   useEffect(() => {
     if (!seed) return;
     setUI({ composerSeed: null }); // consumed: another message box mounted later must not take it
+    if (seed.replacing !== undefined) { setText((cur) => (cur === seed.replacing ? "" : cur)); return; }
     setText((cur) => (seed.append && cur.trim() ? `${cur}${cur.endsWith("\n") ? "" : "\n"}${seed.text}` : seed.text));
     if (seed.notice) setNotice(seed.notice);
     if (seed.blocks?.length) {

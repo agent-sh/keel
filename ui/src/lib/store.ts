@@ -454,8 +454,9 @@ export const actions = {
   send: (id: string, text: string, opts: { images?: PromptBlock[]; mode?: "send" | "queue"; client_id?: string } = {}) =>
     api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, images: opts.images, mode: opts.mode, client_id: opts.client_id }) })
       .then((r) => { if (opts.mode !== "queue") dispatchEvent(new CustomEvent("keel:sent", { detail: id })); return r; }),
-  edit: (id: string, eventId: string, text: string) =>
-    api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, edit_of: eventId }) }),
+  // `files`: the files go back to before the prompt too, as the new version starts.
+  edit: (id: string, eventId: string, text: string, files = false) =>
+    api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, edit_of: eventId, ...(files ? { restore_files: true } : {}) }) }),
   // `sendAnyway`: the owner's word for a server's form that asks for what looks like a secret.
   // `question`: the id of a server's question, so the answer lands on that one and no other.
   answer: (id: string, callId: string, answers: Record<string, { picked: string[]; other?: string }>, sendAnyway = false, question?: string) =>

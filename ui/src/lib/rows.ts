@@ -220,6 +220,12 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
       // Memory and hook notes fold into the turn's notes on its footer: quiet at six stations.
       if (e.data.hook || e.data.memory) b.pending.push(e);
       else if (e.data.kind === "summary") row("checkpoint", { undoable: false });
+      // A rewind is undone while nothing the model reads came after it.
+      else if (e.data.kind === "rewound") {
+        const undoable = !previewing;
+        row("checkpoint", { undoable });
+        if (undoable) b.checkpoint = e.id;
+      }
       else if (e.data.kind === "fork") row("fork");
       else if (e.data.kind === "peer_refused") row("peer_refused");
       else if (e.data.kind === "images") row("images");

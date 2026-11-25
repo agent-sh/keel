@@ -1465,15 +1465,22 @@ export class Engine {
 
   // Edit-and-resend: a new version of an earlier prompt, as a sibling of it (a
   // new branch from its parent). The old branch stays and can be shown again.
-  async edit(id: string, eventId: string, text: string) {
+  // `files`: the files are put back as they were before the old version too (the restoreFiles hook).
+  async edit(id: string, eventId: string, text: string, opts: { files?: boolean; stopShells?: boolean } = {}) {
     const old = this.store.event(eventId);
     if (!old || old.session_id !== id || old.kind !== "user") throw Object.assign(new Error("not a prompt of this session"), { status: 400 });
     // The running turn ends for the owner's new version of the prompt: their act, and not a Stop.
     return this.replace(id, async () => {
       await this.interrupt(id, "edit");
       this.release(id);
+      let after: (() => void) | undefined;
+      if (opts.files) {
+        const session = this.store.session(id);
+        for (const h of allHooks()) if (session && !after) after = await h.restoreFiles?.(session, old, { stopShells: !!opts.stopShells });
+      }
       // An edited steer is a new turn from the same place, not a live steer: it says what it was.
       const ev = this.accept(id, { text, images: old.data.images, ...(old.data.origin === "steer" ? { edited_from: "steer" } : {}) }, old.parent);
+      after?.();
       // A new version of the first prompt is a new task: the title is its words
       // until the next reply makes one again. A title the owner gave stays.
       const s = this.store.session(id);

@@ -1,7 +1,8 @@
 // Turn and session-tree commands: slash commands, palette actions and the
 // fork button under prompts and replies.
 import { createElement } from "react";
-import { GitBranch, GitFork, Split } from "lucide-react";
+import { GitBranch, GitFork, Split, Undo2 } from "lucide-react";
+import { shownAsPrompt } from "../../../src/core/owner.ts";
 import { rowActions, slash } from "./extend.ts";
 import { chooseFallback, setFallback } from "../components/Fallback.tsx";
 import { fuzzy, registerCommand } from "./keys.ts";
@@ -16,6 +17,9 @@ const current = () => {
 // (The fork takes the pane of the session it was made from: the owner means to work in it. lib/looks.ts)
 const fork = (id: string, eventId: string, opts: { before?: boolean; title?: string; worktree?: boolean } = {}) => actions.fork(id, eventId, opts).then((s) => openPlaced(s.id, id));
 const efforts = (model: string) => getState().models.find((m) => m.id === model)?.efforts ?? [];
+
+// The chat, the files or both go back to before a prompt (components/RewindDialog.tsx).
+const rewind = (id: string, eventId?: string) => void import("../components/RewindDialog.tsx").then((m) => m.openRewind({ sessionId: id, eventId }));
 
 slash.add(
   {
@@ -78,6 +82,7 @@ registerCommand(
 );
 
 rowActions.add(
+  { id: "rewind", label: "Rewind to before this prompt", icon: createElement(Undo2, { className: "size-3.5" }), on: "user", idle: true, when: (e) => shownAsPrompt(e), run: (e, s) => rewind(s.id, e.id) },
   { id: "fork", label: "Fork a new session from here", icon: createElement(GitBranch, { className: "size-3.5" }), on: "user", run: (e, s) => void fork(s.id, e.id).catch(reportError) },
   // The prompt itself stays out of the copy and waits in the new box, with its attachments, to be changed.
   { id: "fork-before", label: "Fork before this prompt and edit it there", icon: createElement(Split, { className: "size-3.5" }), on: "user", run: (e, s) => void fork(s.id, e.id, { before: true }).catch(reportError) },

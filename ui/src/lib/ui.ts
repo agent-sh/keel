@@ -36,7 +36,8 @@ type UIState = {
   // session's box, absent for the start box. Several boxes can be on screen.
   // `append`: added below what the box holds instead of replacing it; `notice`: said in the box;
   // `blocks`: attachments that go into the box with the text (a prompt forked back to the box).
-  composerSeed: { text: string; n: number; session?: string; append?: boolean; notice?: string; blocks?: PromptBlock[] } | null;
+  // `replacing`: the box is emptied when it still holds exactly these words, and nothing else changes.
+  composerSeed: { text: string; n: number; session?: string; append?: boolean; notice?: string; blocks?: PromptBlock[]; replacing?: string } | null;
   panel: string | null; // the open tab of the side panel
   focusEvent: string | null; // a message to scroll to once its session is shown (?e=)
   shellAway: string | null; // what the desktop app's title bar says of the daemon while it is away (the page then leaves that to it, and says it in those words)
@@ -209,7 +210,7 @@ export function setTheme(t: ThemePref) {
 }
 export const isDark = () => document.documentElement.classList.contains("dark");
 export const phone = isPhone;
-export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined, o: { append?: boolean; notice?: string; blocks?: PromptBlock[] } = {}) =>
+export const seedComposer = (text: string, session: string | undefined = state.route.name === "session" ? state.route.id : undefined, o: { append?: boolean; notice?: string; blocks?: PromptBlock[]; replacing?: string } = {}) =>
   setUI({ composerSeed: { text, n: (state.composerSeed?.n ?? 0) + 1, session, ...o } });
 
 // Models the owner picked, newest first: the picker's Recent group. A pick

@@ -8,7 +8,7 @@ import { isAbsolute, join, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import { detached, type ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
-import type { Session, StoredEvent } from "../core/types.ts";
+import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { classifyCall } from "./gate.ts";
@@ -16,6 +16,7 @@ import type { CallClass } from "./policy.ts";
 import { Shadow, type DiffResult, type FileChange } from "./shadow.ts";
 import { hunkPatch } from "./patch.ts";
 import { branchNote, leftTurns } from "./branch-note.ts";
+import type { StoredEvent } from "../core/types.ts";
 
 // A read, and a tool that acts on what Keel keeps for the session (ToolKind "own"), touch no file of the workspace.
 export const changesNoFiles = (cls: CallClass) => cls.kind === "read" || (cls.kind === "control" && !!cls.own);
@@ -470,7 +471,7 @@ export class Checkpoints {
   // A note for the model after files were put back: the conversation still
   // describes the files before, so it hears what changed (appended, so the
   // cached prefix stays).
-  private tell(s: Session, what: string, r: RewindResult) {
+  private tell(s: Session, what: string, r: RewindResult, sink?: (data: NoteData) => void, turns?: number[]) {
     if (!r.files.length) return;
     const removed = new Set(r.removes);
     const list = (xs: string[]) => xs.slice(0, 30).join(", ") + (xs.length > 30 ? ` and ${xs.length - 30} more` : "");
@@ -485,7 +486,15 @@ export class Checkpoints {
       r.failed.length ? `Could not be restored: ${list(r.failed.map((f) => f.path))}.` : "",
     ].filter(Boolean).join(" ");
     const short = `Files restored: ${r.files.length}${r.failed.length ? `, ${r.failed.length} could not be` : ""}`;
-    this.bus.emit({ t: "event", event: this.store.append(s.id, "note", { kind: "rewind", model: true, short, text }) });
+    const data: NoteData = { kind: "rewind", model: true, short, text, ...(turns?.length ? { turns } : {}) };
+    if (sink) sink(data);
+    else this.bus.emit({ t: "event", event: this.store.append(s.id, "note", data) });
+  }
+
+  // The first turn at or after a prompt's place in the history that has a start snapshot: where a rewind to
+  // that prompt puts the files back to.
+  fileTurn(s: Session, seq: number): number | undefined {
+    return this.here(s).find((c) => c.at === "start" && c.turn >= seq)?.turn;
   }
 
   // A turn's changed files never change: read once.
@@ -543,7 +552,9 @@ export class Checkpoints {
   // changed since, or only `paths`), or as an undo checkpoint holds them.
   // `confirm` is what the owner saw in the preview: only those paths go back,
   // and only while each is still the version the preview showed.
-  async rewind(s: Session, opts: { turn?: number; checkpoint?: string; paths?: string[]; preview?: boolean; includeOutside?: boolean; confirm?: { paths: string[]; versions: Record<string, string> } }): Promise<RewindResult> {
+  // `note`: where the note for the model goes instead of the end of the branch shown (a chat rewind or
+  // an edit makes the new branch first); `quiet`: no note (an undo that brings the branch it was told on back).
+  async rewind(s: Session, opts: { turn?: number; checkpoint?: string; paths?: string[]; preview?: boolean; includeOutside?: boolean; confirm?: { paths: string[]; versions: Record<string, string> }; note?: (data: NoteData) => void; quiet?: boolean }): Promise<RewindResult> {
     const sh = this.shadow(s.workspace);
     let target: string;
     let scopePaths: string[] | null;
@@ -654,10 +665,15 @@ export class Checkpoints {
     this.bus.emit({ t: "feature", name: "checkpoints", session_id: s.id, data: { rewind: true } });
     const r: RewindResult = { files: [...res.restored, ...merged], failed: res.failed, skipped: opts.includeOutside ? [] : outside.filter((f) => !restore.includes(f) && !merged.includes(f)), outside, merged, conflicts, blocked, removes: removes.filter((f) => res.restored.includes(f)), uncaptured, versions: {}, incomplete, undo: undo.id, scope };
     const turnText = outsideFrom !== null ? this.promptOf(s.id, outsideFrom).split("\n")[0]!.slice(0, 80) : "";
-    this.tell(s, undoOf || incomplete ? "undid an earlier file restore" : `put files back as they were before the turn that began with "${turnText}"`, r);
+    // Every turn from the start of this one on had its files put back: a branch that leaves them is not told they stay.
+    const covered = outsideFrom !== null ? this.here(s).filter((c) => c.at === "start" && c.turn >= outsideFrom!).map((c) => c.turn) : undefined;
+    if (!opts.quiet) this.tell(s, undoOf || incomplete ? "undid an earlier file restore" : `put files back as they were before the turn that began with "${turnText}"`, r, opts.note, covered);
     return r;
   }
 }
+
+// A note stored for the model (and shown) after a restore.
+export type NoteData = { kind: string; model: true; short: string; text: string; turns?: number[] };
 
 export class Bad extends Error {
   constructor(message: string, readonly status = 400) { super(message); }

@@ -178,6 +178,10 @@ export type TurnHooks = {
   // The first request of a turn: a note for the model about the files that turns off its branch left on
   // disk (src/safety/branch-note.ts). Asked once a turn; the engine stores the note, `turns` are the ones it tells.
   branchNote?: (s: Session, line: readonly StoredEvent[]) => Promise<{ short: string; text: string; turns: number[] } | undefined>;
+  // An edit of an earlier prompt that also puts the files back as they were before it: run once the turn
+  // that was running has stopped and before the new version is stored. It throws (with a `status`) to
+  // refuse. The function it returns is run with the new version stored, and puts the note for the model after it.
+  restoreFiles?: (s: Session, prompt: StoredEvent, o: { stopShells: boolean }) => Promise<(() => void) | undefined>;
   // The model and effort the rest of the turn runs at in place of the session's
   // (an inline skill's frontmatter: src/tools/skill-turn.ts). `from`: what chose
   // them, said in the note. `wider`: the model may be on another provider.

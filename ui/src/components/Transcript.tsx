@@ -4,7 +4,8 @@ import { Menu } from "@base-ui/react/menu";
 import { CopyButton, copyWords } from "./CopyButton.tsx";
 import { usePhoneWidth } from "../lib/list-hold.ts";
 import { itemClass, popupClass } from "./ui.tsx";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Ellipsis, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Ellipsis, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square, Undo2 } from "lucide-react";
+import { undoRewindOrReport } from "../lib/rewind-act.ts";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { quoteParts } from "../lib/quote.ts";
@@ -306,7 +307,16 @@ function EditPrompt({ e, sid, back, onDone }: { e: StoredEvent; sid: string; bac
     onDone();
     composer?.focus();
   };
-  const send = () => ok && actions.edit(sid, e.id, text.trim()).then(done, reportError);
+  // The files from this prompt on: the new version may also start from them as they were before it.
+  const [nFiles, setNFiles] = useState<number | null>(null);
+  const [files, setFiles] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api<{ files: string[]; skipped: string[]; merged: string[]; turn: number | null }>(`/api/sessions/${sid}/rewind`, { method: "POST", body: JSON.stringify({ prompt_event: e.id, preview: true }) })
+      .then((p) => live && setNFiles(p.turn === null ? 0 : p.files.length + p.merged.length), () => {});
+    return () => { live = false; };
+  }, [sid, e.id]);
+  const send = () => ok && actions.edit(sid, e.id, text.trim(), files && !!nFiles).then(done, reportError);
   return (
     // (`data-keep`: its block stays drawn while it is open, with what is typed in it.)
     <div ref={root} className="flex justify-end animate-in" data-event-id={e.id} data-keep="">
@@ -331,6 +341,12 @@ function EditPrompt({ e, sid, back, onDone }: { e: StoredEvent; sid: string; bac
           }}
           className="block min-h-16 w-full resize-y bg-transparent px-2 py-1 text-read leading-relaxed outline-none placeholder:text-faint"
         />
+        {!!nFiles && (
+          <label className="flex items-start gap-2 px-2 pt-1.5 text-ui">
+            <input type="checkbox" checked={files} onChange={(x) => setFiles(x.target.checked)} data-testid="edit-files" className="mt-0.5 accent-[var(--accent)]" />
+            <span>Also put the files back as they were before this prompt <span className="text-faint">({nFiles === 1 ? "1 file" : `${nFiles} files`})</span></span>
+          </label>
+        )}
         <div className="flex items-center justify-end gap-1.5 pt-1">
           <span className="mr-auto pl-2 text-caption text-faint" data-testid="edit-note">
             {working ? "Stops the turn, then sends this as a new version." : "Sends as a new version; the current one stays as a branch."}
@@ -407,6 +423,18 @@ function Divider({ children, testid }: { children: ReactNode; testid?: string })
 
 // A context checkpoint: a summary (expandable) or a clear (undo while it is the head).
 function Checkpoint({ e, sid, undoable }: { e: StoredEvent; sid: string; undoable?: boolean }) {
+  if (e.data.kind === "rewound") {
+    return (
+      <Divider testid="rewound">
+        <span className="flex items-center gap-1.5"><Undo2 className="size-3.5" /> {e.data.text}{e.data.files ? ` ${e.data.files === 1 ? "One file" : `${e.data.files} files`} put back.` : ""}</span>
+        {undoable && (
+          <button type="button" data-testid="undo-rewind" className="rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => undoRewindOrReport(sid, e.id)}>
+            Undo
+          </button>
+        )}
+      </Divider>
+    );
+  }
   if (e.data.mode === "clear") {
     return (
       <Divider testid="cleared">
