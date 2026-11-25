@@ -924,10 +924,12 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
   .k-docket-line { height: auto; min-height: var(--spacing-tap); }
   .k-docket-job { flex-wrap: wrap; row-gap: 0; }
   /* The line above is one row on a phone: where the agents or the commands stand beside the plan it is its count and its
-     bar's end (the step's words are in the plan when it opens), and the agents take the rest, wrapping their own counts. */
+     bar's end (the step's words are in the plan when it opens), and the agents take the rest; where their counts do not
+     fit beside it at a large text size the row wraps and they stand on a row of their own. */
   .k-docket-row > .k-docket-planline:not(:only-child) { flex: 0 0 auto; }
   .k-docket-row > .k-docket-planline:not(:only-child) .k-docket-step { display: none; }
-  .k-docket-row > .k-agents-line { flex: 1 1 0; max-width: none; }
+  .k-docket-row { flex-wrap: wrap; }
+  .k-docket-row > .k-agents-line { flex: 1 1 auto; max-width: 100%; }
   /* The agents line: its counts keep their words, and what it waits on goes under them where the row is short. */
   .k-agents-line { flex-wrap: wrap; row-gap: 0; }
   .k-agents-parts { flex: 0 1 auto; height: auto; overflow: visible; }
