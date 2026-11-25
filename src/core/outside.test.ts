@@ -233,6 +233,7 @@ const READS_MORE = new Map<string, [number, string]>([
   ["src/admin/cost-drivers.ts", [1, "the titles of trees found in telemetry_calls, as above"]],
   ["src/server/routes/usage.ts", [1, "the titles of sessions found in the usage ledger, as above"]],
   ["src/server/routes/memory.ts", [2, "what memory gave and recalled: none for a session another harness runs (src/integrations/tacit.ts flags)"]],
+  ["src/tools/session-ports.ts", [2, "session_ports: the port range of a session, found through its archived flag; no word of a session is read"]],
   ["src/admin/storage.ts", [6, "the owner's Storage report, tags and archive policy; GET /api/storage and the cleanup list leave copies out for any caller but the owner"]],
   ["src/admin/hours-read.ts", [1, "one session read by its id, which the door answers as no such session for any caller but the owner (peer-scope.ts)"]],
   ["src/admin/retention.ts", [1, "times and the pin of sessions it may clear, no words"]],
