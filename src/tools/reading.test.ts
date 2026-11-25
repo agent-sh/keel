@@ -301,13 +301,23 @@ describe("an edit after a reading", () => {
     expect(knownOf(ctx, p)).toBeUndefined();
   });
 
-  test("a command that names the file looked at it: nothing is held back after", async () => {
+  test("a command that printed lines of the file made them the session's; one that only names it showed nothing", async () => {
     const { ctx } = rig();
     const p = file();
+    const sh = (command: string) => Bash.run({ command }, ctx);
     await Read.run({ file_path: p }, ctx);
-    expect(knownOf(ctx, p)).toMatchObject({ lines: [{ from: 120, to: 122 }] });
-    await Bash.run({ command: `sed -n '290,310p' ${p}` }, ctx);
+    for (const names of [`ls ${p}`, `true # ${p}`, `wc -l ${p}`, `grep -c zzz ${p} || true`, `echo ${p}`, `cat ${p} | head -n 5`, `sed -n '290,310p' ${p}`]) await sh(names);
+    expect(knownOf(ctx, p)!.lines).toEqual([{ from: 120, to: 122 }]);
+    expect((await Edit.run({ file_path: p, old_string: line(300), new_string: "x" }, ctx)).is_error).toBe(true);
+    await sh(`head -n 50 ${p}`);
+    await sh(`tail -n 10 ${p}`);
+    await sh(`sed -n '1,60p' ${p}`);
+    expect(knownOf(ctx, p)!.lines).toEqual([{ from: 1, to: 60 }, { from: 120, to: 122 }, { from: 591, to: 600 }]);
+    expect((await Edit.run({ file_path: p, old_string: line(55), new_string: "x" }, ctx)).is_error).toBeFalsy();
+    // Printed whole, uncut: the file is the session's as any file it saw.
+    await sh(`cat ${p}`);
     expect(knownOf(ctx, p)).toBeUndefined();
+    expect((await Edit.run({ file_path: p, old_string: line(400), new_string: "x" }, ctx)).is_error).toBeFalsy();
   }, 30_000);
 
   test("Gemini's replace names its own way to read the lines; the GPT family's apply_patch is not held", async () => {

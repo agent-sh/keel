@@ -16,7 +16,8 @@ const words = (s: string) => s.trim().split(/\s+/).map((w) => w.replace(/^['"]|[
 const plain = (a: string) => a !== "" && !/[<>$`*?~{}()\\]/.test(a);
 const at = (dir: string, p: string) => (isAbsolute(p) ? p : resolve(dir, p));
 
-export type Shown = { path: string; lines: number };
+// `end`: the lines are the file's last ones (tail), not its first.
+export type Shown = { path: string; lines: number; end?: true };
 
 // The files a command prints from their first line, and how many lines it prints
 // at most (Infinity for the whole file): `cat F`, `sed -n 1,$p F`, `head -n N F`,
@@ -65,7 +66,7 @@ export function shown(command: string, dir: string): Shown[] {
     if (name === "head" && lines === Infinity) lines = 10;
     if (name === "tail" && lines === Infinity) lines = 10;
     if (!ok) continue;
-    for (const f of files) if (plain(f)) out.push({ path: at(here, f), lines });
+    for (const f of files) if (plain(f)) out.push({ path: at(here, f), lines, ...(name === "tail" ? { end: true as const } : {}) });
   }
   return out;
 }
@@ -87,7 +88,7 @@ export function made(command: string, dir: string): string[] {
   return out;
 }
 
-const lineCount = (p: string) => { const t = readFileSync(p, "utf8"); return t === "" ? 0 : t.split("\n").length - (t.endsWith("\n") ? 1 : 0); };
+export const lineCount = (p: string) => { const t = readFileSync(p, "utf8"); return t === "" ? 0 : t.split("\n").length - (t.endsWith("\n") ? 1 : 0); };
 
 // After a command that ended with status 0: the files it showed whole and the
 // files it made are ones the session knows (`ctx.seen`, by the file's time).

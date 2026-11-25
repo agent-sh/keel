@@ -20,12 +20,15 @@
 // A reading counts as having read the file only for the lines it shows as
 // they are: an edit of other lines is refused with the read to make first,
 // and that same edit sent again is applied (editGuard).
+import { statSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
+import { realOf } from "../core/paths.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import { QUOTE_MARK, readingPrompt, type Chunk, type Material } from "../engine/reader.ts";
 import { READING_HEAD } from "../safety/addresses.ts";
 import { FLOOR } from "./carry.ts";
 import { diffLines, splitLines, type Op } from "./diff.ts";
+import { INLINE, lineCount, shown } from "./shell-seen.ts";
 import type { ToolContext } from "./types.ts";
 
 export type Span = { from: number; to: number };
@@ -192,16 +195,27 @@ export function sawText(ctx: Pick<ToolContext, "seen">, p: string, mtime: number
   k.lines = merge([...k.lines, { from: lines.from, to: lines.to }]);
 }
 
-// A command that ran to its end with status 0 and names a file the session has a reading of looked at the file
-// itself (a printed range, a search, a count): nothing is held back from it after that. The command's words are
-// not read further: an edit still needs its exact text to match.
-export function shellSaw(ctx: Pick<ToolContext, "seen">, command: string): void {
+// A command that ran to its end with status 0 and printed lines of a file the session has a reading of: the
+// lines it printed are the session's. Which lines is read as the overwrite guard reads it (`shown`,
+// src/tools/shell-seen.ts): a file printed from its first line (cat, head, sed -n '1,Np') or to its last
+// (tail), with nothing filtering the output and the output not cut. A command that only names the file (a
+// listing, a count, a search) showed none of its lines. (A file printed whole is the session's by markSeen.)
+export function shellSaw(ctx: Pick<ToolContext, "seen">, command: string, dir: string, output: string): void {
   const b = books.get(ctx.seen);
-  if (!b?.files.size) return;
-  for (const p of [...b.files.keys()]) {
-    const name = p.slice(p.lastIndexOf("/") + 1);
-    if (name && command.includes(name)) b.files.delete(p);
-  }
+  if (!b?.files.size || output.length > INLINE) return;
+  try {
+    for (const s of shown(command, dir)) {
+      const p = realOf(s.path);
+      const k = b.files.get(p);
+      if (!k) continue;
+      const st = statSync(p);
+      if (!st.isFile()) continue;
+      if (k.mtime !== st.mtimeMs) { k.lines = []; k.mtime = st.mtimeMs; k.refused = undefined; }
+      const total = lineCount(p);
+      const n = Math.min(total, s.lines);
+      if (n >= 1) k.lines = merge([...k.lines, s.end ? { from: total - n + 1, to: total } : { from: 1, to: n }]);
+    }
+  } catch {}
 }
 
 // ---- the page and the reading ---------------------------------------------------

@@ -12,7 +12,7 @@ test("the files a command prints whole, and how many lines it prints at most", (
   expect(shown("sed -n '1,$p' a.ts", "/w")).toEqual([{ path: "/w/a.ts", lines: Infinity }]);
   expect(shown("sed -n 1,200p /x/a.ts", "/w")).toEqual([{ path: "/x/a.ts", lines: 200 }]);
   expect(shown("head -n 500 a.ts", "/w")).toEqual([{ path: "/w/a.ts", lines: 500 }]);
-  expect(shown("tail -50 a.ts", "/w")).toEqual([{ path: "/w/a.ts", lines: 50 }]);
+  expect(shown("tail -50 a.ts", "/w")).toEqual([{ path: "/w/a.ts", lines: 50, end: true }]);
   // A range from the middle, a filter, a copy to a file and a script that edits are no whole read.
   expect(shown("sed -n 5,10p a.ts", "/w")).toEqual([]);
   expect(shown("cat a.ts | head -3", "/w")).toEqual([]);

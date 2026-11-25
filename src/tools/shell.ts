@@ -130,8 +130,8 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   }
   const output = said + takeUnread(job);
   // What the command showed or made is a file the session knows (the overwrite guard of Write).
-  // (And a file the session has only a reader's reading of, that the command names, is one it looked at itself.)
-  if (job.exitCode === 0 && !job.signal) { markSeen(ctx, o.command, cwd, output); shellSaw(ctx, o.command); }
+  // (And the lines it printed of a file the session has only a reader's reading of are lines the session has.)
+  if (job.exitCode === 0 && !job.signal) { markSeen(ctx, o.command, cwd, output); shellSaw(ctx, o.command, cwd, output); }
   return { state: "done", output, exitCode: job.exitCode ?? null, signal: job.signal, cwdNote, job };
 }
 
