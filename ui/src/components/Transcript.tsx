@@ -28,7 +28,7 @@ import { clock, cn, fmtCost, fmtSize, fmtTokens, fmtWait, focusBox, scrollMotion
 import { preloadSettled } from "../lib/preload.ts";
 import { every } from "../lib/clock.ts";
 import { flushPlaces, isLater, newAfter, offsetAt, placeOf, putPlace, WRITE_MS, type Place } from "../lib/place.ts";
-import { auto, autoState, presentAt } from "../lib/automation.ts";
+import { auto, autoState, panesInView, presentAt } from "../lib/automation.ts";
 import { STOPPERS } from "../../../src/core/stoppers.ts";
 import type { PaneSwap } from "../lib/looks.ts";
 import { ProviderStatus } from "./ProviderStatus.tsx";
@@ -1264,6 +1264,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   };
   const arrive = useRef(true); // the owner is coming (back) to this conversation: what came since is new, on screen or not
   const sawFresh = useRef(false);
+  // The new events came while the owner was watching (a turn they follow, not one they come back to):
+  // the end followed for a few seconds is reading them, though the rule's own line went by above the view.
+  const watched = useRef(false);
+  // The page is on screen with the owner's focus and this is the one conversation in it (a phone's page, a single
+  // pane): what streams into the end of the view is watched as it comes, with no touch needed (a touch is what makes
+  // a line read, not what makes it seen). A pane beside the one worked in is not watched because it is on screen.
+  const watching = () => !document.hidden && document.hasFocus() && panesInView().join() === sessionId;
   const going = useRef(0);
   const rule = useRef<HTMLElement | null>(null);
   // The last event whose row (or step) has its top on screen.
@@ -1313,6 +1320,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     clearTimeout(going.current);
     going.current = 0;
     sawFresh.current = false;
+    watched.current = false;
     setFresh(null);
     const last = events?.at(-1);
     if (last && !reading) putPlace(sessionId, { read: last.id, readSeq: last.seq, readAt: Date.now() });
@@ -1332,6 +1340,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     const view = el.getBoundingClientRect();
     lookReply(view);
     if (!reading && !fresh) {
+      // At this conversation: the owner works in it, or has the page open on its end as the turn streams in.
+      const near = here || (watching() && stick.current && !short.current);
       const p = placeOf(sessionId);
       const last = events.at(-1)!;
       // The first sight of this conversation on this device: what is here is not new.
@@ -1342,10 +1352,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         // (Nothing is below the view of a reader who follows the end: a row that has just come is
         // looked at before the view was put at the end again.)
         const below = !!first && !stick.current && yOf(holderOf(first.id)!) > view.bottom - 24;
-        if ((first || after === "before") && (arrive.current || !here || below)) {
+        if ((first || after === "before") && (arrive.current || !near || below)) {
           sawFresh.current = false;
+          watched.current = watching() && !arrive.current;
           setFresh({ ev: first?.id ?? null, at: first?.ts ?? p.readAt ?? Date.now() });
-        } else if (here) {
+        } else if (near) {
           const id = stick.current && !short.current ? last.id : lastSeen();
           const seen = id === last.id ? last : id ? events.find((e) => e.id === id) : undefined;
           if (seen && isLater(p, seen)) putPlace(sessionId, { read: seen.id, readSeq: seen.seq, readAt: Date.now() });
@@ -1360,10 +1371,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // (Its row is not on the page: in a part above, or below the earlier part that is read.)
     const where = top === undefined ? (fresh.ev && short.current ? "below" : "above") : top < view.top - 4 ? "above" : top > view.bottom - 24 ? "below" : null;
     if (where !== freshAt) setFreshAt(where);
-    if (!here) return;
-    if (!where) sawFresh.current = true;
+    if (!here && !(watched.current && watching())) return;
+    if (here && !where) sawFresh.current = true;
     const atEnd = !short.current && el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    if (sawFresh.current && atEnd && !going.current) going.current = window.setTimeout(endFresh, 4000);
+    const read = sawFresh.current || watched.current;
+    if (read && atEnd && !going.current) going.current = window.setTimeout(endFresh, 4000);
+    // (Scrolled up again before the seconds were out: only a rule that was seen keeps its timer.)
+    else if (!atEnd && going.current && !sawFresh.current) { clearTimeout(going.current); going.current = 0; }
   };
   const looks = useRef(look);
   looks.current = look;
