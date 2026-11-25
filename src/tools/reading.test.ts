@@ -280,6 +280,15 @@ describe("an edit after a reading", () => {
     expect((await read_file.run({ file_path: q, raw: true }, ctx)).shown).toEqual({ reread: { of: ["reading-2"] } });
   });
 
+  test("a reading of another page of the file keeps the lines the first reading showed", async () => {
+    const p = file();
+    const first = rig({ marks: "@@ 120-122" });
+    await Read.run({ file_path: p, offset: 1, limit: 300 }, first.ctx);
+    await Read.run({ file_path: p, offset: 301, limit: 300 }, { ...rig({ marks: "@@ 400-401" }).ctx, seen: first.ctx.seen });
+    expect(knownOf(first.ctx, p)!.lines).toEqual([{ from: 120, to: 122 }, { from: 400, to: 401 }]);
+    expect((await Edit.run({ file_path: p, old_string: line(121), new_string: "x" }, first.ctx)).is_error).toBeFalsy();
+  });
+
   test("the known lines follow the session's own edits", async () => {
     const { ctx } = rig();
     const p = file();

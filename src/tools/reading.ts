@@ -419,7 +419,8 @@ export async function throughReader(p: string, ctx: ToolContext, page: Page, o: 
     ctx.seen.delete(p);
     const had = book.files.get(p);
     const reads = [...(had?.mtime === o.mtime ? had.reads ?? [] : []), ...(ctx.callId ? [{ call: ctx.callId, from: page.first, to: page.last, raw: [] }] : [])];
-    book.files.set(p, { mtime: o.mtime, lines: quoted, reads });
+    // (A reading of another page of the same file adds its lines to the ones the session has.)
+    book.files.set(p, { mtime: o.mtime, lines: had?.mtime === o.mtime ? merge([...had.lines, ...quoted]) : quoted, reads, ...(had?.mtime === o.mtime && had.refused ? { refused: had.refused } : {}) });
   }
   const usage = addUsage(emptyUsage(), o2.usage);
   return {
