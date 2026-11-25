@@ -225,6 +225,8 @@ const READS_MORE = new Map<string, [number, string]>([
   ["src/integrations/outside/service.ts", [1, "the outside service's own rows: what it reads again after a restart"]],
   ["src/integrations/import/keel.ts", [1, "another Keel's store, the file being imported; not this daemon's table"]],
   ["src/integrations/import/hermes.ts", [2, "Hermes's own store, being imported"]],
+  ["src/integrations/import/goose.ts", [2, "Goose's own store, being imported"]],
+  ["src/integrations/import/crush.ts", [1, "Crush's own store, being imported"]],
   ["src/admin/telemetry.ts", [1, "telemetry_tools: written by the turns Keel runs, and a session another harness runs has none"]],
   ["src/admin/telemetry-report.ts", [1, "telemetry_tools, as above"]],
   ["src/admin/turn-compare.ts", [1, "telemetry_calls: Keel's own requests (the backfill from events leaves copies out)"]],
