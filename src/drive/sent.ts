@@ -132,15 +132,18 @@ export async function farSent(store: Store, host: string, digests: string[]): Pr
   return id ? pushFar(store, far, h, id) : "none";
 }
 
+// What waits for the host, a part at a time from its index (an older Keel's host can gather many): each part is
+// read, told and removed before the next is read.
 async function pushFar(store: Store, to: Far, host: string, id: string): Promise<"told" | "old"> {
-  const waiting = store.db.query<{ digest: string }, [string]>("SELECT digest FROM drive_sends_far WHERE host = ? ORDER BY sent_ms").all(host).map((r) => r.digest);
-  for (let i = 0; i < waiting.length; i += PART) {
-    const part = waiting.slice(i, i + PART);
+  const read = store.db.query<{ digest: string }, [string, number]>("SELECT digest FROM drive_sends_far WHERE host = ? LIMIT ?");
+  const del = store.db.query("DELETE FROM drive_sends_far WHERE host = ? AND digest = ?");
+  for (;;) {
+    const part = read.all(host, PART).map((r) => r.digest);
+    if (!part.length) return "told";
     if ((await to.post(id, part, false)) === "old") return "old";
-    const del = store.db.query("DELETE FROM drive_sends_far WHERE host = ? AND digest = ?");
     store.db.transaction(() => { for (const d of part) del.run(host, d); })();
+    if (part.length < PART) return "told";
   }
-  return "told";
 }
 
 // A link to machine `id` came up (`hosts`: the names the fleet knows it by): its Keel is told what still waits for

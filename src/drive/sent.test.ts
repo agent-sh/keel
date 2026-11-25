@@ -125,6 +125,17 @@ test("a send to a session on another machine: its Keel is told first; one too ol
     host = "nowhere";
     await send("to a host nobody knows");
     expect(sends.slice(3)).toEqual(["to the ssh box", "to a host nobody knows"]);
+    // Much waiting goes in parts the route takes, each read when the one before it was told.
+    host = "far";
+    keel = "old";
+    const big = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    await send(big);
+    keel = "new";
+    posted.length = 0;
+    await farCatchUp(store, "m1", ["far"]);
+    // (with the send that could not be told while the link was down)
+    expect(posted.map(([, d]) => d.length)).toEqual([4096, digestsOf(big).length + digestsOf("fourth").length - 4096]);
+    expect(store.db.query("SELECT COUNT(*) AS n FROM drive_sends_far WHERE host = 'far'").get()).toEqual({ n: 0 });
     expect(unknown).toEqual(["nowhere"]);
   } finally {
     onFarSent(undefined);
