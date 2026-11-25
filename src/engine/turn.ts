@@ -21,7 +21,7 @@ import { ownerPrompt, ownersMeta } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
-import { chainOf, nativeContext, nativeMemory, nativeRoots, withoutPorted } from "./native-memory.ts";
+import { chainOf, nativeContext, nativeMemory, nativeRoots, withoutPorted, type Native } from "./native-memory.ts";
 import { testBuild } from "../core/build.ts";
 import { BuildPins, coldReason, pinAged } from "./build-pin.ts";
 import { SCHEMA_RESENDS, ToolFit, wireOf as fitWireOf } from "./tool-fit.ts";
@@ -452,16 +452,18 @@ const CORE = [
 
 // The per-session part, as its two blocks: the place and the instruction files.
 // `family`: the model's, which decides what the owner's folders give it (src/engine/native-memory.ts); `top`: no agent started the session.
-function sessionParts(cwd: string, created: number, window?: number, marks?: Marks, native?: { family: Family; top: boolean; session: Session }): PromptPart[] {
+// A render is not a load: the prompt is rendered again to be compared with the kept one (and for the
+// context popup), and the kept one is sent while a warm cache holds it. The memory counts as loaded
+// when a prompt that carries it is stored (`loadSystem`), so the sweep counts what models were sent.
+export function sessionParts(cwd: string, created: number, window?: number, marks?: Marks, native?: { family: Family; top: boolean; session: Session }): { parts: PromptPart[]; native: Native | null } {
   const inst = instructionFiles(cwd, window, marks, native?.family);
   const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
-  const mem = native && nativeMemory(native.family, cwd, { top: native.top, store: nativeContext.store?.(native.session) });
-  if (mem) nativeContext.loaded?.(native!.session, mem);
-  return [
+  const mem = (native && nativeMemory(native.family, cwd, { top: native.top, store: nativeContext.store?.(native.session) })) || null;
+  return { native: mem, parts: [
     { name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: inst },
     // The model's own harness's memory of the project: a block of the owner's data, kept in its place while it is empty.
     { name: "native memory", text: mem ? `\n${mem.text}\n` : "", data: mem?.data ?? "" },
-  ];
+  ] };
 }
 
 type Running = { abort: AbortController; done: Promise<void>; providerWaiting?: boolean; providerWaitMs?: number };
@@ -2031,7 +2033,7 @@ export class Engine {
         if (kept && !taken) {
           system = kept;
           // A change of the owner's side is told at the tail meanwhile (tellPrompt).
-          if (own.length) this.fresh.set(session.id, made);
+          if (own.length) this.fresh.set(session.id, { text: made.text, blocks: made.blocks });
           else this.fresh.delete(session.id);
           // (Its blocks stay cut as the kept one's were sent.)
           if (moved && !changed.length && forModel && kept.model !== forModel.id) this.prompts.put(session.id, { ...made, own: kept.own });
@@ -2042,6 +2044,7 @@ export class Engine {
             else this.shelter(session.id, kept);
           }
           this.prompts.put(session.id, made, changed);
+          if (made.native) nativeContext.loaded?.(session, made.native);
           this.fresh.delete(session.id);
           system = made;
         }
@@ -2150,11 +2153,12 @@ export class Engine {
     // folder (started that day), so the session's own blocks come after them.
     // (The instruction files' marks on disk, noted before they are read: an edit is noticed by them, instructionsEdited.)
     const marks: Marks = new Map();
-    const folder = sessionParts(session.workspace, session.created, info && !info.context_assumed ? info.context : undefined, marks, info ? { family: info.family, top: !session.parent_id, session } : undefined).map(sent);
+    const made = sessionParts(session.workspace, session.created, info && !info.context_assumed ? info.context : undefined, marks, info ? { family: info.family, top: !session.parent_id, session } : undefined);
+    const folder = made.parts.map(sent);
     this.marks.set(session.id, marks);
     const parts = [...shared, ...folder, ...own];
     const chars = (list: PromptPart[]) => list.reduce((n, p) => n + p.text.length, 0);
-    return { text: parts.map((p) => p.text).join(""), split: chars(shared), own: chars(shared) + chars(folder), blocks: blocksOf(parts), model: info?.id ?? null };
+    return { text: parts.map((p) => p.text).join(""), split: chars(shared), own: chars(shared) + chars(folder), blocks: blocksOf(parts), model: info?.id ?? null, native: made.native };
   }
 
   // The first request on a model other than the one that wrote the last reply
