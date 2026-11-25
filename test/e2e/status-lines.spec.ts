@@ -86,7 +86,7 @@ const measure = (page: Page) => page.evaluate(() => {
     top: lineOf(q("dock-top")),
     now: lineOf(q("dock-now")),
     plan: r(q("dock-plan")),
-    agents: r(q("dock-agents")),
+    agents: r(q("dock-agents-line")),
     box: r(q("composer-box")),
     ta: r(ta),
     lh: parseFloat(getComputedStyle(ta).lineHeight),
@@ -163,8 +163,8 @@ test.describe("at a desk", () => {
       writeFileSync(gate, "go");
       await page.emulateMedia({ reducedMotion: "no-preference" });
 
-      // 4. The three clicks. An agent: the list of agents, each to open. The changes: the Changes panel. The folder
-      // and the file the action names: the Files panel, the file open.
+      // 4. The clicks. The word Agents: the list of agents, each to open. An agent's name: that agent. The changes: the
+      // Changes panel. The folder and the file the action names: the Files panel, the file open.
       await page.goto(`/s/${id}`);
       await expect(page.getByTestId("dock-agents")).toBeVisible({ timeout: 30_000 });
       await page.getByTestId("dock-agents").click();
@@ -173,6 +173,17 @@ test.describe("at a desk", () => {
       await shoot(page, "status-04-agents");
       await page.keyboard.press("Escape");
       await expect(page.getByTestId("background-popup")).toHaveCount(0);
+      // Each live agent is named over the box by its dot and title, and a press opens it.
+      const named = page.getByTestId("dock-agent");
+      await expect(named).toHaveCount(2);
+      await expect(named.filter({ hasText: "Reader" }).locator(".k-mark")).toBeVisible();
+      await expect(named.filter({ hasText: "Checker" })).toHaveAttribute("data-watch", "work");
+      const kids = (await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as { session_id: string; title?: string }[];
+      await named.filter({ hasText: "Reader" }).click();
+      await expect(page).toHaveURL(new RegExp(`/s/(${kids.map((k) => k.session_id).join("|")})$`));
+      await expect(page).not.toHaveURL(new RegExp(`/s/${id}$`));
+      await page.goto(`/s/${id}`);
+      await expect(page.getByTestId("dock-action-path")).toHaveText("src/a.ts", { timeout: 30_000 });
 
       await page.getByTestId("dock-changes-open").click();
       await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "changes");
@@ -211,6 +222,8 @@ test.describe("at a desk", () => {
       await expect(pane.getByTestId("dock-action")).toHaveCount(0);
       await expect(pane.getByTestId("dock-folder")).toBeHidden();
       await expect(pane.getByTestId("dock-now")).toBeHidden();
+      // (The block is loaded on its own: it is there, with nothing drawn, before it is measured.)
+      await expect(pane.getByTestId("session-dock")).toBeAttached();
       const m = await measure(page);
       expect(m.dock!.height, "the block over the box takes no height").toBeLessThanOrEqual(1);
       await shoot(page, "status-07-rest-1920");

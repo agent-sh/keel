@@ -1059,8 +1059,9 @@ test("the row tab is said, stays out of the bar's way and points at a pane out o
   const head = (i: number) => slot(page, i).getByTestId("station-head").first();
   const oneLine = async (i: number) => { const t = (await head(i).getByTestId("station-title").boundingBox())!, w = (await head(i).getByTestId("station-word").boundingBox())!; return Math.abs(t.y + t.height / 2 - (w.y + w.height / 2)) < 6; };
   expect(await oneLine(0), "the state stands under a short title in a wide pane").toBe(true);
-  // The coordinator at work: the bar is the title, the dot, the word and the timer. The command is the word's tooltip and
-  // the folder the title's, so neither is drawn beside them.
+  // The coordinator at work: the bar is the title, the dot and the word (the timer is the line over the box's). The command
+  // is the word's tooltip and the folder the title's, so neither is drawn beside them.
+  await expect(head(1).getByTestId("station-clock")).toHaveCount(0);
   await expect(head(1).getByTestId("station-why")).toHaveCount(0);
   await expect(head(1).locator(".k-station-meta")).toHaveCount(0);
   expect(await head(1).getByTestId("station-word").getAttribute("title")).toContain("release train notes");

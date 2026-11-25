@@ -57,7 +57,10 @@ test("a parent with an agent at work reads as working until the agent ends", asy
     await expect(r).toHaveAttribute("data-watch", "work");
     // (A row of one line says no number of agents: the session says it.)
     await expect(r.getByTestId("row-state")).toHaveText("Working");
-    await expect(page.getByTestId("station-word")).toHaveText("Working · 1 agent");
+    // The head says the word alone; the line over the box names the agent, by its dot and title.
+    await expect(page.getByTestId("station-word")).toHaveText("Working");
+    await expect(page.getByTestId("dock-agent")).toHaveCount(1);
+    await expect(page.getByTestId("dock-agent")).toHaveAttribute("data-watch", "work");
     // The palette's mark says the same.
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill("Parent with an agent");

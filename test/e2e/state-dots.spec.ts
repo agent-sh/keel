@@ -262,22 +262,26 @@ test("the sidebar counts no agents: the row's chevron opens their tree, and the 
     await toggle.click();
     await expect(wrap.getByTestId("child-row")).toHaveCount(0);
 
-    // The session itself: how many of each state, and a press opens the agents.
+    // The session itself: each live agent by its dot and name, the word Agents counts them all, and a press on it opens them.
     await page.goto(`/s/${lead}`);
     const line = page.getByTestId("dock-agents");
+    const named = page.getByTestId("dock-agents-line").getByTestId("dock-agent");
     await expect(line).toBeVisible();
-    await expect(line.getByTestId("dock-agents-part")).toHaveText(["2 working"]);
-    await expect(line).toHaveAttribute("aria-label", "3 agents: 2 working, 1 done");
+    await expect(named).toHaveCount(2);
+    for (const name of ["Hold lane one", "Hold lane two"]) await expect(named.filter({ hasText: name })).toHaveAttribute("data-watch", "work");
+    await expect(line).toHaveAttribute("aria-label", "Agents: 3 agents: 2 working, 1 done");
     await expect(line).toHaveAttribute("aria-description", "Waiting on agents");
-    await expect(line.getByTestId("dock-agents-waiting")).toHaveText("Waiting on agents");
+    // The line under it says the state once: no count of agents again.
+    await expect(page.getByTestId("dock-now")).not.toContainText(/\d agents?\b/);
     for (const size of SIZES) { await page.setViewportSize(size); await shoot(page, `state-dots-03-session-agents-${size.width}x${size.height}`); }
     await page.setViewportSize(SIZES[0]!);
     // An agent that fails: it is counted, and the session reads Failed until looked at, so it no longer waits on its agents.
     await send(request, lead, script([child("Fetch the notes", "script:billing")]));
-    await expect(line.getByTestId("dock-agents-part")).toHaveText(["1 failed", "2 working"], { timeout: 60_000 });
-    await expect(line).toHaveAttribute("aria-label", "4 agents: 1 failed, 2 working, 1 done");
-    await expect(line.getByTestId("dock-agents-waiting")).toHaveCount(0);
-    for (const part of await line.getByTestId("dock-agents-part").all()) await expect(part.locator(".k-mark")).toBeVisible();
+    await expect(named.and(page.locator('[data-watch="fail"]'))).toHaveText("Fetch the notes", { timeout: 60_000 });
+    await expect(named).toHaveCount(3);
+    await expect(line).toHaveAttribute("aria-label", "Agents: 4 agents: 1 failed, 2 working, 1 done");
+    await expect(line).not.toHaveAttribute("aria-description", /./);
+    for (const part of await named.all()) await expect(part.locator(".k-mark")).toBeVisible();
     await line.click();
     await expect(page.getByTestId("background-popup").getByTestId("bg-agent")).toHaveCount(4, { timeout: 30_000 });
     await shoot(page, "state-dots-04-agents-open");

@@ -507,10 +507,11 @@ test("an agent that asks the owner is marked as asking in the tree, on its card 
     // The parent needs the owner, and says which agent asks what.
     await expect(row(page, parent)).toHaveAttribute("data-watch", "need");
     await expect(row(page, parent).getByTestId("row-why")).toHaveText(/^Agent Ask about scope.*: Question: Should the check cover the staging cluster\?$/);
-    // The count is in the session: one asks, one runs. The row says none, and its dot is the owner's.
+    // The count is in the session: one asks, one runs, each named over the box by its dot. The row says none, and its dot is the owner's.
     const kids = page.getByTestId("session-list").getByTestId("session-children");
-    await expect(page.getByTestId("dock-agents-part").first()).toHaveText("1 needs you");
-    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", "2 agents: 1 needs you, 1 working");
+    await expect(page.getByTestId("dock-agent").and(page.locator('[data-watch="need"]'))).toContainText("Ask about scope");
+    await expect(page.getByTestId("dock-agent").and(page.locator('[data-watch="work"]'))).toContainText("Count the handlers");
+    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", "Agents: 2 agents: 1 needs you, 1 working");
     await expect(row(page, parent).locator('.k-mark[data-watch="need"]')).toBeVisible();
     // The tree: the asking agent is marked, the running one is not.
     await row(page, parent).getByTestId("children-toggle").click();
@@ -898,7 +899,11 @@ test("a long session the page holds only the newest part of reads the daemon's w
       await expect(row(page, id).getByTestId("row-state")).toHaveText(word);
       await expect(row(page, id).getByTestId("row-why")).toHaveText(why);
       await expect(page.getByTestId("station-word")).toHaveText(word);
-      await expect(page.getByTestId("station-why")).toHaveText(why);
+      // A failure's reason is its card's in the transcript: the head keeps the word and the reason is its tooltip.
+      if (id === failed) {
+        await expect(page.getByTestId("station-why")).toHaveCount(0);
+        await expect(page.getByTestId("station-word")).toHaveAttribute("title", why);
+      } else await expect(page.getByTestId("station-why")).toHaveText(why);
     }
     await expect(row(page, failed).getByTestId("row-class")).toHaveText("billing");
     await expect(row(page, waits).getByTestId("row-time")).toHaveText(/^in 1[45]m$/);

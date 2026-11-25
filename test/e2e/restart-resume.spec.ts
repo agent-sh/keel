@@ -1141,7 +1141,8 @@ test("the page says the daemon is unreachable and stops its clocks", async ({ pa
     await call(`/api/sessions/${session.id}/messages`, { text: `script:hold ${gate}` });
     await page.goto(`${d.url}/s/${session.id}`, { waitUntil: "networkidle" });
     const band = page.getByTestId("daemon-away");
-    const clock = page.locator(".k-station-clock");
+    // (At work the step's clock is the line over the box's, not the head's.)
+    const clock = page.getByTestId("dock-action-clock");
     await expect(page.getByTestId("station-word")).toHaveText("Working");
     await expect(clock).toHaveText(/^\d+s$/);
     await expect(band).toHaveCount(0);

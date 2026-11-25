@@ -409,10 +409,12 @@ test("agents started together are one line, and the parent's row moves once for 
     const agents = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { status: string }[];
     await expect.poll(async () => (await agents()).map((a) => a.status).sort().join(" "), { timeout: 60_000 }).toBe("completed running running running running running");
     const dock = page.getByTestId("dock-agents");
-    await expect(dock).toHaveAttribute("aria-label", "6 agents: 5 working, 1 done", { timeout: 20_000 });
-    // One total: the head counts its working agents of every agent it started, the number the session's own line starts with; the row says none.
+    await expect(dock).toHaveAttribute("aria-label", "Agents: 6 agents: 5 working, 1 done", { timeout: 20_000 });
+    // One total, the line over the box's: its word Agents counts every agent it started and it names the five at work;
+    // the head says its word alone and the row says none.
     await expect(row.getByTestId("row-state")).toHaveText("Working", { timeout: 20_000 });
-    await expect(page.getByTestId("station-word")).toHaveText("Working · 5 of 6 agents");
+    await expect(page.getByTestId("station-word")).toHaveText("Working");
+    await expect.poll(async () => (await page.getByTestId("dock-agent").allInnerTexts()).sort(), { timeout: 20_000 }).toEqual([...lanes].sort());
     // The row and its line changed a few times for six agents (they came, one reported), not at each.
     const said = await page.evaluate(() => (window as unknown as { __said: string[] }).__said);
     expect(said.length, said.join(" ;; ")).toBeLessThanOrEqual(3);

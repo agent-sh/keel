@@ -1,7 +1,7 @@
-// The session's agents in the session itself, over its box: how many work, wait, need the owner, failed or are
-// done, each as the state's dot and its count, in the words of the one vocabulary. A press opens the agents (the
-// background popup: each agent, its state, open, stop). The sidebar says nothing of how many agents a session
-// has: its row only has a chevron that opens their tree.
+// The session's agents in the session itself, over its box: each live agent (at work, waiting, needing the owner,
+// or failed and not looked at) by its name and its state's dot, a press on it opens that agent. The word Agents
+// opens all of them (the background popup: each agent, its state, open, stop, the done ones too). The sidebar
+// says nothing of how many agents a session has: its row only has a chevron that opens their tree.
 import { Popover } from "@base-ui/react/popover";
 import { ChevronRight } from "lucide-react";
 import { useMemo } from "react";
@@ -11,6 +11,7 @@ import type { Watch } from "../../../../src/core/watch.ts";
 import { useAuto } from "../../lib/automation.ts";
 import { useSessionState, useToldStates } from "../../lib/watch.ts";
 import { useStore } from "../../lib/store.ts";
+import { openSession } from "../../lib/automation.ts";
 import { Mark } from "../Mark.tsx";
 import { agentSaid } from "./bits.tsx";
 import { BackgroundPopup, useBackground } from "./BackgroundPopover.tsx";
@@ -26,7 +27,7 @@ export function useAgentsTally(sessionId: string) {
     const counted = agents.filter((a) => isCounted(a)).map((a) => ({ a, w: agentSaid(a, told[a.session_id]).watch }));
     if (!counted.length) return null;
     const owed = counted.filter(({ a, w }) => (w === "fail" || w === "declined" ? (a.ended ?? 0) > seen : LINE.has(w)));
-    return { ...agentTally(counted.map((c) => c.w)), shown: agentTally(owed.map((c) => c.w)).parts };
+    return { ...agentTally(counted.map((c) => c.w)), shown: agentTally(owed.map((c) => c.w)).parts, named: owed.map(({ a, w }) => ({ id: a.session_id, title: a.title, w })) };
   }, [agents, told, seen]);
 }
 const LINE = new Set<Watch>(["need", "work", "wait", "resume"]);
@@ -35,26 +36,31 @@ export function AgentsDock({ sessionId }: { sessionId: string }) {
   const bg = useBackground(sessionId);
   const tally = useAgentsTally(sessionId);
   const session = useStore((s) => s.sessions[sessionId]);
+  const titles = useStore((s) => s.sessions);
   const st = useSessionState(session);
-  // The session's own turn is at rest and it waits on them: the line says it, as its row's dot does.
+  // The session's own turn is at rest and it waits on them: the line below says it, as its row's dot does.
   const waiting = backgroundOf(st) === "agents";
   if (!tally) return null;
   return (
-    <Popover.Root>
-      <Popover.Trigger className="k-docket-line k-agents-line" data-testid="dock-agents" aria-label={tally.text} aria-description={waiting ? WAITING_ON_AGENTS : undefined} title={tally.text}>
-        <span className="k-agents-label">Agents</span>
-        <span className="k-agents-parts" data-testid="dock-agents-summary">
-          {tally.shown.map((p) => (
-            <span key={p.w} className="k-agents-part" data-watch={p.w} data-count={p.n} data-testid="dock-agents-part">
-              <Mark w={p.w} />{p.text}
-            </span>
-          ))}
-          {!tally.shown.length && <span className="k-agents-none" data-testid="dock-agents-none">none running</span>}
-        </span>
-        {waiting && <span className="k-agents-waits" data-testid="dock-agents-waiting">{WAITING_ON_AGENTS}</span>}
-        <ChevronRight className="k-docket-more" aria-hidden="true" />
-      </Popover.Trigger>
-      <BackgroundPopup sessionId={sessionId} agents={bg.agents} waits={bg.waits} loops={bg.loops} side="top" />
-    </Popover.Root>
+    <div className="k-docket-line k-agents-line" data-testid="dock-agents-line">
+      <Popover.Root>
+        <Popover.Trigger className="k-agents-all" data-testid="dock-agents" aria-label={`Agents: ${tally.text}`} aria-description={waiting ? WAITING_ON_AGENTS : undefined} title={tally.text}>
+          <span className="k-agents-label">Agents</span>
+          <ChevronRight className="k-docket-more" aria-hidden="true" />
+        </Popover.Trigger>
+        <BackgroundPopup sessionId={sessionId} agents={bg.agents} waits={bg.waits} loops={bg.loops} side="top" />
+      </Popover.Root>
+      <span className="k-agents-parts" data-testid="dock-agents-summary">
+        {tally.named.map((n) => {
+          const title = titles[n.id]?.title || n.title || "Agent";
+          return (
+            <button key={n.id} type="button" className="k-agents-part" data-watch={n.w} data-testid="dock-agent" title={`Open ${title}`} onClick={() => openSession(n.id)}>
+              <Mark w={n.w} /><span className="k-agents-name">{title}</span>
+            </button>
+          );
+        })}
+        {!tally.named.length && <span className="k-agents-none" data-testid="dock-agents-none">none running</span>}
+      </span>
+    </div>
   );
 }

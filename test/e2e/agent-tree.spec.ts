@@ -97,7 +97,7 @@ test("agents start agents, message each other, and stop as a tree", async ({ pag
     const wrap = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${session.id}"]`).locator("xpath=..");
     const kids = wrap.getByTestId("session-children");
     // The session says how many agents it has (its dock), and the row's head counts the same: the tree, not the root's own two.
-    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", /^4 agents:/);
+    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", /^Agents: 4 agents:/);
     expect((await api("/api/state")).states[session.id]).toMatchObject({ agents_total: 4 });
     await wrap.getByTestId("children-toggle").click();
     const rows = kids.getByTestId("child-row");

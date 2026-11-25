@@ -1112,7 +1112,7 @@ for (const size of SIZES) {
         await drop(request, id, q);
       }
     });
-    test("the top bar is one line on a phone, working or at rest: the title cut to the room, the state's dot and its age; its word and reason are the menu's first row, whole", async ({ page, request }) => {
+    test("the top bar is one line on a phone, working or at rest: the title cut to the room and the state's dot; its word and reason are the menu's first row, whole", async ({ page, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
       const id = await start(request, "Phone head one line with a title long enough to be cut by the room the bar leaves it");
       try {
@@ -1130,8 +1130,8 @@ for (const size of SIZES) {
         expect(working, "the top bar of a working session is one row").toBeLessThanOrEqual(Math.ceil(3.25 * rem));
         const title = station.getByTestId("station-title");
         expect(await title.evaluate((e) => e.scrollWidth > e.clientWidth + 1), "a long title is cut by an ellipsis").toBe(true);
-        const clock = station.getByTestId("station-clock");
-        await expect(clock).toBeVisible();
+        // At work the step's clock is not the bar's: the conversation's running line has it.
+        await expect(station.getByTestId("station-clock")).toHaveCount(0);
         const dot = station.locator(".k-station-state .k-mark");
         await expect(dot).toBeVisible();
         expect(await station.getByTestId("station-word").evaluate((e) => (e.textContent ?? "").trim().length > 0), "its word is still there for a reader").toBe(true);
@@ -1275,7 +1275,7 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
-    test("the dock's agents line says its counts and that it waits whole at a large text size", async ({ browser, request }) => {
+    test("the dock's agents line names each agent whole at a large text size", async ({ browser, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
       test.setTimeout(180_000);
       const id = await fullDock(request, "Phone agents line");
@@ -1284,19 +1284,22 @@ for (const size of SIZES) {
           const { ctx, page } = await atScale(browser, size, scale);
           try {
             await page.goto(`/s/${id}`);
-            const line = page.getByTestId("dock-agents");
-            await expect(line.getByTestId("dock-agents-waiting")).toBeVisible({ timeout: 30_000 });
+            const line = page.getByTestId("dock-agents-line");
+            await expect(line.getByTestId("dock-agent")).toHaveCount(1, { timeout: 30_000 });
+            await expect(line.getByTestId("dock-agent").locator(".k-mark")).toBeVisible();
             await page.waitForTimeout(400);
-            // Each count shows all its words: the line grows a row rather than cut a part or the word that it waits.
-            const cut = await line.evaluate((el) => [...el.querySelectorAll<HTMLElement>('[data-testid="dock-agents-part"], [data-testid="dock-agents-waiting"]')].filter((p) => {
+            // Each agent shows its whole name: the line grows a row rather than cut a name.
+            const cut = await line.evaluate((el) => [...el.querySelectorAll<HTMLElement>('[data-testid="dock-agent"]')].filter((p) => {
               const r = p.getBoundingClientRect();
+              const name = p.querySelector<HTMLElement>(".k-agents-name");
+              if (name && name.scrollWidth > name.clientWidth + 1) return true;
               for (let a = p.parentElement; a && a !== el.parentElement; a = a.parentElement) {
                 const b = a.getBoundingClientRect();
                 if (r.right > b.right + 0.5 || r.bottom > b.bottom + 0.5 || r.left < b.left - 0.5) return true;
               }
               return false;
             }).map((p) => p.textContent));
-            expect(cut, `counts cut at ${scale * 100}% text`).toEqual([]);
+            expect(cut, `names cut at ${scale * 100}% text`).toEqual([]);
             expect(await phoneProblems(line), `the agents line at ${scale * 100}% text`).toEqual([]);
             await shoot(page, `phone-surfaces-30-agents-line-${size.width}-${scale}`);
           } finally { await ctx.close(); }

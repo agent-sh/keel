@@ -256,7 +256,6 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
         <>
           <span className="k-face-figure k-docket-n">{done}/{plan.length}</span>
           <span className="k-docket-step min-w-0 truncate max-md:whitespace-normal max-md:break-words">{now ? (now.active ?? now.text) : "Plan"}</span>
-          <span className="k-docket-track" aria-hidden="true"><span style={{ width: `${(100 * done) / plan.length}%` }} /></span>
         </>
       )}
       <ChevronRight className="k-docket-more transition-transform group-data-[open]/plan:rotate-90" />

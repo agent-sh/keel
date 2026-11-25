@@ -4,7 +4,7 @@
 // panel, the changes open the Changes panel. The line above it (SessionDock.tsx) holds the plan and the agents.
 import { Boxes, Folder } from "lucide-react";
 import type { ReactNode } from "react";
-import { STATE_WORD, backgroundOf, stateLabel } from "../../../src/core/state-words.ts";
+import { STATE_WORD, WAITING_ON_AGENTS, backgroundOf, stateWords } from "../../../src/core/state-words.ts";
 import { briefText, whyText } from "../../../src/core/watch.ts";
 import { momentOf, pathInAction, type Moment } from "../lib/now-line.ts";
 import { projectOfFolder, useProjects } from "../lib/projects.ts";
@@ -46,7 +46,9 @@ export function DockNow({ sessionId, changes }: { sessionId: string; changes: Re
   const said = st.text && !inView ? briefText(st, now) : "";
   const whole = st.text ? whyText(st, now) : "";
   // At rest the line says the state in its word (and the reason a failure or a stop has); at work, the action.
-  const words = moment ? said || stateLabel(st) : [stateLabel(st), st.watch === "fail" || st.watch === "declined" || st.watch === "stop" ? said : ""].filter(Boolean).join(": ");
+  // The state's word alone: the agents are the line above's, by name.
+  const word = backgroundOf(st) === "agents" ? WAITING_ON_AGENTS : stateWords(st).word;
+  const words = moment ? said || word : [word, st.watch === "fail" || st.watch === "declined" || st.watch === "stop" ? said : ""].filter(Boolean).join(": ");
   const path = moment === "acting" ? pathInAction(said, session.workspace) : null;
   const clock = moment && timed(st) ? stateClock(st, now) : "";
   const folder = session.workspace ? folderOf(session) : "";
@@ -54,8 +56,9 @@ export function DockNow({ sessionId, changes }: { sessionId: string; changes: Re
   // its reason): the line does not say it again. What is left of the line is the places and the changes, and a line
   // with none of them is not drawn (styles.css, .k-now:empty).
   const asked = moment === null || (moment === "need" && inView);
-  // The bar names the folder while the turn is not at work and the bar has the room; the line names it for a bar
-  // that has not (styles.css, data-bar).
+  // The folder is said once: by the bar while the turn is not at work and the bar has the room, by this line at work
+  // and where the bar has not the room (styles.css, data-bar). A line under a card that would say only the folder
+  // would take the card's room.
   const bar = !(st.watch === "work" && !backgroundOf(st));
   return (
     <div className="k-docket-line k-now" data-testid="dock-now" data-moment={moment ?? undefined} data-watch={st.watch} data-why={st.why}>

@@ -196,8 +196,8 @@ test("a head with a long title and a long reason is still one bar, the brand row
     await page.mouse.move(1000, 700);
     await shoot(page, "top-edge-03-approval-1920");
 
-    // At work on a long command: the bar is the title, the dot, the word and the timer; what it runs is the word's
-    // tooltip (the transcript shows the command), and the folder is the title's.
+    // At work on a long command: the bar is the title, the dot and the word alone; what it runs is the word's
+    // tooltip (the transcript shows the command), the step's clock is the line over the box's, and the folder is the title's.
     const busy = await make("full-auto", { command: `sleep 30; ${command}` });
     const work = page.getByTestId("station").and(page.locator(`[data-station="${busy.id}"]`));
     // Below 1400 the bar is one too (it once was two rows there, 125px against the brand row's 60).
@@ -208,7 +208,9 @@ test("a head with a long title and a long reason is still one bar, the brand row
       await page.mouse.move(1000, 700);
       const head = work.getByTestId("station-head");
       await expect(head.getByTestId("station-word")).toContainText("Working");
-      await expect(head.getByTestId("station-clock")).toBeVisible();
+      await expect(head.getByTestId("station-word"), `at ${width} the head's word is the word alone`).not.toContainText("·");
+      await expect(head.getByTestId("station-clock"), `at ${width} the head says the step's clock again`).toHaveCount(0);
+      await expect(work.getByTestId("dock-action-clock")).toBeVisible();
       await expect(head.getByTestId("station-why"), `at ${width} the command is not in the bar`).toHaveCount(0);
       await expect(head.locator(".k-station-meta"), `at ${width} the folder is not in the bar`).toHaveCount(0);
       expect(await head.getByTestId("station-word").getAttribute("title"), `at ${width} the command is the word's tooltip`).toContain("top-edge-long-reason.txt");
@@ -269,7 +271,7 @@ test("Full auto is neutral ink where it is the owner's usual mode and warm where
 });
 
 // Feature: the bar says a session's state once, in the glyph and the word (no coloured strip across the
-// top of the pane), and what it waits on the owner for is said once, in its card: while the card is in view the bar
+// top of the pane, no tint on its head, no working rule under it), and what it waits on the owner for is said once, in its card: while the card is in view the bar
 // and the dock's line say the state only, not "approve: ..." or "asks: ..." again (UX-S143).
 test("the bar has no state strip, and a session that needs the owner says why once, in its card", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
@@ -288,7 +290,17 @@ test("the bar has no state strip, and a session that needs the owner says why on
     const approve = await make("Waits on a call", calls({ name: "Bash", input: { command: "git push origin release" } }), "ask");
     const asks = await make("Waits on a question", calls({ name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which store should hold the sessions?", options: [{ label: "SQLite" }, { label: "Files" }], multiSelect: false }] } }), "full-auto");
     const failed = await make("Fails at the top", "script:billing", "full-auto");
+    const { session: rest } = await (await request.post("/api/sessions", { data: { model, title: "At rest at the top" } })).json();
+    made.push(rest.id);
     await page.setViewportSize({ width: 1920, height: 1040 });
+    // The paper of a head and of the bar's tools, as drawn.
+    const paper = (id: string) => page.getByTestId("station").and(page.locator(`[data-station="${id}"]`)).evaluate((el) => {
+      const bg = (e: Element | null) => (e ? getComputedStyle(e).backgroundColor : "");
+      return { head: bg(el.querySelector('[data-testid="station-head"]')), tools: bg(el.querySelector('[data-testid="session-header"]')), under: getComputedStyle(el).getPropertyValue("--k-head-bg").trim() };
+    });
+    await page.goto(`/s/${rest.id}`);
+    await expect(page.getByTestId("station").and(page.locator(`[data-station="${rest.id}"]`))).toHaveAttribute("data-watch", "idle", { timeout: 30_000 });
+    const calm = await paper(rest.id);
     for (const [id, watch, said] of [[approve, "need", true], [asks, "need", true], [failed, "fail", false]] as const) {
       await page.goto(`/s/${id}`);
       const pane = page.getByTestId("station").and(page.locator(`[data-station="${id}"]`));
@@ -297,6 +309,9 @@ test("the bar has no state strip, and a session that needs the owner says why on
       const head = pane.getByTestId("station-head");
       // The strip: no colour of the state across the pane's top.
       expect(await pane.locator(":scope > .k-band").evaluate((el) => getComputedStyle(el).backgroundColor), `a pane that is ${watch} draws a strip`).toBe("rgba(0, 0, 0, 0)");
+      // No tint: the head of a pane that calls the owner is the paper of a head at rest; its dot and word say the state.
+      expect(await paper(id), `a pane that is ${watch} tints its head`).toEqual(calm);
+      await expect(head.getByTestId("wake-line")).toHaveCount(0);
       // The card is in view: the bar does not say its reason again, nor does the dock's line over the message box.
       await expect(head.getByTestId("station-ask")).toHaveCount(0);
       if (!said) continue;

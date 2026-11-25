@@ -59,31 +59,33 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     const kids = wrap.getByTestId("session-children");
     const toggle = row(page, parent).getByTestId("children-toggle");
     const dock = page.getByTestId("dock-agents");
-    const parts = dock.getByTestId("dock-agents-part");
-    await expect(dock).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
-    expect(await parts.evaluateAll((els) => els.map((e) => `${e.getAttribute("data-watch")} ${e.getAttribute("data-count")}`))).toEqual(["fail 1", "work 1"]);
+    const line = page.getByTestId("dock-agents-line");
+    const parts = line.getByTestId("dock-agent");
+    await expect(dock).toHaveAttribute("aria-label", "Agents: 8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+    expect((await parts.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")))).sort()).toEqual(["fail", "work"]);
     expect(reads).toEqual([""]);
     expect(await wrap.innerText(), "the sidebar says no number of agents").not.toMatch(/\b\d+ agents?\b/);
-    // One form whatever the states: each is its dot and its words, on one line.
-    for (const [i, word] of ["1 failed", "1 working"].entries()) {
-      await expect(parts.nth(i).locator(".k-mark")).toBeVisible();
-      await expect(parts.nth(i)).toHaveText(word);
+    // One form whatever the states: each is its dot and its name, on one line, and a press opens it.
+    for (const [watch, title] of [["fail", `Failing helper ${tag}`], ["work", `Working helper ${tag}`]] as const) {
+      const one = parts.and(page.locator(`[data-watch="${watch}"]`));
+      await expect(one.locator(".k-mark")).toBeVisible();
+      await expect(one).toHaveText(title);
     }
-    // The line draws what is live or owed to the owner: the six that finished are in its name and its popup, not on the line.
-    await expect(dock.getByTestId("dock-agents-part").filter({ hasText: /done|stopped/ })).toHaveCount(0);
-    await expect(dock).not.toContainText("done");
-    // Every count lies inside the line's box, at the two desk sizes, in both themes: none peeks out cut under it.
+    // The line names what is live or owed to the owner: the six that finished are in its word's name and its popup, not on the line.
+    await expect(parts.filter({ hasText: "Finished helper" })).toHaveCount(0);
+    await expect(line).not.toContainText("Finished helper");
+    // Every name lies inside the line's box, at the two desk sizes, in both themes: none peeks out cut under it.
     for (const size of [{ width: 1920, height: 1040 }, { width: 1366, height: 768 }]) {
       await page.setViewportSize(size);
-      await expect.poll(() => dock.evaluate((el) => {
+      await expect.poll(() => line.evaluate((el) => {
         const box = el.getBoundingClientRect();
-        return [...el.querySelectorAll<HTMLElement>("[data-testid=dock-agents-part]")].filter((p) => { const r = p.getBoundingClientRect(); return r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5 || r.right > box.right + 0.5; }).length;
-      }), { message: `the counts of the agents line lie inside it at ${size.width}` }).toBe(0);
+        return [...el.querySelectorAll<HTMLElement>("[data-testid=dock-agent]")].filter((p) => { const r = p.getBoundingClientRect(); return r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5 || r.right > box.right + 0.5; }).length;
+      }), { message: `the names of the agents line lie inside it at ${size.width}` }).toBe(0);
       await shoot(page, `session-list-01-agents-line-${size.width}`);
     }
     await page.setViewportSize({ width: 1920, height: 1040 });
     await shoot(page, "session-list-01-agents-line");
-    expect((await dock.boundingBox())!.height, "the agents line is one line").toBeLessThanOrEqual(30);
+    expect((await line.boundingBox())!.height, "the agents line is one line").toBeLessThanOrEqual(30);
 
     // Opened: the rows of the ones at rest are read then, once, and every agent is in the tree.
     await toggle.click();
@@ -95,6 +97,12 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     await toggle.click();
     await expect(kids.getByTestId("child-row")).toHaveCount(8);
     expect(reads).toEqual(["", `?agents_of=${parent}`]);
+    // A press on an agent's name over the box opens that agent.
+    await parts.filter({ hasText: `Working helper ${tag}` }).click();
+    await expect(page).toHaveURL(new RegExp(`/s/${working}$`));
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`/s/${parent}$`));
+    await expect(kids.getByTestId("child-row")).toHaveCount(8);
 
     // The palette finds a finished agent by its title, whether the page holds its row or not (the daemon's
     // search answers for what the page does not hold, as for an archived session), and opens it. The tree
@@ -102,7 +110,7 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     await toggle.click();
     await expect(kids.getByTestId("child-row")).toHaveCount(0);
     await page.goto(`/s/${parent}`);
-    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+    await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", "Agents: 8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill(`Finished helper 1 ${tag}`);
     const found = page.locator('[role="option"][id^="palette-opt-t_"], [role="option"][id^="palette-opt-s_"]').filter({ hasText: `Finished helper 1 ${tag}` });
@@ -124,7 +132,7 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
       await r.fulfill({ json: all });
     });
     await page.goto(`/s/${parent}`);
-    await expect(dock).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+    await expect(dock).toHaveAttribute("aria-label", "Agents: 8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
     await page.unroute("**/api/sessions");
 
     // At every desk width, the narrowest rail (232px at 1050) included: one line, nothing cut.
@@ -132,9 +140,9 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
       await page.setViewportSize({ width, height: 1040 });
       await page.evaluate((w) => { if (w) localStorage.setItem("keel.listW", String(w)); else localStorage.removeItem("keel.listW"); }, listW);
       await page.goto(`/s/${parent}`);
-      await expect(dock).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+      await expect(dock).toHaveAttribute("aria-label", "Agents: 8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
       await expect(toggle).toBeVisible();
-      const fit = () => dock.evaluate((el) => { const sum = el.getBoundingClientRect(); return { h: Math.round(sum.height), over: Math.max(0, ...[...el.querySelectorAll<HTMLElement>("[data-testid=dock-agents-part]")].filter((e) => e.getBoundingClientRect().top < sum.bottom).map((e) => Math.round(e.getBoundingClientRect().right - sum.right))) }; });
+      const fit = () => line.evaluate((el) => { const sum = el.getBoundingClientRect(); return { h: Math.round(sum.height), over: Math.max(0, ...[...el.querySelectorAll<HTMLElement>("[data-testid=dock-agent]")].filter((e) => e.getBoundingClientRect().top < sum.bottom).map((e) => Math.round(e.getBoundingClientRect().right - sum.right))) }; });
       await expect.poll(async () => { const f = await fit(); return f.h <= 30 && f.over <= 0; }, { message: `the agents line at ${width}, list ${listW || "default"}: ${JSON.stringify(await fit())}` }).toBe(true);
       await shoot(page, `session-list-01-agents-line-${width}-${listW || "wide"}`);
     }

@@ -185,13 +185,14 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await entry(c).click();
   await expect(page.getByTestId("side-panel")).toHaveCount(0);
 
-  // The top line: a working turn breathes in the header's working line; the pane's top strip says no state.
+  // The top line: a working turn draws no strip across the pane's top and no working rule under its head; the head's dot says it.
   await request.put(`/api/sessions/${c}/permissions`, { data: { mode: "full-auto" } });
   await request.post(`/api/sessions/${c}/messages`, { data: { text: "script:long-tool" } });
   const band = pane(0).locator(".k-band");
   await expect(pane(0)).toHaveAttribute("data-watch", "work", { timeout: 15_000 });
   expect(await band.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
-  await expect(page.getByTestId("wake-line")).toBeVisible();
+  await expect(page.getByTestId("wake-line")).toHaveCount(0);
+  await expect(pane(0).getByTestId("station-word").locator('.k-mark[data-watch="work"]')).toBeVisible();
   await shoot(page, "arrange-09-working-line");
   await request.post(`/api/sessions/${c}/interrupt`, { data: { by: "owner" } });
   await expect(pane(0)).not.toHaveAttribute("data-watch", "work", { timeout: 15_000 });
