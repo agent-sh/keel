@@ -3368,7 +3368,7 @@ export class Engine {
           // reply that can write (a command, an edit): a reply that runs a command and then reads the file it
           // makes means that order, and the read otherwise found nothing (src/engine/step-order.ts).
           const behind = new StepOrder(st.tools, signal);
-          await batch(uses.map((u, index) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? (closingCap ? CAP_SPENT : AGENT_BUDGET_SPENT) : BUDGET_SPENT }) : behind.run(u, () => this.tracked(id, u, this.runTool(session, st.tools, u, { ...ctx, reply: { seq: stored.seq, index } })))).then(settle(u))));
+          await batch(uses.map((u, index) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? (closingCap ? CAP_SPENT : AGENT_BUDGET_SPENT) : BUDGET_SPENT }) : behind.run(u, (ordered) => this.tracked(id, u, this.runTool(session, st.tools, u, { ...ctx, reply: { seq: stored.seq, index }, ordered })))).then(settle(u))));
           } finally { planned?.(); }
           if (cut) await settleNow(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
@@ -3624,6 +3624,8 @@ export class Engine {
       if (deny) return denied(deny);
       const runCtx = authorizationError ? { ...call.ctx, authorizationError } : call.ctx;
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
+      // The calls before it in the reply that must come first (src/engine/step-order.ts): its tool runs after them.
+      if (ctx.ordered) { await ctx.ordered(); if (ctx.signal.aborted) return interrupted(); }
       t0 = Date.now();
       // What the call sends out is the call's, in the outward ledger (src/safety/egress.ts).
       const run = outward({ tool: u.name, call: u.id, session: session.id }, () => (runCtx.dispatch ? runCtx.dispatch(tool, input, runCtx) : tool.run(input, runCtx)));

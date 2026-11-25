@@ -61,10 +61,10 @@ test("a command after an edit in the reply starts when the edit has ended; comma
   const order = new StepOrder(tools, new AbortController().signal);
   const log: string[] = [];
   const edit = gated();
-  const w = order.run({ name: "Write" }, async () => { log.push("write start"); await edit.gate; log.push("write end"); });
-  const first = order.run({ name: "Bash" }, async () => { log.push("bash start"); });
-  const read = order.run({ name: "Read" }, async () => { log.push("read start"); });
-  const second = order.run({ name: "Bash" }, async () => { log.push("bash2 start"); });
+  const w = order.run({ name: "Write" }, async (ordered) => { await ordered(); log.push("write start"); await edit.gate; log.push("write end"); });
+  const first = order.run({ name: "Bash" }, async (ordered) => { await ordered(); log.push("bash start"); });
+  const read = order.run({ name: "Read" }, async (ordered) => { await ordered(); log.push("read start"); });
+  const second = order.run({ name: "Bash" }, async (ordered) => { await ordered(); log.push("bash2 start"); });
   await Promise.resolve(); await Promise.resolve();
   expect(log).toEqual(["write start"]);
   edit.open();
@@ -79,8 +79,8 @@ test("a command before the edit, or with no edit before it, starts at once; an e
   const order = new StepOrder(tools, new AbortController().signal);
   const log: string[] = [];
   const cmd = gated();
-  const b = order.run({ name: "Bash" }, async () => { log.push("bash start"); await cmd.gate; });
-  const w = order.run({ name: "Write" }, async () => { log.push("write start"); });
+  const b = order.run({ name: "Bash" }, async (ordered) => { await ordered(); log.push("bash start"); await cmd.gate; });
+  const w = order.run({ name: "Write" }, async (ordered) => { await ordered(); log.push("write start"); });
   await Promise.resolve(); await Promise.resolve();
   expect(log).toEqual(["bash start", "write start"]);
   cmd.open();
@@ -93,8 +93,8 @@ test("a stop ends a command's wait for an edit", async () => {
   const order = new StepOrder(tools, stop.signal);
   const edit = gated();
   const log: string[] = [];
-  order.run({ name: "Write" }, async () => { await edit.gate; });
-  const b = order.run({ name: "Bash" }, async () => { log.push("bash start"); });
+  order.run({ name: "Write" }, async (ordered) => { await ordered(); await edit.gate; });
+  const b = order.run({ name: "Bash" }, async (ordered) => { await ordered(); log.push("bash start"); });
   stop.abort();
   await b;
   expect(log).toEqual(["bash start"]);

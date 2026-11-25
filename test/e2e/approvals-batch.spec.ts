@@ -196,7 +196,7 @@ test("several requests are answered one by one from the keys, or all of a tool a
     // Exactly the listed ones were answered, in the order they were listed, with one request.
     await expect(card).toHaveCount(1);
     expect(sent).toEqual([listed]);
-    await expect.poll(() => ["three.txt", "four.txt"].every((f) => existsSync(join(ws, f)))).toBe(true);
+    // (The commands after the file change in the reply run when it has ended: they are answered now, and run below.)
     // The file change still waits, a lone card again; the focus is on the list, so the card
     // does not say that Enter allows it.
     await expect(row("note.md")).toBeVisible();
@@ -217,6 +217,7 @@ test("several requests are answered one by one from the keys, or all of a tool a
     await expect(card).toHaveCount(0);
     await expect(pane.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
     expect(existsSync(join(ws, "note.md"))).toBe(true);
+    await expect.poll(() => ["three.txt", "four.txt"].every((f) => existsSync(join(ws, f)))).toBe(true);
     expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
   } finally { await request.delete(`/api/sessions/${id}`); }
 });

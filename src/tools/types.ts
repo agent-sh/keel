@@ -59,6 +59,8 @@ export type ToolContext = {
   // Where the call stands in the model's reply: the reply's event and the call's index in it (set by the
   // engine). The calls are judged side by side; a card keeps this place so cards list in the model's order.
   reply?: { seq: number; index: number };
+  // Settles when the calls before this one in its reply that must come first have ended (src/engine/step-order.ts); a tool runs after it.
+  ordered?: () => Promise<void>;
   // Set by a beforeTool hook: runs the call somewhere else (the session's
   // machine) instead of tool.run here.
   dispatch?: (tool: Tool, input: any, ctx: ToolContext) => Promise<ToolOutput>;
