@@ -282,6 +282,9 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(panel.getByTestId("board-summary")).toHaveText(/^1 to land · /);
   await expect(panel.getByTestId("board-summary")).not.toHaveText(/\b[0-9a-f]{9}\b|\b0 /);
   await expect(panel.getByTestId("board-summary")).toHaveAttribute("title", /^Base main at [0-9a-f]{9}/);
+  // When it was read is the Refresh button's tooltip, not a standing line with the time the read took.
+  await expect(panel).not.toContainText(/\d+ ms\b/);
+  await expect(panel.getByTestId("board-refresh")).toHaveAttribute("title", /^Read .* from git, the check ledger and the landing queue$/);
   // Beta's reviewer refused it: Land is there, held, with the reason, and Open changes stays beside it.
   await expect(card(beta.id).getByTestId("board-land")).toBeDisabled();
   await expect(card(beta.id).getByTestId("board-held")).toContainText("review is refused");

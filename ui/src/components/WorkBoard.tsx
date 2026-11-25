@@ -413,7 +413,8 @@ export function WorkBoard({ session }: { session: Session }) {
             <GitPullRequestArrow /> Review the tree
           </button>
         )}
-        <button type="button" onClick={refresh} disabled={busy} data-testid="board-refresh"
+        {/* When and from what the board was read is the button's tooltip: a standing line of it was a timing for the program. */}
+        <button type="button" onClick={refresh} disabled={busy} data-testid="board-refresh" title={`Read ${ago(b.at) === "now" ? "now" : `${ago(b.at)} ago`} from git, the check ledger and the landing queue`}
           className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
           <RefreshCw className={cn("size-3.5", busy && "animate-spin")} /> Refresh
         </button>
@@ -428,7 +429,6 @@ export function WorkBoard({ session }: { session: Session }) {
         </ul>
       )}
       {b.total > b.rows.length && <p className="px-1 text-micro text-faint"><CircleDashed className="mr-1 inline size-3" />{b.total - b.rows.length} older agents are not shown.</p>}
-      <p className="px-1 text-micro text-faint">Read {ago(b.at)} in {b.took_ms} ms, from git, the check ledger and the landing queue.</p>
       {reviewing && <Suspense fallback={null}><TreeReviewDialog session={session} onClose={() => { setReviewing(false); loadBoard(session.id, true).catch(() => {}); }} /></Suspense>}
     </div>
   );
