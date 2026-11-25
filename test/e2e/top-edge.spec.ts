@@ -303,7 +303,10 @@ test("the bar has no state strip, and a session that needs the owner says why on
       const needs = id === approve ? "git push origin release" : "Which store should hold the sessions";
       await expect(pane.getByTestId(id === approve ? "approval" : "question")).toContainText(needs);
       await expect(head).not.toContainText(needs);
-      await expect(pane.getByTestId("dock-action-text")).toHaveText("Needs you");
+      // The bar says Needs you and the card says what for: the dock's line is not a third place for the word.
+      await expect(head.getByTestId("station-word")).toContainText("Needs you");
+      await expect(pane.getByTestId("dock-action")).toHaveCount(0);
+      await expect(pane.getByTestId("dock-action-text")).toHaveCount(0);
       await shoot(page, `top-edge-ask-${id === approve ? "call" : "question"}`);
     }
   } finally {

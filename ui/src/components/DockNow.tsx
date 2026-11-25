@@ -50,9 +50,12 @@ export function DockNow({ sessionId, changes }: { sessionId: string; changes: Re
   const path = moment === "acting" ? pathInAction(said, session.workspace) : null;
   const clock = moment && timed(st) ? stateClock(st, now) : "";
   const folder = session.workspace ? folderOf(session) : "";
+  // An ask whose card is above the box is said by the bar (its dot, its word, its clock) and by the card: the line
+  // does not say it a third time.
+  const asked = moment === "need" && inView;
   return (
     <div className="k-docket-line k-now" data-testid="dock-now" data-moment={moment ?? undefined} data-watch={st.watch} data-why={st.why}>
-      <span className="k-now-act" data-testid="dock-action" title={whole || undefined}>
+      {!asked && <span className="k-now-act" data-testid="dock-action" title={whole || undefined}>
         {moment ? <MomentMark moment={moment} /> : <span className="k-now-rest" aria-hidden="true" />}
         <span className="k-now-text" data-testid="dock-action-text">
           {path ? (
@@ -63,7 +66,7 @@ export function DockNow({ sessionId, changes }: { sessionId: string; changes: Re
           ) : words}
         </span>
         {clock && <span className="k-now-clock k-face-figure" data-testid="dock-action-clock">{clock}</span>}
-      </span>
+      </span>}
       {folder && (
         <button type="button" className="k-now-seg k-now-folder" data-testid="dock-folder" title={`${session.workspace}\nOpen the folder in Files`} aria-label={`Folder ${session.workspace}: open it in Files`} onClick={() => showInFiles(sessionId, "")}>
           <Folder className="k-docket-glyph" aria-hidden="true" />
