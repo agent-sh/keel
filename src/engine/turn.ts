@@ -915,6 +915,11 @@ export class Engine {
     return this.draining;
   }
 
+  // Whether the stopping daemon is parking this session's turn: an abort of it is a restart's cut, not a stop.
+  isParking(id: string) {
+    return this.parking.has(id);
+  }
+
   // Sessions the owner is archiving or deleting right now. Their commands are stopped first, which
   // takes seconds, and what comes due meanwhile (a command's end, a report, a wait) starts no turn
   // in a session that is about to be gone: whoever delivers it keeps it back (src/automation/core.ts)

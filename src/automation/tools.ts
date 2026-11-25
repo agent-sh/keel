@@ -188,6 +188,7 @@ const MESSAGE_TOOLS = new Set(["SendMessage", "send_input"]);
 export const messageHooks: TurnHooks = {
   callOutcome: (sessionId, callId) => {
     const c = callOf(sessionId, callId);
+    if (c && AGENT_TOOL_NAMES.includes(c.name)) return agents.agentCallCut(sessionId, callId);
     if (!c || !MESSAGE_TOOLS.has(c.name)) return undefined;
     let to: agents.AgentRecord;
     try { to = agents.resolveInTree(sessionId, String(c.input?.to ?? c.input?.agent_id ?? c.input?.target)); } catch { return undefined; }

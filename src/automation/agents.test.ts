@@ -56,8 +56,10 @@ const sends: { id: string; text: string }[] = [];
 const interrupted: { id: string; by?: string }[] = [];
 const held = new Set<string>(); // sessions whose queue is held
 const heldWho = new Map<string, string>(); // who made a hold, as the engine keeps it (none said: the owner)
+const parking = new Set<string>(); // sessions whose turn the stopping daemon parks
 const engine = {
   isRunning: (id: string) => busy.has(id),
+  isParking: (id: string) => parking.has(id),
   isHeld: (id: string) => held.has(id),
   send: (id: string, text: string, o: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...o?.meta }) }),
   // A parent's message to its agent: stored as the agent's prompt (the engine keeps one for a working agent in its queue).
@@ -835,6 +837,33 @@ test("a blocking spawn cancelled before its task is sent owes its stopped parent
   expect(agents.get(b.id)).toMatchObject({ status: "stopped", stopped_by: "parent_turn", handback: false });
   expect(store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_owed WHERE agent_id = ?").get(b.id)!.n).toBe(0);
   busy.delete(p.id);
+});
+
+test("a restart that parks the parent's turn leaves its blocking agent working, and the cut call says its report comes", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "parked parent" });
+  store.append(p.id, "assistant", { blocks: [{ type: "tool_use", id: "call-park", name: "Agent", input: { prompt: "review it" } }] });
+  const ctl = new AbortController();
+  const call = agents.spawn(p.id, { prompt: "review it", isolation: "none", background: false, call_id: "call-park" }, ctl.signal);
+  await settled();
+  const a = agents.list(p.id).at(-1)!;
+  busy.add(a.session_id);
+  parking.add(p.id);
+  try {
+    ctl.abort();
+    await call;
+    await settled();
+    expect(agents.get(a.id)).toMatchObject({ status: "running" });
+    expect(interrupted.some((x) => x.id === a.session_id)).toBe(false);
+    expect((messageHooks.callOutcome!(p.id, "call-park") as { done: string }).done).toContain(`waited on agent ${a.id}`);
+  } finally {
+    parking.delete(p.id);
+  }
+  // In the next daemon it finishes, and its report goes to the parent.
+  busy.delete(a.session_id);
+  end(a, "end_turn", "the review");
+  await settled();
+  expect(agents.get(a.id)).toMatchObject({ status: "completed", handback: true });
+  expect(messageHooks.callOutcome!(p.id, "call-park")).toBeUndefined();
 });
 
 // What a signal still holds of the calls it was given to.

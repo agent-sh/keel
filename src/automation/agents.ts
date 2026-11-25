@@ -1332,7 +1332,9 @@ async function begin(id: string, input: Pick<SpawnInput, "background">, model: s
   sendTask(get(id)!); // a start that recovery made meanwhile is not made twice
   const rec = get(id)!;
   if (input.background === false) {
-    const onAbort = () => { cutCalls.add(id); stop(id, "parent_turn"); };
+    // A restart that parks the parent's turn is no stop: the agent's own turn is parked too and goes on in the
+    // next daemon, and its report reaches the parent as a message (the call's cut result says so: agentCallCut).
+    const onAbort = () => { if (D().engine.isParking?.(parentId)) return; cutCalls.add(id); stop(id, "parent_turn"); };
     signal?.addEventListener("abort", onAbort, { once: true });
     const r = await waitFor(id, { parked: true, signal });
     signal?.removeEventListener("abort", onAbort);
@@ -3093,6 +3095,15 @@ export function stopChildrenOf(parentId: string) {
 }
 
 export const isEnded = (a: AgentRecord) => a.status !== "running" && a.status !== "waiting";
+
+// What a blocking Agent call a restart cut is answered with while the agent it started still works: the agent
+// goes on in the next daemon and its report comes as a message, so the parent does not start it a second time.
+export function agentCallCut(sessionId: string, callId: string): { done: string } | undefined {
+  const row = D().store.db.query<{ id: string }, [string, string]>("SELECT id FROM agents WHERE parent_id = ? AND call_id = ?").get(sessionId, callId);
+  const a = row ? get(row.id) : undefined;
+  if (!a || isEnded(a)) return undefined;
+  return { done: `The daemon restarted while this call waited on agent ${a.id} (${a.title}). The agent goes on by itself, and its report comes to you as a message when it finishes: do not start it again.` };
+}
 slotGate.admit = admit;
 // A wait of a parked agent ended because it can no longer fire (its writer ended or stalled): the agent
 // is woken by it, and its parent is told in a line of its next input, as a park is.
