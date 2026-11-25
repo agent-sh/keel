@@ -57,7 +57,7 @@ import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, 
 import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention, switchWarning } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
-import { cacheState, capsuleText, decideFollowUp, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
+import { cacheState, capsuleText, decideFollowUp, freshStartText, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
 import { anchorsOf, TRAIL_BYTES } from "./trail.ts";
 import { cachePlanOn, compactLimit } from "./agent-defaults.ts";
 import { priceCompaction, residual, type PriceVerdict, type Residual } from "./price-compact.ts";
@@ -4060,14 +4060,10 @@ export class Engine {
     // The capsule: its report, and the story of the checkpoint before it
     // verbatim, inside the summary settle() makes (the statements that
     // checkpoint carried stay above it, as the model reads them).
+    const made = await this.capsuleOf(id, events, st, (before) => capsuleText({ ...o, before }), "making a follow-up's capsule (its kept messages and trail)");
+    if (!made) return undefined;
+    const { capsule } = made;
     const cp = checkpointAt(events);
-    const prev = cp.at >= 0 && events[cp.at]!.data.mode === "summary" ? String(events[cp.at]!.data.summary ?? "") : "";
-    const text = capsuleText({ ...o, before: prev ? storyOf(prev) : undefined });
-    const PLACE = "\u0000capsule\u0000";
-    const settled = (await this.settled(events, PLACE)) ?? settle(events, PLACE, events[cp.at]?.data.statements ?? []);
-    if (this.running.has(id) || this.store.session(id)?.head !== events.at(-1)?.id) return undefined;
-    const story = { ...settled, summary: settled.summary.replace(PLACE, () => text) };
-    const capsule = { ...timed(() => "making a follow-up's capsule (its kept messages and trail)", () => checkpointData(events, text, this.wordsBudget(st), story)), capsule: true };
     const capBytes = messagesBytes([summaryMessage(capsule)], model);
     const prepared = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     const ready = prepared && preparedHolds(events, prepared.covered, false, JSON.parse(prepared.data)) && this.preparedFits(id, events, JSON.parse(prepared.data), st) ? JSON.parse(prepared.data) : undefined;
@@ -4091,6 +4087,42 @@ export class Engine {
     }
     if (plan.way === "summary" && this.applyPrepared(id, events, undefined, st)) return plan;
     return { ...plan, mark: plan.way };
+  }
+
+  // A capsule of a session's records, with no model call: the text `text` makes from the story of the last
+  // checkpoint, inside the summary settle() makes, with the owner's messages and the trail of the work kept
+  // beside it (checkpointData). Undefined when the session started or moved while it was made.
+  private async capsuleOf(id: string, events: readonly StoredEvent[], st: Step, text: (before: string | undefined) => string, what: string) {
+    const cp = checkpointAt(events);
+    const prev = cp.at >= 0 && events[cp.at]!.data.mode === "summary" ? String(events[cp.at]!.data.summary ?? "") : "";
+    const words = text(prev ? storyOf(prev) : undefined);
+    const PLACE = "\u0000capsule\u0000";
+    const settled = (await this.settled(events, PLACE)) ?? settle(events, PLACE, events[cp.at]?.data.statements ?? []);
+    if (this.running.has(id) || this.store.session(id)?.head !== events.at(-1)?.id) return undefined;
+    const story = { ...settled, summary: settled.summary.replace(PLACE, () => words) };
+    return { capsule: { ...timed(() => what, () => checkpointData(events, words, this.wordsBudget(st), story)), capsule: true }, text: words };
+  }
+
+  // The owner starts a top-level session again from a capsule of its records, after the model declined its
+  // last turn: the declined reply is left out of the history as it is of every request, and out of the
+  // capsule. No model call. The caller continues the turn (resume). `report`: the session's replies since
+  // its last checkpoint (src/automation/agents.ts, capsuleReportOf).
+  async freshStart(id: string, report: string): Promise<StoredEvent> {
+    const session = this.store.session(id);
+    if (!session) throw Object.assign(new Error("no such session"), { status: 404 });
+    if (session.parent_id) throw Object.assign(new Error("an agent is taken up by its own successor, not by a fresh start"), { status: 409 });
+    if (this.running.has(id)) throw Object.assign(new Error("a turn is running"), { status: 409 });
+    await this.warmContext(id);
+    const events = this.lineage(id);
+    if (events.findLast((e) => e.kind === "turn_end")?.data.reason !== "refusal") throw Object.assign(new Error("the last turn was not declined by the model"), { status: 409 });
+    const st = await this.step(session, session.model);
+    if (this.running.has(id)) throw Object.assign(new Error("a turn is running"), { status: 409 });
+    const made = await this.capsuleOf(id, events, st, (before) => freshStartText({ report, before }), "making a fresh start's capsule (its kept messages and trail)");
+    if (!made) throw Object.assign(new Error("the session moved while the capsule was made"), { status: 409 });
+    const ev = this.append(id, "compaction", { mode: "summary", ...made.capsule, auto: false, trigger: "fresh_start", tokens_before: this.used(events, st), model: st.info.id });
+    this.emitSession(id);
+    void this.compacted(session, ev);
+    return ev;
   }
 
   // Whether this session's next request asks for the long cache lifetime, as

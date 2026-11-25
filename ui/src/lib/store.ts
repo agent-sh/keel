@@ -477,6 +477,8 @@ export const actions = {
   compact: (id: string, focus?: string) => api(`/api/sessions/${id}/compact`, { method: "POST", body: JSON.stringify({ focus }) }),
   clear: (id: string) => api<{ undo_head_event_id: string }>(`/api/sessions/${id}/clear`, { method: "POST" }),
   resume: (id: string) => api(`/api/sessions/${id}/resume`, { method: "POST" }),
+  // After a declined turn: the session starts again from a capsule of its records, without the declined reply.
+  freshStart: (id: string) => api(`/api/sessions/${id}/fresh-start`, { method: "POST" }),
   // Calls off a failed turn that would continue by itself when the provider's wait is over.
   cancelContinue: (id: string) => api(`/api/sessions/${id}/resume`, { method: "DELETE" }),
   context: (id: string) => api<ContextInfo>(`/api/sessions/${id}/context`),

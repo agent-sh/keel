@@ -1,5 +1,6 @@
 // Turn control and the session tree: queue, resume, compaction, context, head
 // (branch switch), fork.
+import { capsuleReportOf } from "../../automation/agents.ts";
 import { ownersMeta } from "../../core/owner.ts";
 import { leafOf, lineage } from "../../core/tree.ts";
 import { bytesPerToken, checkpointAt, contextTokens, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
@@ -115,6 +116,24 @@ export const turnRoutes: RouteModule = (deps) => {
         const s = sessionOr404(req.params.id);
         if (!s) return bad("no such session", 404);
         return json({ ok: true, cancelled: engine.cancelContinue(s.id) });
+      },
+    },
+
+    // The model declined the session's last turn: the owner starts it again from a capsule of its records (no model
+    // call, the declined reply left out) and the turn goes on from it.
+    "/api/sessions/:id/fresh-start": {
+      POST: async (req: any) => {
+        const s = sessionOr404(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (s.archived || engine.isRunning(s.id)) return bad(s.archived ? "the session is archived" : "a turn is running", 409);
+        try {
+          const ev = await engine.freshStart(s.id, capsuleReportOf(engine.lineage(s.id)));
+          engine.resume(s.id);
+          return json({ ok: true, event_id: ev.id });
+        } catch (e: any) {
+          if (typeof e?.status === "number") return bad(e.message, e.status);
+          throw e;
+        }
       },
     },
 

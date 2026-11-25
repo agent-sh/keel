@@ -28,7 +28,7 @@ export type Row = {
   failures?: StoredEvent[]; // end: what failed in the turn, shown above its footer
   times?: number; // end: the restarts in a row this footer stands for
   folded?: boolean; // end: a restart that the next restart's footer stands for
-  after?: string; // error: the event before it
+  after?: string; // error: the event before it; refusal: the end of the turn it ended
 };
 
 // Rows in order, in blocks of the events' seq (BLOCK to a block): a block's
@@ -113,7 +113,9 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
     const e = events[i]!;
     if (b.refusal) {
       if (e.kind === "note" && e.data.kind === "fallback") patch(b.refusal, () => ({ handled: true }));
-      b.refusal = null;
+      // The turn's end that follows it says whether it is still the session's last (a fresh start is offered then).
+      else if (e.kind === "turn_end") patch(b.refusal, () => ({ after: e.id }));
+      if (e.kind !== "note" || e.data.kind === "fallback") b.refusal = null;
     }
     // A clear is undone while nothing the model reads came after it (a note of the page may have).
     if (b.checkpoint && !(e.kind === "note" && !e.data.model)) {

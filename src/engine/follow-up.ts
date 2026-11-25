@@ -176,6 +176,22 @@ export function capsuleText(o: { title: string; report: string; tasks: number; b
   ].join("\n");
 }
 
+// The capsule of a top-level session the owner starts again after the model declined it. Made from the
+// session's records with no model call, as an agent's is: what it reported since its last checkpoint (the
+// declined reply is not in it), and the story of that checkpoint. The owner's messages and the trail of the
+// work are kept beside it by the checkpoint. It says nothing of why: the declined reply is left out of it.
+export function freshStartText(o: { report: string; before?: string }): string {
+  const report = o.report.trim() || "(Nothing was reported yet.)";
+  const before = o.before?.trim();
+  return [
+    "This session's earlier context was replaced by this capsule, made by the harness from its records: the owner's messages are kept below as they were, and the trail lists the files written and the commands run. The whole history is still stored: read the files again as you need them. Go on with the owner's last request.",
+    ...(before ? ["", "What the context held before that work, from its last summary (as it was written then):", before] : []),
+    "",
+    "Your replies so far (your final messages; the newest first):",
+    report,
+  ].join("\n");
+}
+
 // The story part of a checkpoint's summary: its text after the "## Story"
 // heading settle() writes (src/engine/compact.ts), else the whole text. The
 // statements before it are carried by the next checkpoint on their own.
@@ -188,8 +204,8 @@ export function storyOf(summary: string): string {
   return unframe(text);
 }
 
-const CAPSULE_INTRO = /^You are agent "[^\n]*", taking up new work after you reported[^\n]*\n+/;
-const CAPSULE_HEADS = /^(What your context held before that work, from its last summary \(as it was written then\):|Your reports of the work so far \(your final messages, as the session that started you got them; the newest first\):)\n/gm;
+const CAPSULE_INTRO = /^(?:You are agent "[^\n]*", taking up new work after you reported|This session's earlier context was replaced by this capsule)[^\n]*\n+/;
+const CAPSULE_HEADS = /^(What your context held before that work, from its last summary \(as it was written then\):|Your reports of the work so far \(your final messages, as the session that started you got them; the newest first\):|Your replies so far \(your final messages; the newest first\):)\n/gm;
 
 function unframe(text: string): string {
   if (!CAPSULE_INTRO.test(text)) return text;

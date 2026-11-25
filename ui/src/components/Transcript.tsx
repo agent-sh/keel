@@ -346,8 +346,10 @@ function EditPrompt({ e, sid, back, onDone }: { e: StoredEvent; sid: string; bac
 }
 
 // A declined reply: what the provider said, and a way on with another model.
-function Refusal({ e, sid, handled }: { e: StoredEvent; sid: string; handled?: boolean }) {
+function Refusal({ e, sid, handled, end }: { e: StoredEvent; sid: string; handled?: boolean; end?: string }) {
   const model = useTail((t) => t.session.model);
+  // A session of the owner's own (not an agent) whose last turn this declined: it can start again from a capsule of its records.
+  const fresh = useTail((t) => !handled && !t.session.parent_id && end !== undefined && t.lastEnd === end && !isWorking(t));
   const [pick, setPick] = useState("");
   const [keep, setKeep] = useState(false);
   const d = e.data.stop_details ?? {};
@@ -381,6 +383,12 @@ function Refusal({ e, sid, handled }: { e: StoredEvent; sid: string; handled?: b
           <input type="checkbox" data-testid="refusal-keep-fallback" checked={keep} onChange={(x) => setKeep(x.target.checked)} className="accent-[var(--accent)]" />
           Also use it when a model declines later
         </label>
+      </div>}
+      {fresh && <div className="mt-2 flex items-center gap-2">
+        <button type="button" data-testid="refusal-fresh" onClick={() => actions.freshStart(sid).catch(reportError)} className="k-btn k-btn-lg">
+          Start fresh from a capsule
+        </button>
+        <span className="text-caption text-muted">A summary of the session's records made without a model; your messages stay word for word and the declined reply is left out.</span>
       </div>}
     </div>
   );
@@ -778,7 +786,7 @@ const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid:
     case "checkpoint":
       return <Checkpoint e={e} sid={sid} undoable={row.undoable} />;
     case "refusal":
-      return <Refusal e={e} sid={sid} handled={row.handled} />;
+      return <Refusal e={e} sid={sid} handled={row.handled} end={row.after} />;
     case "assistant":
       // The first row of a reply carries its event's id; a later stretch of its prose is found by the event all the same.
       return <div id={row.id === e.id ? `e-${e.id}` : undefined} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}>{row.id === e.id && <HelperVoice sid={sid} />}<AssistantBlocks blocks={e.data.blocks} prose={row.prose!} sid={sid} /></div>;
