@@ -6,7 +6,6 @@ import { lazy } from "react";
 import { headerActions, panels, settingsSections } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
 import { navigate } from "../lib/ui.ts";
-import { openPanel } from "../components/SidePanel.tsx";
 
 const TAG = "pr-review";
 const isReview = (s: { settings?: { tags?: string[] } }) => !!s.settings?.tags?.includes(TAG);
@@ -30,6 +29,6 @@ panels.add({
   component: lazy(() => import("../components/PrReviews.tsx").then((m) => ({ default: m.PrReviewPanel }))),
 });
 
-headerActions.add({ id: "pr-review", label: "Pull request review: the draft and posting it", icon: <GitPullRequest className="size-4" />, when: isReview, run: () => openPanel("pr-review") });
+headerActions.add({ id: "pr-review", label: "Pull request review: the draft and posting it", icon: <GitPullRequest className="size-4" />, when: isReview, run: () => void import("../components/SidePanel.tsx").then((m) => m.openPanel("pr-review")) });
 
 registerCommand({ id: "pull-requests", label: "Pull request reviews: watched repositories", group: "General", words: "github pull request review watch post", run: () => navigate({ name: "settings", section: "pull-requests" }) });
