@@ -172,7 +172,7 @@ export class HelperCards {
   take(id: string): boolean | string {
     if (this.offered.has(id)) return true;
     const a = this.gate()?.approval(id);
-    if (!a || a.state !== "pending" || this.h.isHelper(a.session_id)) return false;
+    if (!a || a.state !== "pending" || this.h.isHelper(a.session_id) || this.h.isCards(a.session_id)) return false;
     const s = this.h.deps.store.session(a.session_id);
     if (!s) return false;
     const owners = ownerClass(a, false);
