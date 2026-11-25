@@ -1,6 +1,7 @@
 // Writes with the owner's accounts beyond his namespaces: the matching alone, then the table of commands through the
 // policy in every mode.
 import { expect, test } from "bun:test";
+import { resolve } from "node:path";
 import { foreign, ghBase, say, namespaceOf, owned, parseNamespace, parseNamespaces, repoOf, writesOf, namedOwners, type Manifest, type Remotes } from "./accounts.ts";
 import type { Looked } from "./looked.ts";
 import { accountContext, classify, decide, type CallClass, type Mode } from "./policy.ts";
@@ -98,7 +99,8 @@ const packages: Record<string, Manifest> = {
 };
 const looked = (): Looked => ({
   kept: () => ({ n: 0 }), exists: () => "dir", targets: () => null, read: () => null,
-  remotes: (d) => disk[d] ?? null, manifest: (d) => packages[d] ?? null, hostname: (h) => HOSTS[h] ?? null,
+  // (As the disk reads a folder: a `..` in it resolved. This one has no links.)
+  remotes: (d) => disk[resolve(d)] ?? null, manifest: (d) => packages[resolve(d)] ?? null, hostname: (h) => HOSTS[h] ?? null,
 });
 const names = ["me", "ghcr.io/me", "npm:@me", "pypi:metool", "crates:me-crate", "npm:solo"];
 const facts = (mode: Mode, agent = false, list = names) => ({ mode, workspace: ws, sandboxed: false, rules: [], tool: "t", home: "/home/u", looked: looked(), accounts: { names: parseNamespaces(list), ...(agent ? { agent: true as const } : {}) } });
@@ -402,6 +404,32 @@ test("a write after a cd that may not land where it says is placed where the she
   // The card says which folder the write is in.
   const d = run("cd /w/own; git push", "/w/clone", "full-auto") as { ask: { why: string } };
   expect(d.ask.why).toContain("in /w/clone, where the line is if a cd before it fails");
+});
+
+// A `..` after a link leaves the link's target on the disk, and the link in the shell's own words. git -C changes folder
+// through the disk: its folder is asked of the disk as written (src/core/git.ts resolves it part by part). A cd follows
+// the words unless the line asks for real folders (cd -P, set -P): then a `..` is not followed at all.
+test("a folder with a .. in it is asked of the disk as written, and not followed where the shell would walk the real folders", () => {
+  const asked: string[] = [];
+  const f = { ...facts("ask"), looked: { ...looked(), remotes: (d: string) => { asked.push(d); return disk[resolve(d)] ?? null; } } };
+  const where = (command: string, cwd = "/w/own") => {
+    const d = decide({ kind: "shell", command, cwd }, f);
+    return how(d) === "account" ? ((d as { ask: { account: string } }).ask.account || "unplaced") : null;
+  };
+  expect(where("git -C link/.. push")).toBeNull();
+  expect(asked).toContain("/w/own/link/..");
+  expect(where("git -C /w/own/link/.. push")).toBeNull();
+  expect(asked).toContain("/w/own/link/..");
+  expect(where("cd link && git -C .. push")).toBeNull();
+  expect(asked).toContain("/w/own/link/..");
+  expect(where("git -C link -C .. push")).toBeNull();
+  expect(asked).toContain("/w/own/link/..");
+  // The shell's own cd walks the words.
+  expect(where("cd link/.. && git push")).toBeNull();
+  expect(asked.at(-1)).toBe("/w/own");
+  for (const c of ["cd -P link/.. && git push", "set -P; cd link/.. && git push", "set -o physical; cd link/.. && git push", "cd -P link && cd .. && git push", "cd link && cd -P .. && git push", "cd -LP link/.. && git push"]) expect([c, where(c)]).toEqual([c, "unplaced"]);
+  // (Real folders asked for, and no `..`: the folder the words name.)
+  expect(where("cd -P /w/clone && git push")).toBe("github.com/them/lib");
 });
 
 // ---- an MCP tool that writes with an account its server holds ----

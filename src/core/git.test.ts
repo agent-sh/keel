@@ -4,7 +4,7 @@ import { afterAll, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addAll, git, gitEach, GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitSync, innerWork, locate, remotesAsRun, setGitReach, setGitViews } from "./git.ts";
+import { addAll, git, gitEach, GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitSync, innerWork, locate, realDir, remotesAsRun, setGitReach, setGitViews } from "./git.ts";
 import { remotesIn } from "../safety/looked.ts";
 import { handsRoutes } from "../fleet/hands-routes.ts";
 import { Shadow } from "../safety/shadow.ts";
@@ -874,4 +874,25 @@ test("the remotes are listed as the owner's own git lists them: the repository's
   expect((await remotesAsRun(instead, 10_000)).includes).toBeUndefined();
   expect(await remotesIn(plain)).toBe("late");
   expect(((await remotesIn(push)) as { push: Record<string, string[]> }).push.origin).toEqual(["https://forge.example/them/app.git"]);
+});
+
+test("a folder with a .. after a link is the one the disk walks to, not the one its text spells", async () => {
+  const mine = repo("real-mine"), theirs = repo("real-theirs");
+  must(mine, "remote", "add", "origin", "https://forge.example/me/app.git");
+  must(theirs, "remote", "add", "origin", "https://forge.example/them/lib.git");
+  mkdirSync(join(theirs, "sub"));
+  symlinkSync(join(theirs, "sub"), join(mine, "link"));
+  // (As git run with that folder as its own finds it.)
+  const top = (dir: string) => must(dir, "rev-parse", "--show-toplevel");
+  expect(top(`${mine}/link/..`)).toBe(theirs);
+  expect(realDir(`${mine}/link/..`)).toBe(theirs);
+  expect(realDir(`${mine}/link/../../real-mine/./link`)).toBe(join(theirs, "sub"));
+  expect(realDir(`${mine}/link`)).toBe(join(theirs, "sub"));
+  expect(realDir(mine)).toBe(mine);
+  expect(() => realDir(`${mine}/nothere/..`)).toThrow();
+  expect(locate(`${mine}/link/..`)?.top).toBe(theirs);
+  expect(locate(`${mine}/link`)?.top).toBe(theirs);
+  expect(locate(`${mine}/../real-mine`)?.top).toBe(mine);
+  expect((await remotesAsRun(`${mine}/link/..`, 10_000)).out).toContain("them/lib.git");
+  expect((await git(`${mine}/link/..`, ["remote", "get-url", "origin"], { read: true })).out.trim()).toBe("https://forge.example/them/lib.git");
 });

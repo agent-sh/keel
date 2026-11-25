@@ -171,9 +171,23 @@ export function locate(dir: string): Where | null {
   return w && ours(w) ? w : null;
 }
 
+// The folder a path names as the disk walks it: each part in turn, a link followed before the `..` after it. (The
+// runtime's realpath, like path.resolve, first drops `x/..` as text, which names another folder when x is a link:
+// `repo/link/..` is the parent of the link's target, where git run in that folder is.)
+export function realDir(path: string): string {
+  const abs = path.startsWith("/") ? path : `${process.cwd()}/${path}`;
+  if (!/(^|\/)\.\.(\/|$)/.test(abs)) return realpathSync(abs);
+  let at = "/";
+  for (const part of abs.split("/")) {
+    if (!part || part === ".") continue;
+    at = part === ".." ? dirname(at) : realpathSync(join(at, part));
+  }
+  return at;
+}
+
 function find(dir: string): Where | null {
   let d: string;
-  try { d = realpathSync(dir); } catch { return null; }
+  try { d = realDir(dir); } catch { return null; }
   for (;;) {
     const dot = join(d, ".git");
     let named: string | undefined;

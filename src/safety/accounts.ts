@@ -10,8 +10,6 @@
 // `pypi:name`, `crates:name`. Host and names compare in lower case. An entry holds what is under it: `gitlab.com/g`
 // holds `gitlab.com/g/sub/repo`.
 
-import { resolve } from "node:path";
-
 export type Namespace = { kind: "forge"; host: string; path: string[] } | { kind: "package"; registry: Registry; name: string };
 export type Registry = "npm" | "pypi" | "crates";
 // What a command writes to: a repository (`path` is owner, group... and repository), or a package.
@@ -466,7 +464,9 @@ function resolveHost(w: Write, env: Env): Write {
   return h && h !== a.host ? { ...w, account: { ...a, host: lower(h) } } : w;
 }
 
-// git [-C dir] push ...: the folder of a -C is the one asked about.
+// git [-C dir] push ...: the folder of a -C is the one asked about. It is handed on as written, from the folder the
+// command runs in: git changes folder through the disk, where a `..` after a link leaves the link's target, so the
+// disk resolves it (src/core/git.ts realDir), not the text.
 function gitWrites(words: string[], env: Env): Write[] {
   let i = 1, dir = env.dir, moved = env.moved;
   const gitDir = (p: string | undefined) => {
@@ -477,7 +477,7 @@ function gitWrites(words: string[], env: Env): Write[] {
   };
   while (i < words.length && words[i]!.startsWith("-")) {
     const o = words[i]!;
-    if (o === "-C") { moved = true; const p = words[++i]; dir = p === undefined || dynamic(p) || dir === null ? null : p.startsWith("/") ? p : resolve(dir, p); }
+    if (o === "-C") { moved = true; const p = words[++i]; dir = p === undefined || dynamic(p) || dir === null ? null : p.startsWith("/") ? p : `${dir}/${p}`; }
     else if (o === "--git-dir") gitDir(words[++i]);
     else if (o.startsWith("--git-dir=")) gitDir(o.slice(10));
     else if (o === "-c" || o === "--work-tree" || o === "--namespace" || o === "--exec-path") i++;

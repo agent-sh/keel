@@ -243,9 +243,11 @@ export function firmOf(parts: Simple[], runs: Run[], start = true): boolean[] {
 // not land where it says. A `cd` joined by `;`, a newline, `||`, `|` or `&` may have failed (a folder that is not
 // there, or not there for the shell that runs the line), and what follows runs where the shell was; one joined by
 // `&&` gives that folder to what comes after the chain. A relative `cd` from such a folder lands under it. A `cd`
-// with more than one operand, a relative one in a line that names CDPATH, a `pushd` or `popd` that turns the stack,
-// a relative one inside a loop, a condition or a function's body (it may run again) and an `eval` of a `cd` may land
-// anywhere: null, a folder the rules cannot name. `cd X || exit` leaves nothing to run where it failed.
+// with more than one operand, a relative one in a line that names CDPATH, one with a `..` in a line that asks for
+// real folders (`cd -P`, `set -P`: the `..` then leaves a link's target, where `dirsOf` leaves the link), a `pushd`
+// or `popd` that turns the stack, a relative one inside a loop, a condition or a function's body (it may run again)
+// and an `eval` of a `cd` may land anywhere: null, a folder the rules cannot name.
+// `cd X || exit` leaves nothing to run where it failed.
 // For a reader that must know every folder a write can happen in (the account rules): more folders, never fewer.
 const NO_DIRS: readonly (string | null)[] = [];
 const MOVES = /^(cd|pushd|popd)$/;
@@ -254,6 +256,9 @@ export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[]): (
   const evals = (w: string[]) => w[0] === "eval" && w.some((x, k) => k > 0 && /(^|[\s;&|({])(cd|pushd|popd)(\s|$)/.test(x));
   if (!runs.some((r) => MOVES.test(r.words[0] ?? "") || evals(r.words))) return out;
   const cdpath = parts.some((s) => !s.heredoc && /\bCDPATH\b/.test(s.text));
+  // The line asks for real folders somewhere (`set -P`, `set -o physical`, `cd -P`): from there the shell's folder is not
+  // the one its words spell when a link is on the way, and a `..` leaves the link's target, not the link.
+  const real = parts.some((s, i) => { const w = runs[i]!.words; return !s.heredoc && ((w[0] === "set" && w.some((x, k) => /^-[a-zA-Z]*P/.test(x) || (x === "physical" && w[k - 1] === "-o"))) || (MOVES.test(w[0] ?? "") && w.some((x) => /^-[A-Za-z@]*P/.test(x)))); });
   // What a cd is given: its operands, past its options.
   const read = (w: string[]) => {
     let k = 1;
@@ -271,6 +276,7 @@ export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[]): (
     // (pushd alone, or with a number, turns its stack: where that leads is not in the line's words.)
     if (w[0] === "pushd" && (arg === undefined || /^[+-]\d+$/.test(arg))) return true;
     if (arg === undefined) return false;
+    if (real && /(^|\/)\.\.(\/|$)/.test(arg)) return true;
     return cdpath && !/^(\/|~|\.{1,2}(\/|$))/.test(arg);
   };
   let others = new Set<string | null>(), pending = new Set<string | null>(), nested = false;
