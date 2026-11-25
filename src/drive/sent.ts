@@ -10,7 +10,7 @@
 // The digests are kept: a few a send, and a transcript the drive sent into can be copied for as long as it lives,
 // wherever its folder moves.
 import type { Store } from "../core/store.ts";
-import { digestsOf, sentBy, type SentAsk } from "./sent-read.ts";
+import { digestsOf, farDigest, sentBy, type SentAsk } from "./sent-read.ts";
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS drive_sends (digest TEXT PRIMARY KEY, sent_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS drive_sends_state (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
@@ -33,7 +33,7 @@ export function noteSent(store: Store, text: string): string[] {
 
 // Digests another machine's Keel sent for a send into a session here (the fleet's paired route).
 export function noteDigests(store: Store, digests: unknown[]) {
-  keep(store, digests.filter((d): d is string => typeof d === "string" && /^\d{1,24}$/.test(d)).slice(0, 4096));
+  keep(store, digests.filter((d): d is string => typeof d === "string" && farDigest(d)).slice(0, 4096));
 }
 
 // A paired daemon said it has told this Keel every send it made into a session here (farCatchUp, on each of its
@@ -58,7 +58,8 @@ export function wasSent(store: Store, text: string): boolean {
     if (!store.db.query("SELECT 1 FROM drive_sends_state WHERE k = 'backfilled'").get()) return true;
     if (pairNotCaughtUp(store)) return true;
     const q = store.db.query<unknown, [string]>("SELECT 1 FROM drive_sends WHERE digest = ? LIMIT 1");
-    return sentBy(text, (d) => !!q.get(d));
+    const heads = store.db.query<{ digest: string }, [string, string]>("SELECT digest FROM drive_sends WHERE digest >= ? AND digest < ?");
+    return sentBy(text, (d) => !!q.get(d), (h) => heads.all(`h:${h}:`, `h:${h};`).map((r) => Number(r.digest.slice(h.length + 3))));
   } catch {
     return true; // no table: the history was never read
   }

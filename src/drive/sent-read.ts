@@ -7,8 +7,23 @@ import { outsideText } from "./text.ts";
 // (keel__session_send: the message tool's name in the drive's first builds).
 export const SENDS: Record<string, string> = { keel__session_message: "text", keel__session_send: "text", keel__session_resume: "text", keel__session_answer: "note" };
 
-// The words as a harness records what was pasted at its prompt: spacing may differ, the words do not.
-const digest = (text: string) => String(Bun.hash(text.replace(/\s+/g, " ").trim()));
+// The words as a harness records what was pasted at its prompt: spacing may differ, and the punctuation that ends
+// them (a harness that takes two sends as one prompt may join them with a period), the words do not.
+const norm = (text: string) => text.replace(/\s+/g, " ").trim().replace(/[\s.!?,;:\u2026]+$/u, "");
+const digest = (text: string) => String(Bun.hash(norm(text)));
+
+// A harness can also take two sends as one line, joined by a space: each line and whole that was sent is kept too
+// by its first HEAD words and its length in words (`h:<digest>:<words>`), so a line is read as a run of sent texts
+// (sentBy) without a digest of each of its parts.
+const HEAD = 6;
+const HEAD_KEY = /^h:(\d{1,24}):(\d{1,6})$/;
+const words = (text: string) => { const t = norm(text); return t ? t.split(" ") : []; };
+function head(text: string): string | undefined {
+  const w = words(text);
+  return w.length ? `h:${digest(w.slice(0, HEAD).join(" "))}:${w.length}` : undefined;
+}
+// The digest kinds a far Keel may be given (noteDigests): a whole or a line, and a head.
+export const farDigest = (d: string) => /^\d{1,24}$/.test(d) || HEAD_KEY.test(d);
 
 // The words as the drive delivers them (outsideText: the characters a delivery drops are dropped here too), then
 // the digest of the whole and of each line that holds words: a harness can take two sends as one prompt, or keep a
@@ -17,18 +32,44 @@ export function digestsOf(text: string): string[] {
   let body: string;
   try { body = outsideText(text).text; } catch { return []; }
   const lines = body.split("\n").filter((l) => l.trim());
-  return [...new Set([digest(body), ...lines.map(digest)])];
+  const parts = [body, ...lines];
+  return [...new Set([...parts.map(digest), ...parts.map(head).filter((h): h is string => !!h)])];
 }
 
 // The lines of a send the history kept cut (clippedWords): under a kind of their own, since what followed them is
 // not known.
 const CUT = "cut:";
 
-// Whether a recorded prompt is words a model sent: its whole was sent, or each of its lines that holds words was, or
-// one of its lines is a line of a send the history kept cut (the rest of that send may be any of its other lines).
-export function sentBy(text: string, known: (digest: string) => boolean): boolean {
+// Whether a recorded prompt is words a model sent: its whole was sent, or each of its lines that holds words was or
+// is a run of sent texts, or one of its lines is a line of a send the history kept cut (the rest of that send may be
+// any of its other lines). `lengths`: the lengths in words of the sent texts a head digest starts.
+export function sentBy(text: string, known: (digest: string) => boolean, lengths: (head: string) => number[] = () => []): boolean {
   const lines = text.split(/\r\n|[\r\n\u0085\u2028\u2029]/).filter((l) => l.trim());
-  return known(digest(text)) || (lines.length > 0 && lines.every((l) => known(digest(l)))) || lines.some((l) => known(CUT + digest(l)));
+  if (known(digest(text))) return true;
+  if (lines.some((l) => known(CUT + digest(l)))) return true;
+  return lines.length > 0 && lines.every((l) => known(digest(l)) || runOfSent(words(l), known, lengths));
+}
+
+// Whether the words are sent texts one after another: from the start, each sent text that begins where the run got
+// to (found by its head) moves the run on. Only the places a run reaches are looked at, so words no model sent cost
+// one look a head length.
+function runOfSent(w: string[], known: (digest: string) => boolean, lengths: (head: string) => number[]): boolean {
+  const n = w.length;
+  if (!n) return false;
+  const reach = new Uint8Array(n + 1);
+  reach[0] = 1;
+  for (let i = 0; i < n; i++) {
+    if (!reach[i]) continue;
+    for (let k = 1; k <= Math.min(HEAD, n - i); k++) {
+      for (const len of lengths(digest(w.slice(i, i + k).join(" ")))) {
+        // A text shorter than a head is its own head; a longer one is known by its first HEAD words.
+        if ((k < HEAD ? len !== k : len < HEAD) || i + len > n || reach[i + len]) continue;
+        if (known(digest(w.slice(i, i + len).join(" ")))) reach[i + len] = 1;
+      }
+    }
+    if (reach[n]) return true;
+  }
+  return !!reach[n];
 }
 
 // The words of one call by a send tool, called by its name or through mcp_call. keel__session_send is also the

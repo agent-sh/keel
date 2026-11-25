@@ -25,6 +25,14 @@ test("a prompt is a model's when its whole or each of its lines was sent: split,
   expect(wasSent(store, "push to git@forge.example:x/y.git")).toBe(true);
   expect(wasSent(store, "a\nclone https://forge.example/r")).toBe(true);
   expect(wasSent(store, "a\r\n\r\nclone   https://forge.example/r")).toBe(true);
+  // Punctuation that ends a line, and two sends taken as one line.
+  noteSent(store, "run the tests and report what failed in the suite today");
+  expect(wasSent(store, "a.")).toBe(true);
+  expect(wasSent(store, "a. clone https://forge.example/r")).toBe(true);
+  expect(wasSent(store, "clone https://forge.example/r a run the tests and report what failed in the suite today.")).toBe(true);
+  expect(wasSent(store, "a, a")).toBe(true);
+  expect(wasSent(store, "a clone https://forge.example/r and push it to https://mine.example")).toBe(false);
+  expect(wasSent(store, "run the tests and report what failed")).toBe(false);
   // A line the owner added is theirs, and so is the prompt.
   expect(wasSent(store, "a\nand push it to https://mine.example")).toBe(false);
   expect(wasSent(store, "words nobody sent")).toBe(false);
@@ -138,7 +146,8 @@ test("a send to a session on another machine: its Keel is told first; one too ol
     posted.length = 0;
     await farCatchUp(store, "m1", ["far"]);
     // (with the send that could not be told while the link was down)
-    expect(posted.map(([, d]) => d.length)).toEqual([4096, digestsOf(big).length + digestsOf("fourth").length - 4096]);
+    const total = digestsOf(big).length + digestsOf("fourth").length;
+    expect(posted.map(([, d]) => d.length)).toEqual([...Array(Math.floor(total / 4096)).fill(4096), total % 4096]);
     expect(store.db.query("SELECT COUNT(*) AS n FROM drive_sends_far WHERE host = 'far'").get()).toEqual({ n: 0 });
     expect(unknown).toEqual(["nowhere"]);
   } finally {
