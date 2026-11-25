@@ -328,7 +328,7 @@ test("a failed call's reason is kept as the cause line, scrubbed like any error 
   expect(store.db.query<{ error: string }, []>("SELECT error FROM telemetry_tools").all().map((r) => r.error)).toEqual(["error: Authorization: Bearer [secret:test] was rejected (exit code 1)"]);
 }));
 
-test("a failed call is kept with its class, old rows get theirs once, and the report ranks tool failures by class", () => withStore(async (store) => {
+test("a failed call is kept with its class and cause, old rows get theirs once, and the report ranks tool failures by cause", () => withStore(async (store) => {
   const s = store.createSession({ model: "p:main", workspace: store.stateDir });
   new PromptStore(store);
   const t = new Telemetry(store, new Bus());
@@ -341,15 +341,16 @@ test("a failed call is kept with its class, old rows get theirs once, and the re
   // A failure that names no cause has no class.
   fail("d", "Bash", "Exit code 1");
   hooks.toolRan!(store.session(s.id)!, { id: "e", tool: { name: "Read" }, input: {} } as any, { type: "tool_result", tool_use_id: "e", content: "ok" } as any, { ms: 1, outcome: "ok" });
-  const ranked = () => t.report({}, true).then((r) => r.tool_failure_classes.map((c) => [c.tool, c.class, c.count]));
-  expect(await ranked()).toEqual([["Read", "File does not exist: <path>", 2], ["Edit", "The old_string was not found in the file.", 1]]);
+  // Ranked by cause, the message's shape kept beside it.
+  const ranked = () => t.report({}, true).then((r) => r.tool_failure_causes.map((c) => [c.tool, c.cause, c.count, c.shapes.map((x) => x.shape)] as const).sort((a, b) => b[2] - a[2] || a[0].localeCompare(b[0])));
+  expect(await ranked()).toEqual([["Read", "missing_file", 2, ["File does not exist: <path>"]], ["Bash", "nonzero_exit", 1, []], ["Edit", "bad_input", 1, ["The old_string was not found in the file."]]]);
   // Rows from before the column: the class is set again from the kept line, once.
-  store.db.exec("UPDATE telemetry_tools SET error_class = NULL");
-  store.db.exec("DELETE FROM admin_meta WHERE key = 'telemetry_tool_class'");
+  store.db.exec("UPDATE telemetry_tools SET error_class = NULL, cause = NULL");
+  store.db.exec("DELETE FROM admin_meta WHERE key IN ('telemetry_tool_class', 'telemetry_tool_cause')");
   const again = new Telemetry(store, new Bus());
-  expect(await again.report({}, true).then((r) => r.tool_failure_classes.map((c) => [c.tool, c.class, c.count]))).toEqual(await ranked());
+  expect(await again.report({}, true).then((r) => r.tool_failure_causes.map((c) => [c.tool, c.cause, c.count, c.shapes.map((x) => x.shape)] as const).sort((a, b) => b[2] - a[2] || a[0].localeCompare(b[0])))).toEqual(await ranked());
   expect(store.db.query("SELECT COUNT(*) AS n FROM telemetry_tools WHERE error_class IS NOT NULL").get()).toEqual({ n: 3 });
-  expect(t.examples({ tool: "Edit" })[0]).toMatchObject({ error_class: "The old_string was not found in the file." });
+  expect(t.examples({ tool: "Edit" })[0]).toMatchObject({ error_class: "The old_string was not found in the file.", cause: "bad_input" });
 }));
 
 // The report on a ledger that takes long to read is answered from what is kept, and the kept numbers are the full

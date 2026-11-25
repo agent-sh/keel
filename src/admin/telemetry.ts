@@ -20,6 +20,7 @@ import { reportedUsage } from "../providers/reported.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { toolClass } from "../automation/lessons-mine.ts";
 import { errorClass } from "./classes.ts";
+import { causeOf } from "./tool-cause.ts";
 import { armOf, experimentTables } from "./experiments.ts";
 import { registerSettings, settings } from "./settings.ts";
 import { readsOf } from "../server/reads.ts";
@@ -177,6 +178,8 @@ export class Telemetry {
       ["telemetry_tools", "turn_event", "TEXT"], ["telemetry_tools", "exp_id", "TEXT"], ["telemetry_tools", "arm", "TEXT"],
       // The class of a failed call (lessons-mine toolClass of its kept line): a ranking by class is one query.
       ["telemetry_tools", "error_class", "TEXT"],
+      // What the failure was about, one of a short list (tool-cause.ts); error_class is the message's shape.
+      ["telemetry_tools", "cause", "TEXT"],
       ...ZONES.map((z) => ["telemetry_calls", `z_${z}`, "INTEGER"])] as const;
     for (const [t, col, type] of cols) if (!store.columnExists(t, col)) store.db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
     store.migrate("CREATE INDEX IF NOT EXISTS telemetry_calls_session ON telemetry_calls(session_id, ts)");
@@ -260,10 +263,10 @@ export class Telemetry {
         const tag = armOf(this.store, s.id);
         const error = ran.outcome === "error" ? this.scrubbed(s.id, excerpt(result.content, silentCall(call.input, result.content))) : null;
         const row = [s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, error,
-          ran.outcome, ev?.id ?? null, ev?.model ?? null, turn, tag?.exp_id ?? null, tag?.arm ?? null, error ? toolClass(error) : null] as const;
+          ran.outcome, ev?.id ?? null, ev?.model ?? null, turn, tag?.exp_id ?? null, tag?.arm ?? null, error ? toolClass(error) : null, ran.outcome === "error" ? causeOf(error) : null] as const;
         // (A row of the ledger: written with the next commit, src/core/side.ts.)
         this.store.side.later("a tool call's ledger row", () => void this.store.db
-          .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, outcome, event_id, model, turn_event, exp_id, arm, error_class) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+          .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, outcome, event_id, model, turn_event, exp_id, arm, error_class, cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(...row));
       },
     });
@@ -277,7 +280,8 @@ export class Telemetry {
   }
 
   // Rows of failed calls from before the class column: each gets the class of its kept line, once.
-  private classify() {
+  private classify() { this.classifyShapes(); this.classifyCauses(); }
+  private classifyShapes() {
     const db = this.store.db;
     if (db.query("SELECT 1 FROM admin_meta WHERE key = 'telemetry_tool_class'").get()) return;
     db.transaction(() => {
@@ -287,6 +291,17 @@ export class Telemetry {
         if (cls) set.run(cls, r.id);
       }
       db.query("INSERT INTO admin_meta (key, value) VALUES ('telemetry_tool_class', ?)").run(String(Date.now()));
+    })();
+  }
+
+  // Rows from before the cause column: the cause of each failed one, from its kept line, once.
+  private classifyCauses() {
+    const db = this.store.db;
+    if (db.query("SELECT 1 FROM admin_meta WHERE key = 'telemetry_tool_cause'").get()) return;
+    db.transaction(() => {
+      const set = db.query("UPDATE telemetry_tools SET cause = ? WHERE id = ?");
+      for (const r of db.query<{ id: number; error: string | null }, []>("SELECT id, error FROM telemetry_tools WHERE is_error = 1 AND cause IS NULL").all()) set.run(causeOf(r.error), r.id);
+      db.query("INSERT INTO admin_meta (key, value) VALUES ('telemetry_tool_cause', ?)").run(String(Date.now()));
     })();
   }
 
@@ -505,7 +520,7 @@ export class Telemetry {
     if (q.until !== undefined) { where.push("t.ts <= ?"); args.push(q.until); }
     if (q.session) { where.push("t.session_id = ?"); args.push(q.session); }
     args.push(Math.min(100, Math.max(1, q.limit ?? 20)));
-    const sql = `SELECT t.session_id, t.ts, t.tool, t.ms, t.call_id, t.error, t.error_class, t.event_id, s.title AS session_title, s.id IS NULL AS session_gone
+    const sql = `SELECT t.session_id, t.ts, t.tool, t.ms, t.call_id, t.error, t.error_class, t.cause, t.event_id, s.title AS session_title, s.id IS NULL AS session_gone
       FROM telemetry_tools t LEFT JOIN sessions s ON s.id = t.session_id WHERE ${where.join(" AND ")} ORDER BY t.ts DESC LIMIT ?`;
     return this.store.db.query<any, any[]>(sql).all(...args)
       .map((r) => ({ ...r, session_gone: !!r.session_gone, session_title: r.session_title ?? undefined,

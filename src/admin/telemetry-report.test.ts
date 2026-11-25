@@ -9,6 +9,7 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { Telemetry } from "./telemetry.ts";
+import { causeOf } from "./tool-cause.ts";
 import { reportOf } from "./telemetry-report.ts";
 
 const GOLDEN = join(import.meta.dir, "telemetry-report.golden.json");
@@ -28,7 +29,7 @@ function fill(store: Store, sessions: string[], calls: number) {
   let x = 12345;
   const next = (n: number) => ((x = (x * 1103515245 + 12345) % 2147483648) >> 4) % n;
   const call = store.db.query("INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, error, cache_break, break_detail, purpose, error_class, attempt, step_ms, text_ms, turn_event) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-  const tool = store.db.query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, error_class, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const tool = store.db.query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, error_class, model, cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   store.db.transaction(() => {
     for (let i = 0; i < calls; i++) {
       const ts = T0 + i * Math.floor((3 * DAY) / calls) + next(1000);
@@ -46,7 +47,7 @@ function fill(store: Store, sessions: string[], calls: number) {
       if (i % 2 === 0) {
         const bad = next(14) === 0;
         const msg = MESSAGES[next(MESSAGES.length)]!;
-        tool.run(sid, ts + 5, ["Bash", "Read", "Edit", "Grep", "Write"][next(5)]!, next(6) === 0 ? null : 5 + next(2500), bad ? 1 : 0, `c${i}`, bad ? msg : null, bad ? msg : null, model);
+        tool.run(sid, ts + 5, ["Bash", "Read", "Edit", "Grep", "Write"][next(5)]!, next(6) === 0 ? null : 5 + next(2500), bad ? 1 : 0, `c${i}`, bad ? msg : null, bad ? msg : null, model, bad ? causeOf(msg) : null);
       }
     }
   })();

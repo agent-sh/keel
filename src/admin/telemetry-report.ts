@@ -140,11 +140,21 @@ function failedIn(db: Database, where: string, args: (string | number)[]): Map<s
   return by;
 }
 
-// Failed calls by tool and class, the most first: one query on the ledger's class column. `example`: the newest line of the class.
-function failureClasses(db: Database, where: string, args: (string | number)[]) {
-  return db.query<{ tool: string; class: string; count: number; last_ms: number; example: string | null }, any[]>(
-    `SELECT tool, error_class AS class, COUNT(*) AS count, MAX(ts) AS last_ms, error AS example
-     FROM telemetry_tools t WHERE ${where} AND is_error = 1 AND error_class IS NOT NULL GROUP BY tool, error_class ORDER BY count DESC, last_ms DESC LIMIT 50`).all(...args);
+// Failed calls by tool and cause, the most first: one query on the ledger's cause column. `example`: the newest line of the
+// group. `shapes`: the message shapes (the class column) the cause held, three of them with their counts, and how many there were.
+function failureCauses(db: Database, where: string, args: (string | number)[]) {
+  const causes = db.query<{ tool: string; cause: string; count: number; last_ms: number; example: string | null }, any[]>(
+    `SELECT tool, cause, COUNT(*) AS count, MAX(ts) AS last_ms, error AS example
+     FROM telemetry_tools t WHERE ${where} AND is_error = 1 AND cause IS NOT NULL GROUP BY tool, cause ORDER BY count DESC, last_ms DESC LIMIT 50`).all(...args);
+  const shapes = db.query<{ tool: string; cause: string; shape: string; count: number }, any[]>(
+    `SELECT tool, cause, error_class AS shape, COUNT(*) AS count FROM telemetry_tools WHERE ${where} AND is_error = 1 AND cause IS NOT NULL AND error_class IS NOT NULL
+     GROUP BY tool, cause, error_class ORDER BY count DESC, MAX(ts) DESC`).all(...args);
+  const by = new Map<string, { shape: string; count: number }[]>();
+  for (const r of shapes) (by.get(`${r.tool}\0${r.cause}`) ?? by.set(`${r.tool}\0${r.cause}`, []).get(`${r.tool}\0${r.cause}`)!).push({ shape: r.shape, count: r.count });
+  return causes.map((c) => {
+    const list = by.get(`${c.tool}\0${c.cause}`) ?? [];
+    return { ...c, shapes: list.slice(0, 3), shape_count: list.length };
+  });
 }
 
 // The report reads the ledger by aggregates in SQL: what comes back to the loop's thread is one row a
@@ -285,7 +295,7 @@ export function reportOf(db: Database, q: Filter, limits: Limits) {
         provider: providerOf(m.k), model: m.k, class: c.c, count: c.n, calls: m.calls, rate: c.n / m.calls, last_ms: c.last_ms, last_error: lastError.get(`${m.k}\0${c.c}`) ?? null,
       }))).sort((a, b) => b.count - a.count),
     spend: spendOf(db, limits),
-    tool_failure_classes: failureClasses(db, where, args),
+    tool_failure_causes: failureCauses(db, where, args),
     error_kinds: errorKinds,
   };
 }
