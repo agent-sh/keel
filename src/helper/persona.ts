@@ -44,6 +44,14 @@ export function cleanName(raw: unknown): string | undefined {
 
 export const nameOf = (p: Persona) => p.name || DEFAULT_NAME;
 
+// The name a title the owner gave the helper's conversation stands for (they renamed it where any session is
+// renamed): the title as a name, cut to NAME_CHARS. Undefined is the default name (no title, or the default's own).
+export function titleName(title: string): string | undefined {
+  const t = title.replace(/\s+/g, " ").trim();
+  const name = cleanName(Array.from(t).slice(0, NAME_CHARS).join("").trim());
+  return name === DEFAULT_NAME ? undefined : name;
+}
+
 // The description a picture is asked with: what the owner wrote, or a start for it when they wrote nothing,
 // then the lines that keep the result usable as a small round picture.
 export function startPrompt(name: string): string {

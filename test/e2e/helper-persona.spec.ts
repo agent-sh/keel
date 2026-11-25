@@ -89,6 +89,42 @@ test("helper: a name and a picture an image model made, shown wherever it speaks
   expect((await bad.json()).error).toContain("not a PNG");
 });
 
+// Renamed where any session is renamed (its conversation's title, in the header): the list's entry, its panel and
+// the conversation's own title say the new name at once, with no reload; cleared in its settings, it is the default again.
+test("helper: a rename of its conversation names it everywhere at once", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await fresh(request);
+  await page.goto("/");
+  await page.getByTestId("open-helper").click();
+  await expect(page.getByTestId("helper-panel")).toBeVisible();
+  await expect(page.getByTestId("helper-rail-name")).toHaveText("Helper");
+  await expect(page.getByTestId("panel-switch")).toContainText("Helper");
+  const helper = await (await request.get("/api/helper")).json();
+
+  await shoot(page, "helper-persona-06-before-rename");
+  await page.getByTestId("session-menu").click();
+  await page.getByTestId("menu-rename").click();
+  await page.getByLabel("Session title").fill("Dana");
+  await page.getByLabel("Session title").press("Enter");
+  await expect(page.getByTestId("session-title")).toHaveText("Dana");
+  await expect(page.getByTestId("helper-rail-name")).toHaveText("Dana");
+  await expect(page.getByTestId("open-helper")).toHaveAttribute("aria-label", "Dana");
+  await expect(page.getByTestId("helper-head-name")).toHaveText("Dana");
+  await expect(page.getByTestId("panel-switch")).toContainText("Dana");
+  // The name is the helper's own now: its settings, and what a notification or the phone says of it.
+  const named = await (await request.get("/api/helper")).json();
+  expect(named).toMatchObject({ name: "Dana", named: true, session_id: helper.session_id });
+  await shoot(page, "helper-persona-07-renamed");
+
+  // Cleared in its settings: the default name again, and the conversation's title with it.
+  await page.goto("/settings/helper");
+  await expect(page.getByTestId("helper-name")).toHaveValue("Dana");
+  await page.getByTestId("helper-name").fill("");
+  await page.getByTestId("helper-name").press("Enter");
+  await expect(page.getByTestId("helper-rail-name")).toHaveText("Helper");
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${helper.session_id}`)).json()).session.title).toBe("Helper");
+});
+
 test("helper: a new error is read once, with the fix offered; a bug of Keel's comes with a task started only on a press", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "needs the scripted provider: the daemon runs without KEEL_SCRIPTED_PROVIDER=1");

@@ -30,7 +30,7 @@ import { memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
 import { join } from "node:path";
 import { Looks } from "./looks.ts";
 import { isNews, TOLD_SCHEMA } from "./told.ts";
-import { askedWith, cleanName, cleanPrompt, DEFAULT_NAME, keepable, keepAll, nameOf, type Persona, PersonaFiles, startPrompt } from "./persona.ts";
+import { askedWith, cleanName, cleanPrompt, DEFAULT_NAME, keepable, keepAll, nameOf, type Persona, PersonaFiles, startPrompt, titleName } from "./persona.ts";
 import type { Look } from "./error-look.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { pendingQuestions } from "../tools/interact.ts";
@@ -230,6 +230,17 @@ ${TOLD_SCHEMA}`);
     this.savePersona({ name });
     const s = this.session();
     if (s && s.title !== nameOf(this.persona())) this.deps.bus.emit({ t: "session", session: this.deps.store.updateSession(s.id, { title: nameOf(this.persona()) }) });
+    this.emit();
+  }
+  // Its conversation renamed by the owner (the header, the list, a phone: title_by empty) names the helper: the
+  // list's entry, its panel, its replies, notifications and the phone say the new name at once. A title a hook
+  // gave is not a name. An empty title is the default name again, and the title says it.
+  adoptTitle(s: Session) {
+    if (!this.isHelper(s.id) || s.title_by) return;
+    const name = titleName(s.title);
+    if (!s.title.trim()) this.deps.bus.emit({ t: "session", session: this.deps.store.updateSession(s.id, { title: DEFAULT_NAME }) });
+    if (name === this.persona().name) return;
+    this.savePersona({ name });
     this.emit();
   }
   // The models of the owner's providers that make pictures, and the providers that could not be asked.
@@ -540,6 +551,7 @@ ${TOLD_SCHEMA}`);
     this.off.push(this.deps.bus.on((f) => {
       try {
         if (f.t === "feature" && f.name === "automation" && f.data?.kind === "alert") this.onAlert(f.data.data as alerts.Alert);
+        else if (f.t === "session" && !f.deleted && f.session.settings.helper) this.adoptTitle(f.session);
       } catch (e) {
         this.deps.errors.capture("server", e, { at: "helper event" });
       }
@@ -552,6 +564,9 @@ ${TOLD_SCHEMA}`);
     // Its notifications carry its picture.
     alerts.alertIcon.of = (id) => (this.isHelper(id) ? this.avatarFile()?.path : undefined);
     this.off.push(() => { alerts.alertIcon.of = undefined; });
+    // A rename of its conversation made while no daemon of this build ran.
+    const own = this.session();
+    if (own) this.adoptTitle(own);
     this.start();
     // A wake a restart cut short is scheduled again.
     if (this.unfed().some((e) => e.level === "wake")) this.schedule();

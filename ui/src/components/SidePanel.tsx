@@ -80,7 +80,7 @@ function atHand(list: Panel[], open: string | null): Panel[] {
 let registered = "";
 function registerPanelCommands() {
   const all = panels.all();
-  const key = all.map((p) => p.id).join();
+  const key = all.map((p) => `${p.id}:${p.label}`).join();
   if (key === registered) return;
   registered = key;
   registerCommand(...all.map((p) => ({ id: `panel.${p.id}`, label: `Open the ${p.label} panel`, group: "Panels", words: `panel ${groupOf(p)} ${hintOf(p)}`, run: () => openPanel(p.id), when: () => getUI().route.name === "session" && !hasCommand(`panel-${p.id}`) })));

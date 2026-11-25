@@ -37,6 +37,10 @@ export function useHelper<T>(sel: (s: State) => T): T {
   return useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => sel(state));
 }
 
+// The name the helper answers to, outside a component (a panel's label): read now, and told of each change.
+export const helperName = () => state.view?.name ?? "Helper";
+export const onHelper = (f: () => void) => (subs.add(f), () => void subs.delete(f));
+
 export async function loadHelper(): Promise<HelperView> {
   const [view, mem, looks] = await Promise.all([api<HelperView>("/api/helper"), api<{ items: MemoryRecord[] }>("/api/helper/memory"), api<{ looks: Look[] }>("/api/helper/looks")]);
   set({ view, memory: mem.items, looks: looks.looks });
