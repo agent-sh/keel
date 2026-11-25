@@ -25,6 +25,11 @@
 #   ui          bun test ./ui/src/lib
 #   scripts     bun test ./scripts
 #   cli         bun test ./test/cli      (builds the binary)
+#   qt          desktop/qt/check.sh      (the Qt WebEngine engine built in a container, its --self-test run offscreen;
+#                                         needs Docker or Podman on the host. It runs by itself when the commit changes
+#                                         desktop/qt, the files the engines share (desktop/src/{said,clip,links,qt}.rs,
+#                                         desktop/test/paths.txt) or the script that builds them, against origin/main
+#                                         as this clone has it; --only qt runs it alone, --only with qt in it runs it too)
 #   e2e         scripts/smoke.sh SPEC... (only with --e2e; a daemon of its own on the scripted provider)
 #
 # Every stage runs, also after one failed. One line is printed as each ends and a table at
@@ -69,7 +74,7 @@ if [ "${1:-}" != "__remote" ]; then
       --only) only=${2:?--only takes stages, separated by commas}; shift ;;
       --wait) wait_s=${2:?--wait takes seconds}; shift ;;
       --e2e) e2e=1 ;;
-      -h|--help) trap - EXIT; sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      -h|--help) trap - EXIT; sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
       -*) echo "remote-verify: unknown option $1 (see --help)" >&2; exit 2 ;;
       *)
         # After --e2e, what names a spec is a spec; anything else is the commit.
@@ -96,6 +101,9 @@ if [ "${1:-}" != "__remote" ]; then
     commit=HEAD
   fi
   sha=$(git rev-parse --verify --quiet "$commit^{commit}") || { echo "remote-verify: $commit is not a commit of this repository" >&2; exit 2; }
+  # Whether the commit changes what the Qt engine is built from (the qt stage runs by itself then).
+  qt=0
+  if mb=$(git merge-base origin/main "$sha" 2> /dev/null) && git diff --name-only "$mb" "$sha" | grep -qE '^desktop/(qt/|build\.sh$|src/(said|clip|links|qt)\.rs$|test/paths\.txt$)'; then qt=1; fi
   ssh_() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "$@"; }
   run=$(date -u +%Y%m%dT%H%M%SZ)-${sha:0:12}-$$
   # The host's folder and its bare repository; this script goes with the run, so a commit from before it can be checked too.
@@ -108,7 +116,7 @@ if [ "${1:-}" != "__remote" ]; then
   # session), the far side is hung up and ends its run. This side waits for it as a job, so a
   # signal to this script is acted on at once and takes the connection with it.
   ssh -q -tt -o BatchMode=yes -o ConnectTimeout=15 "$host" \
-    "KEEL_VERIFY_MAX_RUNS=$MAX_RUNS KEEL_VERIFY_MAX_LOAD=$MAX_LOAD bash '$dir/runs/$run/remote-verify.sh' __remote '$dir' '$run' '$sha' '$wait_s' '$only' '$e2e' ${specs[*]:-}" < /dev/null &
+    "KEEL_VERIFY_MAX_RUNS=$MAX_RUNS KEEL_VERIFY_MAX_LOAD=$MAX_LOAD KEEL_VERIFY_QT=$qt bash '$dir/runs/$run/remote-verify.sh' __remote '$dir' '$run' '$sha' '$wait_s' '$only' '$e2e' ${specs[*]:-}" < /dev/null &
   far=$!; started=1
   trap 'kill "$far" 2> /dev/null || true; wait "$far" 2> /dev/null || true; echo "remote-verify: stopped; the run on $host is ended" >&2; exit 130' INT TERM HUP
   wait "$far" || rc=$?
@@ -249,6 +257,11 @@ else
   wanted ui && stage ui "$BUN" test --timeout 20000 ./ui/src/lib
   wanted scripts && stage scripts "$BUN" test --timeout 20000 ./scripts
   wanted cli && stage cli "$BUN" test ./test/cli
+  # The Qt engine: when the commit changes what it is built from, or when asked for by name.
+  if [[ ",$only," == *",qt,"* ]] || { [ -z "$only" ] && [ "${KEEL_VERIFY_QT:-0}" = 1 ]; }; then
+    if command -v docker > /dev/null || command -v podman > /dev/null; then stage qt bash desktop/qt/check.sh
+    else say "qt: neither docker nor podman is on this host: not run"; names+=(qt); codes+=(2); passes+=(-); fails+=(-); secs+=(0); failed=1; fi
+  fi
   if [ "$e2e" = 1 ] && wanted e2e; then
     if [ ! -f scripts/smoke.sh ]; then say "e2e: this commit has no scripts/smoke.sh: not run"; names+=(e2e); codes+=(2); passes+=(-); fails+=(-); secs+=(0); failed=1
     else
