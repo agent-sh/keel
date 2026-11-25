@@ -278,19 +278,29 @@ test("a line of fetches and scripts reads each script once", () => {
 test("a long run of brackets and parentheses is split and judged in step with its length", () => {
   const facts = { mode: "ask" as const, workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] };
   const rep = (u: string, n: number) => u.repeat(Math.ceil(n / u.length)).slice(0, n);
-  const M = 200_000;
-  const shapes: Record<string, string> = {
+  const shapes = (M: number): Record<string, string> => ({
     "[": rep("[", M), "[=[": rep("[=[", M), "[[": rep("[[", M), "-[": `ls ${rep("-[", M)}`, "[x[": `echo ${rep("[x[", M)}`,
     "[ -f": rep("[ -f x ] ", M / 10), "[[ a": rep("[[ a == b ]] ", M), "*[?": `ls ${rep("*[?", M)}`, "a[": `echo ${rep("a[", M)}`,
     "(((": rep("(", M), "((": rep("((", M), "$((": rep("$((", M), "$(": rep("$(", M), "(a": rep("(a ", M), "(a;": rep("(a;", M),
     "((a": rep("((a ", M), "python -c": `python3 -c 'os.system(${rep("(", M)}'`, "python -c [": `python3 -c 'os.system(${rep("[", M)}'`,
     "node -e": `node -e 'require("child_process").execSync(${rep("(", M)}'`, "bash -c": `bash -c '${rep("(", M)}'`,
-  };
-  const timed = (f: () => unknown) => { let best = Infinity; for (let k = 0; k < 3 && best > 150; k++) { const t = performance.now(); f(); best = Math.min(best, performance.now() - t); } return best; };
+  });
+  const reads = { split: splitCommand, decide: (command: string) => decide({ kind: "shell", command, cwd: "/w" }, facts) };
+  const timed = (read: (command: string) => unknown, command: string) => { const t = performance.now(); read(command); return performance.now() - t; };
+  const short = shapes(50_000), long = shapes(200_000);
+  // Four times the run should take about four times as long, not sixteen. Retry a slow pair to discount GC and
+  // scheduling stalls; allow some slack for small measurements and for the cache cost of the larger input.
+  const tooSlow = (small: number, big: number) => big > 7 * small + 10;
   const slow: string[] = [];
-  for (const [name, command] of Object.entries(shapes)) {
-    const split = timed(() => splitCommand(command)), whole = timed(() => decide({ kind: "shell", command, cwd: "/w" }, facts));
-    if (split > 150 || whole > 150) slow.push(`${name}: split ${split.toFixed(0)} ms, decide ${whole.toFixed(0)} ms`);
+  for (const [name, command] of Object.entries(long)) {
+    for (const [stage, read] of Object.entries(reads)) {
+      let small = Infinity, big = Infinity;
+      for (let k = 0; k < 5 && (k === 0 || tooSlow(small, big)); k++) {
+        small = Math.min(small, timed(read, short[name]!));
+        big = Math.min(big, timed(read, command));
+      }
+      if (tooSlow(small, big)) slow.push(`${name}, ${stage}: ${small.toFixed(1)} ms at 1x, ${big.toFixed(1)} ms at 4x`);
+    }
   }
   expect(slow).toEqual([]);
 }, 120_000);
