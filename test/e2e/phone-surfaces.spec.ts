@@ -1443,5 +1443,22 @@ for (const size of SIZES) {
         await drop(request, ...ids);
       }
     });
+    test("Customize is a press away in the list's foot at a large text size too, where the foot has no room for its word", async ({ browser }) => {
+      for (const scale of [1, 1.5]) {
+        const { ctx, page } = await atScale(browser, size, scale);
+        try {
+          await page.goto("/");
+          await page.getByTestId("show-sidebar").first().tap();
+          const button = page.getByTestId("customize-button");
+          await expect(button, `Customize in the list's foot at ${scale * 100}% text`).toBeVisible();
+          const b = (await button.boundingBox())!;
+          expect(b.x + b.width, "inside the list").toBeLessThanOrEqual(size.width);
+          expect(Math.min(b.width, b.height), "a finger's size").toBeGreaterThanOrEqual(2.75 * (await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))) - 1);
+          await shoot(page, `phone-surfaces-37-customize-foot-${size.width}-${scale}`);
+          await button.tap();
+          await expect(page).toHaveURL(/\/customize/);
+        } finally { await ctx.close(); }
+      }
+    });
   });
 }

@@ -154,6 +154,8 @@
 @container rail (max-width: 16.5rem) {
   /* The foot keeps its one row here: Customize steps out (the palette still opens it). */
   .k-rail[data-open] .k-rail-foot > .k-foot-more { display: none; }
+  /* (A finger has no keys to reach it by, and no palette it can know: the foot wraps a row and keeps it.) */
+  @media (pointer: coarse) { .k-rail[data-open] .k-rail-foot > .k-foot-more { display: inline-flex; } }
   .k-rail[data-open] .k-rail-foot .k-act-label { display: none; }
   /* Its buttons stand closer, so the five are one row with two-digit counts. Counts of more
      digits in every button: a second row, never a button outside the bar. */
