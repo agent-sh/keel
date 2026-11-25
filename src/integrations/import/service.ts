@@ -94,15 +94,14 @@ export const WENT_ON = "the Keel session went on since it was copied, so it is n
 export type { ListQuery } from "./offer.ts";
 
 // Whether a source is a file of the owner's own store on this machine that the importer reads: Claude Code's
-// projects, Codex's sessions (archived too), and the command line's and the IDE's stores of Antigravity, by real
-// path (a link out of the store is not in it). Not a file given by its path from anywhere else, another machine's,
-// a session of a store kept in one database, or Antigravity's ACP store, whose prompts are whichever client ran it
-// (Keel's own ACP provider included). Only such a source's typed prompts keep their mark (see copy).
+// projects and Codex's sessions (archived too), by real path (a link out of the store is not in it). Not a file
+// given by its path from anywhere else, another machine's, a session of a store kept in one database, or
+// Antigravity's, whose stores do not record whether a person or a script (`agy -p`, an ACP client, Keel's own ACP
+// provider included) entered a prompt. Only such a source's typed prompts keep their mark (see copy).
 const realOf = (p: string) => { try { return realpathSync(p); } catch { return null; } };
 export function ownStore(f: Pick<Found, "harness" | "path">): boolean {
   const roots = f.harness === "claude" ? [claudeRoot()]
     : f.harness === "codex" ? [join(codexHome(), "sessions"), join(codexHome(), "archived_sessions")]
-    : f.harness === "agy" ? [join(agyHome(), "antigravity-cli"), join(agyHome(), "antigravity")]
     : [];
   const file = roots.length ? realOf(f.path) : null;
   return !!file && roots.some((r) => { const root = realOf(r); return !!root && contains(root, file); });

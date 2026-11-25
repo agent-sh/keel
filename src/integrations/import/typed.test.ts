@@ -110,7 +110,7 @@ test("Codex: a user message of a thread the user started in Codex's own client c
   expect(codex(tui, said("typed words", "# AGENTS.md instructions\n\nrules"), said("<codex_delegation>x</codex_delegation>"), said("[helper digest] news"))).toEqual([["typed words\n# AGENTS.md instructions\n\nrules", false], ["<codex_delegation>x</codex_delegation>", false], ["[helper digest] news", false]]);
 });
 
-test("Antigravity: a request the user sent counts; its notes, another step's source and a relayed voice's context do not", async () => {
+test("Antigravity: no prompt counts, since a script's `agy -p` prompt is recorded as the IDE's typed one is", async () => {
   const dir = join(root, "agy-shape", "brain", "c1", ".system_generated", "logs");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "transcript_full.jsonl");
@@ -122,7 +122,7 @@ test("Antigravity: a request the user sent counts; its notes, another step's sou
     step(3, "<USER_REQUEST><talker_agent_context>a voice said https://said.example</talker_agent_context></USER_REQUEST>"),
   ].join("\n") + "\n");
   const r = await readAgy({ harness: "agy", id: "c1", path, title: "x", updated_ms: 0, size_bytes: 0, kind: "interactive" });
-  expect(marks(r.events)).toEqual([["typed request", true], ["no request tag here", false], ["from elsewhere", false], ["<talker_agent_context>a voice said https://said.example</talker_agent_context>", false]]);
+  expect(marks(r.events)).toEqual([["typed request", false], ["no request tag here", false], ["from elsewhere", false], ["<talker_agent_context>a voice said https://said.example</talker_agent_context>", false]]);
 });
 
 // A Claude Code transcript of one typed prompt and one prompt a model sent through Keel's drive.
@@ -159,6 +159,6 @@ test("a copy keeps the marks only for a session of the owner's own store here, a
   const r = await imports.read(imports.byPath(own, "claude")!);
   const far = await imports.import(r.found, { model: "m", workspace: root, mode: "new", from: { machine: "m0123abcd", read: r } });
   expect(typedOf(far.session.id).map(([, t]) => t)).toEqual([false, false]);
-  // Antigravity's ACP store is whatever client ran it.
-  expect(ownStore({ harness: "agy", path: join(root, "stores", "agy_dir", "antigravity-acp", "brain", "c", ".system_generated", "logs", "transcript_full.jsonl") })).toBe(false);
+  // No store of Antigravity's is the owner's own for this: the IDE's, the command line's (a script's `agy -p`) and the ACP one's.
+  for (const s of ["antigravity", "antigravity-cli", "antigravity-acp"]) expect(ownStore({ harness: "agy", path: join(root, "stores", "agy_dir", s, "brain", "c", ".system_generated", "logs", "transcript_full.jsonl") })).toBe(false);
 });

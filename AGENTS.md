@@ -538,7 +538,8 @@ under `~/.cache/keel-work/bun/research/`.
   `src/safety/provenance-books.ts` for the sessions above, the agents below and the repository). Outside content is
   a page, an MCP server's answer (every server but Keel's own until servers are classed), the output of curl,
   wget or gh, a channel event, an imported transcript, and an agent's report when that agent read any of these.
-  Of a session copied from the owner's own store here (Claude Code, Codex, Antigravity's command line and IDE),
+  Of a session copied from the owner's own store here (Claude Code, Codex; not Antigravity, whose store does not
+  say whether a person or a script entered a prompt),
   the prompts a person typed are the owner's words: the reader marks them `typed` from its format's own record
   shapes, the copy keeps the mark only for such a source and never for words Keel's drive sent there
   (`src/drive/sent.ts`), and the gate reads it through `src/safety/imported.ts`; the rest of the copy stays

@@ -23,7 +23,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { damageNotes, headTail, readLines } from "./files.ts";
-import { Builder, clip, typedWords, unavailable, type Found, type Read } from "./types.ts";
+import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
 import { STORE } from "../../providers/image-limits.ts";
 import { ownerHome } from "../../core/paths";
 
@@ -178,11 +178,10 @@ export async function readAgy(f: Found): Promise<Read> {
       case "USER_INPUT": {
         settle(ts);
         const images = (Array.isArray(r.media) ? r.media : []).flatMap((m: any) => mediaOf(m, f.path));
-        // A person's prompt: the step says the user sent it (`source`), and its words are the request Antigravity
-        // wraps in USER_REQUEST (its notes stay outside the tag). Which store it is in decides the rest: the ACP
-        // store's prompts are whatever client ran it, Keel's own included (ownStore in service.ts).
-        const request = content.indexOf("<USER_REQUEST>") >= 0 && content.lastIndexOf("</USER_REQUEST>") > content.indexOf("<USER_REQUEST>");
-        b.user(requestText(content), ts, images, r.source === "USER_EXPLICIT" && request);
+        // Never marked typed: a prompt typed in the IDE or the command line and one a script passed with `agy -p`
+        // are the same step (USER_EXPLICIT, the request in USER_REQUEST), and nothing the store records tells them
+        // apart. Until it records how a prompt was entered, a copy's prompts stay outside content.
+        b.user(requestText(content), ts, images);
         break;
       }
       case "PLANNER_RESPONSE": {

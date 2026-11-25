@@ -1,7 +1,7 @@
 // What of a session is a copy of another harness's transcript, and which of its prompts are the owner's words.
 // Every event up to the import link's `synced_ms` is the copy's (src/integrations/import/service.ts dates none
 // later). All of it is outside content, but for one case: a copy of a session the owner ran in a store of their own
-// on this machine (Claude Code, Codex, Antigravity) keeps a prompt its reader found typed by a person with
+// on this machine (Claude Code, Codex) keeps a prompt its reader found typed by a person with
 // `typed: true` in its data, and only such a copy's marks are read. A copy from another machine, of another store,
 // or of a Keel session (which copies its source's data as it is) counts none.
 import type { Store } from "../core/store.ts";
@@ -9,7 +9,7 @@ import { sourceMachine } from "../integrations/import/types.ts";
 
 export type Imported = { until: number; own: boolean };
 
-const OWN_STORES = new Set(["claude", "codex", "agy"]);
+const OWN_STORES = new Set(["claude", "codex"]);
 
 export function importOf(store: Store, sessionId: string): Imported {
   let link: { synced_ms: number; harness: string; source_path: string } | null = null;
