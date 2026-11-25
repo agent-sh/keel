@@ -1,6 +1,6 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Clock, Copy, Ellipsis, Folder, FolderPlus, GitBranch, LayoutList, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Clock, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
@@ -399,6 +399,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
     // To come back to it: its row keeps its unread mark until the session is opened again.
     ...(!session.parent_id && !session.machine ? [{ id: "menu-unread", label: "Mark unread", icon: <MailOpen />, run: () => void auto.unreadSession(session.id).catch(reportError) }] : []),
     { id: "menu-fork", label: "Fork", icon: <GitBranch />, gap: true, disabled: !session.head, run: () => { if (session.head) actions.fork(session.id, session.head).then((f) => openPlaced(f.id, session.id), reportError); } },
+    { id: "menu-fork-worktree", label: "Fork into a new worktree", icon: <GitFork />, disabled: !session.head, run: () => { if (session.head) actions.fork(session.id, session.head, { worktree: true }).then((f) => openPlaced(f.id, session.id), reportError); } },
     session.archived
       ? { id: "menu-restore", label: "Restore", icon: <ArchiveRestore />, gap: true, run: () => void actions.patch(session.id, { archived: false }).catch(reportError) }
       : { id: "menu-archive", label: "Archive", icon: <Archive />, gap: true, run: () => void archive(session).catch(reportError) },

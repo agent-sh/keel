@@ -465,9 +465,10 @@ export const actions = {
     return r;
   },
   // `before`: the prompt is left out of the copy and goes back to the new box, words and attachments.
-  async fork(id: string, eventId: string, opts: { before?: boolean; title?: string } = {}): Promise<Session> {
+  // `worktree`: the fork works in a worktree of its own, so it never writes the folder its source does.
+  async fork(id: string, eventId: string, opts: { before?: boolean; title?: string; worktree?: boolean } = {}): Promise<Session> {
     const r = await api<{ session: Session; prompt_text?: string; prompt_images?: PromptBlock[] }>(`/api/sessions/${id}/fork`, {
-      method: "POST", body: JSON.stringify({ event_id: eventId, before: !!opts.before, title: opts.title || undefined }),
+      method: "POST", body: JSON.stringify({ event_id: eventId, before: !!opts.before, title: opts.title || undefined, worktree: opts.worktree ? {} : undefined }),
     });
     set({ sessions: { ...state.sessions, [r.session.id]: r.session } });
     if (r.prompt_text !== undefined || r.prompt_images) seedComposer(r.prompt_text ?? "", r.session.id, { blocks: r.prompt_images });

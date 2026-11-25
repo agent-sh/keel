@@ -8,6 +8,9 @@ import { RetryTooLong } from "../../engine/retry.ts";
 import { toMessages } from "../../engine/turn.ts";
 import { ProviderError } from "../../providers/http.ts";
 import type { RouteModule } from "../app.ts";
+import { Worktrees } from "../../worktree/manager.ts";
+import { join } from "node:path";
+import { newInstructions } from "./places.ts";
 import { resolveSwitchModel, switchCompactionBlock } from "../switch.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -17,6 +20,7 @@ export const turnRoutes: RouteModule = (deps) => {
   const { store, engine, providers, bus, errors } = deps;
   const queueBody = (id: string) => ({ queue: engine.queued(id), held: engine.isHeld(id) });
   const sessionOr404 = (id: string) => store.session(id);
+  const wts = new Worktrees(store, join(store.stateDir, "worktrees"));
 
   return {
     "/api/sessions/:id/queue": {
@@ -236,10 +240,28 @@ export const turnRoutes: RouteModule = (deps) => {
         // The copy keeps the settings, not the source's pin or done mark.
         const { pinned_ms: _p, done_ms: _d, repairs: _r, ...settings } = s.settings; // (its repairs are recorded as its own)
         const f = store.createSession({ title, model: s.model, workspace: s.workspace, settings });
+        // `worktree` ({ name?, base? } or true): the fork works in a worktree of its own, as a clone does, so two
+        // forks of one task never write the same folder.
+        if (b.worktree) {
+          const o = typeof b.worktree === "object" ? b.worktree : {};
+          try {
+            const { wt, cwd } = await wts.create(f.id, s.workspace, o.name || title, o.base);
+            wts.adopt(f.id, wt);
+            store.updateSession(f.id, { workspace: cwd });
+          } catch (e) {
+            store.deleteSession(f.id);
+            throw e;
+          }
+        }
         store.copyEvents(f.id, copy);
         // Queued prompts are the source's work, not history: they stay there, and the fork says so.
         const left = engine.queued(s.id).length;
         store.append(f.id, "note", { kind: "fork", from_session: s.id, from_title: s.title, queue_left: left || undefined, text: `Forked from ${s.title || "a session"}.${left ? ` ${left === 1 ? "One queued message stays" : `${left} queued messages stay`} there.` : ""}` });
+        if (b.worktree) {
+          const now = store.session(f.id)!;
+          const inst = newInstructions(now.workspace, s.workspace);
+          bus.emit({ t: "event", event: store.append(f.id, "note", { kind: "folder", model: true, short: `Forked into ${now.workspace}`, text: `[harness] This session was forked into ${now.workspace} (the conversation so far ran in ${s.workspace}). Work there now.${inst ? `\n\nInstructions from the owner's files there:\n\n${inst}` : ""}` }) });
+        }
         const session = store.session(f.id)!;
         bus.emit({ t: "session", session });
         // `before`: the prompt itself is not copied; its words and attachments go back to the box.

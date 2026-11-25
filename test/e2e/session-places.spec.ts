@@ -113,6 +113,18 @@ test("move to a folder, clone into a worktree, images, repositories, open", asyn
   expect((await (await request.get(`/api/sessions/${cloneId}/worktree`)).json()).worktree).toBeTruthy();
   await shoot(page, "places-04-clone");
 
+  // A fork into a new worktree: its own folder, so it never writes the clone's.
+  await page.getByTestId("session-menu").click();
+  await page.getByTestId("menu-fork-worktree").click();
+  await expect(page).not.toHaveURL(new RegExp(cloneId));
+  const forkId = page.url().split("/s/")[1]!;
+  const fork = await (await request.get(`/api/sessions/${forkId}`)).json();
+  expect(fork.session.workspace).not.toBe(clone.session.workspace);
+  expect(fork.session.workspace).not.toBe(b);
+  expect((await (await request.get(`/api/sessions/${forkId}/worktree`)).json()).worktree).toBeTruthy();
+  await shoot(page, "places-05-fork-worktree");
+
+  await request.delete(`/api/sessions/${forkId}`);
   await request.delete(`/api/sessions/${cloneId}`);
   await request.delete(`/api/sessions/${session.id}`);
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });

@@ -25,7 +25,7 @@ const isRepo = (p: string) => existsSync(join(p, ".git"));
 // The instruction files (AGENTS.md, else CLAUDE.md, per folder up to the
 // root) of `to` that the session's prompt does not carry yet: those of the
 // folders `from` does not share. Applied through the same filter as the prompt.
-function newInstructions(to: string, from: string): string {
+export function newInstructions(to: string, from: string): string {
   const chain = (dir: string) => {
     const out: string[] = [];
     for (let d = dir; ; d = dirname(d)) {
