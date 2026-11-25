@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import dev.avifenesh.keel.Chat
 import dev.avifenesh.keel.Conn
@@ -40,7 +41,8 @@ import dev.avifenesh.keel.dotOf
 import dev.avifenesh.keel.dotWordOf
 import dev.avifenesh.keel.look
 import dev.avifenesh.keel.showsNews
-import androidx.compose.foundation.shape.CircleShape
+import dev.avifenesh.keel.titleHeavy
+import dev.avifenesh.keel.titleQuiet
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.ago
 import dev.avifenesh.keel.elapsed
@@ -185,7 +187,10 @@ private fun SessionRow(r: Row3, now: Double) {
         Box(Modifier.padding(top = 6.dp, end = 12.dp)) { DotMark(lk, 10.dp, halo = true) }
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Txt(c.title, T.uiStrong.copy(fontSize = T.body.fontSize * 0.95f), k.fg, Modifier.weight(1f), maxLines = 1)
+                // News is the title's weight, not a second dot beside the state's; a seen session at rest steps back to the muted ink.
+                val news = showsNews(dot, c.unread)
+                Txt(c.title, (if (titleHeavy(dot, c.unread)) T.uiStrong else T.ui).copy(fontSize = T.body.fontSize * 0.95f), if (titleQuiet(dot, c.unread)) k.muted else k.fg,
+                    Modifier.weight(1f).semantics { if (news) stateDescription = "$NEW_WORD, ${c.unread} unread" }, maxLines = 1)
                 Spacer(Modifier.width(S.sm))
                 val right = when (r.state) {
                     State.WORKING -> r.since?.let { elapsed(it, now) } ?: "working"
@@ -212,11 +217,6 @@ private fun SessionRow(r: Row3, now: Double) {
                 }
                 if (c.pinned) { Spacer(Modifier.width(S.sm)); Box(Modifier.size(6.dp).clip(RoundedCornerShape(1.dp)).background(k.lineStrong)) }
             }
-        }
-        // News is a dot at the row's end, centered on the row; a row that needs the owner or failed says more than a dot does.
-        if (showsNews(dot, c.unread)) {
-            Spacer(Modifier.width(S.sm))
-            Box(Modifier.align(Alignment.CenterVertically).size(7.dp).clip(CircleShape).background(k.unread).semantics { contentDescription = "$NEW_WORD, ${c.unread} unread" })
         }
     }
     Rule(Modifier.padding(start = 38.dp))

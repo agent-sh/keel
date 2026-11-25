@@ -76,12 +76,13 @@ val Tokens.addTint get() = done.copy(alpha = if (dark) 0.16f else 0.12f)
 val Tokens.delTint get() = dangerSoft.copy(alpha = 0.85f)
 
 fun Tokens.of(s: State): Color = when (s) {
-    State.NEEDS -> need; State.WORKING -> work; State.FAILED -> fail; State.DONE -> done; State.STOPPED, State.IDLE -> idle
+    // Done is the quiet grey of a state at rest, as the page draws its dot; its green is for a success mark (a check, a diff's added line).
+    State.NEEDS -> need; State.WORKING -> work; State.FAILED -> fail; State.STOPPED, State.IDLE, State.DONE -> idle
 }
 
 /** The state's word color: the mark's own hue, dark enough to read as text. A state at rest reads in the muted text color. */
 fun Tokens.inkOf(s: State): Color = when (s) {
-    State.NEEDS -> needInk; State.WORKING -> workInk; State.FAILED -> failInk; State.DONE -> doneInk; State.STOPPED, State.IDLE -> muted
+    State.NEEDS -> needInk; State.WORKING -> workInk; State.FAILED -> failInk; State.DONE, State.STOPPED, State.IDLE -> muted
 }
 
 @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)

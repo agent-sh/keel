@@ -83,7 +83,24 @@ class DotTest {
         assertEquals(listOf("Needs you", "Working", "Waiting", "Failed", "Declined", "Waiting", "Stopped", "Done", "Not started"), Dot.entries.map { it.word })
     }
 
-    @Test fun newsIsADotOnARowThatSaysNoMore() {
+    @Test fun doneIsTheQuietGreyAndNewsIsTheTitlesWeight() {
+        // Done is the grey of a state at rest, the page's --dot-done; colour is for what needs the owner, failed and at work.
+        assertEquals("--st-idle", look(Dot.DONE).fill)
+        assertEquals(StatePalette.of("--st-idle", false), StatePalette.of(look(Dot.IDLE).fill, false))
+        val chroma = { rgb: Long -> val c = listOf(16, 8, 0).map { ((rgb shr it) and 0xFF).toInt() }; c.max() - c.min() }
+        for (dark in listOf(false, true)) assertTrue(chroma(StatePalette.of(look(Dot.DONE).fill, dark)) < 16)
+        // The title is heavier for news and for the states that ask something of the owner, and no other row's is.
+        assertTrue(titleHeavy(Dot.DONE, 2))
+        assertTrue(titleHeavy(Dot.WORK, 1))
+        for (d in listOf(Dot.NEED, Dot.FAIL, Dot.DECLINED)) assertTrue(titleHeavy(d, 0))
+        for (d in listOf(Dot.DONE, Dot.IDLE, Dot.STOP, Dot.WORK, Dot.WAIT)) assertFalse(titleHeavy(d, 0))
+        // A seen session at rest steps back to the muted ink; news brings it back.
+        assertTrue(titleQuiet(Dot.DONE, 0))
+        assertFalse(titleQuiet(Dot.DONE, 1))
+        assertFalse(titleQuiet(Dot.WORK, 0))
+    }
+
+    @Test fun newsIsTheTitlesWeightOnARowThatSaysNoMore() {
         assertTrue(showsNews(Dot.DONE, 1))
         assertTrue(showsNews(Dot.WORK, 3))
         assertFalse(showsNews(Dot.DONE, 0))

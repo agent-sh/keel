@@ -71,7 +71,8 @@ fun look(dot: Dot, ring: String = "", word: String = dot.word, reducedMotion: Bo
     dot == Dot.WAIT -> Look(dot, Form.HALF, "--dot-work", "--dot-work", false, false, word)
     dot == Dot.FAIL -> Look(dot, Form.SOLID, "--dot-fail", "--dot-fail", false, false, word)
     dot == Dot.DECLINED -> Look(dot, Form.HOLLOW, "--dot-fail", "--dot-fail", false, false, word)
-    dot == Dot.DONE -> Look(dot, Form.SOLID, "--dot-done", "--dot-done", false, false, word)
+    // Done is the quiet grey of a state at rest (the page's --dot-done is --st-idle): colour is for what needs the owner, failed and at work.
+    dot == Dot.DONE -> Look(dot, Form.SOLID, "--st-idle", "--st-idle", false, false, word)
     dot == Dot.IDLE -> Look(dot, Form.HOLLOW, "--st-idle", "--st-idle", false, false, word)
     dot == Dot.STOP -> Look(dot, Form.SQUARE, "--st-idle", "--st-idle", false, false, word)
     else -> Look(dot, Form.OPEN, "--st-idle", "--st-idle", false, false, word)
@@ -82,3 +83,12 @@ fun look(dot: Dot, ring: String = "", word: String = dot.word, reducedMotion: Bo
  * A row that needs the owner or failed says more than a dot, so it shows none.
  */
 fun showsNews(dot: Dot, unread: Int): Boolean = unread > 0 && dot != Dot.NEED && dot != Dot.FAIL && dot != Dot.DECLINED
+
+/**
+ * Whether a row's title is the heavy one: a session that needs the owner, failed or has news says so by its weight, as the page's
+ * row does (bridge.css, .k-row-title). News is no second dot beside the state's.
+ */
+fun titleHeavy(dot: Dot, unread: Int): Boolean = dot == Dot.NEED || dot == Dot.FAIL || dot == Dot.DECLINED || showsNews(dot, unread)
+
+/** A session at rest that has been seen reads in the muted text color; every other row's title is in ink. */
+fun titleQuiet(dot: Dot, unread: Int): Boolean = (dot == Dot.DONE || dot == Dot.IDLE || dot == Dot.STOP) && !showsNews(dot, unread)

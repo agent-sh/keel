@@ -1,6 +1,10 @@
 package dev.avifenesh.keel
 
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import dev.avifenesh.keel.ui.KeelTheme
 import dev.avifenesh.keel.ui.SessionList
@@ -9,12 +13,22 @@ import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
-// A row's state is one dot with its word for a reader, and news is a dot at the row's end.
+// A row's state is one dot with its word for a reader, and news is the title's weight.
 class DotRowsTest {
     @get:Rule val rule = createComposeRule()
 
     private fun chat(id: String, status: String, dot: String = "", ring: String = "", word: String = "", unread: Int = 0, agents: Int = 0) =
         Chat(id, "T-$id", status, 1.0, unread, false, false, "A line.", "agent", null, agents = agents, dot = dot, dotRing = ring, dotWord = word)
+
+    private fun told(text: String) = rule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, text), useUnmergedTree = true).fetchSemanticsNodes().size
+
+    /** The weight of the title of a row, read from its text layout. */
+    private fun weightOf(title: String): Int {
+        val node = rule.onNodeWithText(title, useUnmergedTree = true).fetchSemanticsNode()
+        val out = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(out)
+        return out.first().layoutInput.style.fontWeight!!.weight
+    }
 
     private fun words(word: String) = rule.onAllNodesWithContentDescription(word, useUnmergedTree = true).fetchSemanticsNodes().size
 
@@ -33,8 +47,13 @@ class DotRowsTest {
         for (word in listOf("Working", "Waiting on agents", "Waiting", "Declined", "Failed", "Done", "Needs you", "Not started")) assertEquals("the dot of $word", 1, words(word))
         // A declined turn is not read as an ordinary failure, and a session that waits on its agents is not just working.
         assertEquals(1, words("Failed"))
-        // News: a dot on the done row; none on the row that needs the owner.
-        assertEquals(1, words("New, 2 unread"))
-        assertEquals(0, words("New, 1 unread"))
+        // News: the done row's title is heavier and a reader is told; the row that needs the owner says more and tells none.
+        assertEquals(1, told("New, 2 unread"))
+        assertEquals(0, told("New, 1 unread"))
+        assertEquals(0, words("New, 2 unread"))
+        assertEquals(600, weightOf("T-n"))
+        assertEquals(600, weightOf("T-y"))
+        assertEquals(400, weightOf("T-i"))
+        assertEquals(400, weightOf("T-w"))
     }
 }
