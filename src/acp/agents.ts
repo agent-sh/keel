@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { basename, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { commandsOf, listedOf, mergeChoices, splitModel, type Learned, type SlashCommand } from "./choices.ts";
+import { commandsOf, listedOf, mergeChoices, splitModel, twinsOf, type Learned, type SlashCommand } from "./choices.ts";
 import { readFolders } from "./confine.ts";
 import { AcpConnection } from "./rpc.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
@@ -253,6 +253,11 @@ export class AcpAgents {
     return this.list().find((a) => a.id === id);
   }
 
+  // The agents among `agents` that are a later copy of an earlier one (the same models, modes and commands): `{ later: earlier }`.
+  twins(agents: { id: string }[]): Record<string, string> {
+    return twinsOf(agents, (id) => this.known[id]);
+  }
+
   get registryFetched() { return this.fetched; }
 }
 
@@ -293,7 +298,8 @@ export class AcpProvider implements Provider {
     await this.agents.refresh();
     const installed = this.agents.list().filter((a) => a.run);
     this.agents.ask(installed);
-    return installed.flatMap((a) => listedOf(a, this.agents.learned(a.id)));
+    const twins = this.agents.twins(installed);
+    return installed.flatMap((a) => listedOf(a, this.agents.learned(a.id), twins[a.id]));
   }
 
   async stream(_req: ProviderRequest, _onDelta: (d: Delta) => void): Promise<ProviderResult> {

@@ -565,6 +565,8 @@ export class Providers {
       ...(Object.keys(known_from).length ? { known_from } : {}),
       // The listing's own offers win; else the route's catalog section's.
       speeds: m.speeds ?? own?.speeds,
+      ...(m.unavailable ? { unavailable: m.unavailable } : {}),
+      ...(m.same_as ? { same_as: m.same_as } : {}),
       // A fact of the route: the catalog names it per provider (one model has
       // reasoning_content on one route, reasoning_details or nothing on
       // another). A route with a section takes only its own entry; one

@@ -90,15 +90,20 @@ export const acpRoutes: RouteModule = (deps) => {
   });
 
   const needs = (req: Request) => (!presence || presence.allows(req, "mcp-command") ? null : json({ error: "this needs your passkey from a remote device", presence: { action: "mcp-command" } }, 428));
-  const listing = () => json({
+  const listing = () => {
+    const all = provider.agents.list();
+    // An agent that is a later copy of an earlier one (the same models, modes and commands) says so.
+    const twins = provider.agents.twins(all.filter((a) => a.run));
+    return json({
     // How a new session's agent would run (the default sandbox): the card says it plainly.
-    agents: provider.agents.list().map((a) => ({ ...a, installed: !!a.run, model: `acp:${a.id}`, run: a.run ? { command: a.run.command, args: a.run.args } : undefined,
+    agents: all.map((a) => ({ ...a, installed: !!a.run, model: `acp:${a.id}`, ...(twins[a.id] ? { same_as: twins[a.id] } : {}), run: a.run ? { command: a.run.command, args: a.run.args } : undefined,
       ...(a.run ? { sandbox: (({ confined, note }) => ({ confined, note }))(confineAgent(a, permOf(), deps.workspace, false)),
         // The folders it may write: the owner's list, else the guess by its name.
         folders: { list: a.folders ?? agentFolders(a, false).map((f) => (f.startsWith(homeDir() + "/") ? `~${f.slice(homeDir().length)}` : f)), own: !!a.folders } } : {}) })),
     error: provider.agents.error,
     running: runner.running(),
-  });
+    });
+  };
 
   return {
     "/api/acp/agents": {

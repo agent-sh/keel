@@ -8,7 +8,7 @@ import { navigate } from "../lib/ui.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 
 type Cmd = { command: string; args: string[] };
-type Agent = { id: string; name: string; description?: string; version?: string; source: "registry" | "custom"; installed: boolean; model: string; run?: Cmd; add?: Cmd; website?: string; sandbox?: { confined: boolean; note: string }; folders?: { list: string[]; own: boolean } };
+type Agent = { id: string; name: string; description?: string; version?: string; source: "registry" | "custom"; installed: boolean; same_as?: string; model: string; run?: Cmd; add?: Cmd; website?: string; sandbox?: { confined: boolean; note: string }; folders?: { list: string[]; own: boolean } };
 type Listing = { agents: Agent[]; error?: string; running: { session: string; agent: string }[] };
 
 const line = (c?: Cmd) => (c ? [c.command.replace(/^\/home\/[^/]+/, "~"), ...c.args].join(" ") : "");
@@ -85,6 +85,7 @@ export function AcpAgentsSettings() {
         {installed.map((a) => (
           <SettingRow key={a.id} label={a.name} hint={<>
             <span className="block font-mono text-caption" data-testid="acp-agent-command">{line(a.run)}</span>
+            {a.same_as && <span className="block text-caption text-muted" data-testid="acp-agent-same">Same program as {l?.agents.find((x) => x.id === a.same_as)?.name ?? a.same_as}: it states the same models, modes and commands, so the model picker lists only the first.</span>}
             {a.sandbox && <span className={a.sandbox.confined ? "block text-caption text-muted" : "block text-caption text-warn"} data-testid="acp-agent-sandbox" data-confined={String(a.sandbox.confined)}>{a.sandbox.note}</span>}
             {a.folders && <AgentFolders agent={a} busy={busy} save={(folders) => act(() => api<Listing>(`/api/acp/agents/${a.id}/folders`, { method: "PUT", body: JSON.stringify({ folders }) }))} />}
           </>}>

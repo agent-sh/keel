@@ -570,3 +570,37 @@ test("acp agent models", async ({ page, request }) => {
     await request.delete("/api/acp/agents/standin-m");
   }
 });
+
+// Feature: the model picker's ACP agents. A later entry of one program (the same models, modes and
+// commands) is not offered twice, and an agent whose probe failed is listed as unavailable with its short reason.
+test("acp agent twins and unavailable", async ({ page, request }) => {
+  const standin = join(import.meta.dirname, "fixtures/acp-agent-standin.ts");
+  const signedOut = `process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "auth" } }) + "\\n"); setTimeout(() => {}, 5000);`;
+  for (const id of ["twin-a", "twin-b", "twin-out"]) await request.delete(`/api/acp/agents/${id}`).catch(() => {});
+  expect((await request.post("/api/acp/agents", { data: { id: "twin-a", command: "bun", args: [standin] } })).ok()).toBe(true);
+  expect((await request.post("/api/acp/agents", { data: { id: "twin-b", command: "bun", args: [standin, "again"] } })).ok()).toBe(true);
+  expect((await request.post("/api/acp/agents", { data: { id: "twin-out", command: "bun", args: ["-e", signedOut] } })).ok()).toBe(true);
+  try {
+    const mine = async () => ((await (await request.get("/api/models")).json()).models as any[]).filter((m) => m.provider === "acp" && /^twin-/.test(m.model));
+    // Both entries learn the same choices; the later one is marked and the signed-out one carries its reason.
+    await expect.poll(async () => (await mine()).filter((m) => m.same_as).length, { timeout: 60_000 }).toBe(4);
+    await expect.poll(async () => (await mine()).find((m) => m.id === "acp:twin-out")?.unavailable, { timeout: 60_000 }).toBe("it needs its own sign-in first");
+    expect((await mine()).filter((m) => m.same_as).every((m) => m.model.startsWith("twin-b") && m.same_as === "twin-a")).toBe(true);
+    await page.goto("/");
+    await page.getByTestId("model-picker").first().click();
+    await page.getByPlaceholder("Search models").fill("twin-");
+    await expect(page.getByTestId("model-option").filter({ hasText: "twin-a: Fast" })).toHaveCount(1);
+    await expect(page.getByTestId("model-option").filter({ hasText: "twin-b" })).toHaveCount(0);
+    const out = page.getByTestId("model-option").filter({ hasText: "twin-out" });
+    await expect(out).toHaveAttribute("data-unavailable", "");
+    await expect(out.getByTestId("model-unavailable")).toContainText("it needs its own sign-in first");
+    await shoot(page, "acp-20-twins-unavailable");
+    await page.keyboard.press("Escape");
+    // Settings names the later entry as the same program.
+    await page.goto("/settings/acp-agents");
+    await expect(page.getByTestId("acp-agent-same")).toHaveCount(1);
+    await expect(page.getByTestId("acp-agent-same")).toContainText("same models, modes and commands");
+  } finally {
+    for (const id of ["twin-a", "twin-b", "twin-out"]) await request.delete(`/api/acp/agents/${id}`);
+  }
+});

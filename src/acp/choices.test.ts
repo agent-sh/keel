@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { choicesOf, heldSwitch, listedOf, mergeChoices, settle, splitModel, unknownCurrent, withOptions } from "./choices.ts";
+import { choicesOf, heldSwitch, listedOf, mergeChoices, settle, splitModel, twinsOf, unknownCurrent, withOptions } from "./choices.ts";
 
 const model = { id: "model", name: "Model", category: "model", type: "select", currentValue: "a", options: [{ group: "g", name: "G", options: [{ value: "a", name: "A" }, { value: "x/b", name: "B" }] }] };
 const level = { id: "think", name: "Thinking", category: "thought_level", type: "select", currentValue: "low", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] };
@@ -84,4 +84,22 @@ test("a value an agent states twice is one choice and one listed model", () => {
   // What was learned before is listed once too.
   const old = { models: { via: "config" as const, configId: "model", name: "Model", current: "auto", options: [{ value: "auto", name: "Auto" }, { value: "auto", name: "Auto" }] } };
   expect(listedOf({ id: "ag", name: "Ag" }, old).map((m) => m.model)).toEqual(["ag", "ag/auto"]);
+});
+
+test("two entries that learned the same models, modes and commands are one program: the later one is marked", () => {
+  const learned = (cmds: string[], values = ["a", "b"]) => ({ key: "k", at: 1, models: { via: "config" as const, configId: "model", name: "Model", current: "a", options: values.map((v) => ({ value: v, name: v })) }, commands: cmds.map((name) => ({ name, description: "" })) });
+  const known: Record<string, any> = { kimi: learned(["init"]), "kimi-code": learned(["init"]), other: learned(["init"], ["a", "c"]), more: learned([]), none: { key: "k", at: 1, error: "it needs its own sign-in first" }, none2: { key: "k", at: 1, error: "it needs its own sign-in first" } };
+  const ids = ["kimi", "kimi-code", "other", "more", "none", "none2", "unknown"].map((id) => ({ id }));
+  expect(twinsOf(ids, (id) => known[id])).toEqual({ "kimi-code": "kimi" });
+  expect(listedOf({ id: "kimi-code", name: "Kimi" }, known["kimi-code"], "kimi").every((m) => m.same_as === "kimi")).toBe(true);
+  expect(listedOf({ id: "kimi", name: "Kimi" }, known.kimi).some((m) => m.same_as)).toBe(false);
+});
+
+test("an agent whose probe failed and left no choice is listed as unavailable with a short reason", () => {
+  const rows = listedOf({ id: "cursor", name: "Cursor" }, { key: "k", at: 1, error: "it needs its own sign-in first" });
+  expect(rows.map((m) => [m.model, m.unavailable])).toEqual([["cursor", "it needs its own sign-in first"]]);
+  expect(listedOf({ id: "cursor", name: "Cursor" }, { key: "k", at: 1, error: "x".repeat(300) })[0]!.unavailable!.length).toBeLessThanOrEqual(80);
+  // A failure that left what was learned before keeps those choices available.
+  const kept = { key: "k", at: 1, error: "no answer in 180 s", models: { via: "config" as const, configId: "m", name: "M", current: "a", options: [{ value: "a", name: "A" }] } };
+  expect(listedOf({ id: "ag", name: "Ag" }, kept).some((m) => m.unavailable)).toBe(false);
 });

@@ -148,11 +148,39 @@ export function splitModel(model: string): { agent: string; choice?: string } {
   return i < 0 ? { agent: model } : { agent: model.slice(0, i), choice: model.slice(i + 1) };
 }
 
-// The listing of one agent: itself, then each of its choices.
-export function listedOf(agent: { id: string; name: string }, c?: AgentChoices): ListedModel[] {
-  const base = { billing: { kind: "subscription" as const, plan: agent.name }, images: true, ...(c?.efforts ? { efforts: c.efforts.options.map((o) => o.value) } : {}) };
-  const out: ListedModel[] = [{ model: agent.id, name: agent.name, ...base }];
+// What makes two agents one program as far as a session can tell: the same models, modes and commands, learned
+// without a failure. Nothing when the agent states no model or mode choice (it has nothing to compare by).
+export function programSignature(c?: Learned): string | undefined {
+  if (!c || c.error) return undefined;
   const set = pickable(c);
+  if (!set?.options.length) return undefined;
+  return JSON.stringify([c.models?.options.map((o) => o.value), c.modes?.options.map((o) => o.value), (c.commands ?? []).map((x) => x.name)]);
+}
+
+// Each agent that is a later copy of an earlier one, by id: `{ later: earlier }`, in the order given.
+export function twinsOf(agents: { id: string }[], learned: (id: string) => Learned | undefined): Record<string, string> {
+  const first = new Map<string, string>(), out: Record<string, string> = {};
+  for (const a of agents) {
+    const sig = programSignature(learned(a.id));
+    if (!sig) continue;
+    const at = first.get(sig);
+    if (at) out[a.id] = at;
+    else first.set(sig, a.id);
+  }
+  return out;
+}
+
+// A failed probe's words, short enough for a picker row.
+const shortReason = (e: string): string => { const t = e.replace(/\s+/g, " ").trim(); return t.length > 80 ? `${t.slice(0, 79)}…` : t; };
+
+// The listing of one agent: itself, then each of its choices. An agent whose last probe failed and left
+// nothing to choose from is listed as unavailable, with the reason; one that is a later copy of
+// the agent `twin` carries that.
+export function listedOf(agent: { id: string; name: string }, c?: AgentChoices & Partial<Learned>, twin?: string): ListedModel[] {
+  const set = pickable(c);
+  const note = c?.error && !set?.options.length ? { unavailable: shortReason(c.error) } : {};
+  const base = { billing: { kind: "subscription" as const, plan: agent.name }, images: true, ...(c?.efforts ? { efforts: c.efforts.options.map((o) => o.value) } : {}), ...note, ...(twin ? { same_as: twin } : {}) };
+  const out: ListedModel[] = [{ model: agent.id, name: agent.name, ...base }];
   for (const o of once(set?.options ?? [])) out.push({ model: `${agent.id}/${o.value}`, name: `${agent.name}: ${o.name}`, ...base });
   return out;
 }

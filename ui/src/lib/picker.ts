@@ -9,6 +9,8 @@ export type Item = {
   aria: string;
   // The ACP agent a route belongs to (`agent` or `agent/choice` under the ACP provider).
   agent?: string;
+  // Why it cannot answer now (an ACP agent whose probe failed), in a few words.
+  unavailable?: string;
 };
 // `sub`: one agent of the ACP provider, folded to its own row under a header that opens it (`folded`, absent while searching); `total` is
 // the models the agent offers besides itself.
@@ -41,10 +43,13 @@ export function buildItems(models: ListedModel[], labels: Record<string, string>
       key: m.id, hay: `${m.name} ${m.model} ${providerLabel} ${m.provider} ${m.id}`.toLowerCase(),
       aria: `${m.name}, ${providerLabel}`,
       ...(m.provider === ACP_PROVIDER ? { agent: m.model.split("/")[0] } : {}),
+      ...(m.unavailable ? { unavailable: m.unavailable } : {}),
     };
   };
-  const all = models.map(item);
-  const byId = new Map(all.map((i) => [i.value, i]));
+  // A later entry of one program (an ACP agent the listing holds twice) is not offered; a session on it still names its model.
+  const every = models.map(item);
+  const byId = new Map(every.map((i) => [i.value, i]));
+  const all = every.filter((_, n) => !models[n]!.same_as);
   return { all, byId, labelOf };
 }
 

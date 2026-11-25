@@ -161,6 +161,12 @@ export type ListedModel = {
   tools?: boolean;     // takes tool definitions (the listing's word)
   reasoning?: boolean; // thinks before it answers
   speeds?: SpeedOffer[];
+  // Why the model cannot answer now, in a few words (an ACP agent whose probe failed): the picker shows
+  // it as unavailable with this note.
+  unavailable?: string;
+  // The listing holds another entry of the same program (the same models, modes and commands): its
+  // id here. The picker offers only the first of them.
+  same_as?: string;
 };
 
 export type ModelInfo = {
@@ -187,6 +193,8 @@ export type ModelInfo = {
   // Where each known capability came from.
   known_from?: Partial<Record<"tools" | "images" | "reasoning" | "caching", "owner" | "probe" | "listing" | "catalog">>;
   speeds?: SpeedOffer[];
+  unavailable?: string;
+  same_as?: string;
   // The message field the model reads its earlier reasoning from (the
   // catalog's `interleaved.field`): a Chat Completions request carries it on
   // every assistant message (src/providers/wires/chat.ts).
