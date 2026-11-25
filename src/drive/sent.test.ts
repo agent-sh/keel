@@ -1,16 +1,18 @@
 // What the drive keeps of the words a model sends into another harness's session (src/drive/sent.ts): digests of
 // the whole and of each line, the sends of the stored history read once, and a far machine's Keel told first.
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { ownEnv } from "../../test/env.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { backfillSent, noteSent, onFarSent, wasSent } from "./sent.ts";
+import { backfillSent, noteSent, onFarSent, pruneSent, wasSent } from "./sent.ts";
 import { sentCalls } from "./sent-read.ts";
 import { driveTools } from "./tools.ts";
 
 const root = mkdtempSync(join(tmpdir(), "keel-drive-sent-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
+ownEnv({ KEEL_IMPORT_CODEX_DIR: join(root, "codex") });
 let n = 0;
 const fresh = () => new Store(join(root, `s${++n}`));
 const read = (store: Store) => (a: { after: number; span: number }) => Promise.resolve(sentCalls(store.db, a));
@@ -70,4 +72,25 @@ test("a send to a session on another machine goes only once that machine's Keel 
   } finally {
     onFarSent(undefined);
   }
+});
+
+test("a digest goes once the transcript it went into is gone from its store, and not before", async () => {
+  const store = fresh();
+  await backfillSent(store, read(store));
+  const file = (p: string) => { mkdirSync(join(p, ".."), { recursive: true }); writeFileSync(p, ""); return p; };
+  const live = file(join(root, "claude", "-p", "live.jsonl"));
+  const gone = join(root, "claude", "-p", "gone.jsonl");
+  const rollout = "rollout-2026-11-20T10-00-00-0000.jsonl";
+  const moved = join(root, "codex", "sessions", "2026", "11", "20", rollout);
+  file(join(root, "codex", "archived_sessions", rollout)); // Codex moved it when it was archived
+  noteSent(store, "into a live transcript", live);
+  noteSent(store, "into a removed one", gone);
+  noteSent(store, "into an archived rollout", moved);
+  noteSent(store, "into one the drive did not name");
+  const day = 24 * 3600_000;
+  // Within a day of the send nothing goes, its file may not be written yet.
+  pruneSent(store, Date.now() + day / 2);
+  expect(wasSent(store, "into a removed one")).toBe(true);
+  pruneSent(store, Date.now() + 2 * day);
+  expect(["into a live transcript", "into a removed one", "into an archived rollout", "into one the drive did not name"].map((t) => wasSent(store, t))).toEqual([true, false, true, true]);
 });
