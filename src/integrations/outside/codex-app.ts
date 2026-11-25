@@ -202,6 +202,8 @@ type Run = {
 
 export class CodexApp {
   private runs = new Map<string, Run>();
+  // What the bar says of the session's last turn besides its sends (a form Keel declined), until the next send.
+  private said = new Map<string, string[]>();
   private closed = false;
 
   constructor(private d: CodexAppDeps) {
@@ -239,8 +241,19 @@ export class CodexApp {
     return this.d.store.db.query<Send, [string]>("SELECT * FROM outside_sends WHERE id = ?").get(id) ?? undefined;
   }
 
+  notes(sessionId: string): string[] {
+    return this.said.get(sessionId) ?? [];
+  }
+
   private told(sessionId: string) {
-    this.d.bus.emit({ t: "feature", name: "outside_sends", session_id: sessionId, data: { sends: this.sends(sessionId) } });
+    this.d.bus.emit({ t: "feature", name: "outside_sends", session_id: sessionId, data: { sends: this.sends(sessionId), notes: this.notes(sessionId) } });
+  }
+
+  private note(sessionId: string, text: string) {
+    const had = this.notes(sessionId);
+    if (had.includes(text)) return;
+    this.said.set(sessionId, [...had, text].slice(-5));
+    this.told(sessionId);
   }
 
   private set(id: string, state: SendState, more: { offset?: number; said?: string } = {}) {
@@ -266,6 +279,7 @@ export class CodexApp {
     if (!mine && !this.d.bin()) return { error: "no codex program here: Keel answers a Codex session with the codex on your PATH (or KEEL_CODEX_BIN)", status: 409 };
     if (!mine && !codexKeepsLocks(this.d.home())) return { error: UNLOCKED, status: 409 };
     const send: Send = { id: Bun.randomUUIDv7(), session_id: sessionId, key, text, state: "stored", offset: null, said: null, created: Date.now() };
+    this.said.delete(sessionId);
     this.d.store.db.transaction(() => {
       if (again) this.d.store.db.query("DELETE FROM outside_sends WHERE id = ? AND session_id = ? AND state IN ('lost', 'failed')").run(again, sessionId);
       this.d.store.db.query("INSERT INTO outside_sends (id, session_id, key, text, state, offset, said, created) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)").run(send.id, sessionId, key, text, "stored", send.created);
@@ -483,9 +497,12 @@ export class CodexApp {
           if (reply && reply !== DECLINED) for (const [qid, a] of Object.entries(reply)) if (!a.skipped) answers[qid] = { answers: [...a.picked, ...(a.other ? [a.other] : [])] };
           return { answers };
         }
-        case "mcpServer/elicitation/request":
-          // (A form of an MCP server's: not shown in this version.)
+        case "mcpServer/elicitation/request": {
+          // (A form of an MCP server's: not shown in this version. The bar says it was declined.)
+          const server = typeof p?.serverName === "string" && p.serverName ? ` ${p.serverName.slice(0, 80)}` : "";
+          this.note(run.sessionId, `Codex's MCP server${server} asked for a form, and Keel declined it: forms are not shown here yet. Ask in Codex if it needs one.`);
           return { action: "decline", content: null, _meta: null };
+        }
       }
       throw Object.assign(new Error(`Keel does not answer ${method}`), { code: -32601 });
     } finally {

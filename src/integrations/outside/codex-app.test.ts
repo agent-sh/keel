@@ -147,6 +147,23 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   }, 30_000);
 
+  test("a form an MCP server of Codex's asks for is declined, and the bar says so", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "form please", "k1");
+      await until(() => readFileSync(r.rollout, "utf8").includes("The form was decline."), 15_000);
+      await until(() => !r.app().ours(s.id));
+      expect(r.app().notes(s.id)).toEqual(["Codex's MCP server tickets asked for a form, and Keel declined it: forms are not shown here yet. Ask in Codex if it needs one."]);
+      const told = r.frames.filter((f): f is Extract<Frame, { t: "feature" }> => f.t === "feature" && f.name === "outside_sends").at(-1);
+      expect((told?.data as any)?.notes).toEqual(r.app().notes(s.id));
+      // The next send starts clean.
+      r.app().send(s.id, "fix the build", "k2");
+      expect(r.app().notes(s.id)).toEqual([]);
+      await until(() => !r.app().ours(s.id) && readFileSync(r.rollout, "utf8").includes("The command was allowed: fix the build"), 15_000);
+    } finally { r.done(); }
+  }, 30_000);
+
   test("a file change is the gate's one-call card: the owner's alone, showing the diff Codex will write", async () => {
     const r = rig({ realGate: true });
     try {

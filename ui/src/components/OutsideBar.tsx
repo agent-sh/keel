@@ -22,7 +22,7 @@ type Send = { id: string; text: string; state: "stored" | "started" | "delivered
 type Route = "resume" | "steer" | "held" | "missing" | "unlocked" | "none";
 type Details = {
   harness: string; label: string; source_id: string; path: string; live: boolean; files: string[]; usage: { model: string; usage: Usage; cost: number | null }[];
-  holder?: Holder; route?: Route; turn?: boolean; sends?: Send[];
+  holder?: Holder; route?: Route; turn?: boolean; sends?: Send[]; notes?: string[];
 };
 
 const tokensOf = (u: Usage) => u.input + u.output + u.cache_read + u.cache_write;
@@ -42,15 +42,22 @@ export function OutsideBar({ session }: { session: Session }) {
   const textNow = useRef(text);
   textNow.current = text;
   const [sends, setSends] = useState<Send[] | null>(null);
+  // What the driver says of the last turn besides its sends (a form it declined).
+  const [notes, setNotes] = useState<string[]>([]);
   const holder = o.holder ?? d?.holder;
   // Read when the bar shows and again when what it shows changed (a file more, the state, who holds it): the transcript catches up first.
   useEffect(() => {
     let live = true;
-    api<Details>(`/api/sessions/${session.id}/outside`).then((r) => { if (live) { setD(r); setSends(r.sends ?? []); } }, (e) => reportUnlessGone(e, { at: "OutsideBar" }));
+    api<Details>(`/api/sessions/${session.id}/outside`).then((r) => { if (live) { setD(r); setSends(r.sends ?? []); setNotes(r.notes ?? []); } }, (e) => reportUnlessGone(e, { at: "OutsideBar" }));
     return () => { live = false; };
   }, [session.id, o.files, o.state, o.failures, o.holder?.kind, o.holder?.pid]);
   // The sends not yet in the transcript, as they change.
-  useEffect(() => onFeature({ frame: (f) => { if (f.name === "outside_sends" && f.session_id === session.id) setSends(((f.data as { sends?: Send[] })?.sends) ?? []); } }), [session.id]);
+  useEffect(() => onFeature({ frame: (f) => {
+    if (f.name !== "outside_sends" || f.session_id !== session.id) return;
+    const data = f.data as { sends?: Send[]; notes?: string[] } | undefined;
+    setSends(data?.sends ?? []);
+    setNotes(data?.notes ?? []);
+  } }), [session.id]);
   const go = async () => {
     setBusy(true);
     setNote("");
@@ -157,6 +164,7 @@ export function OutsideBar({ session }: { session: Session }) {
           <button type="submit" className="k-btn" data-ink="" disabled={!text.trim()} data-testid="outside-send" aria-label={`Send to ${where}`}><ArrowUp aria-hidden="true" />Send</button>
         </form>
       )}
+      {notes.map((n) => <p key={n} className="k-outside-note" data-testid="outside-said">{n}</p>)}
       <p className="k-outside-note" data-testid="outside-note">{note || quiet}</p>
     </section>
   );

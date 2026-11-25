@@ -9,6 +9,8 @@
 //   - "wait ...": works until turn/interrupt, then the turn is interrupted.
 //   - "stuck ...": a Codex that stops answering mid-turn: no reply to any request
 //     after it, its input's end and SIGTERM ignored (only SIGKILL ends it).
+//   - "form ...": its MCP server asks for a form (an elicitation), then a reply
+//     naming what the client answered.
 //   - "edit ...": a file change it asks to make (a.ts in its folder), then a
 //     reply naming the decision.
 //   - anything else: a command it asks to run (make test), then a reply naming
@@ -77,6 +79,11 @@ async function run(turnId: string, text: string) {
     const r = await ask("item/tool/requestUserInput", { threadId: thread, turnId, itemId: "q1", isBlocking: true, autoResolutionMs: null, questions: [{ id: "color", header: "Color", question: "Which color should the button be?", isOther: true, isSecret: false, options: [{ label: "Blue", description: "The brand color" }, { label: "Green", description: "" }] }] });
     const picked = r?.answers?.color?.answers?.join(", ") || "nothing";
     await reply(turnId, "m2", `You picked ${picked}.`);
+    return finish(turnId, "completed");
+  }
+  if (/^form\b/i.test(text)) {
+    const r = await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: "tickets", environmentId: null, mode: "form", _meta: null, message: "Which project?", requestedSchema: { type: "object", properties: { project: { type: "string" } } } });
+    await reply(turnId, "m5", `The form was ${r?.action ?? "unanswered"}.`);
     return finish(turnId, "completed");
   }
   if (/^edit\b/i.test(text)) {
