@@ -25,6 +25,7 @@ import { paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { useSeenFailure } from "./Attention.tsx";
 import { usePanelBesideShown } from "./SidePanel.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
+import { leftPane } from "../lib/panes.ts";
 import { actions, getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
 import { getUI, keepPanels, navigate, savePref, setUI, stationPanels, useCrowded, useUI } from "../lib/ui.ts";
@@ -37,6 +38,8 @@ import { CARDED, useCardInView } from "../lib/card-view.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
 import { COUNTERS, OFFLINE, STATE_WORD, asOf, backgroundOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
+import { useFleet } from "../lib/fleet.ts";
+import { splitId } from "../lib/fleet-ids.ts";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { soloWindow } from "../lib/shell.ts";
 import { reportError } from "../lib/store.ts";
@@ -737,9 +740,10 @@ export function Bridge() {
     if (sequenceAt() === helm) return;
     focusBox(helm, false);
   }, [helm]);
-  // A session that is gone (deleted, archived) leaves its pane empty.
-  const gone = (id: string) => id !== helm && (!sessions[id] || sessions[id]!.archived);
-  useEffect(() => { if (loaded) stations.drop(gone); }, [loaded, sessions, helm]);
+  // A session that is gone (deleted, archived) leaves its pane empty (leftPane says when one of another machine is).
+  const viewed = useFleet((x) => !!x.viewed);
+  const gone = (id: string) => id !== helm && leftPane(sessions[id], !!splitId(id), viewed);
+  useEffect(() => { if (loaded) stations.drop(gone); }, [loaded, sessions, helm, viewed]);
 
   const focus = kept.focus;
   const startAt = fresh ? target(st) : -1; // the pane the start page shows in

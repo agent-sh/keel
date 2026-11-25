@@ -25,6 +25,8 @@ export type FleetMachineView = { id: string; name: string; state: string; sessio
 type State = {
   machines: Machine[];
   view: FleetMachineView[];
+  // The view has been read once since the page loaded: before that, what it lacks says nothing.
+  viewed?: boolean;
   pairs: { daemon_id: string; name: string | null; created: number }[];
   steps: Record<string, Record<string, { machine: string; name: string }>>;
   newMachine: string; // "" = this machine, "auto" = the placement rules
@@ -103,7 +105,7 @@ export const fleet = {
     const r = await api<{ machines: FleetMachineView[] }>("/api/fleet?others");
     if (mine < viewApplied) return;
     viewApplied = mine;
-    set({ view: r.machines });
+    set({ view: r.machines, viewed: true });
     tellReach();
     const { sessions: cur, events } = getState();
     const next: Record<string, Session> = Object.fromEntries(Object.entries(cur).filter(([id]) => !splitId(id)));

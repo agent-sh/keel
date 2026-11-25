@@ -26,6 +26,12 @@
 // owner fills an empty pane by itself (`filled`), one session a pane.
 export const MAX_PANES = 6;
 
+// Whether a pane's session has left it: deleted or archived. A session of another machine is only known
+// once the fleet view has been read (after this daemon's own list): missing before then, it is not gone,
+// and a reload keeps its pane to fill when the session arrives.
+export const leftPane = (session: { archived?: boolean } | undefined, remote: boolean, viewed: boolean): boolean =>
+  session ? !!session.archived : !remote || viewed;
+
 export type Kept = {
   count: number; // panes on the bridge
   slots: (string | null)[]; // the session each holds, left to right; null is an empty pane

@@ -1,6 +1,6 @@
 // Where an opened session goes, and what placing one does: the rule at the head of stations.ts.
 import { expect, test } from "bun:test";
-import { filled, opened, placed, paneOf, restore, uncovered, type Panes } from "./panes.ts";
+import { leftPane, filled, opened, placed, paneOf, restore, uncovered, type Panes } from "./panes.ts";
 
 const panes = (slots: (string | null)[], active = 0, over: (string | null)[] = slots.map(() => null)): Panes => ({ slots, over, active, keys: slots.map((_, i) => `k${i}`) });
 const view = (p: Panes) => ({ slots: p.slots, over: p.over, active: p.active });
@@ -76,4 +76,14 @@ test("empty panes each take a different session that waits, left to right, and n
   expect(filled(panes([null]), ["a"]).slots).toEqual([null]);
   const full = panes(["reader", "a"], 1);
   expect(filled(full, ["a", "b"])).toBe(full);
+});
+
+test("a pane of another machine's session is kept until the fleet view was read", () => {
+  // Held and live: stays. Held and archived: goes.
+  expect(leftPane({}, false, false)).toBe(false);
+  expect(leftPane({ archived: true }, true, true)).toBe(true);
+  // Missing on this daemon's own list: gone. On another machine: only once its sessions were read.
+  expect(leftPane(undefined, false, false)).toBe(true);
+  expect(leftPane(undefined, true, false)).toBe(false);
+  expect(leftPane(undefined, true, true)).toBe(true);
 });
