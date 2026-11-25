@@ -4,7 +4,7 @@
 // head, until the owner trusts the head. The host is a stand-in tool (KEEL_GH_BIN) and the origin a bare
 // repository on this machine.
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ownEnv, tempTree } from "../../../test/env.ts";
 import { Bus } from "../../core/bus.ts";
@@ -15,6 +15,7 @@ import { instructionFiles, instructionFilter } from "../../engine/turn.ts";
 import { Hooks, pinKey, projectRoot } from "../../integrations/hooks.ts";
 import { namedFor, repoOf } from "../../checks/ledger.ts";
 import { headHold } from "../../safety/head-trust.ts";
+import { headHeld, SetupPins, setupHook } from "../../worktree/setup.ts";
 import { skillFilter } from "../../tools/skills.ts";
 import { trustRoutes } from "./trust.ts";
 import { worktreeRoutes } from "./worktrees.ts";
@@ -26,7 +27,7 @@ const root = tempTree("keel-head-");
 afterAll(() => {
   // (The routes register turn hooks, process-wide: taken off with the filters they set.)
   for (const h of [...allHooks()]) if (!hooksBefore.has(h)) allHooks().splice(allHooks().indexOf(h), 1);
-  instructionFilter.file = undefined; headHold.of = undefined; for (const k of Object.keys(skillFilter)) delete (skillFilter as any)[k];
+  instructionFilter.file = undefined; headHold.of = undefined; headHeld.of = undefined; setupHook.headTrusted = undefined; setupHook.confine = undefined; for (const k of Object.keys(skillFilter)) delete (skillFilter as any)[k];
 });
 
 const run = (cwd: string, ...a: string[]) => {
@@ -60,7 +61,7 @@ const pr = (author: string, cross: boolean) => ({ author: { login: author }, isC
 // One repository with its origin: the base says BASE-RULE; the request's head says HEAD-RULE, adds a skill, a
 // hook file and a named check.
 let n = 0;
-function scenario(baseExtra: Record<string, string> = {}) {
+function scenario(baseExtra: Record<string, string> = {}, headExtra: Record<string, string> = {}) {
   const dir = join(root, `s${++n}`);
   mkdirSync(dir, { recursive: true });
   const origin = join(dir, "origin.git");
@@ -79,6 +80,7 @@ function scenario(baseExtra: Record<string, string> = {}) {
   writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { headcheck: { run: "bun test", args: true } } }));
   mkdirSync(join(repo, ".claude/skills/evil"), { recursive: true });
   writeFileSync(join(repo, ".claude/skills/evil/SKILL.md"), "---\nname: evil\ndescription: from the head\n---\nDo it.\n");
+  for (const [f, text] of Object.entries(headExtra)) writeFileSync(join(repo, f), text);
   run(repo, "add", "-A");
   run(repo, "commit", "-qm", "head");
   run(repo, "push", "-q", "origin", "HEAD:refs/pull/7/head");
@@ -202,4 +204,26 @@ test("a fork's head is held with every instruction file of the base's tree, CLAU
   const kept = JSON.parse((t.store.db.query("SELECT base_files FROM head_trust WHERE session_id = ?").get(s.id) as { base_files: string }).base_files);
   expect(Object.keys(kept).sort()).toEqual(["AGENTS.md", "AGENTS.override.md", "CLAUDE.local.md"]);
   expect(kept["CLAUDE.local.md"]).toContain("BASE-LOCAL");
+});
+
+test("a fork's head runs no worktree setup while it is held, and runs it once when the owner trusts the head", async () => {
+  say({ pr: pr("stranger", true), perm: { role_name: "read", permission: "read" }, user: { login: "owner" } });
+  const t = scenario({}, { ".keel/worktree.json": JSON.stringify({ setup: ["echo ran >> setup-ran.txt"] }) });
+  const s = await t.start();
+  const marker = join(s.workspace, "setup-ran.txt");
+  expect((await t.head(s.id)).held).toBe(true);
+  // The owner pinned the file (a held head cannot be pinned through the panel, so the pin is written as the panel would).
+  const shown = new SetupPins(t.store).show(s.workspace);
+  expect(shown.state).toBe("refused");
+  t.store.db.query("INSERT INTO worktree_setup_pins (root, sha256, created) VALUES (?, ?, 1)").run(pinKey(projectRoot(s.workspace)), shown.sha256!);
+  await Bun.sleep(300);
+  expect(existsSync(marker)).toBe(false);
+  setupHook.confine = () => ({}); // the permission routes are not loaded here: the session's commands run unconfined
+  expect((await t.trust(s.id)).status).toBe(200);
+  const until = Date.now() + 15_000;
+  while (!existsSync(marker) && Date.now() < until) await Bun.sleep(50);
+  expect(readFileSync(marker, "utf8")).toBe("ran\n");
+  await t.trust(s.id); // trusted already: nothing again
+  await Bun.sleep(500);
+  expect(readFileSync(marker, "utf8")).toBe("ran\n");
 });

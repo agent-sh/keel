@@ -12,6 +12,7 @@ import { Quarantine, snapshot, type Snap } from "../../safety/quarantine.ts";
 import { HeadTrust } from "../../safety/head-trust.ts";
 import { rootOf, skillDigest, Trust } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
+import { headHeld, setupHook } from "../../worktree/setup.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
 
@@ -47,6 +48,8 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
   trustRef = trust;
   const heads = new HeadTrust(store);
   headsRef = heads;
+  // A fork head the owner has not trusted runs no setup (src/worktree/setup.ts); the owner's trust runs it, once.
+  headHeld.of = (p) => { const h = heads.held(p); return h ? { why: h.why } : undefined; };
   const quarantine = new Quarantine(store, join(store.stateDir, "quarantine"));
   instructionFilter.file = (path, text) => trust.instructionText(path, text);
   skillFilter.allow = (dir) => trust.skillAllowed(dir);
@@ -175,6 +178,7 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
         if (!before) return bad("this session did not start at a pull request", 404);
         if (before.state !== "held") return json({ head: heads.view(id) });
         heads.trust(id);
+        setupHook.headTrusted?.(id);
         // The owner has looked at the head: its instruction files and skills are pinned as they are now, the way a
         // repository's files are on first sight.
         const cwd = before.path;
