@@ -114,7 +114,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
           <WatchHeadline />
           <NewModelNews />
           {beside && !autoThere && <WatchLists className="min-w-0" />}
-          <h2 className={cn("k-pane-empty-word mb-2.5", beside ? "mt-8" : "mt-5")}>Start a session{machine && <span>{autoThere ? `on ${place!.machine}, in its granted directory` : sshMachine ? `on ${sshMachine.name}` : machine !== "auto" ? `on ${pickedName ?? "the machine you picked"}, in its granted directory` : ""}</span>}</h2>
+          <h2 className={cn("k-pane-title mb-2.5", beside ? "mt-8" : "mt-5")}>Start a session{machine && <span>{autoThere ? `on ${place!.machine}, in its granted directory` : sshMachine ? `on ${sshMachine.name}` : machine !== "auto" ? `on ${pickedName ?? "the machine you picked"}, in its granted directory` : ""}</span>}</h2>
           {/* Where it starts, as one line of quiet pickers whose words line up with the box (styles.css, .k-chip-pick). */}
           <div className="-ml-2 mb-2 flex flex-wrap items-center gap-x-1 gap-y-0.5">
             <MachinePicker />
@@ -161,7 +161,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
           {/* Recent is for where the titled list is not on screen (a phone, a rail folded to its marks): beside the list it would say the same sessions again. */}
           {recent.length > 0 && !autoThere && !listed && (
             <section className="k-home-sec min-w-0 @[74rem]:col-start-1">
-              <h2 className="k-pane-empty-word">Recent</h2>
+              <h2 className="k-pane-title">Recent</h2>
               <div className="mt-2 flex flex-col border-t border-line">
                 {machineRuns(recent).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
                   <button

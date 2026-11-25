@@ -767,7 +767,7 @@ test("no component writes a corner of its own", () => {
   expect(pageCorners(page)).toEqual([]);
   expect(rules(sheets.find((s) => s.file === "styles.css")!.text).flatMap((r) => r.decls).find((d) => d.prop === "--radius")?.value).toBe("var(--radius-sm)");
 });
-test("the instrument face is named by its five roles and nowhere else", () => expect(face(sheets, page)).toEqual({ roles: 5, strays: [] }));
+test("the instrument face is named by its four roles and nowhere else", () => expect(face(sheets, page)).toEqual({ roles: 4, strays: [] }));
 test("a choice of a few is the one segmented control", () => expect(segmented(page, sheets)).toEqual([]));
 test("steel is the frame and nothing else", () => expect(steel(page, sheets)).toEqual([]));
 test("nothing to show is said one way", () => expect(empties(page, sheets)).toEqual([]));

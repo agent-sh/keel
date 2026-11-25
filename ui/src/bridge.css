@@ -729,6 +729,9 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pane-empty-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; width: 100%; max-width: 38rem; margin: 0 auto; padding: 11vh 2rem 2rem; }
 .k-pane-empty-word { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--muted); }
 .k-pane-empty-word span { font-weight: 500; color: var(--faint); }
+/* The title of a pane's start page ("Start a session", "Recent"): a heading in the text face, not a state word. */
+.k-pane-title { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 600; font-size: var(--text-ui); line-height: 1.3; color: var(--fg); }
+.k-pane-title span { font-weight: 400; font-size: var(--text-caption); color: var(--faint); }
 .k-pane-empty-close { display: grid; place-items: center; width: 1.5rem; height: var(--spacing-ctl-sm); margin: -0.25rem -0.25rem -0.25rem auto; align-self: center; border-radius: var(--radius-md); color: var(--faint); }
 .k-pane-empty-close:hover { background: var(--hover); color: var(--fg); }
 .k-pane-empty-close svg { width: 0.875rem; height: 0.875rem; }
@@ -1446,11 +1449,10 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 @keyframes k-found { 0%, 40% { background: var(--accent-soft); } 100% { background: transparent; } }
 .k-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .k-settings-rail[data-open] + .k-settings-scroll { display: none; }
-/* One column for every section, in the free space beside the rail: the reading width for forms, the full
-   width for tables and figures, both from the same left edge, so the title does not jump from one page to the
-   next. The title is the column's first line, on the type scale. */
-.k-settings-body { max-width: 52rem; margin-inline: 0 auto; padding: 1rem 1rem 1.5rem; }
-.k-settings-body[data-wide] { max-width: 92rem; }
+/* One column for every page of Settings and Customize, in the free space beside the rail, from one left edge and to
+   one width: wide enough for a table or a list beside its detail, and the same for a form, so the page does not change
+   its width from one section to the next. The title is the column's first line, on the type scale. */
+.k-settings-body { max-width: 64rem; margin-inline: 0 auto; padding: 1rem 1rem 1.5rem; }
 /* A line cut short with an ellipsis: a section's names, URLs and paths, a panel's file names. A phone writes it whole:
    no hover shows the rest, and a title is no way to read it on a touch screen. */
 /* (In the components layer, as the utility it replaces was: a width or a wrap a part's own classes give still applies.) */
@@ -1468,10 +1470,6 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-hit { min-width: var(--spacing-tap); min-height: var(--spacing-tap); margin: -0.625rem 0 -0.625rem -0.875rem; }
 }
 /* The bar carries the title on a narrow page; the heading stays for a screen reader. */
-/* One heading face on Settings and Customize: the UI face, at the type tokens' sizes. The surface name in the bar,
-   the section's title, the narrow bar's label and a reader's title are all set in it (the instrument face names
-   the other surfaces). */
-.k-settings .k-surface-title { font-family: var(--font-sans); font-stretch: 100%; letter-spacing: -0.01em; }
 .k-set-page-title { margin-bottom: 1.25rem; font-size: var(--text-title); line-height: var(--text-title--line-height); font-weight: 600; letter-spacing: -0.018em; }
 .k-settings-body > h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Wide: the grouped rail stands beside the section and the bar is gone. */

@@ -219,10 +219,6 @@ const FIND: Record<string, string[]> = settingsFind();
 // The groups the rail keeps folded at rest: what the owner rarely comes for. A group opens when the
 // section shown is in it, when it is opened by its head, and while a word is searched.
 const FOLDED = new Set(["This computer", "Advanced"]);
-// One width rule: a page keeps the reading measure (rows, lists, forms), and takes the width only when it
-// holds what needs it (a chart, a table of many columns, a list beside its detail). Its id is listed here.
-const WIDE = new Set(["usage", "lessons", "routes", "network", "telemetry", "observability", "experiments", "resources", "storage", "leftovers", "health", "machines", "mcp", "lsp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
-
 // A row found by its name is brought into view and marked a moment, once its
 // section has drawn it (a section loads on its own: it is watched for, not waited).
 // A row that is not drawn (a server since removed, a part shown only in some
@@ -409,7 +405,7 @@ export function Settings({ kind = "settings", section }: { kind?: Kind; section:
           </div>
         </nav>
         <div className="k-settings-scroll" data-testid="settings-scroll">
-          <div className="k-settings-body" data-wide={WIDE.has(cur.id) || undefined}>
+          <div className="k-settings-body">
             <h2 className="k-set-page-title" data-testid="settings-title">{cur.label}</h2>
             {missing && <p className="k-notice mb-4 text-caption text-muted" role="status" data-testid="settings-missing"><span><span className="text-fg">{missing}</span> is not on this page now: it shows when there is one to show.</span></p>}
             <Body />

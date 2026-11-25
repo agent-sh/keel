@@ -100,6 +100,16 @@ test("Settings and Customize share one heading face and one width, and open on t
     widths[path] = await body();
   }
   expect(widths["settings/models"], "Models and Providers are one width").toBe(widths["settings/providers"]);
+  // One width for every page of both, a form or a table or a reader: General does not stand in a narrower column than Customize.
+  expect([...new Set(Object.values(widths))], `widths ${JSON.stringify(widths)}`).toHaveLength(1);
+  // The names of a page and a panel are in the text face, a heading, not the instrument face.
+  await page.goto("/");
+  const startTitle = page.locator(".k-pane-title", { hasText: "Start a session" }).first();
+  await expect(startTitle).toBeVisible();
+  expect(await startTitle.evaluate((el) => getComputedStyle(el).fontFamily), "Start a session").toMatch(/Plex Sans/);
+  await page.getByTestId("errors-button").click();
+  expect(await page.getByTestId("errors-panel").locator(".k-surface-title").evaluate((el) => getComputedStyle(el).fontFamily), "a panel's title").toMatch(/Plex Sans/);
+  await page.keyboard.press("Escape");
   await page.goto("/customize/agents");
   await expect(page.getByTestId("reader-title").first()).toBeVisible();
   expect(await face("[data-testid=reader-title]")).toBe(await face(".k-settings-nav > button"));
