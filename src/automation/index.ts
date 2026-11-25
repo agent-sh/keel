@@ -290,6 +290,8 @@ function init(deps: Deps) {
       archived.add(s.id);
       waits.cancelForSession(s.id);
       agents.stopChildrenOf(s.id);
+      // Its unread alerts are read: the count drops and the phone's and desktop's notification for it comes down.
+      alerts.onArchived(s.id);
     } else if (!s.archived && archived.delete(s.id)) {
       agents.deliverOwed(s.id);
       // A prompt its queue was owed a start for when it was archived starts now, not at some later restart.

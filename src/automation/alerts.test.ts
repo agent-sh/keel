@@ -661,3 +661,23 @@ test("a fall of a measure raised again replaces its unread row, another path sta
   alerts.settleMetric("memory_recall", "store_prompt");
   expect(alerts.list({ unread: true }).map((a) => a.body)).toEqual(["3 hits"]);
 });
+
+// Archiving a session reads what it holds unread: its count goes and each channel takes back what it shows for it.
+test("an archived session's unread alerts are read and its notification is taken back", async () => {
+  const { store, session } = scratch();
+  const s = session("Done"), other = session("Other");
+  const withdrawn: string[] = [];
+  alerts.registerChannel({ id: "archive-withdraw", label: "withdraw", available: () => true, deliver: () => {}, withdraw: (id) => void withdrawn.push(id) });
+  alerts.raise("finished", s, "Done", "finished");
+  alerts.raise("finished", other, "Other", "finished");
+  store.updateSession(s, { archived: true });
+  // Before: the archived session still counts.
+  expect(alerts.unreadCounts().sessions[s]).toBe(1);
+  expect(alerts.onArchived(s)).toBe(1);
+  await settle();
+  expect(alerts.unreadCounts().sessions[s]).toBeUndefined();
+  expect(alerts.unreadCounts().sessions[other]).toBe(1);
+  expect(alerts.unreadCounts().total).toBe(1);
+  expect(withdrawn).toContain(s);
+  expect(withdrawn).not.toContain(other);
+});

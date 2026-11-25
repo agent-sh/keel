@@ -972,6 +972,13 @@ export function hasOpenCard(sessionId: string): boolean {
   return !!s && sessionState(s).watch === "need";
 }
 
+// A session was archived: what it holds unread is read, so the count drops and each channel takes back what it
+// shows for it (the phone's and the desktop's notification). Kept-unread marks go too: an archived session is
+// out of the inbox.
+export function onArchived(sessionId: string): number {
+  return markRead({ session_id: sessionId });
+}
+
 // Reads alerts: these ids, one session's, or all. `seen` is the inbox revision
 // the page had when the owner acted: an alert that became unread after it (a
 // new one, or one marked unread since) is left alone, so a replayed or late
