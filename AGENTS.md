@@ -298,21 +298,24 @@ under `~/.cache/keel-work/bun/research/`.
 - The owner's helper answers another session's approval card only when the
   card is on the allow-list in `src/safety/delegate.ts` (`offList`): the card
   shows the whole effect, and the effect stays in the session's folder on this
-  machine. The list is listed programs that read and show with no code run and
-  no write outside the folder (ls, cat, head, tail, grep, rg, find, wc, sort,
-  diff, stat, file, jq, sed without -i, awk), mkdir within the folder, cp or
-  mv of one regular file that is not executable to one file path in the
-  folder (real paths, destination not code), edits of files in the folder
-  that are not executable and that no runner reads as code (`codeFile`), and
-  MCP tools whose server says readOnlyHint and not destructiveHint. The list
-  needs no trust in configuration the card does not show: git (hooks,
-  filters, fsmonitor, textconv, a pager), curl and wget are off it. Nothing
-  else: every other card is
-  the owner's, decided in code whatever the helper says, named by its class or
-  `unseen`. A form is added to the list, never a form to a list of refusals.
+  machine. The list is positive and small: one plain command (no list, pipe,
+  subshell, group, redirect, background, wrapper, variable or expansion) of
+  ls, cat, head, tail, wc, stat, diff, grep, rg or find, every word read by
+  that program's grammar in code (`GRAMMARS`: options by exact spelling, each
+  value by its form, then plain paths in the folder where their links lead;
+  rg's --no-config counts only as an option before `--`, and an options file
+  the daemon's environment names sends rg to the owner without it); edits of
+  inert files in the folder by type (`inertFile`: .md, .markdown, .txt, .rst,
+  .csv, .tsv, .log, and .json, .yaml or .toml whose name is no tool's
+  configuration or manifest), with `codeFile` as a second check; and MCP
+  tools whose server says readOnlyHint and not destructiveHint. Source files,
+  git, curl, wget, sed, awk, sort, file, jq, mkdir, cp and mv are off it.
+  Nothing else: every other card is the owner's, decided in code whatever
+  the helper says, named by its class or `unseen`. A form is added to the list, never a form to a list of refusals.
   The text of a card the helper reads is escaped (`cardText`), and a card the
   helper had at a restart that the owner has not seen goes to a fresh context
-  once before it goes to him (`restored` in `src/helper/cards.ts`).
+  once before it goes to him (`restored` in `src/helper/cards.ts`); its row
+  is cleared only when the owner's alert is stored.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

@@ -56,20 +56,22 @@ const send = (session: string, text: string, meta: Record<string, unknown>, opts
 const raised: { id: string; note?: string }[] = [];
 // The context a card was sent to: the only session whose answer is taken for it.
 const ctxOf = (card: string) => sent.find((x) => x.cards.includes(card))!.session;
-const io = { send: send as any, raise: ((a: any, _silent: boolean, note?: string) => { raised.push({ id: a.id, note }); return undefined; }) as any, untold: () => true };
+// A stored alert stands for each raise that was filed.
+const io = { send: send as any, raise: ((a: any, _silent: boolean, note?: string) => { raised.push({ id: a.id, note }); return { id: `alert-${raised.length}` }; }) as any, untold: () => true };
 const cards = new HelperCards(helper, () => gate, io);
 
 let runs = 0;
-const tool = { name: "Bash", description: "", kind: "shell", readOnly: false, input_schema: { type: "object", properties: { command: {} } },
-  run: async (input: any) => { runs++; return { content: `ran: ${input.command}` }; } } as any;
-const run = (s: any, command: string, id: string) =>
-  (engine as any).runTool(s, [tool], { type: "tool_use", id, name: "Bash", input: { command } }, { sessionId: s.id, cwd: ws, signal: new AbortController().signal, spillDir: dir, seen: new Map() }) as Promise<any>;
+// A card on the allow-list: a write of an inert text file in the session's folder.
+const tool = { name: "Write", description: "", kind: "edit", readOnly: false, input_schema: { type: "object", properties: { file_path: {}, content: {} } },
+  run: async (input: any) => { runs++; return { content: `wrote: ${input.file_path.slice(ws.length + 1)}` }; } } as any;
+const run = (s: any, name: string, id: string) =>
+  (engine as any).runTool(s, [tool], { type: "tool_use", id, name: "Write", input: { file_path: join(ws, `${name}.md`), content: "notes\n" } }, { sessionId: s.id, cwd: ws, signal: new AbortController().signal, spillDir: dir, seen: new Map() }) as Promise<any>;
 const open = async (sid: string) => { for (let i = 0; i < 300 && !gate.approvals({ session: sid, pending: true }).length; i++) await Bun.sleep(10); return gate.approvals({ session: sid, pending: true })[0]!; };
 
 test("an allowed card runs the call once and records the helper on the owner's standing instruction", async () => {
   const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Build" });
   gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
-  const result = run(s, "mkdir left-pad", "call-1");
+  const result = run(s, "left-pad", "call-1");
   const card = await open(s.id);
   // Sent once: the card is kept by its fingerprint, so the same card put back (a restart) is not sent to the helper again.
   expect(cards.take(card.id)).toBe(true);
@@ -86,7 +88,7 @@ test("an allowed card runs the call once and records the helper on the owner's s
   expect(ctxOf(card.id)).not.toBe(helperSession.id);
   expect(cards.answer(card.id, "allow", "routine install", { session: ctxOf(card.id), call: "h1" })).toEqual({ ok: expect.stringContaining("Allowed once") });
   const r = await result;
-  expect(r.content).toBe("ran: mkdir left-pad");
+  expect(r.content).toBe("wrote: left-pad.md");
   expect(runs).toBe(1);
   // The call's line keeps who answered its card; the card keeps who, the instruction and its source, and the reason.
   expect((engine as any).shown.get("call-1")).toMatchObject({ card: { by: "helper", choice: "once", reason: "routine install", helper_session: ctxOf(card.id) } });
@@ -95,7 +97,7 @@ test("an allowed card runs the call once and records the helper on the owner's s
   const sealed = store.db.query<{ data: string }, [string]>("SELECT data FROM seal_cards WHERE session_id = ? ORDER BY ts").all(s.id).map((x) => JSON.parse(x.data));
   expect(sealed.at(-1)).toMatchObject({ id: card.id, state: "allowed", by: { client: "helper" } });
   // Nothing more was granted: the same call asks again.
-  const again = run(s, "mkdir left-pad", "call-2");
+  const again = run(s, "left-pad", "call-2");
   const second = await open(s.id);
   expect(second.id).not.toBe(card.id);
   expect(cards.take(second.id)).toBe(true);
@@ -109,13 +111,13 @@ test("after the helper denied a session's last three cards in a row, its next on
   const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Loop" });
   gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
   for (let i = 0; i < 3; i++) {
-    const r = run(s, `mkdir pkg-${i}`, `deny-${i}`);
+    const r = run(s, `pkg-${i}`, `deny-${i}`);
     const card = await open(s.id);
     expect(cards.take(card.id)).toBe(true);
     expect(cards.answer(card.id, "deny", "not needed", { session: ctxOf(card.id) })).toHaveProperty("ok");
     await r;
   }
-  const r = run(s, "mkdir pkg-3", "deny-3");
+  const r = run(s, "pkg-3", "deny-3");
   const card = await open(s.id);
   expect(cards.take(card.id)).toBe("The Helper denied this session's last 3 requests, so this one is yours.");
   gate.resolve(card.id, s.id, { choice: "deny" });
@@ -127,7 +129,7 @@ test("the helper answers only a card sent to it while it is with it: one never s
   gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
   // Opened while answering was off: never sent to the helper, so never its.
   answering = false;
-  const first = run(s, "mkdir never-sent", "back-1");
+  const first = run(s, "never-sent", "back-1");
   const never = await open(s.id);
   expect(cards.take(never.id)).toBe(false);
   answering = true;
@@ -136,7 +138,7 @@ test("the helper answers only a card sent to it while it is with it: one never s
   gate.resolve(never.id, s.id, { choice: "deny" });
   await first;
   // Sent, then gone back to the owner (its turn ended, it timed out, it left it): no longer the helper's.
-  const second = run(s, "mkdir handed-back", "back-2");
+  const second = run(s, "handed-back", "back-2");
   const back = await open(s.id);
   expect(cards.take(back.id)).toBe(true);
   cards.toOwner(back.id, "The Helper did not answer it in time.");
@@ -153,7 +155,7 @@ test("a card is answered in a fresh context of the helper's own: no history, no 
   try {
     const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Context" });
     gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
-    const call = run(s, "mkdir in-context", "ctx-1");
+    const call = run(s, "in-context", "ctx-1");
     const card = await open(s.id);
     expect(cards.take(card.id)).toBe(true);
     const ctx = store.session(ctxOf(card.id))!;
@@ -166,7 +168,7 @@ test("a card is answered in a fresh context of the helper's own: no history, no 
     expect(main).toContain("mail__read");
     expect(main).not.toContain("helper__approval");
     // And in code: a call of any other tool there is refused by the gate.
-    const bash = { ...tool, name: "Bash" };
+    const bash = { ...tool, name: "Bash", kind: "shell" };
     const refused = await gate.beforeTool(ctx, { id: "x", tool: bash, input: { command: "ls" }, ctx: { sessionId: ctx.id, cwd: ws, signal: new AbortController().signal, spillDir: dir, seen: new Map() } } as any);
     expect(refused).toMatchObject({ deny: expect.stringContaining("only answers approval cards") });
     // Its turn ended without an answer: the card goes to the owner and the context is closed.
@@ -182,7 +184,7 @@ test("a card is answered in a fresh context of the helper's own: no history, no 
 test("after a restart, a card the helper had and the owner has not seen goes to a fresh context once, then to the owner; its cut contexts are closed", async () => {
   const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Restart" });
   gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
-  const call = run(s, "mkdir across-restart", "restart-1");
+  const call = run(s, "across-restart", "restart-1");
   const card = await open(s.id);
   expect(cards.take(card.id)).toBe(true);
   const ctx = ctxOf(card.id);
@@ -213,7 +215,7 @@ test("after a restart, a card the helper had and the owner has not seen goes to 
   gate.resolve(card.id, s.id, { choice: "deny" });
   await call;
   // A card that already reached the owner is neither told twice nor sent again.
-  const call2 = run(s, "mkdir told-already", "restart-2");
+  const call2 = run(s, "told-already", "restart-2");
   const second = await open(s.id);
   expect(later.take(second.id)).toBe(true);
   later.stop();
@@ -223,10 +225,35 @@ test("after a restart, a card the helper had and the owner has not seen goes to 
   await call2;
 });
 
+test("a card whose owner's alert could not be filed keeps its row, and the next start gives it to him", async () => {
+  const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Unfiled" });
+  gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
+  const call = run(s, "unfiled", "unfiled-1");
+  const card = await open(s.id);
+  const failing = { ...io, raise: (() => undefined) as any };
+  const first = new HelperCards(helper, () => gate, failing);
+  expect(first.take(card.id)).toBe(true);
+  const row = () => store.db.query("SELECT 1 AS x FROM helper_told WHERE key = ?").get(`offered:${card.id}`);
+  // Gone back to the owner, but filing his alert failed: the helper has it no more, and the row stays.
+  first.toOwner(card.id, "The Helper did not answer it in time.");
+  expect(first.open().find((c) => c.a.id === card.id)).toMatchObject({ mine: false });
+  expect(row()).toEqual({ x: 1 });
+  first.stop();
+  // A start whose raise fails too keeps it again; one whose raise is filed gives it to him and clears the row.
+  store.db.query("INSERT INTO helper_told (key, fp, ts) VALUES (?, 'reoffered', ?) ON CONFLICT(key) DO NOTHING").run(`reoffered:${card.id}`, Date.now());
+  expect(new HelperCards(helper, () => gate, failing).restored()).toEqual({ offered: [], raised: [] });
+  expect(row()).toEqual({ x: 1 });
+  expect(new HelperCards(helper, () => gate, io).restored()).toEqual({ offered: [], raised: [card.id] });
+  expect(raised.at(-1)).toEqual({ id: card.id, note: "The daemon restarted while the Helper had this card, so it is yours." });
+  expect(row()).toBeNull();
+  gate.resolve(card.id, s.id, { choice: "deny" });
+  await call;
+});
+
 test("switched off, the helper gives back every card it has at once", async () => {
   const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Switch" });
   gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
-  const call = run(s, "mkdir switched-off", "off-1");
+  const call = run(s, "switched-off", "off-1");
   const card = await open(s.id);
   expect(cards.take(card.id)).toBe(true);
   answering = false;

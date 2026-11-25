@@ -1999,19 +1999,20 @@ The helper answers only a card on an allow-list, decided in code from what
 the gate stored with the card and what the disk says of the session's folder
 (`src/safety/delegate.ts`), whatever the helper answers: a card that shows the
 whole effect, where the effect stays in the session's folder on this machine.
-The list holds commands made only of programs that read and show (ls, cat,
-head, tail, grep, rg, find, wc, sort, diff, stat, file, jq, sed, awk) with no
-option or script that runs code or writes a file (sed -i and rg -z included);
-mkdir within the folder; cp or mv of one regular file that is not executable
-to one file path in the folder, both checked where their links lead, the
-destination not a file a runner reads as code; edits of files in the folder
-that are not executable and that no runner reads as code (tests, conftest.py,
-build and package files, tool configurations that load plugins, pip's
-configuration, hooks, CI, agent instructions, installed packages); and MCP
-tools whose server says they only read (readOnlyHint, and no
-destructiveHint). Nothing on the list trusts configuration the card does not
-show, so git (hooks, filters, fsmonitor, textconv, a pager or diff program
-from the repository's or the owner's configuration), curl and wget are off it.
+The list holds one plain command (no list, pipe, subshell, group, redirect,
+background, wrapper, variable or expansion) of a program that reads and shows
+(ls, cat, head, tail, wc, stat, diff, grep, rg, find), every word read by that
+program's grammar written in code: its options by their exact spelling, each
+with its value form, then plain paths in the session's folder where their
+links lead (rg counts --no-config only before `--`, and without it an options
+file named by `RIPGREP_CONFIG_PATH` makes the card the owner's); edits of
+inert files in the folder by type (.md, .markdown, .txt, .rst, .csv, .tsv,
+.log, and .json, .yaml or .toml whose name is no tool's configuration or
+manifest), not executable and not a file a runner reads as code
+(requirements, agent instructions, CI and the like); and MCP tools whose
+server says they only read (readOnlyHint, and no destructiveHint). Source
+files are the owner's, and so are git, curl, wget, sed, awk, sort, file, jq,
+mkdir, cp and mv.
 Every other card
 reaches the owner at once, as before, named by its class where one is known: a
 target outside content named first, what only the owner allows, spending,
