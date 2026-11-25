@@ -411,6 +411,12 @@ const openssl = Bun.which("openssl");
 test.skipIf(!openssl)("a self-signed loopback certificate keeps the counted retry path", async () => {
   const dir = mkdtempSync(join(tmpdir(), "keel-loopback-tls-"));
   const cert = join(dir, "cert.pem"), key = join(dir, "key.pem");
+  // The runtime's fetch sends a request through the proxy its environment names, and keeps that proxy once it has
+  // read it: a file that sets one for its own run (or a machine that has one) would make this request go to the
+  // proxy, whose refusal is not the certificate's. The loopback address is never proxied.
+  const bypass = ["NO_PROXY", "no_proxy"];
+  const kept = Object.fromEntries(bypass.map((k) => [k, process.env[k]]));
+  for (const k of bypass) process.env[k] = "127.0.0.1,localhost";
   try {
     const made = Bun.spawnSync([openssl!, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost", "-keyout", key, "-out", cert], { stdout: "ignore", stderr: "ignore" });
     expect(made.exitCode).toBe(0);
@@ -428,6 +434,7 @@ test.skipIf(!openssl)("a self-signed loopback certificate keeps the counted retr
       server.stop(true);
     }
   } finally {
+    for (const [k, v] of Object.entries(kept)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
     rmSync(dir, { recursive: true, force: true });
   }
 });
