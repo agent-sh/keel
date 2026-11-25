@@ -217,11 +217,11 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
     <Collapsible.Trigger className="k-docket-line k-docket-planline" data-testid="dock-plan">
       <ListChecks className="k-docket-glyph" />
       {state === "stale" && known ? (
-        <span className="min-w-0 truncate text-faint max-md:whitespace-normal max-md:break-words" data-testid="dock-plan-stale">{planLine("stale", { ...known, now: clock, items: plan })}</span>
+        <span className="k-docket-step min-w-0 truncate text-faint max-md:whitespace-normal max-md:break-words" data-testid="dock-plan-stale">{planLine("stale", { ...known, now: clock, items: plan })}</span>
       ) : (
         <>
           <span className="k-face-figure k-docket-n">{done}/{plan.length}</span>
-          <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words">{now ? (now.active ?? now.text) : "Plan"}</span>
+          <span className="k-docket-step min-w-0 truncate max-md:whitespace-normal max-md:break-words">{now ? (now.active ?? now.text) : "Plan"}</span>
           <span className="k-docket-track" aria-hidden="true"><span style={{ width: `${(100 * done) / plan.length}%` }} /></span>
         </>
       )}
