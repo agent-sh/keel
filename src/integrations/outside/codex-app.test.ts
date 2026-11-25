@@ -156,6 +156,15 @@ describe("a Codex session answered in place", () => {
       expect(answer(s.id, q.call_id, { color: { picked: ["Green"] } }, false, q.asked!.id)).toBe(true);
       await until(() => readFileSync(r.rollout, "utf8").includes("You picked Green."), 15_000);
       await until(() => !r.app().ours(s.id));
+      // A question of the next turn (a new child, whose request ids start again) is another question: an answer
+      // sent for the first one does not answer it.
+      r.app().send(s.id, "ask me again", "k2");
+      const q2 = await until(() => allPendingQuestions().find((x) => x.session_id === s.id));
+      expect(q2.asked!.id).not.toBe(q.asked!.id);
+      expect(answer(s.id, q2.call_id, { color: { picked: ["Blue"] } }, false, q.asked!.id)).toBe("stale");
+      expect(answer(s.id, q2.call_id, { color: { picked: ["Blue"] } }, false, q2.asked!.id)).toBe(true);
+      await until(() => readFileSync(r.rollout, "utf8").includes("You picked Blue."), 15_000);
+      await until(() => !r.app().ours(s.id));
     } finally { r.done(); }
   }, 30_000);
 

@@ -159,6 +159,9 @@ type Run = {
   // The cards open now, by the request's id: withdrawn when Codex says it resolved one, or the turn stops.
   cards: Map<string | number, AbortController>;
   stopped: AbortController;
+  // This child's own mark in the ids of its cards and questions: a child's request ids start again at each
+  // start, so an id of an earlier turn's card never names one of this turn's.
+  nonce: string;
   // The owner's Stop was asked of Codex: a second Stop ends the child.
   interrupting?: boolean;
   // Sends given to this child whose delivery is checked at the turn's end.
@@ -313,7 +316,7 @@ export class CodexApp {
     // The owner's own coding agent, as an ACP agent is: the whole environment (it signs in from it), with the Codex
     // home the mirror reads.
     const conn = new AcpConnection([bin, "app-server"], { cwd, env: { CODEX_HOME: home } }, (m) => this.d.trouble(new Error(m), "codex app-server"));
-    const run: Run = { sessionId, threadId: row.source_id, path: row.path, conn, ready: Promise.resolve(false), items: new Map(), changes: new Map(), cards: new Map(), stopped: new AbortController(), given: new Set() };
+    const run: Run = { sessionId, threadId: row.source_id, path: row.path, conn, ready: Promise.resolve(false), nonce: Bun.randomUUIDv7().slice(-12), items: new Map(), changes: new Map(), cards: new Map(), stopped: new AbortController(), given: new Set() };
     this.runs.set(sessionId, run);
     conn.onNotification = (method, p) => this.heard(run, method, p);
     conn.onRequest = (method, p, rid) => this.asked(run, method, p, rid);
@@ -391,7 +394,7 @@ export class CodexApp {
     const signal = AbortSignal.any([ac.signal, run.stopped.signal]);
     const cwd = typeof p?.cwd === "string" ? p.cwd : s?.workspace ?? homeDir();
     const ctx = { sessionId: run.sessionId, cwd, signal, seen: new Map(), spillDir: "" } as unknown as ToolContext;
-    const call = (tool: Partial<Tool> & { name: string }, input: Json): ToolCall => ({ id: `codex-${String(p?.itemId ?? rid)}-${String(p?.approvalId ?? rid)}`, tool: { description: "", input_schema: {}, readOnly: false, run: async () => ({ content: "" }), ...tool } as Tool, input, ctx });
+    const call = (tool: Partial<Tool> & { name: string }, input: Json): ToolCall => ({ id: `codex-${run.nonce}-${String(p?.itemId ?? rid)}-${String(p?.approvalId ?? rid)}`, tool: { description: "", input_schema: {}, readOnly: false, run: async () => ({ content: "" }), ...tool } as Tool, input, ctx });
     // Why the card asks, in Codex's own words where it gave some.
     const asks = (reason: unknown) => `asked by Codex${typeof reason === "string" && reason ? `: ${reason}` : ""}`;
     const ask = async (tool: Partial<Tool> & { name: string }, input: Json, name: string, why: string, shown?: string) => {
@@ -426,8 +429,9 @@ export class CodexApp {
         }
         case "item/tool/requestUserInput": {
           const qs = (Array.isArray(p?.questions) ? p.questions : []) as Json[];
-          const askId = String(rid);
-          const callId = `codex-${String(p?.itemId ?? rid)}`;
+          // Unique for each question asked: the answer names it (interact.ts answer: an answer for another is stale).
+          const askId = crypto.randomUUID();
+          const callId = `codex-${run.nonce}-${String(p?.itemId ?? rid)}`;
           const text = qs.map((q) => String(q?.question ?? "")).filter(Boolean).join("\n") || "Codex asks a question";
           this.d.asked?.(run.sessionId, callId, text, askId);
           let reply: Answers | typeof DECLINED | null = null;
