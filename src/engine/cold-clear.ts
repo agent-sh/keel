@@ -102,11 +102,13 @@ export function stubOf(b: ToolResultBlock, call: { name: string; input: unknown 
 // Which results and thinking a cold point clears, from the branch as it is.
 // `thinking`: the wire takes the oldest run of thinking out (Anthropic's).
 // `asks`: a tool whose result is the owner's own words.
+// `results: false`: no result is cleared (a session whose calls ran on another machine: a stub would name a file
+// of this one, where those hands cannot read it).
 // A result after the last prompt is never cleared, and on the Anthropic wire (`thinking`) none is when the turn
 // the last prompt opened already holds thinking: a stub changes the prefix every later thinking block is bound
 // to, and the wire would take out that turn's own thinking along with the old.
 export type Pick = { ids: string[]; chars: number; thinking?: number; thinking_chars: number; files: { id: string; text: string }[] };
-export function pickCleared(events: readonly StoredEvent[], from: number, opts: { thinking: boolean; asks: (tool: string) => boolean; keep?: number }): Pick | undefined {
+export function pickCleared(events: readonly StoredEvent[], from: number, opts: { thinking: boolean; asks: (tool: string) => boolean; keep?: number; results?: boolean }): Pick | undefined {
   const done = clearingOf(events, from);
   type Row = { id: string; name: string; target: string | undefined; chars: number; text: string; ok: boolean };
   const calls = new Map<string, { name: string; input: unknown }>();
@@ -136,7 +138,7 @@ export function pickCleared(events: readonly StoredEvent[], from: number, opts: 
   const keep = opts.keep ?? KEEP_NEWEST;
   const ids: string[] = [], files: Pick["files"] = [];
   let chars = 0;
-  const upto = opts.thinking && turnThinks ? 0 : Math.min(rows.length - keep, rowsAtUser);
+  const upto = opts.results === false || (opts.thinking && turnThinks) ? 0 : Math.min(rows.length - keep, rowsAtUser);
   for (let k = 0; k < upto; k++) {
     const r = rows[k]!;
     if (!r.ok) continue;

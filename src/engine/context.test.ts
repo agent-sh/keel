@@ -603,9 +603,11 @@ test("a lapsed cache clears old results once; a warm one and a tree that does no
   const T0 = Date.UTC(2026, 0, 1);
   const r = rig();
   const usage = { input: 10, output: 200, cache_read: 0, cache_write: 90_000, cache_write_1h: 90_000 };
-  const history = (setting: boolean | undefined) => {
+  const history = (setting: boolean | undefined, machine?: string) => {
     setSystemTime(new Date(T0));
     const id = r.session(BIG.id);
+    if (machine && !r.store.columnExists("sessions", "machine")) r.store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT"); // the fleet adds it in the daemon
+    if (machine) r.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(machine, id);
     if (setting !== undefined) r.store.updateSession(id, { settings: { cold_clear: setting } });
     r.store.append(id, "user", { text: "explore the repo" });
     for (let i = 0; i < 14; i++) {
@@ -643,6 +645,14 @@ test("a lapsed cache clears old results once; a warm one and a tree that does no
     expect(notes(cold)).toHaveLength(1);
     const second = JSON.stringify(r.sent.at(-1)!.messages);
     expect(second.startsWith(first.slice(0, first.indexOf("and the tests?")))).toBe(true);
+
+    // A session whose calls ran on another machine: the stubs would name files on this one, so its results stay.
+    const far = history(true, "far-box");
+    setSystemTime(new Date(T0 + 70 * MIN));
+    r.engine.send(far, "and the tests?");
+    await r.idle(far);
+    expect(notes(far)).toEqual([]);
+    expect(wholeRead(r.sent.at(-1))).toBe(14);
 
     // The same lapse, a tree that does not run it (nothing set, or switched off): whole.
     for (const setting of [undefined, false]) {

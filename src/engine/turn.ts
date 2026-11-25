@@ -3783,7 +3783,7 @@ export class Engine {
   // be written stays. Only where the route's cache lifetime is documented, so a cache that may still hold is never cut.
   private async clearCold(id: string, session: Session, events: readonly StoredEvent[], st: Step): Promise<boolean> {
     if (longestSure(st.provider.wire) <= 0) return false;
-    const pick = pickCleared(events, checkpointAt(events).keepFrom, { thinking: st.provider.wire === "anthropic_messages", asks: asksOwner });
+    const pick = pickCleared(events, checkpointAt(events).keepFrom, { thinking: st.provider.wire === "anthropic_messages", asks: asksOwner, results: !session.machine });
     if (!pick) return false;
     const dir = join(this.spillRoot, id);
     const kept = new Set<string>();
