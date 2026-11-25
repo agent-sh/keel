@@ -29,7 +29,7 @@ export function SpeechButtons({ sid }: { sid: string | undefined }) {
         title={dictating ? withKeys("Stop dictating", "dictate") : withKeys("Dictate: speak, and the words go in the box", "dictate")}
         disabled={talking}
         onClick={() => toggleDictation()}
-        className={cn(button, "relative disabled:opacity-40")}
+        className={cn(button, "k-dictate relative disabled:opacity-40")}
       >
         <Mic className="size-4" />
         {dictating && <span className="absolute right-1.5 top-1.5 size-1.5 animate-pulse-dot rounded-full bg-accent" />}
