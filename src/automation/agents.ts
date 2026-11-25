@@ -39,7 +39,8 @@ import { speedOffer } from "../providers/registry.ts";
 import { enabledUnits } from "../plugins/registry.ts";
 import { fillContent } from "../plugins/options.ts";
 import { valuesOf } from "../plugins/settings.ts";
-import { checkpointAt } from "../engine/compact.ts";
+import { checkpointAt, contextTokens } from "../engine/compact.ts";
+import { forkPriceLine, startTokens } from "../engine/fork-price.ts";
 import { isWay, WAY_WORDS, type Way } from "../engine/follow-up.ts";
 import { readerFor, readRunsOf } from "../engine/read-run.ts";
 import { smallModels } from "../engine/readers.ts";
@@ -1136,6 +1137,10 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     for (const e of prefix.slice(cp.keepFrom)) {
       if (e.kind === "user" || e.kind === "assistant" || e.kind === "tool_result" || (e.kind === "note" && e.data.model)) store.append(child.id, e.kind, e.data);
     }
+    // What each of its steps reads, beside a fresh agent's, said once in the spawn's result.
+    const context = contextTokens(prefix, model).used;
+    if (forkOut.size > EARLIER_KEPT) forkOut.delete(forkOut.keys().next().value!);
+    if (context > 0) forkOut.set(id, forkPriceLine({ context, fresh: startTokens(line.filter((e) => e.kind === "assistant").map((e) => e.data.usage)), price: info.price }));
   }
 
   const now = Date.now();
@@ -1347,6 +1352,14 @@ export function notCarried(id: string): string {
 // Where an agent with a write scope may write and why it has one, by agent id, for the spawn's result to say.
 const scopeOut = new Map<string, string>();
 export const scopeNote = (id: string) => scopeOut.get(id) ?? "";
+// What a fork's steps cost, by agent id, for the spawn's result to say.
+const forkOut = new Map<string, string>();
+// Taken once, as the earlier agents' lines are (the map keeps the newest few).
+export const takeFork = (id: string) => {
+  const n = forkOut.get(id) ?? "";
+  forkOut.delete(id);
+  return n;
+};
 // The earlier agents of the repository closest to its task (src/automation/earlier.ts), by agent id, said once in the spawn's result.
 const earlierOut = new Map<string, string>();
 const EARLIER_KEPT = 200;
@@ -1365,7 +1378,8 @@ export const takeEarlier = (id: string) => {
 // What the spawn's result says past the start: what was not carried, the agent's write scope, and the earlier attempts near its task.
 export function spawnNotes(id: string): string {
   const s = scopeOut.get(id);
-  return notCarried(id) + (s ? `\n\n${s}` : "") + takeEarlier(id);
+  const f = takeFork(id);
+  return notCarried(id) + (s ? `\n\n${s}` : "") + (f ? `\n\n${f}` : "") + takeEarlier(id);
 }
 
 // Whether the owner's own words are in a session's running turn (a stand-in engine that does not say: no).

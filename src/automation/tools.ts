@@ -290,7 +290,8 @@ const spawn_agent: Tool = {
     const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, task_name: typeof input.task_name === "string" ? input.task_name : undefined, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews, api: input.api, effort: typeof input.effort === "string" ? input.effort : undefined, speed: input.speed }, ctx.signal);
     const left = agents.notCarried(a.id).trim();
     const earlier = agents.takeEarlier(a.id).trim();
-    return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}), ...(agents.scopeNote(a.id) ? { write_scope: agents.scopeNote(a.id) } : {}), ...(earlier ? { earlier_attempts: earlier } : {}) }));
+    const forkCost = agents.takeFork(a.id);
+    return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}), ...(agents.scopeNote(a.id) ? { write_scope: agents.scopeNote(a.id) } : {}), ...(forkCost ? { fork_cost: forkCost } : {}), ...(earlier ? { earlier_attempts: earlier } : {}) }));
   }),
 };
 

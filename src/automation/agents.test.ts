@@ -737,6 +737,36 @@ test("forked context is the parent's selected branch as its next request reads i
   expect(text).not.toContain("old question");
 });
 
+test("a fork's spawn result says what a step of it costs beside a fresh agent's", async () => {
+  const p = store.createSession({ model: "m:x", workspace: dir, title: "fork price" });
+  const usage = (read: number, write = 0) => ({ input: 0, output: 10, cache_read: read, cache_write: write });
+  store.append(p.id, "user", { text: "first" });
+  store.append(p.id, "assistant", { blocks: [{ type: "text", text: "one" }], usage: usage(0, 12_000) });
+  store.append(p.id, "user", { text: "later" });
+  store.append(p.id, "assistant", { blocks: [{ type: "text", text: "two" }], usage: usage(300_000, 10_000) });
+  store.append(p.id, "assistant", { blocks: [{ type: "tool_use", id: "call-p", name: "Agent", input: {} }] });
+  const was = baseDeps.providers.resolve;
+  baseDeps.providers.resolve = async () => ({ info: { price: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 } } });
+  try {
+    const a = await agents.spawn(p.id, { prompt: "go on", fork: true, isolation: "none", background: true, call_id: "call-p" });
+    const said = agents.spawnNotes(a.id);
+    // 310K tokens (the last reply read 300K and wrote 10K) read at 0.5 a million, and the 12K a fresh agent starts from.
+    expect(said).toContain("about 310K tokens");
+    expect(said).toContain("$0.155 a step");
+    expect(said).toContain("A fresh agent starts from about 12K tokens (about $0.0060 a step)");
+    // Said once: the map does not keep it.
+    expect(agents.spawnNotes(a.id)).not.toContain("A fork starts");
+    // A fresh agent says nothing of it.
+    expect(agents.spawnNotes((await agents.spawn(p.id, { prompt: "fresh", isolation: "none", background: true })).id)).not.toContain("A fork starts");
+    // A model with no listed price: the tokens, and why no dollars.
+    baseDeps.providers.resolve = async () => ({ info: {} });
+    const b = await agents.spawn(p.id, { prompt: "again", fork: true, isolation: "none", background: true, call_id: "call-p" });
+    expect(agents.spawnNotes(b.id)).toContain("lists no price");
+  } finally {
+    baseDeps.providers.resolve = was;
+  }
+});
+
 test("recovery settles a child whose turn had ended before the daemon went down, and continues one that was cut", async () => {
   const [done, cut] = [await spawn(), await spawn()];
   // done: its reply and end are stored, the end hook never ran.
