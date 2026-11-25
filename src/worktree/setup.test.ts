@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { dirname, join } from "node:path";
 import { Store } from "../core/store.ts";
 import { bindLedger, repoOf, treeOf, unbindLedger } from "../checks/ledger.ts";
-import { sessionVars, startJob, toolEnv, waitJob } from "../tools/jobs.ts";
+import { sessionVars, toolEnv } from "../tools/jobs.ts";
 import { tempTree } from "../../test/env.ts";
 import { Worktrees } from "./manager.ts";
 import { headHeld, parseEnvFile, parseSetup, refusedName, setupHook } from "./setup.ts";
@@ -87,13 +87,18 @@ test("a setup that is not pinned is held, and one that is pinned runs once, afte
   expect(sessionVars("s2").FROM_SETUP).toBe(a.wt.path);
   expect(sessionVars("s3").FROM_SETUP).toBeUndefined();
   expect(toolEnv("s2").FROM_SETUP).toBeUndefined();
-  const run = async (vars: boolean) => {
-    const job = startJob({ sessionId: "s2", command: "echo got=$FROM_SETUP", cwd: a.wt.path, logDir: join(root, "jobs"), vars });
-    await waitJob(job, 10_000);
-    return readFileSync(job.log, "utf8");
-  };
-  expect(await run(true)).toContain(`got=${a.wt.path}`);
-  expect(await run(false)).toContain("got=\n");
+  // A job asks for them (StartOpts.vars) in a program of its own: a job started here would stay in this process's job list.
+  const code = `
+    import { registerVars, startJob, waitJob } from ${JSON.stringify(join(import.meta.dir, "../tools/jobs.ts"))};
+    import { readFileSync } from "node:fs";
+    registerVars(() => ({ FROM_SETUP: "yes" }));
+    for (const vars of [true, false]) {
+      const job = startJob({ sessionId: "vars", command: "echo got=$FROM_SETUP", cwd: ${JSON.stringify(root)}, logDir: ${JSON.stringify(join(root, "jobs"))}, vars });
+      await waitJob(job, 10000);
+      console.log(readFileSync(job.log, "utf8").trim());
+    }`;
+  const p = Bun.spawn(["bun", "-e", code], { stdout: "pipe", stderr: "inherit" });
+  expect((await new Response(p.stdout).text()).trim().split("\n")).toEqual(["got=yes", "got="]);
   expect(wts.get("s2")?.setup?.state).toBe("ok"); // kept with the worktree
 });
 
