@@ -5,7 +5,7 @@ import type { EventKind } from "../../core/types.ts";
 
 export type Harness = "claude" | "codex" | "keel" | "agy" | "hermes" | "opencode" | "gemini" | "grok" | "kimi" | "pi" | "cursor" | "copilot" | "aider" | "qwen" | "goose" | "crush";
 // A store that keeps every session in one database: a source's path is `<database>#<session id>`.
-const DATABASES = new Set<string>(["keel", "hermes", "opencode", "goose", "crush", "cursor"]);
+const DATABASES = new Set<string>(["keel", "hermes", "opencode", "goose", "crush", "cursor", "aider"]);
 export const inDatabase = (h: string) => DATABASES.has(h);
 export type Kind = "interactive" | "subagent" | "headless";
 
