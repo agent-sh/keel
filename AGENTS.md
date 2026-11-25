@@ -546,7 +546,9 @@ under `~/.cache/keel-work/bun/research/`.
   words a model sent is the model's, punctuation aside, checked on the read thread; losing an owner prompt's mark is
   the safe side, so a one-word send costs every prompt holding that word its mark. The history's sends are read once
   before any mark is kept, run_code's calls and `/model` commands included, a cut send by its words before the cut;
-  the keys are all kept. A far machine's Keel is told before the send, or once it can when its build is older, and
+  the keys are all kept. A send is refused while the session's input box shows the owner's unsent draft
+  (`src/drive/box.ts`, read from its screen); when the box cannot be read empty, and for the history's sends, a
+  send's words are also kept without their first and last word, so a draft word glued to them hides nothing. A far machine's Keel is told before the send, or once it can when its build is older, and
   told on each link that nothing more waits: a Keel keeps no mark while any daemon paired with it has not said so,
   one Errors row naming it, so a pair with a Keel of a build before that word keeps every copy there unmarked), and
   the gate reads it through `src/safety/imported.ts`; the rest of

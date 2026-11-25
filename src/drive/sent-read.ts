@@ -26,24 +26,32 @@ const key = (w: string[]) => `w${w.length}:${Bun.hash(w.join(" "))}`;
 // The keys a far Keel may be given (noteDigests).
 export const farDigest = (d: string) => /^w[1-6]:\d{1,24}$/.test(d);
 
-function keysInto(out: Set<string>, text: string) {
-  const all = wordsOf(text);
-  if (all.length <= RUN) { if (all.length) out.add(key(all)); }
-  else for (let i = 0; i + RUN <= all.length; i++) out.add(key(all.slice(i, i + RUN)));
+function runsInto(out: Set<string>, w: string[]) {
+  if (w.length <= RUN) { if (w.length) out.add(key(w)); }
+  else for (let i = 0; i + RUN <= w.length; i++) out.add(key(w.slice(i, i + RUN)));
+}
+
+// `loose`: the send may land beside text already in the session's input box (an unsent draft of the owner's, when
+// the box could not be read: src/drive/box.ts), which a harness records as one prompt with the send, a word of the
+// draft perhaps glued to the send's first or last word. Its words are then also kept without the first, without the
+// last and without both, so a short send is still found in such a prompt.
+function keysInto(out: Set<string>, text: string, loose: boolean) {
+  const vary = (w: string[]) => (loose ? [w, w.slice(1), w.slice(0, -1), w.slice(1, -1)] : [w]);
+  for (const v of vary(wordsOf(text))) runsInto(out, v);
   // A harness may keep a line of a send alone: a short line is a sent text of its own.
   for (const line of text.split("\n")) {
     const w = wordsOf(line);
-    if (w.length && w.length < RUN) out.add(key(w));
+    if (w.length && w.length < RUN) for (const v of vary(w)) if (v.length) out.add(key(v));
   }
 }
 
 // The keys of a send, its words as the drive delivers them (outsideText: the characters a delivery drops are
 // dropped here too). Empty when nothing would be sent.
-export function digestsOf(text: string): string[] {
+export function digestsOf(text: string, loose = false): string[] {
   let body: string;
   try { body = outsideText(text).text; } catch { return []; }
   const out = new Set<string>();
-  keysInto(out, body);
+  keysInto(out, body, loose);
   return [...out];
 }
 
@@ -146,7 +154,8 @@ export function sentCalls(db: Database, a: SentAsk): { digests: string[]; next: 
   const table = a.table ?? "events";
   const needles = Object.keys(SENDS).map((n) => `"${n}"`);
   const digests = new Set<string>();
-  const add = (words: string | undefined) => { if (words) for (const d of digestsOf(words)) digests.add(d); };
+  // What an input box held when a past send went is not known: its keys are loose.
+  const add = (words: string | undefined) => { if (words) for (const d of digestsOf(words, true)) digests.add(d); };
   let last = 0;
   if (table === "events") {
     const rows = db.query<{ data: string }, [number, number, ...string[]]>(

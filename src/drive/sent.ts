@@ -15,8 +15,8 @@ import { digestsOf, farDigest, sentOf, type SentAsk } from "./sent-read.ts";
 const SCHEMA = `CREATE TABLE IF NOT EXISTS drive_sends (digest TEXT PRIMARY KEY, sent_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS drive_sends_state (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS drive_sends_caught (daemon_id TEXT PRIMARY KEY, at INTEGER NOT NULL)`;
-// The state row that says the history's sends were read, in the keys of this build (sent-read.ts).
-const READ = "read_runs";
+// The state row that says the history's sends were read, in the keys of this build (sent-read.ts: loose keys).
+const READ = "read_runs_loose";
 
 function keep(store: Store, digests: string[]) {
   if (!digests.length) return;
@@ -26,9 +26,10 @@ function keep(store: Store, digests: string[]) {
   store.db.transaction(() => { for (const d of digests) q.run(d, now); })();
 }
 
-// Kept before the words are sent. Returns the digests, for a far machine's Keel.
-export function noteSent(store: Store, text: string): string[] {
-  const digests = digestsOf(text);
+// Kept before the words are sent (`loose`: the session's input box was not read empty, sent-read.ts keysInto).
+// Returns the digests, for a far machine's Keel.
+export function noteSent(store: Store, text: string, loose = false): string[] {
+  const digests = digestsOf(text, loose);
   keep(store, digests);
   return digests;
 }

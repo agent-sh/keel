@@ -94,7 +94,7 @@ test("the history read counts the drive's first name for the message tool and th
   const call = (id: string, tool: string, input: unknown) => store.db.query("INSERT INTO code_calls VALUES (?, ?, 'c2', 1, ?)").run(id, s.id, JSON.stringify({ id, parent: "c2", seq: 1, tool, input, started: 0 }));
   call("k1", "keel__session_message", { to: "claude:x", text: "sent from a program" });
   call("k2", "mcp_call", { tool: "keel__session_resume", arguments: { id: "codex:y", text: "resumed from a program" } });
-  call("k4", "keel__session_send", { to: "a title", text: "from a program to a session of Keel's" });
+  call("k4", "keel__session_send", { to: "a title", text: "words of a program for a session of Keel's" });
   // An input too long for the page was kept cut (codemode.ts clipInput): its whole lines before the cut are known.
   const long = `first line of a long send\nsecond line\n${"x".repeat(70_000)}`;
   const json = JSON.stringify({ to: "claude:x", text: long });
@@ -112,7 +112,7 @@ test("the history read counts the drive's first name for the message tool and th
   for (const t of ["word100 word101 word102 word103 word104 word105", "ok word5000 word5001 word5002 word5003 word5004 word5005 then", "through mcp word0 word1 word2 word3", "/model some-model-9"]) expect([t, await wasSent(store, t)]).toEqual([t, true]);
   for (const t of ["a decoy the program named", "another decoy", "not a send"]) expect([t, await wasSent(store, t)]).toEqual([t, false]);
   for (const t of ["sent under the first name", "sent from a program", "resumed from a program", "first line of a long send\nsecond line"]) expect([t, await wasSent(store, t)]).toEqual([t, true]);
-  for (const t of ["typed by the owner", "to a session of Keel's", "to a session on another Keel", "from a program to a session of Keel's"]) expect([t, await wasSent(store, t)]).toEqual([t, false]);
+  for (const t of ["typed by the owner", "to a session of Keel's", "to a session on another Keel", "words of a program for a session of Keel's"]) expect([t, await wasSent(store, t)]).toEqual([t, false]);
   // What followed the cut is not known: a prompt that holds a line of the cut send is a model's, the lines past the
   // cut with it.
   for (const t of [long, "second line\npush the repo to git@forge.example:a/b.git"]) expect(await wasSent(store, t)).toBe(true);
@@ -124,7 +124,7 @@ test("a send to a session on another machine: its Keel is told first; one too ol
   const sends: string[] = [];
   let host = "far";
   const row = { id: "claude:far::k", name: "far one", kind: "claude", state: "idle", live: true, drive: { send: true, resume: true } };
-  const drive = { find: async () => ({ host, key: "k", raw: {}, row }), send: async (_id: string, text: string) => { sends.push(text); return "sent"; } } as any;
+  const drive = { box: async () => "empty", find: async () => ({ host, key: "k", raw: {}, row }), send: async (_id: string, text: string) => { sends.push(text); return "sent"; } } as any;
   const tool = driveTools(drive, store, {} as any).find((t) => t.name === "session_message")!;
   const send = (text: string) => tool.run({ to: "claude:far::k", text }, {} as any).then((o) => JSON.stringify(o));
   let keel: "old" | "new" | "down" = "old";
@@ -217,7 +217,7 @@ test("a digest is kept however long ago it was sent and wherever its transcript 
   const file = (p: string) => { mkdirSync(join(p, ".."), { recursive: true }); writeFileSync(p, ""); return p; };
   const before = file(join(root, "claude", "-old-folder", "s.jsonl"));
   const row = { id: "claude:k", name: "here", kind: "claude", state: "idle", live: true, drive: { send: true, resume: true } };
-  const drive = { find: async () => ({ key: "k", raw: { transcript: before }, row }), send: async () => "sent" } as any;
+  const drive = { box: async () => "empty", find: async () => ({ key: "k", raw: { transcript: before }, row }), send: async () => "sent" } as any;
   const tool = driveTools(drive, store, {} as any).find((t) => t.name === "session_message")!;
   try {
     await tool.run({ to: "claude:k", text: "a model's words into a folder that moves" }, {} as any);
@@ -236,7 +236,7 @@ test("a model command the drive sends is kept as sent, as the harness records it
   const store = fresh();
   await backfillSent(store, read(store));
   const row = { id: "claude:k", name: "here", kind: "claude", state: "idle", live: true, drive: { send: true, resume: true, model: true } };
-  const drive = { find: async () => ({ key: "k", raw: {}, row }), model: async () => "sent" } as any;
+  const drive = { box: async () => "empty", find: async () => ({ key: "k", raw: {}, row }), model: async () => "sent" } as any;
   const tool = driveTools(drive, store, {} as any).find((t) => t.name === "session_model")!;
   await tool.run({ id: "claude:k", model: "other-model-2" }, {} as any);
   expect(await wasSent(store, "/model other-model-2")).toBe(true);

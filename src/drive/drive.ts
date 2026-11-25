@@ -8,6 +8,7 @@ import * as av from "./agentview.ts";
 import { harnessCommand, outsideText, pickChoice, promptHash, type OutsideText, type Prompt } from "./text.ts";
 import { fitTurns, turnsOf, type Turn } from "./transcript.ts";
 import { stripAnsi } from "../core/text.ts";
+import { boxOf, type Box } from "./box.ts";
 
 export type State = "working" | "waiting" | "scheduled" | "idle" | "done" | "ended" | "disconnected" | "unknown";
 export type Row = {
@@ -108,6 +109,7 @@ export class Drive {
   private cache: { at: number; raws: av.Raw[] } | null = null;
   private inflight: Promise<av.Raw[]> | null = null;
   private seen = new Map<string, Map<string, { f: string; row: Row }>>(); // per driver: row id -> fingerprint
+  private boxes = new WeakMap<Found, { at: number; box: Box }>(); // a send's reads of the box share one
   // Called with every list the agent view printed (the page's frame, the copies a take-over settles).
   readonly onList: ((rows: Row[]) => void)[] = [];
 
@@ -219,14 +221,34 @@ export class Drive {
     } catch (e) {
       return `whether it waits on a prompt could not be read (${(e as Error).message})`;
     }
-    if (f.row.kind !== "claude" || str(f.raw.job)) return;
-    try {
-      const now = await this.freshRow(f);
-      if (now.state === "waiting" && ["", "claude"].includes(str(now.source)))
-        return `"${f.row.name}" has a dialog open (Claude Code reports it waiting${str(now.detail) ? `: ${now.detail}` : ""}): a text would land in the dialog. Send once it is idle`;
-    } catch (e) {
-      return `whether it waits on a prompt could not be read (${(e as Error).message})`;
+    if (f.row.kind === "claude" && !str(f.raw.job)) {
+      try {
+        const now = await this.freshRow(f);
+        if (now.state === "waiting" && ["", "claude"].includes(str(now.source)))
+          return `"${f.row.name}" has a dialog open (Claude Code reports it waiting${str(now.detail) ? `: ${now.detail}` : ""}): a text would land in the dialog. Send once it is idle`;
+      } catch (e) {
+        return `whether it waits on a prompt could not be read (${(e as Error).message})`;
+      }
     }
+    if ((await this.box(f)) === "draft") return drafted(f);
+  }
+
+  // What the session's input box holds (src/drive/box.ts): a text sent beside an unsent draft goes out inside it,
+  // and the harness records the two as one typed prompt. A session that is not live has no box (it is resumed with
+  // the text as an argument); one whose screen cannot be read is "unread". `fresh`: not the read a moment ago.
+  async box(f: Found, fresh = false): Promise<Box> {
+    if (f.raw.live !== true) return "empty";
+    const was = this.boxes.get(f);
+    if (!fresh && was && Date.now() - was.at <= 2000) return was.box;
+    let box: Box;
+    try {
+      const live = await av.rpc(f.host, { op: "live", key: f.key, lines: 40 });
+      box = boxOf(f.row.kind, Array.isArray(live?.lines) ? live.lines.map((l: unknown) => String(l)) : []);
+    } catch {
+      box = "unread";
+    }
+    this.boxes.set(f, { at: Date.now(), box });
+    return box;
   }
 
   // The agent view's identity of the session, checked against what was judged
@@ -367,6 +389,7 @@ export class Drive {
     // The note is queued after the answer and is not held: the prompt it follows is the one just answered.
     if (note) {
       try {
+        if ((await this.box(f, true)) === "draft") throw new Error(drafted(f));
         line += ` Note: ${await this.enqueue(f, note)}`;
       } catch (e) {
         line += ` The note was not sent: ${(e as Error).message}`;
@@ -375,6 +398,8 @@ export class Drive {
     return line;
   }
 }
+
+const drafted = (f: Found) => `"${f.row.name}" holds an unsent draft in its input box: a text sent now would go out inside it. Send once the box is empty`;
 
 // One Drive per daemon: the routes, the tools and the take-over share its list.
 let shared: Drive | undefined;

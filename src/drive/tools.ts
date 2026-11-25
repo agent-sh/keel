@@ -27,9 +27,14 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
 
   // Words a model is about to put at another session's prompt, kept as digests before they go (src/drive/sent.ts),
   // and told to the Keel of the machine the session runs on (nothing is sent when that Keel cannot be reached; a Keel
-  // too old to keep them is told once it can, src/drive/sent.ts farSent).
-  const sent = async (f: Found, text: string) => {
-    const digests = noteSent(store, text);
+  // too old to keep them is told once it can, src/drive/sent.ts farSent). A send beside an unsent draft in the
+  // session's input box is refused (drive.held refuses it again just before it goes); when the box could not be read
+  // empty, the words are kept loosely (sent-read.ts keysInto). A note after an answer is not refused here: the box
+  // is under the prompt then, and the drive reads it again before the note goes.
+  const sent = async (f: Found, text: string, note = false) => {
+    const box = await drive.box(f);
+    if (box === "draft" && !note) throw new DriveError("NOT_SENT", `"${f.row.name}" holds an unsent draft in its input box: a text sent now would go out inside it. Send once the box is empty. Nothing was sent.`);
+    const digests = noteSent(store, text, box !== "empty");
     if (f.host) {
       try { await farSent(store, f.host, digests); } catch (e) { throw new DriveError("NOT_SENT", `the Keel on ${f.host} could not be told what is sent (${(e as Error).message}). Nothing was sent.`); }
     }
@@ -109,7 +114,7 @@ export function driveTools(drive: Drive, store: Store, providers: Providers): Ca
       async (i) => {
         try {
           const f = judged.get(i) ?? (await drive.find(i.id));
-          if (typeof i.note === "string") await sent(f, i.note);
+          if (typeof i.note === "string") await sent(f, i.note, true);
           return ok(await drive.answer(i.id, i, f));
         } catch (e) {
           return fmt(e);
