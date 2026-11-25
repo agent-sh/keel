@@ -124,7 +124,7 @@ export const PHONE_API = /^\/v1\//;
 export const blindTo = (a: Authority, req: { path: string; linked?: boolean }): boolean => a.kind === "session" || !!req.linked || PHONE_API.test(req.path);
 // The sessions a request names: by its path (a segment after `sessions/`, wherever it stands, and the
 // sessions elsewhere routes' id of one, src/server/routes/drive.ts) and by the parameters routes read a session from.
-const NAMING = ["session", "session_id", "of", "children_of", "agents_of"];
+const NAMING = ["session", "session_id", "of", "children_of", "tree_of", "agents_of"];
 export function namedSessions(path: string, search = ""): string[] {
   const out: string[] = [];
   let p = path;

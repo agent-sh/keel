@@ -230,7 +230,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
   const strays = new Set<string>();
 
   const result = (w: Partial<Watched> & Pick<Watched, "subtype" | "outcome">) => {
-    const one: Watched = { answer, errors, turns: total.turns, pending: 0, refused: denials.length, held: false, usage: { ...used, cost: total.cost, unpriced: total.unpriced }, ...w };
+    const one: Watched = { answer, errors, turns: total.turns, agents: [], pending: 0, refused: denials.length, held: false, usage: { ...used, cost: total.cost, unpriced: total.unpriced }, ...w };
     last = one;
     say({
       ...resultObject(one, { sessionId: sessionId!, url, ms: since === null ? 0 : Date.now() - since, onAsk }),

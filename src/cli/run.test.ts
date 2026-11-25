@@ -3,7 +3,7 @@
 // subagent timed against it: a stand-in daemon serves them.
 import { expect, test } from "bun:test";
 import { Client } from "./client.ts";
-import { watch } from "./run.ts";
+import { resultObject, treeUsage, watch } from "./run.ts";
 
 const SID = "s1";
 const say = (text: string) => ({ kind: "assistant", data: { blocks: [{ type: "text", text }] } });
@@ -58,4 +58,35 @@ test("the command's own prompt that fails before its turn starts ends the wait a
   expect(await watched(started, "all", true)).toEqual(["error_during_execution", "failure", ["overloaded"], 1]);
   // A retry of the owner's after the failure is theirs, not this command's.
   expect(await watched([...failed, other, { kind: "turn_start" }, say("Theirs."), end], "all", true)).toEqual(["error_during_execution", "failure", ["no such model"], 0]);
+});
+
+// The cost a run reports is the whole tree's: the usage the daemon sums for the session and its agents.
+test("a run's usage is the tree's, and its agents come grouped by definition with their launches", async () => {
+  const sum = (o: Record<string, number | string>) => ({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, calls: 1, priced_cost_usd: 0, unpriced_calls: 0, incomplete_calls: 0, ...o });
+  let asked = "";
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(req) {
+      asked = req.url;
+      return Response.json({
+        total: sum({ calls: 3, input_tokens: 30, output_tokens: 9, priced_cost_usd: 0.75 }),
+        buckets: [sum({ key: "", input_tokens: 10, output_tokens: 3, priced_cost_usd: 0.25 }), sum({ key: "Explore", launches: 2, calls: 2, input_tokens: 20, output_tokens: 6, priced_cost_usd: 0.5 })],
+      });
+    },
+  });
+  try {
+    const w: any = { usage: { input: 10, output: 3, cache_read: 0, cache_write: 0, cost: 0.25, unpriced: 0 }, agents: [] };
+    await treeUsage(new Client(`http://127.0.0.1:${server.port}`), w, "s 1", 1234.7);
+    expect(new URL(asked).searchParams.get("tree_of")).toBe("s 1");
+    expect(new URL(asked).searchParams.get("since_ms")).toBe("1234");
+    expect(w.usage).toMatchObject({ input: 30, output: 9, cost: 0.75, unpriced: 0 });
+    expect(w.agents).toEqual([{ name: "Explore", launches: 2, input: 20, output: 6, cache_read: 0, cache_write: 0, cost: 0.5 }]);
+    expect(resultObject({ ...w, subtype: "success", outcome: "success", answer: "", errors: [], turns: 1, pending: 0, refused: 0, held: false }, { sessionId: "s1", url: "u", ms: 1, onAsk: "deny" })).toMatchObject({ total_cost_usd: 0.75, agents: [{ name: "Explore", launches: 2, cost: 0.5 }] });
+  } finally {
+    server.stop(true);
+  }
+  // A daemon that cannot answer leaves the session's own count.
+  const w: any = { usage: { input: 1, output: 1, cache_read: 0, cache_write: 0, cost: 0.1, unpriced: 0 }, agents: [] };
+  await treeUsage(new Client("http://127.0.0.1:1"), w, "s1", 0);
+  expect(w.usage.cost).toBe(0.1);
 });

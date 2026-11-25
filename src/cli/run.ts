@@ -110,6 +110,8 @@ export type Watch = {
   t0?: number;
 };
 
+export type AgentUse = { name: string; launches: number; input: number; output: number; cache_read: number; cache_write: number; cost: number | null };
+
 export type Watched = {
   subtype: "success" | "needs_input" | "error_during_execution" | "cancelled" | "timeout" | "error_max_structured_output_retries";
   outcome: Outcome;
@@ -117,6 +119,8 @@ export type Watched = {
   errors: string[];
   turns: number;
   usage: { input: number; output: number; cache_read: number; cache_write: number; cost: number; unpriced: number };
+  // What the agents of the tree spent, by agent definition (see treeUsage). Empty when none ran.
+  agents: AgentUse[];
   pending: number;
   refused: number;
   // The prompt is still queued and the queue is held: no turn starts by itself.
@@ -125,7 +129,7 @@ export type Watched = {
 
 // Follows a session from a prompt until the work it asked for has ended.
 export async function watch(w: Watch): Promise<Watched> {
-  const r: Watched = { subtype: "success", outcome: null, answer: "", errors: [], turns: 0, usage: { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0 }, pending: 0, refused: 0, held: false };
+  const r: Watched = { subtype: "success", outcome: null, answer: "", errors: [], turns: 0, usage: { input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0 }, agents: [], pending: 0, refused: 0, held: false };
   let ours = false;
   let ended = false;
   // A turn is under way since this command's prompt (or since the last end).
@@ -268,6 +272,22 @@ export async function watch(w: Watch): Promise<Watched> {
   return r;
 }
 
+// The spend of the whole tree since `sinceMs`: the session and the agents under it, at any depth, as the
+// Usage page sums them from the ledger (`group=agent&tree_of=`), replaces what the session's own turns
+// counted; the agents come grouped by definition with how many were started. A daemon that cannot say
+// (an older one, a ledger with no request of the tree) leaves the session's own count as it was.
+export async function treeUsage(c: Client, w: Watched, sessionId: string, sinceMs: number): Promise<void> {
+  type Sum = { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; calls: number; priced_cost_usd: number; unpriced_calls: number; incomplete_calls: number };
+  let r: { total: Sum; buckets: (Sum & { key: string; launches?: number })[] };
+  try { r = await c.get(`/api/usage?group=agent&tree_of=${encodeURIComponent(sessionId)}&since_ms=${Math.floor(sinceMs)}`); } catch { return; }
+  if (!r?.total?.calls && !r?.buckets?.some((b) => b.key && b.launches)) return;
+  const cost = (s: Sum) => (s.unpriced_calls || s.incomplete_calls ? null : s.priced_cost_usd);
+  if (r.total.calls) {
+    w.usage = { input: r.total.input_tokens, output: r.total.output_tokens, cache_read: r.total.cache_read_tokens, cache_write: r.total.cache_write_tokens, cost: r.total.priced_cost_usd, unpriced: r.total.unpriced_calls + r.total.incomplete_calls };
+  }
+  w.agents = r.buckets.filter((b) => b.key).map((b) => ({ name: b.key, launches: b.launches ?? 0, input: b.input_tokens, output: b.output_tokens, cache_read: b.cache_read_tokens, cache_write: b.cache_write_tokens, cost: cost(b) }));
+}
+
 export const exitOf = (w: Watched) =>
   w.subtype === "success" ? EXIT.ok : w.subtype === "needs_input" ? EXIT.owner : w.subtype === "timeout" ? EXIT.timeout : EXIT.error;
 
@@ -307,6 +327,7 @@ export function resultObject(w: Watched, x: { sessionId: string; url: string; ms
     duration_ms: x.ms,
     usage: { input_tokens: w.usage.input, output_tokens: w.usage.output, cache_read_input_tokens: w.usage.cache_read, cache_creation_input_tokens: w.usage.cache_write },
     total_cost_usd: w.usage.unpriced ? null : Number(w.usage.cost.toFixed(6)),
+    agents: w.agents.map((a) => ({ ...a, cost: a.cost === null ? null : Number(a.cost.toFixed(6)) })),
     outcome: w.outcome,
     url: x.url,
     on_ask: x.onAsk,
@@ -462,6 +483,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
     const value = match && "value" in match ? match : undefined;
     if (w.subtype === "timeout" && own) await c.post(`/api/sessions/${sessionId}/interrupt`, { by: "owner" }).catch(() => {});
     if (v.archived) await c.patch(`/api/sessions/${sessionId}`, { archived: true }).catch((e) => console.error(`keel ${name}: the session was not archived: ${e.message}`));
+    await treeUsage(c, w, sessionId, t0);
     const res = resultObject(w, { sessionId, url, ms: Date.now() - t0, onAsk, replayed: sent.replayed, structured: value });
 
     if (w.refused) console.error(`keel ${name}: refused ${w.refused} approval card${w.refused === 1 ? "" : "s"} or question${w.refused === 1 ? "" : "s"} (--on-ask deny)`);

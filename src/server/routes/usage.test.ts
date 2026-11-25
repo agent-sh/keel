@@ -312,3 +312,24 @@ test("a rollup that drifted from the ledger is found by its count and made again
   expect(checkRollup(store.db, false).ok).toBe(true);
   expect(captured).toEqual([`The usage rollup did not match the ledger and was made again from it (${drift.ledger_calls} requests).`]);
 });
+
+test("a tree's spend is grouped by the definition of each agent, launches counted, and sums to the tree's total", async () => {
+  store.db.run("CREATE TABLE agents (id TEXT PRIMARY KEY, parent_id TEXT, session_id TEXT, type TEXT, created INTEGER)");
+  const mk = (id: string, parent: string | null) => store.db.run("INSERT INTO sessions (id, title, model, workspace, created, updated, parent_id) VALUES (?, ?, 'alpha:big', ?, 0, 0, ?)", [id, id, dir, parent]);
+  for (const [id, parent] of [["t-root", null], ["t-a1", "t-root"], ["t-a2", "t-root"], ["t-b1", "t-a1"], ["t-out", null]] as const) mk(id, parent);
+  const agent = (id: string, parent: string, type: string, created: number) => store.db.run("INSERT INTO agents VALUES (?, ?, ?, ?, ?)", [`ag-${id}`, parent, id, type, created]);
+  agent("t-a1", "t-root", "Explore", 2_000); agent("t-a2", "t-root", "Explore", 2_000); agent("t-b1", "t-a1", "Review", 2_000);
+  // A session of this tree before the window, an agent of it that spent nothing, and another tree.
+  agent("t-out", "t-root", "Explore", 100);
+  const T = 1_000;
+  for (const [s, cost] of [["t-root", 0.5], ["t-a1", 0.25], ["t-a2", 0.125], ["t-b1", 0.0625], ["t-out", 9]] as const) add.run(s, T + 5, "alpha:big", 10, 2, 100, 0, cost, 0, "ok", null);
+  const { body } = await ask({ group: "agent", tree_of: "t-root", since_ms: T });
+  const by = Object.fromEntries(body.buckets.map((b: any) => [b.key, b]));
+  expect(Object.keys(by).sort()).toEqual(["", "Explore", "Review"]);
+  expect([by[""].launches, by.Explore.launches, by.Review.launches]).toEqual([0, 2, 1]);
+  expect([by[""].priced_cost_usd, by.Explore.priced_cost_usd, by.Review.priced_cost_usd]).toEqual([0.5, 0.375, 0.0625]);
+  // The total is what the tree's own grouping on the Usage page shows for it.
+  expect(body.total.priced_cost_usd).toBe(0.9375);
+  expect((await ask({ group: "session", tree_of: "t-root", since_ms: T })).body.total.priced_cost_usd).toBe(0.9375);
+  expect((await route(new Request("http://x/api/usage?group=agent"))).status).toBe(400);
+});

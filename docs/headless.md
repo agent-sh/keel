@@ -139,6 +139,9 @@ One `result` line is written per turn:
 - `duration_ms`: from when the turn's prompt was sent (or the turn began) to this line.
 - `usage`: this turn's tokens. `total_cost_usd` and `num_turns`: the whole command so far.
   `total_cost_usd` is null when a model in it has no listed price.
+- `agents` (with `keel run`): what the agents under the session spent, grouped by agent definition:
+  `name`, `launches`, token counts and `cost`. `total_cost_usd` and `usage` then cover the whole tree
+  from the command's start, as the Usage page sums it.
 - `permission_denials`: the requests refused in the turn (`tool_name`, `tool_use_id`,
   `tool_input`), when any; `refused_approvals` is how many.
 - A turn that work in the background starts (an agent's report) gets a result too.

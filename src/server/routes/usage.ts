@@ -12,6 +12,11 @@
 // `tz_offset_minutes` (0: UTC). `sort` orders non-day groups: total tokens
 // (default), fresh (input without cache plus output) or cost.
 // children_of: the requests of the agents a session started (its delegated spend).
+// tree_of: the requests of a session and of every agent under it, at any depth.
+// group=agent (with tree_of) sums them by the definition of the agent that made
+// them: the session itself is the bucket with the empty key, an agent whose
+// definition is not known "other". `launches` is how many agents of that
+// definition were started in the window (the tree's, since_ms on).
 // group=tree sums each session with the agents under it (and theirs) into the
 // session at the top: `own_cost_usd` is the top session's own, `agents` how
 // many agents spent and `agents_cost_usd` what they spent. With group=session
@@ -34,7 +39,7 @@ import { driversAtStart } from "../drivers-start.ts";
 import { checkpointerOf } from "../../core/checkpoint.ts";
 import { rewriteUsd, USAGE_ROLLUP_TRIGGER, type DriversRead } from "../../admin/cost-drivers.ts";
 
-const GROUPS = new Set(["model", "session", "tree", "day", "provider"]);
+const GROUPS = new Set(["model", "session", "tree", "day", "provider", "agent"]);
 const SORTS = new Set(["total", "fresh", "cost"]);
 
 type Sum = {
@@ -293,6 +298,9 @@ export const usageRoutes: RouteModule = ({ store, errors, providers }) => {
       const args: (string | number)[] = [];
       if (q.get("session_id")) { where.push("session_id = ?"); args.push(q.get("session_id")!); }
       if (q.get("children_of")) { where.push("session_id IN (SELECT id FROM sessions WHERE parent_id = ?)"); args.push(q.get("children_of")!); }
+      const treeOf = q.get("tree_of");
+      if (treeOf) { where.push("session_id IN (WITH RECURSIVE t(id) AS (SELECT ? UNION SELECT s.id FROM sessions s JOIN t ON s.parent_id = t.id) SELECT id FROM t)"); args.push(treeOf); }
+      if (group === "agent" && !treeOf) return Response.json({ error: "group=agent needs tree_of" }, { status: 400 });
       // What is summed, as rows of the rollup's shape with a time: the rollup
       // for the whole quarter hours of the window, the ledger for what is left
       // at its ends (`whole` false: the ledger for all of it).
@@ -317,8 +325,15 @@ export const usageRoutes: RouteModule = ({ store, errors, providers }) => {
       };
       let src = source(true);
       let key = "model";
+      // The key's own placeholder comes first in the statement.
+      const keyArgs: (string | number)[] = [];
+      const agentsTable = has(store.db, "table", "agents");
       if (group === "provider") key = "substr(model, 1, max(0, instr(model, ':') - 1))";
       else if (group === "session" || group === "tree") key = "session_id";
+      else if (group === "agent") {
+        key = agentsTable ? "CASE WHEN session_id = ? THEN '' ELSE COALESCE((SELECT type FROM agents WHERE agents.session_id = sums.session_id LIMIT 1), 'other') END" : "''";
+        if (agentsTable) keyArgs.push(treeOf!);
+      }
       else if (group === "day") {
         // The day number of the local clock: at the zone's offset of that
         // instant (the UTC days that hold requests say where its clock changes),
@@ -337,7 +352,7 @@ export const usageRoutes: RouteModule = ({ store, errors, providers }) => {
       // requests are spread thin the rollup has nearly a row a request. The
       // statement is made for this request and freed after it (a day key carries
       // the request's offset in its text: kept, one would stay for every offset asked for).
-      const groups = await reads.sql<Group>(`SELECT ${key} AS key, purpose, MIN(first) AS first, ${SUMS.map((c) => `SUM(${c}) AS ${c}`).join(", ")} FROM (${src.sql}) GROUP BY 1, 2`, src.args);
+      const groups = await reads.sql<Group>(`SELECT ${key} AS key, purpose, MIN(first) AS first, ${SUMS.map((c) => `SUM(${c}) AS ${c}`).join(", ")} FROM (${src.sql}) AS sums GROUP BY 1, 2`, [...keyArgs, ...src.args]);
       // Buckets and purposes in the order their first request was written.
       const total = empty();
       const buckets = new Map<string, Sum & { first: number }>();
@@ -360,6 +375,17 @@ export const usageRoutes: RouteModule = ({ store, errors, providers }) => {
         .map(([key, s]) => ({ key, ...finish(s) }))
         .sort((a, b) => (group === "day" ? b.key.localeCompare(a.key) : rank(b) - rank(a)));
       // Agent trees: every session's sums go to the session at the top of its tree.
+      if (group === "agent") {
+        // Launches from the agents table, so a definition whose agents made no request still shows.
+        const made = new Map<string, number>();
+        if (agentsTable) {
+          for (const r of store.db.query<{ type: string; n: number }, [string, number]>(
+            `SELECT type, COUNT(*) AS n FROM agents WHERE created >= ?2 AND session_id IN (WITH RECURSIVE t(id) AS (SELECT ?1 UNION SELECT s.id FROM sessions s JOIN t ON s.parent_id = t.id) SELECT id FROM t WHERE id <> ?1) GROUP BY type`).all(treeOf!, since ?? 0)) made.set(r.type, r.n);
+        }
+        const rows: any[] = list.map((b) => ({ ...b, launches: made.get(b.key) ?? 0 }));
+        for (const [type, n] of made) if (!rows.some((b) => b.key === type)) rows.push({ key: type, ...finish(empty()), launches: n });
+        list = rows;
+      }
       let sessions: Record<string, { title: string; parent_id?: string; archived?: true }> | undefined;
       if (group === "tree" || group === "session") {
         const agents = !!store.db.query("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'parent_id'").get();
