@@ -297,8 +297,9 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const left = !gone ? null : deleted || (!live && !given.archived) ? "deleted" : given.archived ? "restored" : "archived";
   // News is a dot at the row's end, where the list's count of what is new counts it (lib/list-order.ts: isNews).
   const news = unread && !gone && !left && !offline && isNews(w);
-  // The dot's word a phone shows in the row (bridge.css): the states the row does not say in words, what it waits on in the background.
-  const dotWords = !offline && !left && (!SPELLED.includes(w) || !!backgroundOf(st));
+  // The dot's word a phone shows in the row (bridge.css): what the row does not say in words, apart from a session at rest (done
+  // is the dot, one line), and what it waits on in the background.
+  const dotWords = !offline && !left && (backgroundOf(st) ? true : !SPELLED.includes(w) && w !== "done" && w !== "idle");
   // The card beside the row is away while a menu of the row is open over it.
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
   // A session of another harness that Keel only shows has no name of Keel's to give.

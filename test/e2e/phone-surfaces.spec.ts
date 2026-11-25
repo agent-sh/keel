@@ -1403,8 +1403,14 @@ for (const size of SIZES) {
               const mark = row(id).locator(".k-mark");
               await expect(mark).toHaveAttribute("aria-label", word);
               await row(id).scrollIntoViewIfNeeded();
-              expect(await shown(row(id), word), `"${word}" shown in the row at ${scale * 100}% text`).toBe(true);
+              // A session at rest is its dot and its title on one line (a reader still has the mark's label); what waits in the
+              // background has its word in the row.
+              if (id === done || id === news) expect(await row(id).getByTestId("row-dot-word").count(), `no word under a finished row at ${scale * 100}% text`).toBe(0);
+              else expect(await shown(row(id), word), `"${word}" shown in the row at ${scale * 100}% text`).toBe(true);
             }
+            const height = (id: string) => row(id).evaluate((el) => el.getBoundingClientRect().height);
+            expect(await height(done), "a finished row is one line, shorter than one with a word under its title").toBeLessThan(await height(command));
+            expect(await height(news), "and so is one with news").toBeLessThan(await height(command));
             // News is the title's weight (no word beside it, no second dot): heavier than the title of a row read.
             const weight = (id: string) => row(id).locator(".k-row-title").evaluate((el) => Number(getComputedStyle(el).fontWeight));
             expect(await weight(news), "news is the title's weight").toBeGreaterThan(await weight(done));
