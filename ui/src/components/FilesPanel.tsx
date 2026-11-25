@@ -1,47 +1,13 @@
 import { AtSign, ChevronLeft, File as FileIcon, Folder, Search } from "lucide-react";
-import { langOf } from "../lib/lang.ts";
-import { IMAGE, OpenInEditor, rawFile } from "./OpenInEditor.tsx";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { FileBody, type Opened } from "./FileBody.tsx";
+import { OpenInEditor } from "./OpenInEditor.tsx";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError } from "../lib/store.ts";
 import { seedComposer, setUI, useUI } from "../lib/ui.ts";
-import { cn, fmtSize } from "../lib/utils.ts";
+import { cn } from "../lib/utils.ts";
 
 type Hit = { path: string; dir: boolean };
-type Opened = { path: string; size: number; text?: string; binary?: boolean; truncated?: boolean };
-
-function CodeView({ file, line, end }: { file: Opened; line?: number; end?: number }) {
-  const [html, setHtml] = useState<string | null>(null);
-  const band = useRef<HTMLDivElement>(null);
-  // A linked line is shown near the top of the view, its lines marked.
-  useEffect(() => {
-    const el = band.current;
-    const sc = el?.closest<HTMLElement>("[data-file-scroll]");
-    if (el && sc) sc.scrollTop = Math.max(0, el.offsetTop - 96);
-  }, [line, file]);
-  const lines = useMemo(() => (file.text ?? "").split("\n"), [file.text]);
-  useEffect(() => {
-    setHtml(null);
-    if (!file.text || file.text.length > 200_000) return;
-    import("../lib/highlight.ts").then((m) => setHtml(m.highlightHtml(file.text!, langOf(file.path)))).catch(reportError);
-  }, [file]);
-  return (
-    <div className="relative flex min-h-full w-max min-w-full font-mono text-caption leading-[1.65]">
-      {line && line <= lines.length && (
-        <div ref={band} data-testid="file-line" aria-hidden="true" className="pointer-events-none absolute inset-x-0 bg-accent-soft"
-          style={{ top: `calc(12px + ${line - 1} * 1.65em)`, height: `calc(${Math.max(1, Math.min(end ?? line, lines.length) - line + 1)} * 1.65em)` }} />
-      )}
-      <div aria-hidden="true" className="sticky left-0 select-none border-r border-line bg-sunken px-3 py-3 text-right text-faint tabular-nums">
-        {lines.map((_, i) => <div key={i}>{i + 1}</div>)}
-      </div>
-      {html ? (
-        <pre className="relative flex-1 px-4 py-3" dangerouslySetInnerHTML={{ __html: html }} />
-      ) : (
-        <pre className="relative flex-1 px-4 py-3">{file.text}</pre>
-      )}
-    </div>
-  );
-}
 
 // The session's folder: find a file, read it, mention it in the message box.
 // By keyboard: Down from the search box goes into the results, Up and Down
@@ -134,12 +100,7 @@ export function FilesPanel({ session }: { session: Session }) {
           </button>
           {!session.machine && <OpenInEditor sessionId={session.id} path={open.path} />}
         </div>
-        <div className="min-h-0 flex-1 overflow-auto bg-raised" data-file-scroll>
-          {open.binary && IMAGE.test(open.path) && !session.machine
-            ? <img src={rawFile(session.id, open.path)} alt={open.path} data-testid="file-image" className="m-4 max-w-[calc(100%-2rem)] rounded-md border border-line" />
-            : open.binary ? <p className="p-6 text-ui text-faint">A binary file, {fmtSize(open.size)}.</p> : <CodeView file={open} line={at.line} end={at.end} />}
-          {open.truncated && <p className="border-t border-line p-3 text-caption text-faint">Showing the first 512 KB of {fmtSize(open.size)}.</p>}
-        </div>
+        <FileBody session={session} first={open} line={at.line} end={at.end} />
       </div>
     );
   }

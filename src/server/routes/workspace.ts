@@ -9,6 +9,7 @@ import { git } from "../../core/git.ts";
 import { contains, homeDir } from "../../core/paths.ts";
 import { rankFolders } from "../../core/folder-match.ts";
 import { findRoots, folderIndex } from "../folder-index.ts";
+import { countLines, HTML_MAX, imageFacts, shapeOf, tarEntries, textRange, zipEntries } from "../file-preview.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -81,6 +82,19 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
     try { real = realpathSync(p); } catch { return null; }
     return readable(real) ? real : null;
   };
+  // A file named by `root` and `path` of a request: inside the folder, a file, not held back.
+  const fileIn = (u: URL): { root: string; real: string; size: number } | Response => {
+    const root = allowed(u.searchParams.get("root"));
+    if (!root) return bad("outside the home directory", 403);
+    let real: string;
+    try { real = realpathSync(resolve(root, u.searchParams.get("path") ?? "")); } catch { return bad("no such file", 404); }
+    if (!contains(root, real)) return bad("outside the folder", 403);
+    const st = statSync(real);
+    if (!st.isFile()) return bad("not a file", 400);
+    const held = heldFile(real);
+    if (held) return bad(held, 403);
+    return { root, real, size: st.size };
+  };
   // The folders sessions on this machine worked in, newest first, at most `n`: one grouped read of
   // the table (a picker asks at every pause in typing), not every session parsed. A session placed
   // on another machine (the fleet's column) names a folder there.
@@ -147,23 +161,54 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
       },
     },
 
-    // One text file for the Files panel: inside the folder it was asked from, at most 512 KB.
+    // One file for the Files panel, by its kind (src/server/file-preview.ts): a text range of at most
+    // 512 KB from `offset` (a larger file is read in ranges, never whole), a table's line count, the
+    // names and sizes inside a ZIP or a tar, an image's size against the limits. A file that is none
+    // of these is named with its size and kind.
     "/api/fs/file": {
       GET: async (req: Request) => {
         const u = new URL(req.url);
-        const root = allowed(u.searchParams.get("root"));
-        if (!root) return bad("outside the home directory", 403);
-        let p: string;
-        try { p = realpathSync(resolve(root, u.searchParams.get("path") ?? "")); } catch { return bad("no such file", 404); }
-        if (!contains(root, p)) return bad("outside the folder", 403);
-        const st = statSync(p);
-        if (!st.isFile()) return bad("not a file", 400);
-        { const held = heldFile(p); if (held) return bad(held, 403); }
+        const file = fileIn(u);
+        if (file instanceof Response) return file;
+        const { root, real: p, size } = file;
+        const path = relative(root, p);
         const f = Bun.file(p);
         const head = new Uint8Array(await f.slice(0, 8000).arrayBuffer());
-        if (head.includes(0)) return json({ path: relative(root, p), size: st.size, binary: true });
-        const LIMIT = 512 * 1024;
-        return json({ path: relative(root, p), size: st.size, truncated: st.size > LIMIT, text: await f.slice(0, LIMIT).text() });
+        const shape = shapeOf(p, head);
+        const base = { path, size, kind: shape.kind, what: shape.what };
+        if (shape.kind === "image") return json({ ...base, binary: true, image: { mime: shape.mime, ...imageFacts(head.length < 65_536 ? new Uint8Array(await f.slice(0, 65_536).arrayBuffer()) : head, size) } });
+        if (shape.kind === "archive") {
+          const l = shape.archive === "zip" ? await zipEntries(f, size) : await tarEntries(f, size, shape.archive === "tgz");
+          return json({ ...base, binary: true, archive: l });
+        }
+        if (shape.kind === "binary") return json({ ...base, binary: true });
+        const offset = Math.max(0, Math.floor(Number(u.searchParams.get("offset") ?? 0)) || 0);
+        const r = await textRange(f, size, offset);
+        const more = r.to < size;
+        const rows = (shape.kind === "csv" || shape.kind === "tsv") && offset === 0 ? await countLines(f, size) : null;
+        return json({ ...base, text: r.text, from: r.from, to: r.to, truncated: more || r.from > 0, ...(rows ? { rows: rows.lines, rows_exact: rows.exact } : {}), ...(shape.kind === "html" ? { framed: size <= HTML_MAX } : {}) });
+      },
+    },
+
+    // The file itself, streamed: for the Files panel's raw view, an image and a page in a frame
+    // with no script and no network. What is neither is a download.
+    "/api/fs/raw": {
+      GET: async (req: Request) => {
+        const u = new URL(req.url);
+        const file = fileIn(u);
+        if (file instanceof Response) return file;
+        const f = Bun.file(file.real);
+        const shape = shapeOf(file.real, new Uint8Array(await f.slice(0, 8000).arrayBuffer()));
+        const h: Record<string, string> = { "x-content-type-options": "nosniff", "cache-control": "no-cache", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'none'; sandbox" };
+        if (shape.kind === "image") h["content-type"] = shape.mime!;
+        else if (shape.kind === "html" && file.size <= HTML_MAX && u.searchParams.get("as") !== "text") {
+          h["content-type"] = "text/html; charset=utf-8";
+          h["content-security-policy"] = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; sandbox";
+        } else if (shape.kind === "archive" || shape.kind === "binary") {
+          h["content-type"] = "application/octet-stream";
+          h["content-disposition"] = `attachment; filename="${basename(file.real).replace(/["\\\r\n]/g, "_")}"`;
+        } else h["content-type"] = "text/plain; charset=utf-8";
+        return new Response(f, { headers: h });
       },
     },
 
