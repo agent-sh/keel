@@ -416,7 +416,7 @@ export class Store {
   sideFailed?: (e: unknown, what: string) => void;
   // Set by the daemon (src/admin/stall.ts): a piece of the store's own work that can hold the
   // loop runs inside it, so a stall it makes is named (the side rows' commit, a whole collection).
-  timed?: <T>(label: () => string, f: () => T) => T;
+  timed?: <T>(label: () => string, f: () => T, own?: boolean, kind?: string) => T;
 
   // Told of each event as it is stored (the search index, src/server/routes/search.ts): its row
   // number in the table, and `bulk` for one stored with many others in a transaction still open.
@@ -1221,7 +1221,8 @@ export class Store {
     const who = asker();
     // (Named in a stall it makes: the table's part is the statement's, the parse after it is nobody's else.)
     const run = () => this.readRun(k, i, who);
-    return this.timed ? this.timed(() => `reading and parsing a run of a session's event bodies on the loop (asked by ${who})`, run) : run();
+    // (One of many in a walk over a session's history: the stall such a walk makes names them together, by their kind.)
+    return this.timed ? this.timed(() => `reading and parsing a run of a session's event bodies on the loop (asked by ${who})`, run, false, "event bodies") : run();
   }
   private readRun(k: Kept, i: number, who: string): Run {
     const end = Math.min(k.all.length, (i + 1) * RUN);

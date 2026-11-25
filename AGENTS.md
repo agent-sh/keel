@@ -173,7 +173,10 @@ under `~/.cache/keel-work/bun/research/`.
   child), stopped. The decision is pure (`src/admin/stall-cause.ts`), and
   stalls with one cause are one Errors row. The watcher sees no JavaScript
   frames: synchronous work that can be long is wrapped in `timed`
-  (`src/admin/stall.ts`) so a stall that computed names it.
+  (`src/admin/stall.ts`) so a stall that computed names it. Work that is long
+  only as many short sections (a walk over a session's history reads its
+  event bodies a run at a time) gives `timed` its kind: the sections of one
+  kind are summed between two ticks and named together, with how many.
 - The daemon's environment holds no secret (`src/safety/closed-env.ts`, `src/safety/env-secret.ts`). A
   command a session runs as the same user can read `/proc/<daemon>/environ`, which shows what the
   daemon was started with. At start the daemon is started again once in the same process (the

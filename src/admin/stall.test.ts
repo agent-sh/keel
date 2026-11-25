@@ -296,6 +296,69 @@ test("what held the loop is named, the row is filed under the session its path n
   expect(m.tick()!.during).toBeUndefined();
 });
 
+// A walk over a long session's history reads its event bodies a run at a time, each a section of a few
+// milliseconds: no one of them is what held the loop, and all of them together are.
+test("many short sections of one kind that held the loop between them are named, with how many, and their row is one whatever the count", () => {
+  const { m, pass } = monitor();
+  const read = "reading and parsing a run of a session's event bodies on the loop (asked by callOf < callKey)";
+  const walk = (runs: number, busy = 6) => { for (let i = 0; i < runs; i++) { timed(() => read, () => pass(6, busy), false, "event bodies"); pass(0.2); } };
+  walk(395);
+  pass(100);
+  const s = m.tick()!;
+  expect(s.during).toEqual({ label: read, ms: expect.closeTo(2_370, 3), times: 395 });
+  const d = describeStall(s);
+  expect(d.message).toBe(`Daemon unresponsive for 2.4 s while ${read}, 395 times`);
+  expect(d.context).toMatchObject({ during: read, during_ms: 2_370, during_times: 395 });
+  // The cause as a list of stalls says it carries no count: two walks are one cause there too.
+  expect(d.what).toBe(`while ${read}`);
+  // Another walk of another length is the same cause: one row.
+  walk(300);
+  pass(100);
+  expect(describeStall(m.tick()!).group).toBe(d.group);
+  // What was summed is one tick's: the sections of the walk before are not counted into the next stall.
+  walk(20);
+  pass(2_000);
+  expect(m.tick()!.during).toBeUndefined();
+  // One section that held the loop by itself is named before the many beside it.
+  walk(100);
+  timed(() => "answering GET /api/daemon", () => pass(1_500));
+  pass(100);
+  expect(m.tick()!.during).toMatchObject({ label: "answering GET /api/daemon", ms: 1_500 });
+  // Sections the process slept in (a disk that did not answer) did not hold the loop with their own code.
+  walk(395, 0);
+  pass(100, 0);
+  expect(m.tick()!.during).toBeUndefined();
+  // A section that says no kind is not summed: sixty short handlers are sixty requests, not one cause.
+  for (let i = 0; i < 60; i++) timed(() => "answering GET /api/daemon", () => pass(40));
+  pass(100);
+  expect(m.tick()!.during).toBeUndefined();
+});
+
+// The walk itself, on a store: a reader that goes back over a session's replies for something none of them
+// holds reads every body the store does not have in memory, on the loop, with no yield between the runs.
+test("a walk over a long session's history that held the loop says the bodies it read and who asked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-stall-walk-"));
+  const store = new Store(dir);
+  try {
+    const { m, pass } = monitor();
+    const s = store.createSession({ model: "m:x", workspace: dir, title: "long" });
+    const RUNS = 40;
+    for (let i = 0; i < RUNS * 64; i++) store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: `call-${i}`, name: "Bash", input: { command: "true" } }] });
+    // As after a long idle time: the events are kept, their bodies are not.
+    (store as unknown as { forget(id: string): void }).forget(s.id);
+    // (Each read takes a time on the test's clock: under the 50 ms a section is noted from by itself.)
+    store.timed = (label, f, own, kind) => timed(label, () => { const r = f(); pass(30); return r; }, own, kind);
+    const callOf = (id: string) => store.lineage(s.id).findLast((e) => e.kind === "assistant" && (e.data.blocks as { id?: string }[]).some((b) => b.id === id));
+    expect(callOf("a call a program made")).toBeUndefined();
+    pass(100);
+    const stall = m.tick()!;
+    expect(stall.during).toMatchObject({ ms: RUNS * 30, times: RUNS });
+    expect(describeStall(stall).message).toMatch(/^Daemon unresponsive for 1\.2 s while reading and parsing a run of a session's event bodies on the loop \(asked by .+\), 40 times$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the timer fires ten times a second while the daemon works and once a second while it is idle", () => {
   const { m, clock, seen, pass } = monitor();
   expect(m.period()).toBe(100);

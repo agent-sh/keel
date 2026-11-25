@@ -57,7 +57,11 @@ const NOTED_MS = 50;
 const WAITING_MS = 8000;
 
 // `label`: what the daemon was doing, as the words after "while": "answering GET /api/daemon".
-type Section = { label: string; ms: number };
+// `times`: the sections of one kind that made it up, when it was not one section (see `timed`). Its `ms` is then
+// theirs since the last tick on time, the ones before the loop was held included: it can pass the stall's own.
+type Section = { label: string; ms: number; times?: number };
+// The sections of one kind since the last tick: their time and processor time together, how many, and the last one's label.
+type Repeated = { ms: number; cpu: number; n: number; label: () => string };
 // `work`: the daemon's own long passes (a start's read of its sessions), by what they are: in progress (false),
 // or over since the last tick (true: a pass that ends as the loop comes free is still what the tick was late for).
 // `inside`: the longest section the process was not busy for (it slept in
@@ -65,7 +69,8 @@ type Section = { label: string; ms: number };
 // `beat`: the number the watcher reads; `due`: when the next tick is due; `depth`: timed sections open.
 // `wake`: set while the timer is armed for its idle second: work that begins then brings the next tick forward.
 // `idle`: the last beat said the loop is idle (the watcher looks once a second then, and is told when that ends).
-type State = { longest: Section | null; inside: Section | null; waited?: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number; beat?: Int32Array; seq: number; due: number; depth: number; wake?: () => void; idle?: boolean };
+// `repeated`: the sections that said their kind, summed by it since the last tick.
+type State = { longest: Section | null; inside: Section | null; repeated?: Map<string, Repeated>; waited?: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number; beat?: Int32Array; seq: number; due: number; depth: number; wake?: () => void; idle?: boolean };
 const state = (): State => (G.__keelStall ??= { longest: null, inside: null, flights: new Map(), work: new Map(), touched: 0, seq: 0, due: 0, depth: 0 });
 // Tells the watcher the loop is alive and will say so again within `allowMs`.
 // A watcher that was looking once a second (the loop was idle) is woken to look now.
@@ -111,7 +116,10 @@ let cpuMs = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1
 // `own`: a pass the daemon makes by its own clock (a sampler, a sweep). It is watched the same way, but
 // it is not work: it neither brings the idle tick forward nor counts the daemon as working for the
 // next few seconds, which an idle daemon would otherwise do again every time one of them came due.
-export function timed<T>(label: () => string, f: () => T, own = false): T {
+// `kind`: for a section that comes many times in one stretch of code that does not yield (a run of a
+// session's event bodies read for a walk over its history): each is far too short to be the longest, so
+// the sections of one kind are summed between two ticks, and a stall they made together names them.
+export function timed<T>(label: () => string, f: () => T, own = false, kind?: string): T {
   const t0 = performance.now();
   const c0 = cpuMs();
   const st = state();
@@ -124,8 +132,15 @@ export function timed<T>(label: () => string, f: () => T, own = false): T {
     const ms = now - t0;
     if (!own) st.touched = now;
     if (--st.depth === 0) beat(st, Math.max(0, st.due - now));
+    const cpu = kind !== undefined || ms >= NOTED_MS ? cpuMs() - c0 : 0;
+    if (kind !== undefined) {
+      const sums = (st.repeated ??= new Map());
+      const sum = sums.get(kind);
+      if (sum) { sum.ms += ms; sum.cpu += cpu; sum.n++; sum.label = label; }
+      else sums.set(kind, { ms, cpu, n: 1, label });
+    }
     if (ms >= NOTED_MS) {
-      const busy = cpuMs() - c0 >= ms * 0.5;
+      const busy = cpu >= ms * 0.5;
       if (busy && ms > (st.longest?.ms ?? 0)) st.longest = { label: label(), ms };
       else if (!busy && ms > (st.inside?.ms ?? 0)) st.inside = { label: label(), ms };
     }
@@ -234,13 +249,15 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
   const slept = own ? s.within ?? s.during : known ? s.during : undefined;
   const also = busy && known?.also ? `; also ${known.also}` : "";
   // The row's title is cut short where it is listed: how long and what come first.
-  const what = busy
+  // (`times`: how many sections a summed name stands for. In the message alone: the cause is the same whatever the count.)
+  const said = (times: string) => busy
     ? s.during
-      ? ` while ${s.during.label}${also}`
+      ? ` while ${s.during.label}${times}${also}`
       : `: ${kernel ? kernelWords(known) : "blocked by its own code"}, ${s.work?.length ? `with ${s.work.join(" and ")} in progress` : "outside anything it times"}${also}`
     : known
       ? `: ${known.text}${s.waited ? `: ${s.waited.label}` : ""}${slept ? ` while ${slept.label}` : ""}`
       : `: its process was not running (a blocking call, or a stopped or starved machine)${c ? `; ${c.text}` : ""}`;
+  const what = said("");
   const ran = [
     s.turns.length ? `${s.turns.length} turn${s.turns.length > 1 ? "s were" : " was"} running` : "",
     s.in_flight.length ? `${s.in_flight.length} request${s.in_flight.length > 1 ? "s" : ""} waited` : "",
@@ -249,14 +266,14 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
   const section = busy ? s.during : own ? slept : undefined;
   const where = section ? section.label : busy ? (s.work?.length ? s.work.join(" and ") : "untimed") : "";
   return {
-    message: `Daemon unresponsive for ${secs(ms)}${what}${ran ? ` (${ran})` : ""}`,
+    message: `Daemon unresponsive for ${secs(ms)}${said(s.during?.times ? `, ${s.during.times} times` : "")}${ran ? ` (${ran})` : ""}`,
     ms: Math.round(ms),
     group: `stall ${known?.key ?? (busy ? "compute" : "unknown")}${s.waited ? " the log's restart" : ""}${where ? ` ${where}` : ""}`,
     what: what.replace(/^:? /, ""),
     kind: known?.kind ?? (busy ? "compute" : "unknown"),
     context: {
       kind: "stall", ms: Math.round(ms), busy_ms: Math.round(s.busy_ms),
-      ...(s.during ? { during: s.during.label, during_ms: Math.round(s.during.ms), ...(sessionIn(s.during.label) ? { session: sessionIn(s.during.label) } : {}) } : {}),
+      ...(s.during ? { during: s.during.label, during_ms: Math.round(s.during.ms), ...(s.during.times ? { during_times: s.during.times } : {}), ...(sessionIn(s.during.label) ? { session: sessionIn(s.during.label) } : {}) } : {}),
       ...(s.within ? { within: s.within.label, within_ms: Math.round(s.within.ms) } : {}),
       ...(s.waited ? { waited: s.waited.label, waited_ms: Math.round(s.waited.ms) } : {}),
       ...(c ? { cause: defined({ ...c, ...(busy && !kernel && !c.note ? { note: UNSEEN } : {}) }) } : {}),
@@ -351,6 +368,7 @@ export class StallMonitor {
     this.last = performance.now();
     this.cpuLast = cpuMs();
     state().longest = state().inside = null;
+    state().repeated?.clear();
     this.arm();
   }
 
@@ -426,14 +444,23 @@ export class StallMonitor {
     this.last = now;
     this.cpuLast = cpu;
     st.longest = st.inside = null;
+    // The sections of one kind that together took the most of the time the process was busy in.
+    let most: Repeated | undefined;
+    for (const sum of st.repeated?.values() ?? []) if (sum.n > 1 && sum.cpu >= sum.ms * 0.5 && sum.ms > (most?.ms ?? 0)) most = sum;
+    st.repeated?.clear();
     const work = [...st.work.keys()];
     for (const [label, over] of st.work) if (over) st.work.delete(label);
     if (!this.timer) this.arm(false);
     try { this.deps.tick?.(this.working()); } catch {}
     const row = this.deps.thresholdMs ?? STALL_MS;
     // A section that was timed says exactly how long it held the loop, also when the tick was a long one.
-    const during = longest && longest.ms >= late * 0.5 ? longest : undefined;
-    const held = during ? Math.max(late, during.ms) : late;
+    const one = longest && longest.ms >= late * 0.5 ? longest : undefined;
+    // With no such section, many short ones of one kind that took half of it between them are what held it.
+    // (How long it was held is the tick's word then: the loop may have run between two of them. The sum is of
+    // the whole time since the last tick, so sections that yielded before an unrelated stall count toward its half:
+    // at most a tick's worth, which names a stall only where the bar to keep one is set under a few hundred ms.)
+    const during: Section | undefined = one ?? (most && most.ms >= late * 0.5 ? { label: most.label(), ms: most.ms, times: most.n } : undefined);
+    const held = one ? Math.max(late, one.ms) : late;
     if (held < keepFrom(row)) return undefined;
     // The watcher told of this stall a moment ago (it began while the timer slept).
     if (now - this.unsaidAt < SAME_MS) return undefined;
