@@ -33,7 +33,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, timeBucket, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, WAITS_ON_YOU, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, stateWords, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, WAITS_ON_YOU, backgroundOf, dotWord, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countName, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, stateWords, wentWrongWord } from "../../../src/core/state-words.ts";
 import { OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
@@ -292,6 +292,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const left = !gone ? null : deleted || (!live && !given.archived) ? "deleted" : given.archived ? "restored" : "archived";
   // News is a dot at the row's end, where the list's count of what is new counts it (lib/list-order.ts: isNews).
   const news = unread && !gone && !left && !offline && isNews(w);
+  // The dot's word a phone shows in the row (bridge.css): the states the row does not say in words, what it waits on in the background, news.
+  const dotWords = !offline && !left && (!SPELLED.includes(w) || !!backgroundOf(st) || news);
   // The card beside the row is away while a menu of the row is open over it.
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
   const open = (beside: boolean) => {
@@ -311,6 +313,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       data-shown={shown || undefined}
       data-unread={unread || undefined}
       data-offline={offline || undefined}
+      data-dotword={dotWords ? (backgroundOf(st) ? "long" : "short") : undefined}
       data-gone={gone || undefined}
       data-pinned={pinned || undefined}
       data-under={under || undefined}
@@ -357,6 +360,11 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
             : SPELLED.includes(w)
             ? <span className="k-row-state" data-testid="row-state">{/* One line: how many agents work is said in the session itself, not on its row. */lines === "one" ? stateWords(st).word : stateLabel(st)}</span>
             : lines === "two" && <RestLine s={s} />}
+          {/* On a phone there is no tooltip to read the dot's word in: a state the row does not say in words (a session at rest,
+              what it waits on in the background) and the white news dot are said here, in the row (bridge.css shows it there only). */}
+          {dotWords && (
+            <span className="k-row-dot-word" aria-hidden="true" data-testid="row-dot-word" data-bg={backgroundOf(st)}>{[!SPELLED.includes(w) || backgroundOf(st) ? dotWord(st) : "", news ? NEW : ""].filter(Boolean).join(" · ")}</span>
+          )}
           {/* A state that is not current because the page does not hear the daemon says since when. (A machine out of reach: above.) */}
           {!left && !offline && !!st.as_of && <span className="shrink-0 whitespace-nowrap text-micro text-muted" data-testid="row-asof">{asOf(clock(st.as_of))}</span>}
           {!offline && w === "fail" && failWord(st.cls) && !on && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}

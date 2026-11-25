@@ -352,6 +352,39 @@
 /* A row has one state signal, its mark. Its words are quiet; only what needs the owner keeps its ink. */
 .k-row-state { margin-top: 1px; font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-state { color: var(--st-need-ink); }
+/* The dot's word beside the title, drawn on a phone only (a desk has the dot's tooltip). A session that waits on what it
+   left going says that, not the bare Working the ring is a kind of. */
+.k-row-dot-word { display: none; }
+@media (max-width: 767px) {
+  .k-row-sub .k-row-dot-word { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: 500; line-height: 1rem; color: var(--faint); }
+  .k-row[data-dotword="long"] .k-row-sub > .k-row-state { display: none; }
+  .k-row[data-dotword="long"] .k-row-sub > .k-row-why { display: none; }
+  /* A short word (Done, New) follows the title on its line, the title giving way; a long one (what it waits on in the
+     background) is the line under the title, where a row says it whole at a large text size too. */
+  .k-row[data-dotword="short"] .k-row-main { flex-wrap: nowrap; }
+  .k-row[data-dotword="short"] .k-row-main > .k-row-title { flex: 0 1 auto; min-width: 2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .k-row[data-dotword="short"] .k-row-main > .k-row-sub { flex: 0 0 auto; }
+  /* A word that does not follow the title is the line under it, as wide as the row (the two-line row of the list). */
+  .k-index .k-row[data-dotword="long"] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem auto; column-gap: 0.5625rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
+  .k-index .k-row[data-dotword="long"] .k-row-main { display: contents; }
+  .k-index .k-row[data-dotword="long"] > .k-mark { grid-area: 1 / 1; }
+  .k-index .k-row[data-dotword="long"] .k-row-title { grid-area: 1 / 2; }
+  .k-index .k-row[data-dotword="long"] .k-row-end { grid-area: 1 / 3; min-width: 0; flex-shrink: 1; }
+  .k-index .k-row[data-dotword="long"] .k-row-dot-word { white-space: normal; overflow: visible; }
+  .k-index .k-row[data-dotword="long"] .k-row-sub { grid-column: 2 / -1; grid-row: 2; flex: none; height: auto; min-height: 1rem; line-height: 1rem; overflow: visible; }
+}
+/* Where the list is too narrow to leave a title room beside the word (a large text size), every word is the line under it. */
+@container rail (max-width: 17rem) {
+  @media (max-width: 767px) {
+    .k-index .k-row[data-dotword="short"] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem auto; column-gap: 0.5625rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
+    .k-index .k-row[data-dotword="short"] .k-row-main { display: contents; }
+    .k-index .k-row[data-dotword="short"] > .k-mark { grid-area: 1 / 1; }
+    .k-index .k-row[data-dotword="short"] .k-row-title { grid-area: 1 / 2; flex: none; min-width: 0; }
+    .k-index .k-row[data-dotword="short"] .k-row-end { grid-area: 1 / 3; min-width: 0; flex-shrink: 1; }
+    .k-index .k-row[data-dotword="short"] .k-row-dot-word { white-space: normal; overflow: visible; }
+    .k-index .k-row[data-dotword="short"] .k-row-sub { grid-column: 2 / -1; grid-row: 2; flex: none; height: auto; min-height: 1rem; line-height: 1rem; overflow: visible; }
+  }
+}
 /* A failure's class beside the word, in its colour: rate limit, billing, sign-in. */
 .k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--st-fail-ink); }
 /* The state line reads as one sentence on one line: the word, then why, cut at the row's edge.

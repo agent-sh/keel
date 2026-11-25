@@ -1272,5 +1272,56 @@ for (const size of SIZES) {
         await drop(request, ...ids);
       }
     });
+    test("a row's dot says its word on a phone, where a tooltip cannot be read: done, a command or agents in the background, news", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(180_000);
+      const made: string[] = [];
+      const mk = async (title: string, text: string) => { const id = await start(request, title); made.push(id); await request.post(`/api/sessions/${id}/messages`, { data: { text } }); return id; };
+      try {
+        const hold = calls([{ name: "Bash", input: { command: "sleep 120" } }]);
+        const lead = await mk("Phone dots lead", calls([{ name: "spawn_agent", input: { message: `Hold the lane\n${hold}`, isolation: "none" } }]));
+        const command = await mk("Phone dots command", calls([{ name: "Bash", input: { command: "sleep 240", run_in_background: true, description: "the long migration" } }]));
+        const done = await mk("Phone dots done", "script:say Done.");
+        const news = await mk("Phone dots news", "script:say Done, and not read yet.");
+        for (const id of [done, news]) await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        await expect.poll(async () => { const st = (await (await request.get("/api/state")).json()).states ?? {}; return [lead, command].map((id) => st[id]?.watch).join(" "); }, { timeout: 60_000 }).toBe("work work");
+        await request.post(`/api/sessions/${news}/marks`, { data: { unread: true } });
+        await request.post(`/api/sessions/${done}/marks`, { data: { unread: false } });
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${done}`);
+            await page.getByTestId("show-sidebar").first().tap();
+            const row = (id: string) => page.locator(`[data-testid="session-row"][data-session="${id}"]`);
+            // The words are in the row's visible part: a press at the middle of the word reaches the row's own text (not clipped away, nor under another part), and it is whole.
+            const shown = (r: Locator, word: string) => r.evaluate((el, w) => {
+              const e = [...el.querySelectorAll<HTMLElement>("span")].find((x) => x.children.length === 0 && (x.textContent ?? "").includes(w) && !x.classList.contains("sr-only"));
+              if (!e) return false;
+              const b = e.getBoundingClientRect();
+              if (b.width < 1 || e.scrollWidth > e.clientWidth + 1) return false;
+              const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+              return !!at && e.contains(at);
+            }, word);
+            for (const id of made) await expect(row(id)).toBeVisible();
+            await page.waitForTimeout(500);
+            // What the dot says to a reader is written in its row for a finger: there is no tooltip to wait for.
+            for (const id of made) await row(id).scrollIntoViewIfNeeded();
+            for (const [id, word] of [[lead, "Waiting on agents"], [command, "Command in background"], [done, "Done"], [news, "Done"]] as const) {
+              const mark = row(id).locator(".k-mark");
+              await expect(mark).toHaveAttribute("aria-label", word);
+              await row(id).scrollIntoViewIfNeeded();
+              expect(await shown(row(id), word), `"${word}" shown in the row at ${scale * 100}% text`).toBe(true);
+            }
+            expect(await shown(row(news), "New"), "the white dot's word").toBe(true);
+            expect(await row(done).evaluate((el) => (el as HTMLElement).innerText), "a row read has no news").not.toContain("New");
+            await noSideScroll(page);
+            await shoot(page, `phone-surfaces-33-dot-words-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+        await request.post(`/api/sessions/${command}/interrupt`, { data: { by: "owner" } });
+      } finally {
+        await drop(request, ...made);
+      }
+    });
   });
 }
