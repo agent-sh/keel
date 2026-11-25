@@ -15,7 +15,7 @@ import { classifyCall } from "./gate.ts";
 import type { CallClass } from "./policy.ts";
 import { Shadow, type DiffResult, type FileChange } from "./shadow.ts";
 import { hunkPatch } from "./patch.ts";
-import { branchNote, leftTurns } from "./branch-note.ts";
+import { branchNote, leftTurns, offBranch, unreadNotes } from "./branch-note.ts";
 import type { StoredEvent } from "../core/types.ts";
 
 // A read, and a tool that acts on what Keel keeps for the session (ToolKind "own"), touch no file of the workspace.
@@ -531,11 +531,22 @@ export class Checkpoints {
   // A turn's changed files never change: read once.
   private turnFiles = new Map<string, string[]>();
 
+  // The turns each note read so far told, by the note's id: a note never changes, so it is read once.
+  private told = new Map<string, readonly number[]>();
+
   // What the disk holds from turns the branch `line` does not contain, told once (src/safety/branch-note.ts).
   async branchNote(s: Session, line: readonly StoredEvent[]): Promise<{ short: string; text: string; turns: number[] } | undefined> {
     const starts = this.here(s).filter((c) => c.at === "start" && c.tree);
     if (!starts.length) return undefined;
-    const left = leftTurns(starts.map((c) => c.turn), line);
+    const turns = starts.map((c) => c.turn);
+    // A turn that is off the branch is the only reason to read a note's body (every first request asks).
+    // The bodies of the notes that may tell it are read off the loop before they are read here.
+    const off = offBranch(turns, line);
+    if (!off.length) return undefined;
+    const unread = unreadNotes(line, Math.min(...off), this.told);
+    if (unread.length) await this.store.warmBodies(s.id, unread[0]!.seq, unread.at(-1)!.seq);
+    if (this.told.size > 50_000) this.told.clear();
+    const left = leftTurns(turns, line, this.told);
     if (!left.length) return undefined;
     const rows = this.here(s);
     const files = new Set<string>();
