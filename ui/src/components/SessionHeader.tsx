@@ -62,7 +62,9 @@ function useFit(tools: Tool[], reserve: number) {
   // A folded tool is measured in the list, where it may be styled a little
   // differently: its row width is the one it folded at, moved by what it gained or lost since.
   const folded = useRef<Record<string, { row: number; list: number }>>({});
-  const [out, setOut] = useState<string[]>([]);
+  // What has no resting place starts in the menu: a tool drawn in the row for the first render and moved to
+  // the menu by the first measure is mounted twice, and each mount reads what it shows.
+  const [out, setOut] = useState<string[]>(() => tools.filter((t) => !t.rest).map((t) => t.id));
   const fit = useRef(() => {});
   fit.current = () => {
     const el = head.current;

@@ -62,6 +62,7 @@ const replay = (list: Approval[], seen: Approval[], session?: string) =>
 // Sessions on screen now (counted per view): a reconnect rereads these, not
 // every session this tab has ever shown. The rest come from the global list.
 const shown = new Map<string, number>();
+let settingsRead: Promise<void> | null = null;
 
 export const safety = {
   // A session deleted meanwhile is dropped, not an error: its views unmount,
@@ -87,8 +88,9 @@ export const safety = {
   // A view shows this session's cards and mode: loaded now, and again on a
   // reconnect while the view stays. Returns the release.
   watch(id: string): () => void {
+    // A second view of a session already shown reads nothing: the first read, the frames and a reconnect keep it.
+    if (!shown.has(id)) safety.loadSession(id).catch(reportError);
     shown.set(id, (shown.get(id) ?? 0) + 1);
-    safety.loadSession(id).catch(reportError);
     return () => {
       const n = (shown.get(id) ?? 1) - 1;
       if (n > 0) shown.set(id, n);
@@ -103,9 +105,16 @@ export const safety = {
     for (const a of seen) by[a.session_id] ??= [];
     set({ approvals: Object.fromEntries(Object.entries(by).map(([k, list]) => [k, replay(list, seen, k)])) });
   },
-  async loadSettings() {
-    const r = await api<{ default_mode?: string; modes: ModeInfo[]; mode_groups?: ModeGroup[]; sandbox?: SandboxInfo }>("/api/permissions/settings");
-    set({ modes: r.modes, modeGroups: r.mode_groups ?? [], sandbox: r.sandbox ?? null, defaultMode: r.default_mode ?? null });
+  // Two views that need the modes at once share the read.
+  loadSettings(): Promise<void> {
+    return (settingsRead ??= (async () => {
+      try {
+        const r = await api<{ default_mode?: string; modes: ModeInfo[]; mode_groups?: ModeGroup[]; sandbox?: SandboxInfo }>("/api/permissions/settings");
+        set({ modes: r.modes, modeGroups: r.mode_groups ?? [], sandbox: r.sandbox ?? null, defaultMode: r.default_mode ?? null });
+      } finally {
+        settingsRead = null;
+      }
+    })());
   },
   async loadGrants() {
     const r = await api<{ grants: Rule[] }>("/api/permissions/grants");
