@@ -190,15 +190,20 @@ test("a blip says nothing; a request let through that fails keeps the others wai
 
 test("a stop leaves the wait at once; the last one to leave ends it; the ceiling fails with the failure itself", async () => {
   const closed: boolean[] = [];
-  const o = new Outages({ timing: FAST, probe: async () => { throw gone(); } });
-  o.listen({ close: (_x, _ms, answered) => closed.push(answered) });
+  let probes = 0;
+  const o = new Outages({ timing: FAST, probe: async () => { probes++; throw gone(); } });
+  // The wait says it is confirmed when it opens: that is the signal to stop on, not a time.
+  const confirmed = Promise.withResolvers<void>();
+  o.listen({ open: () => confirmed.resolve(), close: (_x, _ms, answered) => closed.push(answered) });
   const stop = new AbortController();
   const w = o.wait("p", gone(), stop.signal, { session: "a" });
-  const t0 = Date.now();
-  await Bun.sleep(40); // confirmed by now
+  await confirmed.promise;
+  expect(await Promise.race([w.then(() => "left", () => "left"), Promise.resolve("waiting")])).toBe("waiting");
+  const before = probes;
   stop.abort();
   await expect(w).rejects.toMatchObject({ name: "AbortError" });
-  expect(Date.now() - t0).toBeLessThan(80);
+  // Gone with the abort itself: no further probe was made for it, and nothing of it is left to wait for.
+  expect(probes).toBe(before);
   expect(o.of("a")).toBeUndefined();
   expect(o.list()).toHaveLength(0);
   expect(closed).toEqual([false]);
