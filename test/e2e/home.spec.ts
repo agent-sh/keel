@@ -562,6 +562,46 @@ test("home: every way to a waiting session lands on the list of requests", async
   }
 });
 
+// A Review on a row that says how many wait goes through all of them, as Alt A does, and the owner is
+// on the home screen again when the last is answered: not in the agent's session they answered in.
+test("home: Review goes through every request that waits, and ends on the home screen", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(180_000);
+  const states = async (id: string) => ((await (await request.get(`/api/sessions/${id}/approvals?all`)).json()).approvals as any[]).map((a) => `${a.state}${a.choice ? `/${a.choice}` : ""}`).join(",") || "none";
+  const spawn = (name: string, word: string) => ({ name: "spawn_agent", input: { message: `${name}\nscript:calls ${JSON.stringify([bash(`echo ${word} > ${word}.txt`)])}`, isolation: "none" } });
+  const parent = await asking(request, "Home: parent of two asking agents", [spawn("Check A", "review_a"), spawn("Check B", "review_b"), { name: "wait_agent", input: {} }], "batch");
+  try {
+    let kids: string[] = [];
+    await expect.poll(async () => (kids = ((await (await request.get(`/api/sessions/${parent.id}/agents`)).json()).agents ?? []).map((a: any) => a.session_id)).length, { timeout: 30_000 }).toBe(2);
+    for (const k of kids) await expect.poll(() => states(k), { timeout: 30_000 }).toBe("pending");
+    await page.goto("/");
+    const review = row(page, parent.id).getByTestId("home-review");
+    // The row says how many it goes through, and what key goes to the next.
+    await expect(review).toHaveText("Review 2", { timeout: 30_000 });
+    await expect(review).toHaveAttribute("title", /all 2 requests in turn.*Alt A/);
+    await expect(review).toBeEnabled();
+    await shoot(page, "home-11-review-all");
+    await review.click();
+    const ready = async () => { const allow = page.getByTestId("allow-once"); await expect(allow).toBeFocused(); await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 5000 }); };
+    await expect(page).toHaveURL(/\/s\//);
+    const first = page.url();
+    await ready();
+    await page.keyboard.press("Enter");
+    // The next agent's request opens by itself, with the keyboard on it.
+    await expect.poll(() => page.url()).not.toBe(first);
+    await expect(page).toHaveURL(/\/s\//);
+    await ready();
+    await page.keyboard.press("Enter");
+    // Both are answered, and the owner is where they started.
+    for (const k of kids) await expect.poll(() => states(k), { timeout: 30_000 }).toBe("allowed/once");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("home-watch")).toBeVisible();
+    await shoot(page, "home-12-all-answered");
+  } finally {
+    await drop(request, [parent.id]);
+  }
+});
+
 // A row's Answer opens the session that asks as the start of an answering sequence, so the owner is
 // back on the home screen once they have answered it, not left in the session they answered in.
 test("home: answering what a row opened leads back to the home screen", async ({ page, request }) => {
