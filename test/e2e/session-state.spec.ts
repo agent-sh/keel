@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { openPanel, shoot, SHOTS } from "./shots.ts";
@@ -233,19 +233,30 @@ test("is anything stuck: a held stream, a silent command and a stalled agent are
     await page.goto(`/s/${parent}`);
     const strip = page.getByTestId("stuck");
     await expect(strip).toBeVisible({ timeout: 15_000 });
+    // (The list shows its first three entries: while there are more that made no progress, it is opened to all of them.)
+    await expect.poll(async () => {
+      const more = strip.getByTestId("stuck-more");
+      if (await more.count() && (await more.getAttribute("aria-expanded")) !== "true") await more.click();
+      return Promise.all([stream, tool, parent].map((id) => strip.locator(`[data-session="${id}"]`).count()));
+    }, { timeout: 30_000 }).toEqual([1, 1, 1]);
+    // (A tooltip moves from title to data-tip once a pointer has been over it.)
+    const tip = async (el: Locator) => (await el.getAttribute("title")) ?? (await el.getAttribute("data-tip")) ?? "";
     // One line an entry (the dot, the title, how long) in the colour of what needs the owner; what it has not done and
     // whose agent it is are in the tooltip.
-    await expect(strip.locator(`[data-session="${stream}"]`)).toHaveAttribute("title", /no output/);
-    await expect(strip.locator(`[data-session="${tool}"]`)).toHaveAttribute("title", /Running until .+, no output/);
-    await expect(strip.locator(`[data-session="${agent}"]`)).toHaveAttribute("title", /agent of Audit the three services/);
-    for (const id of [stream, tool, agent]) {
+    await expect.poll(() => tip(strip.locator(`[data-session="${stream}"]`))).toMatch(/no output/);
+    await expect.poll(() => tip(strip.locator(`[data-session="${tool}"]`))).toMatch(/Running until .+, no output/);
+    // An agent is no entry of its own: the session it works for is, with how many of its agents are stuck.
+    await expect.poll(() => tip(strip.locator(`[data-session="${parent}"]`))).toMatch(/agent of Audit the three services/);
+    await expect(strip.locator(`[data-session="${parent}"]`)).toHaveAttribute("data-agents", "1");
+    await expect(strip.locator(`[data-session="${parent}"] [data-testid="stuck-agents"]`)).toHaveText("1 agent");
+    await expect(strip.locator(`[data-session="${agent}"]`)).toHaveCount(0);
+    for (const id of [stream, tool, parent]) {
       const item = strip.locator(`[data-session="${id}"]`);
       await expect(item.locator(".k-mark"), "the needs-you dot").toHaveAttribute("data-watch", "need");
       expect(await item.evaluate((el) => el.getBoundingClientRect().height), "one line").toBeLessThan(32);
       await expect(item.locator(".k-stuck-what")).toHaveCount(0);
     }
     await expect(strip.locator(`[data-session="${chatty}"]`)).toHaveCount(0);
-    await expect(strip.locator(`[data-session="${parent}"]`)).toHaveCount(0);
     await shoot(page, "session-state-04-stuck");
     await strip.locator(`[data-session="${tool}"]`).click();
     await expect(page).toHaveURL(new RegExp(`/s/${tool}$`));
@@ -1054,6 +1065,60 @@ test("twelve sessions in mixed states read apart at a glance, wide and on a phon
     await expect(row(page, approval)).toBeVisible();
     await shoot(page, "session-state-12-phone-list");
   } finally {
+    mkdirSync(WS, { recursive: true });
+    writeFileSync(gate, "");
+    await drop(request, made);
+  }
+});
+
+// Feature (UX-M62): the list of what made no progress shows its first three entries and says how many more, and an
+// agent is no entry of its own: the session it works for is, with how many of its agents are stuck.
+test("what made no progress is capped at three entries with the rest a count, agents folded into their session", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.setTimeout(240_000);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const gate = `${WS}/cap-${Date.now().toString(36)}.go`;
+  const hold = (n: number) => script([{ name: "Bash", input: { command: `until [ -f ${gate} ]; do sleep 0.2; done; echo ${n}` } }]);
+  try {
+    const singles: string[] = [];
+    for (let i = 0; i < 4; i++) { const id = await start(request, `Cap: silent command ${i + 1}`); made.push(id); singles.push(id); await send(request, id, hold(i)); }
+    const lead = await start(request, "Cap: a coordinator with two stalled helpers");
+    made.push(lead);
+    const agent = (n: number) => ({ name: "spawn_agent", input: { message: `Quiet worker ${n}\n${hold(n)}`, isolation: "none" } });
+    await send(request, lead, `script:batch ${JSON.stringify([agent(1), agent(2)])}`);
+    expect((await request.patch("/api/settings", { data: { stuck: { model_s: 5, tool_s: 5 } } })).ok()).toBe(true);
+    // The entries the page should list: each stuck session once, its agents at the root of their tree.
+    const entries = async () => {
+      const { items } = await (await request.get("/api/stuck")).json() as { items: { session_id: string; agent: boolean; parent_id?: string }[] };
+      const sessions = (await (await request.get("/api/sessions")).json()).sessions as { id: string; parent_id?: string }[];
+      const parent = new Map(sessions.map((s) => [s.id, s.parent_id]));
+      const root = (id: string) => { for (let i = 0; i < 16 && parent.get(id); i++) id = parent.get(id)!; return id; };
+      return new Set(items.map((i) => root(i.session_id)));
+    };
+    await expect.poll(async () => { const e = await entries(); return [...singles, lead].every((id) => e.has(id)); }, { timeout: 60_000 }).toBe(true);
+    const total = (await entries()).size;
+    expect(total, "five or more entries to cap").toBeGreaterThanOrEqual(5);
+    await page.goto("/");
+    const strip = page.getByTestId("stuck");
+    await expect(strip).toBeVisible({ timeout: 15_000 });
+    await expect(strip.getByTestId("stuck-item")).toHaveCount(3);
+    await expect(strip.getByTestId("stuck-more")).toHaveText(`+${total - 3} more`);
+    await expect(strip.locator("h2")).toContainText(String(total));
+    expect(await strip.evaluate((el) => el.getBoundingClientRect().height), "the band takes about five rows").toBeLessThan(5.5 * 24 + 16);
+    await shoot(page, "session-state-05-stuck-capped");
+    await strip.getByTestId("stuck-more").click();
+    await expect(strip.getByTestId("stuck-item")).toHaveCount(total);
+    // The coordinator is one entry for both its agents; they are not entries of their own.
+    const folded = strip.locator(`[data-session="${lead}"]`);
+    await expect(folded).toHaveAttribute("data-agents", "2");
+    await expect(folded.getByTestId("stuck-agents")).toHaveText("2 agents");
+    await expect(strip.locator("[data-testid=stuck-item]", { hasText: "Quiet worker" })).toHaveCount(0);
+    await shoot(page, "session-state-06-stuck-all");
+    await strip.getByTestId("stuck-more").click();
+    await expect(strip.getByTestId("stuck-item")).toHaveCount(3);
+  } finally {
+    await request.patch("/api/settings", { data: { stuck: null } }).catch(() => {});
     mkdirSync(WS, { recursive: true });
     writeFileSync(gate, "");
     await drop(request, made);
