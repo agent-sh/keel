@@ -745,6 +745,11 @@ for (const scale of [1, 1.5]) {
         const seen = await watch.evaluate((h) => ({ over: h.scrollWidth - h.clientWidth, counts: [...h.querySelectorAll<HTMLElement>("[data-testid^='home-count']")].map((c) => { const b = c.getBoundingClientRect(); return { id: c.dataset.testid!, right: b.right, width: b.width, text: c.textContent!.trim() }; }) }));
         expect(seen.over, "the headline does not scroll sideways").toBeLessThanOrEqual(0);
         for (const c of seen.counts) expect(c.right, `${c.id} ("${c.text}") ends inside the screen`).toBeLessThanOrEqual(390);
+        // The headline is at most two rows of the page's own size, and the start box's text is above the tab bar at the foot.
+        const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+        expect((await watch.boundingBox())!.height / rem, "the headline's height, in rem").toBeLessThanOrEqual(6);
+        const box = await page.getByTestId("new-composer").locator("textarea").boundingBox();
+        expect(box!.y + box!.height, "the start box's text is above the foot").toBeLessThanOrEqual(844 - 5 * rem);
         await shoot(page, `home-phone-counts-${scale}`);
       } finally {
         writeFileSync(gate, "");

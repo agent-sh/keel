@@ -1902,6 +1902,14 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
      (a count cut at the screen's edge, or reached by a sideways scroll, hid a state). */
   .k-home-state:not([data-quiet]) { column-gap: 1rem; row-gap: 0.125rem; }
   .k-home-state:not([data-quiet]) > .k-home-count { flex-shrink: 0; white-space: nowrap; }
+  /* Where the page is too narrow for every count's words on one line (a large text size), the first count keeps its words
+     and the rest are a mark and a figure: the headline stays one row and the start box stays above the tab bar. Their words
+     are the count's name and tip. */
+  @container (max-width: 20rem) {
+    .k-home-state:not([data-quiet]) { column-gap: 0.5rem; }
+    .k-home-state:not([data-quiet]) > .k-home-count { gap: 0.375rem; }
+    .k-home-state:not([data-quiet]) > .k-home-count:not(:first-child) .k-home-word { display: none; }
+  }
   /* A question's choice is a row as tall as a target: its words stand in its middle. */
   .k-q-option { align-items: center; }
 }

@@ -112,7 +112,7 @@ export function WatchHeadline() {
   return (
     <h1 className="k-home-state" data-testid="home-watch">
       {head.map((p) => (
-        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} data-count={p.n} title={`${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
+        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} data-count={p.n} aria-label={`${p.text}. Open ${byId[p.ids[0]!]?.title || "the session"}`} title={`${p.text}. ${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
           <Mark w={p.w} />{headCount(p.text)}
         </button>
       ))}
@@ -123,7 +123,7 @@ export function WatchHeadline() {
 // A count of the headline: its figure in the state's ink, its words in the page's (the mark beside it says the state too).
 function headCount(text: string): ReactNode {
   const m = /^(\d+)(\s.*)$/s.exec(text);
-  return m ? <span><b className="k-home-n">{m[1]}</b>{m[2]}</span> : text;
+  return m ? <span><b className="k-home-n">{m[1]}</b><span className="k-home-word">{m[2]}</span></span> : text;
 }
 
 // What one row says, and what its answer is about: the served state, and the
