@@ -127,7 +127,7 @@ export function WatchHeadline() {
   return (
     <h1 className="k-home-state" data-testid="home-watch">
       {head.map((p) => (
-        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} data-count={p.n} aria-label={`${p.text}. Open ${byId[p.ids[0]!]?.title || "the session"}`} title={`${p.text}. ${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => answerFromHome(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
+        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} data-count={p.n} aria-label={`${p.text}. Open ${byId[p.ids[0]!]?.title || "the session"}`} title={`${p.text}. ${p.w === "need" ? `${COUNTERS.waiting(p.asks ?? p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => answerFromHome(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
           <Mark w={p.w} />{headCount(p.text)}
         </button>
       ))}

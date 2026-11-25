@@ -10,14 +10,15 @@ export type Row = { id: string; w: Watch };
 // The headline's parts. `wait` is every session that goes on by itself: one
 // that waits on something it set up, and one a restart cut that Keel resumes.
 // `text`: how it reads.
-export type Part = { w: "need" | "fail" | "declined" | "work" | "wait" | "stop"; ids: string[]; n: number; text: string };
+export type Part = { w: "need" | "fail" | "declined" | "work" | "wait" | "stop"; ids: string[]; n: number; text: string; asks?: number };
 
 // How a count reads in the headline: the vocabulary's count words (src/core/state-words.ts).
 export const say = (w: Part["w"], n: number) => countWord(w, n);
 
 // `list` is in order of attention.
-// - What needs the owner is counted by the things that wait, as the tab's
-//   title counts them: a session with three requests is three.
+// - Every part counts sessions, as the list beside it shows them: a session
+//   with three requests is one that needs the owner (`asks` keeps the three,
+//   for the count's tooltip).
 // - A failed or declined session counts until the owner has looked at it
 //   (`unseen`): after that it is a failed session in the list, not news.
 // - A stopped session counts when it stopped by itself or holds prompts for
@@ -32,7 +33,7 @@ export function watchSummary(list: Told[], unseen: ReadonlySet<string>): { head:
   const rows = (g: Told[]): Row[] => g.map((r) => ({ id: r.id, w: r.st.watch }));
   return {
     // Every session that works is one count: one that only keeps a command going works too ("in background" is its detail, on its row).
-    head: groups.filter(([, g]) => g.length).map(([w, g]) => ({ w, ids: g.map((r) => r.id), n: w === "need" ? waitsOnOwner(g.map((r) => r.st)) : g.length, text: say(w, w === "need" ? waitsOnOwner(g.map((r) => r.st)) : g.length) })),
+    head: groups.filter(([, g]) => g.length).map(([w, g]) => ({ w, ids: g.map((r) => r.id), n: g.length, text: say(w, g.length), ...(w === "need" ? { asks: waitsOnOwner(g.map((r) => r.st)) } : {}) })),
     attention: rows([...of("need"), ...news("fail"), ...news("declined"), ...stopped]),
     working: rows([...of("work"), ...of("wait", "resume")]),
   };

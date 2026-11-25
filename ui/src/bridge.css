@@ -1096,6 +1096,9 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* The headline's figures are in ink: the dot before each is the state's one colour. */
 .k-home-n { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg); }
 .k-home-count .k-mark { width: 0.625rem; height: 0.625rem; }
+/* What goes on by itself does not need the owner: its count is muted, its figure regular. Only what needs them or failed is in ink. */
+.k-home-count:is([data-watch="work"], [data-watch="wait"]) { color: var(--muted); }
+.k-home-count:is([data-watch="work"], [data-watch="wait"]) .k-home-n { font-weight: 400; color: var(--muted); }
 .k-home-count:hover { text-decoration: underline; text-decoration-thickness: 1px; text-decoration-color: var(--line-strong); text-underline-offset: 0.22em; }
 .k-home-count:focus-visible { outline: 2px solid var(--ring); outline-offset: 0.1875rem; }
 .k-home-sec { margin-top: 1.875rem; }

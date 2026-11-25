@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { ownerPrompt } from "../../../src/core/owner.ts";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
 import { agentLive, AT_REST, liveAgentCounts, stateOf, type SessionState, type Watch } from "../../../src/core/watch.ts";
-import { stateAlone, stateLabel, waitsOnOwner } from "../../../src/core/state-words.ts";
+import { countsNow, stateAlone, stateLabel, waitsOnOwner } from "../../../src/core/state-words.ts";
 import { useAuto } from "./automation.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { useSafety } from "./safety.ts";
@@ -233,9 +233,17 @@ export function useStateLabel(): (id: string, w: Watch) => string {
   return useCallback((id, w) => stateAlone(states[id]?.watch === w ? states[id]! : { watch: w }), [states]);
 }
 
-// How many things wait on the owner, in every session of theirs: the one count (src/core/state-words.ts)
-// behind the tab's title, the home headline, the list's line and the phone's dock.
+// How many sessions wait on the owner, counted as the list shows them (a session with three requests, its
+// own or its agents', is one): the one count behind the tab's title, the home headline, the Inbox's count
+// and the phone's dock. (The things that wait are said where the owner looks: a count's tooltip, useAskCount.)
 export function useNeedCount(): number {
+  const sessions = useStore((x) => x.sessions);
+  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
+  const states = useSessionStates(list);
+  return useMemo(() => list.filter((s) => states[s.id]?.watch === "need" && countsNow(states[s.id])).length, [list, states]);
+}
+// How many things wait on the owner in all those sessions (requests, questions, plans, secrets).
+export function useAskCount(): number {
   const sessions = useStore((x) => x.sessions);
   const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
   const states = useSessionStates(list);

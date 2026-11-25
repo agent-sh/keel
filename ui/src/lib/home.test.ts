@@ -12,8 +12,9 @@ test("the headline counts what the rows list, from the served states", () => {
     { id: "s", st: st("stop", { why: "max_steps" }) }, { id: "o", st: st("stop") }, { id: "f", st: st("done") },
   ];
   const s = watchSummary(list, new Set(["c", "n"]));
-  // What needs the owner is counted by the things that wait (three requests and a held turn), as the tab's title counts.
-  expect(s.head.map((p) => say(p.w, p.n))).toEqual(["4 need you", "1 failed", "1 declined", "1 working", "2 waiting", "1 stopped"]);
+  // Every part counts sessions, as the list shows them: two sessions need the owner, with four things between them.
+  expect(s.head.map((p) => say(p.w, p.n))).toEqual(["2 need you", "1 failed", "1 declined", "1 working", "2 waiting", "1 stopped"]);
+  expect(s.head[0]!.asks).toBe(4);
   // A failure and a declined turn until looked at; a stop the daemon gives a reason for, not one the owner made.
   expect(s.attention.map((r) => r.id)).toEqual(["a", "h", "c", "n", "s"]);
   // What goes on by itself: at work, waiting on something it set up, or about to be resumed.

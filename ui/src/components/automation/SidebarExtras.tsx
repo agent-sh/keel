@@ -6,7 +6,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useAgentsOpen } from "../../lib/agents-open.ts";
 import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
 import { isLive, openSession, snoozeText, useAuto, type AgentRecord } from "../../lib/automation.ts";
-import { COUNTERS, wentWrongWord } from "../../../../src/core/state-words.ts";
+import { COUNTERS, countWord, wentWrongWord } from "../../../../src/core/state-words.ts";
 import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { AgentMark, agentSaid, IconButton, nowMeta, StopAgent } from "./bits.tsx";
@@ -14,7 +14,7 @@ import { useNow as useSecond } from "../Mark.tsx";
 import { beatOf } from "../../lib/clock.ts";
 import { AgentLane } from "./Lane.tsx";
 import { scope } from "../../lib/store.ts";
-import { useNeedCount, useToldStates } from "../../lib/watch.ts";
+import { useAskCount, useNeedCount, useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
 import { calls, useSettled } from "../../lib/settle.ts";
 import type { Watch } from "../../../../src/core/watch.ts";
@@ -207,6 +207,7 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
   // What waits on the owner is the one count of the tab's title and the home headline (useNeedCount).
   // Other news is unread that is not that: a session that needs the owner has its ask unread, which the count has.
   const need = useNeedCount();
+  const asks = useAskCount();
   const told = useToldStates();
   const unreadBy = useAuto((s) => s.unread.sessions);
   // Unread that is not a session needing the owner is the dot; the ones among it that failed or were declined
@@ -222,7 +223,7 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
   // they have settled; what waits on the owner, and what they read, move it at once.
   const { unread, others, failed, declined } = useSettled("bell", { unread: liveUnread, ...liveOthers }, `${liveUnread}|${liveOthers.others}|${liveOthers.failed}|${liveOthers.declined}`, (was) => need > 0 || liveUnread < was.unread || liveOthers.others < was.others || liveOthers.failed > was.failed || liveOthers.declined > was.declined);
   const wrong = failed + declined;
-  const said = `Inbox. ${need ? `${COUNTERS.waiting(need)}. ` : ""}${COUNTERS.unread(unread)}${wrong ? `. ${wrong} ${wentWrongWord(failed, declined)}` : ""}${held ? ". Alerts are snoozed" : ""}`;
+  const said = `Inbox. ${need ? `${countWord("need", need)}. ${COUNTERS.waiting(asks)}. ` : ""}${COUNTERS.unread(unread)}${wrong ? `. ${wrong} ${wentWrongWord(failed, declined)}` : ""}${held ? ". Alerts are snoozed" : ""}`;
   return (
     <>
       <button

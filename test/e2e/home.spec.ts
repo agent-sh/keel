@@ -832,3 +832,30 @@ for (const scale of [1, 1.5]) {
     });
   });
 }
+
+// One count unit everywhere: sessions, as the lists show them. A session whose two agents each ask is one
+// session that needs the owner: the headline, the tab's title and the Inbox's count say one, and the things
+// that wait are said in the count's tooltip.
+test("home: every count of what needs you counts sessions, not their agents' requests", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const spawn = (title: string, command: string) => ({ name: "spawn_agent", input: { message: `${title}\nscript:calls ${JSON.stringify([bash(command)])}`, isolation: "none" } });
+  const lead = await asking(request, "Home: one tree, two requests", [spawn("Migrate the settings", "touch counted-a.txt"), spawn("Rotate the keys", "touch counted-b.txt")], "batch");
+  const failed = await make(request, "Home: the nightly sync", "script:billing");
+  try {
+    await expect.poll(() => ended(request, failed.id), { timeout: 60_000 }).toBe(true);
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto("/");
+    const need = page.getByTestId("home-count-need");
+    await expect(need, "both agents' requests are in").toHaveAttribute("title", /2 things wait on you/, { timeout: 60_000 });
+    await expect(need, "the headline counts the one session").toHaveText("1 needs you");
+    await expect(row(page, lead.id), "the one row it counts").toHaveCount(1);
+    await expect(page).toHaveTitle(/^\(1\) /);
+    // What goes on by itself is muted in the headline; what needs the owner is in ink.
+    const ink = (id: string) => page.getByTestId(id).evaluate((el) => getComputedStyle(el).color);
+    expect(await ink("home-count-fail"), "a failure is in ink").toBe(await ink("home-count-need"));
+    await expect(page.getByTestId("inbox-count")).toHaveText("1");
+    await shoot(page, "home-12-counted-sessions");
+  } finally {
+    await drop(request, [lead.id, failed.id]);
+  }
+});
