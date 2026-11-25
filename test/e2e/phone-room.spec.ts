@@ -100,7 +100,7 @@ test.describe("on a phone", () => {
       await expect(pane.getByTestId("stop")).toBeVisible({ timeout: 30_000 });
       const hint = await pane.getByTestId("composer").getAttribute("placeholder");
       expect(hint).not.toMatch(/Ctrl|Enter|Cmd|Shift/);
-      expect(hint).toMatch(/Send steers/);
+      expect(hint).toMatch(/^(Steer or queue|Send steers)/);
       // With Stop, the queue button and Send on the right, the effort and the context ring are still whole.
       for (const id of ["effort-picker", "context-meter", "stop", "queue-button", "send"]) await expect(pane.getByTestId(id)).toBeInViewport({ ratio: 1 });
       // The box is two rows: the ring and the queue button stand in the text's row, the tools row holds the chips, Stop and Send.
@@ -673,7 +673,7 @@ test.describe("on a phone, what waits", () => {
       await pane.getByTestId("composer").tap();
       await expect(pane.getByTestId("stop")).toBeVisible();
       await expect(pane.getByTestId("composer-tools")).toBeVisible();
-      await expect(pane.getByTestId("composer")).toHaveAttribute("placeholder", /^Send steers/);
+      await expect(pane.getByTestId("composer")).toHaveAttribute("placeholder", /^(Steer or queue|Send steers)/);
       // Whole where a finger finds them: inside the window and the pane, above the dock, and the
       // press at Stop's middle lands on Stop. The cards above give the room and scroll.
       const reach = () => pane.evaluate((el) => {
@@ -1051,3 +1051,31 @@ async function keyWords(page: Page) {
     return out;
   });
 }
+
+// Feature (UX-M67): the box of a running turn has a hint that fits one line at a large text size, so the
+// box does not grow a second line of empty text before its tools.
+test.describe("on a phone at 150% text, a running turn", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("has a one-line hint and a box of one text line", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    await page.addInitScript(() => localStorage.setItem("keel.textScale", "1.5"));
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Hint at 150" } })).json();
+    const gate = join(mkdtempSync(join(tmpdir(), "keel-phone-")), "go");
+    try {
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:hold ${gate}` } });
+      await page.goto(`/s/${session.id}`);
+      const pane = page.locator(".k-station[data-helm]");
+      await expect(pane.getByTestId("stop")).toBeVisible({ timeout: 30_000 });
+      const box = pane.getByTestId("composer");
+      await expect(box).toHaveAttribute("placeholder", "Steer it");
+      const m = await box.evaluate((el) => { const t = el as HTMLTextAreaElement; return { height: t.getBoundingClientRect().height, one: parseFloat(getComputedStyle(t).minHeight) }; });
+      expect(m.height, "the text field is its one-line height").toBeLessThanOrEqual(m.one + 1);
+      await shoot(page, "phone-room-hint-150");
+    } finally {
+      writeFileSync(gate, "go");
+      await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
+      await request.delete(`/api/sessions/${session.id}`).catch(() => {});
+    }
+  });
+});

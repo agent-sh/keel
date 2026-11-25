@@ -16,7 +16,7 @@ import { sendWaitingSoon } from "../lib/resend.ts";
 import { api, getState, onFeature, readAtOpen, reportError, reportUnlessGone, useStore, useModels, failed, whileHeard, type ListedModel } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
 import { menuClosed, stopHeld } from "../lib/looks.ts";
-import { setUI, useUI } from "../lib/ui.ts";
+import { setUI, useCrowded, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
@@ -451,6 +451,8 @@ const SessionComposer = memo(function SessionComposer({
     return () => { document.removeEventListener("focusin", look); document.removeEventListener("focusout", later); };
   }, []);
   const busy = !!working && (runShown || keysHere);
+  // A large text size on a phone leaves the hint room for two short words: the queue button names itself.
+  const crowded = useCrowded();
   // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
   const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
   // Untouched and holding nothing, whatever runs: while a card waits above it on a phone, the box rests as its
@@ -1112,7 +1114,7 @@ const SessionComposer = memo(function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? "Send steers, or queue it" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files and sessions" : "Describe the task, / for commands, @ for files and sessions"}
+        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? (crowded ? "Steer it" : "Steer or queue") : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files and sessions" : "Describe the task, / for commands, @ for files and sessions"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
