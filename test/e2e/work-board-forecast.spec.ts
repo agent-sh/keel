@@ -1,8 +1,15 @@
-import { expect, test } from "./isolate.ts";
+import { expect, test, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, ask, openPanel, shoot } from "./shots.ts";
+
+// A card's facts open under its chevron: open every card that has them, once the board shows its cards.
+const expandAll = async (page: Page) => {
+  const board = page.getByTestId("work-board");
+  await expect(board.getByTestId("board-row").first()).toBeVisible();
+  for (const t of await board.getByTestId("board-toggle").all()) if ((await t.getAttribute("aria-expanded")) === "false") await t.click();
+};
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
 
@@ -49,14 +56,17 @@ test("the board holds Land for a branch the overlap forecast says would conflict
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${coord}`);
   await openPanel(page, "board");
+  await expandAll(page);
   const card = (id: string) => page.locator(`[data-testid="board-row"][data-agent="${id}"]`);
   await expect(card(one.id).getByTestId("board-forecast-conflict")).toHaveAttribute("data-with", two.branch);
   await expect(card(one.id).getByTestId("board-forecast-conflict")).toContainText("Would conflict with");
   await expect(card(one.id).getByTestId("board-forecast-files")).toHaveText("notes.md");
-  await expect(card(one.id).getByTestId("board-land")).toHaveCount(0);
-  await expect(card(two.id).getByTestId("board-land")).toHaveCount(0);
+  // Land is there, held, with the forecast's words as the reason.
+  await expect(card(one.id).getByTestId("board-land")).toBeDisabled();
+  await expect(card(one.id).getByTestId("board-held")).toContainText("would conflict with");
+  await expect(card(two.id).getByTestId("board-land")).toBeDisabled();
   await expect(card(three.id).getByTestId("board-forecast")).toHaveCount(0);
-  await expect(card(three.id).getByTestId("board-land")).toBeVisible();
+  await expect(card(three.id).getByTestId("board-land")).toBeEnabled();
   await page.mouse.move(0, 0);
   await shoot(page, "work-board-forecast-pair");
 
@@ -67,9 +77,10 @@ test("the board holds Land for a branch the overlap forecast says would conflict
   await expect.poll(async () => rowOf(await board(), three.id)?.forecast?.map((f: any) => [f.with, f.base]), { timeout: 60_000 }).toEqual([["main", true]]);
   await page.reload();
   await openPanel(page, "board");
+  await expandAll(page);
   await expect(card(three.id).getByTestId("board-forecast-conflict")).toHaveAttribute("data-base", "yes");
   await expect(card(three.id).getByTestId("board-forecast-conflict")).toContainText("the base");
-  await expect(card(three.id).getByTestId("board-land")).toHaveCount(0);
+  await expect(card(three.id).getByTestId("board-land")).toBeDisabled();
   await page.mouse.move(0, 0);
   await shoot(page, "work-board-forecast-base");
 });
