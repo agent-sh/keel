@@ -50,8 +50,12 @@ const sent: any[] = [];
 // joins a running one (steer) or waits in the queue.
 let sendBreaks = false;
 const asked = new Set<string>();
+const turnStatus = new Map<string, any>();
+const turnStart = new Map<string, string>();
 const engine = {
   isRunning: (id: string) => running.has(id),
+  statusOf: (id: string) => turnStatus.get(id) ?? { kind: "idle" },
+  turnOf: (id: string) => turnStart.get(id),
   send: (id: string, text: string, opts: any) => {
     sent.push({ id, text, opts });
     const images = opts.images?.length ? opts.images : undefined;
@@ -1339,6 +1343,13 @@ describe("the wire contract", () => {
     store.append(resting.id, "turn_end", { reason: "end_turn" });
     store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run("ag-ring", resting.id, failed.id, "Looks", "general-purpose", "fx:saved", 1, "running", Date.now());
+    // A session at work on a command: its row says what it does now.
+    const acting = session("Acting");
+    running.add(acting.id);
+    store.append(acting.id, "user", { text: "Run the tests" });
+    turnStart.set(acting.id, store.append(acting.id, "turn_start", {}).id);
+    store.append(acting.id, "assistant", { blocks: [{ type: "tool_use", id: "ta", name: "Bash", input: { command: "bun test", description: "Run the unit tests" } }], model: "fx:saved" });
+    turnStatus.set(acting.id, { kind: "tool", names: ["Bash"], since: Date.now() });
     // The owner's helper, its conversation a chat of the list, told of a failure, with a record kept.
     const h = await helperOn();
     h.record("failed", s.id, "Fix the build failed", "HTTP 402: no credit", "feed");
@@ -1350,6 +1361,9 @@ describe("the wire contract", () => {
     expect(first.chats.find((c: any) => c.id === resting.id)).toMatchObject({ dot: "work", dot_ring: "agents", dot_word: "Waiting on agents" });
     expect(first.chats.find((c: any) => c.id === failed.id)).toMatchObject({ dot: "fail", dot_word: "Failed" });
     expect(first.chats.find((c: any) => c.id === failed.id)).not.toHaveProperty("dot_ring");
+    // The row of a session at work says what its turn does now; one that waits on the owner or has failed says its state and none.
+    expect(first.chats.find((c: any) => c.id === acting.id)).toMatchObject({ dot: "work", action: "Run the unit tests" });
+    expect(first.chats.find((c: any) => c.id === failed.id)).not.toHaveProperty("action");
     take("helper", (await call("GET", "/v1/helper")).body);
     take("memory", (await call("GET", "/v1/helper/memory")).body);
     // A question from the helper row, asked twice under one id, and its answer: the session it read, named.

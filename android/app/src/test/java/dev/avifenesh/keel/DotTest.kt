@@ -100,6 +100,15 @@ class DotTest {
         assertFalse(titleQuiet(Dot.WORK, 0))
     }
 
+    @Test fun aSessionAtWorkSaysWhatItDoesNow() {
+        val c = chat("working", dot = "work").copy(action = " Editing src/a.ts ")
+        assertEquals("Editing src/a.ts", actionLine(c, State.WORKING))
+        // At rest or waiting on the owner a row says its state; a daemon that says no action leaves the message line.
+        assertEquals("", actionLine(c, State.NEEDS))
+        assertEquals("", actionLine(c, State.DONE))
+        assertEquals("", actionLine(chat("working"), State.WORKING))
+    }
+
     @Test fun newsIsTheTitlesWeightOnARowThatSaysNoMore() {
         assertTrue(showsNews(Dot.DONE, 1))
         assertTrue(showsNews(Dot.WORK, 3))

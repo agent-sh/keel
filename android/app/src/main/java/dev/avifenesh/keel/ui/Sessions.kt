@@ -40,6 +40,7 @@ import dev.avifenesh.keel.NEW_WORD
 import dev.avifenesh.keel.dotOf
 import dev.avifenesh.keel.dotWordOf
 import dev.avifenesh.keel.look
+import dev.avifenesh.keel.actionLine
 import dev.avifenesh.keel.showsNews
 import dev.avifenesh.keel.titleHeavy
 import dev.avifenesh.keel.titleQuiet
@@ -202,14 +203,16 @@ private fun SessionRow(r: Row3, now: Double) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // What it asks, when it waits on the owner: the reason it is at the top of the list.
                 val asks = r.state == State.NEEDS && r.ask.isNotBlank()
+                val doing = actionLine(c, r.state)
                 val line = when {
                     asks -> r.ask
+                    doing.isNotEmpty() -> doing
                     r.state == State.FAILED -> "Failed: ${c.failure.ifBlank { "the last turn did not finish" }}"
                     c.preview.isBlank() -> "No messages yet"
                     c.lastRole == "user" -> "You: ${c.preview}"
                     else -> c.preview
                 }
-                Txt(line, T.small, when { asks -> k.ownerInk; r.state == State.FAILED -> k.failInk; else -> k.muted }, Modifier.weight(1f).semantics { contentDescription = "line-of-${c.title}" }, maxLines = 2)
+                Txt(line, T.small, when { asks -> k.ownerInk; r.state == State.FAILED -> k.failInk; doing.isNotEmpty() -> k.workInk; else -> k.muted }, Modifier.weight(1f).semantics { contentDescription = "line-of-${c.title}" }, maxLines = if (doing.isNotEmpty()) 1 else 2)
                 // Agents at work under it, at any depth: the session is busy even between its own turns.
                 if (c.agents > 0) {
                     Spacer(Modifier.width(S.sm))

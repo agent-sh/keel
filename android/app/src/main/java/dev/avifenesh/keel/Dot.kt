@@ -92,3 +92,9 @@ fun titleHeavy(dot: Dot, unread: Int): Boolean = dot == Dot.NEED || dot == Dot.F
 
 /** A session at rest that has been seen reads in the muted text color; every other row's title is in ink. */
 fun titleQuiet(dot: Dot, unread: Int): Boolean = (dot == Dot.DONE || dot == Dot.IDLE || dot == Dot.STOP) && !showsNews(dot, unread)
+
+/**
+ * The line a session at work shows in place of its last message: what its turn does now, in the page's words. Nothing for a
+ * session that does not work (it says its state), one that waits on the owner (it says what it asks) or a daemon that says none.
+ */
+fun actionLine(chat: Chat, state: State): String = if (state == State.WORKING) chat.action.trim() else ""

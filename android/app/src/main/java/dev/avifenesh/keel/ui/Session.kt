@@ -64,6 +64,7 @@ import dev.avifenesh.keel.State
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.Wire
 import dev.avifenesh.keel.earlierAfter
+import dev.avifenesh.keel.actionLine
 import dev.avifenesh.keel.elapsed
 import dev.avifenesh.keel.newestTs
 import dev.avifenesh.keel.sendArrived
@@ -148,6 +149,9 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
                     if (draft.isNotBlank()) Markdown(draft)
                     Spacer(Modifier.height(6.dp))
                     if (isWorking && !pending) StateTag(State.WORKING, working[id]?.let { elapsed(it, now) }.orEmpty())
+                    // What the turn does now, under its state: the page's line over the box.
+                    val doing = chat?.let { actionLine(it, State.WORKING) }.orEmpty()
+                    if (isWorking && !pending && doing.isNotEmpty()) Txt(doing, T.small, k.muted, Modifier.padding(top = 2.dp).semantics { contentDescription = "action-line" }, maxLines = 2)
                 }
             }
             items(items.asReversed(), key = { it.id }) { m -> MsgView(act, m, cards[m.approvalId]) { viewing = it } }

@@ -4,6 +4,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import dev.avifenesh.keel.ui.KeelTheme
@@ -17,8 +18,8 @@ import org.junit.Test
 class DotRowsTest {
     @get:Rule val rule = createComposeRule()
 
-    private fun chat(id: String, status: String, dot: String = "", ring: String = "", word: String = "", unread: Int = 0, agents: Int = 0) =
-        Chat(id, "T-$id", status, 1.0, unread, false, false, "A line.", "agent", null, agents = agents, dot = dot, dotRing = ring, dotWord = word)
+    private fun chat(id: String, status: String, dot: String = "", ring: String = "", word: String = "", unread: Int = 0, agents: Int = 0, action: String = "") =
+        Chat(id, "T-$id", status, 1.0, unread, false, false, "A line.", "agent", null, agents = agents, dot = dot, dotRing = ring, dotWord = word, action = action)
 
     private fun told(text: String) = rule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, text), useUnmergedTree = true).fetchSemanticsNodes().size
 
@@ -34,7 +35,7 @@ class DotRowsTest {
 
     @Test fun everyStateIsADotWithItsWordAndNewsIsADot() {
         val chats = listOf(
-            chat("w", "working", "work", word = "Working"),
+            chat("w", "working", "work", word = "Working", action = "Editing src/a.ts"),
             chat("r", "working", "work", "agents", "Waiting on agents", agents = 2),
             chat("h", "working", "wait", word = "Waiting"),
             chat("d", "failed", "declined", word = "Declined"),
@@ -51,6 +52,9 @@ class DotRowsTest {
         assertEquals(1, told("New, 2 unread"))
         assertEquals(0, told("New, 1 unread"))
         assertEquals(0, words("New, 2 unread"))
+        // A session at work says what it does now, where the others say their last message.
+        rule.onNodeWithText("Editing src/a.ts", useUnmergedTree = true).assertExists()
+        assertEquals(5, rule.onAllNodesWithText("A line.", useUnmergedTree = true).fetchSemanticsNodes().size)
         assertEquals(600, weightOf("T-n"))
         assertEquals(600, weightOf("T-y"))
         assertEquals(400, weightOf("T-i"))

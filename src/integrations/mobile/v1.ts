@@ -156,11 +156,14 @@ export function pairLink(base: string, code: string, app: PairApp = "keel") {
 // The chat's newest message on its shown branch, for the inbox line: the app
 // keeps a preview the server sends over one it guesses from a batch of messages.
 
+// The longest action line a row carries: a row says one line, and the phone cuts it to its width.
+const ACTION_CHARS = 160;
+
 // Where a chat stands, as the phone's list shows it: a card waits for the
 // owner, a turn runs or its agents still work (agents: how many), or how the
 // last turn ended.
 export type ChatStatus = "needs_you" | "working" | "failed" | "stopped" | "done" | "idle";
-export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number; state_word?: string; dot?: string; dot_ring?: string; dot_word?: string; now?: NowLine | null };
+export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number; state_word?: string; dot?: string; dot_ring?: string; dot_word?: string; action?: string; now?: NowLine | null };
 
 export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   const c: Record<string, unknown> = {
@@ -180,6 +183,9 @@ export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   if (x.dot) c.dot = x.dot;
   if (x.dot_ring) c.dot_ring = x.dot_ring;
   if (x.dot_word) c.dot_word = x.dot_word;
+  // What the session's own turn does now, in the page's words for it ("Editing src/a.ts", "Waiting for a timer"): the line the
+  // page's status block shows over the box. Only while it works or waits; a session at rest says its state, not an action.
+  if (x.action) c.action = x.action;
   if (x.failure) c.failure = x.failure;
   if (x.agents) c.agents = x.agents;
   // A live agent's "now" line, flat: what it is doing, its steps, when its task began, its spend, whether it needs the owner.
@@ -508,10 +514,12 @@ export function mobileApi(ctx: MobileCtx) {
   const unread = () => { try { return alerts.unreadCounts().sessions; } catch { return {} as Record<string, number>; } };
   // How the last turn on the shown branch ended, walking back from the head.
   // A failed turn says why, in a line.
-  function status(s: Session): { status: ChatStatus; state_word: string; dot: string; dot_ring?: string; dot_word: string; failure?: string; agents?: number } {
+  function status(s: Session): { status: ChatStatus; state_word: string; dot: string; dot_ring?: string; dot_word: string; action?: string; failure?: string; agents?: number } {
     const told = statusOf(s);
     const ring = backgroundOf(told.st);
-    return { ...told.is, state_word: stateWords(told.st).phrase, dot: told.st.watch, ...(ring ? { dot_ring: ring } : {}), dot_word: dotWord(told.st) };
+    // The words without a clock ("stalled for 3m" is the page's tooltip): the row is sent when its facts change, not each minute.
+    const action = told.st.watch === "work" || told.st.watch === "wait" || told.st.watch === "resume" ? (told.st.brief ?? told.st.text ?? "").trim().slice(0, ACTION_CHARS) : "";
+    return { ...told.is, state_word: stateWords(told.st).phrase, dot: told.st.watch, ...(ring ? { dot_ring: ring } : {}), dot_word: dotWord(told.st), ...(action ? { action } : {}) };
   }
   function statusOf(s: Session): { st: ReturnType<typeof sessionState>; is: { status: ChatStatus; failure?: string; agents?: number } } {
     // The end of the shown branch, back to the owner's last prompt: how its last turn ended.

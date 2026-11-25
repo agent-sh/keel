@@ -111,6 +111,7 @@
    "dot": "string?",
    "dot_ring": "string?",
    "dot_word": "string?",
+   "action": "string?",
    "h": "string?",
    "now": "string?",
    "now_steps": "number?",
@@ -637,6 +638,7 @@
     "dot": "work",
     "dot_ring": "agents",
     "dot_word": "Waiting on agents",
+    "action": "Waiting for 1 agent",
     "h": "4e5f6a7b"
    },
    {
