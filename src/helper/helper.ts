@@ -17,6 +17,7 @@
 import * as alerts from "../automation/alerts.ts";
 import { deliver } from "../automation/core.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
+import { isOutside } from "../core/outside.ts";
 import { lineage } from "../core/tree.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
@@ -582,6 +583,9 @@ ${TOLD_SCHEMA}`);
       }
       return;
     }
+    // A session another harness runs is the owner's alone, its cards too while Keel answers it in place: none of its
+    // words reach the helper (src/core/outside.ts).
+    if (a.session_id && isOutside(this.deps.store.session(a.session_id))) return;
     const level = levelOfAlert(a.kind, a.data, alerts.LONG_TURN_MS);
     if (!level) return;
     // A frame is not an event: a delivery, a mark or a card put back at a restart is the same alert again.

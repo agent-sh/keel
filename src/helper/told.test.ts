@@ -42,6 +42,11 @@ test("an open approval card is told to the helper once: its delivery, a restart 
   expect(told()).toBe(2);
   frame(bus, card({ body: "Bash: make install" }));
   expect(told()).toBe(3);
+  // A card of a session another harness runs (Keel answers it in place) is the owner's alone: none of its words reach the helper.
+  const away = store.createSession({ title: "Codex: rotate the deploy key", model: "m", workspace: "/" }).id;
+  store.updateSession(away, { outside: { harness: "codex", source_id: "t-1", state: "working", since: 1, files: 0, failures: 0 } });
+  frame(bus, card({ session_id: away, body: "Codex command: scp id_deploy host:/keys", data: { approval_id: "ap-9", open_session: away } }));
+  expect(told()).toBe(3);
 });
 
 test("a row that is not a decision is told once by its id, and the table forgets after thirty days", () => {
