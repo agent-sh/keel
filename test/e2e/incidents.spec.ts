@@ -161,7 +161,8 @@ test("a stop systemd asks for is no incident; a daemon that went down without st
     await expect.poll(async () => (await get("/api/incidents")).open.map((i: any) => i.key)).toEqual(["restarts"]);
     const [inc] = (await get("/api/incidents")).open;
     expect(inc.cls).toBe("killed");
-    expect((await told()).map((a) => [a.title, a.body])).toEqual([["Keel went down by itself", "No turn was running, so none was cut."]]);
+    // The alert waits for the start's record of the turns the stop cut (at most a minute), so it is told a moment after the incident.
+    await expect.poll(async () => (await told()).map((a) => [a.title, a.body]), { timeout: 70_000 }).toEqual([["Keel went down by itself", "No turn was running, so none was cut."]]);
     await page.setViewportSize(WIDE);
     await page.goto(d.url);
     await expect(page.getByTestId("incident-band")).toHaveAttribute("data-key", "restarts");
