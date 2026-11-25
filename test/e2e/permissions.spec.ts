@@ -187,6 +187,10 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
   const card = page.locator(`[data-station="${session.id}"]`).getByTestId("approval");
   await expect(card).toBeVisible({ timeout: 30_000 });
   const once = card.getByTestId("allow-once"), always = card.getByTestId("allow-always"), deny = card.getByTestId("deny");
+  // The card is drawn with its command in view, below the top of the region. A key counts a row seen after
+  // 300 ms in view: the keyboard takes the answers into view at once, so the command is never in view that
+  // long, whatever the checks below take.
+  await once.focus();
   // Each answer is whole: inside the card and the screen, with all of its words, and the card has nothing to pan to.
   const whole = async (l: typeof once, words: string) => {
     await expect(l).toHaveText(words);
@@ -204,8 +208,8 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
   // The region shows less than the card here, and the command is not in it: nothing is answered
   // for a text that was never in view. Allow once says how much is left; scrolled through by the
   // owner, the card is read.
-  await once.focus();
   await page.waitForTimeout(1300);
+  await expect(once).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ (lines?|rows?) not seen yet/);
   expect(existsSync(join(ws, "alpha.txt"))).toBe(false);
