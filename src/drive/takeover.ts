@@ -38,7 +38,8 @@ export type Answer = {
   live_source?: boolean;
   told?: boolean;
 };
-export type Req = { session?: string; harness?: Harness; id?: string; path?: string; model?: string; title?: string };
+// `owner`: the owner asked for it (the page's route), not a model through keel__session_import (Imports.import `owner`).
+export type Req = { session?: string; harness?: Harness; id?: string; path?: string; model?: string; title?: string; owner?: boolean };
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -175,14 +176,14 @@ export class TakeOver {
 
   // An import of the source, or an update of the copy made before. A copy that
   // went on is left as it is (`went_on`).
-  async copy(src: Source, o: { model?: string; title?: string; mode?: "new" | "update" | "open" }): Promise<{ action: "created" | "updated" | "opened"; session: any; imported_events: number; counts: unknown; notes: string[]; went_on?: boolean }> {
+  async copy(src: Source, o: { model?: string; title?: string; mode?: "new" | "update" | "open"; owner?: boolean }): Promise<{ action: "created" | "updated" | "opened"; session: any; imported_events: number; counts: unknown; notes: string[]; went_on?: boolean }> {
     const prior = this.imports.links(src.harness, src.id)[0];
     if (prior && !o.mode && this.wentOn(prior.session_id)) return { action: "opened", session: this.d.store.session(prior.session_id), imported_events: 0, counts: undefined, notes: [], went_on: true };
     const model = o.model || (await modelFor(this.d.providers, src));
     if (!model) throw new HttpError(409, "no model is available: no provider has credentials");
     const workspace = src.cwd && isDir(src.cwd) ? src.cwd : this.d.workspace;
     const seq = prior ? this.lastSeq(prior.session_id) : 0;
-    const r = await this.imports.import(src, { mode: o.mode ?? (prior ? "update" : undefined), model, workspace, title: o.title });
+    const r = await this.imports.import(src, { mode: o.mode ?? (prior ? "update" : undefined), model, workspace, title: o.title, owner: o.owner === true });
     if (r.action === "created") this.d.bus.emit({ t: "session", session: r.session });
     else if (r.action === "updated") this.emitSince(r.session.id, seq);
     return { action: r.action, session: r.session, imported_events: r.imported_events, counts: r.read?.counts, notes: r.read?.notes ?? [] };
@@ -203,7 +204,7 @@ export class TakeOver {
       if (went) done.step = `${done.step ?? ""} This session went on here since it was copied, so nothing of the original is added to it.`.trim();
       if (b.jobs.length || b.running) done.left_behind = { jobs: b.jobs, running: b.running };
     } else if (done.action === "taken_over") {
-      const { behind, gap } = await this.tellEnded(sid, done.how ?? null, done.stopped === true);
+      const { behind, gap } = await this.tellEnded(sid, done.how ?? null, done.stopped === true, req.owner === true);
       const r = row as Found | null;
       if (r) for (const l of this.imports.liveSources()) if (l.session_id !== sid && l.drive_id === r.row.id) await this.tellEnded(l.session_id, done.how ?? null, false);
       if (gap) done.not_copied = gap;
@@ -324,7 +325,8 @@ export class TakeOver {
 
   // Tells the copy its original ended: brought up to date first, unless it went
   // on in Keel, when the line says how many of the original's messages it lacks.
-  async tellEnded(sessionId: string, how: string | null, stoppedNow: boolean): Promise<{ behind: Behind; gap?: { messages: number | null; transcript: string } }> {
+  // `owner`: the owner's take-over asks; otherwise the catch-up keeps typed marks only for a copy the owner made.
+  async tellEnded(sessionId: string, how: string | null, stoppedNow: boolean, owner = false): Promise<{ behind: Behind; gap?: { messages: number | null; transcript: string } }> {
     const l = this.imports.link(sessionId);
     if (!l) {
       this.imports.clearLive(sessionId);
@@ -343,7 +345,8 @@ export class TakeOver {
     } else if (src) {
       try {
         const seq = this.lastSeq(sessionId);
-        await this.imports.import(src, { mode: "update", model: this.d.store.session(sessionId)!.model, workspace: this.d.workspace });
+        // This copy, not the newest copy of the same original.
+        await this.imports.import(src, { mode: "update", model: this.d.store.session(sessionId)!.model, workspace: this.d.workspace, session_id: sessionId, owner: owner || l.owner === 1 });
         this.emitSince(sessionId, seq);
       } catch (e) {
         this.d.errors.capture("server", e, { at: "takeover catch up", session: sessionId });

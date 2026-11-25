@@ -608,7 +608,7 @@ async function planSessions(items: Planned[], deps: PortDeps, opts: { days: numb
         run: async () => {
           const model = link ? "" : (await modelFor(deps.providers, f)) ?? "";
           if (!link && !model) throw Object.assign(new Error("no model is set up"), { status: 409 });
-          const r = await im.import(f, { mode: link ? "update" : undefined, model, workspace: f.cwd || deps.workspace });
+          const r = await im.import(f, { mode: link ? "update" : undefined, model, workspace: f.cwd || deps.workspace, owner: true });
           if (r.action === "created" && f.archived) deps.store.updateSession(r.session.id, { archived: true });
           deps.emit?.(deps.store.session(r.session.id));
           return `${r.action} ${r.session.id} (${plural(r.imported_events, "event")})`;

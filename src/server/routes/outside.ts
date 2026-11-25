@@ -61,9 +61,9 @@ export const outsideRoutes: RouteModule = (deps) => {
         // The copy made before, brought up to date; a new one where it went on here or its source rewound.
         let r;
         if (prior && !imports.wentOn(prior.session_id)) {
-          r = await imports.import(f, { mode: "update", model, workspace, session_id: prior.session_id }).catch((e) => ((e as any)?.status === 409 ? undefined : Promise.reject(e)));
+          r = await imports.import(f, { mode: "update", model, workspace, session_id: prior.session_id, owner: true }).catch((e) => ((e as any)?.status === 409 ? undefined : Promise.reject(e)));
         }
-        r ??= await imports.import(f, { mode: "new", model, workspace });
+        r ??= await imports.import(f, { mode: "new", model, workspace, owner: true });
         if (r.action === "updated") for (const e of store.events(r.session.id, seq)) bus.emit({ t: "event", event: e });
         bus.emit({ t: "session", session: r.session });
         return json({ action: r.action, session: r.session, imported_events: r.imported_events }, r.action === "created" ? 201 : 200);

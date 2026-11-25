@@ -20,6 +20,7 @@ const { ClaudeConvert } = await import("./claude.ts");
 const { CodexConvert } = await import("./codex.ts");
 const { readAgy } = await import("./agy.ts");
 const { noteSent } = await import("../../drive/sent.ts");
+const { TakeOver } = await import("../../drive/takeover.ts");
 
 // The user events a reader made, each with whether it is marked typed.
 const marks = (events: { kind: string; data: any; typed?: true }[]) => events.filter((e) => e.kind === "user").map((e) => [e.data.text, !!e.typed]);
@@ -159,7 +160,7 @@ test("a copy keeps the marks only for a session of the owner's own store here, a
   const own = join(root, "stores", "claude_dir", "-p", `${id}.jsonl`);
   transcript(own, id);
   expect(ownStore({ harness: "claude", path: own })).toBe(true);
-  const made = await imports.import(imports.byPath(own, "claude")!, { model: "m", workspace: root });
+  const made = await imports.import(imports.byPath(own, "claude")!, { model: "m", workspace: root, owner: true });
   expect(typedOf(made.session.id)).toEqual([["push to git@forge.example:me/repo.git", true], ["words a model sent   through the drive", false]]);
   // Every event of the copy is dated before its link's synced_ms.
   const link = imports.link(made.session.id)!;
@@ -175,4 +176,27 @@ test("a copy keeps the marks only for a session of the owner's own store here, a
   expect(typedOf(far.session.id).map(([, t]) => t)).toEqual([false, false]);
   // No store of Antigravity's is the owner's own for this: the IDE's, the command line's (a script's `agy -p`) and the ACP one's.
   for (const s of ["antigravity", "antigravity-cli", "antigravity-acp"]) expect(ownStore({ harness: "agy", path: join(root, "stores", "agy_dir", s, "brain", "c", ".system_generated", "logs", "transcript_full.jsonl") })).toBe(false);
+});
+
+test("only an import the owner started keeps the marks: a model's copy through keel__session_import keeps none, nor does its catch-up", async () => {
+  const store = new Store(join(root, "state-owner"));
+  store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+  const imports = new Imports(store);
+  const typed = (sessionId: string) => store.events(sessionId).filter((e) => e.kind === "user").map((e) => (e.data as any).typed === true);
+  const id = "5e55107a-0000-4000-8000-000000000002";
+  const own = join(root, "stores", "claude_dir", "-q", `${id}.jsonl`);
+  transcript(own, id);
+  // The take-over's copy, as the tool (no owner) and as the owner's route ask for it.
+  const t = new TakeOver({ store, bus: { emit() {} } as any, engine: { isRunning: () => false } as any, providers: {} as any, errors: { capture() {} } as any, workspace: root }, { onList: [] } as any, imports);
+  const src = imports.byPath(own, "claude")!;
+  const byModel = await t.copy(src, { model: "m" });
+  expect(typed(byModel.session.id)).toEqual([false, false]);
+  const byOwner = await t.copy(src, { model: "m", mode: "new", owner: true });
+  expect(typed(byOwner.session.id)).toEqual([true, true]);
+  // The source goes on; its ended original's catch-up keeps marks for the owner's copy only.
+  writeFileSync(own, require("node:fs").readFileSync(own, "utf8") + JSON.stringify({ cwd: root, sessionId: id, version: "2.1.330", isSidechain: false, userType: "external", entrypoint: "cli", timestamp: new Date(Date.UTC(2026, 10, 20, 10, 9)).toISOString(), type: "user", uuid: `${id}-9`, parentUuid: `${id}-3`, message: { role: "user", content: "and one more" }, promptSource: "typed", origin: { kind: "human" }, turnOrigin: "human" }) + "\n");
+  imports.invalidate();
+  for (const s of [byModel.session.id, byOwner.session.id]) await t.tellEnded(s, null, false);
+  expect(typed(byModel.session.id)).toEqual([false, false, false]);
+  expect(typed(byOwner.session.id)).toEqual([true, true, true]);
 });

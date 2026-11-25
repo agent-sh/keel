@@ -349,7 +349,7 @@ export const importRoutes: RouteModule = (deps) => {
         const seq = lastSeq(prior?.session_id);
         let r;
         try {
-          r = await imports.import(f, { mode: b.mode, model, workspace: workspaceOf(f, b.cwd), title: b.title, session_id: named });
+          r = await imports.import(f, { mode: b.mode, model, workspace: workspaceOf(f, b.cwd), title: b.title, session_id: named, owner: true });
         } catch (e) {
           if ((e as any)?.status === 409) return json({ error: (e as Error).message, session_id: (e as any).session_id, reason: (e as any).reason }, 409);
           throw e;
@@ -390,7 +390,7 @@ export const importRoutes: RouteModule = (deps) => {
             const model = mode === "open" && prior ? "" : b.model ?? (await modelFor(f));
             if (!model && !(mode === "open" && prior)) { fail(409, "no model is available: no provider has credentials", { reason: "no_model" }); continue; }
             const seq = lastSeq(prior?.session_id);
-            const r = await imports.import(f, { mode: prior ? mode : undefined, model, workspace: workspaceOf(f) });
+            const r = await imports.import(f, { mode: prior ? mode : undefined, model, workspace: workspaceOf(f), owner: true });
             if (r.action === "updated") emitGained(r.session.id, seq);
             if (r.action !== "opened") bus.emit({ t: "session", session: r.session });
             results.push({ harness: f.harness, id: f.id, title: f.title, ok: true, action: r.action, session_id: r.session.id, imported_events: r.imported_events });

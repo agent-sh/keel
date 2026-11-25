@@ -63,7 +63,7 @@ const COPIED = "NOT EXISTS (SELECT 1 FROM import_links l WHERE l.harness = impor
 // A row of the index as a listing orders it, before it is decoded.
 type IndexKey = { rowid: number; path: string; harness: Harness; id: string; updated_ms: number; size_bytes: number; title: string };
 
-export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null };
+export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null; owner: number };
 
 export { sourceMachine };
 
@@ -152,6 +152,8 @@ export class Imports {
   constructor(private store: Store) {
     store.migrate(SCHEMA);
     if (!store.columnExists("import_links", "digest")) store.db.exec("ALTER TABLE import_links ADD COLUMN digest TEXT");
+    // 1 when the owner made the copy (Imports.import `owner`); a catch-up of the copy goes by it.
+    if (!store.columnExists("import_links", "owner")) store.db.exec("ALTER TABLE import_links ADD COLUMN owner INTEGER NOT NULL DEFAULT 0");
     if (!store.columnExists("import_index", "v")) store.db.exec("ALTER TABLE import_index ADD COLUMN v INTEGER NOT NULL DEFAULT 0");
     for (const c of COLUMNS) if (!store.columnExists("import_index", c.split(" ")[0]!)) store.db.exec(`ALTER TABLE import_index ADD COLUMN ${c}`);
     store.db.exec("CREATE INDEX IF NOT EXISTS import_index_sid ON import_index(harness, sid)");
@@ -695,7 +697,10 @@ export class Imports {
   // the link names that machine, and the session's tools run there.
   // Open never reads the source (the copy stands on its own); `session_id`
   // names which copy when there are several.
-  async import(f: Found, o: { mode?: "new" | "update" | "open"; model: string; workspace: string; title?: string; session_id?: string; from?: { machine: string; read: Read } }): Promise<{ action: "created" | "updated" | "opened"; session: Session; imported_events: number; read?: Read }> {
+  // `owner`: the owner started this import (a page's route, the owner's take-over and its catch-up). Only such an
+  // import keeps the prompts' typed marks: a model that wrote a transcript into a store and copied it through a tool
+  // (keel__session_import) would make its own words the owner's.
+  async import(f: Found, o: { mode?: "new" | "update" | "open"; model: string; workspace: string; title?: string; session_id?: string; from?: { machine: string; read: Read }; owner?: boolean }): Promise<{ action: "created" | "updated" | "opened"; session: Session; imported_events: number; read?: Read }> {
     const copies = this.links(f.harness, f.id, f.path, o.from?.machine);
     const prior = o.session_id ? copies.find((l) => l.session_id === o.session_id) : copies[0];
     if (o.session_id && !prior) throw refuse(`${o.session_id} is not a copy of ${f.id}`);
@@ -705,8 +710,9 @@ export class Imports {
     // by another session since is not copied under the first one's name.
     if (r.found.id !== f.id) throw refuse(`the file now holds another session (${r.found.id}), not ${f.id}: look at the list again`);
     const st = (o.from ? undefined : sourceStat(f)) ?? { size: f.size_bytes, mtime: f.updated_ms };
-    // A person's prompts count as the owner's only from a session the owner ran in a store of their own here.
-    const own = !o.from && r.found.kind === "interactive" && ownStore(f) && ownStore(r.found);
+    // A person's prompts count as the owner's only from a session the owner ran in a store of their own here, in an
+    // import the owner started.
+    const own = o.owner === true && !o.from && r.found.kind === "interactive" && ownStore(f) && ownStore(r.found);
     // From here to the return nothing waits: what was true before the read
     // (the copies, a copy's head and link) is looked at again, and the events
     // and the link are written as one transaction or not at all.
@@ -745,8 +751,8 @@ export class Imports {
       this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });
       const now = Date.now();
       this.store.db
-        .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, digest, source_size, source_mtime, imported_ms, synced_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, digestOf(r.events), st.size, st.mtime, now, now);
+        .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, digest, source_size, source_mtime, imported_ms, synced_ms, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, digestOf(r.events), st.size, st.mtime, now, now, o.owner === true ? 1 : 0);
       // It goes on in the permission mode it ran in at the source (high-risk commands still ask in every mode).
       // Last, so nothing is told of a session that is then undone.
       if (found.perm_mode) perm.gate?.setPerm(s.id, { mode: found.perm_mode });

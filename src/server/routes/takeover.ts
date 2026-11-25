@@ -111,7 +111,7 @@ export const takeoverRoutes: RouteModule = (deps: Deps) => {
         if (!b.session && !b.path && !(b.harness && b.id)) return bad("name the session: session (from the drive list), harness and id, or path");
         if (b.harness && !["claude", "codex", "agy"].includes(b.harness)) return bad(`unknown harness ${b.harness}`);
         try {
-          const d = await t.takeOver({ session: b.session, harness: b.harness, id: b.id, path: b.path, model: b.model, title: b.title });
+          const d = await t.takeOver({ session: b.session, harness: b.harness, id: b.id, path: b.path, model: b.model, title: b.title, owner: true });
           return json(d);
         } catch (e) {
           if (e instanceof HttpError) return bad(e.message, e.status);
