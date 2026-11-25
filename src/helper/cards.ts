@@ -27,6 +27,7 @@
 import * as alerts from "../automation/alerts.ts";
 import { deliver } from "../automation/core.ts";
 import type { Frame } from "../core/types.ts";
+import { isOutside } from "../core/outside.ts";
 import * as perm from "../server/routes/permissions.ts";
 import type { Approval, Gate } from "../safety/gate.ts";
 import { CLASS_WORDS, localPlace, ownerClass } from "../safety/delegate.ts";
@@ -201,7 +202,8 @@ export class HelperCards {
     const a = this.gate()?.approval(id);
     if (!a || a.state !== "pending" || this.h.isHelper(a.session_id) || this.h.isCards(a.session_id)) return false;
     const s = this.h.deps.store.session(a.session_id);
-    if (!s) return false;
+    // A session another harness runs stays home: its cards are the owner's, and the helper never reads them.
+    if (!s || isOutside(s)) return false;
     const owners = this.ownerOf(a);
     const fresh = this.fresh(a);
     if (owners || !fresh || !this.on()) return false;
@@ -298,11 +300,12 @@ export class HelperCards {
   }
 
   // The open cards of other sessions, as the helper reads them. Only a card sent to it and not gone back to the owner
-  // is its to answer (`mine`); every other one says whose it is.
+  // is its to answer (`mine`); every other one says whose it is. A card of a session another harness runs is not
+  // listed at all: what it shows (its command, its diff) stays home (src/core/outside.ts).
   open(): { a: Approval; text: string; mine: boolean }[] {
     const gate = this.gate();
     if (!gate) return [];
-    return gate.approvals({ pending: true }).filter((a) => !this.h.isHelper(a.session_id)).map((a) => {
+    return gate.approvals({ pending: true }).filter((a) => !this.h.isHelper(a.session_id) && !isOutside(this.h.deps.store.session(a.session_id))).map((a) => {
       const owners = this.ownerOf(a);
       const title = this.h.deps.store.session(a.session_id)?.title || "untitled";
       const mine = !owners && this.on() && this.offered.has(a.id);
