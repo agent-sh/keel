@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 import { basename, dirname, join } from "node:path";
 import { spelled } from "../safety/chars.ts";
 import { detached, type ErrorTracker } from "../core/errors.ts";
-import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
+import { registerCatalog, sessionOff, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { networkFailure, RETRY, retryDelay } from "./retry.ts";
@@ -886,6 +886,7 @@ export class McpManager {
     registerCatalog({
       name,
       session: e.session,
+      ...(e.session ? {} : { server: true as const }),
       tools: async () => {
         // Phone control turned off leaves search, and a call still gets the plain reason.
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
@@ -1301,6 +1302,7 @@ export class McpManager {
 
   // Why a session may not reach a server Keel brings, or nothing.
   refusal(name: string, session: string | undefined): string | undefined {
+    if (session && !this.entries.get(name)?.session && sessionOff.of?.(session)?.includes(name)) return `the MCP server ${name} is turned off for this session (the owner turns it on in this session's panel).`;
     return session ? this.entries.get(name)?.bundled?.refuses?.(session) : undefined;
   }
 

@@ -13,7 +13,7 @@
 import { testBuild } from "../core/build.ts";
 import { SessionMap } from "../core/session-map.ts";
 import type { Message } from "../core/types.ts";
-import { catalogReady, catalogTools, judgedOf, score, stale, surfaced, unavailableNote, type CatalogTool, type Judged } from "./catalog.ts";
+import { catalogReady, catalogTools, judgedOf, score, stale, surfaced, turnedOff, unavailableNote, type CatalogTool, type Judged } from "./catalog.ts";
 import { fail, type Tool, type ToolOutput } from "./types.ts";
 
 export const TOOL_SEARCH = "ToolSearch";
@@ -121,7 +121,10 @@ function wrap(t: CatalogTool): Deferred {
     },
     async run(input, ctx): Promise<ToolOutput> {
       const now = (await catalogTools(ctx?.sessionId)).find((x) => x.qualified === t.qualified);
-      if (!now) return fail(`${name} is no longer available (its server was removed or is not connected). ${unavailableNote(ctx?.sessionId)} Search with ${TOOL_SEARCH} again.`.replace("  ", " "));
+      if (!now) {
+        const off = turnedOff(t.qualified, ctx?.sessionId);
+        return fail(off ? `${name} is not available: ${off}.` : `${name} is no longer available (its server was removed or is not connected). ${unavailableNote(ctx?.sessionId)} Search with ${TOOL_SEARCH} again.`.replace("  ", " "));
+      }
       const why = stale(input && typeof input === "object" ? judged.get(input) : undefined, now, name, "Load it again");
       if (why) return fail(why);
       const deny = ctx.authorizationError?.();
@@ -134,9 +137,9 @@ function wrap(t: CatalogTool): Deferred {
 // A tool named by a tool_reference earlier in the conversation that the
 // catalog no longer has, or that the request leaves out (`why`: its schema
 // cannot be made to fit): still declared, so the request stays valid.
-const gone = (name: string, why?: string): Deferred => ({
+const gone = (name: string, why?: string, off?: string): Deferred => ({
   name, description: why === undefined ? "No longer available." : "Not offered.", input_schema: { type: "object", properties: {} }, defer: true, readOnly: true, catalog: name, left: true,
-  run: async () => fail(why === undefined ? `${name} is no longer available (its server was removed or is not connected).` : notOffered(name, why)),
+  run: async () => fail(off ? `${name} is no longer available: ${off}.` : why === undefined ? `${name} is no longer available (its server was removed or is not connected).` : notOffered(name, why)),
 });
 
 // The request's tools with a stand-in for each tool an earlier tool_reference
@@ -147,7 +150,7 @@ export function keepReferenced(tools: Tool[], messages: Message[], session?: str
   const missing = [...referenced(messages)].filter((n) => !names.has(n));
   if (!missing.length) return tools;
   const off = leftOutOf(session);
-  return [...tools, ...missing.map((n) => gone(n, off?.get(n)))];
+  return [...tools, ...missing.map((n) => gone(n, off?.get(n), turnedOff(n, session)))];
 }
 
 export function referenced(messages: Message[]): Set<string> {
@@ -186,7 +189,7 @@ export async function withCatalog(tools: Tool[], family: string, messages: Messa
     names.add(w.name);
     cat.push(w);
   }
-  for (const n of referenced(messages)) if (!names.has(n)) { names.add(n); cat.push(gone(n)); }
+  for (const n of referenced(messages)) if (!names.has(n)) { names.add(n); cat.push(gone(n, undefined, turnedOff(n, session))); }
   return [...own, ...cat];
 }
 

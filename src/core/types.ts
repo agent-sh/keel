@@ -191,6 +191,7 @@ export type SessionSettings = {
   acp_switches?: Record<string, boolean>; // an ACP agent's boolean options as the owner set them, by id: sent before its next prompt
   cache_long?: boolean; // an agent's request came after a pause near its short cache lifetime: it asks for the long one from then on
   drop_thinking?: boolean; // the provider refused this session's sent-back thinking once: "drop_block" from then on
+  mcp_off?: string[];  // MCP servers (the owner's, by name) turned off for this session alone: their tools are not offered to it (src/tools/catalog.ts sessionOff)
   image_edge?: number; // px: the image limit the provider stated when it refused a request; larger images are sent scaled to it
   images_out?: string[]; // images (imageKey) the provider refused a request over: sent as a note from then on (src/engine/image-fit.ts)
   results_short?: string[]; // tool results (their call ids) sent shortened to their start and end after a provider refused a request as too large (src/engine/size-fit.ts)

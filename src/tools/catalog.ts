@@ -47,7 +47,13 @@ export type CatalogSource = {
   // The one session these tools are for (a server an editor passed with its
   // session): no other session, and no list of the owner's, is offered them.
   session?: string;
+  // An MCP server of the owner's (or one Keel brings): the owner may turn it off for one session (`sessionOff`).
+  server?: true;
 };
+
+// The servers turned off for a session, set where sessions are kept (src/server/routes/mcp.ts): a source that is a
+// server by that name is no source of that session's, so its tools are neither searched nor declared nor called.
+export const sessionOff: { of?: (session: string) => readonly string[] | undefined } = {};
 
 const sources = new Map<string, CatalogSource>();
 
@@ -71,9 +77,19 @@ export const unregisterCatalog = (name: string) => void sources.delete(name);
 // session named (the owner's lists), the shared ones.
 // The shared ones come first: a name both have is the shared server's.
 const offered = (session?: string) => {
+  const off = session ? sessionOff.of?.(session) : undefined;
   const all = [...sources.values()];
-  return [...all.filter((s) => !s.session), ...(session ? all.filter((s) => s.session === session) : [])];
+  return [...all.filter((s) => !s.session && !(s.server && off?.includes(s.name))), ...(session ? all.filter((s) => s.session === session) : [])];
 };
+
+// Why a tool is not there, when its server is turned off for the session: the words a call to it is told. The tool is
+// named by its qualified name (`server__tool`) or the name it loads by (`mcp__server__tool`).
+export function turnedOff(tool: string, session: string | undefined): string | undefined {
+  const off = session ? sessionOff.of?.(session) : undefined;
+  if (!off?.length) return undefined;
+  const server = off.find((n) => (tool.startsWith("mcp__") ? tool.slice(5) : tool).startsWith(`${n}__`));
+  return server ? `the MCP server ${server} is turned off for this session (the owner turns it on in this session's panel)` : undefined;
+}
 export const catalogSources = (session?: string) => offered(session);
 
 // One line naming the servers whose tools are missing now and why, or "".

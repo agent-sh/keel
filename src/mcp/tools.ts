@@ -3,7 +3,7 @@
 // one line per hit and the schema only for the hits shown, so finding a tool
 // costs a few hundred tokens instead of every server's schemas on every request.
 import { registerHooks } from "../engine/hooks.ts";
-import { catalogSources, catalogTools, judgedOf, registerCatalog, score, stale, surfaced, unavailableNote, type CatalogTool, type Judged } from "../tools/catalog.ts";
+import { catalogSources, catalogTools, judgedOf, registerCatalog, score, stale, surfaced, turnedOff, unavailableNote, type CatalogTool, type Judged } from "../tools/catalog.ts";
 export { score };
 import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
@@ -77,6 +77,8 @@ const byName = (all: CatalogTool[], name: string) =>
   all.find((x) => x.qualified === name) ?? all.find((x) => x.mcp && `mcp__${x.qualified}` === name) ?? all.find((x) => x.name === name);
 
 function unknownTool(name: string, all: CatalogTool[], session?: string): string {
+  const off = turnedOff(name, session);
+  if (off) return `${name} is not available: ${off}.`;
   const near = all.map((x) => ({ x, s: score(x, name.replace(/__/g, " ")) })).filter((h) => h.s > 0).sort((a, b) => b.s - a.s).slice(0, 3);
   const pending = catalogSources(session).flatMap((s) => s.pending?.() ?? []);
   const down = unavailableNote(session);

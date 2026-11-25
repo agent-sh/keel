@@ -291,6 +291,36 @@ function EditorServers({ s }: { s: Session }) {
   );
 }
 
+type OwnerServer = { name: string; session?: string; state: string; enabled: boolean; tools: number; bundled?: string };
+
+// The owner's MCP servers for this session alone: a server turned off here offers its tools to no request of this
+// session (the others keep it), and a call of one is told why. A tool its conversation loaded stays as it was until
+// the prompt cache is cold. Customize > MCP servers is for every session.
+function ServersHere({ s }: { s: Session }) {
+  const [list, setList] = useState<OwnerServer[] | null>(null);
+  useEffect(() => {
+    const load = () => api<{ servers: OwnerServer[] }>(`/api/sessions/${s.id}/mcp`).then((r) => setList(r.servers.filter((x) => !x.session)), reportError);
+    load();
+    return onFeature({ frame: (f) => { if (f.name === "mcp-session" && f.session_id === s.id) load(); } });
+  }, [s.id]);
+  const off = new Set(s.settings.mcp_off ?? []);
+  const shown = (list ?? []).filter((x) => x.enabled || off.has(x.name));
+  if (!shown.length) return null;
+  const put = (name: string, on: boolean) => api(`/api/sessions/${s.id}/mcp/${encodeURIComponent(name)}/off`, { method: "POST", body: JSON.stringify({ off: !on }) }).catch(reportError);
+  return (
+    <Section title="MCP servers in this session" testid="session-servers">
+      <p className="pb-1 text-caption text-faint">Turn one off to leave its tools out of this session only. A tool it already loaded stays until the prompt cache is cold. Customize, then MCP servers, is for every session.</p>
+      {shown.map((x) => (
+        <div key={x.name} data-testid="session-server" data-server={x.name} data-off={off.has(x.name) ? "yes" : "no"}>
+        <Line label={x.name} hint={`${x.tools} ${x.tools === 1 ? "tool" : "tools"}${x.state !== "ready" && x.state !== "idle" ? ` · ${SERVER_STATE[x.state] ?? x.state}` : ""}`}>
+          <Toggle on={!off.has(x.name)} label={`${x.name} in this session`} testid="session-server-toggle" onChange={(v) => void put(x.name, v)} />
+        </Line>
+        </div>
+      ))}
+    </Section>
+  );
+}
+
 type AgentSwitch = { id: string; name: string; description?: string; current?: boolean; set?: boolean; held?: true };
 
 // An ACP agent's own on and off options (its boolean config options). The
@@ -348,6 +378,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
       <Recap s={s} />
       {!s.machine && <Place s={s} />}
       <SkillMode s={s} />
+      <ServersHere s={s} />
       <EditorServers s={s} />
       <AgentSwitches s={s} />
       <Section title="Archive">

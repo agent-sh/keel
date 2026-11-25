@@ -14,7 +14,7 @@ import { readsOf } from "../reads.ts";
 import { configPath, readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { endpoint, importHome } from "../../mcp/sources.ts";
 import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
-import { catalogSources, catalogTools } from "../../tools/catalog.ts";
+import { catalogSources, catalogTools, sessionOff } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
 import { gate, presence } from "./permissions.ts";
 import { hookMcp } from "../../integrations/hooks.ts";
@@ -192,6 +192,9 @@ export const mcpRoutes: RouteModule = (deps) => {
     channel: { ...x.channel, sessions: x.session ? [] : channels.sessionsOf(x.name, m.channelOf(x.name)?.ident ?? ""), recent: channels.recentOf(`mcp:${x.session ? `${x.name}@${x.session}` : x.name}`) },
   }));
   const servers = () => json({ servers: withChannels(m.list()) });
+  // The servers the owner turned off for one session: its tools are not offered there (src/tools/catalog.ts).
+  sessionOff.of = (id) => deps.store.session(id)?.settings.mcp_off;
+  const offOf = (id: string) => deps.store.session(id)?.settings.mcp_off ?? [];
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
   // A plugin's server goes and stops with its plugin (Customize > Plugins).
   const plugins = (name: string) => { const p = m.pluginOf(name); return p ? bad(`${name} comes with the plugin ${p}: turn the plugin off or remove it in Customize > Plugins`, 409) : null; };
@@ -217,7 +220,7 @@ export const mcpRoutes: RouteModule = (deps) => {
     // They run with the session's permissions and nothing more (see
     // McpManager.setSessionServers), and are never written to the owner's file.
     "/api/sessions/:id/mcp": {
-      GET: (req: any) => (deps.store.session(req.params.id) ? json({ servers: withChannels(m.list(req.params.id)) }) : bad("no such session", 404)),
+      GET: (req: any) => (deps.store.session(req.params.id) ? json({ servers: withChannels(m.list(req.params.id)).map((x) => (x.session ? x : { ...x, off: offOf(req.params.id).includes(x.name) })) }) : bad("no such session", 404)),
       PUT: async (req: any) => {
         const s = deps.store.session(req.params.id);
         if (!s) return bad("no such session", 404);
@@ -242,6 +245,23 @@ export const mcpRoutes: RouteModule = (deps) => {
         if (holder && list.length && !holders.has(holder)) return bad("no open hold socket has this holder (GET /api/mcp/hold?holder=ID first)", 409);
         const remote = s.machine && s.machine !== "local" ? s.machine : undefined;
         return json({ set: m.setSessionServers(s.id, list, { cwd: s.workspace, remote, holder }), servers: m.list(s.id).filter((x) => x.session) });
+      },
+    },
+    // POST { off: boolean }: turn one of the owner's servers off for this session alone, or on again. Its tools leave the
+    // session's search and its requests (a tool its conversation loaded stays declared, as it was, until the cache is
+    // cold: src/engine/build-pin.ts), and a call of them is told why. Every other session is as it was.
+    "/api/sessions/:id/mcp/:name/off": {
+      POST: async (req: any) => {
+        const s = deps.store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (!m.has(req.params.name) || m.list().every((x) => x.name !== req.params.name)) return bad(`no MCP server named ${req.params.name}`, 404);
+        const b = await body(req);
+        if (typeof b.off !== "boolean") return bad("off is true or false");
+        const now = new Set(s.settings.mcp_off ?? []);
+        if (b.off) now.add(req.params.name); else now.delete(req.params.name);
+        const next = deps.store.mergeSettings(s.id, { mcp_off: now.size ? [...now].sort() : null });
+        if (next) deps.bus.emit({ t: "session", session: next });
+        return json({ off: offOf(s.id) });
       },
     },
     // A project's .mcp.json servers and what the owner decided of each; a decision is the owner's alone.
