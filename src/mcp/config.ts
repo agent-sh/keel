@@ -40,6 +40,10 @@ export type McpServerConfig = {
   // for `mcp_idle.close_browser_min` minutes. Off by default; only for a server Keel starts (a command), never a
   // remote one (src/mcp/manager.ts closeIdle).
   close_idle_browser?: boolean;
+  // The owner's: this server is offered to the model although an earlier entry of the owner's list is the same program
+  // (the same command, arguments and environment, or the same address). By default only the first by name is offered and
+  // the others are listed as "same as <name>" (src/mcp/manager.ts twinOf).
+  offer_twin?: boolean;
   // The owner's: this command server runs from the daemon's start and is never ended for idleness. Off by default:
   // a command server is started by its first call, from the tool list kept of its last run, and ended after
   // `mcp_idle.stop_min` minutes with no call (src/mcp/manager.ts). For one that holds state in memory between calls.
@@ -137,7 +141,7 @@ export function validate(name: string, c: McpServerConfig): string | null {
 
 // The keys one server's JSON may hold, Claude Code's (`type`, `headersHelper`, `disabled`) and Keel's own.
 const SERVER_KEYS = new Set(["type", "command", "args", "env", "env_vars", "owner_env_vars", "cwd", "url", "headers", "headers_env", "bearer_env", "enabled", "disabled",
-  "timeout_secs", "tool_timeout_secs", "tool_max_secs", "oauth", "read_tools", "transport", "headers_helper", "headersHelper", "sync", "channel", "close_idle_browser", "keep_running", "share", "class"]);
+  "timeout_secs", "tool_timeout_secs", "tool_max_secs", "oauth", "read_tools", "transport", "headers_helper", "headersHelper", "sync", "channel", "close_idle_browser", "offer_twin", "keep_running", "share", "class"]);
 
 // One server's JSON as a person gives it (`keel mcp add NAME --json -`: from stdin, so a token stays off the
 // command line). An unknown key is refused by name, never dropped: a misspelled `headers` would otherwise
@@ -178,6 +182,7 @@ function normalize(c: any): McpServerConfig {
   if (c.sync && typeof c.sync.source === "string" && typeof c.sync.name === "string") out.sync = { source: c.sync.source, name: c.sync.name };
   if (c.channel === true) out.channel = true;
   if (c.close_idle_browser === true) out.close_idle_browser = true;
+  if (c.offer_twin === true) out.offer_twin = true;
   if (c.keep_running === true) out.keep_running = true;
   if (c.share === false) out.share = false;
   if (c.class && typeof c.class === "object") {

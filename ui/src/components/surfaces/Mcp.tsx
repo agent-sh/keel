@@ -154,6 +154,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
             <p className="mt-0.5 text-muted">{s.name} and {s.same_as.join(", ")} run the same command or list the same tools. Each entry connects on its own and holds a change of its tools on its own; a change is told once, naming both. Remove the one you do not need.</p>
           </div>
         )}
+        {(s.twin_of || s.offer_twin) && !s.plugin && !s.session && <OfferTwinSection s={s} base={base} act={act} />}
         {s.held && <ToolChanges s={s} base={base} act={act} />}
         {offered(s) && s.tool_names.length > 0 && (s.bundled || s.plugin ? (
           <div>
@@ -217,6 +218,26 @@ const OUTCOME: Record<Outcome["state"], string> = {
 const outcomeWords = (o: Outcome) =>
   o.state === "held" ? (ownerStop(o.by) ? OUTCOME.held : o.reason ? `waits: ${o.reason}` : "waits behind a stop")
   : `${OUTCOME[o.state]}${o.reason && o.state === "refused" ? ` (${o.reason})` : ""}`;
+
+// An entry that runs the same program as an earlier one (the same command, arguments and environment, or the same
+// address) is not offered to the model: its tools and instructions are the first entry's, which the model is told of.
+// The switch offers this one too.
+function OfferTwinSection({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
+  const on = !!s.offer_twin;
+  return (
+    <div className="k-issue" data-tone="quiet" data-testid="mcp-offer-twin" data-on={on || undefined}>
+      <div className="flex items-center gap-2 font-semibold">
+        <span className="min-w-0 flex-1">{on ? "Offered to the model, though it is a copy" : `Same as ${s.twin_of}`}</span>
+        <Toggle testid="mcp-offer-twin-toggle" on={on} label={on ? `Offer only ${s.twin_of ?? "the first entry"} to the model` : `Offer ${s.name} to the model too`} onChange={(v) => act(`${base}/offer-twin`, { on: v }, "PUT")} />
+      </div>
+      <p className="mt-0.5 text-muted" data-testid="mcp-offer-twin-says">
+        {on
+          ? `${s.name} runs the same program as another entry, and the model is offered both: the same tools twice.`
+          : `${s.name} runs the same program as ${s.twin_of}. The model is offered ${s.twin_of}'s tools and instructions and is told this one is the same; none of its tools are listed twice. Turn on to offer this entry too.`}
+      </p>
+    </div>
+  );
+}
 
 // A server that lists browser_navigate and browser_close (the Playwright server) keeps its browser open after
 // the call that used it. The switch has Keel call the server's own browser_close once no call used it for the

@@ -348,6 +348,19 @@ export const mcpRoutes: RouteModule = (deps) => {
         return session ? json({ servers: withChannels(m.list(session)) }) : servers();
       },
     },
+    // The owner's switch for offering a server to the model although it is a later copy of another entry (same program).
+    "/api/mcp/servers/:name/offer-twin": {
+      PUT: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const guard = needs(req);
+        if (guard) return guard;
+        const b = await body(req);
+        if (typeof b.on !== "boolean") return bad("on is true or false");
+        try { m.setOfferTwin(req.params.name, b.on); } catch (e) { return bad((e as Error).message, (e as { status?: number }).status ?? 400); }
+        return servers();
+      },
+    },
     // The owner's switch for closing a server's browser once it is idle (src/mcp/manager.ts closeIdle); off by
     // default, never for a remote server. A remote device needs the passkey.
     "/api/mcp/servers/:name/idle-browser": {

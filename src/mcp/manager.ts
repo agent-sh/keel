@@ -138,6 +138,11 @@ export type McpServerState = {
   // Other entries of the owner's list that are this server under another name: the same command and
   // arguments (or address), or the same tools. One server configured twice.
   same_as?: string[];
+  // The first entry (by name) of a set that runs one program (the same command, arguments and environment, or the same
+  // address), when this one is a later copy: the model is offered that one's tools and instructions, not this one's.
+  // `offer_twin`: the owner turned that off for this server.
+  twin_of?: string;
+  offer_twin?: boolean;
   pinned_at?: number; // when its tool definitions were last accepted
   pinned_at_upgrade?: boolean; // pinned as it was when this build first ran, and the owner has not looked yet
   class?: ServerClass; // what kind of server it is (src/mcp/class.ts); not of a server Keel brings
@@ -429,7 +434,7 @@ export async function helperHeaders(cmd: string, timeoutMs = 10_000, run: { argv
 const pluginWord = (plugin: string) => `it comes with the plugin ${plugin}: turn the plugin off or remove it in Customize > Plugins`;
 
 // (Whether it is on and whether its events are taken are not what the server is: neither restarts it.)
-const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined, class: undefined, close_idle_browser: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined, class: undefined, close_idle_browser: undefined });
+const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined, class: undefined, close_idle_browser: undefined, offer_twin: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined, class: undefined, close_idle_browser: undefined, offer_twin: undefined });
 
 // How long the prompt list of a server that does not say when it changes is
 // used before it is read again: the composer's own window before it asked
@@ -914,7 +919,7 @@ export class McpManager {
       tools: async () => {
         // Phone control turned off leaves search, and a call still gets the plain reason.
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
-        if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing") return [];
+        if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing" || this.twinOf(e)) return [];
         // A bundled server's shipped list: searching it starts nothing. Nor does the kept list of a command server.
         if (e.bundled) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
         if (this.listed(e)) return this.forModel(e).map((t) => this.catalogTool(e, t));
@@ -937,7 +942,7 @@ export class McpManager {
       },
       known: () => {
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
-        if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing") return [];
+        if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing" || this.twinOf(e)) return [];
         if (e.bundled) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
         return e.state === "ready" || this.listed(e) ? this.forModel(e).map((t) => this.catalogTool(e, t)) : [];
       },
@@ -2011,6 +2016,8 @@ export class McpManager {
       tool_hints: e.bundled ? {} : Object.fromEntries(e.tools.map((t) => [t.name, hintWords(hintsOf(t.annotations))] as const).filter(([, w]) => w.length)),
       ...this.heldOf(e),
       ...(twins.get(e.name) ? { same_as: twins.get(e.name) } : {}),
+      ...(this.twinOf(e) ? { twin_of: this.twinOf(e) } : {}),
+      ...(e.config.offer_twin ? { offer_twin: true } : {}),
       ...(e.bundled ? {} : { class: classify(shown, !!e.config.url && this.oauth.signedIn(e.name)) }),
       last_connected: e.last,
       ...(e.state === "connecting" && e.startedAt ? { started_at: e.startedAt } : {}),
@@ -2349,6 +2356,35 @@ export class McpManager {
     }
     return out;
   }
+  // The entry this one is a later copy of, when the model is offered that one instead: the owner's enabled entries that run
+  // one program (the same command, arguments and environment, or the same address and headers) are a set, the first by
+  // name is offered, and a later one is not, unless the owner turned that off for it (`offer_twin`).
+  private twinOf(e: Entry): string | undefined {
+    if (!this.leashed(e) || e.state === "disabled" || e.config.offer_twin) return undefined;
+    const key = (x: Entry) => `${endpoint(x.config)}\n${canon({ env: x.config.env ?? {}, env_vars: [...(x.config.env_vars ?? [])].sort(), cwd: x.config.cwd ?? "", headers: x.config.headers ?? {}, headers_env: x.config.headers_env ?? {}, bearer_env: x.config.bearer_env ?? "", headers_helper: x.config.headers_helper ?? "" })}`;
+    const mine = key(e);
+    let first: string | undefined;
+    for (const o of this.entries.values()) {
+      if (!this.leashed(o) || o.state === "disabled" || key(o) !== mine) continue;
+      if (first === undefined || o.name.localeCompare(first) < 0) first = o.name;
+    }
+    return first && first !== e.name ? first : undefined;
+  }
+
+  // The owner turns the one-of-a-twin-set rule off for a server (its tools and instructions are offered too), or on again.
+  setOfferTwin(name: string, on: boolean) {
+    const e = this.entries.get(name);
+    if (!e || e.session) throw Object.assign(new Error(`no MCP server named ${name}`), { status: 404 });
+    if (e.bundled) throw Object.assign(new Error(`${name} is built in: it has no twin`), { status: 409 });
+    if (e.plugin) throw Object.assign(new Error(pluginWord(e.plugin)), { status: 409 });
+    if (!!e.config.offer_twin === on) return;
+    const c: McpServerConfig = { ...e.config };
+    if (on) c.offer_twin = true;
+    else delete c.offer_twin;
+    this.save({ ...this.cfg.servers, [name]: c });
+    e.config = c;
+  }
+
   // The names of this server's twins, for a notice that names them all.
   twinsOf(name: string): string[] {
     return this.twinNames().get(name) ?? [];
@@ -3057,7 +3093,7 @@ export class McpManager {
   // the ones it last published. A server that has never connected under its
   // config and is connecting now is waited for, up to `waitMs` in all, so a
   // session started with the daemon gets its instructions too.
-  async configured(waitMs = 0): Promise<{ name: string; instructions?: string }[]> {
+  async configured(waitMs = 0): Promise<{ name: string; instructions?: string; same_as?: string }[]> {
     const live = () => [...this.entries.values()].filter((e) => e.state !== "disabled" && e.state !== "missing" && !e.session);
     const unknown = live().filter((e) => e.state === "connecting" && !e.bundled && !this.lastPublished(e));
     if (waitMs > 0 && unknown.length && !runMode.client) {
@@ -3071,7 +3107,7 @@ export class McpManager {
       await Promise.race([Promise.all(unknown.map(settled)), new Promise((r) => (timer = setTimeout(r, waitMs)))]);
       clearTimeout(timer);
     }
-    return live().map((e) => ({ name: e.name, instructions: e.bundled ? e.bundled.instructions ?? e.client?.instructions ?? this.lastPublished(e)?.instructions : this.leashed(e) ? this.pinnedInstructions(e) : e.client?.instructions ?? this.lastPublished(e)?.instructions }));
+    return live().map((e) => ({ name: e.name, ...(this.twinOf(e) ? { same_as: this.twinOf(e) } : {}), instructions: this.twinOf(e) ? undefined : e.bundled ? e.bundled.instructions ?? e.client?.instructions ?? this.lastPublished(e)?.instructions : this.leashed(e) ? this.pinnedInstructions(e) : e.client?.instructions ?? this.lastPublished(e)?.instructions }));
   }
 }
 

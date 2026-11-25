@@ -196,7 +196,7 @@ export function installMcpTools(m: McpManager) {
     // The servers and what they published are the owner's side of the block (hooks.ts SystemBlock).
     system: async () => {
       const s = await m.configured(FIRST_CONNECT_WAIT_MS);
-      const lines = s.map((x) => `- ${x.name}${x.instructions ? `: ${oneLine(x.instructions, 200)}` : ""}`);
+      const lines = s.map((x) => `- ${x.name}${x.same_as ? `: same as ${x.same_as}` : x.instructions ? `: ${oneLine(x.instructions, 200)}` : ""}`);
       return {
         name: "MCP servers are connected", data: lines.join("\n"),
         text: s.length ? `MCP servers are connected; their tools are deferred: load them with your tool search tool (ToolSearch, or search_tools and mcp_call):\n${lines.join("\n")}` : "",

@@ -289,7 +289,20 @@ test("two entries of one server say so on the MCP page", async ({ page, request 
     const row = panel.locator('[data-testid="mcp-server"][data-name="echo-again"]');
     await expect(row.getByTestId("mcp-twin")).toHaveAttribute("data-twins", "echo");
     await expect(row.getByTestId("mcp-twin")).toContainText("One server, configured twice");
+    // The later one is not offered to the model: the page says whose tools are, and the owner can offer it too.
+    const states = async () => Object.fromEntries(((await (await request.get("/api/mcp/servers")).json()).servers as any[]).map((x) => [x.name, x]));
+    expect((await states())["echo-again"]).toMatchObject({ twin_of: "echo" });
+    expect((await states()).echo.twin_of).toBeUndefined();
+    const offer = row.getByTestId("mcp-offer-twin");
+    await expect(offer).toContainText("Same as echo");
+    await expect(row.getByTestId("mcp-offer-twin-says")).toContainText("none of its tools are listed twice");
     await shoot(page, "mcp-twin");
+    await offer.getByTestId("mcp-offer-twin-toggle").click();
+    await expect(offer).toHaveAttribute("data-on", "true");
+    expect((await states())["echo-again"]).toMatchObject({ offer_twin: true });
+    expect((await states())["echo-again"].twin_of).toBeUndefined();
+    await offer.getByTestId("mcp-offer-twin-toggle").click();
+    await expect(offer).toContainText("Same as echo");
     await request.delete("/api/mcp/servers/echo");
     await expect(row.getByTestId("mcp-twin")).toHaveCount(0);
   } finally {
