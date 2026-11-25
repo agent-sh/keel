@@ -118,7 +118,7 @@ const names = (out: string) => out.split("\0").filter(Boolean);
 // one added), and untracked. Null: the repository could not say.
 export async function repoDiffers(root: string, head: string): Promise<string[] | null> {
   const tracked = await gitOut(root, ["diff-files", "--name-only", "--no-renames", "--relative", "-z"]);
-  const staged = head ? await gitOut(root, ["diff-index", "--cached", "--name-only", "--no-renames", "--relative", "-z", "HEAD"]) : "";
+  const staged = head ? await gitOut(root, ["diff-index", "--cached", "--name-only", "--no-renames", "--relative", "-z", "HEAD", "--"]) : "";
   const untracked = await gitOut(root, ["ls-files", "-o", "--exclude-standard", "-z"]);
   if (tracked === null || staged === null || untracked === null) return null;
   return [...new Set([...names(tracked), ...names(staged), ...names(untracked)])];

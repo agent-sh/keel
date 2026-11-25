@@ -311,7 +311,7 @@ err=$(snapadd -n) || unreadable "$err"`, true);
     const out = await this.must(machine, dir, `${CHECKS}
 ${o.leaving ? `if [ -n "$stop" ]; then echo "refuse=$stop"; exit 0; fi` : ""}
 head=$(git rev-parse HEAD)
-when=$(git show -s --format=%cI HEAD)
+when=$(git show -s --format=%cI HEAD --)
 export GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when"
 htree=$(git rev-parse 'HEAD^{tree}')
 # An index with unmerged paths has no tree: HEAD's stands in for what is staged.
@@ -334,7 +334,7 @@ for f in rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD; do if [ -e "$(g
 if [ -n "$sparse" ]; then lost="$lost sparse"; elif [ -n "$(git ls-files -v | grep -m 1 '^[a-zS] ')" ]; then lost="$lost bits"; fi` : ""}
 echo "top=$top"; echo "head=$head"; echo "tree=$tree"; echo "itree=$itree"; echo "snap=$snap"; echo "busy=$busy"; echo "ita=$ita"; echo "lost=$lost"
 echo "prefix=$(git rev-parse --show-prefix)"
-roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`, "snapshot", true);
+roots=$(git rev-list --max-parents=0 HEAD -- | tr '\\n' ' '); echo "roots=$roots"`, "snapshot", true);
     const v = (k: string) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() ?? "";
     // Said in the owner's words, with nothing changed: not a failed script.
     if (v("refuse")) throw new Error(v("refuse"));

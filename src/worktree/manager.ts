@@ -382,7 +382,7 @@ export class Worktrees {
   // Put a saved working state back into `dir` as uncommitted work.
   private async applyState(dir: string, ref: string, sessionId: string) {
     const snap = (await git(dir, ["rev-parse", ref])).trim();
-    const gone = (await git(dir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", snap])).split("\0").filter(Boolean);
+    const gone = (await git(dir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", snap, "--"])).split("\0").filter(Boolean);
     // (The files come back into the folder: a partial clone may fetch the ones it was promised.)
     await git(dir, ["checkout", snap, "--", "."], { fetch: gitReach(sessionId) });
     for (const f of gone) rmSync(join(dir, f), { force: true });
@@ -391,7 +391,7 @@ export class Worktrees {
 
   // Take the working state out of `dir`: tracked files back to HEAD, new files removed.
   private async clearState(dir: string) {
-    const added = (await git(dir, ["diff", "--cached", "--name-only", "-z", "--diff-filter=A", "HEAD"])).split("\0").filter(Boolean);
+    const added = (await git(dir, ["diff", "--cached", "--name-only", "-z", "--diff-filter=A", "HEAD", "--"])).split("\0").filter(Boolean);
     if (added.length) await git(dir, ["rm", "-q", "--cached", "--", ...added]);
     await git(dir, ["checkout", "HEAD", "--", "."], { ok: true });
     await git(dir, ["reset", "-q"]);
@@ -603,7 +603,7 @@ export class Worktrees {
   // it committed, more work since, another branch checked out).
   async committedAs(s: Session, from: string, to: string): Promise<string | null> {
     if (!existsSync(s.workspace)) return null;
-    const out = await git(s.workspace, ["log", "-n", "100", "--format=%H %T %P", "HEAD"], { ok: true });
+    const out = await git(s.workspace, ["log", "-n", "100", "--format=%H %T %P", "HEAD", "--"], { ok: true });
     const rows = out.trim().split("\n").filter(Boolean).map((l) => l.split(" "));
     const tree = new Map(rows.map((r) => [r[0]!, r[1]!]));
     for (let i = rows.length - 1; i >= 0; i--) {

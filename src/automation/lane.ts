@@ -86,7 +86,7 @@ export async function gitOf(a: Pick<AgentRecord, "worktree" | "branch" | "machin
     const base = await baseOf(run, row, parentFolder);
     const [commits, numstat, untracked, status] = await Promise.all([
       base ? run(["rev-list", "--count", `${base}..HEAD`]) : Promise.resolve("0"),
-      run(["diff", "--numstat", "--no-renames", base || "HEAD"]),
+      run(["diff", "--numstat", "--no-renames", base || "HEAD", "--"]),
       run(["ls-files", "--others", "--exclude-standard"]),
       run(["status", "--porcelain", "--untracked-files=all"]),
     ]);

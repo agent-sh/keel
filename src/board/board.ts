@@ -123,7 +123,7 @@ export class WorkBoard {
   private async changes(repo: string, dir: string, base: string | null, head: string, ahead: number | undefined, by: number): Promise<Work | null> {
     const [branch, tracked, listed] = await Promise.all([
       base && ahead !== 0 ? this.span(repo, base, head, by) : Promise.resolve(null),
-      this.git(dir, ["diff", "--shortstat", "--no-renames", "HEAD"], undefined, by),
+      this.git(dir, ["diff", "--shortstat", "--no-renames", "HEAD", "--"], undefined, by),
       gitNames(dir, ["ls-files", "-o", "--exclude-standard", "-z"], UNTRACKED + 1, Math.max(250, Math.min(GIT_MS, Math.ceil(by - performance.now())))),
     ]);
     this.stats.git += 2;

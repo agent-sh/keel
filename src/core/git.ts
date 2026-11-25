@@ -869,7 +869,7 @@ export async function innerWork(top: string, depth = 0, main?: string): Promise<
     if (!dir || depth >= DEPTH) { out.unknown.push(path); continue; }
     const [st, own] = await Promise.all([
       git(dir, ["status", "--porcelain", "-z"], { read: true, timeout: 30_000 }),
-      git(dir, ["rev-list", "-n", "1", "HEAD", "--not", "--remotes"], { read: true, timeout: 30_000 }),
+      git(dir, ["rev-list", "-n", "1", "HEAD", "--not", "--remotes", "--"], { read: true, timeout: 30_000 }),
     ]);
     if (st.code !== 0 || own.code !== 0) { out.unknown.push(path); continue; }
     if (st.out) out.dirty.push(path);

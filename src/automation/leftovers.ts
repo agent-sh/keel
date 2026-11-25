@@ -149,7 +149,7 @@ const statusOf = async (path: string): Promise<Status | undefined> => {
 };
 // Commits of `ref` that no other branch, remote branch or tag holds (`self`: the branches to leave out).
 const uniqueOf = async (dir: string, ref: string, self?: string | string[]): Promise<number | undefined> => {
-  const out = await run(dir, ["rev-list", "--count", ref, "--not", ...[self ?? []].flat().map((b) => `--exclude=${b}`), "--branches", "--remotes", "--tags"]);
+  const out = await run(dir, ["rev-list", "--count", ref, "--not", ...[self ?? []].flat().map((b) => `--exclude=${b}`), "--branches", "--remotes", "--tags", "--"]);
   return out === undefined ? undefined : Number(out.trim()) || 0;
 };
 
