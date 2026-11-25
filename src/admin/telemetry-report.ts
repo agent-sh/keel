@@ -105,7 +105,8 @@ export function spendOf(db: Database, limits: Limits, now = new Date()) {
   };
 }
 
-function rows(db: Database, q: Filter) {
+// The range of a report and the filter its queries share; the first request or tool run is read when the range has no start.
+function scope(db: Database, q: Filter) {
   const where = ["1 = 1"];
   const args: (string | number)[] = [];
   if (q.session) { where.push("session_id = ?"); args.push(q.session); }
@@ -113,13 +114,19 @@ function rows(db: Database, q: Filter) {
   if (q.since !== undefined) { where.push("ts >= ?"); args.push(q.since); }
   if (q.until !== undefined) { where.push("ts < ?"); args.push(q.until); }
   const w = where.join(" AND ");
+  const first = (table: string) => db.query<{ ts: number | null }, any[]>(`SELECT MIN(ts) AS ts FROM ${table} WHERE ${w}`).get(...args)?.ts ?? undefined;
+  const since = q.since ?? Math.min(first("telemetry_calls") ?? Date.now(), first("telemetry_tools") ?? Date.now());
+  const until = q.until ?? Date.now();
+  return { since, until, bucket: q.bucket ?? pickBucket(until - since), where: w, args };
+}
+
+function rows(db: Database, q: Filter) {
+  const { where: w, args, ...range } = scope(db, q);
   const calls = db.query<CallRow, any[]>(`SELECT * FROM telemetry_calls WHERE ${w} ORDER BY ts`).all(...args);
   // A model filter keeps the tool calls that model's steps asked for (a row
   // whose step is not known is in no model's count).
   const tools = db.query<ToolRow, any[]>(`SELECT ts, tool, ms, is_error FROM telemetry_tools WHERE ${w} ORDER BY ts`).all(...args);
-  const since = q.since ?? Math.min(calls[0]?.ts ?? Date.now(), tools[0]?.ts ?? Date.now());
-  const until = q.until ?? Date.now();
-  return { calls, tools, since, until, bucket: q.bucket ?? pickBucket(until - since), where: w, args };
+  return { calls, tools, ...range, where: w, args };
 }
 
 // The failed calls of each tool by session, the most failures first, with how many calls of that tool the session made.
@@ -140,60 +147,146 @@ function failureClasses(db: Database, where: string, args: (string | number)[]) 
      FROM telemetry_tools t WHERE ${where} AND is_error = 1 AND error_class IS NOT NULL GROUP BY tool, error_class ORDER BY count DESC, last_ms DESC LIMIT 50`).all(...args);
 }
 
-export function reportOf(db: Database, q: Filter, limits: Limits) {
-  const { calls, tools, since, until, bucket, where, args } = rows(db, q);
-  const failures = failedIn(db, where, args);
-  const series = new Map<number, { calls: CallRow[]; tools: ToolRow[] }>();
-  const at = (ts: number) => {
-    const t = Math.floor(ts / bucket) * bucket;
-    let b = series.get(t);
-    if (!b) series.set(t, (b = { calls: [], tools: [] }));
-    return b;
-  };
-  for (const c of calls) at(c.ts).calls.push(c);
-  for (const t of tools) at(t.ts).tools.push(t);
+// The report reads the ledger by aggregates in SQL: what comes back to the loop's thread is one row a
+// group (the whole range, a bucket, a model, a tool, a failure class), never a row of the ledger.
+// A percentile is the value at its nearest rank (as `pct`): the ranks are worked out here from the
+// group's counts and the values are picked by a window over the sorted column.
+type Key = string;
+type Where = { w: string; args: (string | number)[] };
+type Pcts = Map<Key, Map<number, number>>; // group -> quantile -> value
 
-  const byModel = group(calls, (c) => c.model);
-  const byTool = group(tools, (t) => t.tool);
-  const errorKinds = group(calls.filter((c) => c.outcome === "error"), (c) => c.error ?? "unknown");
+// The group of a row, as text: `all` is every row together.
+const BUCKET = (b: number) => `CAST(ts * 1.0 / ${b} AS INTEGER) * ${b}`;
+const ALL = "'all'";
+
+function percentilesOf(db: Database, table: string, { w, args }: Where, key: string, col: string, only: string, counts: Map<Key, number>, qs: number[]): Pcts {
+  const ranks: [Key, number, number][] = [];
+  for (const [k, n] of counts) for (const q of qs) ranks.push([k, Math.min(n - 1, Math.max(0, Math.ceil(q * n) - 1)) + 1, q]);
+  const out: Pcts = new Map();
+  if (!ranks.length) return out;
+  const rows = db.query<{ k: string; rn: number; v: number }, any[]>(
+    `SELECT k, rn, v FROM (SELECT CAST(${key} AS TEXT) AS k, ${col} AS v, ROW_NUMBER() OVER (PARTITION BY ${key} ORDER BY ${col}) AS rn
+       FROM ${table} WHERE ${w} AND ${col} IS NOT NULL ${only}) WHERE (k, rn) IN (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?))`)
+    .all(...args, JSON.stringify(ranks.map(([k, rn]) => [k, rn])));
+  const at = new Map(rows.map((r) => [`${r.k}\0${r.rn}`, r.v]));
+  for (const [k, rn, q] of ranks) (out.get(k) ?? out.set(k, new Map()).get(k)!).set(q, at.get(`${k}\0${rn}`)!);
+  return out;
+}
+
+type CallAgg = {
+  k: Key; calls: number; errors: number; cache_breaks: number; interrupted: number; failed: number; unpriced: number; input: number; cache_read: number; cache_write: number; output: number; priced: number;
+  retried: number; streamed: number; streamed_out: number; stream_ms: number; last_ms: number; first_ms: number; n_latency: number; n_ttft: number; n_text: number; n_step: number;
+};
+const STREAMED = "(latency_ms IS NOT NULL AND ttft_ms IS NOT NULL AND latency_ms > ttft_ms AND output > 0)";
+
+// Every group of the key, its sums and its percentiles.
+function callGroups(db: Database, wh: Where, key: string) {
+  const groups = db.query<CallAgg, any[]>(
+    `SELECT CAST(${key} AS TEXT) AS k, COUNT(*) AS calls, SUM(outcome = 'error') AS errors, SUM(COALESCE(cache_break, '') != '') AS cache_breaks, SUM(outcome = 'interrupted') AS interrupted,
+       SUM(COALESCE(error_class, '') != '') AS failed, SUM(COALESCE(unpriced, 0) != 0) AS unpriced, SUM(input) AS input, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(output) AS output,
+       SUM(COALESCE(cost, 0)) AS priced, SUM(outcome = 'ok' AND COALESCE(attempt, 1) > 1) AS retried, SUM(${STREAMED}) AS streamed, SUM(CASE WHEN ${STREAMED} THEN output ELSE 0 END) AS streamed_out,
+       SUM(CASE WHEN ${STREAMED} THEN latency_ms - ttft_ms ELSE 0 END) AS stream_ms, MAX(ts) AS last_ms, MIN(ts) AS first_ms,
+       COUNT(latency_ms) AS n_latency, COUNT(ttft_ms) AS n_ttft, COUNT(text_ms) AS n_text, COUNT(CASE WHEN outcome = 'ok' THEN step_ms END) AS n_step
+     FROM telemetry_calls WHERE ${wh.w} GROUP BY ${key}`).all(...wh.args);
+  const counts = (f: (g: CallAgg) => number) => new Map(groups.map((g) => [g.k, f(g)] as const).filter(([, n]) => n > 0));
+  const latency = percentilesOf(db, "telemetry_calls", wh, key, "latency_ms", "", counts((g) => g.n_latency), [0.5, 0.95]);
+  const ttft = percentilesOf(db, "telemetry_calls", wh, key, "ttft_ms", "", counts((g) => g.n_ttft), [0.5, 0.95]);
+  const text = percentilesOf(db, "telemetry_calls", wh, key, "text_ms", "", counts((g) => g.n_text), [0.5]);
+  const step = percentilesOf(db, "telemetry_calls", wh, key, "step_ms", "AND outcome = 'ok'", counts((g) => g.n_step), [0.5, 0.95]);
+  const by = new Map<Key, ReturnType<typeof statsOf>>();
+  const pick = (m: Pcts, k: Key, q: number) => m.get(k)?.get(q) ?? null;
+  for (const g of groups) by.set(g.k, statsOf(g, { latency_p50: pick(latency, g.k, 0.5), latency_p95: pick(latency, g.k, 0.95), ttft_p50: pick(ttft, g.k, 0.5), ttft_p95: pick(ttft, g.k, 0.95), first_text_p50: pick(text, g.k, 0.5), step_latency_p50: pick(step, g.k, 0.5), step_latency_p95: pick(step, g.k, 0.95) }));
+  return { stats: by, aggs: new Map(groups.map((g) => [g.k, g])) };
+}
+
+// The numbers of `callStats`, from the sums of a group (none: the numbers of no calls).
+function statsOf(g: CallAgg | undefined, p: Record<"latency_p50" | "latency_p95" | "ttft_p50" | "ttft_p95" | "first_text_p50" | "step_latency_p50" | "step_latency_p95", number | null>) {
+  const n = (v: number | undefined) => v ?? 0;
+  const calls = n(g?.calls), errors = n(g?.errors), unpriced = n(g?.unpriced), failed = n(g?.failed);
+  const input = n(g?.input), cacheRead = n(g?.cache_read), cacheWrite = n(g?.cache_write), prompt = input + cacheRead + cacheWrite, priced = n(g?.priced);
+  return {
+    calls, errors, cache_breaks: n(g?.cache_breaks), interrupted: n(g?.interrupted), error_rate: calls ? errors / calls : 0, failed, failed_share: calls ? failed / calls : 0,
+    latency_p50: p.latency_p50, latency_p95: p.latency_p95, ttft_p50: p.ttft_p50, ttft_p95: p.ttft_p95, first_text_p50: p.first_text_p50, step_latency_p50: p.step_latency_p50, step_latency_p95: p.step_latency_p95,
+    retried_steps: n(g?.retried),
+    speed_sample: { calls: n(g?.streamed), output_tokens: n(g?.streamed_out) },
+    output_tokens_per_s: n(g?.stream_ms) ? (n(g?.streamed_out) / n(g?.stream_ms)) * 1000 : null,
+    input_tokens: input, output_tokens: n(g?.output), cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, cache_hit_ratio: prompt ? cacheRead / prompt : null,
+    priced_cost_usd: priced, unpriced_calls: unpriced, cost_usd: unpriced ? null : priced,
+  };
+}
+
+type ToolAgg = { k: Key; tool_calls: number; tool_errors: number; timed: number; total_ms: number | null; last_ms: number };
+function toolGroups(db: Database, wh: Where, key: string): Map<Key, ToolAgg> {
+  return new Map(db.query<ToolAgg, any[]>(
+    `SELECT CAST(${key} AS TEXT) AS k, COUNT(*) AS tool_calls, SUM(is_error != 0) AS tool_errors, COUNT(ms) AS timed, SUM(ms) AS total_ms, MAX(ts) AS last_ms FROM telemetry_tools WHERE ${wh.w} GROUP BY ${key}`)
+    .all(...wh.args).map((g) => [g.k, g]));
+}
+const toolStatsOf = (g: ToolAgg | undefined) => ({ tool_calls: g?.tool_calls ?? 0, tool_errors: g?.tool_errors ?? 0, tool_error_rate: g?.tool_calls ? g.tool_errors / g.tool_calls : 0 });
+
+export function reportOf(db: Database, q: Filter, limits: Limits) {
+  const { since, until, bucket, where, args } = scope(db, q);
+  const wh = { w: where, args };
+  const failures = failedIn(db, where, args);
+  const BY = BUCKET(bucket);
+  const total = callGroups(db, wh, ALL), perBucket = callGroups(db, wh, BY), perModel = callGroups(db, wh, "model");
+  const totalTools = toolGroups(db, wh, ALL), bucketTools = toolGroups(db, wh, BY), perTool = toolGroups(db, wh, "tool");
+  const empty = statsOf(undefined, { latency_p50: null, latency_p95: null, ttft_p50: null, ttft_p95: null, first_text_p50: null, step_latency_p50: null, step_latency_p95: null });
+  const toolMs = percentilesOf(db, "telemetry_tools", wh, "tool", "ms", "", new Map([...perTool].map(([k, g]) => [k, g.timed] as const).filter(([, n]) => n > 0)), [0.5, 0.95]);
+
+  // The classes of failed requests in each bucket, and by model.
+  const bucketClasses = new Map<Key, Record<string, number>>();
+  for (const r of db.query<{ k: string; c: string; n: number }, any[]>(`SELECT CAST(${BY} AS TEXT) AS k, error_class AS c, COUNT(*) AS n FROM telemetry_calls WHERE ${where} AND COALESCE(error_class, '') != '' GROUP BY ${BY}, error_class ORDER BY MIN(ts), MIN(id)`).all(...args)) {
+    (bucketClasses.get(r.k) ?? bucketClasses.set(r.k, {}).get(r.k)!)[r.c] = r.n;
+  }
+  const keys = [...new Set([...perBucket.stats.keys(), ...bucketTools.keys()])].sort((a, b) => Number(a) - Number(b));
+  // Models in the order their first request came (as the rows were grouped when they were all read).
+  const models = [...perModel.aggs.values()].sort((a, b) => a.first_ms - b.first_ms || 0);
+  const modelClasses = db.query<{ model: string; c: string; n: number; last_ms: number }, any[]>(
+    `SELECT model, error_class AS c, COUNT(*) AS n, MAX(ts) AS last_ms FROM telemetry_calls WHERE ${where} AND COALESCE(error_class, '') != '' GROUP BY model, error_class ORDER BY MIN(ts), MIN(id)`).all(...args);
+  const lastError = new Map(db.query<{ model: string; c: string; error: string }, any[]>(
+    `SELECT model, c, error FROM (SELECT model, error_class AS c, error, ROW_NUMBER() OVER (PARTITION BY model, error_class ORDER BY ts DESC, id DESC) AS rn
+       FROM telemetry_calls WHERE ${where} AND COALESCE(error_class, '') != '' AND COALESCE(error, '') != '') WHERE rn = 1`).all(...args).map((r) => [`${r.model}\0${r.c}`, r.error]));
+
+  const breakRows = db.query<{ cause: string; n: number; last_ms: number; uncached: number }, any[]>(
+    `SELECT cache_break AS cause, COUNT(*) AS n, MAX(ts) AS last_ms, SUM(input + cache_write) AS uncached FROM telemetry_calls WHERE ${where} AND cache_break IN (SELECT value FROM json_each(?)) GROUP BY cache_break`)
+    .all(...args, JSON.stringify(BREAK_CAUSES));
+  const details = db.query<{ cause: string; detail: string; n: number }, any[]>(
+    `SELECT cache_break AS cause, break_detail AS detail, COUNT(*) AS n FROM telemetry_calls WHERE ${where} AND cache_break IN (SELECT value FROM json_each(?)) AND COALESCE(break_detail, '') != '' GROUP BY cache_break, break_detail ORDER BY n DESC, MIN(ts), MIN(id)`)
+    .all(...args, JSON.stringify(BREAK_CAUSES));
+  const errorKinds = db.query<{ message: string; count: number; last_ms: number }, any[]>(
+    `SELECT COALESCE(error, 'unknown') AS message, COUNT(*) AS count, MAX(ts) AS last_ms FROM telemetry_calls WHERE ${where} AND outcome = 'error' GROUP BY COALESCE(error, 'unknown') ORDER BY count DESC, MIN(ts), MIN(id) LIMIT 10`).all(...args);
+
+  const allTotal = total.stats.get("all") ?? empty, allTools = totalTools.get("all");
   return {
     since_ms: since,
     until_ms: until,
     bucket_ms: bucket,
-    total: { ...callStats(calls), ...toolStats(tools) },
+    total: { ...allTotal, ...toolStatsOf(allTools) },
     // `last_ms`: when the bucket's newest request or tool call was (a bucket starts on the clock's grid, which may be the day before).
-    series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, b]) => ({ t_ms, last_ms: Math.max(b.calls.at(-1)?.ts ?? 0, b.tools.at(-1)?.ts ?? 0), ...callStats(b.calls), ...toolStats(b.tools), classes: classCounts(b.calls) })),
-    by_model: [...byModel.entries()].map(([model, list]) => ({ model, ...callStats(list) })).sort((a, b) => b.calls - a.calls),
+    series: keys.map((k) => ({ t_ms: Number(k), last_ms: Math.max(perBucket.aggs.get(k)?.last_ms ?? 0, bucketTools.get(k)?.last_ms ?? 0), ...(perBucket.stats.get(k) ?? empty), ...toolStatsOf(bucketTools.get(k)), classes: bucketClasses.get(k) ?? {} })),
+    by_model: models.map((m) => ({ model: m.k, ...perModel.stats.get(m.k)! })).sort((a, b) => b.calls - a.calls),
     // total_ms sums the timed calls only (`timed` of `tool_calls`); null when none was timed.
-    tools: [...byTool.entries()].map(([tool, list]) => {
-      const timed = list.filter((t) => t.ms !== null);
+    tools: [...perTool.values()].map((g) => {
       // `failed_in`: the sessions its failures happened in, the most first (ten of them; `failed_in_more` counts the rest).
-      const inSessions = failures.get(tool) ?? [];
+      const inSessions = failures.get(g.k) ?? [];
       return {
-        tool, ...toolStats(list), p50_ms: pct(list.map((t) => t.ms), 0.5), p95_ms: pct(list.map((t) => t.ms), 0.95), timed: timed.length, total_ms: timed.length ? timed.reduce((n, t) => n + t.ms!, 0) : null,
+        tool: g.k, ...toolStatsOf(g), p50_ms: toolMs.get(g.k)?.get(0.5) ?? null, p95_ms: toolMs.get(g.k)?.get(0.95) ?? null, timed: g.timed, total_ms: g.timed ? g.total_ms : null,
         failed_in: inSessions.slice(0, 10).map(({ tool: _t, title, ...r }) => ({ ...r, ...(title !== null ? { title } : {}) })), ...(inSessions.length > 10 ? { failed_in_more: inSessions.length - 10 } : {}),
       };
     })
       .sort((a, b) => b.tool_calls - a.tool_calls),
     breaks: BREAK_CAUSES.map((cause) => {
-      const list = calls.filter((c) => c.cache_break === cause);
-      // What differed, where it was recorded: each detail with its count.
-      const details = new Map<string, number>();
-      for (const c of list) if (c.break_detail) details.set(c.break_detail, (details.get(c.break_detail) ?? 0) + 1);
-      return {
-        cause, count: list.length, last_ms: list.at(-1)?.ts ?? null, uncached_tokens: list.reduce((n, c) => n + c.input + c.cache_write, 0),
-        details: [...details.entries()].map(([detail, count]) => ({ detail, count })).sort((a, b) => b.count - a.count),
-      };
+      const r = breakRows.find((x) => x.cause === cause);
+      return { cause, count: r?.n ?? 0, last_ms: r?.last_ms ?? null, uncached_tokens: r?.uncached ?? 0, details: details.filter((d) => d.cause === cause).map(({ detail, n }) => ({ detail, count: n })) };
     }).filter((b) => b.count),
     // Failures by class, per provider and model: `rate` is per request of that model.
-    error_classes: [...byModel.entries()].flatMap(([model, list]) =>
-      Object.entries(classCounts(list)).map(([cls, count]) => {
-        const of = list.filter((c) => c.error_class === cls);
-        return { provider: providerOf(model), model, class: cls, count, calls: list.length, rate: count / list.length, last_ms: of.at(-1)!.ts, last_error: of.findLast((c) => c.error)?.error ?? null };
-      })).sort((a, b) => b.count - a.count),
+    error_classes: models.flatMap((m) =>
+      modelClasses.filter((c) => c.model === m.k).map((c) => ({
+        provider: providerOf(m.k), model: m.k, class: c.c, count: c.n, calls: m.calls, rate: c.n / m.calls, last_ms: c.last_ms, last_error: lastError.get(`${m.k}\0${c.c}`) ?? null,
+      }))).sort((a, b) => b.count - a.count),
     spend: spendOf(db, limits),
     tool_failure_classes: failureClasses(db, where, args),
-    error_kinds: [...errorKinds.entries()].map(([message, list]) => ({ message, count: list.length, last_ms: list.at(-1)!.ts })).sort((a, b) => b.count - a.count).slice(0, 10),
+    error_kinds: errorKinds,
   };
 }
 
