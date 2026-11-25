@@ -12,14 +12,19 @@
 // ids), the result of the oldest call still waiting under a step of its own
 // kind (GENERIC, RUN_COMMAND, VIEW_FILE, AGENCY_TOOL_CALL and more as tools
 // are added), ERROR_MESSAGE, CHECKPOINT (a compaction's summary) and
-// SYSTEM_MESSAGE (the harness's own). A
+// SYSTEM_MESSAGE (the harness's own). A reply names its model (`model`), a
+// failed step carries its words in `error` (and a command its `exit_code`),
+// a step recorded while it still ran has the status RUNNING and is no failure,
+// and a prompt's media are `{ mime_type, uri }`: the file is read from the
+// conversation's own upload folder when it is there. A
 // conversation kept as binary steps only has no transcript and is not listed.
 // Nothing here writes.
 import { Database } from "bun:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { damageNotes, headTail, readLines } from "./files.ts";
-import { Builder, clip, type Found, type Read } from "./types.ts";
+import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
+import { STORE } from "../../providers/image-limits.ts";
 import { ownerHome } from "../../core/paths";
 
 export const agyHome = () => process.env.KEEL_IMPORT_AGY_DIR ?? join(ownerHome(), ".gemini");
@@ -69,8 +74,11 @@ const fileUri = (uris: string) => {
 
 function prompts(path: string) {
   const { head, tail } = headTail(path, 64 * 1024);
-  const all = [...head, ...tail].filter((r) => r.type === "USER_INPUT" && typeof r.content === "string").map((r) => requestText(r.content)).filter(Boolean);
-  return { first: all[0], last: all[all.length - 1] };
+  const both = [...head, ...tail];
+  const all = both.filter((r) => r.type === "USER_INPUT" && typeof r.content === "string").map((r) => requestText(r.content)).filter(Boolean);
+  // The newest reply's model: the tail is read after the head.
+  const model = tail.findLast((r) => r.type === "PLANNER_RESPONSE" && typeof r.model === "string" && r.model)?.model ?? head.findLast((r) => r.type === "PLANNER_RESPONSE" && typeof r.model === "string" && r.model)?.model;
+  return { first: all[0], last: all[all.length - 1], model: model as string | undefined };
 }
 
 function found(store: string, id: string, row: { title?: string; preview?: string; listed_ms?: number; cwd?: string; parent?: string }): Found | null {
@@ -84,6 +92,7 @@ function found(store: string, id: string, row: { title?: string; preview?: strin
     harness: "agy", id, path, cwd: row.cwd, title: clip(title, 120),
     first_prompt: p.first ? clip(p.first) : undefined, last_prompt: p.last ? clip(p.last) : undefined,
     updated_ms: Math.max(row.listed_ms ?? 0, Math.round(st.mtimeMs)), size_bytes: st.size,
+    ...(p.model ? { model: p.model } : {}),
     kind: row.parent ? "subagent" : "interactive", parent_id: row.parent || undefined,
   };
 }
@@ -122,6 +131,28 @@ export function agySessions(home = agyHome()): Found[] {
   return out;
 }
 
+// A prompt's media: bytes the record holds, else the file its `uri` names (kept in the conversation's own
+// `.user_uploaded` folder, found by its name: the uri names the machine that wrote it), else named as unavailable.
+function mediaOf(m: any, transcript: string): any[] {
+  const mime = m?.mimeType ?? m?.mime_type;
+  const data = m?.data ?? m?.inlineData;
+  if (typeof mime !== "string") return [];
+  const image = mime.startsWith("image/") && STORE.formats.includes(mime);
+  if (typeof data === "string") return image ? [{ type: "image", source: { type: "base64", media_type: mime, data } }] : [unavailable(`${mime} attachment`)];
+  const name = typeof m?.uri === "string" ? basename(m.uri) : "";
+  if (!image || !name) return [unavailable(`${mime} attachment${name ? ` ${name}` : ""}`)];
+  const brain = dirname(dirname(dirname(transcript)));
+  try {
+    const bytes = readFileSync(join(brain, ".user_uploaded", name));
+    const base64 = bytes.toString("base64");
+    if (base64.length <= (STORE.base64 ?? Infinity)) return [{ type: "image", source: { type: "base64", media_type: mime, data: base64 } }];
+  } catch {}
+  return [unavailable(`${mime} attachment ${name}`)];
+}
+
+// A step's failure words: its own `error`, with what it printed after.
+const failureOf = (r: any, content: string) => [typeof r.error === "string" ? r.error : "", content].filter((x) => x.trim()).join("\n");
+
 export async function readAgy(f: Found): Promise<Read> {
   const b = new Builder();
   const notes: string[] = [];
@@ -129,6 +160,7 @@ export async function readAgy(f: Found): Promise<Read> {
   // Calls get their results in the order they were made; ids are ours.
   const waiting: string[] = [];
   let compacted = false;
+  const models = new Set<string>();
   // A call left without a result when the conversation moves on gets one, so
   // the history stays well formed for the next model.
   const settle = (ts: number) => {
@@ -145,10 +177,7 @@ export async function readAgy(f: Found): Promise<Read> {
     switch (r.type) {
       case "USER_INPUT": {
         settle(ts);
-        const images = (Array.isArray(r.media) ? r.media : [])
-          .map((m: any) => ({ mime: m?.mimeType ?? m?.mime_type, data: m?.data ?? m?.inlineData }))
-          .filter((m: any) => typeof m.mime === "string" && m.mime.startsWith("image/") && typeof m.data === "string")
-          .map((m: any) => ({ type: "image", source: { type: "base64", media_type: m.mime, data: m.data } }));
+        const images = (Array.isArray(r.media) ? r.media : []).flatMap((m: any) => mediaOf(m, f.path));
         b.user(requestText(content), ts, images);
         break;
       }
@@ -162,7 +191,9 @@ export async function readAgy(f: Found): Promise<Read> {
           waiting.push(id);
           blocks.push({ type: "tool_use", id, name: String(c.name), input: c.args && typeof c.args === "object" ? c.args : {} });
         });
-        b.assistant(blocks, ts, undefined, true);
+        if (!blocks.length && typeof r.error === "string" && r.error.trim()) { b.note(`Antigravity's model request failed here: ${clip(r.error, 300)}`, ts); break; }
+        b.assistant(blocks, ts, typeof r.model === "string" && r.model ? r.model : undefined, true);
+        if (typeof r.model === "string" && r.model) models.add(r.model);
         break;
       }
       case "SYSTEM_MESSAGE":
@@ -174,7 +205,11 @@ export async function readAgy(f: Found): Promise<Read> {
       default: {
         // Any other step answers the oldest waiting call; an error with no call waiting is skipped.
         const id = waiting.shift();
-        if (id) b.result({ tool_use_id: id, content: resultOf(content), is_error: r.type === "ERROR_MESSAGE" || (typeof r.status === "string" && r.status !== "DONE") }, ts);
+        // A failure: an error step, a step that says ERROR (its own words in `error`) or a command that exited with a code.
+        // RUNNING is a step recorded while it ran, not a failure.
+        const failed = r.type === "ERROR_MESSAGE" || r.status === "ERROR" || (r.type === "RUN_COMMAND" && Number.isInteger(r.exit_code) && r.exit_code !== 0);
+        const text = failed ? failureOf(r, resultOf(content)) : resultOf(content);
+        if (id) b.result({ tool_use_id: id, content: failed && r.type === "RUN_COMMAND" && Number.isInteger(r.exit_code) && r.exit_code !== 0 ? `${text}\n[exit code ${r.exit_code}]`.trim() : text, is_error: failed }, ts);
         else b.counts.skipped++;
       }
     }
@@ -183,6 +218,7 @@ export async function readAgy(f: Found): Promise<Read> {
   notes.push(...damageNotes(lines));
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} reasoning step${b.counts.thoughts_dropped === 1 ? " is" : "s are"} not carried: another model's thinking is not sent to this one.`);
   if (compacted) notes.push("Antigravity's compaction summaries are kept as notes where they happened.");
-  notes.push("Antigravity records no call ids and no model name: calls and results are paired by order.");
+  if (models.size > 1) notes.push(`The conversation used ${[...models].join(", ")}.`);
+  notes.push("Antigravity records no call ids: calls and results are paired by order.");
   return { found: f, events: b.events, counts: b.counts, notes };
 }
