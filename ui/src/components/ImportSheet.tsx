@@ -441,13 +441,13 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
         >
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 max-md:gap-x-1 max-md:px-3 max-md:py-2 md:flex-nowrap">
             <History className="size-4 text-muted" />
-            <Dialog.Title className="shrink-0 whitespace-nowrap font-semibold">Import sessions</Dialog.Title>
+            <Dialog.Title className="shrink-0 whitespace-nowrap font-semibold max-md:flex-1">Import sessions</Dialog.Title>
             <Seg
               kind="tabs"
               // Each source is listed over the network and a change drops the pick: the arrows only move, Space or Enter chooses.
               manual
               panel={panel}
-              className="order-last min-w-0 basis-full md:order-none md:ml-2 md:basis-auto"
+              className="min-w-0 basis-full max-md:order-3 md:ml-2 md:basis-auto"
               wrap={narrow}
               label="Where to import from"
               value={harness}
@@ -463,12 +463,12 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               }))}
             />
             <input ref={pick} type="file" accept=".jsonl,application/x-ndjson,application/jsonl" hidden data-testid="import-keel-file-input" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void importKeelFile(f); }} />
-            <button type="button" data-testid="import-keel-file" title="A session exported from another Keel as a Keel file" disabled={keelFile?.state === "sending"} onClick={() => pick.current?.click()} className="ml-auto flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
+            <button type="button" data-testid="import-keel-file" title="A session exported from another Keel as a Keel file" disabled={keelFile?.state === "sending"} onClick={() => pick.current?.click()} className="ml-auto flex h-7 shrink-0 items-center max-md:order-4 max-md:ml-0 gap-1.5 whitespace-nowrap rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
               <FileUp className="size-3.5" />
               <span className="max-md:sr-only">Import a Keel file</span>
             </button>
             {linked.length > 0 && (
-              <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption text-faint">
+              <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption text-faint max-md:order-5 max-md:ml-auto">
                 On
                 <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="k-field-sm">
                   <option value="">all machines</option>
