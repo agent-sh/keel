@@ -140,7 +140,7 @@ function Json({ name, value, depth }: { name?: string; value: unknown; depth: nu
         <div className="pl-4">
           {entries.slice(0, shown).map(([k, v]) => <Json key={k} name={array ? undefined : k} value={v} depth={depth + 1} />)}
           {entries.length > shown && <button type="button" onClick={() => setShown(shown + 500)} className="py-px text-faint hover:text-fg">{(entries.length - shown).toLocaleString("en-US")} more…</button>}
-          <div className="-ml-4 pl-4 text-faint">{brace[1]}</div>
+          <div className="-ml-4 text-faint">{brace[1]}</div>
         </div>
       )}
     </div>
