@@ -14,6 +14,15 @@ export function splitId(id: string): { machine: string; id: string } | null {
 
 export const apiPath = (p: string) => p.replace(/^\/api\/sessions\/([A-Za-z0-9]+)--([\w-]+)/, "/api/fleet/machines/$1/api/sessions/$2");
 
+// An /api path that is about a session's own machine (its repository's trust, hooks, quarantine): for a session of
+// another daemon it goes to that daemon, which holds the folder; for one of this daemon it is the path itself.
+export const machineApi = (sessionId: string, path: string) => {
+  const r = splitId(sessionId);
+  return r ? path.replace(/^\/api\//, `/api/fleet/machines/${r.machine}/api/`) : path;
+};
+// The session's id on the daemon that holds it.
+export const ownId = (sessionId: string) => splitId(sessionId)?.id ?? sessionId;
+
 // Its parent is a session of that daemon too: the backlink opens it there.
 export const asRemote = (machine: string, s: Session): Session => ({ ...s, id: remoteId(machine, s.id), machine, ...(s.parent_id ? { parent_id: remoteId(machine, s.parent_id) } : {}) });
 

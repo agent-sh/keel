@@ -4,6 +4,7 @@ import type { Session } from "../../../src/core/types.ts";
 import type { Source as HookSource } from "../../../src/integrations/hooks.ts";
 import type { Batch } from "../../../src/safety/quarantine.ts";
 import type { ProjectFile } from "../../../src/safety/trust.ts";
+import { machineApi, ownId } from "../lib/fleet-ids.ts";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
@@ -25,10 +26,12 @@ export function TrustPanel({ session }: { session: Session }) {
   const [batches, setBatches] = useState<Batch[]>([]);
   const [err, setErr] = useState("");
   const cwd = encodeURIComponent(session.workspace);
+  // A session of another machine: its folder is there, so what is read and trusted is that machine's.
+  const on = (path: string) => machineApi(session.id, path);
   const load = useCallback(() => {
-    api<View>(`/api/trust?cwd=${cwd}`).then(setView).catch((e) => setErr(failed(e, { at: "TrustPanel" })));
-    api<{ sources: Omit<HookSource, "groups">[] }>(`/api/hooks?cwd=${cwd}`).then((r) => setHooks(r.sources)).catch(reportError);
-    api<{ batches: Batch[] }>(`/api/permissions/quarantine?session=${session.id}`).then((r) => setBatches(r.batches)).catch(reportError);
+    api<View>(on(`/api/trust?cwd=${cwd}`)).then(setView).catch((e) => setErr(failed(e, { at: "TrustPanel" })));
+    api<{ sources: Omit<HookSource, "groups">[] }>(on(`/api/hooks?cwd=${cwd}`)).then((r) => setHooks(r.sources)).catch(reportError);
+    api<{ batches: Batch[] }>(on(`/api/permissions/quarantine?session=${ownId(session.id)}`)).then((r) => setBatches(r.batches)).catch(reportError);
   }, [cwd, session.id]);
   useEffect(() => {
     load();
@@ -55,7 +58,7 @@ export function TrustPanel({ session }: { session: Session }) {
               <p className="px-1 text-caption text-muted">
                 {held.length === 1 ? "This file is" : "These files are"} held: {view.new_files === "ask" ? "new or changed" : "changed"} since you trusted {held.length === 1 ? "it" : "them"}. A changed instruction file loads as you last trusted it; a skill does not load.
               </p>
-              {held.map((f) => <HeldFile key={f.path} f={f} cwd={session.workspace} onDone={load} />)}
+              {held.map((f) => <HeldFile key={f.path} f={f} cwd={session.workspace} on={on} onDone={load} />)}
             </>
           ) : (
             <p className="k-empty px-1" data-testid="trust-clear">Nothing is held: every file loads as you trusted it.</p>
@@ -72,7 +75,7 @@ export function TrustPanel({ session }: { session: Session }) {
                     {/* A skill pinned on first sight loads; its allowed-tools run without asking only once you trust it yourself. */}
                     {f.auto && f.kind === "skill" && (
                       <button type="button" data-testid="trust-own" className="k-btn" data-quiet title="Its allowed-tools then run without asking in the turn that loads it" onClick={async () => {
-                        try { await api("/api/trust", { method: "POST", body: JSON.stringify({ cwd: session.workspace, files: [{ path: f.path, sha256: f.sha256 }] }) }); load(); } catch (e) { setErr(failed(e, { at: "TrustPanel" })); }
+                        try { await api(on("/api/trust"), { method: "POST", body: JSON.stringify({ cwd: session.workspace, files: [{ path: f.path, sha256: f.sha256 }] }) }); load(); } catch (e) { setErr(failed(e, { at: "TrustPanel" })); }
                       }}>Trust it yourself</button>
                     )}
                   </li>
@@ -100,7 +103,7 @@ export function TrustPanel({ session }: { session: Session }) {
                   <>
                     <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap">{h.text}</pre>
                     <button data-testid="trust-hooks"
-                      onClick={() => api("/api/hooks/trust", { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: h.sha256 }) }).then(load).catch((e) => setHookErr(failed(e, { at: "TrustPanel" })))}
+                      onClick={() => api(on("/api/hooks/trust"), { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: h.sha256 }) }).then(load).catch((e) => setHookErr(failed(e, { at: "TrustPanel" })))}
                       className="mt-2 h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90">Trust this version</button>
                     {hookErr && <p className="mt-1 text-danger">{hookErr}</p>}
                   </>
@@ -117,7 +120,7 @@ export function TrustPanel({ session }: { session: Session }) {
         <h3 className="flex items-center gap-2 px-1 text-ui font-medium"><FileWarning className="size-4 text-accent" /> Quarantine</h3>
         {live.length === 0 ? (
           <p className="k-empty px-1">Nothing in quarantine. A call you did not answer on a card that creates or changes a git hook, .envrc, the project's hook or MCP file or an editor task moves it here.</p>
-        ) : live.map((b) => <BatchCard key={b.id} b={b} onDone={load} />)}
+        ) : live.map((b) => <BatchCard key={b.id} b={b} on={on} onDone={load} />)}
       </section>
     </div>
   );
@@ -130,7 +133,8 @@ const SETUP_STATE = { new: "held: not pinned", changed: "held: changed since you
 function WorktreeSetupFile({ session }: { session: Session }) {
   const [v, setV] = useState<SetupView | null>(null);
   const [err, setErr] = useState("");
-  const load = useCallback(() => { api<SetupView>(`/api/worktree-setup?cwd=${encodeURIComponent(session.workspace)}`).then(setV).catch(reportError); }, [session.workspace]);
+  const on = (path: string) => machineApi(session.id, path);
+  const load = useCallback(() => { api<SetupView>(on(`/api/worktree-setup?cwd=${encodeURIComponent(session.workspace)}`)).then(setV).catch(reportError); }, [session.workspace]);
   useEffect(load, [load]);
   if (!v?.exists) return null;
   return (
@@ -148,7 +152,7 @@ function WorktreeSetupFile({ session }: { session: Session }) {
           <>
             <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap">{v.text}</pre>
             <button data-testid="trust-worktree-setup" className="mt-2 h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90"
-              onClick={() => api("/api/worktree-setup/trust", { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: v.sha256 }) }).then(() => { setErr(""); load(); }).catch((e) => setErr(failed(e, { at: "TrustPanel" })))}>Trust this version</button>
+              onClick={() => api(on("/api/worktree-setup/trust"), { method: "POST", body: JSON.stringify({ cwd: session.workspace, sha256: v.sha256 }) }).then(() => { setErr(""); load(); }).catch((e) => setErr(failed(e, { at: "TrustPanel" })))}>Trust this version</button>
             {err && <p className="mt-1 text-danger">{err}</p>}
           </>
         )}
@@ -157,18 +161,18 @@ function WorktreeSetupFile({ session }: { session: Session }) {
   );
 }
 
-function HeldFile({ f, cwd, onDone }: { f: File; cwd: string; onDone: () => void }) {
+function HeldFile({ f, cwd, on, onDone }: { f: File; cwd: string; on: (path: string) => string; onDone: () => void }) {
   const [diff, setDiff] = useState<Diff | null>(null);
   const [err, setErr] = useState("");
   const Icon = ICON[f.kind];
   useEffect(() => {
     if (f.state === "gone") return;
-    api<Diff>(`/api/trust/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(f.path)}`).then(setDiff).catch((e) => setErr(failed(e, { at: "TrustPanel" })));
+    api<Diff>(on(`/api/trust/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(f.path)}`)).then(setDiff).catch((e) => setErr(failed(e, { at: "TrustPanel" })));
   }, [f.path, f.sha256]);
   const trust = async () => {
     setErr("");
     try {
-      await api("/api/trust", { method: "POST", body: JSON.stringify({ cwd, files: [{ path: f.path, sha256: diff?.sha256 ?? f.sha256 }] }) });
+      await api(on("/api/trust"), { method: "POST", body: JSON.stringify({ cwd, files: [{ path: f.path, sha256: diff?.sha256 ?? f.sha256 }] }) });
       onDone();
     } catch (e) { setErr(failed(e, { at: "TrustPanel" })); }
   };
@@ -192,7 +196,7 @@ function HeldFile({ f, cwd, onDone }: { f: File; cwd: string; onDone: () => void
   );
 }
 
-function BatchCard({ b, onDone }: { b: Batch; onDone: () => void }) {
+function BatchCard({ b, on, onDone }: { b: Batch; on: (path: string) => string; onDone: () => void }) {
   const [err, setErr] = useState("");
   const act = async (f: () => Promise<unknown>) => { setErr(""); try { await f(); onDone(); } catch (e) { setErr(failed(e, { at: "TrustPanel" })); } };
   return (
@@ -202,11 +206,11 @@ function BatchCard({ b, onDone }: { b: Batch; onDone: () => void }) {
         {b.paths.map((p) => <li key={p} className="truncate font-mono text-caption">{p}</li>)}
       </ul>
       <div className="mt-2 flex items-center gap-1.5">
-        <button data-testid="quarantine-restore" onClick={() => act(() => api(`/api/permissions/quarantine/${b.id}/restore`, { method: "POST" }))} className="k-btn">
+        <button data-testid="quarantine-restore" onClick={() => act(() => api(on(`/api/permissions/quarantine/${b.id}/restore`), { method: "POST" }))} className="k-btn">
           <RotateCcw className="size-3" /> Put back
         </button>
         <button data-testid="quarantine-discard"
-          onClick={async () => { if (await confirmAction({ title: "Discard these files?", body: b.paths.join("\n"), action: "Discard", danger: true })) act(() => api(`/api/permissions/quarantine/${b.id}`, { method: "DELETE" })); }}
+          onClick={async () => { if (await confirmAction({ title: "Discard these files?", body: b.paths.join("\n"), action: "Discard", danger: true })) act(() => api(on(`/api/permissions/quarantine/${b.id}`), { method: "DELETE" })); }}
           className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-caption text-muted hover:bg-danger-soft hover:text-danger">
           <Trash2 className="size-3" /> Discard
         </button>
