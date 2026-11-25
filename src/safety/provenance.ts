@@ -36,7 +36,7 @@
 // read back is `inside`. What is held is what outside content named whole.
 import { resolve } from "node:path";
 import { ownerPrompt } from "../core/owner.ts";
-import { ownersImported } from "./imported.ts";
+import { inCopy, ownersImported } from "./imported.ts";
 import { resolveVariables, splitCommand, type Simple } from "./shell.ts";
 import { name as baseName, unwrap, type Run } from "./risk-words.ts";
 import { groupOf, readerAnswered, withScheme } from "./addresses.ts";
@@ -820,6 +820,8 @@ export class ProvenanceBook {
     // The transcript is a copy of a session the owner ran in a store of their own here (src/safety/imported.ts):
     // its prompts marked typed are the owner's words.
     private ownImport = false,
+    // The last seq of the copy, when its link keeps one: then every event up to it is the copy's, whatever its date.
+    private importedThrough?: number,
   ) {}
 
   get(key: string): Origin | undefined { return this.first.get(key); }
@@ -933,11 +935,12 @@ export class ProvenanceBook {
       const d = e.data;
       if (!d) continue;
       // Another harness's transcript, whatever it holds.
-      if (this.importedUntil > 0 && e.ts <= this.importedUntil) {
+      const imp = { until: this.importedUntil, through: this.importedThrough, own: this.ownImport };
+      if (inCopy(imp, e)) {
         const where = "an imported transcript";
         // A prompt the owner typed there is theirs, as one typed here is; everything else of the copy (its tool
         // results, the model's words and calls, notices, hand-backs) stays outside content.
-        if (e.kind === "user" && ownersImported({ until: this.importedUntil, own: this.ownImport }, d)) await this.noteAll(String(d.text ?? ""), "owner", "the owner's prompt in an imported transcript", e);
+        if (e.kind === "user" && ownersImported(imp, d)) await this.noteAll(String(d.text ?? ""), "owner", "the owner's prompt in an imported transcript", e);
         else if (e.kind === "user") await this.noteAll(String(d.text ?? ""), "outside", where, e);
         else if (e.kind === "assistant") for (const b of d.blocks ?? []) { if (b?.type === "text") await this.noteAll(String(b.text ?? ""), "outside", where, e); else if (b?.type === "tool_use") await this.noteAll(JSON.stringify(b.input ?? {}), "outside", where, e); }
         else if (e.kind === "tool_result") for (const r of d.results ?? []) await this.noteAll(textOf(r?.content), "outside", where, e);

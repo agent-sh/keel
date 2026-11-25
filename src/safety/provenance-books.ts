@@ -34,7 +34,7 @@ export class Provenance {
     if (!b) {
       if (this.books.size >= MAX_BOOKS) this.books.delete(this.books.keys().next().value!);
       const imp = importOf(this.store, id);
-      this.books.set(id, (b = new ProvenanceBook(this.source, imp.until, (agent) => { const sid = this.kids.get(agent); return sid ? this.books.get(sid) ?? null : null; }, imp.own)));
+      this.books.set(id, (b = new ProvenanceBook(this.source, imp.until, (agent) => { const sid = this.kids.get(agent); return sid ? this.books.get(sid) ?? null : null; }, imp.own, imp.through)));
     }
     // A session not in memory is brought in, and the bodies of the events this book has not read are read, off the loop.
     if (this.store.session(id)) await this.store.warmBodies(id, b.seq + 1);

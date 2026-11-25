@@ -63,7 +63,7 @@ const COPIED = "NOT EXISTS (SELECT 1 FROM import_links l WHERE l.harness = impor
 // A row of the index as a listing orders it, before it is decoded.
 type IndexKey = { rowid: number; path: string; harness: Harness; id: string; updated_ms: number; size_bytes: number; title: string };
 
-export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null; owner: number };
+export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null; owner: number; through: number | null };
 
 export { sourceMachine };
 
@@ -111,6 +111,19 @@ const sourceStat = (f: Found) => {
   try { const s = statSync(inDatabase(f.harness) ? f.path.split("#")[0]! : f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; }
 };
 
+// The last seq of a copy made before its link kept one, found once: a copy is a run of events at the session's start
+// (an update is refused once a turn was taken here, so only Keel's notes come between its parts), and an event of it
+// is one dated no later than the link's synced_ms, one dated after the moment this runs (no event written here is
+// dated after it), or the copy's own note. An event the source dated between the two at the end of the copy's last
+// part reads as the session's own: only a copy made before the copy dated no event later than its synced_ms.
+function throughOfOld(store: Store) {
+  const now = Date.now();
+  const old = store.db.query<{ session_id: string; synced_ms: number }, []>("SELECT session_id, synced_ms FROM import_links WHERE through IS NULL").all();
+  const last = store.db.query<{ n: number | null }, [string, number, number]>("SELECT MAX(seq) AS n FROM events WHERE session_id = ? AND (ts <= ? OR ts > ? OR (kind = 'note' AND json_extract(data, '$.imported') = 1))");
+  const set = store.db.query("UPDATE import_links SET through = ? WHERE session_id = ?");
+  for (const l of old) set.run(last.get(l.session_id, l.synced_ms, now)?.n ?? 0, l.session_id);
+}
+
 // A user event its reader marked typed (ImportedEvent): the mark is the reader's, never the data's.
 const typedPrompt = (e: ImportedEvent) => e.kind === "user" && e.typed === true && typeof e.data?.text === "string" && !e.data.kind && !e.data.origin;
 
@@ -154,6 +167,9 @@ export class Imports {
     if (!store.columnExists("import_links", "digest")) store.db.exec("ALTER TABLE import_links ADD COLUMN digest TEXT");
     // 1 when the owner made the copy (Imports.import `owner`); a catch-up of the copy goes by it.
     if (!store.columnExists("import_links", "owner")) store.db.exec("ALTER TABLE import_links ADD COLUMN owner INTEGER NOT NULL DEFAULT 0");
+    // The last seq the copy wrote: every event up to it is the import's, whatever its date (src/safety/imported.ts).
+    if (!store.columnExists("import_links", "through")) store.db.exec("ALTER TABLE import_links ADD COLUMN through INTEGER");
+    throughOfOld(store);
     if (!store.columnExists("import_index", "v")) store.db.exec("ALTER TABLE import_index ADD COLUMN v INTEGER NOT NULL DEFAULT 0");
     for (const c of COLUMNS) if (!store.columnExists("import_index", c.split(" ")[0]!)) store.db.exec(`ALTER TABLE import_index ADD COLUMN ${c}`);
     store.db.exec("CREATE INDEX IF NOT EXISTS import_index_sid ON import_index(harness, sid)");
@@ -732,7 +748,7 @@ export class Imports {
       const more = r.events.slice(link.items);
       this.store.atomic(s.id, () => {
         this.copy(s.id, more, r.events.slice(0, link.items), own);
-        this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), s.id);
+        this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ?, through = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), this.store.lastSeq(s.id), s.id);
       });
       return { action: "updated", session: this.store.session(s.id)!, imported_events: more.length, read: r };
     }
@@ -751,8 +767,8 @@ export class Imports {
       this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });
       const now = Date.now();
       this.store.db
-        .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, digest, source_size, source_mtime, imported_ms, synced_ms, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, digestOf(r.events), st.size, st.mtime, now, now, o.owner === true ? 1 : 0);
+        .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, digest, source_size, source_mtime, imported_ms, synced_ms, owner, through) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, digestOf(r.events), st.size, st.mtime, now, now, o.owner === true ? 1 : 0, this.store.lastSeq(s.id));
       // It goes on in the permission mode it ran in at the source (high-risk commands still ask in every mode).
       // Last, so nothing is told of a session that is then undone.
       if (found.perm_mode) perm.gate?.setPerm(s.id, { mode: found.perm_mode });

@@ -205,3 +205,36 @@ test("only an import the owner started keeps the marks: a model's copy through k
   expect(typed(byModel.session.id)).toEqual([false, false, false]);
   expect(typed(byOwner.session.id)).toEqual([true, true, true]);
 });
+
+test("a copy made before its link kept a seq: an event its source dated after the import is still the copy's", async () => {
+  const { importOf, inCopy } = await import("../../safety/imported.ts");
+  const { ProvenanceBook } = await import("../../safety/provenance.ts");
+  const store = new Store(join(root, "state-old"));
+  store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+  await ready(store);
+  const id = "5e55107a-0000-4000-8000-000000000003";
+  const path = join(root, "given-old", `${id}.jsonl`);
+  transcript(path, id);
+  const im = new Imports(store);
+  const made = await im.import(im.byPath(path, "claude")!, { model: "m", workspace: root });
+  const sid = made.session.id;
+  // As an older build left it: no seq on the link, and the last prompt dated by its source after the import.
+  const prompt = store.events(sid).filter((e) => e.kind === "user").at(-1)!;
+  // (Its synced_ms a while back, as a copy made before; the copy's events are its source's dates, before that.)
+  store.db.query("UPDATE import_links SET through = NULL, synced_ms = synced_ms - 60000 WHERE session_id = ?").run(sid);
+  store.db.query("UPDATE events SET ts = ? WHERE id = ?").run(Date.UTC(2099, 0, 1), prompt.id);
+  store.append(sid, "user", { text: "typed here, in Keel" });
+  const imp = importOf(store, sid);
+  expect(imp.through).toBeUndefined();
+  new Imports(store); // the start that finds the seq once
+  const after = importOf(store, sid);
+  const rows = store.db.query<{ seq: number; ts: number; id: string }, [string]>("SELECT seq, ts, id FROM events WHERE session_id = ? ORDER BY seq").all(sid);
+  expect(rows.filter((e) => inCopy(after, e)).map((e) => e.id)).toContain(prompt.id);
+  expect(inCopy(after, rows.at(-1)!)).toBe(false);
+  // The book counts the future-dated prompt's address as the import's, not as the owner's.
+  const book = new ProvenanceBook(() => undefined, after.until, () => null, after.own, after.through);
+  await book.take(store.db.query<any, [string]>("SELECT seq, kind, data, ts FROM events WHERE session_id = ? ORDER BY seq").all(sid).map((e) => ({ ...e, data: JSON.parse(e.data) })));
+  const seen = [...((book as any).first as Map<string, any>).entries()].filter(([k]) => k.includes("forge.example")).map(([, o]) => o.cls);
+  expect(seen.length).toBeGreaterThan(0);
+  expect(seen.every((c) => c === "outside")).toBe(true);
+});
