@@ -302,22 +302,25 @@ test("a calm list's time buckets move with the page's clock, with nothing touche
     const gap = n - o;
     expect(gap, "the two sessions ended apart").toBeGreaterThan(20);
     expect(gap).toBeLessThan(40_000);
-    // The page's own clock: both ended a few seconds ago, so both say the same and the older one's time is not repeated.
+    // The page's own clock: both ended a few seconds ago. A row at rest says no age within the hour (its dot says it, its
+    // tooltip has the time), so a list of finished rows is not a column of "now" and "4m".
     await page.clock.install({ time: n + 1000 });
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto("/");
     await expect(row(page, newer)).toBeVisible();
     await page.clock.pauseAt(n + 15_000);
-    await expect(row(page, older).getByTestId("row-time")).toHaveAttribute("data-calm", "true");
-    await expect(row(page, older).getByTestId("row-time")).toBeHidden();
-    await expect(row(page, newer).getByTestId("row-time")).toHaveText("now");
-    // The page's clock moves on to the instant the older one says a minute and the newer one does not yet: its time
+    for (const id of [older, newer]) {
+      await expect(row(page, id).getByTestId("row-time")).toHaveAttribute("data-calm", "true");
+      await expect(row(page, id).getByTestId("row-time")).toBeHidden();
+      await expect(row(page, id).getByTestId("row-time")).toHaveAttribute("title", /\d\d:\d\d/);
+    }
+    // The page's clock moves on to the instant the older one is an hour old and the newer one is not yet: its age
     // shows, with no event, no click and no reload.
-    await page.clock.fastForward(59_500 - Math.ceil(gap / 2) - 15_000);
+    await page.clock.fastForward(3_599_500 - Math.ceil(gap / 2) - 15_000);
     await expect(row(page, older).getByTestId("row-time")).toBeVisible();
-    await expect(row(page, older).getByTestId("row-time")).toHaveText("1m");
+    await expect(row(page, older).getByTestId("row-time")).toHaveText("1h");
     await expect(row(page, older).getByTestId("row-time")).not.toHaveAttribute("data-calm", /.*/);
-    await expect(row(page, newer).getByTestId("row-time")).toHaveText("now");
+    await expect(row(page, newer).getByTestId("row-time")).toBeHidden();
     await shoot(page, "rest-bar-06-calm-clock");
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);

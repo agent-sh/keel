@@ -224,6 +224,8 @@ function AgentsToggle({ id }: { id: string }) {
 // A row draws again only for what it shows: its own reads (the session as it is now, its state,
 // its queue) tell it. The list draws again with every change of any session and asks none of
 // its rows to follow: a new session object with the same id and the same archive mark is the same row.
+// Rows at rest say no age until they are this old (lib/utils.ts, timeBucket: 0 now, 1 within the hour).
+const QUIET_BUCKET = 2;
 const Row = memo(RowOf, (a, b) => a.s.id === b.s.id && !!a.s.archived === !!b.s.archived && a.active === b.active && a.where === b.where && a.gone === b.gone && a.calm === b.calm && a.said === b.said);
 // The row's end is one slot, and it always holds the row's age; before it, the word of a row that waits on the
 // owner (you) or was declined. A failure's class is on the row's line and in the slot's tooltip. The chevron of a
@@ -553,8 +555,8 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
   const shown = fluid && drawn.current.key === key && on && !actedOn(on) ? around(fits, drawn.current.ids, on, (s) => s.id) : fits;
   drawn.current = { key, ids: shown.map((s) => s.id) };
   for (const s of shown) kept.current.add(s.id);
-  // A quiet row's time shows where it starts a new bucket after the quiet row above it: a calm list is
-  // not a column of the same "7m". (A live clock, a word in the time's place: always shown. News is the title's
+  // A quiet row's time shows past the hour, where it starts a new bucket after the quiet row above it: a calm list is
+  // not a column of the same "7m" or "now". (A live clock, a word in the time's place: always shown. News is the title's
   // ink, so a row with news follows the same rule.)
   // The buckets are read on the page's clock (lib/clock.ts), so a list nobody touched changes with the time.
   const calm = new Set<string>();
@@ -562,7 +564,8 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
   for (const s of shown) {
     if (!AT_REST.includes(watches[s.id] ?? "idle")) continue;
     const b = timeBucket(s.updated, now);
-    if (b === above) calm.add(s.id);
+    // Within the hour a finished row says no age: its dot says it, and its tooltip has the time.
+    if (b === above || b < QUIET_BUCKET) calm.add(s.id);
     above = b;
   }
   return (
