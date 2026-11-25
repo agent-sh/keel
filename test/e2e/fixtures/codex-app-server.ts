@@ -66,6 +66,9 @@ async function run(turnId: string, text: string) {
   await sleep(100);
   if (/^stuck\b/i.test(text)) {
     deaf = true;
+    // It lives on past its pipes too: a reader that went (a launcher killed above it) ends nothing.
+    setInterval(() => {}, 1 << 30);
+    process.stdout.on("error", () => {});
     await reply(turnId, "m1", "Stuck.");
     return;
   }

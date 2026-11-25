@@ -84,6 +84,36 @@ export function alive(pid: number, start?: string): boolean {
   return start === undefined || s.start === start;
 }
 
+// A process by its pid and start time: a pid taken again by another program is not it.
+export type Proc = { pid: number; start: string };
+export function procOf(pid: number): Proc | undefined {
+  try { const s = statFields(readFileSync(`/proc/${pid}/stat`, "utf8")); return s && s.state !== "Z" ? { pid, start: s.start } : undefined; } catch { return undefined; }
+}
+
+// The processes under one, each with its start time (/proc/<pid>/task/<tid>/children, every thread's). A
+// program a launcher starts (the npm package's codex.js starts the native codex) holds what the launcher
+// does not: the native holds the thread's writer lock.
+export function descendants(pid: number, depth = 4): Proc[] {
+  const out: Proc[] = [];
+  const walk = (p: number, d: number) => {
+    if (d <= 0) return;
+    let tids: string[] = [];
+    try { tids = readdirSync(`/proc/${p}/task`); } catch { return; }
+    const kids = new Set<number>();
+    for (const t of tids) {
+      try { for (const k of readFileSync(`/proc/${p}/task/${t}/children`, "utf8").trim().split(/\s+/)) if (Number(k) > 1) kids.add(Number(k)); } catch {}
+    }
+    for (const k of kids) {
+      const c = procOf(k);
+      if (!c) continue;
+      out.push(c);
+      walk(k, d - 1);
+    }
+  };
+  walk(pid, depth);
+  return out;
+}
+
 // A Claude Code record of a running session, as its kind and entrypoint say who runs it.
 export type ClaudeRecord = { pid: number; sessionId?: string; procStart?: string; kind?: string; entrypoint?: string; status?: string; waitingFor?: string };
 export function claudeKind(r: Pick<ClaudeRecord, "kind" | "entrypoint">): HolderKind {

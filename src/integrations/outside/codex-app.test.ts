@@ -4,7 +4,7 @@
 // back, the rollout holds the message and the reply, and the child is gone after the turn. A question is a question
 // card. A session another process holds takes nothing. After a restart a send is looked for in the rollout.
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
@@ -15,13 +15,16 @@ import { answer, allPendingQuestions } from "../../tools/interact.ts";
 import { Outside } from "./service.ts";
 import { OUTSIDE_DEFAULTS } from "./settings.ts";
 import { Gate } from "../../safety/gate.ts";
-import { statFields } from "./writer.ts";
-import { CodexApp, holdsMessage, threadFacts, type CardGate } from "./codex-app.ts";
+import { descendants, statFields } from "./writer.ts";
+import { CodexApp, holdsMessage, lastRecord, threadFacts, type CardGate } from "./codex-app.ts";
 
 const top = mkdtempSync(join(tmpdir(), "keel-codex-app-"));
 ownEnv({ KEEL_IMPORT_CODEX_DIR: undefined, KEEL_IMPORT_CLAUDE_DIR: undefined });
 afterAll(() => rmSync(top, { recursive: true, force: true }));
 const STANDIN = join(import.meta.dir, "../../../test/e2e/fixtures/codex-app-server.ts");
+const LAUNCHER = join(import.meta.dir, "../../../test/e2e/fixtures/codex-launcher.ts");
+// What reads processes here: /proc (Linux). Elsewhere those tests are skipped by name.
+const PROC = existsSync("/proc/self/task");
 
 const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> => {
   const end = Date.now() + ms;
@@ -34,7 +37,7 @@ const until = async <T>(f: () => T | undefined | false, ms = 8000): Promise<T> =
 };
 
 let k = 0;
-function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; locks?: false } = {}) {
+function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; locks?: false; bin?: string } = {}) {
   const dir = join(top, String(k++));
   const codex = join(dir, "codex");
   const cwd = join(dir, "work");
@@ -61,7 +64,7 @@ function rig(opts: { holder?: () => Holder | undefined; realGate?: boolean; lock
   let real = opts.realGate ? new Gate(store, bus) : undefined;
   let gate: CardGate = real ?? stub;
   const outside = { row: (id: string) => o.row(id), holderNow: (id: string) => opts.holder?.() ?? o.holderNow(id), retell: (id: string) => o.retell(id) };
-  const make = () => (app = new CodexApp({ store, bus, outside, gate: () => gate, bin: () => STANDIN, home: () => codex, trouble: (e) => { throw e; } }));
+  const make = () => (app = new CodexApp({ store, bus, outside, gate: () => gate, bin: () => opts.bin ?? STANDIN, home: () => codex, trouble: (e) => { throw e; } }));
   make();
   const thread = `019a0000-0000-7000-8000-${String(k).padStart(12, "0")}`;
   const rollout = join(day, `rollout-${now.toISOString().slice(0, 19).replaceAll(":", "-")}-${thread}.jsonl`);
@@ -280,26 +283,95 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   });
 
-  test("a child an earlier daemon left running is ended at the start, and nothing it did not start", async () => {
+  test.skipIf(!PROC)("a child an earlier daemon left running is ended at the start, with what it started, and nothing Keel did not start", async () => {
     const r = rig();
-    const orphan = Bun.spawn([STANDIN, "app-server"], { stdin: "pipe", stdout: "ignore", stderr: "ignore", env: { ...process.env, CODEX_HOME: r.codex } });
+    const forever = ["-e", "setInterval(() => {}, 1 << 30)"];
+    // Keel's own child, a launcher whose native it started after the row was kept (the daemon ended first).
+    const orphan = Bun.spawn([process.execPath, "-e", `require("node:child_process").spawn(process.execPath, ${JSON.stringify(forever)}.concat(["app-server"]), { stdio: "ignore" }); setInterval(() => {}, 1 << 30)`, "app-server"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    // Not Keel's: another program with Keel's start time, a server whose start time is not the row's (its pid
+    // taken again), and a pid that is this process with a start time of another.
     const other = Bun.spawn(["sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const decoy = Bun.spawn([process.execPath, ...forever, "app-server"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const startOf = (pid: number) => statFields(readFileSync(`/proc/${pid}/stat`, "utf8"))!.start;
+    let native = 0;
     try {
       const s = await r.session();
-      const startOf = (pid: number) => statFields(readFileSync(`/proc/${pid}/stat`, "utf8"))!.start;
-      await until(() => { try { return readFileSync(`/proc/${orphan.pid}/cmdline`, "utf8").includes("app-server"); } catch { return false; } });
-      const put = r.store.db.query("INSERT INTO outside_children (session_id, pid, start) VALUES (?, ?, ?)");
+      native = (await until(() => descendants(orphan.pid)[0])).pid;
+      const put = r.store.db.query("INSERT INTO outside_procs (session_id, pid, start) VALUES (?, ?, ?)");
       put.run(s.id, orphan.pid, startOf(orphan.pid));
-      // Not Keel's child: another program, and a pid whose start differs (taken again since).
       put.run("not-a-session", other.pid, startOf(other.pid));
-      put.run("taken-again", process.pid, "1");
+      put.run("taken-again", decoy.pid, String(Number(startOf(decoy.pid)) - 7));
+      put.run("this-one", process.pid, "1");
       r.app().stop();
       r.make().start();
-      await until(() => orphan.exitCode !== null || orphan.signalCode !== null, 8000);
+      await until(() => orphan.signalCode !== null || orphan.exitCode !== null, 8000);
+      expect(orphan.signalCode).toBe("SIGTERM");
+      await until(() => { try { return statFields(readFileSync(`/proc/${native}/stat`, "utf8"))?.state === "Z"; } catch { return true; } }, 8000);
+      await Bun.sleep(100);
       expect(other.exitCode).toBeNull();
-      expect(r.store.db.query("SELECT * FROM outside_children").all()).toEqual([]);
-    } finally { other.kill(); orphan.kill(); r.done(); }
+      expect(other.signalCode).toBeNull();
+      expect(decoy.exitCode).toBeNull();
+      expect(decoy.signalCode).toBeNull();
+      expect(r.store.db.query("SELECT * FROM outside_procs").all()).toEqual([]);
+    } finally { other.kill(); orphan.kill(); decoy.kill(); if (native) try { process.kill(native, "SIGKILL"); } catch {} r.done(); }
   }, 30_000);
+
+  test.skipIf(!PROC)("a codex that is a launcher (the npm package's): Stop ends the native under it too, which holds the thread", async () => {
+    const r = rig({ bin: LAUNCHER });
+    let native = 0;
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "stuck now", "k1");
+      await until(() => r.frames.some((f) => f.t === "delta" && f.session_id === s.id && f.text.includes("Stuck")), 15_000);
+      const launcher = (r.app() as any).runs.get(s.id).conn.pid as number;
+      native = (await until(() => descendants(launcher)[0])).pid;
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      expect(await r.app().interrupt(s.id)).toBe(true);
+      await until(() => !r.app().ours(s.id), 15_000);
+      const gone = (pid: number) => { try { return statFields(readFileSync(`/proc/${pid}/stat`, "utf8"))?.state === "Z"; } catch { return true; } };
+      expect(gone(launcher)).toBe(true);
+      expect(gone(native)).toBe(true);
+      expect(r.store.db.query("SELECT * FROM outside_procs").all()).toEqual([]);
+    } finally { if (native) try { process.kill(native, "SIGKILL"); } catch {} r.done(); }
+  }, 30_000);
+
+  test("a send that lands while the child ends goes with one new child, never two", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      const app = r.app() as any;
+      const end0 = app.end.bind(app);
+      let sent = false;
+      // The owner's next message lands in the tick the child begins to end.
+      app.end = (run: any) => { const p = end0(run); if (!sent) { sent = true; app.send(s.id, "fix the build once more", "k2"); } return p; };
+      r.app().send(s.id, "fix the build", "k1");
+      await until(() => r.store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM outside_sends WHERE state = 'delivered'").get()!.n === 2 && !r.app().ours(s.id), 20_000);
+      const log = readFileSync(`${r.rollout}.standin.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).method);
+      expect(log.filter((m) => m === "thread/resume").length).toBe(2);
+      expect(readFileSync(r.rollout, "utf8").split('"message":"fix the build once more"').length - 1).toBe(1);
+    } finally { r.done(); }
+  }, 30_000);
+
+  test("the last record of a type is found however far back it is, with the loop free while it reads", async () => {
+    const f = join(top, "long.jsonl");
+    const ctx = (n: number) => JSON.stringify({ type: "turn_context", payload: { turn_id: `t${n}` } }) + "\n";
+    const out = JSON.stringify({ type: "response_item", payload: { output: "é".repeat(20_000) } }) + "\n";
+    writeFileSync(f, ctx(1) + out.repeat(1000));
+    let ticks = 0;
+    const tick = setInterval(() => ticks++, 0);
+    try {
+      expect((await lastRecord(f, "turn_context"))?.payload.turn_id).toBe("t1");
+    } finally { clearInterval(tick); }
+    expect(ticks).toBeGreaterThan(0);
+    // A record cut across parts (a two-byte character at the boundary), a decoy in a string, a cut last line, none.
+    writeFileSync(f, ctx(1) + JSON.stringify({ type: "response_item", payload: { text: 'he quoted "type":"turn_context" here' } }) + "\n" + ctx(2) + out.slice(0, 301) + "\n");
+    for (const part of [7, 64, 1000, 4096]) expect((await lastRecord(f, "turn_context", part))?.payload.turn_id).toBe("t2");
+    writeFileSync(f, ctx(1) + '{"type":"turn_context","payload":{"turn_id":"cut');
+    expect((await lastRecord(f, "turn_context", 50))?.payload.turn_id).toBe("t1");
+    writeFileSync(f, out);
+    expect(await lastRecord(f, "turn_context", 100)).toBeUndefined();
+    expect(await lastRecord(`${f}.none`, "turn_context")).toBeUndefined();
+  });
 
   test("who holds the rows a page shows is read from one look at /proc/locks a tick", async () => {
     const r = rig();
