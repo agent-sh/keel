@@ -14,7 +14,7 @@ import { later, useAway } from "../lib/later.ts";
 import { placeOf, type Place } from "../lib/reply-calls.ts";
 import { NEEDS_APPROVAL } from "../lib/work.ts";
 import { modalOpen } from "../lib/overlay.ts";
-import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
+import { mineWords, safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError, useStore } from "../lib/store.ts";
 import { tipSay } from "../lib/tips.ts";
 import { useNudge, usePress, useStood } from "../lib/press-hooks.tsx";
@@ -1426,7 +1426,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
               aria-disabled={!live || mustOpen || undefined}
               data-testid={a.mine ? "allow-mine" : "allow-read"}
               data-stop={shut ? undefined : "card"}
-              title={a.mine ? `Allow this once and add ${a.mine} to Your accounts (Settings > Permissions), so writes there stop asking.` : `Allow this once and mark ${a.read_tool!.tool} as a read of ${a.read_tool!.server}, so it stops asking.`}
+              title={a.mine ? `Allow this once and add ${a.mine} to Your accounts, so writes there stop asking. Take it back in Settings > Permissions > Your accounts.` : `Allow this once and mark ${a.read_tool!.tool} as a read of ${a.read_tool!.server}, so it stops asking.`}
               onPointerDown={() => minePress.onPointerDown()}
               onMouseDown={minePress.onMouseDown}
               onClick={(e) => {
@@ -1438,7 +1438,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
               }}
               className="k-btn whitespace-nowrap aria-disabled:cursor-default aria-disabled:opacity-50"
             >
-              {a.mine ? <>Mine<span className="ml-1 font-normal text-muted">{a.mine}</span></> : "Mark as read"}
+              {a.mine ? <>{mineWords(a.mine, a.mine_account)}<span className="ml-1 font-normal text-muted">{a.mine}</span></> : "Mark as read"}
             </button>
           )}
           {nudge.line}

@@ -41,6 +41,13 @@ test("a push beyond the owner's namespaces is his to allow, in every mode", asyn
   await card.getByTestId("accounts-input").fill("not a namespace");
   await card.getByTestId("accounts-add").click();
   await expect(card.getByTestId("accounts-note")).toBeVisible();
+  // GitHub is asked only at this press, and only when gh is signed in here: with no sign-in it says so and adds nothing.
+  // (A daemon that runs with a real gh sign-in is not pressed: the spec never reads GitHub with the owner's account.)
+  const signedIn = ((await (await request.get("/api/accounts/github")).json()).hosts as string[]).length > 0;
+  if (!signedIn) {
+    await card.getByTestId("accounts-github").click();
+    await expect(card.getByTestId("accounts-note")).toContainText("not signed in");
+  }
   await card.scrollIntoViewIfNeeded();
   await shoot(page, "account-writes-01-settings");
 
@@ -74,7 +81,9 @@ test("a push beyond the owner's namespaces is his to allow, in every mode", asyn
   await request.post(`${base}/messages`, { data: { text: calls([bash("git push third main")]) } });
   const mine = page.getByTestId("approval");
   await expect(mine).toHaveCount(1, { timeout: 30_000 });
+  await expect(mine.getByTestId("allow-mine")).toContainText("This organization is mine");
   await expect(mine.getByTestId("allow-mine")).toContainText("127.0.0.1/third");
+  await expect(mine.getByTestId("allow-mine")).toHaveAttribute("title", /Settings > Permissions > Your accounts/);
   await shoot(page, "account-writes-04-mine");
   await mine.getByTestId("allow-mine").click();
   await expect.poll(turns, { timeout: 30_000 }).toBe(3);

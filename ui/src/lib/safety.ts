@@ -171,3 +171,8 @@ onFeature({
 });
 // The open cards of every session, read as the page loads.
 const pending = readAtOpen(() => safety.loadPending());
+
+// What the card's press says it makes the owner's: the owner of a repository is an organization, or the account gh is
+// signed in as (`account`: the gate read it from gh's own file), a scope or a package is his own scope or package
+// (src/safety/accounts.ts namespaceOf names the entry).
+export const mineWords = (namespace: string, account = false): string => (/^npm:@/.test(namespace) ? "This scope is mine" : /^[a-z]+:/i.test(namespace) ? "This package is mine" : account ? "This account is mine" : "This organization is mine");

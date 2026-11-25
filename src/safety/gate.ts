@@ -17,6 +17,7 @@ import { bornDuring, endedWell, worktreesAdded } from "./made-places.ts";
 import { fitsAsPlace, namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
 import { lookRepo, readRepo, repoContext } from "./repofacts.ts";
 import { accountNames } from "./account-settings.ts";
+import { ghOwnLogin } from "./account-learn.ts";
 import { askVisibility, held as publicHeld, heldRefusal, heldWhy, learner, type Deps as PublicDeps, type Held } from "./public-send.ts";
 import { looking, type Looked } from "./looked.ts";
 import { confine } from "./sandbox.ts";
@@ -156,6 +157,7 @@ export type Approval = {
   rule?: string;        // the class of the rule that asked, in the policy's few words (its `Ask.rule`)
   part?: AskedPart;     // a chained command: the part of it that asked (its text, and which of equal ones), for the card to mark
   mine?: string;        // a write beyond the owner's accounts: the namespace "Mine" adds to his list (accounts.ts)
+  mine_account?: true;  // that namespace is the account gh is signed in as here: a personal account, not an organization
   read_tool?: { server: string; tool: string }; // an MCP write that holds an account: the tool the card can mark as a read
   risk: "high" | "low";
   why?: string;         // why only "once" is offered
@@ -2229,7 +2231,7 @@ export class Gate {
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
       input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)), reply: call.ctx.reply,
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls), ...(ask.rule ? { rule: ask.rule } : {}),
-      ...(ask.mine ? { mine: ask.mine } : {}), ...(ask.readTool ? { read_tool: ask.readTool } : {}), ...(ask.part && cls.kind === "shell" ? { part: ask.part } : {}),
+      ...(ask.mine ? { mine: ask.mine, ...(ghOwnLogin(ask.mine) ? { mine_account: true as const } : {}) } : {}), ...(ask.readTool ? { read_tool: ask.readTool } : {}), ...(ask.part && cls.kind === "shell" ? { part: ask.part } : {}),
       ...factsOf(ask),
     };
     return this.wait(a, session, call, name, cls);

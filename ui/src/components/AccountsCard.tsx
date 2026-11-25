@@ -17,6 +17,11 @@ export function AccountsCard() {
     .then((r) => { setList(r.settings.accounts.namespaces); setNote(""); return true; })
     .catch((e) => { setNote(failed(e, { at: "AccountsCard" })); return false; });
   const look = () => api<{ candidates: Candidate[] }>("/api/accounts/candidates").then((r) => { setFound(r.candidates); setNote(r.candidates.length ? "" : "Nothing new in your git remotes, gh sign-in or .npmrc."); }).catch(reportError);
+  // The login and the organizations the owner's gh sign-in administers: reads of GitHub, at this press only.
+  const ask = () => api<{ candidates: Candidate[]; note: string }>("/api/accounts/github", { method: "POST" }).then((r) => {
+    setFound((f) => [...(f ?? []).filter((c) => !r.candidates.some((x) => x.namespace === c.namespace)), ...r.candidates]);
+    setNote(r.note || (r.candidates.length ? "" : "Nothing new in your GitHub sign-in."));
+  }).catch(reportError);
   if (!list) return null;
   const add = async (ns: string) => { if (ns.trim() && await save([...list, ns.trim()])) { setTyped(""); setFound((f) => f && f.filter((c) => c.namespace !== ns)); } };
   return (
@@ -50,6 +55,9 @@ export function AccountsCard() {
         </div>
         <SettingRow label="Learn them from your config" hint="Reads the owners of the git remotes in the folders your sessions work in, the user gh is signed in as, and the scopes of your .npmrc, once, here. You choose which are yours.">
           <button type="button" data-testid="accounts-look" className="k-btn k-btn-lg" onClick={() => look().catch(reportError)}>Look</button>
+        </SettingRow>
+        <SettingRow label="Ask GitHub" hint="Asks GitHub, once, for the account gh is signed in as and the organizations it administers (reads only, nothing written), only when you press. You choose which are yours.">
+          <button type="button" data-testid="accounts-github" className="k-btn k-btn-lg" onClick={() => ask().catch(reportError)}>Ask GitHub</button>
         </SettingRow>
         {(found?.length || note) ? (
           <div className="py-3">

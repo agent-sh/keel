@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test";
 import { foreign, ghBase, say, namespaceOf, owned, parseNamespace, parseNamespaces, repoOf, writesOf, namedOwners, type Manifest, type Remotes } from "./accounts.ts";
 import type { Looked } from "./looked.ts";
-import { classify, decide, type CallClass, type Mode } from "./policy.ts";
+import { accountContext, classify, decide, type CallClass, type Mode } from "./policy.ts";
 
 test("a namespace is read from the owner's words", () => {
   expect(parseNamespace("avifenesh")).toEqual({ kind: "forge", host: "github.com", path: ["avifenesh"] });
@@ -318,6 +318,37 @@ test("what the rules cannot place asks: a folder they cannot follow, an answer t
   // An empty list names nothing as his: every write asks, and says so.
   const none = decide({ kind: "shell", command: "git push origin", cwd: "/w/own" }, facts("ask", false, []));
   expect((none as { ask: { why: string } }).ask.why).toContain("named no namespaces");
+});
+
+// A folder the line names with a shell variable, $HOME or a substitution is not a folder the rules place a write by: what
+// the shell makes of the word is the shell's to say (a name set twice, in a branch, by eval, read or a loop), so the write is
+// the owner's, his own repository included. A folder written out is followed, a relative one from the folder it runs in.
+test("a write behind a folder spelled with a variable or a substitution is not placed; a written-out folder is", () => {
+  const where = (command: string, cwd = "/w/own") => {
+    const d = run(command, cwd, "ask");
+    return how(d) === "account" ? ((d as { ask: { account: string } }).ask.account || "unplaced") : null;
+  };
+  const rows: [string, string | null, string?][] = [
+    ["cd /w/own && cd ../clone && git push", "github.com/them/lib"],
+    ["git -C ../clone push", "github.com/them/lib"],
+    ["git -C ../own push", null, "/w/clone"],
+    ["git -C /w -C clone push", "github.com/them/lib"],
+    ['D=/w/own; cd "$D" && git push', "unplaced"],
+    ["D=/w/own; cd $D && git push origin main", "unplaced"],
+    ['D=/w/clone; cd "$D" && git push', "unplaced"],
+    ['export WT=/w/own && cd "${WT}" && git push', "unplaced"],
+    ['D=/w/own; git -C "$D" push', "unplaced"],
+    ["cd $HOME/work/own && git push", "unplaced"],
+    ['cd "${HOME}/work/own" && git push', "unplaced"],
+    ["git -C $HOME/work/own push", "unplaced"],
+    ['cd "$(git rev-parse --show-toplevel)" && git push', "unplaced"],
+    ['git -C "$(git rev-parse --show-toplevel)" push', "unplaced"],
+    ['cd "$ELSEWHERE" && git push', "unplaced"],
+    ["D=/w/own; D=/w/clone; cd $D && git push", "unplaced"],
+  ];
+  for (const [command, want, cwd] of rows) expect([command, where(command, cwd)]).toEqual([command, want]);
+  // The judge is told the same.
+  expect(accountContext('D=/w/own; cd "$D" && git push', "/w/own", looked(), parseNamespaces(names), "/home/u")).toContain("where it lands is unknown");
 });
 
 // ---- an MCP tool that writes with an account its server holds ----
