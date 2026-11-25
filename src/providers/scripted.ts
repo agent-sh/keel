@@ -62,7 +62,8 @@ import { reportUsage } from "./reported.ts";
 import { REWORD_SYSTEM } from "../automation/successor.ts";
 import { RULING_SYSTEM, standInMatch } from "../automation/ruling-match.ts";
 import { KIND_SYSTEM, LESSON_SYSTEM, standInDraft, standInKind } from "../automation/lesson-draft.ts";
-import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult, Wire } from "./types.ts";
+import { cartoon } from "./scripted-art.ts";
+import type { Delta, ImageRequest, ImageRow, ListedModel, MadeImage, Provider, ProviderRequest, ProviderResult, Wire } from "./types.ts";
 import { anthropicBody } from "./wires/anthropic.ts";
 import { geminiBody } from "./wires/gemini.ts";
 import { responsesBody } from "./wires/responses.ts";
@@ -215,6 +216,18 @@ export class ScriptedProvider implements Provider {
     this.outage = { kind: (OUTAGE_KINDS as readonly string[]).includes(kind) ? (kind as OutageKind) : "dns", until: Date.now() + Math.min(ms, 600_000), started: [...this.outage.started.slice(-200), key], requests: 0, listings: 0 };
     this.saveOutage();
     return true;
+  }
+
+  // The stand-in image maker (the avatar spec): one model that draws a cartoon face seeded by the prompt and
+  // the picture's number, so the pictures of one ask differ and the same ask gives the same ones.
+  async imageModels(): Promise<ImageRow[]> {
+    return [{ model: "stand-in-image", name: "Scripted image maker", out: true, via: "images" }];
+  }
+
+  async makeImages(req: ImageRequest): Promise<MadeImage[]> {
+    const gone = this.down("requests");
+    if (gone) throw gone;
+    return Array.from({ length: req.n }, (_, i) => ({ media_type: "image/png", data: Buffer.from(cartoon(`${req.prompt}\n${i}`)).toString("base64") }));
   }
 
   async list(): Promise<ListedModel[]> {

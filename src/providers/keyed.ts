@@ -5,7 +5,8 @@ import { configured, fingerprint, forget, key, look, recheck, shown, sourceIdent
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { notChat } from "./family.ts";
 import { allPages, getJson, NoKey } from "./http.ts";
-import type { Delta, Family, ListedModel, Provider, ProviderRequest, ProviderResult, ProviderStatus, SpeechAccess, Wire } from "./types.ts";
+import { several, viaGemini, viaImages } from "./images.ts";
+import type { Delta, Family, ImageRequest, ImageRow, ListedModel, MadeImage, Provider, ProviderRequest, ProviderResult, ProviderStatus, SpeechAccess, Wire } from "./types.ts";
 import { geminiWire } from "./wires/gemini.ts";
 import { responsesWire } from "./wires/responses.ts";
 
@@ -76,6 +77,19 @@ export class OpenAIProvider extends KeyedProvider {
       .map((model: string) => ({ model, family: "gpt" as const }));
   }
 
+  // Every model the API lists: which of them make pictures is for the catalog to say.
+  async imageModels(): Promise<ImageRow[]> {
+    const k = await this.key();
+    const d = await getJson(this.label, `${this.base}/models`, { authorization: `Bearer ${k}` }, [k]);
+    return (d.data ?? []).map((m: any) => ({ model: String(m.id), via: "images" as const }));
+  }
+
+  async makeImages(req: ImageRequest): Promise<MadeImage[]> {
+    const k = await this.key();
+    const route = { label: this.label, headers: { authorization: `Bearer ${k}` }, secrets: [k], signal: req.signal };
+    return several(req.n, () => viaImages(route, this.base, req.model, req.prompt));
+  }
+
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {
     const k = await this.key();
     const codec = responsesWire("openai");
@@ -111,6 +125,26 @@ export class GeminiProvider extends KeyedProvider {
       }
       return { rows, next: d.nextPageToken };
     });
+  }
+
+  // The models that can answer a request for content: which of them make pictures is for the catalog to say.
+  async imageModels(): Promise<ImageRow[]> {
+    const k = await this.key();
+    return allPages(this.label, async (token, until) => {
+      const d = await getJson(this.label, `${this.base}/v1beta/models?pageSize=1000${token ? `&pageToken=${encodeURIComponent(token)}` : ""}`, { "x-goog-api-key": k }, [k], until);
+      const rows: ImageRow[] = [];
+      for (const m of d.models ?? []) {
+        const id = String(m.name ?? "").replace(/^models\//, "");
+        if (id && (m.supportedGenerationMethods ?? []).includes("generateContent")) rows.push({ model: id, name: m.displayName, via: "gemini" });
+      }
+      return { rows, next: d.nextPageToken };
+    });
+  }
+
+  async makeImages(req: ImageRequest): Promise<MadeImage[]> {
+    const k = await this.key();
+    const route = { label: this.label, headers: { "x-goog-api-key": k }, secrets: [k], signal: req.signal };
+    return several(req.n, () => viaGemini(route, this.base, req.model, req.prompt));
   }
 
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {

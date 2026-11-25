@@ -9,7 +9,8 @@ import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { familyOf, notChat } from "./family.ts";
 import { allPages, getJson, NoKey, ProviderError } from "./http.ts";
 import { fromOpenRouterKey, type WindowReading } from "./limits.ts";
-import type { Billing, Delta, ListedModel, Price, Provider, ProviderRequest, ProviderResult, ProviderStatus, SpeechAccess, Wire } from "./types.ts";
+import { several, viaChat, viaGemini, viaImages } from "./images.ts";
+import type { Billing, Delta, ImageRequest, ImageRow, ListedModel, MadeImage, Price, Provider, ProviderRequest, ProviderResult, ProviderStatus, SpeechAccess, Wire } from "./types.ts";
 import { anthropicWire } from "./wires/anthropic.ts";
 import { chatWire } from "./wires/chat.ts";
 import { geminiWire } from "./wires/gemini.ts";
@@ -234,6 +235,30 @@ export class EndpointProvider implements Provider {
           reasoning: sp ? sp.includes("reasoning") || sp.includes("include_reasoning") : said(m.capabilities?.thinking) ?? x.reasoning,
         };
       });
+  }
+
+  // The models the server lists, image models included (`list` leaves them out of the chat models). A row that
+  // says its output modalities says whether it makes pictures; else the catalog decides. A model that answers in
+  // text and pictures is asked through chat completions, one that answers in pictures alone through the images route.
+  async imageModels(): Promise<ImageRow[]> {
+    if (this.wire === "anthropic_messages") return [];
+    const a = await this.auth();
+    const rows = await this.rows(await getJson(this.label, this.listUrl, a.headers, a.secrets), a);
+    return rows.flatMap((m): ImageRow[] => {
+      const id = String(m?.id ?? m?.name ?? "").replace(/^models\//, "");
+      if (!id) return [];
+      if (this.wire === "gemini_generate_content") return (m.supportedGenerationMethods ?? ["generateContent"]).includes("generateContent") ? [{ model: id, name: m.displayName, via: "gemini" }] : [];
+      const out: unknown = m.architecture?.output_modalities;
+      const known = Array.isArray(out) ? out.includes("image") : undefined;
+      return [{ model: id, name: m.display_name ?? m.name, ...(known === undefined ? {} : { out: known }), via: Array.isArray(out) && out.includes("text") && this.wire === "chat_completions" ? "chat" : "images" }];
+    });
+  }
+
+  async makeImages(req: ImageRequest): Promise<MadeImage[]> {
+    const a = await this.auth();
+    const route = { label: this.label, headers: a.headers, secrets: a.secrets, signal: req.signal };
+    const make = this.wire === "gemini_generate_content" ? viaGemini : req.via === "chat" ? viaChat : viaImages;
+    return several(req.n, () => make(route, this.base, req.model, req.prompt));
   }
 
   // The root of an OpenAI-style base (`http://host:11434/v1` to `http://host:11434`).

@@ -1245,7 +1245,7 @@ export class Engine {
   // readers' choices: src/engine/reader.ts), the model `model` last, each at its
   // lowest effort. Counted on the session `id`. The first answer that `holds`
   // is taken; undefined when none did (each failure is captured once, under `at`).
-  async small(id: string, model: string, o: { system: string; prompt: string; out: number; signal: AbortSignal; at: string; holds: (text: string) => boolean }): Promise<{ text: string; model: string } | undefined> {
+  async small(id: string, model: string, o: { system: string; prompt: string; out: number; signal: AbortSignal; at: string; holds: (text: string) => boolean }): Promise<{ text: string; model: string; usage: Usage } | undefined> {
     const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(model).then((r) => r.info)]);
     const choices = this.allowedModels(id, "reader", readerChoices(models, cur, Math.ceil(o.prompt.length / bytesPerToken(cur.id)) + o.out, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, this.ownSmall(id, "small")));
     const s = this.store.session(id);
@@ -1262,7 +1262,7 @@ export class Engine {
         this.store.addUsage(id, res.usage);
         const text = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
         if (res.stop === "refusal" || res.stop === "max_tokens" || !o.holds(text)) continue;
-        return { text, model: info.id };
+        return { text, model: info.id, usage: res.usage };
       } catch (e) {
         if (!o.signal.aborted) this.errors.capture("provider", e, { session: id, at: o.at, model: m.id });
       }

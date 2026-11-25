@@ -11,6 +11,9 @@ import { MemorySweep } from "./MemorySweep.tsx";
 import { Select } from "./Select.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 import { iconButton } from "./ui.tsx";
+import { HelperFace, useHelperName } from "./HelperFace.tsx";
+import { HelperIdentity } from "./HelperIdentity.tsx";
+import { navigate } from "../lib/ui.ts";
 import { composing } from "../lib/keys.ts";
 
 const KINDS = ["fact", "person", "preference", "decision", "commitment", "reference"];
@@ -138,8 +141,16 @@ export function HelperPanel(_: { session: Session }) {
   const view = useHelper((s) => s.view);
   const [checked, setChecked] = useState("");
   const events = (view?.events ?? []).slice(-12).reverse();
+  const name = useHelperName();
   return (
     <div className="flex h-full flex-col gap-5 overflow-y-auto p-4" data-testid="helper-panel">
+      <header className="flex items-center gap-3" data-testid="helper-head">
+        <HelperFace size="head" testid="helper-head-face" />
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-base font-semibold" data-testid="helper-head-name">{name}</h2>
+          <button type="button" className="text-caption text-muted hover:text-fg" onClick={() => navigate({ name: "settings", section: "helper" })} data-testid="helper-head-edit">Name and picture</button>
+        </div>
+      </header>
       <MemoryList />
 
       <MemorySweep compact />
@@ -187,6 +198,7 @@ export function HelperSettings() {
   return (
     <div className="flex flex-col gap-4" data-testid="helper-settings">
       <Card>
+        <HelperIdentity />
         <SettingRow label="Helper" hint="One conversation that never ends, at the top of the list (Ctrl J). It follows your sessions, checks your mail, and keeps what is worth remembering. Off: no wakes and no mail checks; the conversation and the list stay.">
           <button type="button" role="switch" aria-checked={view.on} data-testid="helper-on" aria-label="Helper on"
             onClick={() => (view.on ? setHelper({ on: false }) : openHelper()).catch(reportError)}

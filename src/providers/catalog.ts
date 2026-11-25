@@ -18,6 +18,8 @@ export type CatalogEntry = {
   reasoning?: boolean;
   tools?: boolean;
   images?: boolean;
+  // Makes pictures (the catalog's output modalities).
+  imageOut?: boolean;
   pdf?: boolean;
   // A model that only turns speech into text ("stt") or text into speech ("tts"), by the
   // catalog's modalities (src/speech/speech.ts reads it).
@@ -86,6 +88,7 @@ function entry(id: string, m: any): CatalogEntry {
     reasoning: m.reasoning,
     tools: m.tool_call,
     images: m.modalities?.input?.includes("image"),
+    imageOut: m.modalities?.output?.includes("image"),
     pdf: m.modalities?.input?.includes("pdf"),
     speech: speechOf(m),
     price: priceOf(c),

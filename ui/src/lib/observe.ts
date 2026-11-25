@@ -38,7 +38,8 @@ export function copyBundle(t: BundleTarget, at?: Element | null): Promise<boolea
 }
 
 // A new session asked to find the cause and fix it, with the bundle on disk; the page goes there.
-export async function fixThis(t: BundleTarget) {
+// `task`: the agent's instruction in place of the stock one; `repo: "keel"`: it works in Keel's source folder.
+export async function fixThis(t: BundleTarget & { task?: string; repo?: "keel" }) {
   const r = await api<{ session: { id: string }; path: string }>("/api/debug/fix", { method: "POST", body: JSON.stringify(t) });
   setUI({ errors: false });
   navigate({ name: "session", id: r.session.id });

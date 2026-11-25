@@ -348,3 +348,27 @@ export async function getJson(label: string, url: string, headers: Record<string
     throw new ProviderError("server", `${label}: the listing is not JSON`);
   }
 }
+
+// A POST that returns JSON, for one request that is not a stream (an image made by a provider's images
+// route). `ms`: the most it may take; `signal` stops it sooner.
+export async function postJson(label: string, url: string, headers: Record<string, string>, body: unknown, secrets: string[] = [], signal?: AbortSignal, ms = 240_000): Promise<any> {
+  const limit = signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
+  let r: Response;
+  try {
+    r = await apiFetch(url, { method: "POST", headers: { accept: "application/json", "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: limit });
+  } catch (e) {
+    if (signal?.aborted) throw new ProviderError("cancelled", "cancelled");
+    if (limit.aborted) throw new ProviderError("network", `${label}: no answer in ${Math.round(ms / 1000)} s`);
+    if (e instanceof ProviderError) throw e;
+    throw fetchFailure(label, e, secrets, url);
+  }
+  if (intercepted(r)) { void r.body?.cancel().catch(() => {}); throw portal(label, r); }
+  const text = await r.text().catch((e) => { throw new ProviderError("network", `${label}: the response broke: ${scrub(String((e as Error)?.message ?? e), secrets)}`); });
+  if (mayBePortal(r) && startsHtml(text)) throw portal(label, r);
+  if (!r.ok) throw classify(label, r.status, r.headers, scrub(text, secrets));
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ProviderError("server", `${label}: the answer is not JSON`);
+  }
+}

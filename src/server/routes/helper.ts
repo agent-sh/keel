@@ -1,16 +1,27 @@
 // The owner's helper (src/helper/): its state, the remembered list, and a
 // mail check on demand.
 //   GET  /api/helper                 on, session, mail source, recent events
-//   PUT  /api/helper                 { on?, mail_every_min?, wake_gap_min? }
+//   PUT  /api/helper                 { on?, mail_every_min?, wake_gap_min?, name? } (name: "" or null: the default again)
 //   POST /api/helper/check           look at new mail now
 //   POST /api/helper/ask             { text, key? } a question from the helper row on a phone: { id, chat_id }
 //   GET  /api/helper/ask/:id         its answer: state, words, the sessions it read and what each waits on
+//   GET  /api/helper/avatar          the kept picture (404: none)
+//   POST /api/helper/avatar          the bytes of a PNG, JPEG or WebP picture as the body: kept (scaled to fit); DELETE removes it
+//   GET  /api/helper/avatar/models   { models, failed }: the image models of the owner's providers (found from the
+//                                    listings and the catalog) and the providers that could not be asked
+//   POST /api/helper/avatar/make     { prompt, model, n? } a few pictures to pick from (the helper view's candidates)
+//   GET  /api/helper/avatar/candidates/:id   one of them
+//   POST /api/helper/avatar/pick     { id } the picture kept
+//   GET  /api/helper/looks           the helper's looks at errors, newest first
+//   POST /api/helper/looks/:cause/ask   look now (or again), whatever the hour's count
 //   GET  /api/helper/memory          the memory's records (?q= finds keys by alias, topic, prefix or words)
 //   POST /api/helper/memory          { key?, value, kind?, aliases?, topics? } added by the owner
 //   PATCH/DELETE /api/helper/memory/:key  (PATCH may carry a new key)
 import { askId } from "../../helper/ask.ts";
 import { Helper } from "../../helper/helper.ts";
 import { paramKey } from "../../helper/memory.ts";
+import { UPLOAD_BYTES } from "../../helper/persona.ts";
+import { ModelLookupError } from "../../providers/registry.ts";
 import { bindHelperTools } from "../../helper/tools.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -30,9 +41,69 @@ export const helperRoutes: RouteModule = (deps) => {
       PUT: async (req: Request) => {
         const b = (await req.json().catch(() => ({}))) as any;
         if (b.on !== undefined && typeof b.on !== "boolean") return json({ error: "on is true or false" }, 400);
+        try {
+          if (b.name !== undefined) h.setName(b.name);
+        } catch (e: any) {
+          return json({ error: e?.message ?? String(e) }, e?.status ?? 500);
+        }
         h.configure(b);
         if (b.on !== undefined) await h.setOn(b.on);
         return json(h.view());
+      },
+    },
+    "/api/helper/avatar": {
+      GET: () => {
+        const f = h.avatarFile();
+        const bytes = f && h.files.read(f.path);
+        return bytes ? new Response(bytes as unknown as BodyInit, { headers: { "content-type": f.type, "cache-control": "private, max-age=31536000, immutable" } }) : json({ error: "no picture" }, 404);
+      },
+      POST: async (req: Request) => {
+        if (Number(req.headers.get("content-length") ?? 0) > UPLOAD_BYTES) return json({ error: "the picture is over 10 MB" }, 413);
+        try {
+          return json(await h.uploadAvatar(new Uint8Array(await req.arrayBuffer())));
+        } catch (e: any) {
+          return json({ error: e?.message ?? String(e) }, e?.status ?? 500);
+        }
+      },
+      DELETE: () => json(h.removeAvatar()),
+    },
+    "/api/helper/avatar/models": { GET: async () => json(await h.images()) },
+    "/api/helper/avatar/make": {
+      POST: async (req: Request) => {
+        const b = (await req.json().catch(() => ({}))) as any;
+        try {
+          return json(await h.makeAvatars(b, AbortSignal.any([req.signal, AbortSignal.timeout(300_000)])));
+        } catch (e: any) {
+          return json({ error: e?.message ?? String(e) }, e?.status ?? (e instanceof ModelLookupError ? 409 : 502));
+        }
+      },
+    },
+    "/api/helper/avatar/candidates/:id": {
+      GET: (req: any) => {
+        const c = h.persona().candidates?.find((x) => x.id === String(req.params.id));
+        const bytes = c && h.files.read(h.files.candidatePath(c));
+        return bytes ? new Response(bytes as unknown as BodyInit, { headers: { "content-type": h.files.type(c.ext), "cache-control": "private, max-age=3600" } }) : json({ error: "no such picture" }, 404);
+      },
+    },
+    "/api/helper/avatar/pick": {
+      POST: async (req: Request) => {
+        const b = (await req.json().catch(() => ({}))) as any;
+        try {
+          return json(h.pickAvatar(b.id));
+        } catch (e: any) {
+          return json({ error: e?.message ?? String(e) }, e?.status ?? 500);
+        }
+      },
+    },
+    "/api/helper/looks": { GET: () => json({ looks: h.looks.list() }) },
+    "/api/helper/looks/:cause/ask": {
+      POST: async (req: any) => {
+        try {
+          const l = await h.looks.ask(String(req.params.cause));
+          return l ? json({ look: l }) : json({ error: "no such look" }, 404);
+        } catch (e: any) {
+          return json({ error: e?.message ?? String(e) }, e?.status ?? 500);
+        }
       },
     },
     "/api/helper/check": { POST: async () => json(await h.runMailCheck()) },

@@ -3,7 +3,9 @@
 // export of the traces.
 //
 // GET  /api/debug/bundle?error_id= | ?session_id=&turn_event=   the bundle, text/markdown
-// POST /api/debug/fix { error_id | session_id, model?, workspace? }
+// POST /api/debug/fix { error_id | session_id, model?, workspace?, task?, repo? }
+//        task: the instruction for the agent, in place of the stock one (the helper's look writes one for a bug of
+//        Keel's); repo "keel": the agent works in Keel's own source folder (409 when the daemon does not run from one)
 //        writes the bundle under the state folder and starts a session that is
 //        asked to find the cause and fix it -> { session, path }
 // GET  /api/debug/traces?session_id=&limit=     a session's traces (their root spans), newest first
@@ -235,7 +237,9 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         const from = err?.session_id ? store.session(err.session_id) : body.session_id ? store.session(body.session_id) : undefined;
         // Keel's own failures are fixed in Keel's source when the daemon runs from it; others where they happened.
         const own = err && (err.source === "server" || err.source === "client");
-        const ws = resolve(body.workspace || (own && src ? src.dir : from?.workspace ?? src?.dir ?? workspace));
+        if (body.task !== undefined && (typeof body.task !== "string" || !body.task.trim() || body.task.length > 6000)) return json({ error: "task is the agent's instruction, up to 6000 characters" }, 400);
+        if (body.repo === "keel" && !body.workspace && !src) return json({ error: "this daemon does not run from Keel's source folder: give a workspace" }, 409);
+        const ws = resolve(body.workspace || (body.repo === "keel" ? src!.dir : own && src ? src.dir : from?.workspace ?? src?.dir ?? workspace));
         const model = body.model || (await providers.defaultModel());
         if (!model) return json({ error: "no model is available: no provider has credentials" }, 409);
         await providers.resolve(model);
@@ -245,7 +249,9 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
           `Something failed in Keel${from ? ` (session "${from.title}")` : ""}: ${b.title}`,
           "",
           `The debug bundle is ${path}. Read it first: it has the failure, the trace of its turn with the failing request's shape and wire facts, the transcript before it and the daemon log around it.`,
-          "Find the cause. If it is a bug in code you can change here, fix it and say how you checked the fix. If it is not a code problem (a key, a quota, the network, a provider outage), say what it is and what the owner should do.",
+          ...(body.task
+            ? ["", body.task.trim()]
+            : ["Find the cause. If it is a bug in code you can change here, fix it and say how you checked the fix. If it is not a code problem (a key, a quota, the network, a provider outage), say what it is and what the owner should do."]),
         ].join("\n");
         engine.send(s.id, text);
         return json({ session: store.session(s.id), path }, 201);

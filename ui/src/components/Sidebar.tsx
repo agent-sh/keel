@@ -11,7 +11,7 @@
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sun, SunMoon, Tag, X } from "lucide-react";
 import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
@@ -55,6 +55,7 @@ import { RowMenu, type RowMenuAt } from "./RowMenu.tsx";
 import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
+import { HelperFace, useHelperName } from "./HelperFace.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { StuckStrip } from "./Stuck.tsx";
 import { calls, useSettled, useSettledState, useSettledStates } from "../lib/settle.ts";
@@ -1315,6 +1316,7 @@ export function Sidebar({ open }: { open: boolean }) {
   const rail = useRail();
   const current = route.name === "session" ? route.id : null;
   const onHelper = useStore((s) => (current ? !!s.sessions[current]?.settings.helper : false));
+  const helperName = useHelperName();
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
   const { card, bind, hide } = useCard();
   const grip = useRef<{ from: number; to: number | null }>({ from: 0, to: null });
@@ -1406,8 +1408,8 @@ export function Sidebar({ open }: { open: boolean }) {
           <Search /><span className="k-act-label">Search and commands</span>{open && <Kbd keys="mod+k" className="k-act-key ml-auto" />}
         </button>
         {/* The helper: one conversation kept above the sessions (src/helper/). */}
-        <button type="button" className="k-act" data-testid="open-helper" aria-label="Helper" title="Helper (Ctrl J)" aria-current={onHelper ? "page" : undefined} onClick={() => void openHelper().catch(reportError)}>
-          <Sparkles /><span className="k-act-label">Helper</span>{open && <Kbd keys="mod+j" className="k-act-key ml-auto" />}
+        <button type="button" className="k-act" data-testid="open-helper" aria-label={helperName} title={`${helperName} (Ctrl J)`} aria-current={onHelper ? "page" : undefined} onClick={() => void openHelper().catch(reportError)}>
+          <HelperFace size="rail" testid="helper-rail-face" /><span className="k-act-label" data-testid="helper-rail-name">{helperName}</span>{open && <Kbd keys="mod+j" className="k-act-key ml-auto" />}
         </button>
       </div>
       <div ref={top} className="k-rail-top"><StuckStrip open={open} /></div>

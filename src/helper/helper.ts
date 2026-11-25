@@ -27,6 +27,10 @@ import { Memory } from "./memory.ts";
 import { digestLines, digestZone, isNotice, levelOfAlert, nextWakeAt, spike, SPIKE_COUNT, SPIKE_WINDOW_MS, spikeCounts, type DigestEvent, type Level } from "./policy.ts";
 import { recallLine, type MemoryRecord } from "./records.ts";
 import { memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
+import { join } from "node:path";
+import { Looks } from "./looks.ts";
+import { askedWith, cleanName, cleanPrompt, DEFAULT_NAME, keepable, keepAll, nameOf, type Persona, PersonaFiles, startPrompt } from "./persona.ts";
+import type { Look } from "./error-look.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { pendingQuestions } from "../tools/interact.ts";
 import { ASK_LINE, askRefusal, answerOf, type Answer, type AskFrom } from "./ask.ts";
@@ -37,7 +41,7 @@ export type HelperSettings = {
   mail_every_min: number; // 0: no periodic mail check
   wake_gap_min: number;
 };
-type State = HelperSettings & { last_wake: number; mail_baseline: boolean; labels_synced?: number };
+type State = HelperSettings & { last_wake: number; mail_baseline: boolean; labels_synced?: number; persona?: Persona };
 
 // A burst of events is gathered this long before a wake (one wake, not one per event).
 export const COALESCE_MS = 60_000;
@@ -79,6 +83,10 @@ export class Helper {
   // Keyed records (memory.ts); the old free-text list moves into them at start.
   readonly records: Memory;
   private meter: MemoryMeter;
+  // The name and the picture (persona.ts), and the looks at errors (looks.ts).
+  readonly files: PersonaFiles;
+  readonly looks: Looks;
+  private toldLooks = new Set<string>();
 
   constructor(readonly deps: Deps, source = mailSource()) {
     this.source = source;
@@ -89,6 +97,8 @@ CREATE INDEX IF NOT EXISTS helper_events_ts ON helper_events(ts);
 CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT NULL);`);
     this.records = new Memory(deps.store.db, () => deps.bus.emit({ t: "feature", name: "helper_memory", data: { items: this.memory() } }));
     this.meter = memoryMeter(deps.store);
+    this.files = new PersonaFiles(join(deps.store.stateDir, "helper"));
+    this.looks = new Looks(deps, { session: () => this.session(), on: () => this.state().on, isHelper: this.isHelper }, (l) => this.onLook(l));
   }
 
   // --- state ---------------------------------------------------------------
@@ -114,6 +124,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     const s = this.session();
     return {
       on: st.on && !!s, session_id: s?.id ?? null, mail_every_min: st.mail_every_min, wake_gap_min: st.wake_gap_min, last_wake: st.last_wake || null,
+      ...this.look(),
       mail: { id: this.source.id, label: this.source.label, available: this.source.available(), account: this.source.available() ? this.source.account() : undefined, can: this.source.can },
       events: this.events(40),
     };
@@ -129,7 +140,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     if (on && !this.session()) {
       const { store, providers, workspace } = this.deps;
       const model = await providers.defaultModel();
-      const s = store.createSession({ title: "Helper", model, workspace, settings: { helper: true, pinned_ms: Date.now(), cache_long: true } });
+      const s = store.createSession({ title: nameOf(this.persona()), model, workspace, settings: { helper: true, pinned_ms: Date.now(), cache_long: true } });
       this.deps.bus.emit({ t: "session", session: s });
       // A new conversation starts with nothing told (the old one's events went with it).
       store.db.query("DELETE FROM helper_events").run();
@@ -147,6 +158,106 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     this.save({ ...(p.mail_every_min !== undefined ? { mail_every_min: n(p.mail_every_min, "mail_every_min") } : {}), ...(p.wake_gap_min !== undefined ? { wake_gap_min: n(p.wake_gap_min, "wake_gap_min") } : {}) });
     this.start();
     this.emit();
+  }
+
+  // --- the name and the picture (persona.ts) ---------------------------------------
+
+  persona(): Persona {
+    return this.state().persona ?? {};
+  }
+  private savePersona(p: Partial<Persona>) {
+    this.save({ persona: { ...this.persona(), ...p } });
+  }
+  name(): string {
+    return nameOf(this.persona());
+  }
+  // What the page shows of the helper's look: its name, its picture's address (it changes with the picture), the
+  // description and model last used, and the candidates waiting to be picked.
+  look() {
+    const p = this.persona();
+    const candidates = this.files.present(p.candidates ?? []);
+    return {
+      name: nameOf(p),
+      named: !!p.name,
+      avatar: p.avatar ? { url: `/api/helper/avatar?v=${p.avatar.v}`, from: p.avatar.from, model: p.avatar.model, prompt: p.avatar.prompt } : null,
+      avatar_prompt: p.avatar_prompt ?? startPrompt(nameOf(p)),
+      avatar_model: p.avatar_model ?? null,
+      candidates: candidates.map((c) => ({ id: c.id, url: `/api/helper/avatar/candidates/${c.id}`, model: c.model })),
+    };
+  }
+  // The helper's name, or its default again (`null`). The conversation is titled with it: the list, a notification
+  // and the phone show the session by its title.
+  setName(raw: unknown) {
+    const name = raw === null || raw === "" ? undefined : cleanName(raw);
+    if (raw !== null && raw !== "" && name === undefined) throw Object.assign(new Error("the name is one line of at most 40 characters"), { status: 400 });
+    this.savePersona({ name });
+    const s = this.session();
+    if (s && s.title !== nameOf(this.persona())) this.deps.bus.emit({ t: "session", session: this.deps.store.updateSession(s.id, { title: nameOf(this.persona()) }) });
+    this.emit();
+  }
+  // The models of the owner's providers that make pictures, and the providers that could not be asked.
+  images() {
+    return this.deps.providers.imageModels();
+  }
+  // A few pictures of the description by an image model of the owner's. They wait, with the description and the
+  // model, until the owner picks one or asks again.
+  async makeAvatars(b: { prompt?: unknown; model?: unknown; n?: unknown }, signal: AbortSignal) {
+    const prompt = cleanPrompt(b.prompt ?? this.persona().avatar_prompt ?? startPrompt(this.name()));
+    if (!prompt) throw Object.assign(new Error("the description is one to six hundred characters"), { status: 400 });
+    if (typeof b.model !== "string" || !b.model) throw Object.assign(new Error("model is the id of an image model"), { status: 400 });
+    const n = b.n === undefined ? 4 : Number(b.n);
+    if (!Number.isInteger(n) || n < 1 || n > 6) throw Object.assign(new Error("n is a whole number from 1 to 6"), { status: 400 });
+    // Remembered before the request, so a refusal leaves the owner's words where they typed them.
+    this.savePersona({ avatar_prompt: prompt, avatar_model: b.model });
+    const made = await this.deps.providers.makeImages(b.model, askedWith(prompt), n, signal);
+    const kept = await keepAll(made);
+    if ("error" in kept) throw Object.assign(new Error(kept.error), { status: 502 });
+    const candidates = this.files.addCandidates(kept, b.model, prompt, Date.now());
+    this.savePersona({ candidates });
+    this.emit();
+    return this.view();
+  }
+  pickAvatar(id: unknown) {
+    const p = this.persona();
+    const c = (p.candidates ?? []).find((x) => x.id === id);
+    const bytes = c && this.files.read(this.files.candidatePath(c));
+    if (!c || !bytes) throw Object.assign(new Error("no such picture among the ones made"), { status: 404 });
+    const v = this.files.keep(c.ext, bytes);
+    this.files.clearCandidates();
+    this.savePersona({ avatar: { ext: c.ext, v, from: "made", model: c.model, prompt: c.prompt, ts: Date.now() }, candidates: [] });
+    this.emit();
+    return this.view();
+  }
+  async uploadAvatar(bytes: Uint8Array) {
+    const k = await keepable(bytes);
+    if ("error" in k) throw Object.assign(new Error(k.error), { status: 400 });
+    const v = this.files.keep(k.ext, k.bytes);
+    this.savePersona({ avatar: { ext: k.ext, v, from: "upload", ts: Date.now() } });
+    this.emit();
+    return this.view();
+  }
+  removeAvatar() {
+    this.files.remove();
+    this.savePersona({ avatar: undefined });
+    this.emit();
+    return this.view();
+  }
+  // The kept picture's file and format, for the route that serves it and for a notification's icon.
+  avatarFile(): { path: string; type: string } | undefined {
+    const a = this.persona().avatar;
+    return a ? { path: this.files.avatarPath(a.ext), type: this.files.type(a.ext) } : undefined;
+  }
+
+  // --- the looks at errors (looks.ts) --------------------------------------------------
+
+  // A look changed: the page is told, and a finished one goes to the helper's events once (told with its next turn, no wake).
+  private onLook(l: Look) {
+    this.deps.bus.emit({ t: "feature", name: "helper_looks", data: { looks: this.looks.list() } });
+    if (l.state !== "done" || !l.what) return;
+    const key = `${l.cause}:${l.ts}`;
+    if (this.toldLooks.has(key)) return;
+    this.toldLooks.add(key);
+    this.record("error_look", l.session_id ?? null, `Looked at an error: ${l.title}`, `${l.blame ?? "unknown"}: ${l.what}`, "feed");
   }
 
   // --- a question from a phone (ask.ts) ---------------------------------------
@@ -350,6 +461,12 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     const h = this;
     registerHooks({
       system: (s) => (s.settings.helper ? HELPER_PROMPT : ""),
+      // The name the owner gave it is theirs: a change of it reaches a warm conversation as a note (hooks.ts SystemBlock).
+      sessionSystem: (s) => {
+        if (!s.settings.helper) return "";
+        const name = h.name();
+        return { name: "Helper name", data: name === DEFAULT_NAME ? "" : name, text: name === DEFAULT_NAME ? "" : `The owner named you ${name}. Answer to that name.` };
+      },
       compactFocus: (s) => (s.settings.helper ? FOCUS : undefined),
       async beforeRequest(s, req) {
         if (req.purpose !== "turn" || !s.settings.helper) return req;
@@ -390,7 +507,11 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     // Failures as they are captured: a frame of the bus also says a row was read, healed or resolved.
     this.off.push(this.deps.errors.onCapture((c) => {
       try { if (spikeCounts(c)) this.onError(c); } catch (e) { this.deps.errors.capture("server", e, { at: "helper event" }); }
+      try { this.looks.note(c); } catch (e) { this.deps.errors.capture("server", e, { at: "helper look" }); }
     }));
+    // Its notifications carry its picture.
+    alerts.alertIcon.of = (id) => (this.isHelper(id) ? this.avatarFile()?.path : undefined);
+    this.off.push(() => { alerts.alertIcon.of = undefined; });
     this.start();
     // A wake a restart cut short is scheduled again.
     if (this.unfed().some((e) => e.level === "wake")) this.schedule();
@@ -443,6 +564,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     if (this.mailTimer) clearInterval(this.mailTimer);
     this.wakeTimer = this.mailTimer = null;
+    this.looks.stop();
     for (const f of this.off) f();
     this.off = [];
   }

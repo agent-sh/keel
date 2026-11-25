@@ -4,6 +4,7 @@
 import { MessageSquare } from "lucide-react";
 import { useState } from "react";
 import { useHelper } from "../lib/helper.ts";
+import { HelperFace } from "./HelperFace.tsx";
 import { actions, failed } from "../lib/store.ts";
 
 export function EmptyTranscript({ sessionId }: { sessionId: string }) {
@@ -18,7 +19,7 @@ export function EmptyTranscript({ sessionId }: { sessionId: string }) {
   const ask = (text: string) => { setErr(""); actions.send(sessionId, text).catch((e) => setErr(failed(e, { at: "helper intro" }))); };
   return (
     <section className="flex flex-col gap-3 py-4" data-testid="helper-intro" aria-labelledby="helper-intro-title">
-      <h2 id="helper-intro-title" className="text-base font-semibold text-fg">Your helper</h2>
+      <h2 id="helper-intro-title" className="flex items-center gap-2.5 text-base font-semibold text-fg"><HelperFace size="head" testid="helper-intro-face" />{helper.named ? helper.name : "Your helper"}</h2>
       <p className="max-w-[38rem] text-ui leading-relaxed text-muted">
         One conversation that stays open. It follows your other sessions and tells you what needs you, {helper.mail.available ? `reads your mail${helper.mail.can?.calendar ? " and calendar" : ""}, ` : ""}and keeps what you tell it to remember. It wakes by itself for a failure, a usage limit{helper.mail.available ? " or mail that needs you" : ""}; the rest waits for your next message.
       </p>

@@ -13,7 +13,8 @@ import { BrokerAddress, directBrokerOrigin } from "./broker-address.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { getJson, fetchFailure, ProviderError, scrub } from "./http.ts";
-import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
+import { several, viaTool } from "./images.ts";
+import type { Delta, ImageRequest, ImageRow, ListedModel, MadeImage, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { responsesWire } from "./wires/responses.ts";
 import { fromChatgptUsage, type WindowReading } from "./limits.ts";
 import { ResponsesSockets, WsTooLarge, WsUnavailable } from "./responses-ws.ts";
@@ -197,6 +198,19 @@ export class CodexProvider implements Provider {
           }))
           : undefined,
       }));
+  }
+
+  // The plan makes pictures through the Responses image_generation tool of a model it lists, as Codex does:
+  // the model that carries the tool is the first one its listing names (the one it ranks first).
+  async imageModels(): Promise<ImageRow[]> {
+    const host = (await this.list())[0];
+    return host ? [{ model: host.model, name: `${host.name ?? host.model}, image generation`, out: true, plan: true, via: "tool" }] : [];
+  }
+
+  async makeImages(req: ImageRequest): Promise<MadeImage[]> {
+    const a = await this.auth();
+    const route = { label: this.label, headers: this.responseHeaders(a), secrets: [a.tokens!.access_token!], signal: req.signal };
+    return several(req.n, () => viaTool(route, `${this.base}/responses`, req.model, req.prompt));
   }
 
   // A request for a response asks the backend not to echo what Keel does not

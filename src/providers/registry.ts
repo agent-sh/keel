@@ -24,7 +24,7 @@ import { NoKey, ProviderError } from "./http.ts";
 import { fromHeaders, Limits, type Window } from "./limits.ts";
 import { Admission } from "./admission.ts";
 import { SCRIPTED_SECOND, ScriptedProvider, scriptedEnabled, scriptedSecond } from "./scripted.ts";
-import type { ListedModel, ModelInfo, Provider, ProviderRequest, ProviderStatus, SpeedOffer } from "./types.ts";
+import type { ImageRow, ListedModel, MadeImage, ModelInfo, Provider, ProviderRequest, ProviderStatus, SpeedOffer } from "./types.ts";
 import { XaiProvider } from "./xai.ts";
 import { AcpProvider } from "../acp/agents.ts";
 import { runMode } from "../core/runmode.ts";
@@ -41,6 +41,9 @@ const SECTION: Record<string, string> = {
 export class ModelLookupError extends Error {
   constructor(message: string, readonly listingFailed = false) { super(message); }
 }
+
+// A model that can make pictures, as the owner's providers list it (`plan`: it is paid by a subscription).
+export type ImageModelInfo = { id: string; provider: string; model: string; name: string; billing: "subscription" | "per_token" };
 
 export type Listing = { state: "ok" | "failed" | "saved" | "never"; fetched?: number; error?: string; models: ListedModel[]; identity?: string };
 // The owner's picks: the default, models hidden per provider, whole providers
@@ -478,9 +481,53 @@ export class Providers {
     }));
   }
 
+  // The catalog section that describes a route's models.
+  private sectionOf(p: Provider): string | undefined {
+    return p instanceof EndpointProvider ? p.cfg.catalog : p instanceof PluginProvider ? p.catalog : SECTION[p.id];
+  }
+
+  // The models that can make pictures, of every provider that is available and can ask for them: a model of
+  // the provider's own listing that says it makes pictures (its output modalities), else one the catalog says
+  // does. A provider that could not be asked is named with why, so the owner is told instead of shown nothing.
+  private imageRows = new Map<string, ImageRow>();
+  async imageModels(): Promise<{ models: ImageModelInfo[]; failed: { provider: string; label: string; error: string }[] }> {
+    await this.catalog.ready();
+    const models: ImageModelInfo[] = [];
+    const failed: { provider: string; label: string; error: string }[] = [];
+    await Promise.all(this.all().filter((p) => p.available() && p.imageModels).map(async (p) => {
+      try {
+        const rows = await Promise.race([p.imageModels!(), new Promise<never>((_, no) => setTimeout(() => no(new Error("the listing did not answer in 30 s")), 30_000).unref?.())]);
+        const section = this.sectionOf(p);
+        for (const r of rows) {
+          const c = this.catalog.lookup(r.model, section);
+          if (!(r.out ?? !!c?.imageOut)) continue;
+          const id = `${p.id}:${r.model}`;
+          this.imageRows.set(id, r);
+          const plan = r.plan ?? (p instanceof EndpointProvider && p.cfg.billing === "subscription");
+          models.push({ id, provider: p.id, model: r.model, name: r.name ?? c?.name ?? r.model, billing: plan ? "subscription" : "per_token" });
+        }
+      } catch (e) {
+        failed.push({ provider: p.id, label: p.label ?? p.id, error: String((e as Error)?.message ?? e).slice(0, 300) });
+      }
+    }));
+    models.sort((a, b) => a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name));
+    return { models, failed };
+  }
+
+  // `n` pictures of `prompt` from the image model `id` (one of imageModels).
+  async makeImages(id: string, prompt: string, n: number, signal: AbortSignal): Promise<MadeImage[]> {
+    const pid = id.slice(0, Math.max(0, id.indexOf(":")));
+    const provider = this.get(pid);
+    if (!provider?.available() || !provider.makeImages) throw new ModelLookupError(`provider ${pid || id} cannot make pictures here`);
+    if (!this.imageRows.has(id)) await this.imageModels();
+    const row = this.imageRows.get(id);
+    if (!row) throw new ModelLookupError(`${id} is not among the models that make pictures`);
+    return provider.makeImages({ model: row.model, prompt, n, signal, via: row.via });
+  }
+
   private join(p: Provider, m: ListedModel): ModelInfo {
     const ep = p instanceof EndpointProvider ? p : undefined;
-    const section = ep ? ep.cfg.catalog : p instanceof PluginProvider ? p.catalog : SECTION[p.id];
+    const section = this.sectionOf(p);
     const c = this.catalog.lookup(m.model, section);
     const own = this.catalog.own(m.model, section);
     const billing = m.billing?.kind ?? (ep?.cfg.billing === "subscription" ? "subscription" : "per_token");

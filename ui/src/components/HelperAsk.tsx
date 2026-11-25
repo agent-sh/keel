@@ -8,7 +8,7 @@
 // what it offers is the owner's tap: open a session it read, or answer what
 // that session waits on (openWaiting, the way every row of the home goes to a
 // request). The helper's conversation keeps the question and the answer.
-import { ArrowUp, Sparkles, X } from "lucide-react";
+import { ArrowUp, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { ask, dismiss, lookAgain, pending, readLine, resume, useAsk } from "../lib/ask.ts";
@@ -16,6 +16,7 @@ import { useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { useSessionStates } from "../lib/watch.ts";
+import { HelperFace, useHelperName } from "./HelperFace.tsx";
 import { openWaiting } from "./HomeWatch.tsx";
 import { Markdown } from "./Markdown.tsx";
 
@@ -27,6 +28,7 @@ export function HelperAsk() {
   const error = useAsk((s) => s.error);
   const unanswered = useAsk((s) => s.unanswered);
   const [text, setText] = useState("");
+  const name = useHelperName();
   useEffect(resume, []);
   const send = () => { const t = text; setText(""); void ask(t); };
   const sessions = useStore((s) => s.sessions);
@@ -36,11 +38,11 @@ export function HelperAsk() {
   return (
     <section className="k-ask" data-testid="helper-ask" aria-label="Ask the helper">
       <form className="k-ask-row" onSubmit={(e) => { e.preventDefault(); send(); }}>
-        <Sparkles className="k-ask-mark" aria-hidden />
+        <HelperFace size="voice" testid="helper-ask-face" />
         <input
           className="k-ask-field" data-testid="helper-ask-field" dir="auto" enterKeyHint="send"
           value={text} onChange={(e) => setText(e.target.value)}
-          placeholder="Ask the helper" aria-label="Question for the helper"
+          placeholder={`Ask ${name}`} aria-label={`Question for ${name}`}
         />
         <button type="submit" className="k-ask-btn k-ask-btn-send" data-testid="helper-ask-send" aria-label="Ask" disabled={!text.trim() || asking}><ArrowUp /></button>
       </form>

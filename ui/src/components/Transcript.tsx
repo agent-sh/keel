@@ -1,4 +1,5 @@
 import { Popover } from "@base-ui/react/popover";
+import { HelperFace, useHelperName } from "./HelperFace.tsx";
 import { Menu } from "@base-ui/react/menu";
 import { CopyButton, copyWords } from "./CopyButton.tsx";
 import { usePhoneWidth } from "../lib/list-hold.ts";
@@ -519,6 +520,14 @@ function Status({ sessionId }: { sessionId: string }) {
 
 // What a reply says at length, and what it thought when it called no tool: the
 // rest of a reply that calls tools is in the run of work under it (rows.ts).
+// In the helper's own conversation a reply says who speaks: its picture and the name the owner gave it.
+function HelperVoice({ sid }: { sid: string }) {
+  const helper = useStore((s) => !!s.sessions[sid]?.settings.helper);
+  const name = useHelperName();
+  if (!helper) return null;
+  return <div className="flex items-center gap-2 text-caption text-muted" data-testid="helper-voice"><HelperFace size="voice" testid="helper-voice-face" /><span data-testid="helper-voice-name">{name}</span></div>;
+}
+
 function AssistantBlocks({ blocks, prose, sid }: { blocks: AssistantBlock[]; prose: number[]; sid: string }) {
   const remote = useTail((t) => !!t.session.machine);
   return (
@@ -772,7 +781,7 @@ const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid:
       return <Refusal e={e} sid={sid} handled={row.handled} />;
     case "assistant":
       // The first row of a reply carries its event's id; a later stretch of its prose is found by the event all the same.
-      return <div id={row.id === e.id ? `e-${e.id}` : undefined} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} prose={row.prose!} sid={sid} /></div>;
+      return <div id={row.id === e.id ? `e-${e.id}` : undefined} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}>{row.id === e.id && <HelperVoice sid={sid} />}<AssistantBlocks blocks={e.data.blocks} prose={row.prose!} sid={sid} /></div>;
     case "work":
       return <WorkRow row={row} sid={sid} />;
     case "error":

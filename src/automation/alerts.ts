@@ -473,6 +473,8 @@ const absorbedBy = (kind: AlertKind, sessionId: string, data: unknown) => {
   return absorbHook.of?.(typeof d.agent_session === "string" ? d.agent_session : sessionId, d.cls);
 };
 
+// The picture a session's desktop notifications carry (the helper's avatar), when it has one: a file path.
+export const alertIcon: { of?: (sessionId: string | null) => string | undefined } = {};
 // What a wait on the owner costs as it begins (src/automation/wait-cost.ts), kept with the alert of
 // an ask or a failure: the next-look queue's key (src/core/wait-rank.ts).
 // `now`: what it costs as it stands, for the line an alert says when it is listed or told.
@@ -1204,6 +1206,8 @@ registerChannel({
     const cost = costs(now) ? costLine(now, Date.now()) : "";
     const a = cost ? { ...given, body: `${given.body}\n${cost}` } : given;
     const key = a.session_id ?? "_";
+    let icon: string | undefined;
+    try { icon = alertIcon.of?.(a.session_id ?? null); } catch {}
     // A count that grew on a notification already shown replaces it quietly.
     const sound = settings().sound && !a.data?.in_place;
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
@@ -1228,12 +1232,12 @@ registerChannel({
       if (helper && await helper.ready && !helper.ended) {
         // The service may have shown this even if it never acknowledged.
         // No retry through gdbus after the request has left this daemon.
-        return helper.send({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, sound, kind: a.kind });
+        return helper.send({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, sound, kind: a.kind, icon });
       }
     }
     const p = Bun.spawn([
       "gdbus", ...gdbusArgs, "--method", "org.freedesktop.Notifications.Notify",
-      "Keel", String(shown.get(key) ?? 0), "", gvariantString(a.title), gvariantString(a.body), "[]",
+      "Keel", String(shown.get(key) ?? 0), gvariantString(icon ?? ""), gvariantString(a.title), gvariantString(a.body), "[]",
       `{'suppress-sound': <${!sound}>, 'urgency': <byte ${urgency}>, 'desktop-entry': <'keel'>, 'category': <${gvariantString(`keel.${a.kind}`)}>}`,
       "int32 -1",
     ], { stdout: "pipe", stderr: "pipe" });

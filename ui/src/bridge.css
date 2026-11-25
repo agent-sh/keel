@@ -72,6 +72,16 @@
    glyphs read as a puzzle. Folded, or where the words with their counts do not fit (data-tight, measured by
    the foot itself: Sidebar.tsx, useFootFit), they are glyphs again. */
 .k-rail[data-open] .k-rail-foot .k-act-word .k-act-label { display: none; }
+/* The helper's picture (HelperFace.tsx): round, cropped to fill, in the size of the place it speaks in. */
+.k-face { display: block; flex-shrink: 0; border-radius: 50%; object-fit: cover; background: var(--sunken); box-shadow: 0 0 0 1px var(--line); }
+.k-face[data-size="rail"], .k-act .k-face[data-size="rail"] { width: 1.25rem; height: 1.25rem; }
+.k-face[data-size="voice"] { width: 1.5rem; height: 1.5rem; }
+.k-face[data-size="head"] { width: 2.75rem; height: 2.75rem; }
+.k-face[data-size="set"] { width: 4.5rem; height: 4.5rem; }
+.k-face-mark { flex-shrink: 0; color: var(--muted); }
+.k-face-mark[data-size="voice"] { width: 1.25rem; height: 1.25rem; }
+.k-face-mark[data-size="head"] { width: 1.75rem; height: 1.75rem; }
+.k-face-mark[data-size="set"] { width: 2.5rem; height: 2.5rem; }
 .k-foot-word { display: none; }
 /* Tight enough that the words and their counts fit the list's default width: the glyphs at either end
    take a control's width, not a wide one's, and the words their own and a little air. */
@@ -1057,7 +1067,6 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-ask { margin-bottom: 1.5rem; }
 .k-ask-row { display: flex; align-items: center; gap: 0.5rem; height: 2.75rem; padding: 0 0.25rem 0 0.75rem; border-radius: var(--radius-md); background: var(--raised); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line); }
 .k-ask-row:focus-within { box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line-strong); }
-.k-ask-mark { width: 1rem; height: 1rem; flex-shrink: 0; color: var(--accent-ink); }
 .k-ask-field { min-width: 0; flex: 1; height: 100%; background: transparent; font-size: var(--text-ui); color: var(--fg); outline: none; }
 .k-ask-field::placeholder { color: var(--faint); }
 .k-ask-btn { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; flex-shrink: 0; border-radius: var(--radius-md); color: var(--muted); }
@@ -1805,3 +1814,29 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
    (Transcript.tsx writes it as --k-under), the message box stays at its own foot. Where the conversation
    fills the view the room is none and the card is at the box. */
 .k-session .k-tray[data-asking] { transform: translateY(calc(var(--k-under, 0px) * -1)); }
+
+/* The helper's picture maker (HelperIdentity.tsx): the description, the model, and the pictures to pick from. */
+.k-pick { display: flex; flex-direction: column; gap: 0.625rem; padding-block: 1rem; border-bottom: 1px solid var(--line); }
+.k-pick-label { font-size: var(--text-caption); color: var(--muted); }
+.k-pick-prompt { height: auto; min-height: 4.5rem; resize: vertical; padding-block: 0.375rem; line-height: 1.45; }
+.k-pick-row { display: flex; align-items: center; gap: 0.5rem; }
+.k-pick-note { font-size: var(--text-caption); color: var(--muted); }
+.k-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); gap: 0.625rem; }
+.k-pick-item { display: block; width: 100%; aspect-ratio: 1; overflow: hidden; border-radius: var(--radius-lg); background: var(--sunken); box-shadow: 0 0 0 1px var(--line); transition: box-shadow var(--dur-quick); }
+.k-pick-item img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.k-pick-item:hover { box-shadow: 0 0 0 2px var(--accent); }
+.k-pick-item:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* The helper's look at an error (HelperLook.tsx), under the error's row. */
+.k-look { display: flex; gap: 0.625rem; margin: 0 0.75rem 0.5rem 2.125rem; padding: 0.5rem 0.625rem; border-radius: var(--radius-md); background: var(--sunken); }
+.k-look .k-face, .k-look .k-face-mark { margin-top: 0.125rem; }
+.k-look-body { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 0.25rem; font-size: var(--text-ui); }
+.k-look-head { display: flex; align-items: baseline; gap: 0.5rem; font-size: var(--text-caption); }
+.k-look-whose { color: var(--muted); }
+.k-look-whose::before { content: "\00b7"; margin-right: 0.5rem; color: var(--faint); }
+.k-look-line { overflow-wrap: anywhere; }
+.k-look-link { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--accent-ink); }
+.k-look-link:hover { text-decoration: underline; }
+.k-look-task { display: flex; flex-direction: column; gap: 0.375rem; margin-top: 0.25rem; }
+.k-look-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.625rem; }
+.k-look-cost { font-size: var(--text-micro); color: var(--faint); }

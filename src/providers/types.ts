@@ -212,6 +212,15 @@ export type ProviderStatus = {
 // and /models) and the headers that sign a call, with every secret named so an error can scrub it.
 export type SpeechAccess = { base: string; headers: Record<string, string>; secrets: string[] };
 
+// A picture a provider made: its bytes as base64 and the format they are in.
+export type MadeImage = { media_type: string; data: string };
+export type ImageRequest = { model: string; prompt: string; n: number; signal: AbortSignal; via?: ImageRow["via"] };
+// A model of a provider's listing that may make pictures. `out`: the listing itself says it does (its output
+// modalities); absent, the catalog's output modalities decide (src/providers/registry.ts imageModels).
+// `via`: how a request for a picture is made on this route (src/providers/images.ts).
+// `plan`: the pictures are paid by a subscription, not per picture.
+export type ImageRow = { model: string; name?: string; out?: boolean; plan?: boolean; via?: "images" | "chat" | "gemini" | "tool" };
+
 export interface Provider {
   readonly id: string;
   // An environment-configured address of an HTTP provider. Not a credential source.
@@ -252,6 +261,11 @@ export interface Provider {
   list(): Promise<ListedModel[]>;
   // Where this provider takes speech in and out, when it speaks the OpenAI audio routes (src/speech/speech.ts).
   speech?(): Promise<SpeechAccess | null>;
+  // The models of its listing that could make pictures (the listing as the server returns it, image models
+  // included: `list` leaves them out of the chat models) and a request for pictures. Both are optional: a
+  // provider that cannot make pictures has neither.
+  imageModels?(): Promise<ImageRow[]>;
+  makeImages?(req: ImageRequest): Promise<MadeImage[]>;
   stream(req: ProviderRequest, onDelta: (d: Delta) => void): Promise<ProviderResult>;
   // The account's usage windows, from an endpoint that states them.
   usage?(): Promise<import("./limits.ts").WindowReading[]>;

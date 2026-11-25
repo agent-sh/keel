@@ -9,6 +9,7 @@ import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { footSheet } from "./ui.tsx";
+import { HelperLook } from "./HelperLook.tsx";
 import { modelOf } from "./Mark.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { FailureActions } from "./TurnFailure.tsx";
@@ -173,6 +174,7 @@ function Row({ e }: { e: ErrorRecord }) {
     navigate({ name: "session", id: e.session_id! });
   };
   return (
+    <div>
     <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
       <summary className="flex cursor-default list-none flex-col gap-1.5 text-ui [&::-webkit-details-marker]:hidden">
         <span className="flex items-baseline gap-2 max-sm:flex-wrap max-sm:items-center max-sm:gap-y-0">
@@ -307,6 +309,8 @@ function Row({ e }: { e: ErrorRecord }) {
         )}
       </div>
     </details>
+    <HelperLook errorId={e.id} />
+    </div>
   );
 }
 
