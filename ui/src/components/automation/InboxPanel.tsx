@@ -16,6 +16,7 @@ import { rootOf } from "../../lib/agent-tree.ts";
 import { seeAllAgents } from "../../lib/agent-seen.ts";
 import { ALERT_GROUPS, ALERT_GROUP_WORD, ASK_KINDS, COUNTERS, STATE_WORD, TURN_ENDED, alertGroup, alertWord, askAction, type AlertGroup } from "../../../../src/core/state-words.ts";
 import { Mark } from "../Mark.tsx";
+import { ReadyToLand } from "../ReadyToLand.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 import { Seg, tabId } from "../Seg.tsx";
 import { costLine, costs, type WaitNow } from "../../../../src/core/wait-rank.ts";
@@ -200,6 +201,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
         onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null) && !e.currentTarget.matches(":hover")) hold(false); }}
       >
         {shown.length === 0 && <li><Empty>{onlyUnread ? "Nothing unread." : `Nothing ${STATE_WORD.need.toLowerCase()}.`}</Empty></li>}
+        {/* What could land is its own part, after what waits on the owner and counted in neither it nor the unread. */}
+        {!parts.some((p) => p.part === "need") && <ReadyToLand inbox />}
         {parts.flatMap(({ part, n, rows }) => [<PartHead key={part} part={part} n={n} />, ...rows.map(({ a, first, last, alone, place, fresh, asks, word, declined }) => {
           // On a phone a row that waits gives its line the width: its mark and its "Review" say what it is, and its age is in the tooltip.
           // A row offers the card that answers it only while that card waits: an ask whose card is gone (answered, or its turn stopped) has nothing to answer.
@@ -285,7 +288,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
               )}
             </li>
           );
-        })])}
+        }), ...(part === "need" ? [<ReadyToLand key="ready" inbox />] : [])])}
       </ul>
     </div>
   );

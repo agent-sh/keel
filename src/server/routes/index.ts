@@ -48,6 +48,7 @@ import { landingRoutes } from "./landing.ts";
 import { stewardRoutes } from "./steward.ts";
 import { boardRoutes } from "./board.ts";
 import { treeReviewRoutes } from "./tree-review.ts";
+import { readyRoutes } from "./ready.ts";
 import { lanePlanRoutes } from "./lane-plans.ts";
 import { reviewRoutes } from "./reviews.ts";
 import { prReviewRoutes } from "./pr-reviews.ts";
@@ -119,6 +120,7 @@ const modules: Record<string, RouteModule> = {
   landingRoutes, // after overlapRoutes: the queue orders and warns by its forecast
   boardRoutes, // after landingRoutes: the board reads the base the queue lands on
   treeReviewRoutes, // after boardRoutes: the tree review reads the board, the forecast and the queue
+  readyRoutes, // after boardRoutes: the branches ready to land read the board and the queue
   lanePlanRoutes, // after overlapRoutes: a lane's branch is read through its forecast's bases
   pictureRoutes, // after boardRoutes: a run's end makes its tree's board old
   reviewRoutes,

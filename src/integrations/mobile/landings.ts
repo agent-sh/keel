@@ -69,12 +69,12 @@ export function landings(d: LandingsDeps) {
       numstat: row.repo && row.base && row.head ? await numstat(row.repo, row.base, row.head) : "" });
 
   // Every card, ready first.
-  async function list(): Promise<LandCard[]> {
+  async function list(fresh = false): Promise<LandCard[]> {
     const b = d.board();
     if (!b) return [];
     const out: (LandCard & { at: number })[] = [];
     for (const root of roots()) {
-      const board = await b.read(root).catch(() => undefined);
+      const board = await b.read(root, fresh).catch(() => undefined);
       for (const row of board?.rows ?? []) if (isCard(row)) out.push({ ...(await cardOf(root, row, board?.repos)), at: row.ended ?? row.created });
     }
     return out.sort(cardOrder).map(({ at, ...c }) => c);

@@ -40,6 +40,7 @@ import { focusAsk } from "../lib/asks.ts";
 import { autoState, focusApproval, useAuto } from "../lib/automation.ts";
 import { agentFailNews, failedAgentOf, pickRows, rowKind, rowLine, sayMore, watchSummary, wholeCommand, withAgentFailures } from "../lib/home.ts";
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
+import { ReadyToLand } from "./ReadyToLand.tsx";
 import { actions, getState, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow, doneAlert, stateWords } from "../../../src/core/state-words.ts";
@@ -392,12 +393,14 @@ function Finished() {
 export function WatchLists({ className }: { className?: string }) {
   const { attention, working } = useHome();
   const finished = useAuto((x) => x.alerts.some((a) => doneAlert(a) && !a.read));
-  if (!attention.length && !working.length && !finished) return null;
+  // (Home's watch is only ever shown beside this part: it reads the branches ready to land itself.)
+  if (!attention.length && !working.length && !finished) return <div className={className} data-testid="home-lists"><ReadyToLand /></div>;
   return (
     <div className={className} data-testid="home-lists">
       <List title={STATE_WORD.need} rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" counted />
       {/* Under what needs the owner: a finish that comes while they answer moves no row they are pressing. */}
       <Finished />
+      <ReadyToLand />
       <List title={working.every((r) => r.w === "work") ? STATE_WORD.work : `${STATE_WORD.work} and ${STATE_WORD.wait.toLowerCase()}`} rows={working} most={MOST.working} testid="home-working" className="k-home-sec" />
     </div>
   );

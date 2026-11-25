@@ -16,7 +16,8 @@ import { jobsOf, leftText, jobLive, stopJobs } from "../tools/jobs.ts";
 import { admit, initAccess, seesOutside, standIn } from "./admission.ts";
 import { agentsUnder, leanSessions } from "./session-list.ts";
 import { Live } from "./live.ts";
-import { sessionTopic } from "./scope.ts";
+import { feedTopic, sessionTopic } from "./scope.ts";
+import { feedHeard } from "./feed-heard.ts";
 import { readsOf } from "./reads.ts";
 import { fold, searchTerms } from "./search-query.ts";
 import { callAge, lastCall } from "./routes/calls-read.ts";
@@ -793,6 +794,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   const server = Bun.serve({ ...options, routes: { ...ui.routes(PAGES, embeddedUi), ...routes } } as any);
   // A session a page shows (a socket names its stream) goes before agents in its account's line.
   engine.viewed = (id) => server.subscriberCount(sessionTopic(id)) > 0;
+  // A feed some page shows: a module that reads a lot to make a feed's frame reads only then.
+  feedHeard.of = (name) => server.subscriberCount(feedTopic(name)) > 0;
   // The sandbox's proxy never connects here, whatever is listed for a sandbox (src/safety/net-proxy.ts).
   ownPort(server.port);
   // What goes wrong with the proxies' thread is in the Errors panel.
