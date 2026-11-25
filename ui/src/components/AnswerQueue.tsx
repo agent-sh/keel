@@ -345,8 +345,9 @@ export function WaitingSlot({ sessionId }: { sessionId: string }) {
       slotSubs.forEach((f) => f());
     };
   }, [sessionId]);
-  // (Where it holds the chip it takes the free room of the header's row, ahead of the answers' own.)
-  return <span ref={ref} data-waiting-slot="" className="[&:not(:empty)]:ml-auto [&:not(:empty)]:inline-flex" />;
+  // (Where it holds the chip it takes the free room of the header's row, ahead of the answers' own; on a phone it is a row of
+  // its own under them, the header wrapping for it, so it never takes the title's and Later's room at a large text size.)
+  return <span ref={ref} data-waiting-slot="" className="[&:not(:empty)]:ml-auto [&:not(:empty)]:inline-flex max-md:[&:not(:empty)]:order-last max-md:[&:not(:empty)]:ml-0 max-md:[&:not(:empty)]:basis-full" />;
 }
 
 // Above what a session asks: how many other sessions wait, and how to get to

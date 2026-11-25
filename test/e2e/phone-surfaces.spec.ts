@@ -1231,5 +1231,46 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    test("the waiting chip in a card's header has its own row on a phone: it covers no word and no control, also at a large text size", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(180_000);
+      await settle(request);
+      const ids = [await create(request, "Phone chip one", folder("phone-chip-1")), await create(request, "Phone chip two", folder("phone-chip-2")), await create(request, "Phone chip three", folder("phone-chip-3"))];
+      try {
+        for (const id of ids) await ask(request, id, "approval");
+        // (An agent's question has no head row on a phone, so its count stands in a line over it: nothing to wrap.)
+        for (const kind of ["approval"] as const) {
+          for (const scale of [1, 1.5]) {
+            const { ctx, page } = await atScale(browser, size, scale);
+            try {
+              await page.goto(`/s/${ids[0]}`);
+              const here = page.locator(".k-station[data-helm]");
+              const chip = here.getByTestId("waiting-elsewhere");
+              await expect(chip).toBeVisible({ timeout: 30_000 });
+              await page.waitForTimeout(400);
+              // The header the chip stands in: each of its parts inside it, and no two over each other.
+              const bad = await chip.evaluate((el) => {
+                const head = el.closest("[data-waiting-slot]")!.parentElement!, h = head.getBoundingClientRect(), out: string[] = [];
+                const parts = [...head.children].map((c) => ({ c: c as HTMLElement, r: c.getBoundingClientRect() })).filter((x) => x.r.width > 1 && x.r.height > 1);
+                const name = (e: HTMLElement) => e.dataset.testid ?? e.dataset.waitingSlot ?? `${e.tagName.toLowerCase()} "${(e.textContent ?? "").trim().slice(0, 14)}"`;
+                for (const x of parts) if (x.r.right > h.right + 0.5 || x.r.left < h.left - 0.5) out.push(`${name(x.c)} outside the header`);
+                for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
+                  const a = parts[i]!.r, b = parts[j]!.r;
+                  if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) out.push(`${name(parts[i]!.c)} over ${name(parts[j]!.c)}`);
+                }
+                // A word cut to a sliver: the title's lines are each wider than a few letters.
+                for (const x of parts) if (x.c.dataset.testid !== "waiting-elsewhere" && x.c.scrollWidth > x.c.clientWidth + 1 && getComputedStyle(x.c).overflow !== "visible") out.push(`${name(x.c)} cut`);
+                return out;
+              });
+              expect(bad, `the ${kind} card's header at ${scale * 100}% text`).toEqual([]);
+              expect(await small(here.getByTestId("composer-asks")), "every control of the card is a finger's target").toEqual([]);
+              await shoot(page, `phone-surfaces-32-chip-${kind}-${size.width}-${scale}`);
+            } finally { await ctx.close(); }
+          }
+        }
+      } finally {
+        await drop(request, ...ids);
+      }
+    });
   });
 }

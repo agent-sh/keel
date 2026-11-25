@@ -1205,7 +1205,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
   );
   const fromCode = a.call_id.includes("~") && <span className="rounded-full bg-sunken px-1.5 py-px text-micro text-muted" data-testid="approval-from-code">from a program</span>;
   const title = (
-    <span id={`${ids}-title`} className={cn(dense ? "text-caption font-medium" : "min-w-0 text-ui font-medium", dense && plain && "sr-only")}>
+    <span id={`${ids}-title`} className={cn(dense ? "text-caption font-medium" : "min-w-0 text-ui font-medium max-md:grow max-md:basis-0", dense && plain && "sr-only")}>
       {asker && <span className="sr-only">{asker}: </span>}
       {TITLE[a.kind]} <span className="font-mono text-caption font-normal text-faint">{a.tool}</span>
     </span>
@@ -1343,7 +1343,7 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
       ) : (
         <>
           {/* On a phone the title gives way (it wraps) before Later drops to a row of its own: that row is the height of a finger's target, and at a large text size it pushed the last answer out of the card's room. */}
-          <div className={cn("flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3", !machine && !place && !fromCode && a.risk !== "high" && "max-md:flex-nowrap")}>
+          <div className={cn("flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3", !machine && !place && !fromCode && a.risk !== "high" && "max-md:flex-nowrap max-md:has-[[data-waiting-slot]:not(:empty)]:flex-wrap")}>
             {icon}
             {title}
             {call}
