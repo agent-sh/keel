@@ -40,6 +40,9 @@ export const importRoutes: RouteModule = (deps) => {
   imports.created = (id) => { try { deps.engine.adoptImport(id); } catch (e) { deps.errors.capture("server", e, { session: id, at: "import title" }); } };
   imports.offRead ??= (sql, params) => reads.sql(sql, params);
   imports.sentOff ??= (texts) => reads.run("drive.sentOf", { texts });
+  // A paired daemon that has not said it told this Keel its drive sends (src/drive/sent.ts typedHeld): one Errors
+  // row for each, naming it, while it keeps the owner's prompts of every copy here unmarked.
+  imports.typedHeld = (d) => deps.errors.capture("server", new Error(`the paired Keel ${d.name || d.id} has not said it told this Keel the words its models sent through the drive (it is of an older build, or has not linked since): until it does, no prompt of a copy made here counts as the owner's`), { at: "drive sends caught up", daemon: d.id }, { group: `drive sends caught up ${d.id}` });
   const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
   // The source's model when this daemon lists it, else the default one.
   const modelFor = (f: Found) => pickModel(providers, f);

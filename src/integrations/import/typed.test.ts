@@ -258,3 +258,20 @@ test("a copy made before its link kept a seq: an event its source dated after th
   expect(seen.length).toBeGreaterThan(0);
   expect(seen.every((c) => c === "outside")).toBe(true);
 });
+
+test("a paired daemon that has not said it told its sends keeps the marks off, and is named for the owner", async () => {
+  const store = new Store(join(root, "state-held"));
+  store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+  store.migrate("CREATE TABLE IF NOT EXISTS fleet_pairs (daemon_id TEXT PRIMARY KEY, name TEXT, key TEXT NOT NULL, created INTEGER NOT NULL)");
+  store.db.query("INSERT INTO fleet_pairs VALUES ('d9', 'the mini', 'k', 0)").run();
+  const imports = new Imports(store);
+  await ready(store);
+  const held: { id: string; name: string | null }[] = [];
+  imports.typedHeld = (d) => held.push(d);
+  const id = "5e55107a-0000-4000-8000-000000000004";
+  const own = join(root, "stores", "claude_dir", "-h", `${id}.jsonl`);
+  transcript(own, id);
+  const made = await imports.import(imports.byPath(own, "claude")!, { model: "m", workspace: root, owner: true });
+  expect(store.events(made.session.id).filter((e) => e.kind === "user").map((e) => (e.data as any).typed === true)).toEqual([false, false]);
+  expect(held).toEqual([{ id: "d9", name: "the mini" }]);
+});
