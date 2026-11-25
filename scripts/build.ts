@@ -10,6 +10,7 @@ import tailwind from "bun-plugin-tailwind";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { graphOf, withPreloads } from "./page-graph.ts";
 import { sourceApi, UI_PREFIX, type UiManifest } from "../src/server/ui-bundle.ts";
 
 const root = resolve(import.meta.dir, "..");
@@ -40,7 +41,7 @@ async function browserGraph(): Promise<Record<string, Uint8Array>> {
   const dir = mkdtempSync(join(tmpdir(), "keel-ui-"));
   try {
     const t = performance.now();
-    const res = await Bun.build({ entrypoints: [join(root, "ui/index.html")], outdir: dir, target: "browser", minify: true, splitting: true, sourcemap: "none", publicPath: UI_PREFIX, plugins: [tailwind], define });
+    const res = await Bun.build({ entrypoints: [join(root, "ui/index.html")], outdir: dir, target: "browser", minify: true, splitting: true, sourcemap: "none", publicPath: UI_PREFIX, plugins: [tailwind], define, metafile: true });
     if (!res.success) fail(res);
     const files: Record<string, Uint8Array> = {};
     const walk = (d: string): void => {
@@ -51,6 +52,8 @@ async function browserGraph(): Promise<Record<string, Uint8Array>> {
       }
     };
     walk(dir);
+    // A wide window's first view draws the bridge and the session list: their chunks are named in the page.
+    files["index.html"] = new TextEncoder().encode(withPreloads(new TextDecoder().decode(files["index.html"]), graphOf(res.metafile)));
     const bytes = Object.values(files).reduce((n, f) => n + f.length, 0);
     console.log(`browser graph: ${Object.keys(files).length} files, ${(bytes / 1024).toFixed(0)} KB in ${((performance.now() - t) / 1000).toFixed(2)}s`);
     return files;

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { closureOf, holds, pageGraph, sizeOf } from "./page-graph.ts";
+import { closureOf, holds, pageGraph, sizeOf, wideStart, withPreloads } from "./page-graph.ts";
 
 // Feature: the page's start loads what every view needs and no more. The start is the entry chunk
 // and the chunks of the bridge and of the session list, each with what it imports statically (a
@@ -8,7 +8,9 @@ import { closureOf, holds, pageGraph, sizeOf } from "./page-graph.ts";
 // compression) with a little room. What a view draws only when something asks stays out of the
 // start: the approval card, the find bar, the incident band, the speech engine. The session list and
 // the side panel are not in the entry chunk, so the script that runs first stays small. Raise a
-// number only for a start that really draws more.
+// number only for a start that really draws more. A wide window's page names the start's chunks in
+// its head (withPreloads), so the first paint does not wait for the chain the browser would find them
+// by, a chunk at a time: the rail and the bridge are drawn at about the time the entry runs.
 const START = 1_290_000;
 const ENTRY = 760_000;
 const NOT_AT_START = [
@@ -28,4 +30,10 @@ test("the page's start stays within its size budget and leaves out what is drawn
   expect(sizeOf(g, start)).toBeLessThan(START);
   for (const f of NOT_AT_START) expect(holds(g, start, f)).toBe(false);
   for (const f of NOT_IN_ENTRY) expect(holds(g, [g.entry], f)).toBe(false);
+  // The page names every chunk of the start but the entry, once each, for a window that is not a phone's.
+  const page = withPreloads(g.html, g);
+  const named: string[] = JSON.parse(/var n of (\[[^\]]*\])/.exec(page)![1]!);
+  expect(new Set(named)).toEqual(new Set([...start].filter((c) => c !== g.entry)));
+  expect(named).toEqual(wideStart(g));
+  expect(page.indexOf("modulepreload")).toBeLessThan(page.indexOf('<link rel="stylesheet"'));
 });
