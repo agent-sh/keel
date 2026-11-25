@@ -201,6 +201,9 @@ export function expandReading(reading: string, page: Pick<Page, "rows">, budget:
   const out: string[] = [];
   const quoted: Span[] = [];
   let left = budget;
+  // The page's first and last line: a mark is walked only inside them, whatever numbers the reader wrote.
+  let lo = Infinity, hi = -Infinity;
+  for (const n of page.rows.keys()) { if (n < lo) lo = n; if (n > hi) hi = n; }
   for (const line of reading.split("\n")) {
     const row = ROW.exec(line);
     if (row) {
@@ -212,8 +215,11 @@ export function expandReading(reading: string, page: Pick<Page, "rows">, budget:
     }
     const m = MARK.exec(line);
     if (!m) { out.push(line); continue; }
-    const from = Number(m[1]), to = Math.max(from, Number(m[2] ?? m[1]));
+    const a = Number(m[1]), b = Math.max(a, Number(m[2] ?? m[1]));
     if (m[3]?.trim()) out.push(m[3].trim());
+    const from = Math.max(a, lo), to = Math.min(b, hi);
+    // (No line of the mark is on the page: said in the reader's own numbers, shortened.)
+    if (!(from <= to)) { out.push(`[lines ${m[1]!.slice(0, 12)}${m[2] ? `-${m[2].slice(0, 12)}` : ""} are not shown here]`); continue; }
     let shown = 0, end = from - 1;
     for (let n = from; n <= to; n++) {
       const own = page.rows.get(n);

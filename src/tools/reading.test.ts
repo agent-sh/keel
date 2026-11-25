@@ -316,6 +316,23 @@ describe("the reading itself", () => {
   });
 });
 
+describe("a mark is walked inside the page only", () => {
+  test("a mark that ends far past the page, or at a number no line has, costs what the page's lines cost", () => {
+    const page = pageOf(Array.from({ length: 600 }, (_, i) => `${i + 1}\t${line(i + 1)}`).join("\n"), true, 1, 600);
+    const t0 = performance.now();
+    const far = expandReading("@@ 590-1500000000", page, 100_000);
+    const huge = expandReading("@@ 598-99999999999999999999", page, 100_000);
+    const before = expandReading("@@ 0-2", pageOf(`20\t${line(20)}\n21\t${line(21)}`, true, 20, 600), 100_000);
+    const none = expandReading("@@ 700-900000000000000000000000", page, 100_000);
+    expect(performance.now() - t0).toBeLessThan(1_000);
+    expect(far.quoted).toEqual([{ from: 590, to: 600 }]);
+    expect(far.text.split("\n")).toHaveLength(11);
+    expect(huge.quoted).toEqual([{ from: 598, to: 600 }]);
+    expect(before).toEqual({ text: "[lines 0-2 are not shown here]", quoted: [] });
+    expect(none).toEqual({ text: "[lines 700-900000000000 are not shown here]", quoted: [] });
+  });
+});
+
 describe("no reading comes back", () => {
   test("a reader that fails: the file, said once; reads stay raw without asking until the rest is over", async () => {
     let fail = true;
