@@ -282,7 +282,7 @@ test("a tool the owner stopped reads stopped, not failed", async ({ page, reques
     await page.getByTestId("composer").fill("script:long-tool");
     await page.getByTestId("composer").press("Enter");
     const call = page.getByTestId("tool-call");
-    await expect(page.getByTestId("working")).toContainText("Running Bash", { timeout: 15_000 });
+    await expect(page.getByTestId("dock-now")).toHaveAttribute("data-moment", "acting", { timeout: 15_000 });
     await page.getByTestId("stop").click();
     await expect(call).toHaveAttribute("data-state", "stopped", { timeout: 15_000 });
     await expect(call.getByTestId("tool-ended")).toHaveText("stopped");

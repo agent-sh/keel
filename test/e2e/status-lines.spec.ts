@@ -132,6 +132,9 @@ test.describe("at a desk", () => {
       const now = page.getByTestId("dock-now");
       await expect(now).toHaveAttribute("data-moment", "acting");
       await expect(page.getByTestId("dock-action-text")).toContainText("Editing");
+      // The line says the action once: the conversation has no running line of its own that says it again.
+      await expect(page.getByTestId("dock-action-clock")).toHaveText(/\d+s/);
+      await expect(page.getByTestId("working"), "the transcript does not say the action again").toHaveCount(0);
       const mark = page.getByTestId("dock-moment");
       await expect(mark).toHaveAttribute("aria-label", "Working");
       const shape = () => mark.evaluate((m) => ({ moment: (m as HTMLElement).dataset.moment, parts: [...m.children].map((i) => { const s = getComputedStyle(i); return `${s.width}x${s.height}:${s.borderRadius}:${s.display}`; }), runs: getComputedStyle(m.children[0]!).animationDuration }));

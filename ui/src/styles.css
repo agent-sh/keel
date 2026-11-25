@@ -903,7 +903,8 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 .k-now-ready { flex-shrink: 0; white-space: nowrap; font-weight: 400; color: var(--ok); }
 .k-now-path { display: inline; min-width: 0; padding: 0; border-radius: var(--radius-sm); color: var(--fg); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 2px; }
 .k-now-path:hover { text-decoration-color: currentColor; }
-@container docket (max-width: 34rem) { .k-now-project .k-now-name, .k-now-clock { display: none; } .k-now-project { padding: 0 0.375rem; } }
+/* (The clock stays at every width: the line is the one place that says how long the step has run.) */
+@container docket (max-width: 34rem) { .k-now-project .k-now-name { display: none; } .k-now-project { padding: 0 0.375rem; } }
 @container docket (max-width: 26rem) { .k-now-files, .k-docket-jobs-word { display: none; } .k-now-name { max-width: 5rem; } }
 /* The marker of the action: its own shape at rest, so that with motion off the three still differ. */
 .k-moment { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; gap: 0.125rem; width: 1rem; height: 1rem; color: var(--st-work); }

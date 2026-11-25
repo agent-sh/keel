@@ -69,7 +69,7 @@ test("a reply under a long transcript renders only its own rows", async ({ page,
     await expect(page.getByTestId("draft")).toBeVisible({ timeout: 15_000 });
     await shoot(page, "long-transcript-01-streaming");
     await expect.poll(async () => ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).running, { timeout: 60_000 }).toBe(false);
-    await expect(page.getByTestId("working")).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId("dock-moment")).toHaveCount(0, { timeout: 30_000 });
 
     let after = await stored();
     const fresh = new Set(after.slice(before.length).map((e) => e.id));
@@ -114,7 +114,7 @@ test("a reply under a long transcript renders only its own rows", async ({ page,
     await page.getByTestId("composer").press("Enter");
     await expect.poll(async () => (await stored()).length, { timeout: 30_000 }).toBeGreaterThan(after.length);
     await expect.poll(async () => ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).running, { timeout: 60_000 }).toBe(false);
-    await expect(page.getByTestId("working")).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId("dock-moment")).toHaveCount(0, { timeout: 30_000 });
     await expect.poll(shown, { timeout: 30_000 }).toBeLessThan(more);
     await expect(page.getByTestId("load-earlier")).toBeVisible();
     after = await stored();
@@ -251,7 +251,7 @@ test("a long session opens with its newest part and reads the rest as asked", as
     await expect(page.getByTestId("user-message").last()).toContainText("at the end", { timeout: 30_000 });
     await idle();
     await expect(page.getByTestId("assistant-text").last()).toContainText("The parser, moved", { timeout: 30_000 });
-    await expect(page.getByTestId("working")).toHaveCount(0);
+    await expect(page.getByTestId("dock-moment")).toHaveCount(0);
     const fresh = ((await (await fetch(`${d.url}/api/sessions/${id}/events?after=${base}`)).json()) as any).events.map((e: any) => e.seq);
     expect(fresh.length).toBeGreaterThanOrEqual(4);
     expect(sockets.filter((s) => s > base)).toEqual(fresh);

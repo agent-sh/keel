@@ -65,7 +65,7 @@ test("a spend window: told at 80 percent, a loop run is held at the cap, the own
     const note = (await events(looped)).find((e) => e.kind === "note" && e.data.kind === "spend_window")!;
     expect(note.data.text).toContain("This turn waits: the spend cap of");
     await page.goto(`/s/${looped}`);
-    await expect(page.getByTestId("working-what")).toContainText("Waits for the spend window", { timeout: 30_000 });
+    await expect(page.getByTestId("dock-action-text")).toContainText("Waits for the spend window", { timeout: 30_000 });
     await shoot(page, "spend-window-03-held");
     expect((await events(looped)).some((e) => e.kind === "assistant")).toBe(false);
 

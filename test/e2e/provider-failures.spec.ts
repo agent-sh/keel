@@ -170,16 +170,16 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   await expect(retrying).toContainText(/attempt 2, until the model has room/, { timeout: 5_000 });
   await expect(texts.last()).toHaveText("Answered after the overload passed.", { timeout: 15_000 });
 
-  // A model slow to start: the working line says what the turn waits on.
+  // A model slow to start: the line over the box says what the turn waits on, with its clock.
   await composer.fill("script:slow");
   await composer.press("Enter");
-  await expect(page.getByTestId("working")).toContainText(/Calling Scripted stand-in\s*2s/);
+  await expect(page.getByTestId("dock-action")).toContainText(/Calling the model\s*2s/);
   await expect(texts.last()).toHaveText("Answered after a slow start.", { timeout: 15_000 });
 
   // Connected but no output yet (only keep-alives): said apart from the network wait.
   await composer.fill("script:quiet");
   await composer.press("Enter");
-  await expect(page.getByTestId("working")).toContainText(/Connected to Scripted stand-in, no output yet\s*2s/);
+  await expect(page.getByTestId("dock-action")).toContainText(/The model is answering\s*2s/);
   await shoot(page, "failures-03-connected-quiet");
   await expect(texts.last()).toHaveText("Answered after a quiet start.", { timeout: 15_000 });
 

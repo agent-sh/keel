@@ -36,7 +36,7 @@ test("switch models mid-turn and across providers", async ({ page, request }) =>
   // A turn that runs a few seconds in a tool; the switch is made while it runs.
   await composer.fill("Run this shell command with your tool: `timeout 6 tail -f /dev/null; echo ready`. Then reply with only the word it printed.");
   await composer.press("Enter");
-  await expect(page.getByTestId("working-what")).toContainText("Running", { timeout: 60_000 });
+  await expect(page.getByTestId("dock-now")).toHaveAttribute("data-moment", "acting", { timeout: 60_000 });
   await pick(page, other);
   // A warm cache asks first; with a turn running there is no compact-first choice.
   if (await confirm.isVisible({ timeout: 3000 }).catch(() => false)) {

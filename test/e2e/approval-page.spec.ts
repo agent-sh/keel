@@ -41,7 +41,7 @@ test("the approval page has no running line under the card that asks the same", 
   test.skip(!(await scripted(request)), "requires the scripted provider");
   const s = await asking(request, page, "Approval page: one line of it");
   try {
-    await expect(page.getByTestId("working")).toHaveCount(0);
+    await expect(page.getByTestId("dock-action")).toHaveCount(0);
   } finally {
     await drop(request, s.id);
   }

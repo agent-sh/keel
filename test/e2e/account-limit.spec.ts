@@ -49,7 +49,8 @@ test("an account's 429 holds its other requests in one line, and the owner's tur
     ({ session: own } = await (await request.post("/api/sessions", { data: { model: LIMITED, title: "The owner's turn" } })).json());
     await page.goto(`/s/${own!.id}`);
     expect((await request.post(`/api/sessions/${own!.id}/messages`, { data: { text: "script:account-wait" } })).ok()).toBe(true);
-    await expect(page.getByTestId("working-what")).toHaveText(/^Waits for the account's limit, about \d+s$/, { timeout: 10_000 });
+    await expect(page.getByTestId("dock-action-text")).toHaveText("Waits for the account's limit", { timeout: 10_000 });
+    await expect(page.getByTestId("dock-action-clock")).toHaveText(/\d+s/);
     await expect.poll(async () => (await held()).find((h) => h.account === LIMITED)?.waiting ?? 0, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
     await shoot(page, "account-limit-held");
 
@@ -59,7 +60,7 @@ test("an account's 429 holds its other requests in one line, and the owner's tur
     const byTitle = async (t: string) => said(await events((await agents()).find((a) => a.title.startsWith(t))!.session_id));
     expect(await byTitle("Limited")).toBe("Answered in place 2 after the account's limit; it refused 1 request.");
     expect(await byTitle("Waiting")).toBe("Answered in place 3 after the account's limit; it refused 1 request.");
-    await expect(page.getByTestId("working-what")).toHaveCount(0);
+    await expect(page.getByTestId("dock-action-text").filter({ hasText: "Waits for the account's limit" })).toHaveCount(0);
     await shoot(page, "account-limit-answered");
   } finally {
     for (const p of parents) await request.delete(`/api/sessions/${p.id}`);

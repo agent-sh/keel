@@ -60,7 +60,7 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     await page.getByTestId("composer").fill("script:long-tool");
     await page.getByTestId("composer").press("Enter");
     await expect(page.getByTestId("tool-call")).toHaveCount(1, { timeout: 15_000 });
-    await expect(page.getByTestId("working")).toContainText("Running Bash"); // the command runs
+    await expect(page.getByTestId("dock-now")).toHaveAttribute("data-moment", "acting"); // the command runs
     await page.waitForTimeout(1_000);
     d.proc.kill("SIGKILL");
     await exited(d.proc);
@@ -813,7 +813,7 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     await expect(page.locator(`[data-approval-id="${first}"]`)).toHaveCount(1, { timeout: 30_000 });
     await expect(card).toHaveCount(1);
     await expect(card.getByTestId("approval-summary")).toContainText("ran-1");
-    await expect(page.getByTestId("working")).toHaveCount(0); // the continued turn waits on the card, which says so
+    await expect(page.getByTestId("dock-action")).toHaveCount(0); // the continued turn waits on the card, which says so
     await shoot(page, "restart-04-approval-after-crash");
     expect(ran()).toBe("");
 
@@ -869,7 +869,7 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     await page.getByTestId("deny-reason").fill("leave denied.txt alone");
     await page.getByTestId("deny-send").click();
     await expect(card).toHaveCount(0);
-    await expect(page.getByTestId("working")).toContainText("Running Bash"); // the sleep still runs
+    await expect(page.getByTestId("dock-now")).toHaveAttribute("data-moment", "acting"); // the sleep still runs
     d.proc.kill("SIGKILL");
     await exited(d.proc);
     d = await daemon(state, {}, at);
@@ -1084,7 +1084,7 @@ test("a message sent while the daemon is down or draining goes out once when it 
     // reload on another session's page, without its own box being opened.
     await composer.fill("script:long-tool");
     await composer.press("Enter");
-    await expect(page.getByTestId("working")).toContainText("Running Bash", { timeout: 15_000 });
+    await expect(page.getByTestId("dock-now")).toHaveAttribute("data-moment", "acting", { timeout: 15_000 });
     expect((await call(`/api/sessions/${sid}/draft`, { images: [{ name: "shot.png", mime: "image/png", data: PNG }], origin: "capture" })).status).toBe(200);
     await expect(page.getByTestId("attachments").getByRole("img", { name: "shot.png" })).toBeVisible();
     d.proc.kill("SIGTERM");

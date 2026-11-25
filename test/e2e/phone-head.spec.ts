@@ -129,8 +129,8 @@ for (const [what, ask] of [["a question", colors], ["an approval", { name: "Bash
   }
 }
 
-// Feature (UX-M65): a working session's bar is its title, its dot and the menu: the step's clock stays in the running line of
-// the conversation (at a large text size the bar had no room for it, and the title was cut to a few letters).
+// Feature (UX-M65): a working session's bar is its title, its dot and the menu: the step's clock stays in the line over the
+// message box, which says the action once (at a large text size the bar had no room for it, and the title was cut to a few letters).
 for (const scale of [1, 1.5]) {
   test.describe(`on a phone, a session at work at ${scale * 100}% text`, () => {
     test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
@@ -150,7 +150,8 @@ for (const scale of [1, 1.5]) {
         const title = (await pane.getByTestId("station-title").boundingBox())!;
         await expect(pane.getByTestId("station-clock")).toHaveCount(0);
         expect(title.width / rem, "the title has the room the clock left").toBeGreaterThanOrEqual(7);
-        await expect(pane.getByTestId("working"), "the step's clock is the running line's").toContainText(/\d+s/, { timeout: 15_000 });
+        await expect(pane.getByTestId("dock-action-clock"), "the step's clock is the line's over the box").toHaveText(/\d+s/, { timeout: 15_000 });
+        await expect(pane.getByTestId("working"), "said once: the conversation has no running line").toHaveCount(0);
         await shoot(page, `phone-head-work-${scale}`);
       } finally {
         await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } }).catch(() => {});

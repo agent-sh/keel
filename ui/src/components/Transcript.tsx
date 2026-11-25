@@ -764,6 +764,9 @@ function Live({ sessionId, working, asking, since, elsewhere, onTail }: { sessio
   // (Asked without a copy of the text: it grows with every delta, and `trim` would copy it each time.)
   const hasDraft = draft && Object.values(draft).some((b) => b.kind !== "text" || WORDS.test(b.text));
   const status = useStore((x) => { const st = x.status[sessionId]; return !st || st.kind === "idle" || st.kind === "model" || st.kind === "tool" ? "" : st.kind; });
+  // What the turn does now is said once, by the line over the message box (DockNow.tsx), with its mark and its clock.
+  // Only a session another harness runs has no such line (its bar takes the box's place): there the working line says it.
+  const docked = useStore((x) => !x.sessions[sessionId]?.outside);
   useLayoutEffect(() => onTail(), [working, !!hasDraft, asking, status]);
   // The reply streams at the end of the current branch: under another branch,
   // or under an earlier part of this one, it would read as written there.
@@ -784,7 +787,7 @@ function Live({ sessionId, working, asking, since, elsewhere, onTail }: { sessio
       {/* (No lower than the working line it takes the place of: the first words of a reply drop no line above them.) */}
       {hasDraft && <div className="flex min-h-[1.875rem] flex-col gap-3" data-testid="draft"><Draft draft={draft} /></div>}
       <Status sessionId={sessionId} />
-      {working && !hasDraft && !asking && <Working since={since} sessionId={sessionId} />}
+      {working && !hasDraft && !asking && !docked && <Working since={since} sessionId={sessionId} />}
       <Announcer sessionId={sessionId} working={working} asking={asking} />
     </>
   );

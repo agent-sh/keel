@@ -62,7 +62,7 @@ test("a pending question is announced once", async ({ page, request }) => {
     const card = page.getByTestId("question");
     await expect(card).toHaveAttribute("data-state", "open");
     await expect(region).toHaveText("Needs you: an answer.");
-    await expect(page.getByTestId("working")).toHaveCount(0);
+    await expect(page.getByTestId("dock-action")).toHaveCount(0);
     await shoot(page, "turn-status-01-question");
     // The socket drops and comes back: the same question is sent again, and nothing new is said.
     await socket!.close({ code: 4000, reason: "cut by the test" });
