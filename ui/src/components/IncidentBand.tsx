@@ -113,7 +113,7 @@ export function IncidentList() {
   const all = [...open, ...cleared];
   if (!all.length) return null;
   return (
-    <div className="border-b border-line px-3 py-2" data-testid="errors-incidents">
+    <div className="max-h-[30dvh] shrink-0 overflow-y-auto border-b border-line px-3 py-2" data-testid="errors-incidents">
       <div className="k-label pb-1">Incidents</div>
       <ul className="flex flex-col">
         {all.map((i) => (

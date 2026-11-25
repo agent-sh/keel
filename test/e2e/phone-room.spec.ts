@@ -900,6 +900,18 @@ test.describe("on a phone, the errors", () => {
           const row = panel.getByTestId("error-message").filter({ hasText: tag });
           await expect(row).toBeVisible();
           const whole = (el: Element) => el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1;
+          // Shut, a row is one line (the message cut to the room, its count and age); no act and no source stand under it.
+          const head = panel.getByTestId("error-head").filter({ has: page.getByTestId("error-message").filter({ hasText: tag }) });
+          const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+          expect((await head.boundingBox())!.height / rem, `a shut row is one line at ${scale * 100}% text`).toBeLessThanOrEqual(3);
+          expect(await row.evaluate(whole), "its message is cut").toBe(false);
+          await expect(head.getByTestId("error-source")).toBeHidden();
+          await expect(head.getByTestId("error-acts")).toBeHidden();
+          await shoot(page, `phone-18-errors-shut-${width}-${scale}`);
+          // A tap opens it: the message is read whole, with where it came from.
+          await row.tap({ timeout: 8000 });
+          await expect(head.getByTestId("error-source")).toBeVisible();
+          await expect(head.getByTestId("error-acts")).toBeVisible();
           expect(await row.evaluate(whole)).toBe(true);
           await shoot(page, `phone-18-errors-${width}-${scale}`);
           // Three open errors make it the drawer: its note has a line of its own under the title, read whole

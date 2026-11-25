@@ -177,14 +177,14 @@ function Row({ e }: { e: ErrorRecord }) {
     <details className="group relative rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
       {/* Where it happened (the session and its model) is the row's tooltip; a touch screen has no tooltip, so there it is a line when the row is opened. */}
       <summary className="flex cursor-default list-none flex-col gap-1.5 text-ui [&::-webkit-details-marker]:hidden" title={where} data-testid="error-head">
-        <span className="flex items-baseline gap-2 max-sm:flex-wrap max-sm:items-center max-sm:gap-y-0">
+        <span className="flex items-baseline gap-2 max-sm:items-center">
         {/* The row opens: a marker of its own says so, and turns when it has. */}
         <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
         {/* The message leads; where it came from is a quiet word after it, not a red tag on every row (the drawer is all failures). */}
-        {/* On a phone the message has the line to itself; its source, count and time go under it. */}
-        {/* (On a phone it is read whole, wrapped: its line is all the row has to say what broke.) */}
-        <span className={cn("min-w-0 flex-1 truncate max-md:whitespace-normal max-md:break-words max-sm:basis-[calc(100%-1.375rem)]", unread ? "font-medium text-fg" : "text-muted")} data-testid="error-message">{e.message}</span>
-        <span className="shrink-0 text-micro text-faint max-sm:ml-[1.375rem]" data-testid="error-source">{e.source}</span>
+        {/* On a phone a row is one line: the message cut to the room, the count and the age. Opened, the message is read whole
+            and the source, the places and the acts are under it. */}
+        <span className={cn("min-w-0 flex-1 truncate max-md:group-open:whitespace-normal max-md:group-open:break-words", unread ? "font-medium text-fg" : "text-muted")} data-testid="error-message">{e.message}</span>
+        <span className="shrink-0 text-micro text-faint max-sm:hidden max-sm:group-open:inline" data-testid="error-source">{e.source}</span>
         {state === "recovered" && <span className="shrink-0 text-micro text-ok" title={`Every time, a retry of the request passed. Last healed ${when(e.recovered_ts!)}`} data-testid="error-recovered">{ERROR_STATE.recovered}</span>}
         {n > 1 && (
           <span className="k-face-figure shrink-0 text-micro text-muted" data-testid="error-count" title={`${n} times since ${when(e.first_ts ?? e.ts)}${(e.sites?.length ?? 0) > 1 ? `, in ${e.sites!.length} sessions` : ""}`}>
@@ -196,7 +196,7 @@ function Row({ e }: { e: ErrorRecord }) {
         {state === "open" && (
           <button
             type="button"
-            className="grid size-6 shrink-0 place-items-center self-center rounded-md text-faint hover:bg-hover hover:text-fg max-sm:ml-auto"
+            className="grid size-6 shrink-0 place-items-center self-center rounded-md text-faint hover:bg-hover hover:text-fg"
             aria-label={unread ? "Mark read" : "Mark unread"}
             title={unread ? "Mark read: it leaves the badge and stays here" : "Mark unread"}
             onClick={(ev) => { ev.preventDefault(); actions.readError(e.id, unread).catch(reportError); }}
@@ -221,7 +221,7 @@ function Row({ e }: { e: ErrorRecord }) {
         {(acts || fixable) && (
           // Where there is a pointer the acts appear on the row when it is hovered or a key is in it (they are in the tab
           // order meanwhile); on a touch screen they are a line of their own.
-          <span className={cn("ml-[1.375rem] flex flex-wrap items-center gap-1.5", "sm:pointer-fine:absolute sm:pointer-fine:right-10 sm:pointer-fine:top-1.5 sm:pointer-fine:z-10 sm:pointer-fine:ml-0 sm:pointer-fine:rounded-md sm:pointer-fine:bg-raised sm:pointer-fine:pl-2 sm:pointer-fine:opacity-0 sm:pointer-fine:shadow-sm sm:pointer-fine:group-hover:bg-[image:linear-gradient(var(--hover),var(--hover))] sm:pointer-fine:group-hover:opacity-100 sm:pointer-fine:group-focus-within:opacity-100")} data-testid="error-acts">
+          <span className={cn("ml-[1.375rem] hidden flex-wrap items-center gap-1.5 group-open:flex sm:pointer-fine:flex", "sm:pointer-fine:absolute sm:pointer-fine:right-10 sm:pointer-fine:top-1.5 sm:pointer-fine:z-10 sm:pointer-fine:ml-0 sm:pointer-fine:rounded-md sm:pointer-fine:bg-raised sm:pointer-fine:pl-2 sm:pointer-fine:opacity-0 sm:pointer-fine:shadow-sm sm:pointer-fine:group-hover:bg-[image:linear-gradient(var(--hover),var(--hover))] sm:pointer-fine:group-hover:opacity-100 sm:pointer-fine:group-focus-within:opacity-100")} data-testid="error-acts">
             {acts && <FailureActions f={failure!} s={session} retry={live} quiet />}
             {fixable && (
               <button

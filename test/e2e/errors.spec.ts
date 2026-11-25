@@ -414,14 +414,16 @@ test("a row offers the acts that fit its failure, and Fix this only where an age
     await row.getByTestId("error-details").click();
     await row.getByTestId("error-marker").click();
 
-    // On a phone the acts wrap inside the panel; nothing runs off its side.
+    // On a phone a folded row is one line: its acts and where it happened come with the row opened, and wrap inside the
+    // panel; nothing runs off its side.
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(acts.getByTestId("try-again")).toBeInViewport();
-    expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
-    // Folded, the row on a narrow page is its message, its figures and its acts; where it happened comes with the row opened.
+    await expect(acts.getByTestId("try-again")).toBeHidden();
     await expect(row.getByTestId("error-where")).toBeHidden();
     await row.getByTestId("error-marker").click();
+    await expect(acts.getByTestId("try-again")).toBeInViewport();
+    expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     await expect(row.getByTestId("error-where")).toBeVisible();
+    await shoot(page, "errors-acts-03-narrow-open");
     await row.getByTestId("error-marker").click();
     await expect(row.getByTestId("error-where")).toBeHidden();
     await shoot(page, "errors-acts-03-narrow");
