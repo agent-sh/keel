@@ -165,6 +165,7 @@
    "from": "string?",
    "line": "string?",
    "glance": "boolean?",
+   "at": "array?",
    "grants": "array?",
    "wait.key": "number?",
    "wait_line": "string?",

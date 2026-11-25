@@ -363,3 +363,30 @@ test("a card says where its command starts and what reads it", async () => {
   const a = g.approvals({ session: "s1", pending: true })[0]!;
   expect(g.form(a)).toBe(g.form(g.approval(a.id)!));
 });
+
+// A chained command asked by one of its parts: the policy names the part, the card says where it stands.
+test("the card marks the part of a chained command that asked", async () => {
+  const { decide } = await import("./policy.ts");
+  const { partSpan } = await import("./summary.ts");
+  const facts = { mode: "ask", workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] } as any;
+  const ask = (command: string) => { const d = decide({ kind: "shell", command, cwd: "/w" } as any, facts); return "ask" in d ? d.ask : undefined; };
+  const command = "cd /w/a && rm -rf /etc/x && echo done";
+  const asked = ask(command)!;
+  expect(asked.risk).toBe("high");
+  expect(asked.part).toEqual({ text: "rm -rf /etc/x", nth: 0 });
+  const a = { id: "c1", session_id: "s", call_id: "k", tool: "Bash", kind: "shell", summary: command, input: { command }, risk: asked.risk, suggest: [], state: "pending", created: 0, part: asked.part } as any;
+  const form = cardForm(a);
+  expect(form.at).toEqual([command.indexOf("rm"), command.indexOf(" && echo")]);
+  expect(command.slice(form.at![0], form.at![1])).toBe("rm -rf /etc/x");
+  // The notification starts with that part, and carries no Allow once for a line that does not show all of it.
+  expect(form.line).toBe("Bash: rm -rf /etc/x (part of a longer command)");
+  expect(form.glance).toBe(false);
+  expect(cardLines(form).at).toEqual(form.at);
+  // A line of one command names no part; the same text twice marks the one that asked.
+  expect(ask("rm -rf /etc/x")?.part).toBeUndefined();
+  expect(cardForm({ ...a, summary: "rm -rf /etc/x", part: { text: "rm -rf /etc/x", nth: 0 } }).at).toBeUndefined();
+  expect(partSpan("x && x && x", { text: "x", nth: 2 })).toEqual([10, 11]);
+  expect(partSpan("x && y", { text: "x", nth: 1 })).toBeUndefined();
+  // A low-risk chain that asks for its last part.
+  expect(ask("cd /w/a && npm run build && echo done")?.part).toEqual({ text: "npm run build", nth: 0 });
+});

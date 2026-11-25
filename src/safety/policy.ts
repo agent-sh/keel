@@ -9,6 +9,7 @@ import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.t
 import type { Looked } from "./looked.ts";
 import { RULE_WORDS, codeGiven, laid, risksAt } from "./risk.ts";
 import type { PartRisk } from "./own-places.ts";
+import type { AskedPart } from "./summary.ts";
 import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
@@ -137,11 +138,25 @@ export type CallClass =
 // `account`: a write with the owner's account beyond his namespaces (the namespace, or "" when it is not known): the owner's
 // alone in every mode, Full auto included, where it opens a card and does not go to the judge.
 // `interaction`: the tool's server requires the owner's answer on every call: his card opens in every mode, Full auto too.
-export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; interaction?: true; mine?: string; readTool?: { server: string; tool: string }; notice?: string; settles?: true; risks?: PartRisk[] };
+export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; account?: string; interaction?: true; mine?: string; readTool?: { server: string; tool: string }; notice?: string; settles?: true; risks?: PartRisk[]; part?: AskedPart };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
   | { ask: Ask };
+
+// The part of a line that asked: its text and which of the parts with that text it is, so the card can mark it.
+const partAt = (parts: Simple[], i: number | null | undefined): AskedPart | undefined => {
+  const p = i == null ? undefined : parts[i];
+  if (!p || !p.text || !p.words.length) return undefined;
+  let nth = 0;
+  for (let k = 0; k < i!; k++) if (parts[k]!.text === p.text) nth++;
+  return { text: p.text, nth };
+};
+// An ask that names the part of the line that asked (a line of one command names none: the whole is it).
+const naming = (d: Decision, parts: Simple[], i: number | null | undefined): Decision => {
+  const part = parts.length > 1 && "ask" in d ? partAt(parts, i) : undefined;
+  return part && "ask" in d ? { ask: { ...d.ask, part } } : d;
+};
 
 const onlyOwner = (why: string, rule = "yours alone to allow"): Decision => ({ ask: { risk: "high", why, rule, suggest: [], ownerOnly: true } });
 
@@ -914,7 +929,8 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     if (hit) return uncovered(accountDecision(hit, f, "the command", hit.account !== null && foreignAll(f.accounts.names, writes).every((w) => w.own && w.account)), whyForeign(hit, f.accounts.names));
   }
   if (f.mode !== "read-only") {
-    const owners = (o: OwnerOnly): Decision => uncovered(f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule), o.why);
+    let askAt: number | undefined; // the part the loop below is reading
+    const owners = (o: OwnerOnly): Decision => naming(uncovered(f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule), o.why), parts, askAt);
     // The variables the line gives one value, and the links it makes: a write through either lands where they lead.
     let vals: ReturnType<typeof valuesOf> | undefined;
     const links = new Map<string, string>();
@@ -925,6 +941,7 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
       if (part.heredoc) continue;
+      askAt = i;
       const run = pre.runs[i]!;
       // (Most parts redirect nothing and are none of the programs read here: they are passed before anything is asked of them.)
       const first = baseName(run.words[0]), lands = LANDS.has(first) || first.startsWith("python");
@@ -1013,8 +1030,8 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
     // (The rule is the first reason in a few words: its own when it is that short, else its class's. A line of
     // several says how many more.)
     const classes = [...new Set(risks.map((r) => (r.said ? r.why : RULE_WORDS[r.rule])))];
-    return uncovered({ ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${classes[0]}, and ${classes.length - 1} more` : classes[0], suggest: [],
-      ...(risks.every((r) => r.git) ? { settles: true as const } : {}), risks: risks.map((r) => ({ at: r.at, rule: r.rule, why: r.why })) } }, risks[0]!.why);
+    return naming(uncovered({ ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${classes[0]}, and ${classes.length - 1} more` : classes[0], suggest: [],
+      ...(risks.every((r) => r.git) ? { settles: true as const } : {}), risks: risks.map((r) => ({ at: r.at, rule: r.rule, why: r.why })) } }, risks[0]!.why), parts, risks.find((r) => r.at !== null)?.at);
   }
   // A credential file a reading command names, or a folder holding the home's stores that a searcher walks: the
   // same class as a file tool's read of it.
@@ -1039,15 +1056,20 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   // A rule that stops at a launcher (`pnpm dlx *`) covers no package where a model decides: the line goes to it.
   const judged = f.mode === "auto" || f.mode === "reviewer";
   const anyPackage: { rule: string; part: Simple }[] = [];
-  const open = resolveVariables(parts).filter((p) => {
-    if (interpreter === undefined && reads(p)) return false;
-    const hit = shellRules.filter((r) => matchRule(r.pattern, p));
-    if (!hit.length) return true;
-    if (!judged) return false;
-    const covering = hit.find((r) => !runsAnyPackage(r.pattern, p));
-    if (covering) return false;
-    anyPackage.push({ rule: hit[0]!.pattern, part: p });
-    return true;
+  const openAt: number[] = []; // where each open part stands in the line
+  const open = resolveVariables(parts).filter((p, at) => {
+    const keep = (() => {
+      if (interpreter === undefined && reads(p)) return false;
+      const hit = shellRules.filter((r) => matchRule(r.pattern, p));
+      if (!hit.length) return true;
+      if (!judged) return false;
+      const covering = hit.find((r) => !runsAnyPackage(r.pattern, p));
+      if (covering) return false;
+      anyPackage.push({ rule: hit[0]!.pattern, part: p });
+      return true;
+    })();
+    if (keep) openAt.push(at);
+    return keep;
   });
   if (!open.length) return { allow: true };
   // The form that would be read as a read, when an expansion among the arguments is all that keeps it from being one.
@@ -1072,7 +1094,7 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   const any = anyPackage[0];
   const named = any && packageRule(any.part);
   const notice = any ? `Your rule "${any.rule}" runs any package, so it does not cover this one${named ? `: allow ${named.slice(0, -2)} only with "${named}"` : ""}.` : readNotice;
-  return { ask: { risk: "low", suggest, ...(notice ? { notice } : {}) } };
+  return naming({ ask: { risk: "low", suggest, ...(notice ? { notice } : {}) } }, parts, openAt[0]);
 }
 
 // Driving another session. An allow rule for a tool does not cover another

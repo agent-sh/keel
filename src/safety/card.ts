@@ -8,7 +8,7 @@
 import type { Approval } from "./gate.ts";
 import { marked, marksOf, marksSaid, plainAscii, spelled, type Marks } from "./chars.ts";
 import { RULE_WORDS } from "./risk-words.ts";
-import { shownInPart } from "./summary.ts";
+import { partSpan, shownInPart } from "./summary.ts";
 
 // The most of a text a form carries. The gate keeps this much of an input
 // (its `clip`), and the page shows this much: a longer one says that only its
@@ -60,6 +60,7 @@ export type CardForm = {
   machine?: Where;     // where it runs
   reason?: string;     // why it is asked, and why only once is offered
   rule?: string;       // the class of the policy's rule that asked, when it gave one
+  at?: [number, number]; // a chained command: where in `text` the part that asked stands, [from, to)
   hold: Hold[];        // empty: one line shows all of it
   line: string;        // what a notification says of it: the tool, where it runs when not the session's own folder, the start of the text
   glance: boolean;     // that line shows all of it within a collapsed notification: only then may one carry Allow once
@@ -131,16 +132,21 @@ export function cardForm(a: Approval, here?: { name: string; far?: boolean }): C
   // there, and counts in what the line may hold. The tool's name is spelled as
   // the text is: an MCP server names its own tools.
   const place = machine?.far ? ` on ${machine.name}${machine.cwd ? ` in ${machine.cwd}` : ""}` : machine?.cwd ? ` in ${machine.away ? machine.cwd : machine.sub ?? machine.cwd}` : "";
-  const line = `${spelled(a.tool, "")}${place}: ${spelled(a.summary)}`.slice(0, 500);
+  // A chained command asked by one of its parts: the notification starts with that part (the rest of the line is
+  // not on it, so it carries no Allow once).
+  const span = partSpan(text, a.part);
+  const asked = span && (span[0] > 0 || span[1] < text.length) ? span : undefined;
+  const line = `${spelled(a.tool, "")}${place}: ${asked ? `${spelled(text.slice(asked[0], asked[1]))} (part of a longer command)` : spelled(a.summary)}`.slice(0, 500);
   return {
     id: a.id, session_id: a.session_id, call_id: a.call_id, tool: a.tool, kind: a.kind, state: a.state,
     text, ...(cut ? { cut: true as const } : {}), ...(w.kept ? { kept: true as const } : {}),
     // (An input the gate cut says how long it was; a text the form cut is counted here.)
     ...(w.kept ? (typeof a.input_len === "number" ? { total: a.input_len } : {}) : over ? { total: w.text.length } : {}),
     chars: text.length, lines,
+    ...(asked ? { at: asked } : {}),
     risk: a.risk, marks, ...(machine ? { machine } : {}), ...(reason ? { reason: `${reason}.` } : {}), ...(a.rule ? { rule: a.rule } : {}),
     // Every character of the line is one column of a notification: plain ASCII, the tool's name included.
-    hold, line, glance: hold.length === 0 && a.risk === "low" && !GRAVE.test(a.rule ?? "") && line.length <= NOTE_MAX && plainAscii(line) && !/ {2}/.test(line),
+    hold, line, glance: !asked && hold.length === 0 && a.risk === "low" && !GRAVE.test(a.rule ?? "") && line.length <= NOTE_MAX && plainAscii(line) && !/ {2}/.test(line),
     grants: standing ? a.suggest.map((r) => r.pattern) : [],
     choices: ["once", ...(standing ? (["session", "always"] as const) : []), "deny"],
   };
@@ -240,7 +246,7 @@ export function fromSaid(by: AnsweredBy | undefined): string {
 // A card as lines for a place that draws plain text (a terminal, an editor's
 // request): what it is, where it runs, why it is asked, then the text with
 // every hidden character written out, and what the text holds that misleads.
-export function cardLines(f: CardForm): { head: string; notes: string[]; text: string } {
+export function cardLines(f: CardForm): { head: string; notes: string[]; text: string; at?: [number, number] } {
   const thing = f.kind === "shell" ? "command" : "text";
   const m = f.machine;
   const notes = [
@@ -253,5 +259,5 @@ export function cardLines(f: CardForm): { head: string; notes: string[]; text: s
       : [`Only its start is shown here: ${f.chars} of ${f.total ?? "more"} characters. The page shows all of it.`]),
   ];
   const size = f.lines > 1 ? `${f.lines} lines` : f.chars > SHORT_MAX ? `${f.chars} characters` : "";
-  return { head: `${spelled(f.tool, "")}${f.risk === "high" ? ", high risk" : ""}${size ? `, ${size}` : ""}`, notes, text: spelled(f.text) };
+  return { head: `${spelled(f.tool, "")}${f.risk === "high" ? ", high risk" : ""}${size ? `, ${size}` : ""}`, notes, text: spelled(f.text), ...(f.at ? { at: [spelled(f.text.slice(0, f.at[0])).length, spelled(f.text.slice(0, f.at[1])).length] as [number, number] } : {}) };
 }

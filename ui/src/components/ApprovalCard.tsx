@@ -2,7 +2,7 @@ import { runsAt, type Where } from "../lib/runs-at.ts";
 import { Popover } from "@base-ui/react/popover";
 import { Check, CheckCheck, ChevronDown, Clock, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
-import { shownInPart } from "../../../src/safety/summary.ts";
+import { partSpan, shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, keyPressable, KEY_MS, nextAction, paintedReader, pressable, readOnSteps, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving, useAuto } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
@@ -1171,6 +1171,9 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
   const alike = whole && part ? lookAlikes(kept) : shown.alike;
   const rtl = whole && part ? hasRtl(kept) : shown.rtl;
   const hiddenNow = whole && part ? hasHidden(kept, "\n\t") : marked;
+  // A chained command asked by one of its parts: that part is marked in the text (nothing when it is all of it).
+  const span = a.kind === "shell" && !body ? partSpan(a.summary, a.part) : undefined;
+  const asking = span && (span[0] > 0 || span[1] < a.summary.length) ? span : undefined;
   const summary = (
     <>
       <pre
@@ -1188,7 +1191,15 @@ function Card({ a, first, place: at, lead, asker, where, list, many, plain, hot,
         data-marks={whole && marked ? "shown" : undefined}
       >
         {a.kind === "shell" && <span className="select-none text-accent">$ </span>}
-        {body ? <span className="font-semibold"><Spelled text={a.summary} shown={whole} /></span> : <Spelled text={whole && part ? kept : a.summary} shown={whole} />}
+        {body ? <span className="font-semibold"><Spelled text={a.summary} shown={whole} /></span> : asking && !(whole && part)
+          ? (<>
+              <Spelled text={a.summary.slice(0, asking[0])} shown={whole} />
+              <span className="font-semibold underline decoration-accent decoration-2 underline-offset-4" data-testid="approval-part">
+                <Spelled text={a.summary.slice(asking[0], asking[1])} shown={whole} />
+              </span>
+              <Spelled text={a.summary.slice(asking[1])} shown={whole} />
+            </>)
+          : <Spelled text={whole && part ? kept : a.summary} shown={whole} />}
         {body && (
           <span data-testid="approval-body">
             {body.lines.map((l, i) => (

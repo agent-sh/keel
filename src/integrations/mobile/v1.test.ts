@@ -1328,6 +1328,8 @@ describe("the wire contract", () => {
     // Permission cards: one that waits and is held (long, its start alone kept, a hidden character,
     // a command for another machine), and one that was answered from the phone.
     card({ id: "apr-held", session_id: s.id, summary: `cd /srv\nrm -rf build\u202e\n${"x".repeat(21_000)}`, input: { command: "x", machine: "build box" } });
+    // A chained command asked by its middle part: the card says where that part stands.
+    card({ id: "apr-chain", session_id: s.id, summary: "cd /srv && rm -rf build && echo done", part: { text: "rm -rf build", nth: 0 }, risk: "high", why: "deletes files" });
     card({ id: "apr-done", session_id: s.id, summary: "npm test", state: "allowed", choice: "once", resolved: Date.now(), by: { client: "phone", device: "Pixel 8", seen: "whole" } });
     // What the question's wait costs, as its alert keeps it (src/automation/wait-cost.ts): its card says it.
     const wait = { at: Date.now(), agents: 2, rate: 0.05, tokens: 90_000, usd: 0.4, until: Date.now() + 120_000, key: 0.45 };
@@ -1532,7 +1534,7 @@ describe("the wire contract", () => {
     // A catch-up for a phone that said what it holds: the buckets that changed, sent whole.
     take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}&held=${heldOf([{ id: "s-gone", h: "00000000" }], 1)}`)).body);
     running.delete(parent.id);
-    store.db.query("DELETE FROM approvals WHERE id IN ('apr-held', 'apr-done')").run();
+    store.db.query("DELETE FROM approvals WHERE id IN ('apr-held', 'apr-chain', 'apr-done')").run();
     store.db.query("DELETE FROM alerts WHERE id = 'al-wait'").run();
 
     expect(bad).toEqual([]);

@@ -393,6 +393,7 @@ const STATE: Record<string, string> = { pending: "pending", allowed: "approved",
 // - `rtl`: it holds letters written right to left (the app keeps each run in place);
 // - `hold`: why Allow needs the text shown whole first (empty: one line shows
 //   all of it);
+// - `at`: for a chained command, where in `text` the part that asked stands, [from, to): the app marks it;
 // - `line` and `glance`: what a notification says of it, and whether that line
 //   shows all of it within a collapsed notification (only then may one carry
 //   Allow once; a notification never gives a standing answer);
@@ -416,7 +417,7 @@ export function approvalOf(a: Approval, form?: CardForm) {
     ...(form && l ? {
       text: l.text, notes: l.notes, cut: !!form.cut, total: form.total ?? null, lines: form.lines, chars: form.chars,
       risk: form.risk, rtl: form.marks.rtl, machine: form.machine?.far ? form.machine.name : "", hold: form.hold,
-      line: form.line, glance: form.glance, grants: form.grants,
+      line: form.line, glance: form.glance, grants: form.grants, ...(l.at ? { at: l.at } : {}),
     } : {}),
   };
 }

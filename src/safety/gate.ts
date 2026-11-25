@@ -34,7 +34,7 @@ import { familyOf } from "../providers/family.ts";
 import { nativeWrites } from "../engine/native-memory.ts";
 import { artifactsDir, atCwd, contains, realOf, homeDir } from "../core/paths.ts";
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
-import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
+import { SUMMARY_LIMIT, shownInPart, type AskedPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
@@ -152,6 +152,7 @@ export type Approval = {
   // `sub`: the folder as a path under the session's own, when it is one.
   at?: { cwd?: string; sub?: string; shell?: string; away?: true };
   rule?: string;        // the class of the rule that asked, in the policy's few words (its `Ask.rule`)
+  part?: AskedPart;     // a chained command: the part of it that asked (its text, and which of equal ones), for the card to mark
   mine?: string;        // a write beyond the owner's accounts: the namespace "Mine" adds to his list (accounts.ts)
   read_tool?: { server: string; tool: string }; // an MCP write that holds an account: the tool the card can mark as a read
   risk: "high" | "low";
@@ -2178,7 +2179,7 @@ export class Gate {
   }
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
-    ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true; mine?: string; readTool?: { server: string; tool: string } }, once = false): Promise<{ deny: string } | void> {
+    ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true; mine?: string; readTool?: { server: string; tool: string }; part?: AskedPart }, once = false): Promise<{ deny: string } | void> {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
@@ -2202,7 +2203,7 @@ export class Gate {
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
       input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)), reply: call.ctx.reply,
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls), ...(ask.rule ? { rule: ask.rule } : {}),
-      ...(ask.mine ? { mine: ask.mine } : {}), ...(ask.readTool ? { read_tool: ask.readTool } : {}),
+      ...(ask.mine ? { mine: ask.mine } : {}), ...(ask.readTool ? { read_tool: ask.readTool } : {}), ...(ask.part && cls.kind === "shell" ? { part: ask.part } : {}),
     };
     return this.wait(a, session, call, name, cls);
   }

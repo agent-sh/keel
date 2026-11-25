@@ -421,9 +421,13 @@ test("a command cut by its box is answered on its own, and opens in place", asyn
     // The line that writes a file is below what the box shows.
     expect(await row("script.txt").getByTestId("approval-summary").evaluate((el) => {
       const range = document.createRange();
-      const text = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent!.includes("script.txt"))!;
+      // The command may be drawn in several runs (the part that asked is marked): from "echo done" to the last text.
+      const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const texts: Text[] = [];
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) texts.push(n as Text);
+      const text = texts.find((n) => n.textContent!.includes("echo done"))!;
       range.setStart(text, text.textContent!.indexOf("echo done"));
-      range.setEnd(text, text.textContent!.length);
+      range.setEnd(texts[texts.length - 1]!, texts[texts.length - 1]!.textContent!.length);
       return range.getBoundingClientRect().top > el.getBoundingClientRect().bottom;
     })).toBe(true);
     await shoot(page, "approvals-batch-1920-cut");
