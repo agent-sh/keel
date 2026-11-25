@@ -56,15 +56,18 @@ export function wasSent(store: Store, text: string): boolean {
   }
 }
 
-// The sends of the stored history, read once on the read thread a part at a time (`run`: Reads.run).
+// The sends of the stored history, read once on the read thread a part at a time (`run`: Reads.run): the replies'
+// calls, then the calls programs made inside run_code.
 export async function backfillSent(store: Store, run: (a: SentAsk) => Promise<{ digests: string[]; next: number | null }>, span = 20_000) {
   store.migrate(SCHEMA);
   if (store.db.query("SELECT 1 FROM drive_sends_state WHERE k = 'backfilled'").get()) return;
-  for (let after = 0; ; ) {
-    const r = await run({ after, span });
-    keep(store, r.digests, "");
-    if (r.next === null) break;
-    after = r.next;
+  for (const table of ["events", "code_calls"] as const) {
+    for (let after = 0; ; ) {
+      const r = await run({ after, span, table });
+      keep(store, r.digests, "");
+      if (r.next === null) break;
+      after = r.next;
+    }
   }
   store.db.query("INSERT OR REPLACE INTO drive_sends_state (k, v) VALUES ('backfilled', ?)").run(Date.now());
 }

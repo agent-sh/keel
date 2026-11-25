@@ -52,6 +52,24 @@ test("the sends of the stored history are read once; until then every prompt cou
   expect(parts).toBe(0);
 });
 
+test("the history read counts the drive's first name for the message tool and the sends programs made inside run_code", async () => {
+  const store = fresh();
+  const s = store.createSession({ title: "t", model: "m", workspace: root });
+  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c1", name: "keel__session_send", input: { to: "claude:x", text: "sent under the first name" } }] });
+  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c2", name: "run_code", input: { code: "await tools.keel__session_message(...)" } }] });
+  store.migrate("CREATE TABLE IF NOT EXISTS code_calls (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL)");
+  const call = (id: string, tool: string, input: unknown) => store.db.query("INSERT INTO code_calls VALUES (?, ?, 'c2', 1, ?)").run(id, s.id, JSON.stringify({ id, parent: "c2", seq: 1, tool, input, started: 0 }));
+  call("k1", "keel__session_message", { to: "claude:x", text: "sent from a program" });
+  call("k2", "mcp_call", { tool: "keel__session_resume", arguments: { id: "codex:y", text: "resumed from a program" } });
+  // An input too long for the page was kept cut (codemode.ts clipInput): its whole lines before the cut are known.
+  const long = `first line of a long send\nsecond line\n${"x".repeat(70_000)}`;
+  const json = JSON.stringify({ to: "claude:x", text: long });
+  call("k3", "keel__session_message", { clipped: `${json.slice(0, 65_536)} [... ${json.length - 65_536} more characters]` });
+  await backfillSent(store, read(store));
+  for (const t of ["sent under the first name", "sent from a program", "resumed from a program", "first line of a long send\nsecond line"]) expect([t, wasSent(store, t)]).toEqual([t, true]);
+  expect(wasSent(store, "typed by the owner")).toBe(false);
+});
+
 test("a send to a session on another machine goes only once that machine's Keel has its digests", async () => {
   const store = fresh();
   const sends: string[] = [];
