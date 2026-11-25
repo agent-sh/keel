@@ -141,7 +141,7 @@ function WorktreeSetupFile({ session }: { session: Session }) {
           <span className={cn("rounded px-1.5 text-micro font-medium", v.state === "pinned" ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn")}>{v.state === "pinned" ? "runs" : "held"}</span>
           <span className="min-w-0 flex-1 truncate font-mono text-faint">{v.path}</span>
         </div>
-        <p className="mt-1 text-muted">{SETUP_STATE[v.state]}. It runs once in each new worktree of this repository, under the session's sandbox and network rules. Scripts it runs from outside .keel/ are not part of the pin.</p>
+        <p className="mt-1 text-muted">{SETUP_STATE[v.state]}. It runs once in each new worktree of this repository, under the session's sandbox and network rules. The pin holds this file and the scripts it runs from .keel/ only: what its commands read from the rest of the tree (package.json, scripts/, install scripts) is not held.</p>
         {v.covers && v.covers.length > 0 && <p className="mt-0.5 text-muted">The pin also covers: {v.covers.join(", ")}</p>}
         {v.problems.map((p, i) => <p key={i} className="mt-0.5 text-warn">{p}</p>)}
         {v.state !== "pinned" && v.sha256 && v.state !== "refused" && (

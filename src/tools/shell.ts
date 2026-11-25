@@ -94,7 +94,7 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   const said = waitedLine(slot);
   const job = startHeld({
     sessionId: ctx.sessionId, command: o.command, description: o.description, cwd, logDir: dir,
-    argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, callId: ctx.callId,
+    argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, vars: true, callId: ctx.callId,
     // In the foreground the call stops the command when its turn is stopped (below).
     handle: o.handle, stops: !o.background, traceFile,
   }, slot);

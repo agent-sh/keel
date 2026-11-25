@@ -195,6 +195,18 @@ const OWN_ENV = /^(KEEL_(SUPERVISED|DRAIN_MS|WAIT_FOR_PID)|BUN_GC_TIMER_DISABLE)
 // Variables a feature adds to a session's commands (the secrets it was given).
 const envProviders: ((sessionId: string) => Record<string, string>)[] = [];
 export const registerEnv = (f: (sessionId: string) => Record<string, string>) => void envProviders.push(f);
+// Variables a repository's worktree setup chose (src/worktree/setup.ts): only for a command that is the session's own and
+// runs under its confinement (StartOpts.vars, the code tool), never in toolEnv, which the daemon's own spawns (an editor,
+// xdg-open, git init, the landing queue) read too: a variable a sandboxed command could plant must not reach a process that
+// runs without the sandbox.
+const varProviders: ((sessionId: string) => Record<string, string>)[] = [];
+export const registerVars = (f: (sessionId: string) => Record<string, string>) => void varProviders.push(f);
+export function sessionVars(sessionId: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of varProviders) Object.assign(out, f(sessionId));
+  for (const f of envDrops.values()) for (const k of f(sessionId)) delete out[k];
+  return out;
+}
 // Variables a feature keeps from a session's commands (a review of another person's code gets no GitHub credentials).
 // Keyed by the feature, so a hot reload replaces its entry.
 const envDrops = new Map<string, (sessionId: string) => readonly string[]>();
@@ -255,6 +267,8 @@ export type StartOpts = {
   argv?: string[];       // default: bash -c command
   pty?: boolean;
   env?: Record<string, string>;
+  // The command is the session's own, run under its confinement: it gets the variables its worktree setup chose (sessionVars).
+  vars?: boolean;
   background?: boolean;
   // The session confinement (a beforeTool hook sets ctx.wrapSpawn).
   wrap?: (argv: string[]) => string[];
@@ -290,7 +304,7 @@ export function startJob(o: StartOpts): Job {
   // Every process of the job carries its mark: one that left the job's group and session (setsid, a
   // double fork) is still found where there is no cgroup to hold it (see members).
   const stateId = stateIdOf(dirname(dirname(o.logDir)));
-  const env = { ...(o.env ?? toolEnv(o.sessionId)), ...NO_PAGER, ...extra, [MARK]: markOf({ id, started }), ...(stateId ? { [STATE_MARK]: stateId } : {}) };
+  const env = { ...(o.env ?? toolEnv(o.sessionId)), ...(o.vars ? sessionVars(o.sessionId) : {}), ...NO_PAGER, ...extra, [MARK]: markOf({ id, started }), ...(stateId ? { [STATE_MARK]: stateId } : {}) };
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,

@@ -17,7 +17,7 @@
 // API, results by console.log).
 import type { ToolResultBlock } from "../core/types.ts";
 import { logDir, shq } from "./shell.ts";
-import { codeJob, endCodeJob, sessionScope, toolEnv, UNREAD_CAP, type Job } from "./jobs.ts";
+import { codeJob, endCodeJob, sessionScope, sessionVars, toolEnv, UNREAD_CAP, type Job } from "./jobs.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { appendFileSync } from "node:fs";
@@ -156,7 +156,7 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
   const scope = sessionScope("code", ctx.wrapSpawn ? ctx.wrapSpawn(argv) : argv, ctx.sessionId);
   const proc = Bun.spawn(scope.argv, {
     cwd: ctx.cwd,
-    env: toolEnv(ctx.sessionId, { BUN_BE_BUN: "1", NO_COLOR: "1", ...scope.env }),
+    env: { ...toolEnv(ctx.sessionId, {}), ...sessionVars(ctx.sessionId), BUN_BE_BUN: "1", NO_COLOR: "1", ...scope.env },
     stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: !scope.cgroup,
     ipc(m: any) {
       if (m?.done) { done = m; resolveDone(); return; }

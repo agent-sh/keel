@@ -77,7 +77,7 @@ export class AcpTerminals {
         // A heavy command waits for its slot (src/tools/heavy.ts).
         const slot = await takeFor(ctx, command);
         if (slot === "aborted") return { content: ABORTED_TEXT, is_error: true };
-        const job = startHeld({ sessionId: s.id, command, cwd, logDir: join(this.stateDir, "spill", s.id, "jobs"), env: toolEnv(s.id), wrap: ctx.wrapSpawn, description: "run by the ACP agent" }, slot);
+        const job = startHeld({ sessionId: s.id, command, cwd, logDir: join(this.stateDir, "spill", s.id, "jobs"), env: toolEnv(s.id), vars: true, wrap: ctx.wrapSpawn, description: "run by the ACP agent" }, slot);
         this.terms.set(id, { job, limit, command });
         return { content: `Started in a terminal of Keel's (${id}).` };
       },

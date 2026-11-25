@@ -11,7 +11,7 @@ import { addAll, git as gitCall, gitEnv, gitReach, innerWork, locate, nestedIn, 
 import { readText } from "../core/proc.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { prTarget, type Host } from "./pr-head.ts";
-import { runSetup, setupDir, setupHook, SetupPins, type SetupOutcome } from "./setup.ts";
+import { dropSetup, has as hasSetup, headHeld, HEAD_HELD, runSetup, setupDir, setupHook, SetupPins, type SetupOutcome } from "./setup.ts";
 
 export type Worktree = {
   session_id: string;
@@ -209,7 +209,7 @@ export class Worktrees {
   // `madeFor`: the session whose reach bounds what the fill may fetch in a
   // partial clone (an agent's parent; GitOpts.fetch in src/core/git.ts); the
   // key itself when that is a session.
-  async create(sessionKey: string, workspace: string, title: string, base?: string, madeFor: string = sessionKey): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string }> {
+  async create(sessionKey: string, workspace: string, title: string, base?: string, madeFor: string = sessionKey, o: { setup?: boolean } = {}): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string }> {
     const repo = await this.repoOf(workspace);
     if (!repo) throw new GitError(`not a git repository: ${workspace}`, 400);
     const ref = base?.trim() || (await git(repo.top, ["symbolic-ref", "--quiet", "--short", "HEAD"], { ok: true })).trim() || "HEAD";
@@ -239,7 +239,10 @@ export class Worktrees {
       throw new GitError(left.length ? `${was}; the new worktree could not be removed, left: ${left.join(", ")}` : `${was}; the new worktree and its branch ${branch} were removed`, (e as GitError).status ?? 500);
     }
     // The repository's own setup (.keel/worktree.json), as the session that asked for the worktree is allowed to run commands.
-    const setup = await runSetup({ path, dir: setupDir(this.root, path), madeFor, pins: this.pins }).catch((e): SetupOutcome => ({ state: "failed", ms: 0, steps: 0, note: `the setup could not start: ${(e as Error).message}` }));
+    // `o.setup` false: the caller runs it itself (settleSetup) once it has decided whose files these are (a pull request's head).
+    const setup = o.setup === false
+      ? (hasSetup(path) ? { state: "held", ms: 0, steps: 0, pending: true, note: "waiting for the owner to trust the head of the pull request before its setup runs" } as SetupOutcome : null)
+      : await runSetup({ path, dir: setupDir(this.root, path), madeFor, pins: this.pins }).catch((e): SetupOutcome => ({ state: "failed", ms: 0, steps: 0, note: `the setup could not start: ${(e as Error).message}` }));
     const now = Date.now();
     return {
       wt: { repo_root: repo.root, path, branch, base: ref === "HEAD" ? baseCommit : ref, base_commit: baseCommit, state: "active", snapshot_ref: null, created: now, updated: now, ...(setup ? { setup } : {}) },
@@ -270,7 +273,7 @@ export class Worktrees {
     }
     try {
       const commit = (await git(repo.top, ["rev-parse", "--verify", `${own}^{commit}`])).trim();
-      const made = await this.create(sessionKey, workspace, `pr-${t.number}`, commit, madeFor);
+      const made = await this.create(sessionKey, workspace, `pr-${t.number}`, commit, madeFor, { setup: false });
       return { ...made, number: t.number, commit, host: t.host, origin, top: repo.top };
     } finally {
       await git(repo.top, ["update-ref", "-d", own], { ok: true });
@@ -346,7 +349,24 @@ export class Worktrees {
   adopt(sessionId: string, wt: Omit<Worktree, "session_id">) {
     this.put({ ...wt, session_id: sessionId });
     // A setup that did not run well is told on the session (what the owner and its model need to know first).
-    if (wt.setup && wt.setup.state !== "ok") try { setupHook.told?.(sessionId, wt.setup, wt.branch); } catch {}
+    if (wt.setup && wt.setup.state !== "ok" && !wt.setup.pending) try { setupHook.told?.(sessionId, wt.setup, wt.branch); } catch {}
+  }
+
+  // The setup of a worktree made without it (a pull request's head), once the head's trust is decided: it runs unless the head is
+  // still held, and again when the owner trusts the head (setupHook.headTrusted). Nothing for any other worktree.
+  async settleSetup(sessionId: string): Promise<Worktree | undefined> {
+    const w = this.get(sessionId);
+    if (!w?.setup?.pending || w.state !== "active") return w;
+    const held = headHeld.of?.(w.path);
+    let setup: SetupOutcome;
+    if (held) {
+      setup = { ...w.setup, note: `${HEAD_HELD}: its setup runs then` };
+      if (setup.note === w.setup.note) return w;
+    } else setup = await runSetup({ path: w.path, dir: setupDir(this.root, w.path), madeFor: w.session_id, pins: this.pins }).catch((e): SetupOutcome => ({ state: "failed", ms: 0, steps: 0, note: `the setup could not start: ${(e as Error).message}` })) ?? { state: "ok", ms: 0, steps: 0, note: "the file names no command" };
+    const next = { ...w, setup };
+    this.put(next);
+    if (setup.state !== "ok") try { setupHook.told?.(sessionId, setup, w.branch); } catch {}
+    return next;
   }
 
   async status(w: Worktree): Promise<WorktreeStatus> {
@@ -472,6 +492,7 @@ export class Worktrees {
     await git(w.repo_root, ["checkout", "-q", w.branch]);
     if (moved) await this.applyState(w.repo_root, ref, s.id);
     this.put({ ...w, state: "removed", snapshot_ref: null });
+    dropSetup(setupDir(this.root, w.path));
     return { cwd: join(w.repo_root, relative(w.path, s.workspace)), branch: w.branch, previous, moved };
   }
 
@@ -487,7 +508,7 @@ export class Worktrees {
       if (busy(w.session_id)) continue;
       const st = await this.status(w);
       if (st.unknown) continue; // git cannot read it: never removed
-      if (w.state === "parked") { this.put({ ...w, state: "removed" }); removed.push(w.session_id); continue; }
+      if (w.state === "parked") { this.put({ ...w, state: "removed" }); dropSetup(setupDir(this.root, w.path)); removed.push(w.session_id); continue; }
       const r = await this.remove(w, true);
       if (r.removed) removed.push(w.session_id);
     }
@@ -546,6 +567,7 @@ export class Worktrees {
       } catch {} // still there: said so (branch_deleted false)
     }
     this.put({ ...w, state: "removed", snapshot_ref: ref });
+    dropSetup(setupDir(this.root, w.path));
     return { removed: true, snapshot_ref: ref, branch_deleted: branchDeleted };
   }
 
@@ -566,6 +588,7 @@ export class Worktrees {
     let branchDeleted = false;
     if (sha) try { await git(w.repo_root, ["update-ref", "-d", `refs/heads/${w.branch}`, sha]); branchDeleted = true; } catch {} // moved since: kept, and said (branch_deleted false)
     this.put({ ...w, state: "removed", snapshot_ref: null });
+    dropSetup(setupDir(this.root, w.path));
     return { removed: true, branch_deleted: branchDeleted };
   }
 

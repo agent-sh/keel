@@ -36,6 +36,7 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
     if (c?.sandbox === "read-only") return { skip: "the session's sandbox is read-only, so a setup could write nothing" };
     return c ? { wrap: c.wrap } : {};
   };
+  setupHook.headTrusted = (id) => { wts.settleSetup(id).then((w) => { if (w) emit(id); }, (e) => deps.errors.capture("server", e, { at: "worktree setup" })); };
   setupHook.envOf = (id) => {
     try { const raw = store.db.query<{ setup: string | null }, [string]>("SELECT setup FROM worktrees WHERE session_id = ?").get(id)?.setup; return raw ? (JSON.parse(raw) as SetupOutcome).env : undefined; } catch { return undefined; }
   };
@@ -93,6 +94,9 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
           wts.adopt(s.id, wt);
           // Who wrote the head is decided before the session reads a file of it (src/safety/head-trust.ts).
           if (at) await headsRef?.record({ sessionId: s.id, path: wt.path, top: at.top, number: at.number, host: at.host, named: String(pr).trim().replace(/^#/, ""), origin: at.origin, hasHost: !!hostOfRemote(at.origin), commit: at.commit });
+          // A pull request's head has no setup run yet: it runs here, after the head's trust is decided (where the pull request's
+          // head is recorded, before this line) and only if the head is not held; the owner's trust of a held head runs it later.
+          if (pr !== undefined) await wts.settleSetup(s.id);
           sweep().catch((e) => deps.errors.capture("server", e, { at: "worktree prune" }));
           const next = store.updateSession(s.id, { workspace: cwd });
           bus.emit({ t: "session", session: next });

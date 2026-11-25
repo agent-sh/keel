@@ -562,10 +562,17 @@ under `~/.cache/keel-work/bun/research/`.
 - A repository names a setup for the worktrees Keel makes (`.keel/worktree.json`, `src/worktree/setup.ts`):
   commands that run once in each new worktree after git made it and `.worktreeinclude` was copied in, so agents
   do not each install. It runs commands, so it is held like a hooks file: only while the owner's pin holds the
-  file and the `.keel/` scripts it runs (a new or changed one is held and said on the session). It runs under
-  the session's own sandbox and network rules (nothing when its sandbox is read-only), its output is a file,
-  a failure is a failure of the session and shows on its worktree chip and its agent's card, and the NAME=value
-  lines it writes to `$KEEL_ENV_FILE` are the environment of the session's later commands.
+  file and the `.keel/` scripts it runs (a new or changed one is held and said on the session; the pin holds
+  nothing else: what its commands read from the rest of the tree, `package.json`, `scripts/`, install scripts,
+  is not held, and a link of `.keel/` or the file out of the repository is refused). The head of a pull request
+  from a fork runs no setup until the owner trusts the head (`create` takes `setup: false`, the route calls
+  `settleSetup` after the head's trust is decided; `headHeld` and `setupHook.headTrusted` are what the head-trust
+  code fills). Each step runs in a process group of its own, killed at the step's end and at the time limit. It
+  runs under the session's own sandbox and network rules (nothing when its sandbox is read-only), its output is a
+  file, a failure is a failure of the session and shows on its worktree chip and its agent's card. The NAME=value
+  lines it writes to `$KEEL_ENV_FILE` are read once when it ends and are the environment of the session's own
+  commands only (`StartOpts.vars`, the code tool: never `toolEnv`, which the daemon's own unconfined spawns read),
+  and not the names that change what a program loads or runs (`refusedName`). Its folder goes with the worktree.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

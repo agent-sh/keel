@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Store } from "../core/store.ts";
 import { bindLedger, repoOf, treeOf, unbindLedger } from "../checks/ledger.ts";
-import { toolEnv } from "../tools/jobs.ts";
+import { sessionVars, startJob, toolEnv, waitJob } from "../tools/jobs.ts";
 import { tempTree } from "../../test/env.ts";
 import { Worktrees } from "./manager.ts";
-import { parseEnvFile, parseSetup, setupHook } from "./setup.ts";
+import { headHeld, parseEnvFile, parseSetup, refusedName, setupHook } from "./setup.ts";
 
 setDefaultTimeout(30_000);
 
@@ -24,7 +24,16 @@ test("the file's words: a list of commands and a time limit, anything else named
 test("the variables a setup writes: NAME=value lines, quotes taken off, Keel's own names and other lines left out", () => {
   const r = parseEnvFile(["# c", "", "A=1", 'B="two words"', "export C='x'", "A=3", "KEEL_SESSION=other", "not a line", "1X=2", "D="].join("\n"));
   expect(r.env).toEqual({ A: "3", B: "two words", C: "x", D: "" });
-  expect(r.left).toEqual(["KEEL_SESSION=other", "not a line", "1X=2"]);
+  expect(r.left).toEqual(["KEEL_SESSION", "a line that is not NAME=value", "a line that is not NAME=value"]); // names only: a value may be a secret
+});
+
+test("names that change what a program loads or runs are never taken from a setup", () => {
+  const bad = ["PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "BASH_ENV", "ENV", "SHELLOPTS", "PS4", "NODE_OPTIONS", "BUN_CONFIG_REGISTRY", "PYTHONPATH", "PYTHONSTARTUP", "HOME", "TMPDIR", "https_proxy", "HTTPS_PROXY", "ALL_PROXY", "SSH_ASKPASS", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND", "GIT_CONFIG_COUNT", "KEEL_X", "XDG_DATA_DIRS", "EDITOR"];
+  for (const n of bad) expect([n, refusedName(n)]).toEqual([n, true]);
+  for (const n of ["NODE_ENV", "CI", "FROM_SETUP", "GIT_AUTHOR_NAME", "GIT_COMMITTER_EMAIL", "DATABASE_URL"]) expect([n, refusedName(n)]).toEqual([n, false]);
+  const r = parseEnvFile(["PATH=/x:$PATH", "LD_PRELOAD=/x.so", "SETUP_FLAG=test", "GIT_SSH_COMMAND=x"].join("\n"));
+  expect(r.env).toEqual({ SETUP_FLAG: "test" });
+  expect(r.left).toEqual(["PATH", "LD_PRELOAD", "GIT_SSH_COMMAND"]);
 });
 
 // The setup of a repository runs in a new worktree under the owner's pin, in the order git made it, and nowhere else.
@@ -71,11 +80,20 @@ test("a setup that is not pinned is held, and one that is pinned runs once, afte
   }
   expect(confined).toBe(2);
 
-  // Its variables are the environment of the session's later commands.
+  // Its variables are the environment of the session's own commands (a job that asks for them), never of toolEnv, which the
+  // daemon's own spawns (xdg-open, git init, the landing queue) read: those run outside the sandbox.
   wts.adopt("s2", a.wt);
   setupHook.envOf = (id) => wts.get(id)?.setup?.env;
-  expect(toolEnv("s2").FROM_SETUP).toBe(a.wt.path);
-  expect(toolEnv("s3").FROM_SETUP).toBeUndefined();
+  expect(sessionVars("s2").FROM_SETUP).toBe(a.wt.path);
+  expect(sessionVars("s3").FROM_SETUP).toBeUndefined();
+  expect(toolEnv("s2").FROM_SETUP).toBeUndefined();
+  const run = async (vars: boolean) => {
+    const job = startJob({ sessionId: "s2", command: "echo got=$FROM_SETUP", cwd: a.wt.path, logDir: join(root, "jobs"), vars });
+    await waitJob(job, 10_000);
+    return readFileSync(job.log, "utf8");
+  };
+  expect(await run(true)).toContain(`got=${a.wt.path}`);
+  expect(await run(false)).toContain("got=\n");
   expect(wts.get("s2")?.setup?.state).toBe("ok"); // kept with the worktree
 });
 
@@ -140,4 +158,100 @@ test("what the setup installs is not hashed by the check ledger's look", async (
     expect(look && "why" in look ? look.why : "").toBe(""); // read, with the 40 MB left out
     expect(look?.tree).toBeTruthy();
   } finally { unbindLedger(); }
+});
+
+
+test("a planted PATH does not reach the session's commands or the daemon's spawns", async () => {
+  writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ['echo "PATH=$PWD/bin:$PATH" >> "$KEEL_ENV_FILE"', 'echo "SETUP_FLAG=test" >> "$KEEL_ENV_FILE"'] }));
+  git(repo, "commit", "-qam", "path");
+  expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  const w = await wts.create("s11", repo, "eleven");
+  wts.adopt("s11", w.wt);
+  expect(w.wt.setup?.note).toContain("sets SETUP_FLAG");
+  expect(w.wt.setup?.note).toContain("PATH");
+  expect(sessionVars("s11")).toEqual({ SETUP_FLAG: "test" });
+  expect(toolEnv("s11").PATH).toBe(process.env.PATH);
+  expect(toolEnv("s11").SETUP_FLAG).toBeUndefined();
+});
+
+test("what a step leaves running is stopped at its end, and the variables are read after that", async () => {
+  writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ["sleep 60 & echo $! > pidfile", '(sleep 0.4; echo "LATE=1" >> "$KEEL_ENV_FILE") &', 'echo "EARLY=1" >> "$KEEL_ENV_FILE"'] }));
+  git(repo, "commit", "-qam", "background");
+  expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  const w = await wts.create("s12", repo, "twelve");
+  expect(w.wt.setup?.state).toBe("ok");
+  const pid = Number(readFileSync(join(w.wt.path, "pidfile"), "utf8"));
+  expect(pid).toBeGreaterThan(1);
+  await Bun.sleep(100);
+  let alive = true;
+  try { process.kill(pid, 0); } catch { alive = false; }
+  expect(alive).toBe(false);
+  await Bun.sleep(700); // past the late write
+  wts.adopt("s12", w.wt);
+  expect(sessionVars("s12")).toEqual({ EARLY: "1" });
+});
+
+test("a time limit stops what the step started too", async () => {
+  writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ["sleep 60 & echo $! > pidfile; sleep 60"], timeout: 0.4 }));
+  git(repo, "commit", "-qam", "limit group");
+  expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  const w = await wts.create("s13", repo, "thirteen");
+  expect(w.wt.setup?.state).toBe("failed");
+  const pid = Number(readFileSync(join(w.wt.path, "pidfile"), "utf8"));
+  let alive = true;
+  try { process.kill(pid, 0); } catch { alive = false; }
+  expect(alive).toBe(false);
+});
+
+test("the head of a pull request from a fork runs its setup only after its trust is decided", async () => {
+  writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ["echo ran >> marker"] }));
+  git(repo, "commit", "-qam", "head");
+  expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  try {
+    headHeld.of = () => ({ why: "fork" });
+    expect(wts.setupPins.show(repo).state).toBe("refused");
+    expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toContain("trusts the head");
+    const w = await wts.create("s14", repo, "fourteen", undefined, "s14", { setup: false });
+    expect(w.wt.setup).toMatchObject({ state: "held", pending: true });
+    wts.adopt("s14", w.wt);
+    await wts.settleSetup("s14");
+    expect(wts.get("s14")?.setup).toMatchObject({ state: "held", pending: true });
+    expect(wts.get("s14")?.setup?.note).toContain("trusts the head");
+    expect(existsSync(join(w.wt.path, "marker"))).toBe(false);
+    headHeld.of = undefined; // the owner trusted the head
+    await wts.settleSetup("s14");
+    expect(wts.get("s14")?.setup).toMatchObject({ state: "ok" });
+    expect(wts.get("s14")?.setup?.pending).toBeUndefined();
+    expect(readFileSync(join(w.wt.path, "marker"), "utf8")).toBe("ran\n");
+    await wts.settleSetup("s14"); // once
+  } finally { headHeld.of = undefined; }
+});
+
+test("the setup's folder goes with the worktree", async () => {
+  const w = await wts.create("s15", repo, "fifteen");
+  expect(w.wt.setup?.state).toBe("ok");
+  const dir = dirname(w.wt.setup!.log!);
+  expect(existsSync(dir)).toBe(true);
+  wts.adopt("s15", w.wt);
+  const r = await wts.remove(wts.get("s15")!, true);
+  expect([r.removed, r.reason]).toEqual([true, undefined]);
+  expect(existsSync(dir)).toBe(false);
+  expect(existsSync(`${dir}.env`)).toBe(false);
+});
+
+test("a .keel/ or a worktree.json that links out of the repository is refused", () => {
+  const other = join(root, "linked");
+  mkdirSync(join(root, "elsewhere"), { recursive: true });
+  writeFileSync(join(root, "elsewhere", "worktree.json"), JSON.stringify({ setup: ["echo x"] }));
+  mkdirSync(join(other, ".keel"), { recursive: true });
+  symlinkSync(join(root, "elsewhere", "worktree.json"), join(other, ".keel", "worktree.json"));
+  const a = wts.setupPins.show(other);
+  expect(a.state).toBe("refused");
+  expect(a.problems.join(" ")).toContain(".keel/worktree.json is a link out of the repository");
+  expect(wts.setupPins.pin(other, a.sha256!)).toContain("link");
+  rmSync(join(other, ".keel"), { recursive: true });
+  symlinkSync(join(root, "elsewhere"), join(other, ".keel"));
+  const b = wts.setupPins.show(other);
+  expect(b.state).toBe("refused");
+  expect(b.problems.join(" ")).toContain(".keel is a link");
 });
