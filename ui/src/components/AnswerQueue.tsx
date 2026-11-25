@@ -68,6 +68,7 @@ import { useAuto } from "../lib/automation.ts";
 import { sessionCosts } from "../lib/next-look.ts";
 import { cn } from "../lib/utils.ts";
 import { Kbd } from "./Kbd.tsx";
+import { Mark } from "./Mark.tsx";
 
 const KEYS = "alt+a";
 // A phone: one page at a time, answered on the way (see the head of the file).
@@ -357,14 +358,15 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
   const helm = useUI((s) => s.route.name === "session" && s.route.id === sessionId);
   const slot = useSyncExternalStore(slotSub, () => slots.get(sessionId) ?? null);
   if (!others || !helm) return null;
-  const n = `${others} more session${others === 1 ? " waits" : "s wait"} for you`;
+  const said = `${others} other session${others === 1 ? " waits" : "s wait"}`;
+  const n = `${said} for you`;
   const words = on ? `Answering in sequence. ${n}: the next opens when this is answered.` : `${n}.`;
   if (slot) {
-    // In the card's header: a chip, not a line. In a sequence it is the status; else it is the way to the next.
+    // In the card's header: a chip, not a line, with the state dot of what waits. In a sequence it is the status; else it is the link to the next.
     const chip = "inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-accent-soft px-2.5 text-micro font-medium text-accent-ink pointer-coarse:h-tap";
     return createPortal(on
-      ? <span role="status" className={chip} data-testid="waiting-elsewhere" data-on="true" title={words}><span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />{others} more · next opens after this</span>
-      : <button type="button" onClick={goNextOther} className={cn(chip, "hover:bg-accent-soft/70 focus-visible:ring-2 focus-visible:ring-accent/40 outline-none")} data-testid="waiting-elsewhere" aria-label={`${n}. Go to the next`} title={`${n}. Alt A goes to the next.`}><span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />{others} more {others === 1 ? "waits" : "wait"}</button>, slot);
+      ? <span role="status" className={chip} data-testid="waiting-elsewhere" data-on="true" title={words}><Mark w="need" className="!size-2" />{said} · next opens after this</span>
+      : <button type="button" onClick={goNextOther} className={cn(chip, "hover:bg-accent-soft/70 hover:underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-accent/40 outline-none")} data-testid="waiting-elsewhere" aria-label={`${n}. Go to the next`} title={`${n}. Alt A goes to the next.`}><Mark w="need" className="!size-2" />{said}</button>, slot);
   }
   // One line of a fixed height, cut where the pane ends: its height never depends on the pane's width.
   // (A finger's screen has no key to name: there the row is one target, a finger's height at least, that goes
@@ -374,7 +376,7 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
   return (
     <div className="k-waiting-elsewhere relative mb-1.5 flex h-ctl-sm items-center gap-x-1.5 overflow-hidden whitespace-nowrap pl-0.5 text-micro text-faint pointer-coarse:h-auto pointer-coarse:min-h-tap pointer-coarse:whitespace-normal pointer-coarse:rounded-lg pointer-coarse:bg-accent-soft pointer-coarse:py-1 pointer-coarse:pl-3 pointer-coarse:text-caption pointer-coarse:text-fg" data-testid="waiting-elsewhere" data-on={on || undefined} title={words}>
       <p className={cn("flex min-w-0 items-center gap-x-1.5", !on && "pointer-coarse:pr-[8.5rem]")} role="status">
-        <span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />
+        <Mark w="need" className="!size-2" />
         {on ? <span className="min-w-0 truncate pointer-coarse:overflow-visible pointer-coarse:whitespace-normal"><span className="text-muted">Answering in sequence.</span> {n}: the next opens when this is answered.</span>
           : <><span className="min-w-0 truncate pointer-coarse:overflow-visible pointer-coarse:whitespace-normal">{n}.</span><Kbd keys={KEYS} className="shrink-0 pointer-coarse:hidden" /><span className="shrink-0 pointer-coarse:hidden">goes to the next.</span></>}
       </p>

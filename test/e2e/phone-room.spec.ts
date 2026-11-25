@@ -257,7 +257,7 @@ test.describe("on a phone", () => {
       await check("approval card");
       // What else waits is a chip in the card's header, a finger's size, and it goes to the next.
       const chip = pane.getByTestId("waiting-elsewhere");
-      await expect(chip).toHaveText(/more waits?$/);
+      await expect(chip).toHaveText(/other sessions? waits?$/);
       expect(await chip.evaluate((b) => b.tagName)).toBe("BUTTON");
       expect((await chip.boundingBox())!.height).toBeGreaterThanOrEqual(44);
       await shoot(page, "phone-04-targets-approval");

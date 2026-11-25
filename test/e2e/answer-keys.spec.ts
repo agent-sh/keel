@@ -627,11 +627,11 @@ test("what waits across sessions is answered in sequence, one key each", async (
   await ready(b);
   // The card says that it is a sequence and how many more wait.
   await expect(page.getByTestId("waiting-elsewhere")).toHaveAttribute("data-on", "true");
-  await expect(page.getByTestId("waiting-elsewhere")).toContainText("2 more · next opens after this");
+  await expect(page.getByTestId("waiting-elsewhere")).toContainText("2 other sessions wait · next opens after this");
   await shoot(page, "answer-keys-06-sequence");
   await press("Enter");
   await ready(c);
-  await expect(page.getByTestId("waiting-elsewhere")).toContainText("1 more · next opens after this");
+  await expect(page.getByTestId("waiting-elsewhere")).toContainText("1 other session waits · next opens after this");
   await press("Enter");
   await at(q);
   const question = cardIn(page, q, "question");
@@ -865,9 +865,11 @@ test("the sequence stays with the owner: it goes on through a grant, ends when t
   // The count is a chip in the card's header that goes to the next, not a line of small text above the card; the
   // key's hint stays on the card only while its Allow has the keyboard.
   const chip = cards.getByTestId("waiting-elsewhere");
-  await expect(chip).toHaveText("2 more wait");
+  await expect(chip).toHaveText("2 other sessions wait");
+  await expect(chip.locator(".k-mark"), "the state dot, not a yellow diamond").toHaveAttribute("data-watch", "need");
+  await expect(chip).toHaveAttribute("aria-label", "2 other sessions wait for you. Go to the next");
   expect(await chip.evaluate((b) => b.tagName)).toBe("BUTTON");
-  await expect(chip).toHaveAttribute("title", "2 more sessions wait for you. Alt A goes to the next.");
+  await expect(chip).toHaveAttribute("title", "2 other sessions wait for you. Alt A goes to the next.");
   expect(await chip.evaluate((b) => { const card = b.closest('[data-testid="approval"]'); return !!card && b.getBoundingClientRect().bottom <= card.querySelector('[data-testid="allow-once"]')!.getBoundingClientRect().top; }), "the chip is in the card's header, above the answers").toBe(true);
   await shoot(page, "answer-keys-09-waits-elsewhere");
   await page.getByTestId("composer").fill("");
