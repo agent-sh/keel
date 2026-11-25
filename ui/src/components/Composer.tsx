@@ -16,7 +16,8 @@ import { sendWaitingSoon } from "../lib/resend.ts";
 import { api, getState, onFeature, readAtOpen, reportError, reportUnlessGone, useStore, useModels, failed, whileHeard, type ListedModel } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
 import { menuClosed, stopHeld } from "../lib/looks.ts";
-import { setUI, useCrowded, useUI } from "../lib/ui.ts";
+import { overBox } from "../lib/escape.ts";
+import { savePref, setUI, useCrowded, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
@@ -119,7 +120,7 @@ type ComposerProps = {
   // without opening it. The box empties and keeps the keyboard; the caller says it started.
   onSendBackground?: (text: string, images: PromptBlock[], id?: string) => Promise<unknown> | void;
   onStop?: () => void;
-  // What Escape does when no menu is open (default: stop a working turn).
+  // What Escape does when nothing is open (no menu, popup or side panel; default: stop a working turn).
   onEscape?: () => void;
   // What Stop stops when that is not the turn of the session shown (an agent's own work):
   // the button then says it in words. A turn's Stop is the same mark in every pane.
@@ -1192,7 +1193,14 @@ const SessionComposer = memo(function SessionComposer({
             lastEsc.current = now;
           }
           // (Escape right after the pane was uncovered, a look or the start page left, stops nothing: lib/looks.ts.)
-          if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); if (onEscape) onEscape(); else if (!session || !stopHeld(session.id)) onStop?.(); }
+          // (What is open goes first: a popup closes on this key by itself, the pane's panel is closed here, and the press after it
+          // is the double press the settle time holds. Only with nothing open does Escape stop the turn or leave.)
+          if (e.key === "Escape" && (onEscape || working)) {
+            const over = overBox(boxEl.current);
+            if (over) { if (over === "panel") { e.preventDefault(); savePref("panel", null); } if (session) menuClosed(session.id); return; }
+            e.preventDefault();
+            if (onEscape) onEscape(); else if (!session || !stopHeld(session.id)) onStop?.();
+          }
         }}
         className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-2.5 text-read leading-normal outline-none placeholder:text-faint max-md:pt-3 max-md:leading-relaxed", rest ? "k-rest-text pb-3 pr-2" : "pb-0.5 max-md:pb-2")}
       />
