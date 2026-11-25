@@ -243,6 +243,13 @@ export class HelperCards {
     this.h.closeCards(ctx);
   }
 
+  // The owner switched answering off, or the helper: every card it has goes back to him at once.
+  settingsChanged() {
+    if (this.on()) return;
+    const why = !this.h.state().on || !this.h.session() ? "The Helper was turned off, so this card is yours." : `You switched off the Helper's answers (${SOURCE}), so this card is yours.`;
+    for (const id of [...this.offered.keys()]) this.toOwner(id, why);
+  }
+
   // The card goes to the owner, with a notification, and the helper's word or silence before its line.
   toOwner(id: string, note: string) {
     this.drop(id);

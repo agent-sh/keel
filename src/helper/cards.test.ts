@@ -207,3 +207,20 @@ test("after a restart, every card the helper had goes to the owner with a notifi
   gate.resolve(second.id, s.id, { choice: "deny" });
   await call2;
 });
+
+test("switched off, the helper gives back every card it has at once", async () => {
+  const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Switch" });
+  gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
+  const call = run(s, "npm install switched-off", "off-1");
+  const card = await open(s.id);
+  expect(cards.take(card.id)).toBe(true);
+  answering = false;
+  try {
+    cards.settingsChanged();
+    expect(raised.at(-1)).toEqual({ id: card.id, note: `You switched off the Helper's answers (${SOURCE}), so this card is yours.` });
+    expect(cards.open().find((c) => c.a.id === card.id)).toMatchObject({ mine: false });
+  } finally { answering = true; }
+  expect(cards.answer(card.id, "allow", "fine", { session: ctxOf(card.id) })).toHaveProperty("error");
+  gate.resolve(card.id, s.id, { choice: "deny" });
+  await call;
+});

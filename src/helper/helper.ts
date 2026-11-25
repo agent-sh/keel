@@ -182,11 +182,12 @@ ${TOLD_SCHEMA}`);
     }
     this.save({ on });
     this.start();
+    this.cards.settingsChanged();
     this.emit();
   }
   configure(p: { mail_every_min?: unknown; wake_gap_min?: unknown; answer_cards?: unknown }) {
     if (p.answer_cards !== undefined && typeof p.answer_cards !== "boolean") throw Object.assign(new Error("answer_cards is true or false"), { status: 400 });
-    if (typeof p.answer_cards === "boolean") this.save({ answer_cards: p.answer_cards });
+    if (typeof p.answer_cards === "boolean") { this.save({ answer_cards: p.answer_cards }); this.cards.settingsChanged(); }
     const n = (v: unknown, k: string) => {
       if (!Number.isFinite(v) || (v as number) < 0 || (v as number) > 1440) throw Object.assign(new Error(`${k} is minutes from 0 to 1440`), { status: 400 });
       return Number(v);
