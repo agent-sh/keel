@@ -68,6 +68,65 @@ const changes = command("changes", CHANGES_USAGE, { diff: { type: "boolean" } },
   return EXIT.ok;
 });
 
+// ---- keel rewind
+
+type Rewound = { files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; merged: string[]; conflicts: string[]; blocked: { path: string; uncaptured: string }[]; removes: string[]; uncaptured: string[]; incomplete: boolean; undo: string | null };
+const REWIND_USAGE = `keel rewind SESSION TURN [--mode files|chat|both] [--preview] [--paths P...] [--include-outside] [--stop-shells] [--json]
+keel rewind SESSION --undo [--stop-shells] [--json]
+  Go back from a turn, as the page's Rewind does. TURN is the number keel changes gives it. --mode
+  files (the default) puts the files back as they were before the turn's prompt; chat moves the
+  session back to before that prompt (the files stay); both does both. --preview lists what would
+  change and writes nothing. --paths limits the files to those named. A file changed outside the
+  session since is kept as it is (listed as kept) unless --include-outside. A turn or a command
+  of the session running refuses it (--stop-shells stops the commands). --undo takes back the
+  newest rewind of the session, until a newer message is sent.`;
+const list = (label: string, items: string[]) => (items.length ? [`${label} (${items.length}):`, ...items.map((p) => `  ${clean(p)}`)] : []);
+const reportFiles = (r: Rewound, would: boolean) => [
+  ...list(would ? "Would restore" : "Restored", r.files),
+  ...list("Removed", would ? [] : r.removes),
+  ...list("Kept, changed outside the session (--include-outside takes them too)", r.skipped),
+  ...list("Taken back around an outside edit", r.merged),
+  ...list("Kept, the session's change and an outside edit overlap", r.conflicts),
+  ...list("Not touched, a file under a folder too large to capture", r.blocked.map((b) => `${b.path} (${b.uncaptured})`)),
+  ...list("Not captured, so not restored", r.uncaptured),
+  ...list("Failed", r.failed.map((f) => `${f.path}: ${f.error}`)),
+];
+const rewind = command("rewind", REWIND_USAGE, {
+  mode: { type: "string" }, preview: { type: "boolean" }, paths: { type: "string", multiple: true }, undo: { type: "boolean" },
+  "include-outside": { type: "boolean" }, "stop-shells": { type: "boolean" },
+}, async (v, pos, c) => {
+  if (!pos[0]) return usageError("rewind", "name the session", REWIND_USAGE);
+  const s = await c.resolve(pos[0]);
+  const path = `/api/sessions/${s.id}/rewind`;
+  if (v.undo) {
+    if (pos[1] !== undefined || v.preview || v.mode || v.paths) return usageError("rewind", "--undo takes the session and nothing else", REWIND_USAGE);
+    const r = await c.post<{ files: Rewound | null; head?: string }>(path, { undo_rewind: "last", stop_shells: v["stop-shells"] || undefined });
+    if (v.json) return (printJson(r), EXIT.ok);
+    console.log([`Undid the last rewind of session "${one(s.title || "(untitled)", 60)}" (${s.id}).`, ...(r.files ? reportFiles(r.files, false) : ["No files were involved."])].join("\n"));
+    return EXIT.ok;
+  }
+  const n = Number(pos[1]);
+  if (pos[1] === undefined || !Number.isInteger(n) || n < 1) return usageError("rewind", "TURN is a turn's number from keel changes", REWIND_USAGE);
+  const mode = v.mode ?? "files";
+  if (!["files", "chat", "both"].includes(mode)) return usageError("rewind", "--mode is files, chat or both", REWIND_USAGE);
+  if (mode === "chat" && (v.paths || v["include-outside"])) return usageError("rewind", "--paths and --include-outside are about files; --mode chat moves none", REWIND_USAGE);
+  const turns = (await c.get<{ turns: CheckTurn[] }>(`/api/sessions/${s.id}/checkpoints`)).turns;
+  const t = turns.find((x) => x.n === n);
+  if (!t) throw new Error(`turn ${n} of this session changed no files (keel changes ${pos[0]} lists the turns that did)`);
+  const body = { prompt_turn: t.turn, mode, paths: v.paths, include_outside: v["include-outside"] || undefined, stop_shells: v["stop-shells"] || undefined };
+  const head = `Session "${one(s.title || "(untitled)", 60)}" (${s.id}), turn ${n}: ${one(t.prompt || "(no prompt)", 80)}`;
+  if (v.preview) {
+    const r = await c.post<Rewound & { turn: number | null }>(path, { ...body, preview: true });
+    if (v.json) return (printJson(r), EXIT.ok);
+    console.log([head, `Preview of rewinding ${mode === "chat" ? "the chat" : mode === "both" ? "the chat and the files" : "the files"} to before it; nothing was written.`, ...(mode === "chat" ? [] : r.files.length || r.skipped.length || r.merged.length ? reportFiles(r, true) : ["No file would change."])].join("\n"));
+    return EXIT.ok;
+  }
+  const r = await c.post<{ files: Rewound | null; note: string; chat: { head?: string } | null }>(path, body);
+  if (v.json) return (printJson(r), EXIT.ok);
+  console.log([head, `Rewound ${mode === "chat" ? "the chat" : mode === "both" ? "the chat and the files" : "the files"} to before it.`, ...(r.files ? reportFiles(r.files, false) : []), ...(r.files?.undo || mode === "chat" ? [`Undo with: keel rewind ${s.id} --undo${r.files?.undo ? ` (undo point ${r.files.undo})` : ""}`] : [])].join("\n"));
+  return EXIT.ok;
+});
+
 // ---- keel cost
 
 const COST_USAGE = `keel cost SESSION [--turns N] [--json]
@@ -103,4 +162,4 @@ const cost = command("cost", COST_USAGE, { turns: { type: "string" } }, async (v
   return EXIT.ok;
 });
 
-export const inspectCommands = { messages, changes, cost };
+export const inspectCommands = { messages, changes, rewind, cost };

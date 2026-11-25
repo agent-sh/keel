@@ -42,7 +42,7 @@ export const WHERE: Record<string, keyof typeof from> = {
   new: "sessions", approve: "sessions", attach: "sessions", open: "sessions", resume: "sessions", export: "sessions", models: "sessions", search: "sessions",
   login: "login", logout: "login",
   providers: "providers",
-  messages: "inspect", changes: "inspect", cost: "inspect",
+  messages: "inspect", changes: "inspect", rewind: "inspect", cost: "inspect",
   run: "run", "-p": "run", "--print": "run",
   rules: "rules", audit: "audit", safety: "safety", review: "review", debug: "debug", import: "import", port: "port", mcp: "mcp", completion: "completion",
 };

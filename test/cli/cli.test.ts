@@ -1680,6 +1680,51 @@ describe("client commands against a running daemon", () => {
     expect((await k(["changes", sender, "7"])).err).toContain("turn 7 of this session changed no files");
   }, 120_000);
 
+  // A turn is gone back from in a terminal as on the page: a preview that writes nothing, the rewind with an
+  // undo, the undo, and a refusal while a turn runs.
+  test("rewind: preview, files back, undo, and refused while a turn runs", async () => {
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const call = async (method: string, path: string, body?: unknown) => (await fetch(url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<any>;
+    const dir = join(WS, "rewind-cli");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.txt"), "before\n");
+    const { session } = await call("POST", "/api/sessions", { title: "Rewind from a terminal", workspace: dir });
+    const calls = [{ name: "Bash", input: { command: "echo after > a.txt; echo new > b.txt" } }];
+    expect((await k(["run", "--wait", "--json", "--permission-mode", "full-auto", "-r", session.id, `script:calls ${JSON.stringify(calls)}`])).code).toBe(0);
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("after\n");
+
+    const preview = await k(["rewind", session.id, "1", "--preview", "--json"]);
+    expect(preview.code).toBe(0);
+    expect(json(preview.out).files.sort()).toEqual(["a.txt", "b.txt"]);
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("after\n");
+    expect(existsSync(join(dir, "b.txt"))).toBe(true);
+    expect((await k(["rewind", session.id, "1", "--preview"])).out).toContain("nothing was written");
+
+    // A turn running refuses it, with the daemon's reason.
+    const gate = join(dir, "..", "rewind-cli.gate");
+    await call("POST", `/api/sessions/${session.id}/messages`, { text: `script:hold ${gate}` });
+    // Its reply has begun: the turn is running.
+    for (let i = 0; i < 200 && !JSON.stringify((await call("GET", `/api/sessions/${session.id}`)).events ?? []).includes("The first half"); i++) await Bun.sleep(100);
+    const busy = await k(["rewind", session.id, "1"]);
+    expect(busy.code).not.toBe(0);
+    expect(busy.err).toMatch(/turn/);
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("after\n");
+    writeFileSync(gate, "go");
+    for (let i = 0; i < 200 && !JSON.stringify((await call("GET", `/api/sessions/${session.id}`)).events ?? []).includes("The second half"); i++) await Bun.sleep(100);
+    await Bun.sleep(300);
+
+    const back = await k(["rewind", session.id, "1"]);
+    expect(back.code).toBe(0);
+    expect(back.out).toMatch(/undo point \S+/);
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("before\n");
+    expect(existsSync(join(dir, "b.txt"))).toBe(false);
+
+    const undone = await k(["rewind", session.id, "--undo", "--json"]);
+    expect(undone.code).toBe(0);
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("after\n");
+    expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("new\n");
+  }, 120_000);
+
   // A plan that waits is a plan in the words, and the two reports of the sessions say their times in one zone: the machine's own.
   test("status --sessions and --away: a plan waits, and both read in the local zone", async () => {
     const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;

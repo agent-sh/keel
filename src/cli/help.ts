@@ -20,6 +20,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["agents", "a session's agents: which work, which wait; --limit sets how many work at once"],
     ["messages", "a session's messages between sessions, each with its state"],
     ["changes", "what a session changed in its working tree, by turn; a turn's files and patch"],
+    ["rewind", "go back from a turn: its files, the chat or both; --preview first, --undo after"],
     ["cost", "what one session cost: its agents, turns, requests and where the tokens went"],
     ["show", "a session and its transcript"],
     ["logs", "a session's events; -f follows them"],

@@ -99,9 +99,10 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
   // back at the end of the branch the rewind left. Not once a newer message was sent.
   const undoRewind = async (s: Session, b: any) => {
     const line = store.lineage(s.id);
-    const at = line.findIndex((e) => e.id === b.undo_rewind);
+    // "last": the newest rewind of the branch shown (the command line has no id to name).
+    const at = b.undo_rewind === "last" ? line.findLastIndex((e) => e.kind === "note" && e.data.kind === "rewound") : line.findIndex((e) => e.id === b.undo_rewind);
     const mark = line[at] as StoredEvent | undefined;
-    if (!mark || mark.kind !== "note" || mark.data.kind !== "rewound") return bad("not a rewind of the branch shown");
+    if (!mark || mark.kind !== "note" || mark.data.kind !== "rewound") return bad(b.undo_rewind === "last" ? "no rewind on the branch shown to undo" : "not a rewind of the branch shown");
     if (line.slice(at + 1).some(shownAsPrompt)) return bad("a newer message was sent; the rewind can no longer be undone from here", 409);
     const chat = mark.data.mode !== "files";
     if (engine.isRunning(s.id)) return bad("a turn is running", 409);
@@ -170,6 +171,13 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         const paths = Array.isArray(b.paths) ? b.paths.filter((p: unknown) => typeof p === "string") : undefined;
         const confirm = Array.isArray(b.confirm?.paths) && b.confirm.versions && typeof b.confirm.versions === "object"
           ? { paths: b.confirm.paths.filter((p: unknown) => typeof p === "string"), versions: b.confirm.versions as Record<string, string> } : undefined;
+        // A turn named by its place in the history (the command line): the prompt it began with.
+        if (Number.isInteger(b.prompt_turn) && typeof b.prompt_event !== "string") {
+          const turn = b.prompt_turn as number;
+          const prompt = store.lineage(s.id).findLast((e) => e.seq < turn && shownAsPrompt(e));
+          if (!prompt || c.fileTurn(s, prompt.seq) !== turn) return bad("that turn did not begin with a prompt of the branch shown, so the chat cannot go back to before it; rewind to the turn that did");
+          b.prompt_event = prompt.id;
+        }
         // From a prompt of the branch shown: the chat, the files, or both go back to before it.
         if (typeof b.prompt_event === "string") return rewindPrompt(s, b, paths, confirm);
         const h = b.preview ? null : await held(s, !!b.stop_shells);
