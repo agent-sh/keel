@@ -11,7 +11,7 @@ import { closureOf, holds, pageGraph, sizeOf, wideStart, withPreloads } from "./
 // number only for a start that really draws more. A wide window's page names the start's chunks in
 // its head (withPreloads), so the first paint does not wait for the chain the browser would find them
 // by, a chunk at a time: the rail and the bridge are drawn at about the time the entry runs.
-const START = 1_300_000;
+const START = 1_320_000;
 const ENTRY = 760_000;
 const NOT_AT_START = [
   "ui/src/components/ApprovalCard.tsx",
