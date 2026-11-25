@@ -105,6 +105,8 @@ export function helperOf(h: Helper) {
   const v = h.view();
   return {
     on: v.on, chat_id: v.session_id, memory: h.records.index.size,
+    // The name the owner gave it, and the mark of its picture (`face`: GET /v1/helper/face; absent while it has none).
+    name: h.name(), ...(h.persona().avatar ? { face: h.persona().avatar!.v } : {}),
     events: v.events.slice(-HELPER_EVENTS).reverse().map((e) => ({ id: e.id, ts: secs(e.ts), chat_id: e.session_id, title: e.title, body: e.body })),
   };
 }
@@ -1578,6 +1580,15 @@ export function mobileApi(ctx: MobileCtx) {
     },
     // The owner's helper: turned on and off, what it was told lately, and its memory, seen and pruned
     // (src/helper/). Its conversation is a chat of the list (`helper: 1`), talked to as any other.
+    // The helper's picture: the bytes the owner kept, under the mark `face` names, so a phone fetches one once.
+    "/v1/helper/face": {
+      GET: signed(() => {
+        const h = ctx.helper?.();
+        const f = h?.avatarFile();
+        const bytes = f && h!.files.read(f.path);
+        return bytes ? new Response(bytes as unknown as BodyInit, { headers: { "content-type": f.type, "x-content-type-options": "nosniff", "cache-control": "private, max-age=31536000, immutable" } }) : err("no picture", 404);
+      }),
+    },
     "/v1/helper": {
       GET: signed(() => { const h = ctx.helper?.(); return h ? json(helperOf(h)) : err("this daemon runs no helper", 409); }),
       PATCH: signed(withBody(async (_r, _d, b) => {

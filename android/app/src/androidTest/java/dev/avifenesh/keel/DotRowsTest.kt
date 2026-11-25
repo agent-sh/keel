@@ -60,4 +60,17 @@ class DotRowsTest {
         assertEquals(400, weightOf("T-i"))
         assertEquals(400, weightOf("T-w"))
     }
+
+    @Test fun theHelperRowCarriesTheFaceTheOwnerGaveIt() {
+        val face = android.graphics.Bitmap.createBitmap(64, 32, android.graphics.Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF2E7D32.toInt()) }
+        val helper = chat("hp", "idle", "idle", word = "Not started").copy(helper = true)
+        val chats = listOf(helper, chat("o", "idle", "idle", word = "Not started")).associateBy { it.id }
+        Face.picture.value = Face.round(face)
+        try {
+            rule.setContent { KeelTheme(2) { SessionList(sessionRows(chats, emptyMap(), emptyMap()), now = 100.0, askRow = false) } }
+            // One face, on the helper's row alone, and its state is still said by the dot beside it.
+            assertEquals(1, rule.onAllNodesWithContentDescription("helper-face", useUnmergedTree = true).fetchSemanticsNodes().size)
+            assertEquals(2, words("Not started"))
+        } finally { Face.picture.value = null }
+    }
 }

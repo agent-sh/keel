@@ -23,6 +23,7 @@ class App : Application() {
         super.onCreate()
         Prefs.init(this)
         Cache.init(this)
+        Face.init(this)
         Notify.channels(this)
         if (Prefs.paired && Prefs.pushState != "on") Push.schedule(this)
     }

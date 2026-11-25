@@ -629,12 +629,13 @@ data class ErrorList(val rows: List<ErrorRow>, val unread: Int) {
 data class HelperEvent(val id: String, val ts: Double, val chatId: String?, val title: String, val body: String)
 
 /** GET /v1/helper: whether the owner's helper is on, its conversation, how much it remembers, what it was told lately (newest first). */
-data class HelperView(val on: Boolean, val chatId: String?, val memory: Int, val events: List<HelperEvent>) {
+data class HelperView(val on: Boolean, val chatId: String?, val memory: Int, val events: List<HelperEvent>, val name: String = "", val face: String = "") {
     companion object {
         fun of(o: JSONObject) = HelperView(
             o.optBoolean("on"), o.str("chat_id").ifBlank { null }, o.optInt("memory"),
             o.optJSONArray("events")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
                 .map { HelperEvent(it.str("id"), it.optDouble("ts", 0.0), it.str("chat_id").ifBlank { null }, it.str("title"), it.str("body")) },
+            o.str("name"), o.str("face"),
         )
     }
 }
@@ -971,6 +972,8 @@ data class PushMsg(
     val working: Int = 0, val needs: Int = 0, val since: Long = 0, val failed: Int = 0, val to: String = "",
     /** Where its notification leads when it names no session: "errors" for a failure with no session to open. */
     val open: String = "",
+    /** The helper, when the alert is of its conversation: the name the owner gave it and the mark of its picture. */
+    val who: String = "", val face: String = "",
 ) {
     companion object {
         fun of(d: Map<String, String>) = PushMsg(
@@ -982,8 +985,10 @@ data class PushMsg(
             held = !d["hold"].isNullOrBlank(),
             working = d["w"]?.toIntOrNull() ?: 0, needs = d["q"]?.toIntOrNull() ?: 0, since = d["since"]?.toLongOrNull() ?: 0,
             failed = d["f"]?.toIntOrNull() ?: 0, to = d["to"].orEmpty(), open = d["open"].orEmpty(),
+            who = d["who"].orEmpty(), face = d["face"].orEmpty(),
         )
     }
+
     /**
      * Whether the notification carries Allow once: the daemon offered it (opts; a push from before
      * opts offered it always) and does not hold the request. Else it leads with Open.

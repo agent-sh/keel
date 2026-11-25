@@ -42,11 +42,14 @@ const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}
 // Open. A standing answer is never a notification's to give. `hold` says why
 // the request is read first (empty when it is not held).
 // `card`: the card's form as the gate reads it now (else what the alert recorded).
-export function alertPush(a: Alert, card?: { hold: string[]; glance: boolean; line: string }): push.PushMessage {
+// `who`: the helper, when the alert is of its conversation: the name the owner gave it and the mark of its picture, so the
+// notification carries its face (the app fetches the picture once per mark).
+export function alertPush(a: Alert, card?: { hold: string[]; glance: boolean; line: string }, who?: { name: string; face?: string }): push.PushMessage {
   const kind = a.kind === "question" ? "approval" : a.kind;
   const data: Record<string, string> = { title: a.title, body: card?.line ?? a.body, ek: a.kind, pri: "", reply: a.kind === "finished" || a.kind === "question" ? "1" : "0" };
   const aid = a.data?.approval_id ?? (a.data?.call_id ? `q-${a.data.open_session ?? a.session_id}.${a.data.call_id}` : a.data?.plan_id ? `plan-${a.data.open_session ?? a.session_id}.${a.data.plan_id}` : undefined);
   if (aid) data.aid = String(aid);
+  if (who) { data.who = who.name; if (who.face) data.face = who.face; }
   // A plan is read whole in the app before it is approved: its notification opens it, and allows nothing.
   if (a.data?.plan_id) { data.hold = "plan"; data.opts = JSON.stringify(["deny"]); }
   if (a.kind === "approval") {
@@ -93,7 +96,8 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
   // An alert as the phone is sent it now: an approval's hold is read from its card as the gate reads it today.
   const pushOf = (a: Alert) => {
     const card = a.kind === "approval" && a.data?.approval_id ? gate?.approval(a.data.approval_id) : undefined;
-    return alertPush(a, card ? gate!.form(card) : undefined);
+    const h = helperNow?.();
+    return alertPush(a, card ? gate!.form(card) : undefined, h?.isHelper(a.session_id) ? { name: h.name(), face: h.persona().avatar?.v } : undefined);
   };
   // The phone's lasting notification while turns run (src/integrations/mobile/live.ts).
   const waiting = () => [

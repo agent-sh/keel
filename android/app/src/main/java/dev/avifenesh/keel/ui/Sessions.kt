@@ -13,7 +13,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -32,6 +34,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import dev.avifenesh.keel.Chat
 import dev.avifenesh.keel.Conn
+import dev.avifenesh.keel.Face
 import dev.avifenesh.keel.Hub
 import dev.avifenesh.keel.Prefs
 import dev.avifenesh.keel.Route
@@ -112,6 +115,10 @@ fun SessionsScreen() {
     fun create() { error = ""; Ui.starting.value = true }
     val now = nowTick()
     val rows = sessionRows(chats, cards, working)
+    // The helper's name and picture, read once while its row is in the list (a daemon that runs none answers 409: nothing to show).
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val helperId = rows.firstOrNull { it.chat.helper }?.chat?.id
+    LaunchedEffect(helperId) { if (helperId != null) runCatching { Hub.helper() }.onSuccess { Face.learn(ctx.applicationContext, it.name, it.face) } }
     // What happened while the owner was away (read by the Hub each time the phone is level again).
     val away by Hub.away.collectAsState()
     // (The daemon's open errors are read when the phone is level and follow the stream's frames after.)
@@ -185,7 +192,14 @@ private fun SessionRow(r: Row3, now: Double) {
     ) {
         val (dot, ring) = dotOf(c, r.state)
         val lk = look(dot, ring, dotWordOf(c, dot, ring), reducedMotion())
-        Box(Modifier.padding(top = 6.dp, end = 12.dp)) { DotMark(lk, 10.dp, halo = true) }
+        // The owner's helper has the face the owner gave it; its state is the dot beside the face.
+        val face by Face.picture.collectAsState()
+        if (c.helper && face != null) {
+            Box(Modifier.padding(end = 10.dp)) {
+                androidx.compose.foundation.Image(face!!.asImageBitmap(), null, Modifier.size(28.dp).clip(CircleShape).semantics { contentDescription = "helper-face" })
+                Box(Modifier.align(Alignment.BottomEnd).background(k.bg, CircleShape).padding(1.5.dp)) { DotMark(lk, 8.dp, halo = false) }
+            }
+        } else Box(Modifier.padding(top = 6.dp, end = 12.dp)) { DotMark(lk, 10.dp, halo = true) }
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // News is the title's weight, not a second dot beside the state's; a seen session at rest steps back to the muted ink.

@@ -9,6 +9,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.work.Constraints
@@ -28,12 +29,16 @@ import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+
+/** How long a push waits for the helper's picture before it is shown without one. */
+private const val FACE_WAIT_MS = 5_000L
 
 object Notify {
     const val NEEDS = "needs"
@@ -109,7 +114,7 @@ object Notify {
      * (long, cut, marked, high risk) gets Open and Deny, and is read in the app.
      * `to`: where it leads when it names no session ("errors": a failure with no session to open opens the Errors view).
      */
-    fun post(c: Context, kind: String, chat: String?, title: String, body: String, aid: String?, allow: Boolean, to: String = "") {
+    fun post(c: Context, kind: String, chat: String?, title: String, body: String, aid: String?, allow: Boolean, to: String = "", m: PushMsg? = null, face: Bitmap? = null) {
         val high = kind in setOf("approval", "question", "failed", "loop_failed", "limit", "test")
         val b = NotificationCompat.Builder(c, if (high) NEEDS else UPDATES)
             .setSmallIcon(R.drawable.ic_stat).setColor(0xFF0E6A80.toInt())
@@ -117,6 +122,11 @@ object Notify {
             .setContentIntent(open(c, chat, to)).setAutoCancel(true)
             .setCategory(if (kind == "approval") NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_STATUS)
             .setPriority(if (high) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
+        // The helper's own: the name the owner gave it and its face, so the notification is known at a glance.
+        if (m != null && m.who.isNotBlank()) {
+            b.setSubText(m.who)
+            face?.let { b.setLargeIcon(Face.round(it)) }
+        }
         // A question or a plan is answered in the app: its notification opens the session.
         if (aid != null && !aid.startsWith("q-") && !aid.startsWith("plan-") && kind == "approval") {
             if (!allow) b.addAction(0, "Open", open(c, chat))
@@ -173,7 +183,11 @@ class PushService : FirebaseMessagingService() {
                 null -> {}
             }
             "live" -> Notify.livePush(this, Live.of(m))
-            else -> Notify.post(this, m.kind, m.chat, m.title, m.body, m.card, m.allows, m.open)
+            else -> {
+                // The helper's face is fetched once per mark; a daemon that cannot be reached in a few seconds shows none.
+                val face = if (m.face.isNotBlank()) runBlocking { withTimeoutOrNull(FACE_WAIT_MS) { Face.load(applicationContext, m.face) } } else null
+                Notify.post(this, m.kind, m.chat, m.title, m.body, m.card, m.allows, m.open, m, face)
+            }
         }
         m.id?.let { id -> Hub.scope.launch { runCatching { Api.post("/v1/push/ack", JSONObject().put("id", id)) } } }
     }

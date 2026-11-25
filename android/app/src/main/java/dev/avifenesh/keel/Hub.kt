@@ -87,7 +87,7 @@ object Hub {
 
     fun reset() {
         live?.cancel(); live = null; saver?.cancel(); dirty = false
-        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L; away.value = null; landings.value = null
+        feed.clear(); runCatching { Cache.clear() }; runCatching { Face.clear() }; levelAt.value = 0L; away.value = null; landings.value = null
         note.value = ""; conn.value = Conn.OFF
     }
 

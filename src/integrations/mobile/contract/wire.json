@@ -21,7 +21,7 @@
   "A push of kind `live` is the lasting notification's news: `w` sessions working, `q` cards waiting on the owner, `title` and `body` to show as they are, `since` (epoch milliseconds) when the longest turn started. The push service keeps only the newest (one collapse key). `w` and `q` of 0 take the notification down. The background check reads the same status from `live` in GET /v1/pulse, with the same fields.",
   "A chat row carries `h`, eight hex digits of its content. A reconnecting phone says what it holds in a bounded number of bytes (`held` on GET /v1/events or /v1/sync): its rows go into `n` buckets by `fnv(id) % n`, and each bucket is said by eight hex digits, the sum mod 2^32 of `fnv(\"<id>:<h>\")` over its rows (FNV-1a, 32 bits, over UTF-8; an empty bucket is 00000000), joined by dots in bucket order, `n` of them (at most 256). The catch-up then sends only the rows of the buckets whose digest differs, with `buckets` naming them (`n`, and `of`, their indices) and `complete` false: the phone drops each row it holds in those buckets that was not sent. `held` at the top of this file is a worked example. A whole read (since 0, or a cursor that cannot be caught up from), and a `held` not of this form, send every row.",
   "search (GET /v1/search?q=<words>) is the page's search across sessions: titles first, then what was said and done, one hit a session at most. A hit's `snippet` holds the words found between \u0001 and \u0002; `kind` says where (title, user, assistant, tool_use, tool_result, summary). `limits` says in words what the query limited the search to (state:failed, since:yesterday).",
-  "helper (GET /v1/helper, PATCH /v1/helper with `on`) is the owner's helper: whether it is on, its conversation (`chat_id`, a chat of the list marked `helper`), how many records its memory holds, and what it was told lately, newest first (helper_event: `chat_id` is the session it is about, null for mail). Turning it on makes its conversation the first time. memory (GET /v1/helper/memory[?q=<words>]) is its memory's records (memory_record), found by key, alias, topic or words with `q`; DELETE /v1/helper/memory/<key> forgets one. A daemon that runs no helper answers 409.",
+  "helper (GET /v1/helper, PATCH /v1/helper with `on`) is the owner's helper: whether it is on, its `name` and the mark of its picture (`face`, absent while it has none; GET /v1/helper/face is the picture's bytes, fetched once per mark), its conversation (`chat_id`, a chat of the list marked `helper`), how many records its memory holds, and what it was told lately, newest first (helper_event: `chat_id` is the session it is about, null for mail). Turning it on makes its conversation the first time. memory (GET /v1/helper/memory[?q=<words>]) is its memory's records (memory_record), found by key, alias, topic or words with `q`; DELETE /v1/helper/memory/<key> forgets one. A daemon that runs no helper answers 409.",
   "What waits on the owner is in the order of the next-look queue (src/core/wait-rank.ts): the costliest wait first, then the one asked first. A pending card says when its alert was first raised (`asked`, seconds) and what its wait costs: `wait` holds the facts it began with (`at` and `until` in seconds; `key`, what the wait costs a minute in dollars, is the order's key and never changes while the card waits), `wait_line` what it costs as it stands when the card is sent (the agents that wait then, the cache's life then), in words. The app orders the cards that wait by `wait.key`, then `asked` (a card without one, its `ts`), then `id`. A push of an ask whose wait costs something also carries the words as they stand in `cost` and the key in `wk` (the app does not read them yet).",
   "landings (GET /v1/landings) lists the branches that wait to land, ready first, each one land_card of the work board's facts: its agent finished, the base lacks its head, and the landing queue does not hold that head. `checks` are the named checks on its head (`state` known with passed, failed and not_run; unknown with why; none: the repository names none); `review` is the latest review of the branch (`verdict` as the board reads it, `current`: of its head as it is now); `proof` is the proof line of the agent's report, from the check ledger; `areas` its size by top folder; `queue` its latest queue entry of this head. `missing` says what of the evidence is not there; `ready` is true when nothing is. `fp` is the print of what the card shows.",
   "POST /v1/landings/:key/land with { fp } puts the branch in the landing queue (landed: the entry as queued). It carries the approval signature (x-hm-ts, x-hm-asig) over signing.land's message: land, the key, the fp and the time, each on a line. POST /v1/landings/:key/back with { fp, text } gives the branch back to its agent with the owner's words as its next input (sent_back). Either is refused with 409 (landing_refused) when the card read again prints otherwise than `fp` (`card`: the card as it is now) or no longer waits to land (`card` null).",
@@ -374,7 +374,9 @@
    "since": "string?",
    "open": "string?",
    "f": "string?",
-   "to": "string?"
+   "to": "string?",
+   "who": "string?",
+   "face": "string?"
   },
   "changes": {
    "turns": "array",
@@ -472,6 +474,8 @@
    "on": "boolean",
    "chat_id": "string|null",
    "memory": "number",
+   "name": "string",
+   "face": "string?",
    "events": "array"
   },
   "helper_event": {
@@ -2578,6 +2582,19 @@
     "hold": "long,cut,marked,where"
    },
    {
+    "t": "finished",
+    "c": "s-helper",
+    "s": "48",
+    "n": "push_4a1b2c3d4e5f6a7b",
+    "title": "Pip: the build is fixed",
+    "body": "Fix the build finished: the tests pass.",
+    "ek": "finished",
+    "pri": "normal",
+    "reply": "1",
+    "who": "Pip",
+    "face": "1k9x2"
+   },
+   {
     "t": "withdraw",
     "c": "s-2",
     "s": "45",
@@ -2938,6 +2955,8 @@
     "on": true,
     "chat_id": "s-helper",
     "memory": 2,
+    "name": "Pip",
+    "face": "1k9x2",
     "events": [
      {
       "id": "he-2",
@@ -2959,6 +2978,7 @@
     "on": false,
     "chat_id": null,
     "memory": 0,
+    "name": "Helper",
     "events": []
    }
   ],

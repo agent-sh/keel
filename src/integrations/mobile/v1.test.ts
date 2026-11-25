@@ -1364,6 +1364,19 @@ describe("the wire contract", () => {
     // The row of a session at work says what its turn does now; one that waits on the owner or has failed says its state and none.
     expect(first.chats.find((c: any) => c.id === acting.id)).toMatchObject({ dot: "work", action: "Run the unit tests" });
     expect(first.chats.find((c: any) => c.id === failed.id)).not.toHaveProperty("action");
+    // The helper's name and picture: the answer carries the picture's mark, its bytes are a route, and a notification of its
+    // conversation carries both so the phone can show its face.
+    await h.uploadAvatar(PNG);
+    h.setName("Pip");
+    const named = (await call("GET", "/v1/helper")).body;
+    take("helper", named);
+    expect([named.name, typeof named.face]).toEqual(["Pip", "string"]);
+    const face: Response = await routes["/v1/helper/face"].GET(signedRaw("GET", "/v1/helper/face", new Uint8Array()), {});
+    expect([face.status, face.headers.get("content-type"), (await face.arrayBuffer()).byteLength > 0]).toEqual([200, "image/png", true]);
+    const told = alertPush({ id: "al4", ts: Date.now(), kind: "finished", session_id: h.session()!.id, title: "Pip: done", body: "x", read: false, data: {}, channels: [] } as any, undefined, { name: h.name(), face: named.face });
+    take("push", pushData(told, mobile.globalSeq(), "push_6"));
+    expect(told.data).toMatchObject({ who: "Pip", face: named.face });
+    expect(alertPush({ id: "al5", ts: Date.now(), kind: "finished", session_id: s.id, title: "x", body: "x", read: false, data: {}, channels: [] } as any).data).not.toHaveProperty("who");
     take("helper", (await call("GET", "/v1/helper")).body);
     take("memory", (await call("GET", "/v1/helper/memory")).body);
     // A question from the helper row, asked twice under one id, and its answer: the session it read, named.

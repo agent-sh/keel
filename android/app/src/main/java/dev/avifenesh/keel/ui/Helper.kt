@@ -31,6 +31,11 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.avifenesh.keel.ApiError
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import dev.avifenesh.keel.Face
 import dev.avifenesh.keel.HelperView
 import dev.avifenesh.keel.Hub
 import dev.avifenesh.keel.MemoryList
@@ -50,12 +55,14 @@ private const val LATELY = 4
 fun HelperPanel() {
     val k = k()
     val scope = rememberCoroutineScope()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val face by Face.picture.collectAsState()
     var view by remember { mutableStateOf<HelperView?>(null) }
     var none by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
-        runCatching { Hub.helper() }.onSuccess { view = it }
+        runCatching { Hub.helper() }.onSuccess { view = it; Face.learn(ctx.applicationContext, it.name, it.face) }
             .onFailure { if ((it as? ApiError)?.code == 409) none = true else error = dev.avifenesh.keel.reach(it) }
     }
     if (none) return
@@ -65,8 +72,17 @@ fun HelperPanel() {
             Txt("HELPER", T.label, k.muted)
             if (v == null) { if (error.isNotBlank()) Notice(error) else Txt("Reading the helper.", T.small, k.muted); return@Column }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StateMark(if (v.on) State.DONE else State.STOPPED, 9.dp); Spacer(Modifier.width(8.dp))
-                Txt(if (v.on) "The helper is on" else "The helper is off", T.uiStrong)
+                face?.let {
+                    androidx.compose.foundation.Image(it.asImageBitmap(), null, Modifier.size(36.dp).clip(androidx.compose.foundation.shape.CircleShape).semantics { contentDescription = "helper-face" })
+                    Spacer(Modifier.width(10.dp))
+                }
+                Column {
+                    if (v.name.isNotBlank()) Txt(v.name, T.uiStrong)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StateMark(if (v.on) State.DONE else State.STOPPED, 9.dp); Spacer(Modifier.width(8.dp))
+                        Txt(if (v.on) "On" else "Off", if (v.name.isBlank()) T.uiStrong else T.small, if (v.name.isBlank()) k.fg else k.muted)
+                    }
+                }
             }
             Txt(
                 if (v.on) "It follows your sessions, checks your mail and keeps what is worth remembering. Its conversation is first in Sessions."
