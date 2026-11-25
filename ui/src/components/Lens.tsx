@@ -253,4 +253,3 @@ export function Lens({ sessionId }: { sessionId: string }) {
     </div>
   );
 }
-
