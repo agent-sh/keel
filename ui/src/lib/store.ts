@@ -649,12 +649,22 @@ export type BuildState = {
   adoptions: { ts: number; reason: string; from_build: string | null; to_build: string; blocks: string[]; tools: string[] }[];
 };
 export type BuildPins = { build: string; sessions: { id: string; title: string; tokens: number; warm: boolean }[]; tokens: number; unknown: number; asked: number };
+export type ContextParts = {
+  measured: boolean;
+  total_tokens: number;
+  native_tools: boolean;
+  system: { tokens: number; blocks: { key: string; label: string; tokens: number }[] };
+  tools: { tokens: number; groups: { key: string; label: string; kind: "builtin" | "mcp" | "catalog"; tools: number; carried: number; tokens: number; save: string }[] };
+  messages: { tokens: number; rows: { key: string; label: string; tokens: number }[] };
+};
 export type ContextInfo = {
   context_window: number;
   bytes_per_token?: number;
   context_used_tokens: number;
   compacts_at_tokens: number;
-  zones: { key: string; bytes: number; estimated_tokens: number }[];
+  zones: { key: string; bytes: number; estimated_tokens: number; tokens?: number }[];
+  // What the next request carries, part by part, in tokens scaled to the provider's count when it measured one.
+  parts?: ContextParts;
   last_usage: { input: number; output: number; cache_read: number; cache_write: number; cost?: number } | null;
 };
 

@@ -4,6 +4,7 @@ import { ownersMeta } from "../../core/owner.ts";
 import { leafOf, lineage } from "../../core/tree.ts";
 import { bytesPerToken, checkpointAt, contextTokens, summaryMessage, utf8Bytes } from "../../engine/compact.ts";
 import { resolveAttachments } from "../../engine/attachments.ts";
+import { ORIGINS, originClass, saving, sizeParts, type Origin } from "../../engine/context-parts.ts";
 import { RetryTooLong } from "../../engine/retry.ts";
 import { toMessages } from "../../engine/turn.ts";
 import { ProviderError } from "../../providers/http.ts";
@@ -147,6 +148,39 @@ export const turnRoutes: RouteModule = (deps) => {
           }
         });
         const window = info?.context ?? 0;
+        const per = bytesPerToken(s.model);
+        // What the request carries beside the conversation, and who wrote the conversation's words.
+        const carried = await engine.requestParts(s.id, messages).catch(() => ({ system: [], tools: [], native: false }));
+        const byOrigin = new Map<Origin, number>();
+        for (let i = Math.max(0, cp.keepFrom); i < events.length; i++) {
+          const e = events[i]!;
+          const texts = e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "text") : e.kind === "user" || (e.kind === "note" && e.data.model) ? [...(e.data.images ?? []), ...(e.data.text ? [{ type: "text", text: e.data.text }] : [])] : [];
+          const who: Origin = e.kind === "assistant" ? "model" : e.kind === "user" ? originClass(e.data) : "harness";
+          for (const b of texts) byOrigin.set(who, (byOrigin.get(who) ?? 0) + utf8Bytes(JSON.stringify(b)));
+        }
+        const split = [...byOrigin.values()].reduce((a, b) => a + b, 0);
+        const chat = zones.conversation!;
+        const rows: { section: "system" | "tools" | "messages"; key: string; label: string; bytes: number; zone?: string }[] = [
+          ...carried.system.map((b) => ({ section: "system" as const, key: b.name, label: b.name, bytes: b.bytes })),
+          ...carried.tools.map((g) => ({ section: "tools" as const, key: g.key, label: g.label, bytes: g.bytes })),
+          ...ORIGINS.map((o) => ({ section: "messages" as const, key: o.key, label: o.label, zone: "conversation", bytes: split ? Math.round((chat * (byOrigin.get(o.key) ?? 0)) / split) : o.key === "owner" ? chat : 0 })),
+          ...([["thinking", "Thinking"], ["tool_calls", "Tool calls"], ["tool_results", "Tool results"], ["summary", "Summary"]] as const).map(([k, label]) => ({ section: "messages" as const, key: k, label, zone: k, bytes: zones[k]! })),
+        ];
+        // The provider's own count when a reply measured one: the parts are scaled to add up to it.
+        const sized = sizeParts(rows.map((r) => r.bytes), per, t.measured > 0 ? t.used : 0);
+        const tokens = (section: string) => rows.reduce((n, r, i) => n + (r.section === section ? sized[i]! : 0), 0);
+        const parts = {
+          measured: t.measured > 0,
+          total_tokens: sized.reduce((a, b) => a + b, 0),
+          native_tools: carried.native,
+          system: { tokens: tokens("system"), blocks: rows.flatMap((r, i) => (r.section === "system" ? [{ key: r.key, label: r.label, tokens: sized[i]! }] : [])) },
+          tools: {
+            tokens: tokens("tools"),
+            groups: carried.tools.map((g) => { const i = rows.findIndex((r) => r.section === "tools" && r.key === g.key); return { key: g.key, label: g.label, kind: g.kind, tools: g.tools, carried: g.carried, tokens: sized[i]!, save: saving(g, carried.native) }; }),
+          },
+          messages: { tokens: tokens("messages"), rows: rows.flatMap((r, i) => (r.section === "messages" && r.bytes ? [{ key: r.key, label: r.label, tokens: sized[i]! }] : [])) },
+        };
+        const zoneTokens = (k: string) => rows.reduce((n, r, i) => n + (r.section === "messages" && r.zone === k ? sized[i]! : 0), 0);
         return json({
           context_window: window,
           // The model's learned bytes a token: the page counts a context no reply has measured with it, as the daemon does.
@@ -158,7 +192,8 @@ export const turnRoutes: RouteModule = (deps) => {
           estimated_tokens: t.estimated,
           last_usage: t.last ?? null,
           compacts_at_tokens: engine.limitOf(s, window),
-          zones: Object.entries(zones).map(([key, bytes]) => ({ key, bytes, estimated_tokens: Math.round(bytes / bytesPerToken(s.model)) })),
+          zones: Object.entries(zones).map(([key, bytes]) => ({ key, bytes, estimated_tokens: Math.round(bytes / per), tokens: zoneTokens(key) })),
+          parts,
           usage_total: s.usage,
         });
       },

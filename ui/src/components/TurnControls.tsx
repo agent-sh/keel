@@ -15,6 +15,7 @@ import { switchSession } from "../lib/switch.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
+import { ContextPartsView } from "./ContextParts.tsx";
 import { composing } from "../lib/keys.ts";
 
 const chipBtn = "grid size-6 place-items-center rounded-md text-faint hover:text-fg hover:bg-hover outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
@@ -286,7 +287,7 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="top" align="end" sideOffset={8} className="z-50">
-          <Popover.Popup className={cn(popupClass, "w-80 p-3.5")} data-testid="context-popup">
+          <Popover.Popup className={cn(popupClass, "w-[min(22rem,calc(100vw-1.5rem))] overflow-y-auto p-3.5 max-h-[calc(100dvh-1.5rem)]")} data-testid="context-popup">
             <Popover.Title className="text-ui font-semibold">Context</Popover.Title>
             <p className="mt-0.5 text-caption text-muted tabular-nums" data-testid="context-summary">
               {est?.estimated ? "~" : ""}{fmtTokens(used)}{window_ && !model?.context_assumed ? ` of ${fmtTokens(window_)}` : ""} tokens{limit ? ` · compacts at ${fmtTokens(limit)}` : ""}
@@ -295,7 +296,8 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sunken">
               <div className={cn("h-full rounded-full", fill >= COMPACT_SHARE ? "bg-danger" : fill >= 0.6 ? "bg-warn" : "bg-accent")} style={{ width: `${Math.max(1, share * 100)}%` }} />
             </div>
-            {info && (
+            {info?.parts && <ContextPartsView parts={info.parts} />}
+            {info && !info.parts && (
               <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-caption tabular-nums">
                 {info.zones.filter((z) => z.bytes).map((z) => (
                   <div key={z.key} className="contents" data-testid={`zone-${z.key}`}>
@@ -311,7 +313,13 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
                 )}
               </dl>
             )}
-            <p className="mt-3 text-caption text-faint">System prompt and tools are counted in the measured total; they stay cached.</p>
+            {info?.last_usage && info.parts && (
+              <div className="mt-1 flex justify-between gap-3 text-caption tabular-nums">
+                <span className="text-muted">Last request read from cache</span>
+                <span data-testid="cache-read">{fmtTokens(info.last_usage.cache_read)}</span>
+              </div>
+            )}
+            {!info?.parts && <p className="mt-3 text-caption text-faint">System prompt and tools are counted in the measured total; they stay cached.</p>}
             {build && <BuildPin build={build} used={used} busy={busy === "build"} disabled={!!busy} onAdopt={() => run("build")} />}
             <div className="mt-3 border-t border-line pt-3">
               <input

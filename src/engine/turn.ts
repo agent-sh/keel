@@ -39,7 +39,9 @@ import { runningData } from "./running.ts";
 import { closestNote, pauseNote, resolvedNote, resolveToolName } from "../tools/resolve.ts";
 import { answers, callPaths, stoppedWaiting, unansweredText } from "../tools/fs-bound.ts";
 import { inputProblem } from "../tools/validate.ts";
-import { isDeferError, keepReferenced, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
+import { isDeferError, keepReferenced, loadsNatively, nativeName, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
+import { catalogReady } from "../tools/catalog.ts";
+import type { ToolGroup } from "./context-parts.ts";
 import { allHooks, cacheBreaks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
@@ -1832,6 +1834,43 @@ export class Engine {
   // Which build the session's tools and prompt are from, and what waits.
   buildState(id: string) {
     return this.pins.state(id);
+  }
+
+  // What the session's next request carries before the conversation, for the
+  // context popup: its system prompt by blocks (as kept, else as it would be
+  // rendered now) and its tool definitions by source. Reads only: no pin is
+  // taken, nothing is stored. A tool the model loaded by search counts where
+  // the conversation names it; one not loaded costs nothing.
+  async requestParts(id: string, messages: Message[]): Promise<{ system: { name: string; bytes: number }[]; tools: ToolGroup[]; native: boolean }> {
+    const session = this.store.session(id);
+    if (!session) throw Object.assign(new Error("no such session"), { status: 404 });
+    const r = await this.providers.resolve(session.model).catch(() => undefined);
+    const info = r?.info;
+    const kept = this.systems.get(id)?.blocks ?? this.prompts.get(id)?.blocks;
+    const blocks = kept ?? (info ? (await this.renderSystem(session, info)).blocks : []);
+    const system = blocks.filter((b) => b.bytes > 0).map((b) => ({ name: b.name, bytes: b.bytes }));
+    if (!r || !info || info.tools === false) return { system, tools: [], native: false };
+    const native = loadsNatively(r.provider.wire, info);
+    const sent = this.pins.sentList(id, { model: info.id, native, own: sessionToolsKey(info.family, id) });
+    const list: Pick<Tool, "name" | "description" | "input_schema" | "defer">[] = sent ?? toolsFor(info.family, native, id);
+    const loaded = referenced(messages);
+    const size = (t: Pick<Tool, "name" | "description" | "input_schema">) => utf8Bytes(JSON.stringify([t.name, t.description, t.input_schema]));
+    const groups = new Map<string, ToolGroup>();
+    const add = (key: string, label: string, kind: ToolGroup["kind"], carries: boolean, bytes: number) => {
+      const g = groups.get(key) ?? { key, label, kind, tools: 0, carried: 0, bytes: 0 };
+      g.tools++;
+      if (carries) { g.carried++; g.bytes += bytes; }
+      groups.set(key, g);
+    };
+    const names = new Set<string>();
+    for (const t of list) { names.add(t.name); add("builtin", "Built-in tools", "builtin", !t.defer || loaded.has(t.name), size(t)); }
+    for (const t of await catalogReady(info.family, id)) {
+      const name = nativeName(t);
+      if (t.hidden || names.has(name)) continue;
+      names.add(name);
+      add(`${t.mcp ? "mcp" : "catalog"}:${t.server}`, t.server === "mcp" ? "MCP resources and prompts" : t.server === "web" ? "Web tools" : t.server, t.mcp ? "mcp" : "catalog", native && loaded.has(name), size(t));
+    }
+    return { system, tools: [...groups.values()], native };
   }
 
   // What taking this build's tools and prompt in every open session would

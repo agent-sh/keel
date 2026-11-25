@@ -26,11 +26,11 @@ test("context meter, effort, compact and clear", async ({ page, request }) => {
 
   await page.getByTestId("context-meter").click();
   await expect(page.getByTestId("context-popup")).toContainText(/of 1\.0M tokens/);
-  await expect(page.getByTestId("context-popup")).toContainText("Conversation");
+  await expect(page.getByTestId("context-popup")).toContainText("Messages");
   await shoot(page, "context-01-meter");
 
   // The breakdown follows a reply committed while the popup stays open.
-  const zone = page.getByTestId("zone-conversation");
+  const zone = page.locator('[data-testid="context-part"][data-part="messages"] [data-testid="context-part-tokens"]');
   const before = await zone.textContent();
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `Remember this list, reply only with ok: ${"lantern harbour ".repeat(300)}` } });
   await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 90_000 });

@@ -173,6 +173,13 @@ export class BuildPins {
     return l;
   }
 
+  // The tool list the session was last sent, as sent, when it is the one a request to `to` carries
+  // (read only: the context popup shows it).
+  sentList(id: string, to: Variant): PinnedTool[] | undefined {
+    const row = this.row(id);
+    return row && !otherList(row, to) ? this.list(row.list) : undefined;
+  }
+
   // The hash of a list already stored, by the list: a step that keeps its pin does not write the
   // list's text again to learn it (tens of KB a step, the step of every working session).
   private hashes = new WeakMap<PinnedTool[], string>();
