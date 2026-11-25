@@ -119,6 +119,9 @@ function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId:
   );
 }
 
+// How many queued prompts the panel shows before it folds the rest into one line.
+const SHOWN = 2;
+
 export function QueuePanel({ sessionId }: { sessionId: string }) {
   const q = useStore((s) => s.queues[sessionId]);
   const all = useStore((s) => s.events[sessionId]);
@@ -144,6 +147,9 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
   }, [key, sessionId]);
   // Reports of this session's agents that wait for it: while it is paused they start no turn.
   const reports = useAuto((s) => Object.values(s.agents).filter((a) => a.parent_id === sessionId && a.handback && !isLive(a)).length);
+  // The queue's height stops growing at SHOWN rows: a prompt that comes while the owner reads (from an agent, a
+  // channel, the other device) does not push the box and the conversation about. The rest are one line, a tap away.
+  const [more, setMore] = useState(false);
   // A paused session with nothing queued still shows that it is paused when reports wait for it.
   if (!q || (!q.queue.length && !(q.held && reports))) return null;
   // Only known when the events are loaded; until then nothing is marked.
@@ -171,9 +177,18 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
         </div>
       )}
       {q.queue.length > 0 && (
-        <ul className="flex flex-col">
-          {q.queue.map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} place={i - q.queue.filter((x) => x.steer).length} off={off(item)} held={q.held} />)}
-        </ul>
+        <>
+          <ul className={cn("flex flex-col", more && "max-h-[40dvh] overflow-y-auto overscroll-contain")} data-testid="queue-list">
+            {(more ? q.queue : q.queue.slice(0, SHOWN)).map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} place={i - q.queue.filter((x) => x.steer).length} off={off(item)} held={q.held} />)}
+          </ul>
+          {q.queue.length > SHOWN && (
+            <button type="button" data-testid="queue-more" aria-expanded={more} onClick={() => setMore(!more)}
+              className="flex h-ctl-sm w-full items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg pointer-coarse:h-tap">
+              <ChevronDown aria-hidden="true" className={cn("size-3.5 transition-transform", more && "rotate-180")} />
+              {more ? "Show fewer" : `${q.queue.length - SHOWN} more queued`}
+            </button>
+          )}
+        </>
       )}
     </div>
   );
