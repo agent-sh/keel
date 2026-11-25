@@ -379,7 +379,9 @@ const AskUserQuestion: Tool = {
     if (!g) return fail("The owner did not answer; the turn was interrupted.");
     const a = g.answers;
     const pairs = qs.map((q) => `"${q.question}"="${answerText(a[q.id] ?? { picked: [] })}"`).join(", ");
-    return { ...ok(ruledText(g, `User has answered your questions: ${pairs}. You can now continue with the user's answers in mind.`)), shown: shownOf(g) };
+    const skipped = qs.filter((q) => a[q.id]?.skipped).length;
+    const note = skipped ? ` The owner sent these without ${skipped === 1 ? "one question" : `${skipped} questions`} (marked skipped): do not take a skip for a choice.` : "";
+    return { ...ok(ruledText(g, `User has answered your questions: ${pairs}.${note} You can now continue with the user's answers in mind.`)), shown: shownOf(g) };
   },
 };
 

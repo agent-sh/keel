@@ -7,7 +7,8 @@ import type { ToolContext } from "./types.ts";
 
 export type Question = AskedQuestion;
 // Per question id: the labels picked, plus free text the owner typed.
-export type Answers = Record<string, { picked: string[]; other?: string }>;
+// `skipped`: the owner sent the others without this one ("Skip the rest" on a card of several questions).
+export type Answers = Record<string, { picked: string[]; other?: string; skipped?: true }>;
 // The owner said no to a question that can be declined (one a server asked).
 export const DECLINED = "declined";
 type Reply = Answers | typeof DECLINED | null;
@@ -132,5 +133,6 @@ export const pendingQuestions = (sessionId: string) =>
 export const questionsWaitingFor = (sessionId: string) =>
   allPendingQuestions().some((q) => q.session_id === sessionId || q.parent_id === sessionId);
 
-export const answerText = (a: { picked: string[]; other?: string }) =>
-  [...a.picked, ...(a.other?.trim() ? [a.other.trim()] : [])].join(", ") || "(no answer)";
+export const SKIPPED = "skipped by the owner";
+export const answerText = (a: { picked: string[]; other?: string; skipped?: true }) =>
+  a.skipped ? SKIPPED : [...a.picked, ...(a.other?.trim() ? [a.other.trim()] : [])].join(", ") || "(no answer)";

@@ -207,6 +207,7 @@ const request_user_input: Tool = {
     const a = g.answers;
     const answers = Object.fromEntries(qs.map((q, i) => {
       const x = a[q.id] ?? a[String(i)] ?? { picked: [] };
+      if (x.skipped) return [q.id, { answers: [], skipped_by_owner: true }];
       return [q.id, { answers: [...x.picked, ...(x.other?.trim() ? [`user_note: ${x.other.trim()}`] : [])] }];
     }));
     return { ...ok(ruledText(g, JSON.stringify({ answers }))), shown: shownOf(g) };

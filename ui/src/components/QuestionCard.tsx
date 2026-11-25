@@ -207,7 +207,7 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
             </Under>
             {given && (
               <Under name={ruled ? "Ruling" : "You"} testid="question-answer">
-                {[...(given[q.id]?.picked ?? []), ...(given[q.id]?.other?.trim() ? [given[q.id]!.other!.trim()] : [])].join(", ") || "no answer"}
+                {[...(given[q.id]?.picked ?? []), ...(given[q.id]?.other?.trim() ? [given[q.id]!.other!.trim()] : [])].join(", ") || (given[q.id]?.skipped ? "skipped" : "no answer")}
               </Under>
             )}
           </Fragment>
@@ -220,7 +220,7 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
   );
 }
 
-type Shown = { answers?: Record<string, { picked: string[]; other?: string }>; ruling?: { id: string; scope: Scope; name: string; words: string[] }; offer?: { scopes: { scope: Scope; name: string }[] } };
+type Shown = { answers?: Record<string, { picked: string[]; other?: string; skipped?: true }>; ruling?: { id: string; scope: Scope; name: string; words: string[] }; offer?: { scopes: { scope: Scope; name: string }[] } };
 const SCOPE_WORD: Record<Scope, string> = { tree: "This tree", repo: "Repository", everywhere: "Everywhere" };
 const inScope = (s: { scope: Scope; name: string }) => (s.scope === "everywhere" ? "everywhere" : s.scope === "tree" ? "in this tree of agents" : `in ${s.name}`);
 
@@ -413,7 +413,8 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
     return { ...p, [q.id]: q.multi ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label] };
   };
   // One answer per question card: Enter and the button share the guard while it is on its way.
-  const submit = async (p: Picked = picked) => {
+  // `rest`: the questions left without an answer are sent as skipped ("Skip the rest").
+  const submit = async (p: Picked = picked, rest = false) => {
     if (inflight.current || gated) return;
     inflight.current = true;
     held.current = !!root.current?.contains(document.activeElement);
@@ -421,7 +422,7 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
     setSending(true);
     setErr("");
     try {
-      await actions.answer(sessionId, use.id, Object.fromEntries(qs.map((q) => [q.id, { picked: at(p, q.id) ?? [], other: at(other, q.id) }])), !!asked?.sensitive && sendAnyway, asked?.id);
+      await actions.answer(sessionId, use.id, Object.fromEntries(qs.map((q) => [q.id, rest && !has(p, q) ? { picked: [], skipped: true as const } : { picked: at(p, q.id) ?? [], other: at(other, q.id) }])), !!asked?.sensitive && sendAnyway, asked?.id);
     } catch (e) {
       setErr(failed(e, { at: "QuestionCard" }));
       setSending(false);
@@ -453,6 +454,10 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
     setNudge("");
     void submit(p);
   };
+
+  // A card of several of the model's own questions can be sent with the answers picked so far: the rest go as skipped.
+  const skippable = !asked && qs.length > 1 && !ready && qs.some((q) => has(picked, q));
+  const skipRest = () => { setNudge(""); void submit(picked, true); };
 
   // One number answers a card that is one question with one choice to make.
   // (Never a server's question: there a number picks, and Enter or Answer sends what is shown.)
@@ -648,6 +653,12 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
               className="h-8 rounded-md bg-accent px-3.5 text-ui font-medium text-accent-fg transition-opacity hover:bg-accent-hover disabled:opacity-40"
             >
               {sending ? "Sending" : link ? "I finished" : asked && !qs.length ? "Confirm" : "Answer"}
+            </button>
+          )}
+          {skippable && (
+            <button type="button" disabled={sending} onClick={skipRest} data-testid="question-skip" className="k-btn k-btn-lg"
+              title="Send the answers chosen so far. The agent is told which questions you skipped.">
+              Skip the rest
             </button>
           )}
           {link && (
