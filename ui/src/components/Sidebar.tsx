@@ -59,6 +59,7 @@ import { HelperFace, useHelperName } from "./HelperFace.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { StuckStrip } from "./Stuck.tsx";
 import { calls, useSettled, useSettledState, useSettledStates } from "../lib/settle.ts";
+import { afterSize } from "../lib/after-size.ts";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 // The filter box draws again only when its words or its width change, not with every change of the list
@@ -1077,11 +1078,13 @@ function Summary() {
     const fit = () => fitSummary(el);
     fit();
     // Measured again when the bar or a count changes width: the edge dragged, the text size, a face that arrived after the first paint.
-    const ro = new ResizeObserver(fit);
+    // (A frame later: the fit changes the size of the line and of its counts, which the observer watches.)
+    const later = afterSize(fit);
+    const ro = new ResizeObserver(later);
     ro.observe(el);
     for (const c of el.children) ro.observe(c);
     document.fonts?.addEventListener("loadingdone", fit);
-    return () => { ro.disconnect(); document.fonts?.removeEventListener("loadingdone", fit); };
+    return () => { ro.disconnect(); later.stop(); document.fonts?.removeEventListener("loadingdone", fit); };
   }, [figures]);
   // One stop for Tab: the arrows move between the counts, Home and End reach the ends.
   const [stop, setStop] = useState<Kind | null>(null);
@@ -1390,12 +1393,14 @@ function useFootFit(open: boolean) {
       el.toggleAttribute("data-tight", room < need + 0.5 || spills);
     };
     fit();
-    const ro = new ResizeObserver(fit);
+    // (A frame later: the fit changes the size of the foot's own words.)
+    const later = afterSize(fit);
+    const ro = new ResizeObserver(later);
     ro.observe(el);
     const mo = new MutationObserver(fit);
     mo.observe(el, { subtree: true, childList: true, characterData: true });
     document.fonts?.addEventListener("loadingdone", fit);
-    return () => { ro.disconnect(); mo.disconnect(); document.fonts?.removeEventListener("loadingdone", fit); el.removeAttribute("data-tight"); };
+    return () => { ro.disconnect(); later.stop(); mo.disconnect(); document.fonts?.removeEventListener("loadingdone", fit); el.removeAttribute("data-tight"); };
   }, [open]);
   return ref;
 }

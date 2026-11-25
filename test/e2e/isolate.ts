@@ -17,6 +17,7 @@
 // A removal the daemon refuses fails the test, as a refused restoration does.
 import { test as base, expect, type APIRequestContext } from "@playwright/test";
 import { stopStrays } from "./own-daemon.ts";
+import { watchWindowErrors } from "./loops.ts";
 import { isScratch } from "./scratch.ts";
 import { FIXED_ENV, seeded } from "../../src/core/fixed-world.ts";
 
@@ -157,11 +158,9 @@ export const test = base.extend<{ daemonSettings: void; ownSessions: void; leftB
     }
     // The browser reports a size changed inside an observer's own pass as an error event ("ResizeObserver loop
     // completed with undelivered notifications"); the page records it as an Errors row. No spec's page does.
-    const loops: string[] = [];
-    await page.addInitScript(() => addEventListener("error", (e: Event) => { const m = (e as ErrorEvent).message; if (/ResizeObserver loop/.test(m)) console.error(`ResizeObserver-loop: ${m}`); }));
-    page.on("console", (m) => { if (m.text().startsWith("ResizeObserver-loop:")) loops.push(`${new URL(page.url()).pathname}: ${m.text()}`); });
+    const errors = await watchWindowErrors(page);
     await use(page);
-    expect(loops, "a page changed the size of what an observer watches from inside its call").toEqual([]);
+    expect(errors.filter((m) => /ResizeObserver loop/.test(m)).map((m) => `${new URL(page.url()).pathname}: ${m}`), "a page changed the size of what an observer watches from inside its call").toEqual([]);
   },
   // Set up first and looked at last, after the sessions went and the settings were put back.
   leftBehind: [
