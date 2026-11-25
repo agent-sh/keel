@@ -13,7 +13,7 @@
 import type { Store } from "../core/store.ts";
 import { git, gitEnv } from "../core/git.ts";
 import { readText } from "../core/proc.ts";
-import { basename } from "node:path";
+import { isInstructionPath } from "./instruction-files.ts";
 import type { Host } from "../worktree/pr-head.ts";
 
 export type HeadState = "held" | "trusted" | "owner";
@@ -169,10 +169,10 @@ export class HeadTrust {
     return undefined;
   }
 
-  // The instruction files of the base's tree: every AGENTS.md and CLAUDE.md, by path from the root.
+  // The instruction files of the base's tree: every file a model family's chain loads (src/safety/instruction-files.ts), by path from the root.
   private async baseFiles(top: string, commit: string): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
-    const list = (await git(top, ["ls-tree", "-r", "--name-only", "-z", commit], { read: true })).out.split("\0").filter((f) => f && (basename(f) === "AGENTS.md" || basename(f) === "CLAUDE.md")).slice(0, FILES_MAX);
+    const list = (await git(top, ["ls-tree", "-r", "--name-only", "-z", commit], { read: true })).out.split("\0").filter((f) => f && isInstructionPath(f)).slice(0, FILES_MAX);
     for (const f of list) {
       const r = await git(top, ["show", `${commit}:${f}`], { read: true });
       if (r.code === 0) out[f] = r.out.slice(0, FILE_MAX);

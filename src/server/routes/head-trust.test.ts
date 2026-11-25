@@ -60,7 +60,7 @@ const pr = (author: string, cross: boolean) => ({ author: { login: author }, isC
 // One repository with its origin: the base says BASE-RULE; the request's head says HEAD-RULE, adds a skill, a
 // hook file and a named check.
 let n = 0;
-function scenario() {
+function scenario(baseExtra: Record<string, string> = {}) {
   const dir = join(root, `s${++n}`);
   mkdirSync(dir, { recursive: true });
   const origin = join(dir, "origin.git");
@@ -68,6 +68,7 @@ function scenario() {
   const repo = join(dir, "repo");
   run(dir, "clone", "-q", origin, repo);
   writeFileSync(join(repo, "AGENTS.md"), "The base says BASE-RULE.\n");
+  for (const [f, text] of Object.entries(baseExtra)) writeFileSync(join(repo, f), text);
   run(repo, "add", "-A");
   run(repo, "commit", "-qm", "base");
   run(repo, "push", "-q", "origin", "HEAD:main");
@@ -191,4 +192,14 @@ test("a head whose author cannot be read is held: the tool fails, or there is no
   } finally {
     process.env.KEEL_GH_BIN = fake;
   }
+});
+
+test("a fork's head is held with every instruction file of the base's tree, CLAUDE.local.md and AGENTS.override.md too", async () => {
+  say({ pr: pr("stranger", true), perm: { role_name: "read", permission: "read" }, user: { login: "owner" } });
+  const t = scenario({ "CLAUDE.local.md": "Local says BASE-LOCAL.\n", "AGENTS.override.md": "Override says BASE-OVERRIDE.\n", "notes.md": "not an instruction file\n" });
+  const s = await t.start();
+  expect((await t.head(s.id)).held).toBe(true);
+  const kept = JSON.parse((t.store.db.query("SELECT base_files FROM head_trust WHERE session_id = ?").get(s.id) as { base_files: string }).base_files);
+  expect(Object.keys(kept).sort()).toEqual(["AGENTS.md", "AGENTS.override.md", "CLAUDE.local.md"]);
+  expect(kept["CLAUDE.local.md"]).toContain("BASE-LOCAL");
 });
