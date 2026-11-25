@@ -175,7 +175,7 @@ function Row({ e }: { e: ErrorRecord }) {
   return (
     <div>
     <details className="group relative rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
-      {/* Where it happened (the session and its model) is the row's tooltip; a touch screen has no tooltip, so there it is a line. */}
+      {/* Where it happened (the session and its model) is the row's tooltip; a touch screen has no tooltip, so there it is a line when the row is opened. */}
       <summary className="flex cursor-default list-none flex-col gap-1.5 text-ui [&::-webkit-details-marker]:hidden" title={where} data-testid="error-head">
         <span className="flex items-baseline gap-2 max-sm:flex-wrap max-sm:items-center max-sm:gap-y-0">
         {/* The row opens: a marker of its own says so, and turns when it has. */}
@@ -209,7 +209,7 @@ function Row({ e }: { e: ErrorRecord }) {
         {/* The acts of the row, on the row: buttons and links here do not fold or unfold it. */}
         {/* Where it happened: the session as a link, and the model it ran on. */}
         {e.session_id && (
-          <span className="ml-[1.375rem] hidden min-w-0 flex-wrap items-baseline gap-x-1.5 text-caption text-muted max-sm:flex pointer-coarse:flex" data-testid="error-where">
+          <span className="ml-[1.375rem] hidden min-w-0 flex-wrap items-baseline gap-x-1.5 text-caption text-muted max-sm:group-open:flex pointer-coarse:group-open:flex" data-testid="error-where">
             <span>in</span>
             <button type="button" onClick={(ev) => { ev.preventDefault(); goTo(); }} className="min-w-0 max-w-full truncate rounded-sm text-accent-ink hover:underline focus-visible:ring-2 focus-visible:ring-accent/40" data-testid="error-where-session" title="Open the session at this failure">
               {session?.title || e.sites?.[0]?.title || "its session"}

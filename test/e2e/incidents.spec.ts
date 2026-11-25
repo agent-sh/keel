@@ -36,7 +36,8 @@ const both = async (page: Page, name: string) => {
   await whole(page, WHOLE);
   await shoot(page, `${name}-wide`);
   await page.setViewportSize(NARROW);
-  await whole(page, WHOLE);
+  // (On a narrow page the Errors list writes what an incident touched whole; beside the title it shares a line and is cut.)
+  await whole(page, [...WHOLE, "incident-row-radius"]);
   await shoot(page, `${name}-narrow`);
   await page.setViewportSize(WIDE);
 };
@@ -122,7 +123,9 @@ test("a credential refused in two sessions is one incident and one alert, and a 
   const row = page.locator('[data-testid="errors-incident"][data-key="account:scripted"]').first();
   await expect(row).toBeVisible();
   await row.getByRole("button").click();
-  await expect(row.getByTestId("incident-radius")).toHaveText("2 sessions: 2 turns failed");
+  await expect(row.getByTestId("incident-row-radius")).toContainText("2 sessions: 2 turns failed");
+  // What it touched is said once: the row says it, the details under it do not repeat it.
+  await expect(row.getByTestId("incident-radius")).toHaveCount(0);
   await both(page, "incidents-04-errors");
   await page.keyboard.press("Escape");
 
