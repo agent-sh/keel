@@ -29,6 +29,7 @@ import { recallLine, type MemoryRecord } from "./records.ts";
 import { memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
 import { join } from "node:path";
 import { Looks } from "./looks.ts";
+import { isNews, TOLD_SCHEMA } from "./told.ts";
 import { askedWith, cleanName, cleanPrompt, DEFAULT_NAME, keepable, keepAll, nameOf, type Persona, PersonaFiles, startPrompt } from "./persona.ts";
 import type { Look } from "./error-look.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -94,7 +95,8 @@ export class Helper {
 CREATE TABLE IF NOT EXISTS helper_state (id INTEGER PRIMARY KEY CHECK (id = 1), value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS helper_events (id TEXT PRIMARY KEY, ts INTEGER NOT NULL, kind TEXT NOT NULL, session_id TEXT, title TEXT NOT NULL, body TEXT NOT NULL, level TEXT NOT NULL, fed INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS helper_events_ts ON helper_events(ts);
-CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT NULL);`);
+CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT NULL);
+${TOLD_SCHEMA}`);
     this.records = new Memory(deps.store.db, () => deps.bus.emit({ t: "feature", name: "helper_memory", data: { items: this.memory() } }));
     this.meter = memoryMeter(deps.store);
     this.files = new PersonaFiles(join(deps.store.stateDir, "helper"));
@@ -529,6 +531,8 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     }
     const level = levelOfAlert(a.kind, a.data, alerts.LONG_TURN_MS);
     if (!level) return;
+    // A frame is not an event: a delivery, a mark or a card put back at a restart is the same alert again.
+    if (!this.state().on || !this.session() || !isNews(this.deps.store.db, a)) return;
     const who = a.data?.child_title ? ` (agent ${a.data.child_title})` : "";
     this.record(a.kind, a.session_id, `${a.title}${who}`, a.body, level);
   }
