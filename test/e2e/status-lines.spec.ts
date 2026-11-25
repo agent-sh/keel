@@ -127,6 +127,11 @@ test.describe("at a desk", () => {
         await shoot(page, `status-01-${width}`);
       }
 
+      // A narrow window with a mouse: the plan's step stays inside its line (it was a column of letters over the conversation).
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect.poll(async () => (await measure(page)).top.out, { message: "nothing of the top line leaves it at 390" }).toEqual([]);
+      await shoot(page, "status-01-390-mouse");
+
       // 2. The marker: acting while a command runs, its word for a reader, its own shape with the motion off.
       await page.setViewportSize({ width: 1366, height: 768 });
       const now = page.getByTestId("dock-now");

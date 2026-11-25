@@ -927,7 +927,21 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 @keyframes k-moment-fade { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 @media (max-width: 767px) {
   .k-docket { margin-bottom: 0.25rem; }
-  .k-docket-line { padding-inline: 0.25rem; }
+  .k-docket-line { padding-inline: 0.25rem; height: auto; min-height: var(--spacing-ctl-md); }
+  /* A narrow window, with a finger or a mouse: where the agents or the commands stand beside the plan, its line is its
+     count (the step's words are in the plan when it opens). A squeezed step was a column of letters over the conversation.
+     The agents take the rest; where their names do not fit beside it the row wraps and they stand on a row of their own,
+     and a plan line alone has the row: its step wraps rather than cut a word. */
+  .k-docket-row > .k-docket-planline:not(:only-child) { flex: 0 0 auto; }
+  .k-docket-row > .k-docket-planline:not(:only-child) .k-docket-step { display: none; }
+  .k-docket-step { white-space: normal; overflow-wrap: break-word; }
+  .k-docket-row { flex-wrap: wrap; }
+  .k-docket-row > .k-agents-line { flex: 1 1 auto; max-width: 100%; }
+  /* The agents line: its names keep their words, and what it waits on goes under them where the row is short. */
+  .k-agents-line { flex-wrap: wrap; row-gap: 0; }
+  .k-agents-parts { flex: 0 1 auto; height: auto; overflow: visible; }
+  .k-agents-part, .k-agents-none { height: auto; }
+  .k-agents-line > .k-docket-more { margin-left: auto; }
 }
 /* A phone's dock: each line is as tall as the finger's target its button needs (the buttons are that tall, so lines
    of the shorter height laid their buttons over each other), grows where its words need a second line, and cuts
@@ -935,18 +949,6 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 @media (pointer: coarse) and (max-width: 767px) {
   .k-docket-line { height: auto; min-height: var(--spacing-tap); }
   .k-docket-job { flex-wrap: wrap; row-gap: 0; }
-  /* The line above is one row on a phone: where the agents or the commands stand beside the plan it is its count and its
-     bar's end (the step's words are in the plan when it opens), and the agents take the rest; where their counts do not
-     fit beside it at a large text size the row wraps and they stand on a row of their own. */
-  .k-docket-row > .k-docket-planline:not(:only-child) { flex: 0 0 auto; }
-  .k-docket-row > .k-docket-planline:not(:only-child) .k-docket-step { display: none; }
-  .k-docket-row { flex-wrap: wrap; }
-  .k-docket-row > .k-agents-line { flex: 1 1 auto; max-width: 100%; }
-  /* The agents line: its counts keep their words, and what it waits on goes under them where the row is short. */
-  .k-agents-line { flex-wrap: wrap; row-gap: 0; }
-  .k-agents-parts { flex: 0 1 auto; height: auto; overflow: visible; }
-  .k-agents-part, .k-agents-none { height: auto; }
-  .k-agents-line > .k-docket-more { margin-left: auto; }
   /* The plan's count already says how far it is; the bar would take the step's words their room. */
   .k-docket-job > .k-job-meta { flex-basis: 100%; order: 2; padding-left: 1.375rem; }
   .k-docket-job > .k-job-stop { order: 1; }
