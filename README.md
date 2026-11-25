@@ -2001,14 +2001,18 @@ the gate stored with the card and what the disk says of the session's folder
 whole effect, where the effect stays in the session's folder on this machine.
 The list holds commands made only of programs that read and show (ls, cat,
 head, tail, grep, rg, find, wc, sort, diff, stat, file, jq, sed, awk) with no
-option or script that runs code or writes outside the folder; git's reading and
-local commands (status, log, diff, show, branch, fetch, clone into the folder or
-the cache, add, commit, checkout or switch of a local branch, stash); curl and
-wget GET requests to a public host, with no redirect followed; mkdir, cp and mv
-within the folder; edits of files in the folder that are not executable and
-that no runner reads as code (tests, conftest.py, build and package files,
-hooks, CI, agent instructions, installed packages); and MCP tools whose server
-says they only read (readOnlyHint, and no destructiveHint). Every other card
+option or script that runs code or writes a file (sed -i and rg -z included);
+mkdir within the folder; cp or mv of one regular file that is not executable
+to one file path in the folder, both checked where their links lead, the
+destination not a file a runner reads as code; edits of files in the folder
+that are not executable and that no runner reads as code (tests, conftest.py,
+build and package files, tool configurations that load plugins, pip's
+configuration, hooks, CI, agent instructions, installed packages); and MCP
+tools whose server says they only read (readOnlyHint, and no
+destructiveHint). Nothing on the list trusts configuration the card does not
+show, so git (hooks, filters, fsmonitor, textconv, a pager or diff program
+from the repository's or the owner's configuration), curl and wget are off it.
+Every other card
 reaches the owner at once, as before, named by its class where one is known: a
 target outside content named first, what only the owner allows, spending,
 an irreversible publish or deletion, authority over his machines or the rules

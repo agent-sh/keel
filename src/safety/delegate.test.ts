@@ -201,6 +201,7 @@ const placed = () => {
   chmodSync(join(ws, "run.sh"), 0o755);
   mkdirSync(join(root, "elsewhere"));
   symlinkSync(join(root, "elsewhere"), join(ws, "out-link"));
+  symlinkSync(join(ws, "a.txt"), join(ws, "a-link"));
   const place = localPlace(ws);
   const shell = (summary: string, at?: CardIn["at"], p: Place | undefined = place) => offList({ tool: "Bash", kind: "shell", summary, input: { command: summary }, risk: "low", ...(at ? { at } : {}) }, p);
   const edit = (path: string, input: Record<string, unknown> = { content: "x" }) => offList({ tool: "Write", kind: "edit", summary: path, input: { file_path: path, ...input }, risk: "low" }, place);
@@ -211,12 +212,8 @@ test("the allow-list: commands of listed programs that run no code and write onl
   const { shell } = placed();
   for (const line of [
     "ls -la", "cat a.txt | grep -n x | wc -l", "find . -name '*.ts' -type f", "sort -u a.txt", "diff a.txt notes.txt", "stat a.txt", "file a.txt",
-    "jq .x a.json", "rg -n foo src", "head -5 a.txt", "tail -n 3 a.txt", "sed -n 's/a/b/p' a.txt", "sed -i 's/a/b/g;/^$/d' notes.txt", "awk '{print $1}' a.txt",
-    "git status", "git log --oneline -5", "git diff HEAD~1", "git show HEAD", "git branch -a", "git branch feature", "git fetch origin", "git fetch --prune origin",
-    "git clone https://github.com/x/y.git", "git clone --depth 1 https://github.com/x/y vendor/y", "git add -A", "git commit -m 'msg'",
-    "git checkout main", "git checkout packed", "git checkout -b new", "git switch -c new2", "git switch main", "git stash", "git stash pop",
-    "curl -fsS https://example.com/a -o a.html", "curl -sI https://example.com/", "wget -q --max-redirect=0 https://example.com/f.txt",
-    "mkdir -p build/out", "cp a.txt b.txt", "mv notes.txt src/", "ls src && cat src/a.ts",
+    "jq .x a.json", "rg -n foo src", "head -5 a.txt", "tail -n 3 a.txt", "sed -n 's/a/b/p' a.txt", "awk '{print $1}' a.txt",
+    "mkdir -p build/out", "cp a.txt b.txt", "cp a.txt src/b.txt", "cp -n a.txt notes.txt", "mv notes.txt src/notes.txt", "mv -T a.txt src/c.txt", "ls src && cat src/a.ts",
   ]) expect([line, shell(line)]).toEqual([line, null]);
 });
 
@@ -232,25 +229,31 @@ test("the allow-list: every other command is the owner's, by its class where one
     ["FOO=1 ls", "unseen"], ["ls $HOME", "unseen"], ["nice ls", "unseen"],
     ["find . -exec rm {} ;", "unseen"], ["find . -delete", "unseen"], ["find . -fprint out", "unseen"], ["rg --pre ./x foo", "unseen"], ["sort -o out a.txt", "unseen"],
     ["sort --compress-program=gzip a.txt", "unseen"], ["file -C -m x", "unseen"],
-    ["sed 's/a/b/e' a.txt", "unseen"], ["sed 'w out' a.txt", "unseen"], ["sed -f s.sed a.txt", "unseen"], ["sed '1e id' a.txt", "unseen"], ["sed -i 's/a/b/' conftest.py", "unseen"],
-    ["sed -i 's/a/b/' ../x.txt", "authority"], ["sed -i 's/a/b/' run.sh", "unseen"],
+    // rg's -z runs a decompressor over compressed files.
+    ["rg -z foo", "unseen"], ["rg -nz foo", "unseen"], ["rg --search-zip foo", "unseen"],
+    ["sed 's/a/b/e' a.txt", "unseen"], ["sed 'w out' a.txt", "unseen"], ["sed -f s.sed a.txt", "unseen"], ["sed '1e id' a.txt", "unseen"],
+    // sed in place: off the list wherever it writes (backups, links); edits go through the edit tools.
+    ["sed -i 's/a/b/g;/^$/d' notes.txt", "unseen"], ["sed -ni 's/a/b/p' notes.txt", "unseen"], ["sed --in-place=.bak 's/a/b/' notes.txt", "unseen"], ["sed -i 's/a/b/' ../x.txt", "unseen"],
     [`awk '{system("id")}' a.txt`, "unseen"], [`awk '{print > "f"}' a.txt`, "unseen"], [`awk '{print | "sh"}' a.txt`, "unseen"], ["awk -f p.awk a.txt", "unseen"],
-    [`awk 'BEGIN{getline x < "/inet/tcp/0/example.com/80"}'`, "unseen"], ["git add --chmod=+x a.txt", "unseen"],
-    // git: what reaches another machine, deletes, forces, restores files or runs a program.
-    ["git push origin main", "authority"], ["git -c core.pager=x log", "unseen"], ["git checkout -- a.txt", "unseen"], ["git checkout a.txt", "unseen"],
-    ["git checkout -f main", "unseen"], ["git branch -D old", "unseen"], ["git stash drop", "unseen"], ["git stash clear", "unseen"],
-    ["git clone ext::sh -c id x", "unseen"], ["git clone --template=/x https://github.com/x/y", "unseen"], ["git clone https://github.com/x/y ../y", "authority"],
-    ["git config core.hooksPath x", "unseen"], ["git fetch origin +main:main", "unseen"], ["git -C ../elsewhere status", "authority"], ["git submodule update", "unseen"],
-    // curl and wget: a write to a service, a private host, a redirect, credentials or options from a file, other schemes.
-    ["curl -sX POST https://api.example.com/x", "authority"], ["curl -d x https://api.example.com/x", "unseen"], ["curl -L https://example.com/", "unseen"],
-    ["curl -fsSL https://example.com/", "unseen"], ["curl https://localhost:1/", "authority"], ["curl http://10.0.0.5/", "authority"], ["curl http://printer/", "authority"],
-    ["curl http://nas.local/x", "authority"], ["curl -K f https://example.com/", "unseen"], ["curl -u a:b https://example.com/", "unseen"], ["curl file:///etc/passwd", "unseen"],
-    ["curl -n https://example.com/", "unseen"], ["curl --unix-socket /run/x.sock http://x/", "unseen"], ["curl --resolve example.com:443:127.0.0.1 https://example.com/", "unseen"],
-    ["wget https://example.com/x", "unseen"], ["curl -O https://example.com/conftest.py", "unseen"], ["curl -o ../x https://example.com/x", "authority"],
-    ["wget --max-redirect=0 https://example.com/Makefile", "unseen"],
-    // mkdir, cp and mv: within the folder, and nothing put in place as code.
-    ["cp a.txt ../x", "authority"], ["cp a.txt Makefile", "unseen"], ["mv a.txt .github/workflows/x.yml", "unseen"], ["mkdir ../out", "authority"],
-    ["cp a.txt out-link/a.txt", "authority"], ["cp a.txt ~/x", "authority"], ["cp -s a.txt b", "unseen"], ["mv notes.txt package.json", "unseen"],
+    [`awk 'BEGIN{getline x < "/inet/tcp/0/example.com/80"}'`, "unseen"],
+    // git: none of it, its reading commands included (hooks, filters, fsmonitor, textconv, a pager from configuration); a push reaches another machine.
+    ["git status", "unseen"], ["git log --oneline -5", "unseen"], ["git diff HEAD~1", "unseen"], ["git show HEAD", "unseen"], ["git branch -a", "unseen"],
+    ["git fetch origin", "unseen"], ["git clone https://github.com/x/y.git", "unseen"], ["git add -A", "unseen"], ["git commit -m 'msg'", "unseen"],
+    ["git checkout main", "unseen"], ["git switch main", "unseen"], ["git stash", "unseen"], ["git -C . status", "unseen"], ["git push origin main", "authority"],
+    // curl and wget: none of it, a GET to a public host included.
+    ["curl -fsS https://example.com/a -o a.html", "unseen"], ["curl -sI https://example.com/", "unseen"], ["wget -q --max-redirect=0 https://example.com/f.txt", "unseen"],
+    ["curl -sX POST https://api.example.com/x", "unseen"], ["curl http://10.0.0.5/", "unseen"],
+    // mkdir within the folder only.
+    ["mkdir ../out", "authority"], ["mkdir out-link/x", "authority"],
+    // cp and mv: one regular file to one file path; a folder, a link, an executable, more than one source, a target folder or a recursive form is the owner's.
+    ["cp -r src out", "unseen"], ["cp -a a.txt b.txt", "unseen"], ["cp -R src/a.ts b.txt", "unseen"], ["cp -t src a.txt", "unseen"], ["cp --target-directory=src a.txt", "unseen"],
+    ["cp a.txt notes.txt src", "unseen"], ["mv notes.txt src/", "unseen"], ["mv notes.txt src", "unseen"], ["cp a.txt .", "unseen"], ["cp src b.txt", "unseen"],
+    ["cp a-link b.txt", "unseen"], ["cp a.txt a-link", "unseen"], ["cp run.sh b.txt", "unseen"], ["cp a.txt run.sh", "unseen"], ["cp missing.txt b.txt", "unseen"],
+    ["cp a.txt nowhere/b.txt", "unseen"], ["cp -s a.txt b", "unseen"], ["cp -l a.txt b", "unseen"],
+    ["cp a.txt ../x", "authority"], ["cp ../x a.txt", "authority"], ["cp a.txt out-link/a.txt", "authority"], ["cp a.txt ~/x", "authority"],
+    // A link's `..` is the folder above where the link leads, not the session's folder.
+    ["cp out-link/../a.txt b.txt", "authority"], ["cp a.txt out-link/../b.txt", "authority"],
+    ["cp a.txt Makefile", "unseen"], ["mv a.txt .github/workflows/x.yml", "unseen"], ["mv notes.txt package.json", "unseen"], ["cp a.txt tsconfig.json", "unseen"],
   ];
   for (const [line, cls] of cases) expect([line, shell(line)?.cls]).toEqual([line, cls]);
   // Through the card's classes first: a pushed tag with git's own options before its command, a tag with no dot.
@@ -261,6 +264,11 @@ test("the allow-list: every other command is the owner's, by its class where one
   expect(shell("ls", { cwd: "/", away: true })?.cls).toBe("authority");
   expect(shell("ls", undefined, { ...localPlace(ws), far: true })?.cls).toBe("authority");
   expect(offList({ tool: "Bash", kind: "shell", summary: "ls", input: { command: "ls" }, risk: "low" })?.cls).toBe("unseen");
+  // Off the list, a command is still named by its class: a request that writes to a service, a private host.
+  expect([at("curl -sX POST https://api.example.com/x"), at("curl http://10.0.0.5/"), at("git status")]).toEqual(["authority", "authority", "unseen"]);
+  // An options file the daemon's environment names for rg: off the list unless rg is told to read none.
+  const rc = { ...localPlace(ws), rgConfig: join(ws, "rgrc") };
+  expect([shell("rg foo", undefined, rc)?.cls, shell("rg --no-config foo", undefined, rc)]).toEqual(["unseen", null]);
 });
 
 test("the allow-list: edits of files in the folder that are not executable and that no runner reads as code", () => {
@@ -270,7 +278,10 @@ test("the allow-list: edits of files in the folder that are not executable and t
   expect(edit(join(ws, "src/a.ts"), { old_string: "x", new_string: "y" })).toBeNull();
   for (const f of ["conftest.py", "tests/conftest.py", "src/a.test.ts", "web/x.spec.tsx", "test_x.py", "x_test.go", "Makefile", "package.json", "build.rs", "pyproject.toml",
     ".git/hooks/pre-commit", ".husky/pre-commit", ".github/workflows/ci.yml", ".gitlab-ci.yml", ".keel/checks.json", ".envrc", "bunfig.toml", "vite.config.ts", "AGENTS.md",
-    ".mcp.json", "node_modules/x/index.js", ".venv/lib/x.pth", "Dockerfile", "scripts/x.sh"])
+    ".mcp.json", "node_modules/x/index.js", ".venv/lib/x.pth", "Dockerfile", "scripts/x.sh",
+    // pip's configuration, and the TypeScript and JavaScript tool configurations that load plugins.
+    "pip.conf", "pip.ini", "tsconfig.json", "web/tsconfig.build.json", "jsconfig.json", ".babelrc", "babel.config.json", ".eslintrc.json", "eslint.config.mjs",
+    "jest.config.json", "vitest.config.mts", "vite.config.js"])
     expect([f, edit(join(ws, f))?.cls]).toEqual([f, "unseen"]);
   expect(edit(join(ws, "run.sh"))?.cls).toBe("unseen");
   expect(edit(join(root, "elsewhere", "a.txt"))?.cls).toBe("authority");

@@ -7,20 +7,23 @@
 // on the allow-list (`offList`): one whose card shows its whole effect, and
 // that effect stays in the session's folder on this machine. A list of what to
 // refuse always misses a form; a list of what may pass does not grow by itself.
-// The list, and nothing else:
+// The list needs no trust in configuration the card does not show. The list, and nothing else:
 //
 // - a command whose every part is a program of the list, with arguments that
-//   run no code: ls, cat, head, tail, grep, rg, find (no -exec, -delete or
-//   file output), wc, sort (no output file or compressor), diff, stat, file,
-//   jq, sed (no e or w command, its in-place files in the folder) and awk (no
-//   system, pipe or output redirect, no program file); git's reading and local
-//   commands (status, log, diff, show, branch, fetch, clone into the folder or
-//   the cache, add, commit, checkout or switch of a local branch, stash);
-//   curl and wget GET requests to a public host, with no redirect followed;
-//   mkdir, cp and mv within the folder;
+//   run no code: ls, cat, head, tail, grep, rg (no --pre, no -z, no options
+//   file the daemon's environment names), find (no -exec, -delete or file
+//   output), wc, sort (no output file or compressor), diff, stat, file, jq,
+//   sed (no e or w command, no -i: edits go through the edit tools) and awk
+//   (no system, pipe or output redirect, no program file); mkdir within the
+//   folder; cp or mv of one regular file that is not executable to one file
+//   path, both in the folder where their links lead, nothing put in place as
+//   a runner's code. git (hooks, filters, fsmonitor, textconv, a pager or
+//   diff program from the repository's or the owner's configuration), curl
+//   and wget (what a request sends and where its name leads) are not on it;
 // - an edit or a write of files in the folder that are not executable and that
 //   no runner reads as code (`codeFile`: tests, conftest.py, build and package
-//   files, hooks, CI, agent instructions, installed packages);
+//   files, tool configurations that load plugins, pip's, hooks, CI, agent
+//   instructions, installed packages);
 // - an MCP tool whose server says readOnlyHint and does not say destructiveHint.
 //
 // Every other card is the owner's, named by its class where one is known and
@@ -48,9 +51,9 @@
 //
 // The card as stored and the session's place in, a class or null out
 // (delegate.test.ts). The place (`localPlace`) is what this machine's disk says
-// of the paths: where links lead, which file is executable, which branch exists.
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+// of the paths: where links lead, which file is executable, what a path names.
+import { lstatSync, statSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 import { name as base, unwrap, type RiskRule } from "./risk-words.ts";
 import { splitCommand, type Simple } from "./shell.ts";
 import { isOwnPort } from "./net-proxy.ts";
@@ -311,6 +314,9 @@ function methodOf(p: string, args: string[]): string | undefined {
     if (/^(-X|--request|--method)$/.test(a)) { m = (args[k + 1] ?? "").toUpperCase(); k++; continue; }
     const glued = /^(?:-X|--request=|--method=)(\w+)$/.exec(a);
     if (glued) { m = glued[1]!.toUpperCase(); continue; }
+    // curl's short options run together: -sX POST, -sXPOST.
+    const run = p === "curl" ? /^-[A-Za-z0-9#:]*X(\w*)$/.exec(a) : null;
+    if (run) { m = (run[1] || (args[++k] ?? "")).toUpperCase(); continue; }
     if (gh && (/^(-f|-F|--field|--raw-field|--input)$/.test(a) || /^(-f|-F)./.test(a) || /^--(field|raw-field|input)=/.test(a))) body = true;
     if (p === "curl" && (/^(-d|--data.*|-F|--form.*|-T|--upload-file|--json)$/.test(a) || /^(-d|-F|-T)./.test(a) || /^--(data|form|json|upload-file)[-=]/.test(a))) body = true;
     if (p === "wget" && /^--(post-data|post-file|body-data|body-file)(=|$)/.test(a)) body = true;
@@ -463,48 +469,29 @@ export function toolClass(words: string[]): Hit {
 // --- the allow-list -----------------------------------------------------------------
 
 // What this machine's disk says of a session's paths, for the list. `localPlace` reads the disk; a test may give its own.
-// `workspace`: the session's folder where its links lead. `far`: its calls run on another machine. `cache`: the cache
-// folder a clone may go to. `real`: a path where its links lead. `exec`: an existing file someone may execute.
-// `branch`: a local branch of the repository a folder is in. `exists`: a path names a file or a folder.
+// `workspace`: the session's folder where its links lead. `far`: its calls run on another machine. `real`: a path where
+// its links lead, each part resolved before the `..` after it. `exec`: an existing file someone may execute. `kind`: what
+// a path names itself, its last part not followed. `rgConfig`: the ripgrep options file the daemon's environment names,
+// which every rg it starts reads.
+export type PathKind = "file" | "dir" | "link" | "missing" | "other";
 export type Place = {
-  workspace: string; far?: boolean; cache?: string; home: string;
-  real(p: string): string; exec(p: string): boolean; branch(cwd: string, name: string): boolean; exists(p: string): boolean;
+  workspace: string; far?: boolean; home: string; rgConfig?: string;
+  real(p: string): string; exec(p: string): boolean; kind(p: string): PathKind;
 };
 
 export function localPlace(workspace: string, far = false): Place {
-  const home = homeDir();
-  const cache = process.env.XDG_CACHE_HOME && process.env.XDG_CACHE_HOME.startsWith("/") ? process.env.XDG_CACHE_HOME : join(home, ".cache");
   return {
-    workspace: far ? workspace : realOf(workspace), far, cache: realOf(cache), home,
+    workspace: far ? workspace : realOf(workspace), far, home: homeDir(),
+    ...(process.env.RIPGREP_CONFIG_PATH ? { rgConfig: process.env.RIPGREP_CONFIG_PATH } : {}),
     real: realOf,
     exec: (p) => { try { const st = statSync(p); return st.isFile() && (st.mode & 0o111) !== 0; } catch { return false; } },
-    branch: localBranch,
-    exists: existsSync,
+    kind: (p) => {
+      try {
+        const st = lstatSync(p);
+        return st.isSymbolicLink() ? "link" : st.isFile() ? "file" : st.isDirectory() ? "dir" : "other";
+      } catch (e) { return (e as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "other"; }
+    },
   };
-}
-
-// Whether `name` is a local branch of the repository `cwd` is in: its ref file or its line in packed-refs.
-export function localBranch(cwd: string, name: string): boolean {
-  if (!/^[A-Za-z0-9._/-]+$/.test(name) || name.startsWith("-") || name.startsWith("/") || name.endsWith("/") || name.includes("..") || name.includes("//") || name.endsWith(".lock") || name === "HEAD") return false;
-  try {
-    let d = realOf(cwd);
-    let gitdir: string | undefined;
-    for (;;) {
-      const g = join(d, ".git");
-      if (existsSync(g)) {
-        gitdir = statSync(g).isDirectory() ? g : resolve(d, /^gitdir:\s*(.+)$/m.exec(readFileSync(g, "utf8"))?.[1]?.trim() ?? "");
-        break;
-      }
-      const up = dirname(d);
-      if (up === d) return false;
-      d = up;
-    }
-    const common = existsSync(join(gitdir, "commondir")) ? resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim()) : gitdir;
-    const ref = join(common, "refs", "heads", name);
-    if (existsSync(ref) && statSync(ref).isFile()) return true;
-    const packed = join(common, "packed-refs");
-    return existsSync(packed) && readFileSync(packed, "utf8").split("\n").some((l) => l.endsWith(` refs/heads/${name}`));
-  } catch { return false; }
 }
 
 const off = (cls: OwnerClass, what: string): Hit => ({ cls, what });
@@ -536,6 +523,9 @@ const CODE_NAMES = new RegExp("^(" + [
   "Dockerfile.*", ".*\\.dockerfile", "Containerfile.*", "(docker-)?compose(\\..*)?\\.ya?ml", "Jenkinsfile", "\\.gitlab-ci\\.ya?ml", "\\.travis\\.ya?ml", "azure-pipelines\\.ya?ml", "\\.pre-commit-config\\.ya?ml",
   "\\.gitattributes", "\\.gitmodules", "\\.envrc", "\\.env(\\..*)?", "\\.(bash|zsh|profile|bash_profile|zprofile|zshenv|bashrc|zshrc|inputrc)", ".*\\.(sh|bash|zsh|fish|ps1|bat|cmd)",
   "AGENTS\\.md", "CLAUDE\\.md", "GEMINI\\.md", "\\.mcp\\.json", "\\.cursorrules",
+  // pip's own configuration (an index, a build hook); TypeScript and JavaScript tool configurations that load plugins.
+  "pip\\.(conf|ini)", "tsconfig.*\\.json", "jsconfig.*\\.json", "\\.babelrc(\\..*)?", "babel\\.config\\..*", "\\.eslintrc(\\..*)?", "eslint\\.config\\..*",
+  "(vite|vitest|jest|webpack|rollup|postcss|tailwind|svelte|astro|nuxt|next)\\.config\\..*", "vitest\\.workspace\\..*", "jest\\.preset\\..*",
 ].join("|") + ")$");
 
 // Why a path (relative to the session's folder) is a file a runner reads as code, or null.
@@ -560,9 +550,10 @@ function writeOffList(path: string, place: Place, who: string): Hit {
 
 // A path as a command gives it, absolute: `~` is the home folder; `~user` is not read.
 function pathAt(cwd: string, p: string, place: Place): string | null {
-  if (p === "~" || p.startsWith("~/")) return join(place.home, p.slice(1));
+  if (p === "~" || p.startsWith("~/")) return place.home + p.slice(1);
   if (p.startsWith("~")) return null;
-  return resolve(cwd, p);
+  // (Not normalised: `link/..` is the folder above where the link leads, which `real` finds; a lexical `..` would not.)
+  return p.startsWith("/") ? p : `${cwd}/${p}`;
 }
 
 // --- edits
@@ -625,40 +616,50 @@ function partOffList(run: string[], cwd: string, place: Place): Hit {
   if (READS.has(p)) {
     if (p === "find" && has(FIND_ACTS)) return unseen(`find runs a program or writes or deletes files (${said})`);
     if (p === "rg" && has(/^--(pre|pre-glob|hostname-bin)(=|$)/)) return unseen(`rg runs a program it is given (${said})`);
+    // (-z runs a decompressor found on the PATH over each compressed file.)
+    if (p === "rg" && (short("z") || has(/^--search-zip$/))) return unseen(`rg runs a decompression program over compressed files (${said})`);
+    if (p === "rg" && place.rgConfig && !has(/^--no-config$/)) return unseen(`rg reads its options from ${place.rgConfig}, which the card does not show (${said})`);
     if (p === "sort" && (short("o") || has(/^--(output|compress-program)(=|$)/))) return unseen(`sort writes a file or runs a program (${said})`);
     if (p === "file" && (short("C") || has(/^--compile$/))) return unseen(`file writes a compiled magic file (${said})`);
     return null;
   }
-  if (p === "sed") return sedOffList(args, cwd, place, said);
+  if (p === "sed") return sedOffList(args, said);
   if (/^(awk|gawk|mawk|nawk)$/.test(p)) return awkOffList(p, args, said);
-  if (p === "git") return gitOffList(args, cwd, place, said);
-  if (p === "curl" || p === "wget") return fetchOffList(p, args, cwd, place, said);
-  if (p === "mkdir" || p === "cp" || p === "mv") return moveOffList(p, args, cwd, place, said);
+  // git runs what the repository's and the owner's configuration name (hooks, filters, fsmonitor, textconv, an
+  // external diff, a pager), even for status, log or diff: nothing of git is on the list. A push changes another
+  // machine.
+  if (p === "git") return gitCommand(args).verb === "push" ? off("authority", `git push changes a repository on another machine (${said})`)
+    : unseen(`git runs hooks, filters, a pager or diff programs from configuration the card does not show (${said})`);
+  // A request's query, headers from files, the client's startup files and where its name resolves are not on the card.
+  if (p === "curl" || p === "wget") return unseen(`${p} sends to the network what the card does not show in whole (${said})`);
+  if (p === "mkdir") return mkdirOffList(args, cwd, place, said);
+  if (p === "cp" || p === "mv") return copyOffList(p, args, cwd, place, said);
   return unseen(`${p} is not among the programs whose whole effect a card shows`);
 }
 
 // --- sed
 
-function sedOffList(args: string[], cwd: string, place: Place, said: string): Hit {
+// sed reads and prints; its in-place form writes files (and backups beside them, through links) and is the owner's:
+// an edit goes through the edit tools, whose card names each file where its links lead.
+function sedOffList(args: string[], said: string): Hit {
   const scripts: string[] = [];
   const operands: string[] = [];
-  let inPlace = false;
   let dd = false;
   for (let k = 0; k < args.length; k++) {
     const a = args[k]!;
     if (dd || a === "-" || !a.startsWith("-")) { operands.push(a); continue; }
     if (a === "--") { dd = true; continue; }
     if (a.startsWith("--")) {
-      if (/^--in-place(=|$)/.test(a)) inPlace = true;
+      if (/^--in-place(=|$)/.test(a)) return unseen(`sed writes files in place (${said})`);
       else if (a === "--expression") scripts.push(args[++k] ?? "");
       else if (a.startsWith("--expression=")) scripts.push(a.slice("--expression=".length));
-      else if (!/^--(quiet|silent|regexp-extended|separate|unbuffered|null-data|zero-terminated|posix|sandbox|debug|follow-symlinks|binary|line-length=\d+)$/.test(a)) return unseen(`sed's option ${a} is not on the list (${said})`);
+      else if (!/^--(quiet|silent|regexp-extended|separate|unbuffered|null-data|zero-terminated|posix|sandbox|debug|line-length=\d+)$/.test(a)) return unseen(`sed's option ${a} is not on the list (${said})`);
       continue;
     }
     for (let j = 1; j < a.length; j++) {
       const c = a[j]!;
-      if ("nrEsuzb".includes(c)) continue;
-      if (c === "i") { inPlace = true; break; }
+      if ("nrEsuz".includes(c)) continue;
+      if (c === "i") return unseen(`sed writes files in place (${said})`);
       if (c === "e") { const rest = a.slice(j + 1); scripts.push(rest || (args[++k] ?? "")); break; }
       if (c === "l") { if (!a.slice(j + 1)) k++; break; }
       return unseen(c === "f" ? `sed reads its script from a file the card does not show (${said})` : `sed's option -${c} is not on the list (${said})`);
@@ -668,13 +669,6 @@ function sedOffList(args: string[], cwd: string, place: Place, said: string): Hi
   for (const s of scripts) {
     const bad = sedRuns(s);
     if (bad) return unseen(`sed ${bad} (${said})`);
-  }
-  if (inPlace) for (const f of operands) {
-    if (f === "-") continue;
-    const path = pathAt(cwd, f, place);
-    if (!path) return unseen(`sed writes a path the rules cannot place (${f})`);
-    const hit = writeOffList(path, place, "sed -i");
-    if (hit) return hit;
   }
   return null;
 }
@@ -764,211 +758,78 @@ function awkOffList(p: string, args: string[], said: string): Hit {
   return null;
 }
 
-// --- git
-
-function gitOffList(args: string[], cwd: string, place: Place, said: string): Hit {
-  let repo = cwd;
-  let k = 0;
-  for (; k < args.length; k++) {
-    const a = args[k]!;
-    if (a === "-C") {
-      const d = args[++k];
-      const at = d === undefined ? null : pathAt(repo, d, place);
-      if (!at) return unseen(`git -C names a folder the rules cannot place (${said})`);
-      repo = place.real(at);
-      if (!contains(place.workspace, repo)) return off("authority", `git works in a folder outside the session's (${said})`);
-      continue;
-    }
-    if (/^(--no-pager|--no-optional-locks|-P|--literal-pathspecs|--no-replace-objects|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-advice)$/.test(a)) continue;
-    if (a.startsWith("-")) return unseen(`git's option ${a} can change what it runs or where (${said})`);
-    break;
-  }
-  const verb = args[k] ?? "";
-  const rest = args.slice(k + 1);
-  const opts = rest.filter((a) => a.startsWith("-"));
-  const words = rest.filter((a) => !a.startsWith("-"));
-  const only = (re: RegExp) => opts.find((a) => !re.test(a));
-  const bad = (what: string) => unseen(`git ${verb} ${what} (${said})`);
-  switch (verb) {
-    case "add":
-      // (--chmod marks a file executable in what is committed.)
-      return rest.some((a) => a.startsWith("--chmod")) ? bad("marks a file executable") : null;
-    case "status": case "commit":
-      return null;
-    case "log": case "show": case "diff":
-      if (rest.some((a) => /^--(output|ext-diff|textconv)(=|$)/.test(a))) return bad("writes a file or runs a diff program");
-      return null;
-    case "branch": {
-      const o = only(/^(-a|--all|-r|--remotes|-l|--list|-v|-vv|--verbose|--show-current|--contains|--no-contains|--merged|--no-merged|--points-at|--sort(=.*)?|--format(=.*)?|--color(=.*)?|--no-color|--column(=.*)?|--no-column|-i|--ignore-case|--abbrev(=.*)?|--no-abbrev|-q|--quiet|-t|--track(=.*)?|--no-track)$/);
-      return o ? bad(`with ${o} deletes, moves, copies or forces a branch, or opens an editor`) : null;
-    }
-    case "fetch": {
-      const o = only(/^(--all|--prune|-p|--tags|-t|--no-tags|-n|--depth=\d+|--deepen=\d+|--unshallow|-q|--quiet|-v|--verbose|--progress|--dry-run|--multiple|--jobs=\d+|-j\d+|--no-recurse-submodules|--filter=.*|--atomic|--no-write-fetch-head)$/);
-      if (o) return bad(`with ${o} is not on the list`);
-      const w = words.find((a) => a.includes("::") || a.includes(":") && !/^[a-z]+:\/\//i.test(a) && !/^[\w.-]+@[\w.-]+:/.test(a) || a.startsWith("+"));
-      return w ? bad(`with ${w} forces a ref, names a transport or writes a local ref`) : null;
-    }
-    case "clone": return cloneOffList(rest, repo, place, said);
-    case "switch": {
-      const o = only(/^(-c|--create|-d|--detach|--guess|--no-guess|-q|--quiet|-t|--track(=.*)?|--no-track|--progress|--no-progress)$/);
-      if (o) return bad(`with ${o} forces, discards or merges changes`);
-      return words.length >= 1 && words.length <= 2 ? null : bad("names more than a branch and its start");
-    }
-    case "checkout": {
-      const o = only(/^(-b|-q|--quiet|-t|--track(=.*)?|--no-track|--progress|--no-progress|--detach|--guess|--no-guess)$/);
-      if (o) return bad(`with ${o} forces, resets or restores files`);
-      if (opts.includes("-b")) return words.length >= 1 && words.length <= 2 && !rest.includes("--") ? null : bad("names more than a new branch and its start");
-      // A word that is not a local branch is a path: checkout puts the file back as committed, losing its changes.
-      if (words.length !== 1) return bad("names files or more than one branch");
-      const b = words[0]!;
-      if (!place.branch(repo, b)) return bad(`names ${b}, which is not a local branch: checkout would restore files`);
-      if (place.exists(resolve(repo, b))) return bad(`names ${b}, which is a local branch and a path too`);
-      return null;
-    }
-    case "stash": {
-      const sub = words[0];
-      if (sub === undefined || /^(push|save|list|show|apply|pop)$/.test(sub)) return null;
-      return bad(sub === "drop" || sub === "clear" ? "deletes stashed work" : `${sub} is not on the list`);
-    }
-    case "push": return off("authority", `git push changes a repository on another machine (${said})`);
-    default: return unseen(`git ${verb} is not among git's commands whose whole effect a card shows (${said})`);
-  }
-}
-
-function cloneOffList(rest: string[], cwd: string, place: Place, said: string): Hit {
-  const words: string[] = [];
-  for (let k = 0; k < rest.length; k++) {
-    const a = rest[k]!;
-    if (/^(-b|--branch|-o|--origin|--depth)$/.test(a)) { k++; continue; }
-    if (/^(-q|--quiet|-v|--verbose|--progress|--depth=\d+|--shallow-since=.*|--single-branch|--no-single-branch|--no-tags|--branch=.*|--origin=.*|--filter=.*|--sparse|-n|--no-checkout|--bare)$/.test(a)) continue;
-    if (a.startsWith("-")) return unseen(`git clone with ${a} is not on the list: it can run a program, a template's hooks or write elsewhere (${said})`);
-    words.push(a);
-  }
-  const [url, dir] = words;
-  if (!url || words.length > 2) return unseen(`git clone is given no source or more than a source and a folder (${said})`);
-  if (url.includes("::")) return unseen(`git clone names a transport that runs a program (${url})`);
-  const name = dir ?? basename(url.replace(/\/+$/, "").replace(/\.git$/, "").replace(/^.*:/, ""));
-  const target = name ? pathAt(cwd, name, place) : null;
-  if (!target) return unseen(`git clone writes a folder the rules cannot place (${said})`);
-  const real = place.real(target);
-  if (!contains(place.workspace, real) && !(place.cache && contains(place.cache, real))) return off("authority", `git clone writes outside the session's folder and the cache (${target})`);
-  const code = contains(place.workspace, real) ? codeFile(relative(place.workspace, real)) : null;
-  return code ? unseen(`git clone writes ${code}, which a runner reads as code`) : null;
-}
-
-// --- curl and wget
-
-const LOCAL_NAMES = /(^|\.)(local|localdomain|internal|intranet|lan|home|corp|home\.arpa|localhost)\.?$/i;
-
-function fetchOffList(p: "curl" | "wget", args: string[], cwd: string, place: Place, said: string): Hit {
-  const urls: string[] = [];
-  const writes: string[] = [];
-  let named = false;
-  let noRedirect = p === "curl";
-  let prefix: string | undefined;
-  // Options with no value, and those with one, for each; any other is the owner's.
-  const FLAGS = p === "curl"
-    ? /^--(silent|show-error|fail|fail-with-body|head|include|verbose|compressed|remote-name|no-progress-meter|progress-bar|http1\.0|http1\.1|http2|ipv4|ipv6|globoff|no-buffer|get)$/
-    : /^--(quiet|no-verbose|server-response|spider|continue|timestamping|no-clobber|inet4-only|inet6-only|no-cache)$/;
-  const VALUED = p === "curl"
-    ? /^--(output|header|user-agent|referer|max-time|connect-timeout|retry|retry-delay|retry-max-time|range|request|max-filesize|limit-rate|url)$/
-    : /^--(output-document|timeout|tries|header|user-agent|directory-prefix|max-redirect|wait)$/;
-  const SHORT_FLAGS = p === "curl" ? "sSfIivk#46Og" : "qSc46N";
-  const SHORT_VALUED = p === "curl" ? "oHAemrX" : "OTtUP";
-  const take = (opt: string, v: string | undefined): Hit => {
-    if (v === undefined) return unseen(`${p} ${opt} has no value (${said})`);
-    if (/^(-X|--request)$/.test(opt) && !/^(GET|HEAD)$/i.test(v)) return off("authority", `${p} sends a ${v.toUpperCase()} request, which writes to a service (${said})`);
-    if (/^(-o|--output|-O|--output-document)$/.test(opt) && v !== "-") writes.push(v);
-    if (/^(-P|--directory-prefix)$/.test(opt)) prefix = v;
-    if (opt === "--max-redirect") noRedirect = v === "0";
-    if (opt === "--url") urls.push(v);
-    return null;
-  };
-  let dd = false;
-  for (let k = 0; k < args.length; k++) {
-    const a = args[k]!;
-    if (dd || !a.startsWith("-") || a === "-") { urls.push(a); continue; }
-    if (a === "--") { dd = true; continue; }
-    if (a.startsWith("--")) {
-      const eq = a.indexOf("=");
-      const opt = eq >= 0 ? a.slice(0, eq) : a;
-      if (FLAGS.test(opt) && eq < 0) { if (opt === "--remote-name") named = true; continue; }
-      if (VALUED.test(opt)) { const hit = take(opt, eq >= 0 ? a.slice(eq + 1) : args[++k]); if (hit) return hit; continue; }
-      if (/^--(location|location-trusted)$/.test(opt)) return unseen(`${p} follows redirects to addresses the card does not show (${said})`);
-      return unseen(`${p}'s option ${opt} is not on the list: it may send a body, credentials or a file, read options from a file, or connect elsewhere (${said})`);
-    }
-    for (let j = 1; j < a.length; j++) {
-      const c = a[j]!;
-      if (SHORT_FLAGS.includes(c)) { if (c === "O" && p === "curl") named = true; continue; }
-      if (SHORT_VALUED.includes(c)) { const v = a.slice(j + 1); const hit = take(`-${c}`, v || args[++k]); if (hit) return hit; break; }
-      if (c === "L" && p === "curl") return unseen(`curl follows redirects to addresses the card does not show (${said})`);
-      return unseen(`${p}'s option -${c} is not on the list: it may send a body, credentials or a file, read options from a file, or connect elsewhere (${said})`);
-    }
-  }
-  if (!noRedirect) return unseen(`wget follows redirects to addresses the card does not show unless --max-redirect=0 (${said})`);
-  if (!urls.length) return unseen(`${p} is given no address (${said})`);
-  for (const raw of urls) {
-    let u: URL;
-    try { u = new URL(raw); } catch { return unseen(`${p} is given an address the rules cannot read (${raw})`); }
-    if (!/^https?:$/.test(u.protocol) || !raw.toLowerCase().startsWith(u.protocol)) return unseen(`${p} is given an address that is not http or https (${raw})`);
-    if (/[{}[\]]/.test(u.pathname + u.search)) return unseen(`${p} is given an address with a pattern (${raw})`);
-    const host = u.hostname.replace(/^\[|\]$/g, "");
-    if (privateHost(host) || LOCAL_NAMES.test(host) || (u.port && keelPorts.has(Number(u.port)))) return off("authority", `${p} reaches a host on this machine or a private network (${raw})`);
-    if (p === "wget" && !writes.length) writes.push(join(prefix ?? ".", basename(u.pathname) || "index.html"));
-    if (p === "curl" && named) writes.push(basename(u.pathname) || "");
-  }
-  for (const w of writes) {
-    if (!w) return unseen(`${p} writes a file the address does not name (${said})`);
-    const path = pathAt(cwd, w, place);
-    if (!path) return unseen(`${p} writes a path the rules cannot place (${w})`);
-    const hit = writeOffList(path, place, p);
-    if (hit) return hit;
-  }
-  return null;
-}
-
 // --- mkdir, cp and mv
 
-function moveOffList(p: "mkdir" | "cp" | "mv", args: string[], cwd: string, place: Place, said: string): Hit {
+function mkdirOffList(args: string[], cwd: string, place: Place, said: string): Hit {
   const ops: string[] = [];
-  let target: string | undefined;
   let dd = false;
-  const LONG = p === "mkdir" ? /^--(parents|verbose)$/ : p === "cp"
-    ? /^--(recursive|archive|preserve(=[a-z,]+)?|verbose|no-clobber|update(=[a-z]+)?|force|parents|no-target-directory|dereference|no-dereference|remove-destination)$/
-    : /^--(force|no-clobber|verbose|update(=[a-z]+)?|no-target-directory)$/;
-  const SHORT = p === "mkdir" ? "pv" : p === "cp" ? "rRapvnfuLPdHTx" : "fnvuT";
   for (let k = 0; k < args.length; k++) {
     const a = args[k]!;
     if (dd || !a.startsWith("-") || a === "-") { ops.push(a); continue; }
     if (a === "--") { dd = true; continue; }
-    if (a.startsWith("--")) {
-      if (p !== "mkdir" && /^--target-directory(=|$)/.test(a)) { target = a.includes("=") ? a.slice(a.indexOf("=") + 1) : args[++k]; continue; }
-      if (p === "mkdir" && /^--mode(=|$)/.test(a)) { if (!a.includes("=")) k++; continue; }
-      if (LONG.test(a)) continue;
-      return unseen(`${p}'s option ${a} is not on the list (${said})`);
-    }
+    if (/^--(parents|verbose)$/.test(a)) continue;
+    if (/^--mode(=|$)/.test(a)) { if (!a.includes("=")) k++; continue; }
+    if (a.startsWith("--")) return unseen(`mkdir's option ${a} is not on the list (${said})`);
     for (let j = 1; j < a.length; j++) {
       const c = a[j]!;
-      if (SHORT.includes(c)) continue;
-      if ((c === "t" && p !== "mkdir") || (c === "m" && p === "mkdir")) { const v = a.slice(j + 1) || args[++k]; if (c === "t") target = v; break; }
-      return unseen(`${p}'s option -${c} is not on the list (${said})`);
+      if (c === "p" || c === "v") continue;
+      if (c === "m") { if (!a.slice(j + 1)) k++; break; }
+      return unseen(`mkdir's option -${c} is not on the list (${said})`);
     }
   }
-  if (target !== undefined) ops.push(target);
-  if (!ops.length || (p !== "mkdir" && ops.length < 2)) return unseen(`${p} is given no path, or no source and destination (${said})`);
-  const abs: string[] = [];
+  if (!ops.length) return unseen(`mkdir is given no folder (${said})`);
   for (const o of ops) {
     const at = pathAt(cwd, o, place);
-    if (!at) return unseen(`${p} names a path the rules cannot place (${o})`);
-    if (!contains(place.workspace, place.real(at))) return off("authority", `${p} reaches outside the session's folder (${o})`);
-    abs.push(at);
+    if (!at) return unseen(`mkdir names a path the rules cannot place (${o})`);
+    if (!contains(place.workspace, place.real(at))) return off("authority", `mkdir reaches outside the session's folder (${o})`);
   }
-  if (p === "mkdir") return null;
-  // What lands at the destination: the destination itself, or each source by its name inside it.
-  const dest = abs[abs.length - 1]!;
-  for (const src of abs.slice(0, -1)) for (const at of [dest, join(dest, basename(src))]) {
-    const hit = writeOffList(at, place, p);
-    if (hit) return hit;
+  return null;
+}
+
+// Where a command's file operand lands: its folder where the links lead (each part resolved before a `..` after it),
+// and its last part as given, which the command opens or makes there. Null: the operand names a folder by its form.
+function fileAt(cwd: string, o: string, place: Place): string | null {
+  if (!o || o.endsWith("/") || /(^|\/)\.\.?$/.test(o)) return null;
+  const at = pathAt(cwd, o, place);
+  if (!at) return null;
+  const k = at.lastIndexOf("/");
+  return join(place.real(at.slice(0, k) || "/"), at.slice(k + 1));
+}
+
+// One regular file copied or moved to one file path, both in the session's folder: not a folder, a link or an
+// executable, and nothing put in place as a runner's code (nor, for mv, taken from where a runner reads it).
+// A recursive copy, a target folder and every other option are the owner's.
+function copyOffList(p: "cp" | "mv", args: string[], cwd: string, place: Place, said: string): Hit {
+  const ops: string[] = [];
+  let dd = false;
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (dd || !a.startsWith("-") || a === "-") { ops.push(a); continue; }
+    if (a === "--") { dd = true; continue; }
+    if (a.startsWith("--")) { if (/^--(no-clobber|verbose|force|no-target-directory)$/.test(a)) continue; return unseen(`${p}'s option ${a} is not on the list: only one file to one file is (${said})`); }
+    for (let j = 1; j < a.length; j++) {
+      const c = a[j]!;
+      if (!"nvfT".includes(c)) return unseen(`${p}'s option -${c} is not on the list: only one file to one file is (${said})`);
+    }
   }
+  if (ops.length !== 2) return unseen(`${p} is given more or less than one source and one destination (${said})`);
+  const [srcOp, destOp] = ops as [string, string];
+  const src = fileAt(cwd, srcOp, place);
+  const dest = fileAt(cwd, destOp, place);
+  if (!src) return unseen(`${p} names a folder as its source (${srcOp})`);
+  if (!dest) return unseen(`${p} names a folder as its destination (${destOp}): only one file to one file is on the list`);
+  if (!contains(place.workspace, src)) return off("authority", `${p} reaches outside the session's folder (${srcOp})`);
+  if (!contains(place.workspace, dest)) return off("authority", `${p} writes outside the session's folder (${destOp})`);
+  const sk = place.kind(src);
+  if (sk !== "file") return unseen(`${p}'s source is ${sk === "missing" ? "not there" : sk === "link" ? "a link" : sk === "dir" ? "a folder" : "not a regular file"} (${srcOp})`);
+  if (place.exec(src)) return unseen(`${p}'s source is an executable file (${srcOp})`);
+  const dk = place.kind(dest);
+  if (dk !== "file" && dk !== "missing") return unseen(`${p}'s destination is ${dk === "dir" ? "a folder" : dk === "link" ? "a link" : "not a regular file"} (${destOp}): only one file to one file is on the list`);
+  if (place.kind(dirname(dest)) !== "dir") return unseen(`${p}'s destination is in no folder that is there (${destOp})`);
+  if (dk === "file" && place.exec(dest)) return unseen(`${p} overwrites an executable file (${destOp})`);
+  const code = codeFile(relative(place.workspace, dest));
+  if (code) return unseen(`${p} writes ${code}, which a runner reads as code`);
+  const from = p === "mv" ? codeFile(relative(place.workspace, src)) : null;
+  if (from) return unseen(`mv takes ${from} from where a runner reads it as code`);
   return null;
 }

@@ -300,11 +300,14 @@ under `~/.cache/keel-work/bun/research/`.
   shows the whole effect, and the effect stays in the session's folder on this
   machine. The list is listed programs that read and show with no code run and
   no write outside the folder (ls, cat, head, tail, grep, rg, find, wc, sort,
-  diff, stat, file, jq, sed, awk), git's reading and local commands, curl and
-  wget GET requests to a public host with no redirect followed, mkdir, cp and
-  mv within the folder, edits of files in the folder that are not executable
-  and that no runner reads as code (`codeFile`), and MCP tools whose server
-  says readOnlyHint and not destructiveHint. Nothing else: every other card is
+  diff, stat, file, jq, sed without -i, awk), mkdir within the folder, cp or
+  mv of one regular file that is not executable to one file path in the
+  folder (real paths, destination not code), edits of files in the folder
+  that are not executable and that no runner reads as code (`codeFile`), and
+  MCP tools whose server says readOnlyHint and not destructiveHint. The list
+  needs no trust in configuration the card does not show: git (hooks,
+  filters, fsmonitor, textconv, a pager), curl and wget are off it. Nothing
+  else: every other card is
   the owner's, decided in code whatever the helper says, named by its class or
   `unseen`. A form is added to the list, never a form to a list of refusals.
   The text of a card the helper reads is escaped (`cardText`), and a card the

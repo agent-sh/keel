@@ -199,6 +199,10 @@ test("after a restart, a card the helper had and the owner has not seen goes to 
   expect(after.open().find((c) => c.a.id === card.id)).toMatchObject({ mine: true });
   // A second stop while the helper still has it: once only, so the owner has it now, with a notification.
   after.stop();
+  // A stop while the owner's notification is being raised: the helper's row stays until the alert is there, so the
+  // next start still gives the card to him.
+  const cut = new HelperCards(helper, () => gate, { ...io, raise: (() => { throw new Error("stopped while raising"); }) as any });
+  expect(() => cut.restored()).toThrow("stopped while raising");
   const later = new HelperCards(helper, () => gate, io);
   expect(later.restored()).toEqual({ offered: [], raised: [card.id] });
   expect(raised.at(-1)).toEqual({ id: card.id, note: "The daemon restarted while the Helper had this card, so it is yours." });
