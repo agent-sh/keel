@@ -36,7 +36,7 @@ import { artifactsDir, atCwd, contains, realOf, homeDir } from "../core/paths.ts
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart, type AskedPart } from "./summary.ts";
 import { agoSaid, answerSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
-import { ownerClass, type CardFacts, type Held as HeldBy } from "./delegate.ts";
+import { localPlace, ownerClass, type CardFacts, type Held as HeldBy } from "./delegate.ts";
 import type { RiskRule } from "./risk-words.ts";
 import { AddressBook, addressOf, dataIn, decoded, groupOf, sendShown, textCarries, withScheme, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
@@ -1961,7 +1961,7 @@ export class Gate {
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
-    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice: notice ?? d.ask.notice, bind: target?.source, cut })) ?? { cls };
+    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice: notice ?? d.ask.notice, bind: target?.source, cut, readHint: target?.read_hint })) ?? { cls };
   }
 
   // The private words a command sends to a public place, or null: none, a private repository, or a check that could
@@ -2018,7 +2018,7 @@ export class Gate {
     };
     if (ask.ownerOnly) {
       const shown = invocation ? `${summary}\n\nStarting directory: ${invocation.path}\nInterpreter: ${invocation.interpreter}` : summary;
-      const deny = await this.card(session, call, name, cls, shown, { ...ask, bind: target?.source, autoOwner: true, cut });
+      const deny = await this.card(session, call, name, cls, shown, { ...ask, bind: target?.source, autoOwner: true, cut, readHint: target?.read_hint });
       return deny ?? (await valid() ? { cls, authorization } : changedReview);
     }
     // Auto refusals and one-off retries are separate from Full auto's
@@ -2202,7 +2202,7 @@ export class Gate {
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
     ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true; mine?: string; readTool?: { server: string; tool: string }; part?: AskedPart;
-      ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy }, once = false): Promise<{ deny: string } | void> {
+      ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy; readHint?: true }, once = false): Promise<{ deny: string } | void> {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
@@ -2344,7 +2344,7 @@ export class Gate {
     if (helper) {
       if (c.choice !== "once" && c.choice !== "deny") return { error: "the helper answers a card once or denies it: it gives no standing answer", status: 400, approval: a };
       if (!c.by?.helper) return { error: "a helper's answer says who answered and on what instruction", status: 400 };
-      const owners = ownerClass(a, this.helperSession?.(a.session_id) ?? false);
+      const owners = ownerClass(a, this.helperSession?.(a.session_id) ?? false, localPlace(session.workspace, !!session.machine));
       if (owners) return { error: `this card stays the owner's: ${owners.why}`, status: 403, approval: a };
     }
     // Do not turn a parked or pre-Auto card into a standing grant under Auto.
@@ -2532,8 +2532,9 @@ function placeOf(session: Session, cls: CallClass): { at?: Approval["at"] } {
 
 // How long an input was, kept only when the card holds its start alone.
 // What the gate knew of why it asked, kept with a card for whoever answers it (src/safety/delegate.ts).
-function factsOf(ask: { ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy }): { facts?: CardFacts } {
+function factsOf(ask: { ownerOnly?: true; account?: string; risks?: { rule: RiskRule }[]; held?: HeldBy; readHint?: true }): { facts?: CardFacts } {
   const f: CardFacts = {
+    ...(ask.readHint ? { read_hint: true as const } : {}),
     ...(ask.ownerOnly ? { owner_only: true as const } : {}), ...(ask.account !== undefined ? { account: ask.account } : {}),
     ...(ask.risks?.length ? { risks: [...new Set(ask.risks.map((r) => r.rule))] } : {}), ...(ask.held ? { held: ask.held } : {}),
   };

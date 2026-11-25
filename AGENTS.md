@@ -295,6 +295,21 @@ under `~/.cache/keel-work/bun/research/`.
   loses its process again (`stopIdle`); not one with a call under way, resources it is told about, a channel
   the owner takes, `keep_running` set, or a browser the owner did not choose to close when idle. A server
   with no kept listing connects at start, as before.
+- The owner's helper answers another session's approval card only when the
+  card is on the allow-list in `src/safety/delegate.ts` (`offList`): the card
+  shows the whole effect, and the effect stays in the session's folder on this
+  machine. The list is listed programs that read and show with no code run and
+  no write outside the folder (ls, cat, head, tail, grep, rg, find, wc, sort,
+  diff, stat, file, jq, sed, awk), git's reading and local commands, curl and
+  wget GET requests to a public host with no redirect followed, mkdir, cp and
+  mv within the folder, edits of files in the folder that are not executable
+  and that no runner reads as code (`codeFile`), and MCP tools whose server
+  says readOnlyHint and not destructiveHint. Nothing else: every other card is
+  the owner's, decided in code whatever the helper says, named by its class or
+  `unseen`. A form is added to the list, never a form to a list of refusals.
+  The text of a card the helper reads is escaped (`cardText`), and a card the
+  helper had at a restart that the owner has not seen goes to a fresh context
+  once before it goes to him (`restored` in `src/helper/cards.ts`).
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

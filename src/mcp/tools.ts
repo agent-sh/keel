@@ -99,7 +99,7 @@ const McpCall: Tool = {
     const args = input?.arguments ?? {};
     const j = t && judgedOf(t);
     if (j && input && typeof input === "object") judged.set(input, j);
-    if (t) return { name: t.qualified, readOnly: !!t.readOnly, input: args, source: t.source, shape: j!.shape, cls: t.judge ? await t.judge(args) : undefined };
+    if (t) return { name: t.qualified, readOnly: !!t.readOnly, input: args, source: t.source, shape: j!.shape, cls: t.judge ? await t.judge(args) : undefined, ...(t.read_hint ? { read_hint: true as const } : {}) };
     // A name not known yet (its server still starting, after the catalog
     // waited on it) is refused, never judged as a read: by the time it would
     // run, the server may know it.

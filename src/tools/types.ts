@@ -157,7 +157,7 @@ export type Tool = ToolSpec & {
   // `session`: the session that calls, for a tool only it is offered.
   // `shell`: how Auto's reviewer is told the invocation, for a target judged as a shell command that is no call of
   // the tool's own shell (the line typed into a terminal, src/tools/typed.ts).
-  target?(input: any, session?: string): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass; source?: string; shape?: string; shell?: { command: string; interpreter: string; options?: unknown } } | null>;
+  target?(input: any, session?: string): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass; source?: string; shape?: string; read_hint?: true; shell?: { command: string; interpreter: string; options?: unknown } } | null>;
   // The running build's own input schema, when the definition a request
   // carries is one the session was sent before (src/tools/pin.ts): what the
   // permission gate reads, never the pinned one.

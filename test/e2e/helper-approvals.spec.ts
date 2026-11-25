@@ -51,14 +51,14 @@ test("helper: answers a session's card once on the standing instruction; a prove
   // The helper is told of it once, as the owner's.
   await expect.poll(async () => ((await (await request.get("/api/helper")).json()).events as any[]).filter((e) => e.kind === "approval" && e.session_id === held.id).map((e) => e.body)).toEqual([expect.stringContaining("the owner's: outside content named its target first")]);
 
-  // A session asks to run an ordinary command; the helper allows it once.
+  // A session asks to run a command on the allow-list (src/safety/delegate.ts); the helper allows it once.
   const { session: asks } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Build notes" } })).json();
   await request.put(`/api/sessions/${asks.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
   await page.goto(`/s/${asks.id}`);
-  const calls = [{ name: "Bash", input: { command: "echo helped > helped.txt # script:helper-card allow" } }];
-  await page.getByTestId("composer").fill(`Write the note. script:calls ${JSON.stringify(calls)}`);
+  const calls = [{ name: "Bash", input: { command: "mkdir helped-notes # script:helper-card allow" } }];
+  await page.getByTestId("composer").fill(`Make the notes folder. script:calls ${JSON.stringify(calls)}`);
   await page.keyboard.press("Enter");
-  const line = page.getByTestId("tool-call").filter({ hasText: "helped.txt" });
+  const line = page.getByTestId("tool-call").filter({ hasText: "helped-notes" });
   await expect(line.getByTestId("call-helper")).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 30_000 });
   await expect(line.getByTestId("tool-helper-answer")).toContainText("Allowed once on your standing instruction (Settings > Helper): the stand-in answers allow");

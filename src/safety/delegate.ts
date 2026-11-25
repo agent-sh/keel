@@ -3,9 +3,28 @@
 //
 // The owner can let the helper answer other sessions' approval cards on his
 // standing instruction (Settings > Helper > Answer approvals, on by default):
-// allow what they ask unless it is really risky. Some cards never go to the
-// helper and stay his, whatever the helper says: `ownerClass` names the class.
-// The helper's judgement applies only to what is left.
+// allow what they ask unless it is really risky. The helper answers only a card
+// on the allow-list (`offList`): one whose card shows its whole effect, and
+// that effect stays in the session's folder on this machine. A list of what to
+// refuse always misses a form; a list of what may pass does not grow by itself.
+// The list, and nothing else:
+//
+// - a command whose every part is a program of the list, with arguments that
+//   run no code: ls, cat, head, tail, grep, rg, find (no -exec, -delete or
+//   file output), wc, sort (no output file or compressor), diff, stat, file,
+//   jq, sed (no e or w command, its in-place files in the folder) and awk (no
+//   system, pipe or output redirect, no program file); git's reading and local
+//   commands (status, log, diff, show, branch, fetch, clone into the folder or
+//   the cache, add, commit, checkout or switch of a local branch, stash);
+//   curl and wget GET requests to a public host, with no redirect followed;
+//   mkdir, cp and mv within the folder;
+// - an edit or a write of files in the folder that are not executable and that
+//   no runner reads as code (`codeFile`: tests, conftest.py, build and package
+//   files, hooks, CI, agent instructions, installed packages);
+// - an MCP tool whose server says readOnlyHint and does not say destructiveHint.
+//
+// Every other card is the owner's, named by its class where one is known and
+// `unseen` otherwise. The classes, which come first whatever the list says:
 //
 // - provenance: outside content (a page, an issue, a tool server's answer)
 //   named the call's target first. A guard against prompt injection: a model
@@ -24,13 +43,19 @@
 //   another machine or a service, credentials sent out or read, sign-ins,
 //   Keel's permissions and settings).
 // - unseen: the card does not hold the whole request (its input was kept only
-//   in part), so nobody but the owner can stand behind an allow.
+//   in part), or what it does is not on the list, so nobody but the owner can
+//   stand behind an allow.
 //
-// Pure: the card as stored in, a class or null out (delegate.test.ts).
+// The card as stored and the session's place in, a class or null out
+// (delegate.test.ts). The place (`localPlace`) is what this machine's disk says
+// of the paths: where links lead, which file is executable, which branch exists.
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { name as base, unwrap, type RiskRule } from "./risk-words.ts";
 import { splitCommand, type Simple } from "./shell.ts";
 import { isOwnPort } from "./net-proxy.ts";
 import { privateHost } from "../core/hosts.ts";
+import { contains, homeDir, realOf } from "../core/paths.ts";
 
 // What made a one-call card (gate.ts askOnce): outside content named the target, a tool that confirms
 // each call, private words in a public place, a hook of the owner's that asks.
@@ -38,7 +63,8 @@ export type Held = "provenance" | "confirm" | "words" | "hook";
 // What the gate knew of why it asked, kept with the card (gate.ts card()).
 // `owner_only`: the policy's onlyOwner. `account`: a write with the owner's account beyond his namespaces.
 // `risks`: the classes of what makes a command high risk (risk-words.ts). `held`: a one-call card and what made it.
-export type CardFacts = { owner_only?: true; account?: string; risks?: RiskRule[]; held?: Held };
+// `read_hint`: an MCP tool whose server says it only reads (readOnlyHint) and does not say it may destroy (destructiveHint).
+export type CardFacts = { owner_only?: true; account?: string; risks?: RiskRule[]; held?: Held; read_hint?: true };
 
 export type OwnerClass = "provenance" | "owner-only" | "spend" | "publish" | "delete" | "authority" | "unseen" | "helper";
 export const CLASS_WORDS: Record<OwnerClass, string> = {
@@ -48,7 +74,7 @@ export const CLASS_WORDS: Record<OwnerClass, string> = {
   publish: "it publishes something that cannot be taken back",
   delete: "it deletes something that cannot be brought back",
   authority: "it changes what may run on the machine or what the rules allow",
-  unseen: "the card does not hold the whole request",
+  unseen: "the card does not show its whole effect, or it is not on the list the helper may answer",
   helper: "it is the helper's own call",
 };
 
@@ -56,15 +82,17 @@ export const CLASS_WORDS: Record<OwnerClass, string> = {
 export type CardIn = {
   tool: string; kind: string; summary: string; input: unknown; risk: "high" | "low";
   rule?: string; why?: string; once?: boolean; autoOwner?: boolean; cut?: boolean; input_len?: number; mine?: string;
+  at?: { cwd?: string; sub?: string; shell?: string; away?: true };
   facts?: CardFacts;
 };
 
 // The rule words the policy gives what leaves the sandbox, reads credentials or is Keel's own (policy.ts).
 const AUTHORITY_RULES = [/asks to leave the sandbox/, /reads credentials/, /Keel's own configuration/, /runs later, outside the sandbox/, /credential store/, /outside what the sandbox shows/, /runs as root/i, /acts in another session/];
 
-// One class for a card, or null: the helper may judge it. What the helper cannot see in the card is the owner's:
-// code the card does not show (a script, a package's script, an alias, code handed to an interpreter) is `unseen`.
-export function ownerClass(a: CardIn, isHelperSession = false): { cls: OwnerClass; why: string } | null {
+// One class for a card, or null: the card is on the allow-list and the helper may judge it. The classes come first
+// (they name why a card is the owner's); then the list: a card off it is the owner's, by the class of what took it
+// off, else `unseen`. With no place (the session is gone), nothing is on the list.
+export function ownerClass(a: CardIn, isHelperSession = false, place?: Place): { cls: OwnerClass; why: string } | null {
   const say = (cls: OwnerClass, detail?: string) => ({ cls, why: detail ? `${CLASS_WORDS[cls]}: ${detail}` : CLASS_WORDS[cls] });
   const f = a.facts ?? {};
   if (isHelperSession) return say("helper");
@@ -88,11 +116,12 @@ export function ownerClass(a: CardIn, isHelperSession = false): { cls: OwnerClas
     if (hit) return say(hit.cls, hit.what);
     const reach = keelReach(a.summary, true);
     if (reach) return say("authority", reach);
+    // Code the card does not show (awk's program is read by the list instead).
     const hidden = hiddenCode(a.summary);
-    if (hidden) return say("unseen", hidden);
+    if (hidden && !(offList(a, place) === null && /^(awk|gawk|mawk|nawk) /.test(hidden))) return say("unseen", hidden);
     if (risks.has("hidden")) return say("unseen", a.why);
   } else {
-    // (An edit's strings are a file's text, which runs nothing by being written: the gate's rules judge where it lands.)
+    // (An edit's strings are a file's text, which runs nothing by being written: where it lands is judged by the list.)
     const hit = toolClass(toolWords(a.tool, a.input)) ?? (a.kind === "edit" ? null : valuesClass(a.tool, a.input));
     if (hit) return say(hit.cls, hit.what);
   }
@@ -100,7 +129,8 @@ export function ownerClass(a: CardIn, isHelperSession = false): { cls: OwnerClas
   // A change on another machine or a service (its deletions and the files there that run later are among it),
   // credentials sent out, a reach past the session on this machine.
   if (risks.has("remote") || risks.has("exposes") || risks.has("machine")) return say("authority", a.why);
-  return null;
+  const off = offList(a, place);
+  return off ? say(off.cls, off.what) : null;
 }
 
 const isClipped = (v: unknown) => !!v && typeof v === "object" && "_clipped" in (v as object);
@@ -165,7 +195,8 @@ function wordsClass(words: string[], line: string): Hit {
   const args = words.slice(1);
   const said = words.join(" ").slice(0, 160);
   const has = (re: RegExp) => args.some((a) => re.test(a));
-  const verb = args.find((a) => !a.startsWith("-")) ?? "";
+  // (git's command stands after its own options and their values: git -C . push.)
+  const verb = (p === "git" ? gitCommand(args).verb : args.find((a) => !a.startsWith("-"))) ?? "";
   const method = methodOf(p, args);
   if (ROOT.has(p)) return { cls: "authority", what: `${p} runs as root (${said})` };
   if (MACHINE.has(p)) return { cls: "authority", what: said };
@@ -426,5 +457,518 @@ export function toolClass(words: string[]): Hit {
   if (words.some((w) => DELETE_WORDS.has(w))) return { cls: "delete", what };
   if (words.some((w) => PUBLISH_WORDS.has(w))) return { cls: "publish", what };
   if (words.some((w) => AUTHORITY_WORDS.has(w)) && !words.some((w) => /^(get|list|read|search|show|view|describe)$/.test(w))) return { cls: "authority", what };
+  return null;
+}
+
+// --- the allow-list -----------------------------------------------------------------
+
+// What this machine's disk says of a session's paths, for the list. `localPlace` reads the disk; a test may give its own.
+// `workspace`: the session's folder where its links lead. `far`: its calls run on another machine. `cache`: the cache
+// folder a clone may go to. `real`: a path where its links lead. `exec`: an existing file someone may execute.
+// `branch`: a local branch of the repository a folder is in. `exists`: a path names a file or a folder.
+export type Place = {
+  workspace: string; far?: boolean; cache?: string; home: string;
+  real(p: string): string; exec(p: string): boolean; branch(cwd: string, name: string): boolean; exists(p: string): boolean;
+};
+
+export function localPlace(workspace: string, far = false): Place {
+  const home = homeDir();
+  const cache = process.env.XDG_CACHE_HOME && process.env.XDG_CACHE_HOME.startsWith("/") ? process.env.XDG_CACHE_HOME : join(home, ".cache");
+  return {
+    workspace: far ? workspace : realOf(workspace), far, cache: realOf(cache), home,
+    real: realOf,
+    exec: (p) => { try { const st = statSync(p); return st.isFile() && (st.mode & 0o111) !== 0; } catch { return false; } },
+    branch: localBranch,
+    exists: existsSync,
+  };
+}
+
+// Whether `name` is a local branch of the repository `cwd` is in: its ref file or its line in packed-refs.
+export function localBranch(cwd: string, name: string): boolean {
+  if (!/^[A-Za-z0-9._/-]+$/.test(name) || name.startsWith("-") || name.startsWith("/") || name.endsWith("/") || name.includes("..") || name.includes("//") || name.endsWith(".lock") || name === "HEAD") return false;
+  try {
+    let d = realOf(cwd);
+    let gitdir: string | undefined;
+    for (;;) {
+      const g = join(d, ".git");
+      if (existsSync(g)) {
+        gitdir = statSync(g).isDirectory() ? g : resolve(d, /^gitdir:\s*(.+)$/m.exec(readFileSync(g, "utf8"))?.[1]?.trim() ?? "");
+        break;
+      }
+      const up = dirname(d);
+      if (up === d) return false;
+      d = up;
+    }
+    const common = existsSync(join(gitdir, "commondir")) ? resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim()) : gitdir;
+    const ref = join(common, "refs", "heads", name);
+    if (existsSync(ref) && statSync(ref).isFile()) return true;
+    const packed = join(common, "packed-refs");
+    return existsSync(packed) && readFileSync(packed, "utf8").split("\n").some((l) => l.endsWith(` refs/heads/${name}`));
+  } catch { return false; }
+}
+
+const off = (cls: OwnerClass, what: string): Hit => ({ cls, what });
+const unseen = (what: string): Hit => off("unseen", what);
+
+// Null: the card is on the list. Else why it is not, with the class that names it.
+export function offList(a: CardIn, place?: Place): Hit {
+  if (!place) return unseen("the session's folder is not known, so nothing can be shown to stay in it");
+  if (place.far) return off("authority", "it runs on another machine");
+  if (a.kind === "shell") return shellOffList(a.summary, a.at, place);
+  if (a.kind === "edit") return editOffList(a, place);
+  if (a.kind === "other" && a.facts?.read_hint) return null;
+  return unseen(`${a.tool} is not among the tools whose whole effect a card shows`);
+}
+
+// --- files a runner reads as code
+
+// Folders whose files something runs or reads as instructions: hooks, CI, Keel's and agents' own, editors' tasks,
+// installed packages and environments, test folders a runner collects whole.
+const CODE_DIRS = new Set([".git", ".github", ".gitlab", ".circleci", ".buildkite", ".husky", ".githooks", ".keel", ".claude", ".codex", ".cursor", ".gemini", ".opencode",
+  ".vscode", ".idea", ".devcontainer", ".cargo", ".config", ".direnv", "node_modules", ".venv", "venv", "site-packages", "dist-packages", "__tests__", ".yarn", ".pnpm-store"]);
+// Files a runner, a build, a package manager, a shell or an agent reads as code or as instructions by their name.
+const CODE_NAMES = new RegExp("^(" + [
+  "conftest\\.py", "test_.*\\.py", ".*_test\\.[a-z0-9]+", ".*\\.(test|spec|e2e|bench)\\.[a-z0-9]+", "pytest\\.ini", "tox\\.ini", "noxfile\\.py", "setup\\.(py|cfg)", "pyproject\\.toml",
+  "sitecustomize\\.py", "usercustomize\\.py", ".*\\.pth", "manage\\.py",
+  "(GNU)?[Mm]akefile", ".*\\.mk", "[Jj]ustfile", "\\.justfile", "Taskfile\\.ya?ml", "Rakefile", "Gemfile", ".*\\.gemspec", "magefile\\.go", "build\\.rs", "Cargo\\.toml", "go\\.mod", "go\\.work",
+  "CMakeLists\\.txt", ".*\\.cmake", "meson\\.build", "BUILD(\\.bazel)?", "WORKSPACE(\\.bazel)?", "MODULE\\.bazel", ".*\\.bzl", "build\\.gradle(\\.kts)?", "settings\\.gradle(\\.kts)?", "gradlew(\\.bat)?", "pom\\.xml",
+  "package\\.json", "deno\\.jsonc?", "bunfig\\.toml", "\\.npmrc", "\\.yarnrc(\\.ya?ml)?", "\\.pnpmfile\\.c?js", ".*\\.config\\.[cm]?[jt]s", "\\..*rc\\.[cm]?[jt]s", "Gruntfile\\.[jt]s", "[Gg]ulpfile\\.[jt]s",
+  "Dockerfile.*", ".*\\.dockerfile", "Containerfile.*", "(docker-)?compose(\\..*)?\\.ya?ml", "Jenkinsfile", "\\.gitlab-ci\\.ya?ml", "\\.travis\\.ya?ml", "azure-pipelines\\.ya?ml", "\\.pre-commit-config\\.ya?ml",
+  "\\.gitattributes", "\\.gitmodules", "\\.envrc", "\\.env(\\..*)?", "\\.(bash|zsh|profile|bash_profile|zprofile|zshenv|bashrc|zshrc|inputrc)", ".*\\.(sh|bash|zsh|fish|ps1|bat|cmd)",
+  "AGENTS\\.md", "CLAUDE\\.md", "GEMINI\\.md", "\\.mcp\\.json", "\\.cursorrules",
+].join("|") + ")$");
+
+// Why a path (relative to the session's folder) is a file a runner reads as code, or null.
+export function codeFile(rel: string): string | null {
+  const parts = rel.split("/").filter((p) => p && p !== ".");
+  const dir = parts.slice(0, -1).find((p) => CODE_DIRS.has(p)) ?? (parts.length && CODE_DIRS.has(parts[parts.length - 1]!) ? parts[parts.length - 1] : undefined);
+  if (dir) return `a file under ${dir}/`;
+  const name = parts[parts.length - 1] ?? "";
+  return CODE_NAMES.test(name) ? name : null;
+}
+
+// A path a command or an edit writes, judged where its links lead: in the session's folder, not a runner's code,
+// not an executable file.
+function writeOffList(path: string, place: Place, who: string): Hit {
+  const real = place.real(path);
+  if (!contains(place.workspace, real)) return off("authority", `${who} writes outside the session's folder (${path})`);
+  const code = codeFile(relative(place.workspace, real)) ?? codeFile(basename(path));
+  if (code) return unseen(`${who} writes ${code}, which a runner reads as code`);
+  if (place.exec(real)) return unseen(`${who} writes an executable file (${path})`);
+  return null;
+}
+
+// A path as a command gives it, absolute: `~` is the home folder; `~user` is not read.
+function pathAt(cwd: string, p: string, place: Place): string | null {
+  if (p === "~" || p.startsWith("~/")) return join(place.home, p.slice(1));
+  if (p.startsWith("~")) return null;
+  return resolve(cwd, p);
+}
+
+// --- edits
+
+function editOffList(a: CardIn, place: Place): Hit {
+  // The gate's card of an edit names its files as absolute paths, one a line.
+  const paths = a.summary.split("\n").map((p) => p.trim()).filter(Boolean);
+  if (!paths.length) return unseen("the edit names no file");
+  for (const p of paths) {
+    if (!p.startsWith("/")) return unseen(`the edit names a path the rules cannot place (${p})`);
+    const hit = writeOffList(p, place, "the edit");
+    if (hit) return hit;
+  }
+  const text = stringsOf(a.input).join("\n");
+  if (/^(\*\*\* Delete File:|deleted file mode)/m.test(text)) return off("delete", "the edit deletes a file");
+  if (/^(new file mode|new mode|old mode) \d*7[0-7][0-7]\b|^(new file mode|new mode) 1007/m.test(text) || /^(new file mode|new mode) 12/m.test(text)) return unseen("the edit makes a file executable or a link");
+  if (/(^|\n)\+?#!/.test(text)) return unseen("the edit writes a script line (#!), which makes it a program");
+  return null;
+}
+
+// --- commands
+
+// The programs that only read and show, and the options of them that run code or write a file.
+const READS = new Set(["ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "find", "wc", "sort", "diff", "stat", "file", "jq"]);
+const FIND_ACTS = /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+
+function shellOffList(line: string, at: CardIn["at"], place: Place): Hit {
+  if (at?.shell) return unseen(`it runs in ${at.shell}, which the rules do not read as bash`);
+  if (at?.away) return off("authority", "it runs outside the session's folder");
+  const cwd = at?.cwd ? place.real(at.cwd) : place.workspace;
+  if (!contains(place.workspace, cwd)) return off("authority", "it runs outside the session's folder");
+  const parts = partsOf(line);
+  if (!parts) return unseen("the rules cannot split the command into what it runs");
+  let any = false;
+  for (const { s, run, pre, deep } of parts) {
+    // (A here-document's lines run only through the command they feed, which is judged itself.)
+    if (s.heredoc) continue;
+    if (s.unknown) return unseen(`the rules cannot read part of it (${s.text.slice(0, 120)})`);
+    if (deep || pre.length) return unseen(`it runs a program through a wrapper or with variables set before it (${s.text.slice(0, 120)})`);
+    if (s.redirects) return unseen(`it writes through a redirect (${s.text.slice(0, 120)})`);
+    if (s.dyn?.length) return unseen(`a word of it comes from an expansion or a pattern (${s.text.slice(0, 120)})`);
+    if (!run.length) continue;
+    any = true;
+    const hit = partOffList(run, cwd, place);
+    if (hit) return hit;
+  }
+  return any ? null : unseen("it runs nothing of the list");
+}
+
+const SYSTEM_PROGRAM = /^\/(usr\/(local\/)?)?s?bin\/[^/]+$/;
+
+function partOffList(run: string[], cwd: string, place: Place): Hit {
+  const first = run[0]!;
+  if (first.includes("/") && !SYSTEM_PROGRAM.test(first)) return unseen(`it runs a program of a path (${first})`);
+  const p = base(first);
+  const args = run.slice(1);
+  const said = run.join(" ").slice(0, 160);
+  const has = (re: RegExp) => args.some((a) => re.test(a));
+  const short = (letters: string) => args.some((a) => /^-[A-Za-z0-9]+$/.test(a) && [...letters].some((l) => a.includes(l)));
+  if (READS.has(p)) {
+    if (p === "find" && has(FIND_ACTS)) return unseen(`find runs a program or writes or deletes files (${said})`);
+    if (p === "rg" && has(/^--(pre|pre-glob|hostname-bin)(=|$)/)) return unseen(`rg runs a program it is given (${said})`);
+    if (p === "sort" && (short("o") || has(/^--(output|compress-program)(=|$)/))) return unseen(`sort writes a file or runs a program (${said})`);
+    if (p === "file" && (short("C") || has(/^--compile$/))) return unseen(`file writes a compiled magic file (${said})`);
+    return null;
+  }
+  if (p === "sed") return sedOffList(args, cwd, place, said);
+  if (/^(awk|gawk|mawk|nawk)$/.test(p)) return awkOffList(p, args, said);
+  if (p === "git") return gitOffList(args, cwd, place, said);
+  if (p === "curl" || p === "wget") return fetchOffList(p, args, cwd, place, said);
+  if (p === "mkdir" || p === "cp" || p === "mv") return moveOffList(p, args, cwd, place, said);
+  return unseen(`${p} is not among the programs whose whole effect a card shows`);
+}
+
+// --- sed
+
+function sedOffList(args: string[], cwd: string, place: Place, said: string): Hit {
+  const scripts: string[] = [];
+  const operands: string[] = [];
+  let inPlace = false;
+  let dd = false;
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (dd || a === "-" || !a.startsWith("-")) { operands.push(a); continue; }
+    if (a === "--") { dd = true; continue; }
+    if (a.startsWith("--")) {
+      if (/^--in-place(=|$)/.test(a)) inPlace = true;
+      else if (a === "--expression") scripts.push(args[++k] ?? "");
+      else if (a.startsWith("--expression=")) scripts.push(a.slice("--expression=".length));
+      else if (!/^--(quiet|silent|regexp-extended|separate|unbuffered|null-data|zero-terminated|posix|sandbox|debug|follow-symlinks|binary|line-length=\d+)$/.test(a)) return unseen(`sed's option ${a} is not on the list (${said})`);
+      continue;
+    }
+    for (let j = 1; j < a.length; j++) {
+      const c = a[j]!;
+      if ("nrEsuzb".includes(c)) continue;
+      if (c === "i") { inPlace = true; break; }
+      if (c === "e") { const rest = a.slice(j + 1); scripts.push(rest || (args[++k] ?? "")); break; }
+      if (c === "l") { if (!a.slice(j + 1)) k++; break; }
+      return unseen(c === "f" ? `sed reads its script from a file the card does not show (${said})` : `sed's option -${c} is not on the list (${said})`);
+    }
+  }
+  if (!scripts.length) { if (!operands.length) return unseen(`sed is given no script (${said})`); scripts.push(operands.shift()!); }
+  for (const s of scripts) {
+    const bad = sedRuns(s);
+    if (bad) return unseen(`sed ${bad} (${said})`);
+  }
+  if (inPlace) for (const f of operands) {
+    if (f === "-") continue;
+    const path = pathAt(cwd, f, place);
+    if (!path) return unseen(`sed writes a path the rules cannot place (${f})`);
+    const hit = writeOffList(path, place, "sed -i");
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// What of a sed script runs a command or writes a file (the e and w commands, s's e and w flags), in words, or null.
+// A script the scanner cannot read is not read as safe.
+export function sedRuns(s: string): string | null {
+  const n = s.length;
+  let i = 0;
+  const spaces = () => { while (i < n && (s[i] === " " || s[i] === "\t")) i++; };
+  // Past a delimited part that starts at s[i] (the delimiter); false when it does not end.
+  const part = (d: string): boolean => {
+    i++;
+    while (i < n && s[i] !== d) { if (s[i] === "\\") i++; else if (s[i] === "\n" && d !== "\n") return false; i++; }
+    if (i >= n) return false;
+    i++;
+    return true;
+  };
+  const toLine = () => { while (i < n && s[i] !== "\n") { if (s[i] === "\\") i++; i++; } };
+  while (i < n) {
+    const c = s[i]!;
+    if (c === " " || c === "\t" || c === "\n" || c === ";" || c === "}") { i++; continue; }
+    if (c === "#") { toLine(); continue; }
+    // An address: numbers, $, /re/ or \cREc with I and M, first~step, addr,+n, then !.
+    for (;;) {
+      if (/[0-9]/.test(s[i] ?? "")) { while (/[0-9~]/.test(s[i] ?? "")) i++; }
+      else if (s[i] === "$") i++;
+      else if (s[i] === "/") { if (!part("/")) return "has a pattern the rules cannot read"; while (s[i] === "I" || s[i] === "M") i++; }
+      else if (s[i] === "\\") { i++; const d = s[i]; if (!d || d === "\n") return "has a pattern the rules cannot read"; if (!part(d)) return "has a pattern the rules cannot read"; while (s[i] === "I" || s[i] === "M") i++; }
+      else break;
+      spaces();
+      if (s[i] === ",") { i++; spaces(); if (s[i] === "+" || s[i] === "~") i++; continue; }
+      break;
+    }
+    spaces();
+    if (s[i] === "!") { i++; spaces(); }
+    const cmd = s[i];
+    i++;
+    if (cmd === undefined) break;
+    if (cmd === "{" || "=dDgGhHnNpPxzF".includes(cmd)) continue;
+    if (cmd === "s" || cmd === "y") {
+      const d = s[i];
+      if (!d || d === "\n" || d === "\\") return "has a command the rules cannot read";
+      if (!part(d)) return "has a command the rules cannot read";
+      i--;
+      if (!part(d)) return "has a command the rules cannot read";
+      if (cmd === "s") while (i < n && /[gpiImMew0-9]/.test(s[i]!)) {
+        if (s[i] === "e") return "runs the result of a substitution as a command (the e flag)";
+        if (s[i] === "w") return "writes a file (the w flag)";
+        i++;
+      }
+      continue;
+    }
+    if ("aic".includes(cmd) || cmd === "r" || cmd === "R") { toLine(); continue; }
+    if (cmd === "e") return "runs a command (the e command)";
+    if (cmd === "w" || cmd === "W") return "writes a file (the w command)";
+    if ("btT:v".includes(cmd)) { while (i < n && s[i] !== "\n" && (cmd === ":" || s[i] !== ";")) i++; continue; }
+    if ("qQlL".includes(cmd)) { spaces(); while (/[0-9]/.test(s[i] ?? "")) i++; continue; }
+    return `has a command the rules cannot read (${cmd})`;
+  }
+  return null;
+}
+
+// --- awk
+
+// An awk program runs a command through system(), a pipe or a coprocess, writes a file through > or >>, and opens a
+// connection through gawk's /inet files. Those
+// characters and words are not read apart from where they mean something else (a comparison), so a program that holds
+// any of them is the owner's. A program from a file, an extension or an include is not shown.
+function awkOffList(p: string, args: string[], said: string): Hit {
+  const programs: string[] = [];
+  const operands: string[] = [];
+  let dd = false;
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (dd || a === "-" || !a.startsWith("-")) { operands.push(a); continue; }
+    if (a === "--") { dd = true; continue; }
+    if (a === "-F" || a === "-v" || a === "--field-separator" || a === "--assign") { k++; continue; }
+    if (/^-[Fv]./.test(a) || /^--(field-separator|assign)=/.test(a)) continue;
+    if (a === "-e" || a === "--source") { programs.push(args[++k] ?? ""); continue; }
+    if (a.startsWith("--source=")) { programs.push(a.slice("--source=".length)); continue; }
+    if (/^(-b|-c|-P|-S|-M|-N|--characters-as-bytes|--traditional|--posix|--sandbox|--bignum|--use-lc-numeric)$/.test(a)) continue;
+    return unseen(`${p}'s option ${a} is not on the list: it reads a program file, loads an extension or writes a file (${said})`);
+  }
+  if (!programs.length) { if (!operands.length) return unseen(`${p} is given no program (${said})`); programs.push(operands.shift()!); }
+  for (const prog of programs) if (/[|>@]|\bsystem\b|\bPROCINFO\b|\/inet/.test(prog)) return unseen(`${p} may run a command or write a file (${said})`);
+  return null;
+}
+
+// --- git
+
+function gitOffList(args: string[], cwd: string, place: Place, said: string): Hit {
+  let repo = cwd;
+  let k = 0;
+  for (; k < args.length; k++) {
+    const a = args[k]!;
+    if (a === "-C") {
+      const d = args[++k];
+      const at = d === undefined ? null : pathAt(repo, d, place);
+      if (!at) return unseen(`git -C names a folder the rules cannot place (${said})`);
+      repo = place.real(at);
+      if (!contains(place.workspace, repo)) return off("authority", `git works in a folder outside the session's (${said})`);
+      continue;
+    }
+    if (/^(--no-pager|--no-optional-locks|-P|--literal-pathspecs|--no-replace-objects|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-advice)$/.test(a)) continue;
+    if (a.startsWith("-")) return unseen(`git's option ${a} can change what it runs or where (${said})`);
+    break;
+  }
+  const verb = args[k] ?? "";
+  const rest = args.slice(k + 1);
+  const opts = rest.filter((a) => a.startsWith("-"));
+  const words = rest.filter((a) => !a.startsWith("-"));
+  const only = (re: RegExp) => opts.find((a) => !re.test(a));
+  const bad = (what: string) => unseen(`git ${verb} ${what} (${said})`);
+  switch (verb) {
+    case "add":
+      // (--chmod marks a file executable in what is committed.)
+      return rest.some((a) => a.startsWith("--chmod")) ? bad("marks a file executable") : null;
+    case "status": case "commit":
+      return null;
+    case "log": case "show": case "diff":
+      if (rest.some((a) => /^--(output|ext-diff|textconv)(=|$)/.test(a))) return bad("writes a file or runs a diff program");
+      return null;
+    case "branch": {
+      const o = only(/^(-a|--all|-r|--remotes|-l|--list|-v|-vv|--verbose|--show-current|--contains|--no-contains|--merged|--no-merged|--points-at|--sort(=.*)?|--format(=.*)?|--color(=.*)?|--no-color|--column(=.*)?|--no-column|-i|--ignore-case|--abbrev(=.*)?|--no-abbrev|-q|--quiet|-t|--track(=.*)?|--no-track)$/);
+      return o ? bad(`with ${o} deletes, moves, copies or forces a branch, or opens an editor`) : null;
+    }
+    case "fetch": {
+      const o = only(/^(--all|--prune|-p|--tags|-t|--no-tags|-n|--depth=\d+|--deepen=\d+|--unshallow|-q|--quiet|-v|--verbose|--progress|--dry-run|--multiple|--jobs=\d+|-j\d+|--no-recurse-submodules|--filter=.*|--atomic|--no-write-fetch-head)$/);
+      if (o) return bad(`with ${o} is not on the list`);
+      const w = words.find((a) => a.includes("::") || a.includes(":") && !/^[a-z]+:\/\//i.test(a) && !/^[\w.-]+@[\w.-]+:/.test(a) || a.startsWith("+"));
+      return w ? bad(`with ${w} forces a ref, names a transport or writes a local ref`) : null;
+    }
+    case "clone": return cloneOffList(rest, repo, place, said);
+    case "switch": {
+      const o = only(/^(-c|--create|-d|--detach|--guess|--no-guess|-q|--quiet|-t|--track(=.*)?|--no-track|--progress|--no-progress)$/);
+      if (o) return bad(`with ${o} forces, discards or merges changes`);
+      return words.length >= 1 && words.length <= 2 ? null : bad("names more than a branch and its start");
+    }
+    case "checkout": {
+      const o = only(/^(-b|-q|--quiet|-t|--track(=.*)?|--no-track|--progress|--no-progress|--detach|--guess|--no-guess)$/);
+      if (o) return bad(`with ${o} forces, resets or restores files`);
+      if (opts.includes("-b")) return words.length >= 1 && words.length <= 2 && !rest.includes("--") ? null : bad("names more than a new branch and its start");
+      // A word that is not a local branch is a path: checkout puts the file back as committed, losing its changes.
+      if (words.length !== 1) return bad("names files or more than one branch");
+      const b = words[0]!;
+      if (!place.branch(repo, b)) return bad(`names ${b}, which is not a local branch: checkout would restore files`);
+      if (place.exists(resolve(repo, b))) return bad(`names ${b}, which is a local branch and a path too`);
+      return null;
+    }
+    case "stash": {
+      const sub = words[0];
+      if (sub === undefined || /^(push|save|list|show|apply|pop)$/.test(sub)) return null;
+      return bad(sub === "drop" || sub === "clear" ? "deletes stashed work" : `${sub} is not on the list`);
+    }
+    case "push": return off("authority", `git push changes a repository on another machine (${said})`);
+    default: return unseen(`git ${verb} is not among git's commands whose whole effect a card shows (${said})`);
+  }
+}
+
+function cloneOffList(rest: string[], cwd: string, place: Place, said: string): Hit {
+  const words: string[] = [];
+  for (let k = 0; k < rest.length; k++) {
+    const a = rest[k]!;
+    if (/^(-b|--branch|-o|--origin|--depth)$/.test(a)) { k++; continue; }
+    if (/^(-q|--quiet|-v|--verbose|--progress|--depth=\d+|--shallow-since=.*|--single-branch|--no-single-branch|--no-tags|--branch=.*|--origin=.*|--filter=.*|--sparse|-n|--no-checkout|--bare)$/.test(a)) continue;
+    if (a.startsWith("-")) return unseen(`git clone with ${a} is not on the list: it can run a program, a template's hooks or write elsewhere (${said})`);
+    words.push(a);
+  }
+  const [url, dir] = words;
+  if (!url || words.length > 2) return unseen(`git clone is given no source or more than a source and a folder (${said})`);
+  if (url.includes("::")) return unseen(`git clone names a transport that runs a program (${url})`);
+  const name = dir ?? basename(url.replace(/\/+$/, "").replace(/\.git$/, "").replace(/^.*:/, ""));
+  const target = name ? pathAt(cwd, name, place) : null;
+  if (!target) return unseen(`git clone writes a folder the rules cannot place (${said})`);
+  const real = place.real(target);
+  if (!contains(place.workspace, real) && !(place.cache && contains(place.cache, real))) return off("authority", `git clone writes outside the session's folder and the cache (${target})`);
+  const code = contains(place.workspace, real) ? codeFile(relative(place.workspace, real)) : null;
+  return code ? unseen(`git clone writes ${code}, which a runner reads as code`) : null;
+}
+
+// --- curl and wget
+
+const LOCAL_NAMES = /(^|\.)(local|localdomain|internal|intranet|lan|home|corp|home\.arpa|localhost)\.?$/i;
+
+function fetchOffList(p: "curl" | "wget", args: string[], cwd: string, place: Place, said: string): Hit {
+  const urls: string[] = [];
+  const writes: string[] = [];
+  let named = false;
+  let noRedirect = p === "curl";
+  let prefix: string | undefined;
+  // Options with no value, and those with one, for each; any other is the owner's.
+  const FLAGS = p === "curl"
+    ? /^--(silent|show-error|fail|fail-with-body|head|include|verbose|compressed|remote-name|no-progress-meter|progress-bar|http1\.0|http1\.1|http2|ipv4|ipv6|globoff|no-buffer|get)$/
+    : /^--(quiet|no-verbose|server-response|spider|continue|timestamping|no-clobber|inet4-only|inet6-only|no-cache)$/;
+  const VALUED = p === "curl"
+    ? /^--(output|header|user-agent|referer|max-time|connect-timeout|retry|retry-delay|retry-max-time|range|request|max-filesize|limit-rate|url)$/
+    : /^--(output-document|timeout|tries|header|user-agent|directory-prefix|max-redirect|wait)$/;
+  const SHORT_FLAGS = p === "curl" ? "sSfIivk#46Og" : "qSc46N";
+  const SHORT_VALUED = p === "curl" ? "oHAemrX" : "OTtUP";
+  const take = (opt: string, v: string | undefined): Hit => {
+    if (v === undefined) return unseen(`${p} ${opt} has no value (${said})`);
+    if (/^(-X|--request)$/.test(opt) && !/^(GET|HEAD)$/i.test(v)) return off("authority", `${p} sends a ${v.toUpperCase()} request, which writes to a service (${said})`);
+    if (/^(-o|--output|-O|--output-document)$/.test(opt) && v !== "-") writes.push(v);
+    if (/^(-P|--directory-prefix)$/.test(opt)) prefix = v;
+    if (opt === "--max-redirect") noRedirect = v === "0";
+    if (opt === "--url") urls.push(v);
+    return null;
+  };
+  let dd = false;
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (dd || !a.startsWith("-") || a === "-") { urls.push(a); continue; }
+    if (a === "--") { dd = true; continue; }
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      const opt = eq >= 0 ? a.slice(0, eq) : a;
+      if (FLAGS.test(opt) && eq < 0) { if (opt === "--remote-name") named = true; continue; }
+      if (VALUED.test(opt)) { const hit = take(opt, eq >= 0 ? a.slice(eq + 1) : args[++k]); if (hit) return hit; continue; }
+      if (/^--(location|location-trusted)$/.test(opt)) return unseen(`${p} follows redirects to addresses the card does not show (${said})`);
+      return unseen(`${p}'s option ${opt} is not on the list: it may send a body, credentials or a file, read options from a file, or connect elsewhere (${said})`);
+    }
+    for (let j = 1; j < a.length; j++) {
+      const c = a[j]!;
+      if (SHORT_FLAGS.includes(c)) { if (c === "O" && p === "curl") named = true; continue; }
+      if (SHORT_VALUED.includes(c)) { const v = a.slice(j + 1); const hit = take(`-${c}`, v || args[++k]); if (hit) return hit; break; }
+      if (c === "L" && p === "curl") return unseen(`curl follows redirects to addresses the card does not show (${said})`);
+      return unseen(`${p}'s option -${c} is not on the list: it may send a body, credentials or a file, read options from a file, or connect elsewhere (${said})`);
+    }
+  }
+  if (!noRedirect) return unseen(`wget follows redirects to addresses the card does not show unless --max-redirect=0 (${said})`);
+  if (!urls.length) return unseen(`${p} is given no address (${said})`);
+  for (const raw of urls) {
+    let u: URL;
+    try { u = new URL(raw); } catch { return unseen(`${p} is given an address the rules cannot read (${raw})`); }
+    if (!/^https?:$/.test(u.protocol) || !raw.toLowerCase().startsWith(u.protocol)) return unseen(`${p} is given an address that is not http or https (${raw})`);
+    if (/[{}[\]]/.test(u.pathname + u.search)) return unseen(`${p} is given an address with a pattern (${raw})`);
+    const host = u.hostname.replace(/^\[|\]$/g, "");
+    if (privateHost(host) || LOCAL_NAMES.test(host) || (u.port && keelPorts.has(Number(u.port)))) return off("authority", `${p} reaches a host on this machine or a private network (${raw})`);
+    if (p === "wget" && !writes.length) writes.push(join(prefix ?? ".", basename(u.pathname) || "index.html"));
+    if (p === "curl" && named) writes.push(basename(u.pathname) || "");
+  }
+  for (const w of writes) {
+    if (!w) return unseen(`${p} writes a file the address does not name (${said})`);
+    const path = pathAt(cwd, w, place);
+    if (!path) return unseen(`${p} writes a path the rules cannot place (${w})`);
+    const hit = writeOffList(path, place, p);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// --- mkdir, cp and mv
+
+function moveOffList(p: "mkdir" | "cp" | "mv", args: string[], cwd: string, place: Place, said: string): Hit {
+  const ops: string[] = [];
+  let target: string | undefined;
+  let dd = false;
+  const LONG = p === "mkdir" ? /^--(parents|verbose)$/ : p === "cp"
+    ? /^--(recursive|archive|preserve(=[a-z,]+)?|verbose|no-clobber|update(=[a-z]+)?|force|parents|no-target-directory|dereference|no-dereference|remove-destination)$/
+    : /^--(force|no-clobber|verbose|update(=[a-z]+)?|no-target-directory)$/;
+  const SHORT = p === "mkdir" ? "pv" : p === "cp" ? "rRapvnfuLPdHTx" : "fnvuT";
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (dd || !a.startsWith("-") || a === "-") { ops.push(a); continue; }
+    if (a === "--") { dd = true; continue; }
+    if (a.startsWith("--")) {
+      if (p !== "mkdir" && /^--target-directory(=|$)/.test(a)) { target = a.includes("=") ? a.slice(a.indexOf("=") + 1) : args[++k]; continue; }
+      if (p === "mkdir" && /^--mode(=|$)/.test(a)) { if (!a.includes("=")) k++; continue; }
+      if (LONG.test(a)) continue;
+      return unseen(`${p}'s option ${a} is not on the list (${said})`);
+    }
+    for (let j = 1; j < a.length; j++) {
+      const c = a[j]!;
+      if (SHORT.includes(c)) continue;
+      if ((c === "t" && p !== "mkdir") || (c === "m" && p === "mkdir")) { const v = a.slice(j + 1) || args[++k]; if (c === "t") target = v; break; }
+      return unseen(`${p}'s option -${c} is not on the list (${said})`);
+    }
+  }
+  if (target !== undefined) ops.push(target);
+  if (!ops.length || (p !== "mkdir" && ops.length < 2)) return unseen(`${p} is given no path, or no source and destination (${said})`);
+  const abs: string[] = [];
+  for (const o of ops) {
+    const at = pathAt(cwd, o, place);
+    if (!at) return unseen(`${p} names a path the rules cannot place (${o})`);
+    if (!contains(place.workspace, place.real(at))) return off("authority", `${p} reaches outside the session's folder (${o})`);
+    abs.push(at);
+  }
+  if (p === "mkdir") return null;
+  // What lands at the destination: the destination itself, or each source by its name inside it.
+  const dest = abs[abs.length - 1]!;
+  for (const src of abs.slice(0, -1)) for (const at of [dest, join(dest, basename(src))]) {
+    const hit = writeOffList(at, place, p);
+    if (hit) return hit;
+  }
   return null;
 }

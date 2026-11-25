@@ -1995,22 +1995,26 @@ card. Its answer is taken only from that context, only for a card sent there
 and not gone back to the owner. It allows the one call, denies it with a
 reason the session reads, or leaves it to the owner.
 
-Some cards never go to it, decided in code from what the gate stored with the
-card (`src/safety/delegate.ts`), whatever the helper answers: a target outside
-content named first, what only the owner allows (a tool that confirms every
-call, a hook of his that asks, a write beyond his accounts), spending or
-renting machines, an irreversible publish or deletion, authority over his
-machines or the rules (driving another session or Keel itself, leaving the
-sandbox, root, services, sign-ins,
-credentials, a write to a service, and Keel's own API: its command line, a
-route that changes it or speaks in a session, an address on this machine or a
-private network, one of its ports, an address built from a variable), and
-what the helper cannot see in the card: a card that does not hold its whole
-request, or a command that runs code the card does not show (a script, a
-package's script, a recipe of make or just, a git alias, code handed to a
-shell or an interpreter). The strings of a tool's input are read the same way
-as a command. Those reach the owner at once, as before. The classes are read
-from words, so a form they miss reaches the helper, and its prompt says so. A card the helper
+The helper answers only a card on an allow-list, decided in code from what
+the gate stored with the card and what the disk says of the session's folder
+(`src/safety/delegate.ts`), whatever the helper answers: a card that shows the
+whole effect, where the effect stays in the session's folder on this machine.
+The list holds commands made only of programs that read and show (ls, cat,
+head, tail, grep, rg, find, wc, sort, diff, stat, file, jq, sed, awk) with no
+option or script that runs code or writes outside the folder; git's reading and
+local commands (status, log, diff, show, branch, fetch, clone into the folder or
+the cache, add, commit, checkout or switch of a local branch, stash); curl and
+wget GET requests to a public host, with no redirect followed; mkdir, cp and mv
+within the folder; edits of files in the folder that are not executable and
+that no runner reads as code (tests, conftest.py, build and package files,
+hooks, CI, agent instructions, installed packages); and MCP tools whose server
+says they only read (readOnlyHint, and no destructiveHint). Every other card
+reaches the owner at once, as before, named by its class where one is known: a
+target outside content named first, what only the owner allows, spending,
+an irreversible publish or deletion, authority over his machines or the rules
+(Keel's own API included), and otherwise a card whose whole effect it does not
+show. The card's text the helper reads has `&`, `<` and `>` written as
+entities, so nothing in it can end the card. A card the helper
 leaves to him, or does not answer in its turn or within two minutes, reaches
 him then, with a notification. Until then its alert waits in the inbox and is
 told nowhere. After the helper denied three of a session's cards in a row, that
@@ -2022,7 +2026,8 @@ where the owner gave it, the reason), and so do the chain of cards, the
 session's timeline and the call's line ("allowed by the Helper"). Settings >
 Helper lists the helper's answers. The helper is told of each open card once,
 as a row of its digest, and again only when the card changed. A card the helper
-had when the daemon stopped is the owner's after the restart, with a
+had when the daemon stopped goes to it again once, in a fresh context, when the
+owner has not seen it; otherwise, or the second time, it is the owner's, with a
 notification.
 
 A question is not a permission card. When the owner answers another

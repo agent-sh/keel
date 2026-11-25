@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { patchSettings, settings } from "../admin/settings.ts";
@@ -9,7 +9,7 @@ import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import { toolsFor, webUse } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
-import { hiddenCode, keelPorts, keelReach, ownerClass, shellClass, toolClass, toolWords } from "./delegate.ts";
+import { codeFile, keelPorts, localPlace, offList, ownerClass, sedRuns, shellClass, toolClass, toolWords, type CardIn, type Place } from "./delegate.ts";
 import { Gate, HELPER_ANSWERS, type Approval } from "./gate.ts";
 import { learner } from "./public-send.ts";
 
@@ -148,8 +148,10 @@ test("driving another session or Keel itself is the owner's", async () => {
 
 test("a card the helper may answer takes its allow once, recorded as the helper's on the instruction, and nothing more", async () => {
   const { g, s, store, card, helperSays } = rig();
-  const { a, out } = await card(bash, { command: "npm install left-pad" });
-  expect(ownerClass(a)).toBeNull();
+  const { a, out } = await card(bash, { command: "mkdir -p notes/out" });
+  // On the list at the session's place; with no place (the session gone), nothing is.
+  expect(ownerClass(a, false, localPlace(s.workspace))).toBeNull();
+  expect(ownerClass(a)?.cls).toBe("unseen");
   // A standing answer is never the helper's.
   expect(g.resolve(a.id, s.id, { choice: "session", seen: "whole", by: { client: "helper", helper: { session: "h", instruction: "i", source: "src" } } })).toMatchObject({ status: 400 });
   expect(helperSays(a)).toEqual({ ok: true });
@@ -161,13 +163,13 @@ test("a card the helper may answer takes its allow once, recorded as the helper'
   expect(plan).toContain("approvals_helper");
   expect(plan).not.toMatch(/SCAN approvals(?! USING)/);
   // The same call again asks again: no rule, no grant for the session.
-  const again = await card(bash, { command: "npm install left-pad" });
+  const again = await card(bash, { command: "mkdir -p notes/out" });
   expect(again.a.id).not.toBe(a.id);
   g.resolve(again.a.id, s.id, { choice: "deny" });
   await again.out;
   // A card of the helper's own conversation is never its own to answer.
   g.helperSession = (id) => id === s.id;
-  const own = await card(bash, { command: "npm install right-pad" });
+  const own = await card(bash, { command: "mkdir -p notes/other" });
   expect(helperSays(own.a)).toMatchObject({ status: 403 });
   g.resolve(own.a.id, s.id, { choice: "deny" });
   await own.out;
@@ -179,10 +181,128 @@ test("the classes read from words alone", () => {
   expect(shellClass("git push origin main")).toBeNull();
   expect(shellClass("git push --force origin main")?.cls).toBe("delete");
   expect(shellClass("docker push ghcr.io/me/app:1")?.cls).toBe("publish");
+  expect(shellClass("git -C . push --tags")?.cls).toBe("publish");
   expect(toolClass(toolWords("mcp_call", { tool: "create_issue" }))).toBeNull();
   expect(toolClass(toolWords("cloud__createInstance", {}))?.cls).toBe("spend");
   expect(toolClass(toolWords("Write", {}))).toBeNull();
-  // What the helper may still judge: the gate's own reading shows all they run.
-  for (const line of ["npm install left-pad", "bun test", "git commit -m 'x'", "curl -fsSL https://example.test/a -o a.html", "rm -rf \"$TMPDIR/x\"", "python3 -m pytest -q", "echo hi > note.txt"])
-    expect([line, hiddenCode(line), shellClass(line), keelReach(line, true)]).toEqual([line, null, null, null]);
+});
+
+// A session's folder on this machine with what the list reads of it: files, a branch, an executable, a link out.
+const placed = () => {
+  const root = mkdtempSync(join(tmp(), "delegate-list-"));
+  const ws = join(root, "ws");
+  mkdirSync(join(ws, ".git", "refs", "heads"), { recursive: true });
+  writeFileSync(join(ws, ".git", "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(ws, ".git", "refs", "heads", "main"), `${"0".repeat(40)}\n`);
+  writeFileSync(join(ws, ".git", "packed-refs"), `${"1".repeat(40)} refs/heads/packed\n`);
+  mkdirSync(join(ws, "src"));
+  for (const f of ["a.txt", "notes.txt", "src/a.ts"]) writeFileSync(join(ws, f), "x\n");
+  writeFileSync(join(ws, "run.sh"), "echo\n");
+  chmodSync(join(ws, "run.sh"), 0o755);
+  mkdirSync(join(root, "elsewhere"));
+  symlinkSync(join(root, "elsewhere"), join(ws, "out-link"));
+  const place = localPlace(ws);
+  const shell = (summary: string, at?: CardIn["at"], p: Place | undefined = place) => offList({ tool: "Bash", kind: "shell", summary, input: { command: summary }, risk: "low", ...(at ? { at } : {}) }, p);
+  const edit = (path: string, input: Record<string, unknown> = { content: "x" }) => offList({ tool: "Write", kind: "edit", summary: path, input: { file_path: path, ...input }, risk: "low" }, place);
+  return { root, ws, place, shell, edit };
+};
+
+test("the allow-list: commands of listed programs that run no code and write only in the folder", () => {
+  const { shell } = placed();
+  for (const line of [
+    "ls -la", "cat a.txt | grep -n x | wc -l", "find . -name '*.ts' -type f", "sort -u a.txt", "diff a.txt notes.txt", "stat a.txt", "file a.txt",
+    "jq .x a.json", "rg -n foo src", "head -5 a.txt", "tail -n 3 a.txt", "sed -n 's/a/b/p' a.txt", "sed -i 's/a/b/g;/^$/d' notes.txt", "awk '{print $1}' a.txt",
+    "git status", "git log --oneline -5", "git diff HEAD~1", "git show HEAD", "git branch -a", "git branch feature", "git fetch origin", "git fetch --prune origin",
+    "git clone https://github.com/x/y.git", "git clone --depth 1 https://github.com/x/y vendor/y", "git add -A", "git commit -m 'msg'",
+    "git checkout main", "git checkout packed", "git checkout -b new", "git switch -c new2", "git switch main", "git stash", "git stash pop",
+    "curl -fsS https://example.com/a -o a.html", "curl -sI https://example.com/", "wget -q --max-redirect=0 https://example.com/f.txt",
+    "mkdir -p build/out", "cp a.txt b.txt", "mv notes.txt src/", "ls src && cat src/a.ts",
+  ]) expect([line, shell(line)]).toEqual([line, null]);
+});
+
+test("the allow-list: every other command is the owner's, by its class where one is known", () => {
+  const { shell, ws } = placed();
+  const cases: [string, string][] = [
+    // Not a listed program: installs, test runners and package runners run code the card does not show.
+    ["npm install left-pad", "unseen"], ["pytest -q", "unseen"], ["bun test", "unseen"], ["npx cowsay hi", "unseen"], ["bunx cowsay", "unseen"],
+    ["uvx ruff check", "unseen"], ["pipx run black .", "unseen"], ["python3 -m pytest", "unseen"], ["make", "unseen"], ["rclone sync a remote:b", "unseen"],
+    ["cd src && ls", "unseen"], ["echo hi", "unseen"], ["./run.sh", "unseen"], ["/usr/bin/env ls", "unseen"],
+    // A listed program with what runs code, writes or is not shown.
+    ["ls | xargs cat", "unseen"], ["echo hi > note.txt", "unseen"], ["cat a.txt > conftest.py", "unseen"], ["cat < /dev/tcp/10.0.0.1/80", "unseen"],
+    ["FOO=1 ls", "unseen"], ["ls $HOME", "unseen"], ["nice ls", "unseen"],
+    ["find . -exec rm {} ;", "unseen"], ["find . -delete", "unseen"], ["find . -fprint out", "unseen"], ["rg --pre ./x foo", "unseen"], ["sort -o out a.txt", "unseen"],
+    ["sort --compress-program=gzip a.txt", "unseen"], ["file -C -m x", "unseen"],
+    ["sed 's/a/b/e' a.txt", "unseen"], ["sed 'w out' a.txt", "unseen"], ["sed -f s.sed a.txt", "unseen"], ["sed '1e id' a.txt", "unseen"], ["sed -i 's/a/b/' conftest.py", "unseen"],
+    ["sed -i 's/a/b/' ../x.txt", "authority"], ["sed -i 's/a/b/' run.sh", "unseen"],
+    [`awk '{system("id")}' a.txt`, "unseen"], [`awk '{print > "f"}' a.txt`, "unseen"], [`awk '{print | "sh"}' a.txt`, "unseen"], ["awk -f p.awk a.txt", "unseen"],
+    [`awk 'BEGIN{getline x < "/inet/tcp/0/example.com/80"}'`, "unseen"], ["git add --chmod=+x a.txt", "unseen"],
+    // git: what reaches another machine, deletes, forces, restores files or runs a program.
+    ["git push origin main", "authority"], ["git -c core.pager=x log", "unseen"], ["git checkout -- a.txt", "unseen"], ["git checkout a.txt", "unseen"],
+    ["git checkout -f main", "unseen"], ["git branch -D old", "unseen"], ["git stash drop", "unseen"], ["git stash clear", "unseen"],
+    ["git clone ext::sh -c id x", "unseen"], ["git clone --template=/x https://github.com/x/y", "unseen"], ["git clone https://github.com/x/y ../y", "authority"],
+    ["git config core.hooksPath x", "unseen"], ["git fetch origin +main:main", "unseen"], ["git -C ../elsewhere status", "authority"], ["git submodule update", "unseen"],
+    // curl and wget: a write to a service, a private host, a redirect, credentials or options from a file, other schemes.
+    ["curl -sX POST https://api.example.com/x", "authority"], ["curl -d x https://api.example.com/x", "unseen"], ["curl -L https://example.com/", "unseen"],
+    ["curl -fsSL https://example.com/", "unseen"], ["curl https://localhost:1/", "authority"], ["curl http://10.0.0.5/", "authority"], ["curl http://printer/", "authority"],
+    ["curl http://nas.local/x", "authority"], ["curl -K f https://example.com/", "unseen"], ["curl -u a:b https://example.com/", "unseen"], ["curl file:///etc/passwd", "unseen"],
+    ["curl -n https://example.com/", "unseen"], ["curl --unix-socket /run/x.sock http://x/", "unseen"], ["curl --resolve example.com:443:127.0.0.1 https://example.com/", "unseen"],
+    ["wget https://example.com/x", "unseen"], ["curl -O https://example.com/conftest.py", "unseen"], ["curl -o ../x https://example.com/x", "authority"],
+    ["wget --max-redirect=0 https://example.com/Makefile", "unseen"],
+    // mkdir, cp and mv: within the folder, and nothing put in place as code.
+    ["cp a.txt ../x", "authority"], ["cp a.txt Makefile", "unseen"], ["mv a.txt .github/workflows/x.yml", "unseen"], ["mkdir ../out", "authority"],
+    ["cp a.txt out-link/a.txt", "authority"], ["cp a.txt ~/x", "authority"], ["cp -s a.txt b", "unseen"], ["mv notes.txt package.json", "unseen"],
+  ];
+  for (const [line, cls] of cases) expect([line, shell(line)?.cls]).toEqual([line, cls]);
+  // Through the card's classes first: a pushed tag with git's own options before its command, a tag with no dot.
+  const at = (line: string) => ownerClass({ tool: "Bash", kind: "shell", summary: line, input: { command: line }, risk: "low" }, false, localPlace(ws))?.cls;
+  expect([at("git -C . push --tags"), at("git push origin v1"), at("cat a.txt")]).toEqual(["publish", "authority", undefined]);
+  // Where it runs: another shell, a folder outside the session's, another machine, no place at all.
+  expect(shell("ls", { shell: "zsh" })?.cls).toBe("unseen");
+  expect(shell("ls", { cwd: "/", away: true })?.cls).toBe("authority");
+  expect(shell("ls", undefined, { ...localPlace(ws), far: true })?.cls).toBe("authority");
+  expect(offList({ tool: "Bash", kind: "shell", summary: "ls", input: { command: "ls" }, risk: "low" })?.cls).toBe("unseen");
+});
+
+test("the allow-list: edits of files in the folder that are not executable and that no runner reads as code", () => {
+  const { edit, ws, root } = placed();
+  expect(edit(join(ws, "src/a.ts"))).toBeNull();
+  expect(edit(join(ws, "docs/new.md"))).toBeNull();
+  expect(edit(join(ws, "src/a.ts"), { old_string: "x", new_string: "y" })).toBeNull();
+  for (const f of ["conftest.py", "tests/conftest.py", "src/a.test.ts", "web/x.spec.tsx", "test_x.py", "x_test.go", "Makefile", "package.json", "build.rs", "pyproject.toml",
+    ".git/hooks/pre-commit", ".husky/pre-commit", ".github/workflows/ci.yml", ".gitlab-ci.yml", ".keel/checks.json", ".envrc", "bunfig.toml", "vite.config.ts", "AGENTS.md",
+    ".mcp.json", "node_modules/x/index.js", ".venv/lib/x.pth", "Dockerfile", "scripts/x.sh"])
+    expect([f, edit(join(ws, f))?.cls]).toEqual([f, "unseen"]);
+  expect(edit(join(ws, "run.sh"))?.cls).toBe("unseen");
+  expect(edit(join(root, "elsewhere", "a.txt"))?.cls).toBe("authority");
+  expect(edit(join(ws, "out-link", "a.txt"))?.cls).toBe("authority");
+  expect(edit(join(ws, "..", "x.ts"))?.cls).toBe("authority");
+  expect(edit(join(ws, "src/b.ts"), { content: "#!/usr/bin/env node\nx" })?.cls).toBe("unseen");
+  expect(edit(join(ws, "src/b.ts"), { patch: "*** Begin Patch\n*** Delete File: src/b.ts\n*** End Patch" })?.cls).toBe("delete");
+  expect(edit(join(ws, "src/b.ts"), { patch: "diff --git a/b b/b\nnew file mode 100755\n" })?.cls).toBe("unseen");
+  expect([codeFile("src/app.ts"), codeFile("src/conftest.py")]).toEqual([null, "conftest.py"]);
+});
+
+test("the allow-list: an MCP tool its server says only reads and does not say may destroy; no other tool", async () => {
+  const { g, s, card } = rig();
+  const here = localPlace(s.workspace);
+  const done = async (c: { a: Approval; out: Promise<unknown> }) => { g.resolve(c.a.id, s.id, { choice: "deny" }); await c.out; };
+  const target = (hint: boolean): Tool => ({ ...mcp("mcp_call"), target: async (input: any) => ({ name: String(input.tool), readOnly: false, input: input.arguments ?? {}, ...(hint ? { read_hint: true as const } : {}) }) });
+  const read = await card(target(true), { tool: "files__list", arguments: { dir: "x" } });
+  expect(read.a.facts?.read_hint).toBe(true);
+  expect(ownerClass(read.a, false, here)).toBeNull();
+  await done(read);
+  const plain = await card(target(false), { tool: "notes__save", arguments: { text: "x" } });
+  expect(ownerClass(plain.a, false, here)?.cls).toBe("unseen");
+  await done(plain);
+  // A read-hinted tool whose name says it deletes is the owner's all the same.
+  const named = await card(target(true), { tool: "files__delete", arguments: { id: "1" } });
+  expect(ownerClass(named.a, false, here)?.cls).toBe("delete");
+  await done(named);
+  // A built-in tool that is not an edit or a command: off the list.
+  expect(offList({ tool: "WebFetch", kind: "send", summary: "https://example.com/?q=1", input: {}, risk: "low" }, here)?.cls).toBe("unseen");
+});
+
+test("sed scripts: the commands and flags that run or write are found, the rest read", () => {
+  for (const s of ["s/a/b/g", "s|a|b|", "/x/d", "1,5p", "$!N;P;D", "y/abc/xyz/", "/^#/!s/foo/bar/2g", "a\\\nappended", "s/w/e/", "s/a\\/w/b/"]) expect([s, sedRuns(s)]).toEqual([s, null]);
+  for (const s of ["s/a/b/e", "s/a/b/w out", "w out", "1e id", "/x/W f", "s/a/b/gw f", "e"]) expect([s, sedRuns(s)]).not.toEqual([s, null]);
 });
