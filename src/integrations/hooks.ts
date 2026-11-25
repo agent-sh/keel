@@ -461,6 +461,11 @@ export type HookFailure = { hook: string; event: HookEvent; session: string; why
 export const hookFailureText = (f: HookFailure) =>
   f.limit_s !== undefined ? `Hook timed out (${f.event}, ${f.limit_s} s): ${f.hook}` : `Hook failed on ${f.event} (${f.why}): ${f.hook}`;
 
+// One run of a hook, as it ended: what the trace records of it (src/server/routes/hooks.ts) and Settings > Hooks adds up.
+// `outcome`: ok, blocked (it exited 2: its decision, not a failure), failed, or timed out.
+export type HookRun = { hook: string; event: HookEvent; session: string; file: string; start: number; end: number; outcome: "ok" | "blocked" | "failed" | "timed out" };
+export const outcomeOf = (o: { code: number | null }): HookRun["outcome"] => (o.code === 0 ? "ok" : o.code === 2 ? "blocked" : o.code === null ? "timed out" : "failed");
+
 export class Hooks {
   // `failed`: told of each hook that failed (exit 1, a command that is not there, a timeout, an http port nobody listens on).
   constructor(private store: Store, private failed?: (f: HookFailure) => void) {
@@ -823,12 +828,16 @@ export class Hooks {
     const bg = (h: Handler) => h.type === "command" && !!(h.async || h.asyncRewake);
     // `async` does not hold to its `timeout` (as in Claude Code), but to the event's longest limit, so one that never
     // ends is stopped; `asyncRewake` holds to its own.
-    for (const { h } of kept) if (h.type === "command" && bg(h)) void this.background(h, event, s, inputOf(h), h.asyncRewake ? limit(h) : most);
+    for (const { h, path } of kept) if (h.type === "command" && bg(h)) void this.background(h, event, s, inputOf(h), h.asyncRewake ? limit(h) : most, path);
     const fg = kept.filter(({ h }) => !bg(h));
     const handlers = fg.map((x) => x.h);
-    const outs = await Promise.all(handlers.map((h) => {
+    const outs = await Promise.all(handlers.map(async (h, i) => {
       const ms = limit(h) * 1000;
-      return h.type === "http" ? runHttp(h, inputOf(h), ms, opts?.signal) : h.type === "mcp_tool" ? runMcp(h, scopeOf.get(h) === "owner" ? ownerData : data, ms) : runHook(h, inputOf(h), s.workspace, ms, undefined, opts?.signal);
+      const start = Date.now();
+      const o = await (h.type === "http" ? runHttp(h, inputOf(h), ms, opts?.signal) : h.type === "mcp_tool" ? runMcp(h, scopeOf.get(h) === "owner" ? ownerData : data, ms) : runHook(h, inputOf(h), s.workspace, ms, undefined, opts?.signal));
+      // (A run the turn's end cut is no run of the hook's.)
+      if (!opts?.signal?.aborted) this.span(h, event, s, fg[i]!.path, start, o);
+      return o;
     }));
     // The turn that asked has ended: what its hooks answered is of no use to it, and none of it is acted on.
     if (opts?.signal?.aborted) return { context: [], ran: res.ran };
@@ -935,6 +944,12 @@ export class Hooks {
     return res;
   }
 
+  // Told each run of a hook as it ends (a span of its session's turn, in the tracer).
+  ran?: (r: HookRun) => void;
+  private span(h: Handler, event: HookEvent, s: Session, file: string, start: number, o: { code: number | null }) {
+    try { this.ran?.({ hook: hookName(h).slice(0, 500), event, session: s.id, file, start, end: Date.now(), outcome: outcomeOf(o) }); } catch { /* a span that could not be kept is a gap in a trace, never a failure of the hook */ }
+  }
+
   // A failed hook, told to whoever keeps Errors.
   private failure(h: Handler, event: HookEvent, s: Session, o: Out, why: string, limit_s?: number): HookFailure {
     const f: HookFailure = { hook: hookName(h).slice(0, 500), event, session: s.id, why: `${why}${o.stderr.trim() ? `: ${o.stderr.trim().slice(0, 300)}` : ""}`, ...(limit_s !== undefined ? { limit_s } : {}) };
@@ -947,12 +962,14 @@ export class Hooks {
   // action it would have controlled has gone on. It is stopped when its session is archived or deleted, and
   // when the daemon exits (stopBackground). What it says the event reads as context is owed to the session's
   // next turn, which an idle session waits for. An `asyncRewake` hook that exits with code 2 wakes the session.
-  private async background(h: Extract<Handler, { type: "command" }>, event: HookEvent, s: Session, input: string, limit_s: number) {
+  private async background(h: Extract<Handler, { type: "command" }>, event: HookEvent, s: Session, input: string, limit_s: number, file: string) {
     let pid = 0;
     try {
+      const start = Date.now();
       const o = await runHook(h, input, s.workspace, limit_s * 1000, (p) => { pid = p; trackBackground(p, s.id); });
       // Stopped with its session or the daemon: nothing it said is owed, and that is no failure.
       if (pid && STOPPED.delete(pid)) return;
+      this.span(h, event, s, file, start, o);
       if (o.code === null) return void this.failure(h, event, s, o, "it did not finish in time", limit_s);
       if (o.code === 2) {
         if (h.asyncRewake) this.rewake?.(s, hookSaid(o.stderr.trim() || o.stdout.trim() || "a background hook exited with code 2"), event);

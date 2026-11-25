@@ -13,6 +13,7 @@ export function waitLabel(s: SpanLite): string {
   if (s.name === "approval wait" && a.tool) return `${name} for ${a.tool}`;
   if (s.name === "retry wait" && a.attempt) return `${name} before attempt ${a.attempt + 1}`;
   if (s.name === "daemon stall") return "Daemon unresponsive";
+  if (s.name === "hook") return `Hook ${a.event ?? ""}: ${String(a.hook ?? "").slice(0, 80)}`.replace(/ : /, ": ");
   if (s.name === "slot wait") return "Heavy-command slot wait";
   return name;
 }

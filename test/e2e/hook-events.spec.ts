@@ -121,7 +121,7 @@ test("a hook that asks: its reason stands apart from the call's risk", async ({ 
 // and the timeline's row says so in the same words (it read "Tool error").
 test("a hook's time limit is said as the hook's, under the call and in the timeline", async ({ page, request }) => {
   test.skip(!scripted, "needs the scripted model: the calls are given exactly");
-  const { id } = await pinned(page, request, { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "sleep 5", timeout: 1 }] }] });
+  const { id, ws } = await pinned(page, request, { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "sleep 5", timeout: 1 }] }] });
   await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${id}`);
@@ -135,6 +135,18 @@ test("a hook's time limit is said as the hook's, under the call and in the timel
   const story = await (await request.get(`/api/sessions/${id}/timeline?format=text`)).text();
   expect(story).toContain("Hook timed out (PreToolUse, 1 s): sleep 5");
   expect(story).not.toContain("Tool error");
+  // Each run of a hook is a span: Settings > Hooks says how often it ran, how long it took, how often it failed and when it last ran.
+  const slow = async () => ((await (await request.get("/api/hooks/runs")).json()).runs as any[]).find((r) => r.hook === "sleep 5" && r.event === "PreToolUse");
+  await expect.poll(slow).toMatchObject({ runs: 1, failures: 1, last_outcome: "timed out" });
+  expect((await slow()).p95_ms).toBeGreaterThanOrEqual(900);
+  await page.goto("/customize/hooks");
+  await page.locator('[data-testid="hook-source"][data-scope="project"]').filter({ hasText: ws.split("/").pop()! }).click();
+  const row = page.getByTestId("hook-run-row").filter({ hasText: "sleep 5" });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByTestId("hook-run-count")).toHaveText("1");
+  await expect(row.getByTestId("hook-run-failed")).toHaveText("1");
+  await expect(row.getByTestId("hook-run-last")).toHaveText("timed out");
+  await shoot(page, "hook-events-07-runs");
 });
 
 // Every event Keel fires, named in one pinned hooks file.

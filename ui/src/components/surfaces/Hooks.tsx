@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api, reportError, failed } from "../../lib/store.ts";
 import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, tilde, type Group } from "./kit.tsx";
 import { navigate } from "../../lib/ui.ts";
+import { fmtMs } from "../../lib/observe.ts";
+import { ago } from "../../lib/utils.ts";
 
 // `whole`: the text is all of the file (a longer one is not pinned). `notes`: what loads and never runs here.
 // `reaches`: where its hooks send what they are given.
@@ -30,13 +32,40 @@ function Reach({ s }: { s: Source }) {
   );
 }
 type Owner = { path: string; text: string | null; template: string };
+type Run = { hook: string; event: string; file: string; runs: number; p95_ms: number; failures: number; last_ms: number; last_outcome: string };
+
+// What each hook of this file did in the last day, from the spans its runs leave in their turns' traces.
+function Runs({ file, runs }: { file: string; runs: Run[] | null }) {
+  const mine = (runs ?? []).filter((r) => r.file === file);
+  if (!mine.length) return runs ? <p className="mt-3 text-caption text-faint" data-testid="hook-runs-none">No run of these hooks in the last day (a hook that runs inside a turn is counted).</p> : null;
+  return (
+    <div className="mt-3" data-testid="hook-runs">
+      <div className="k-sub k-label">Runs in the last day</div>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto_auto_auto] items-baseline gap-x-4 gap-y-1 text-caption tabular-nums">
+        {["Hook", "Runs", "p95", "Failures", "Last run", ""].map((h, i) => <span key={i} className={`text-micro text-faint ${i ? "text-right" : ""}`}>{h}</span>)}
+        {mine.map((r) => (
+          <div key={`${r.event}\n${r.hook}`} className="contents" data-testid="hook-run-row" data-hook={r.hook} data-failures={r.failures}>
+            <span className="min-w-0 truncate" title={r.hook}><span className="text-muted">{r.event}</span> <code className="font-mono text-micro">{r.hook}</code></span>
+            <span className="text-right" data-testid="hook-run-count">{r.runs}</span>
+            <span className="text-right" data-testid="hook-run-p95">{fmtMs(r.p95_ms)}</span>
+            <span className={`text-right ${r.failures ? "text-danger" : "text-faint"}`} data-testid="hook-run-failed">{r.failures}</span>
+            <span className="text-right text-muted">{ago(r.last_ms)}</span>
+            <span className={`text-right ${r.last_outcome === "failed" || r.last_outcome === "timed out" ? "text-danger" : "text-faint"}`} data-testid="hook-run-last">{r.last_outcome}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function Hooks() {
   const [sources, setSources] = useState<Source[] | null>(null);
   const [owner, setOwner] = useState<Owner | null>(null);
   const [sel, setSel] = useState<string | null>(null);
   const [err, setErr] = useState("");
+  const [runs, setRuns] = useState<Run[] | null>(null);
   const load = useCallback(() => {
+    api<{ runs: Run[] }>("/api/hooks/runs").then((r) => setRuns(r.runs)).catch(reportError);
     api<{ sources: Source[] }>("/api/hooks").then((r) => setSources(r.sources)).catch(reportError);
     api<Owner>("/api/hooks/owner").then(setOwner).catch(reportError);
   }, []);
@@ -96,6 +125,7 @@ export default function Hooks() {
             >
               {mine && mine.problems.length > 0 && <ul className="k-issue mt-3" data-testid="hook-problems">{mine.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
               {mine && <Reach s={mine} />}
+              {mine && <Runs file={mine.path} runs={runs} />}
             </ReaderHead>
             <FileEditor
               name="hooks.json"
@@ -119,6 +149,7 @@ export default function Hooks() {
             >
               {cur.problems.length > 0 && <ul className="k-issue mt-3" data-testid="hook-problems">{cur.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
               <Reach s={cur} />
+              <Runs file={cur.path} runs={runs} />
             </ReaderHead>
             <FileEditor name="its hooks" text={cur.text} readOnly="a plugin's hooks change with the plugin: update it in Customize > Plugins" testid="hook-text" />
           </>
@@ -135,6 +166,7 @@ export default function Hooks() {
               {cur.problems.length > 0 && <ul className="k-issue mt-3" data-tone={cur.active ? undefined : "need"} data-testid="hook-problems">{cur.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
               {cur.whole === false && <p className="k-issue mt-3" data-testid="hook-too-long">This file is longer than Keel shows whole, so it cannot be pinned: you would pin hooks you were not shown.</p>}
               <Reach s={cur} />
+              <Runs file={cur.path} runs={runs} />
               {!!cur.covers?.length && <p className="mt-3 text-caption text-muted" data-testid="hook-covers">The pin also covers what it runs: {cur.covers.map((f, i) => <span key={f}>{i ? ", " : ""}<code className="font-mono text-micro">{f}</code></span>)}</p>}
             </ReaderHead>
             <FileEditor name="hooks.json" text={cur.text} readOnly="a repository's file is pinned, not edited here" testid="hook-text" />

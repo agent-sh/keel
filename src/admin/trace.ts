@@ -443,7 +443,8 @@ export class Tracer {
   // A wait of the session's running turn that is already over (an edit's
   // wait for a language server): a span of its own under the turn, with what
   // it cost and what it gave.
-  waited(sessionId: string, name: string, startMs: number, endMs: number, attrs: Record<string, unknown>) {
+  // (`status`: "error" for a wait that failed, a hook that did.)
+  waited(sessionId: string, name: string, startMs: number, endMs: number, attrs: Record<string, unknown>, status: "ok" | "error" = "ok") {
     try {
       if (!this.isRunning(sessionId)) return;
       const s = this.store.session(sessionId);
@@ -451,8 +452,8 @@ export class Tracer {
       if (!s || !turn) return;
       const parent = this.ensureTurn(s, turn);
       this.later("a wait's span",
-        "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, attrs) VALUES (?, ?, ?, ?, 'wait', ?, ?, ?, 'ok', ?)",
-        [newSpanId(), parent.trace, parent.span, sessionId, name, startMs, endMs, JSON.stringify({ ...attrs, turn_event: turn.id })],
+        "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, attrs) VALUES (?, ?, ?, ?, 'wait', ?, ?, ?, ?, ?)",
+        [newSpanId(), parent.trace, parent.span, sessionId, name, startMs, endMs, status, JSON.stringify({ ...attrs, turn_event: turn.id })],
       );
     } catch {
       // A wait that could not be recorded is a gap in a trace, never a failure of the turn.

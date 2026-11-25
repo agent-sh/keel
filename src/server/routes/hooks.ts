@@ -19,6 +19,9 @@ import { HOOK_BLOCKED } from "../../core/stops.ts";
 import { ranAs } from "../../core/ran-as.ts";
 import { hookLine, sayAt } from "../../admin/daemon-log.ts";
 import { reportedUsage } from "../../providers/reported.ts";
+import { HOOK_RUNS_DAYS, HOOK_RUNS_SQL, type HookRuns } from "../../admin/hook-runs.ts";
+import { readsOf } from "../reads.ts";
+import { tracer } from "./observe.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -68,6 +71,8 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     if (!cur || cur.archived) return void errors.capture("tool", new Error(`A background ${event} hook exited with code 2 for a session that is ${cur ? "archived" : "gone"}`), { event, session: s.id });
     engine.message(s.id, `${HOOK_PREFIX} A background ${event} hook exited with code 2:\n${text}`, { kind: "hook", event });
   })().catch((e) => errors.capture("server", e, { at: "hook rewake", session: s.id }));
+  // Each run of a hook is a span of its session's running turn (a wait named hook): what Settings > Hooks adds up.
+  hooks.ran = (r) => tracer?.waited(r.session, "hook", r.start, r.end, { hook: r.hook, event: r.event, file: r.file, outcome: r.outcome }, r.outcome === "failed" || r.outcome === "timed out" ? "error" : "ok");
   const answered = new Set<string>(); // user events already given to UserPromptSubmit
   // The calls in flight that a hook follows: what the hooks see of it, and what PreToolUse left for later.
   // Kept by session and call id: a call id is its session's (two sessions can each have a call-1).
@@ -417,6 +422,10 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
         const sources = workspaces().flatMap((w) => shown(w)).filter((s) => (seen.has(s.path) ? false : (seen.add(s.path), true)));
         return json({ sources, owner_path: ownerHooksPath() });
       },
+    },
+    // What each hook did in the last day (src/admin/hook-runs.ts), from the spans of its runs.
+    "/api/hooks/runs": {
+      GET: async () => json({ days: HOOK_RUNS_DAYS, runs: await readsOf(store).sql<HookRuns>(HOOK_RUNS_SQL, [Date.now() - HOOK_RUNS_DAYS * 86_400_000]) }),
     },
     "/api/hooks/trust": {
       POST: async (req: Request) => {
