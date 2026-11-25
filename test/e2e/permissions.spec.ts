@@ -175,7 +175,7 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch alpha.txt" } }])}` } });
 
-  await page.setViewportSize({ width: 320, height: 568 });
+  await page.setViewportSize({ width: 320, height: 480 });
   await page.goto(`/s/${session.id}`);
   await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
   await page.reload();

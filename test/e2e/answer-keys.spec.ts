@@ -923,7 +923,7 @@ test("an approval taller than the room above the message box gets the keyboard o
   await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command } }]) } });
   await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals.length).toBe(1);
   // (A window short enough that the card is taller than its region, the running line under it gone.)
-  await page.setViewportSize({ width: 1280, height: 490 });
+  await page.setViewportSize({ width: 1280, height: 470 });
   await page.goto(`/s/${id}`);
   const card = page.getByTestId("approval");
   const allow = card.getByTestId("allow-once");

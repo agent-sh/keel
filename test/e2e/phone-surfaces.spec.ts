@@ -1204,13 +1204,19 @@ for (const size of SIZES) {
           try {
             await page.goto(`/s/${id}`);
             const dock = page.getByTestId("session-dock");
-            await expect(dock.getByTestId("dock-job")).toBeVisible({ timeout: 30_000 });
+            await expect(dock.getByTestId("dock-jobs")).toBeVisible({ timeout: 30_000 });
             await expect(dock.getByTestId("dock-changes")).toBeVisible();
             await expect(dock.getByTestId("dock-plan")).toBeVisible();
             await page.waitForTimeout(400);
             // A button of one line reaches only its own line: Stop on the command and Review on the changes never cover each other.
             expect(await overlaps(dock, "button"), `controls over each other at ${scale * 100}% text`).toEqual([]);
-            for (const line of ["dock-plan", "dock-job", "dock-changes"]) expect(await phoneProblems(dock.getByTestId(line)), `${line} at ${scale * 100}% text`).toEqual([]);
+            for (const line of ["dock-plan", "dock-jobs", "dock-changes"]) expect(await phoneProblems(dock.getByTestId(line)), `${line} at ${scale * 100}% text`).toEqual([]);
+            // The commands are one chip on the line; its list holds a row each, with Stop beside the name and what it says under it.
+            await dock.getByTestId("dock-jobs").tap();
+            const job = page.getByTestId("dock-job").first();
+            await expect(job).toBeVisible();
+            expect(await phoneProblems(job), `dock-job at ${scale * 100}% text`).toEqual([]);
+            await page.keyboard.press("Escape");
             await shoot(page, `phone-surfaces-29-dock-${size.width}-${scale}`);
           } finally { await ctx.close(); }
         }

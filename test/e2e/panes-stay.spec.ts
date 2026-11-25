@@ -558,8 +558,8 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await expect(phone.getByTestId("station-why")).toBeHidden();
   await expect(phone.locator('.k-question[data-state="open"]')).toBeVisible();
   await shoot(page, "panes-stay-10-phone");
-  // With no question open the state stays where a phone's head puts it: under the title, in the page's width
-  // (the approval's card says what is asked).
+  // With no question open the state stays where a phone's head puts it: on the title's one line, in the page's width
+  // (the approval's card says what is asked; the menu's first row says the reason whole).
   await page.goto(`/s/${coord}`);
   const calm = page.locator(`section.k-station[data-station="${coord}"]`);
   await expect.poll(async () => Math.round((await calm.boundingBox())!.x)).toBe(0);
@@ -568,8 +568,8 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   const reason = calm.getByTestId("station-word");
   await expect(reason).toContainText("Needs you");
   const [under, above] = [(await reason.boundingBox())!, (await calm.getByTestId("station-title").boundingBox())!];
-  expect(under.y, "the reason is under the title").toBeGreaterThanOrEqual(above.y + above.height - 1);
-  expect(under.x + under.width, "the reason is in the page's width").toBeLessThanOrEqual(390);
+  expect(Math.abs(under.y + under.height / 2 - (above.y + above.height / 2)), "the state is on the title's line").toBeLessThan(6);
+  expect(under.x + under.width, "the state is in the page's width").toBeLessThanOrEqual(390);
   await shoot(page, "panes-stay-10b-phone-reason");
   await page.goto("/");
   await expect(page.getByTestId("home-count-need")).toContainText("2 need you");

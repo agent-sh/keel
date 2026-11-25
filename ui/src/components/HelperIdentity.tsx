@@ -84,12 +84,12 @@ function KeelRepoRow() {
   };
   return (
     <SettingRow label="Keel's source" hint="The folder of a Keel checkout the helper starts an agent in when it finds a bug of Keel's. Found by itself where it can; set it when it says it cannot." testid="helper-repo-row">
-      <div className="flex flex-col items-start gap-1.5">
-        <input className="k-field w-72" value={dir} placeholder="/path/to/keel" aria-label="Keel source folder" data-testid="helper-repo-input"
+      <div className="flex min-w-0 max-w-full flex-col items-start gap-1.5">
+        <input className="k-field w-72 max-w-full" value={dir} placeholder="/path/to/keel" aria-label="Keel source folder" data-testid="helper-repo-input"
           onChange={(e) => setDir(e.target.value)} onBlur={save} onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") e.currentTarget.blur(); }} />
-        {found && "repo" in found && <p className="k-pick-note" data-testid="helper-repo-found">Using {found.repo.dir}: {WHERE[found.repo.from]}.</p>}
-        {found && "problem" in found && <p className="k-pick-note" role="status" data-testid="helper-repo-problem">{found.problem}</p>}
-        {err && <p className="k-pick-note" role="alert" data-testid="helper-repo-error">{err}</p>}
+        {found && "repo" in found && <p className="k-pick-note max-w-full [overflow-wrap:anywhere]" data-testid="helper-repo-found">Using {found.repo.dir}: {WHERE[found.repo.from]}.</p>}
+        {found && "problem" in found && <p className="k-pick-note max-w-full [overflow-wrap:anywhere]" role="status" data-testid="helper-repo-problem">{found.problem}</p>}
+        {err && <p className="k-pick-note max-w-full [overflow-wrap:anywhere]" role="alert" data-testid="helper-repo-error">{err}</p>}
       </div>
     </SettingRow>
   );
