@@ -51,7 +51,11 @@ export const standing: {
   before?: (ctx: ToolContext, qs: Question[]) => Ruling | Promise<Ruling | undefined> | undefined;
   after?: (ctx: ToolContext, qs: Question[], answers: Answers) => Offer | undefined;
 } = {};
-export type Got = { answers: Answers; ruled?: Ruled; offer?: Offer };
+// `relayed`: the owner's answer came through his helper, from his own words in its conversation (src/helper/relay.ts).
+export type Got = { answers: Answers; ruled?: Ruled; offer?: Offer; relayed?: Relayed };
+// An answer the helper relayed: its conversation, the owner's message there it quotes, and his words verbatim per question.
+export type Relayed = { by: "helper"; session: string; event: string; quotes: Record<string, string> };
+const relays = new Map<string, Relayed>();
 
 // The model's own question: the card reads it from the call's input.
 // `qs`: its questions, as the tool read them from its input.
@@ -65,30 +69,41 @@ export function ask(ctx: ToolContext, qs: Question[] = []): Promise<Got | null> 
   return r.catch(() => undefined).then((x) => x ?? (ctx.signal.aborted ? null : card(ctx, qs)));
 }
 async function card(ctx: ToolContext, qs: Question[]): Promise<Got | null> {
-  const answers = (await askFor(ctx)) as Answers | null;
+  const answers = (await askFor(ctx, undefined, qs)) as Answers | null;
+  const key = keyOf(ctx.sessionId, ctx.callId ?? "");
+  const relayed = relays.get(key);
+  relays.delete(key);
   if (!answers) return null;
+  // (A relayed answer is the owner's words for this one card: never offered for keeping as a ruling.)
+  if (relayed) return { answers, relayed };
   let offer: Offer | undefined;
   try { offer = standing.after?.(ctx, qs, answers); } catch {} // (No offer is no loss: the answer stands.)
   return { answers, ...(offer ? { offer } : {}) };
 }
 // What a tool stores with its result for the page: the answers, and the ruling or the offer.
-export const shownOf = (g: Got) => ({ answers: g.answers, ...(g.ruled ? { ruling: g.ruled.shown } : {}), ...(g.offer ? { offer: g.offer } : {}) });
-// The result text with the ruling named first, when one answered.
-export const ruledText = (g: Got, text: string) => (g.ruled ? `${g.ruled.note}\n\n${text}` : text);
+export const shownOf = (g: Got) => ({ answers: g.answers, ...(g.ruled ? { ruling: g.ruled.shown } : {}), ...(g.offer ? { offer: g.offer } : {}), ...(g.relayed ? { relayed: g.relayed } : {}) });
+// What the model reads first of an answer the helper relayed: whose words they are and where they were said.
+export const relayNote = (r: Relayed) =>
+  `The owner answered through his helper: these are his own words, quoted verbatim from his message ${r.event} in the helper's conversation (session ${r.session}). ${Object.entries(r.quotes).map(([q, w]) => `Question ${q}: "${w}"`).join("; ")}.`;
+// The result text with the ruling named first, when one answered, or the relay's note.
+export const ruledText = (g: Got, text: string) => (g.ruled ? `${g.ruled.note}\n\n${text}` : g.relayed ? `${relayNote(g.relayed)}\n\n${text}` : text);
 
 // `asked`: a question the call's input does not hold (a server asked it while
 // the call ran). The card shows it from the registry, and the owner can
 // decline it. One question waits per call at a time.
-export function askFor(ctx: ToolContext, asked?: Asked): Promise<Reply> {
+// `qs`: the model's own questions, kept with the pending card for whoever answers it from elsewhere (the helper's relay).
+export function askFor(ctx: ToolContext, asked?: Asked, qs?: Question[]): Promise<Reply> {
   if (ctx.signal.aborted) return Promise.resolve(null);
   const id = ctx.callId ?? `q-${crypto.randomUUID()}`;
   const key = keyOf(ctx.sessionId, id);
   const question: PendingQuestion = { session_id: ctx.sessionId, call_id: id, parent_id: ctx.parentId, ...(asked ? { asked } : {}) };
+  if (qs?.length) questionsOf.set(key, qs);
   return new Promise((resolve) => {
     const done = (a: Reply) => {
       ctx.signal.removeEventListener("abort", onAbort);
       if (pending.get(key)?.resolve === done) {
         pending.delete(key);
+        questionsOf.delete(key);
         close(id, ctx.sessionId, a, asked?.id);
         ctx.questionChanged?.();
       }
@@ -126,6 +141,26 @@ export function decline(sessionId: string, callId: string, question?: string): b
   return true;
 }
 export const askedOf = (sessionId: string, callId: string) => pending.get(keyOf(sessionId, callId))?.question.asked;
+// The questions a pending card asks: the model's own (as its tool read them) or a server's.
+const questionsOf = new Map<string, Question[]>();
+export const pendingAsks = (sessionId: string, callId: string): Question[] | undefined => {
+  const p = pending.get(keyOf(sessionId, callId));
+  return p ? p.question.asked?.questions ?? questionsOf.get(keyOf(sessionId, callId)) ?? [] : undefined;
+};
+
+// The owner's answer relayed by his helper (src/helper/relay.ts checks the words are his first): the card is
+// answered with them and the call's result says whose words they are and where he said them. A server's form that
+// asks for what looks like a secret takes no relay.
+export function relay(sessionId: string, callId: string, answers: Answers, r: Relayed): boolean | "unsent" | "stale" {
+  const p = pending.get(keyOf(sessionId, callId));
+  if (!p) return false;
+  if (p.question.asked?.sensitive) return "unsent";
+  // (A server's form takes the words as its answer; the model's own question also reads whose words they are.)
+  if (!p.question.asked) relays.set(keyOf(sessionId, callId), r);
+  const sent = answer(sessionId, callId, answers, false, p.question.asked?.id);
+  if (sent !== true) relays.delete(keyOf(sessionId, callId));
+  return sent;
+}
 
 export const allPendingQuestions = () => Array.from(pending.values(), (p) => p.question);
 export const pendingQuestions = (sessionId: string) =>

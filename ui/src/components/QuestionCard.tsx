@@ -159,6 +159,8 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
   const shown = (result as (ToolResultBlock & { shown?: Shown }) | undefined)?.shown;
   const given = shown?.answers;
   const ruled = shown?.ruling;
+  // `relayed`: the owner answered in the helper's conversation and the helper carried his words here (src/helper/relay.ts).
+  const relayed = shown?.relayed;
   const first = qs[0];
   if (open) {
     return (
@@ -186,6 +188,7 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
           {qs.length > 1 && <>{" "}<span className="k-line-rest">+{qs.length - 1}</span></>}
           {said && <>{" "}<span className="k-line-answer" data-testid="question-line-answer">{said}</span></>}
           {ruled && <>{" "}<span className="k-line-state" data-tone="idle" data-testid="question-ruled">from your standing ruling</span></>}
+          {relayed && <>{" "}<span className="k-line-state" data-tone="idle" data-testid="question-relayed">your words, through the Helper</span></>}
         </span>
         <span className="k-line-end" />
       </Collapsible.Trigger>
@@ -213,6 +216,7 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
             )}
           </Fragment>
         ))}
+        {relayed && <Under name="Helper" testid="question-relay">{`Your words, quoted from your message to the Helper (${relayed.event}): it relayed them and added none.`}</Under>}
         {ruled && <Under name="Kept" testid="question-ruling">{`For questions like it ${inScope(ruled)}. You did not see this question; revoke the ruling in Customize > Rulings.`}</Under>}
         {result && !given && <Under name={result.is_error && !stopKind(result.content) ? STATE_WORD.fail : "Result"} tone={result.is_error && !stopKind(result.content) ? "fail" : undefined} testid="question-result">{resultText(result)}</Under>}
       </div>
@@ -221,7 +225,7 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
   );
 }
 
-type Shown = { answers?: Record<string, { picked: string[]; other?: string; skipped?: true }>; ruling?: { id: string; scope: Scope; name: string; words: string[] }; offer?: { scopes: { scope: Scope; name: string }[] } };
+type Shown = { answers?: Record<string, { picked: string[]; other?: string; skipped?: true }>; ruling?: { id: string; scope: Scope; name: string; words: string[] }; offer?: { scopes: { scope: Scope; name: string }[] }; relayed?: { session: string; event: string } };
 const SCOPE_WORD: Record<Scope, string> = { tree: "This tree", repo: "Repository", everywhere: "Everywhere" };
 const inScope = (s: { scope: Scope; name: string }) => (s.scope === "everywhere" ? "everywhere" : s.scope === "tree" ? "in this tree of agents" : `in ${s.name}`);
 

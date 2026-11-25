@@ -11,7 +11,9 @@ import { whose } from "../engine/compact.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { readsOf } from "../server/reads.ts";
 import type { Store } from "../core/store.ts";
-import { pendingQuestions } from "../tools/interact.ts";
+import { pendingAsks, pendingQuestions, relay } from "../tools/interact.ts";
+import * as activityLog from "../automation/activity.ts";
+import { relayAnswers } from "./relay.ts";
 import { registerSessionTools } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Helper } from "./helper.ts";
@@ -259,8 +261,43 @@ const approval: Tool = {
   }),
 };
 
+// The owner's typed answer to another session's question, carried as his words (relay.ts checks they are).
+const relayTool: Tool = {
+  name: "helper__relay_answer",
+  description: "Answer another session's open question (a model's question to the owner, or a server's form) with the owner's own words from his message to you, when he answered it here. event: the id of his message in this conversation; each answer quotes his words verbatim (never your own) and names the question id when the card asks several. A permission card is not a question: it is answered only with helper__approval.",
+  input_schema: {
+    type: "object",
+    properties: {
+      session: { type: "string", description: "the session's id, or a part of its title naming one" },
+      call: { type: "string", description: "the question's call id, when the session waits on more than one" },
+      event: { type: "string", description: "the id of the owner's message in your conversation the words come from" },
+      answers: { type: "array", items: { type: "object", properties: { question: { type: "string" }, quote: { type: "string" } }, required: ["quote"], additionalProperties: false } },
+    },
+    required: ["session", "event", "answers"], additionalProperties: false,
+  },
+  readOnly: false, kind: "own",
+  run: (input, ctx) => guard(() => {
+    const { store } = H!.deps;
+    if (!H!.isHelper(ctx.sessionId)) throw new Error("only the owner's helper relays his answers");
+    const s = find(String(input.session));
+    const waiting = pendingQuestions(s.id);
+    const call = input.call ? String(input.call) : waiting.length === 1 ? waiting[0]! : undefined;
+    if (!call) throw new Error(waiting.length ? `${s.title || s.id} waits on ${waiting.length} questions: name the call (${waiting.join(", ")})` : `${s.title || s.id} waits on no question`);
+    const qs = pendingAsks(s.id, call);
+    if (!qs) throw new Error(`no open question ${call} in ${s.title || s.id}${perm.gate?.approvals({ session: s.id, pending: true }).some((a) => a.call_id === call) ? ": that is a permission card, answered only with helper__approval" : ""}`);
+    const r = relayAnswers(store.lineage(ctx.sessionId), { event: String(input.event), answers: input.answers }, qs);
+    if ("refused" in r) throw new Error(`Refused: ${r.refused}.`);
+    const sent = relay(s.id, call, r.answers, { by: "helper", session: ctx.sessionId, event: String(input.event), quotes: r.quotes });
+    if (sent === "unsent") throw new Error("Refused: this form asks for what looks like a secret: the owner answers it himself.");
+    if (sent !== true) throw new Error("the question is no longer open");
+    const words = Object.values(r.quotes).map((q) => `"${q}"`).join("; ");
+    activityLog.record("ruling", "relayed", s.id, `The owner's answer, relayed by the Helper from his message ${input.event}: ${words}`, { call_id: call, helper_session: ctx.sessionId, event: String(input.event) });
+    return `Relayed the owner's words to ${s.title || s.id}: ${words}.`;
+  }),
+};
+
 const memory = memoryTools(() => H!.records);
-const ALL = [...memory, sessions, sessionRead, activity, approvals, approval, mailSearch, mailRead, mailLabel, mailSend, calendar];
+const ALL = [...memory, sessions, sessionRead, activity, approvals, approval, relayTool, mailSearch, mailRead, mailLabel, mailSend, calendar];
 
 // The helper whose deps the tools read (a test gives its own and puts back undefined).
 export function useHelper(h: Helper | undefined) { H = h; }
