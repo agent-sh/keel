@@ -86,7 +86,15 @@ export function OutsideBar({ session }: { session: Session }) {
       setNote(failed(e, { at: "OutsideBar send" }));
     }
   };
-  const stop = () => api(`/api/sessions/${session.id}/outside/interrupt`, { method: "POST" }).catch((e) => setNote(failed(e, { at: "OutsideBar stop" })));
+  // One Stop at a time: a press while its request is out is the same Stop (a second one, later, ends the child).
+  const [stopping, setStopping] = useState(false);
+  const stop = async () => {
+    if (stopping) return;
+    setStopping(true);
+    try { await api(`/api/sessions/${session.id}/outside/interrupt`, { method: "POST" }); }
+    catch (e) { setNote(failed(e, { at: "OutsideBar stop" })); }
+    finally { setStopping(false); }
+  };
   const dismiss = (id: string) => api(`/api/sessions/${session.id}/outside/sends/${id}`, { method: "DELETE" }).catch((e) => setNote(failed(e, { at: "OutsideBar dismiss" })));
   // Stale: it worked or waited and has written nothing since (no process vouches for it): said as that, in no state's colour.
   const said = o.state === "waiting" ? `Waits in ${where} for ${o.waiting_for ?? "your answer"}` : o.state === "working" ? `Working in ${where}` : o.state === "stale" ? `No record from ${where}` : `Done in ${where}`;
@@ -159,12 +167,12 @@ export function OutsideBar({ session }: { session: Session }) {
             data-testid="outside-input"
           />
           {route === "steer" && (
-            <button type="button" className="k-btn" data-testid="outside-stop" onClick={() => void stop()} title={`Stop the turn Keel runs in ${where}`}><Square aria-hidden="true" />Stop</button>
+            <button type="button" className="k-btn" data-testid="outside-stop" disabled={stopping} aria-busy={stopping || undefined} onClick={() => void stop()} title={`Stop the turn Keel runs in ${where}`}><Square aria-hidden="true" />Stop</button>
           )}
           <button type="submit" className="k-btn" data-ink="" disabled={!text.trim()} data-testid="outside-send" aria-label={`Send to ${where}`}><ArrowUp aria-hidden="true" />Send</button>
         </form>
       )}
-      {notes.map((n) => <p key={n} className="k-outside-note" data-testid="outside-said">{n}</p>)}
+      {notes.map((n) => <p key={n} className="k-outside-note k-outside-said" data-testid="outside-said">{n}</p>)}
       <p className="k-outside-note" data-testid="outside-note">{note || quiet}</p>
     </section>
   );

@@ -1978,6 +1978,10 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-outside-compose:focus-within { border-color: var(--ring); }
 .k-outside-input { flex: 1; min-width: 0; min-height: 1.75rem; padding: 0.25rem 0; resize: none; background: transparent; font-size: var(--text-ui); line-height: 1.4; color: var(--fg); outline: none; }
 .k-outside-input::placeholder { color: var(--faint); }
+/* Send with nothing to send: an outline whose label still reads (the inked button faded to 0.4 lost it). */
+.k-outside-compose .k-btn[data-ink]:disabled { opacity: 1; background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* What Keel said of the session (a form it declined, a Codex it cannot answer): read, not a footnote. */
+.k-outside-said { color: var(--muted); }
 /* Sends Codex does not hold yet, and the ones it did not take, with what to do. */
 .k-outside-sends { display: grid; gap: 0.25rem; margin-left: 1.5rem; }
 .k-outside-send { display: flex; align-items: center; gap: 0.625rem; min-width: 0; font-size: var(--text-caption); color: var(--muted); }

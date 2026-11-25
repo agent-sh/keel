@@ -86,7 +86,7 @@ async function run(turnId: string, text: string) {
   }
   if (/^form\b/i.test(text)) {
     const r = await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: "tickets", environmentId: null, mode: "form", _meta: null, message: "Which project?", requestedSchema: { type: "object", properties: { project: { type: "string" } } } });
-    await reply(turnId, "m5", `The form was ${r?.action ?? "unanswered"}.`);
+    await reply(turnId, "m5", `The form came back as ${r?.action ?? "no answer"}.`);
     return finish(turnId, "completed");
   }
   if (/^edit\b/i.test(text)) {

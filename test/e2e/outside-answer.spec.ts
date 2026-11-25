@@ -79,6 +79,38 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
     expect((await sessionOf())?.id).toBe(sid);
     await shoot(page, "outside-answer-reply");
 
+    // An MCP server of Codex's asks for a form: Keel declines it, and the bar says so until the next send.
+    await input.fill(`form please ${tag}`);
+    await bar.getByTestId("outside-send").click();
+    await expect(bar.getByTestId("outside-said")).toContainText("asked for a form, and Keel declined it", { timeout: 15_000 });
+    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await shoot(page, "outside-answer-form");
+
+    // A Codex that keeps no writer locks: nothing says whether a terminal has it open, so the box goes.
+    rmSync(join(home!, "thread-writer-locks"), { recursive: true, force: true });
+    try {
+      await page.reload();
+      await expect(bar.getByTestId("outside-note")).toContainText("keeps no writer locks", { timeout: 10_000 });
+      await expect(bar.getByTestId("outside-compose")).toHaveCount(0);
+      await shoot(page, "outside-answer-unlocked");
+    } finally { mkdirSync(join(home!, "thread-writer-locks"), { recursive: true }); }
+
+    // A send a restart cut while Codex worked, as the bar shows it after the restart (a restart is not made
+    // here: the bar's own read is answered with that row).
+    await page.route(`**/api/sessions/${sid}/outside`, async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      await route.fulfill({ response: res, json: { ...body, sends: [{ id: "cut-1", text: `Deploy the build ${tag}`, state: "cut", said: "Keel restarted while Codex worked: the turn stopped there" }] } });
+    });
+    await page.reload();
+    const cut = bar.getByTestId("outside-send-row");
+    await expect(cut).toHaveAttribute("data-state", "cut");
+    await expect(cut).toContainText("Keel restarted while Codex worked: the turn stopped there");
+    await expect(cut.getByTestId("outside-send-again")).toHaveCount(0);
+    await expect(bar.getByTestId("outside-send")).toBeDisabled();
+    await shoot(page, "outside-answer-cut");
+    await page.unroute(`**/api/sessions/${sid}/outside`);
+
     // What Keel sent is the rollout's own record, once; nothing of Keel's was written beside it.
     const text = readFileSync(rollout, "utf8");
     expect(text.split(`"message":"Run the tests ${tag}"`).length - 1).toBe(1);
