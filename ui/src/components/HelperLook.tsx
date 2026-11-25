@@ -21,6 +21,15 @@ export function HelperLook({ errorId }: { errorId: string }) {
   const [asking, setAsking] = useState(false);
   const [err, setErr] = useState("");
   if (!look) return null;
+  // The look stands under the first row of its cause; the others say they are the same.
+  if (look.error_ids[0] !== errorId && look.state === "done") {
+    return (
+      <div className="k-look" data-testid="helper-look-same">
+        <HelperFace size="voice" testid="helper-look-face" />
+        <p className="k-look-line">{name}: the same cause as another error here, which has the look.{look.what ? <span className="text-muted"> {look.what}</span> : null}</p>
+      </div>
+    );
+  }
   const text = task?.cause === look.cause ? task.text : look.task ?? "";
   const ask = () => { setAsking(true); askLook(look.cause).catch(reportError).finally(() => setAsking(false)); };
   const start = () => {

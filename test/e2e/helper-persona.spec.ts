@@ -123,7 +123,9 @@ test("helper: a new error is read once, with the fix offered; a bug of Keel's co
   await page.getByTestId("errors-button").click();
   const panel = page.getByTestId("errors-panel");
   const look = panel.getByTestId("helper-look").filter({ hasText: "never made" });
-  await expect(look).toHaveCount(2);
+  // Under its first row the whole look; under the second row of the cause, that it is the same.
+  await expect(look).toHaveCount(1);
+  await expect(panel.getByTestId("helper-look-same")).toHaveCount(1);
   await expect(look.first().getByTestId("helper-look-name")).toHaveText("Pip");
   await expect(look.first().getByTestId("helper-look-what")).toContainText("a bug in Keel");
   await expect(look.first().getByTestId("helper-look-whose")).toHaveText("A bug in Keel");
