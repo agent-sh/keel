@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { made, markSeen, shown } from "./shell-seen.ts";
-import { guardOverwrite } from "./files.ts";
+import { guardOverwrite, writeFile } from "./files.ts";
 import type { ToolContext } from "./types.ts";
 
 test("the files a command prints whole, and how many lines it prints at most", () => {
@@ -45,4 +45,20 @@ test("a file a command showed whole or made is one a Write may replace at once",
   const later = new Date(Date.now() + 5000);
   (await import("node:fs")).utimesSync(whole, later, later);
   expect(await guardOverwrite(whole, ctx)).toContain("changed on disk");
+});
+
+test("the refusal of an unread file says how to go on in one call, and a file this session wrote is one it knows", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-seen-"));
+  const ctx = { cwd: dir, seen: new Map<string, number>(), sessionId: "s", signal: new AbortController().signal } as unknown as ToolContext;
+  const old = join(dir, "old.txt"), mine = join(dir, "mine.txt");
+  writeFileSync(old, "kept\n");
+  const said = (await guardOverwrite(old, ctx))!;
+  expect(said).toContain("send the same Write again now");
+  expect(said).toContain("Read it first");
+  expect(said).toContain("Edit");
+  expect(await guardOverwrite(old, ctx)).toBeNull();
+  // A file the session made with Write is known to it: the second Write is not refused.
+  expect(await guardOverwrite(mine, ctx)).toBeNull();
+  expect(await writeFile(mine, "one\n", ctx)).toBeUndefined();
+  expect(await guardOverwrite(mine, ctx)).toBeNull();
 });

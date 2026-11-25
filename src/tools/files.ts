@@ -537,9 +537,9 @@ export async function guardOverwrite(p: string, ctx: ToolContext): Promise<strin
       const fh = await open(h.io, "r");
       try { const buf = Buffer.alloc(8192); const { bytesRead } = await fh.read(buf, 0, buf.length, 0); head = buf.subarray(0, bytesRead).toString("utf8").slice(0, 2000); } finally { await fh.close(); }
     } catch {} finally { h.close(); }
-    return `${p} exists and was not read in this session. Its start is below; write again to replace it.\n\n${head}`;
+    return `${p} exists and was not read in this session. Its start is below. To replace it whole, send the same Write again now. To keep what it holds, Read it first, or use Edit to change part of it.\n\n${head}`;
   }
-  if (seen !== m) return `${p} changed on disk since it was read. Read it again before replacing it.`;
+  if (seen !== m) return `${p} changed on disk since it was read. Read it again before replacing it, or use Edit to change part of it.`;
   return null;
 }
 
