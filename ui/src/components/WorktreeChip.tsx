@@ -1,8 +1,10 @@
 import { Popover } from "@base-ui/react/popover";
 import { Archive, ArchiveRestore, Eye, ExternalLink, GitBranch, GitMerge, GitPullRequest, MoveLeft, ShieldAlert, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, reportError, failed } from "../lib/store.ts";
+import { api, reportError, failed, useStore } from "../lib/store.ts";
+import { busyWords, workingIn } from "../lib/folder-busy.ts";
+import { useSessionStates } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { isGitFolder, loadBranches, loadWorktree, setupWords, setStartBase, setStartInWorktree, setStartPr, startBase, useHead, useStartBase, useStartInWorktree, useStartPr, useWorktree, type BranchList } from "../lib/worktree.ts";
 import { loadOverlap, mineOf, useOverlap } from "../lib/overlap.ts";
@@ -279,6 +281,28 @@ export function WorktreeToggle({ workspace }: { workspace: string }) {
       {on && !pr && <WorktreeBase workspace={workspace} />}
       {on && <WorktreePr workspace={workspace} />}
     </>
+  );
+}
+
+// Under the start box's pickers: sessions already work in the chosen folder, so a second one would edit the same
+// files. Says who, and offers the worktree with the toggle above one press away. Nothing for a folder nobody works in.
+export function WorktreeNotice({ workspace }: { workspace: string }) {
+  const sessions = useStore((s) => s.sessions);
+  const [git, setGit] = useState(false);
+  useEffect(() => { if (workspace) isGitFolder(workspace).then(setGit); }, [workspace]);
+  const here = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.machine && s.workspace.replace(/\/+$/, "") === workspace.replace(/\/+$/, "")), [sessions, workspace]);
+  const states = useSessionStates(here);
+  const busy = workingIn(workspace, here, (s) => states[s.id]?.watch);
+  if (!busy.length) return null;
+  return (
+    <p data-testid="folder-busy" data-count={busy.length} className="mb-2.5 flex min-w-0 flex-wrap items-center gap-x-2 text-caption text-muted">
+      <span className="min-w-0 truncate">{busyWords(busy.map((s) => s.title))}.</span>
+      {git && (
+        <button type="button" data-testid="folder-busy-worktree" onClick={() => setStartInWorktree(true)} className="k-link text-accent hover:underline">
+          Start in a worktree
+        </button>
+      )}
+    </p>
   );
 }
 

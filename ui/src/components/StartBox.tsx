@@ -25,6 +25,7 @@ import { useRail, useWidth } from "../lib/rail.ts";
 import { createInWorktree, isGitFolder, startBase, startPr, useStartInWorktree } from "../lib/worktree.ts";
 
 const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeToggle })));
+const WorktreeNotice = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeNotice })));
 
 // The home screen: the state of every session as its headline, the start box
 // (the folder, the model and the first message of a new session), then the
@@ -123,6 +124,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
             {!machine && <Suspense fallback={null}><WorktreeToggle workspace={workspace} /></Suspense>}
             {!machine && <ProjectPicker workspace={workspace} />}
           </div>
+          {!machine && !inWorktree && !!workspace && <Suspense fallback={null}><WorktreeNotice workspace={workspace} /></Suspense>}
           {machine === "auto" && place && (
             <p data-testid="auto-place" data-machine={place.machine_id} className="mb-2.5 flex min-w-0 items-center gap-1.5 text-caption text-muted">
               <span>Auto {autoThere ? "places it on" : "keeps it on"}</span>
