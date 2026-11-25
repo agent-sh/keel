@@ -25,11 +25,13 @@ import { machineName, useFleet } from "../lib/fleet.ts";
 import "../lib/gutter.ts";
 import { useAppSays } from "./Stale.tsx";
 import { DESK_QUERY } from "../lib/phone.ts";
+import { useLensView } from "../lib/lens-view.ts";
 
 // The conversation (Markdown, tool rows) is its own chunk: the start page does
 // not need it, and a session link starts loading it with the page.
 const loadTranscript = () => import("./Transcript.tsx");
 const Transcript = lazy(() => loadTranscript().then((m) => ({ default: m.Transcript })));
+const Lens = lazy(() => import("./Lens.tsx").then((m) => ({ default: m.Lens })));
 const HeldMessages = lazy(() => import("./FleetMessages.tsx").then((m) => ({ default: m.HeldMessages })));
 const SessionDock = lazy(() => import("./SessionDock.tsx").then((m) => ({ default: m.SessionDock })));
 if (location.pathname.startsWith("/s/")) loadTranscript();
@@ -83,7 +85,9 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   const goBack = useMemo(() => (back ? () => backNow.current?.() : undefined), [!back]);
   // The conversation is drawn by what changes in it, not each time its pane draws its part (the
   // header, the panel, the message box): a long one is not gone through again for those.
-  const transcript = useMemo(() => <Transcript sessionId={id} />, [id]);
+  // A session with agents opens on the Conversation lens, the full stream a choice away (lib/lens-view.ts).
+  const view = useLensView(id);
+  const transcript = useMemo(() => (view === "conversation" ? <Lens sessionId={id} /> : <Transcript sessionId={id} />), [id, view]);
   // The session and its panel: the words selected anywhere in them are offered for a quote or a comment.
   const body = useRef<HTMLDivElement>(null);
   if (!session && (missing === id || gone)) {

@@ -34,7 +34,7 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
     if (isPending(sessionId, (m) => m.kind === "landing")) return; // on its way: read again when sent
     const now = () => {
       const o = q.outcomeFor(sessionId);
-      return o ? { text: o.text, meta: { kind: "landing", entries: o.entries }, onSent: () => o.settle() } : undefined;
+      return o ? { text: o.text, meta: { kind: "landing", entries: o.entries, landed: o.landed, left: o.left }, onSent: () => o.settle() } : undefined;
     };
     const first = now();
     if (!first) return;

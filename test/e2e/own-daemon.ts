@@ -134,7 +134,7 @@ export const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode 
 
 // A state folder with sessions that already hold a long transcript (fixtures/long-transcript.ts).
 // `shape` may carry more of the fixture's settings (fixtures/long-transcript.ts: KEEL_FIXTURE_FIND).
-type Shape = "notes" | "turns" | "run";
+type Shape = "notes" | "turns" | "run" | "coordinator";
 export function seeded(name: string, events: number, shape: Shape | { shape: Shape; env: Record<string, string> }, ...titles: string[]) {
   const state = join(ROOT, `${name}-${Date.now()}`);
   mkdirSync(state, { recursive: true });

@@ -29,6 +29,7 @@ export type Place = {
   read?: string;    // the last event seen with the owner present
   readSeq?: number; // its place in the session's order
   readAt?: number;  // when
+  view?: "conversation" | "stream"; // how the conversation is shown here (lib/lens-view.ts), when the owner chose
   at: number;       // when this was last written
 };
 

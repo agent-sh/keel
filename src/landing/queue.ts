@@ -907,7 +907,8 @@ export class LandingQueue {
   }
 
   // What `sessionId` is owed, as one note, and what storing it settles.
-  outcomeFor(sessionId: string): { text: string; entries: string[]; settle: () => void } | undefined {
+  // (`landed`, `left`: how many entries did, kept with the outcome: the entries themselves are pruned in time.)
+  outcomeFor(sessionId: string): { text: string; entries: string[]; landed: number; left: number; settle: () => void } | undefined {
     const rows = this.store.db.query<Entry, [string]>("SELECT * FROM landing_queue WHERE queued_by = ? AND owed = 1 ORDER BY pos").all(sessionId);
     if (!rows.length) return undefined;
     const parts: string[] = [];
@@ -931,6 +932,8 @@ export class LandingQueue {
     return {
       text: `[harness] Landing queue:\n${parts.join("\n")}`,
       entries: ids,
+      landed: rows.filter((r) => r.state === "landed").length,
+      left: rows.filter((r) => r.state === "left").length,
       settle: () => { for (const id of ids) this.store.db.query("UPDATE landing_queue SET owed = 0 WHERE id = ?").run(id); },
     };
   }

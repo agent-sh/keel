@@ -1,6 +1,7 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
+import { setLensView, useLensView } from "../lib/lens-view.ts";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
@@ -385,6 +386,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   const rename: Act = { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) };
   // One switch for the whole fleet: every start the owner did not make (loops, wakes, agents, follow-ups) waits.
   const fleet = useFleetPause();
+  const view = useLensView(session.id);
   const acts: Act[] = [
     ...(alone ? [
       { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, command: "station.pin", run: () => runCommand("station.pin") },
@@ -400,6 +402,10 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
       ...(crowded ? rest.map((p, i) => ({ id: `menu-panel-${p.id}`, ...(i === 0 ? { head: "More panels", gap: !hand.length } : {}), label: p.label, icon: p.icon, run: () => openPanel(p.id) })) : []),
     ] : []),
     ...(phone() ? [] : [rename]),
+    // The Conversation lens or the full stream (lib/lens-view.ts), kept for this session.
+    ...(session.machine || session.outside ? [] : [view === "conversation"
+      ? { id: "menu-stream", label: "Show the full stream", icon: <LayoutList />, run: () => setLensView(session.id, "stream") }
+      : { id: "menu-lens", label: "Show the conversation", icon: <MessagesSquare />, run: () => setLensView(session.id, "conversation") }]),
     { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },
     { id: "menu-path", label: "Copy folder path", icon: <Copy />, run: () => void copyOrSay(session.workspace, menuButton.current) },
     { id: "menu-new-here", label: "New session here", icon: <FolderPlus />, run: () => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); } },

@@ -431,3 +431,38 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-ruling-scope { font-weight: 400; color: var(--fg); }
 .k-ruling-offer[data-state="revoked"] { color: var(--faint); }
 .k-ruling-err { color: var(--danger-ink); }
+
+/* The Conversation lens (Lens.tsx): the owner's messages and the replies read as the transcript
+   draws them; each stretch between them is one quiet line in muted ink, what came of it in words,
+   that opens its stream in place. Its dot is the one mark of colour, and only for what needs the
+   owner (a card that asks him, a failure) or for what runs now. What it took (turns, time, cost)
+   shows where he looks for it: on the line's hover or focus, and when it is opened. */
+.k-lens-head { display: flex; justify-content: flex-end; font-size: var(--text-micro); color: var(--faint); }
+.k-lens-head > button { border-radius: var(--radius-sm); padding: 0 0.25rem; }
+.k-lens-head > button:hover { color: var(--muted); text-decoration: underline; }
+.k-lens-run { display: flex; flex-direction: column; gap: 0.75rem; }
+.k-lens-line {
+  display: flex; align-items: baseline; gap: 0.5rem; width: 100%; min-height: 1.75rem; padding: 0.1875rem 0.5rem;
+  border-radius: var(--radius-sm); text-align: left; font-size: var(--text-caption); color: var(--muted);
+  transition: background-color var(--dur-quick) var(--ease-out);
+}
+.k-lens-line:hover { background: var(--hover); }
+.k-lens-dot { flex: none; align-self: center; width: 0.375rem; height: 0.375rem; border-radius: 999px; background: var(--line-strong); }
+.k-lens-run[data-state="needs"] .k-lens-dot { background: var(--st-need-fill); box-shadow: 0 0 0 1px var(--st-need); }
+.k-lens-run[data-state="failed"] .k-lens-dot { background: var(--st-fail); }
+.k-lens-run[data-state="live"] .k-lens-dot { background: var(--st-work); animation: var(--animate-pulse-dot); }
+.k-lens-came { flex: none; }
+.k-lens-took { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-variant-numeric: tabular-nums; opacity: 0; transition: opacity var(--dur-quick) var(--ease-out); }
+.k-lens-line:hover .k-lens-took, .k-lens-line:focus-visible .k-lens-took, .k-lens-run[data-open] .k-lens-took { opacity: 1; }
+.k-lens-chev { flex: none; align-self: center; color: var(--faint); opacity: 0.6; transition: transform var(--dur-quick) var(--ease-out); }
+.k-lens-run[data-open] .k-lens-chev { transform: rotate(90deg); }
+.k-lens-stream { display: flex; flex-direction: column; gap: var(--k-row-gap, 1rem); margin-left: 0.6875rem; padding-left: 1rem; border-left: 1px solid var(--line); }
+/* What a reply's turn took, under it: on its hover only. */
+.k-lens-reply .k-lens-figs { opacity: 0; transition: opacity var(--dur-quick) var(--ease-out); }
+.k-lens-reply:hover .k-lens-figs, .k-lens-reply:focus-within .k-lens-figs { opacity: 1; }
+@container reading (max-width: 28rem) {
+  .k-lens-took { display: none; }
+  .k-lens-run[data-open] .k-lens-took { display: block; flex-basis: 100%; margin-left: 0.875rem; white-space: normal; }
+  .k-lens-line { flex-wrap: wrap; row-gap: 0; }
+  .k-lens-stream { margin-left: 0.1875rem; padding-left: 0.625rem; }
+}

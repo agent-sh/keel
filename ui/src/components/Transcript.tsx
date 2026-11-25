@@ -14,7 +14,7 @@ import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolUseBlock } from "../../../src/core/types.ts";
 import { shownAsPrompt } from "../../../src/core/owner.ts";
 import { rowActions } from "../lib/extend.ts";
-import { blockKey, buildRows, nextLineage, nextSiblings, PROBE, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
+import { blockKey, buildRows, nextLineage, nextSiblings, PROBE, rowProbe, type Built, type LineageOf, type Row, type Siblings, type SiblingsOf } from "../lib/rows.ts";
 import { EmptyTranscript } from "./EmptyTranscript.tsx";
 import { actions, api, dropSession, failed, forgetEvents, getState, keepEvents, liveNow, onFeature, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
@@ -900,6 +900,25 @@ const Hold = memo(function Hold({ rows, span, gap, rem, width }: { rows: Row[]; 
     </div>
   );
 });
+
+// Events of one part of a session drawn as the transcript draws them, away from the session's end
+// (nothing here acts on the session where it stands): the Conversation lens draws its messages and
+// replies, and a folded run it opens in place, with these (Lens.tsx).
+const NO_SIBLINGS: Siblings = new Map();
+export function StreamRows({ sessionId, events }: { sessionId: string; events: StoredEvent[] }) {
+  const session = useStore((s) => s.sessions[sessionId]);
+  const built = useMemo(() => buildRows(undefined, events, NO_SIBLINGS, false, isInput), [events]);
+  const tail = useMemo(tailStore, []);
+  if (session) tail.put(session, undefined, undefined, true);
+  useLayoutEffect(() => tail.flush());
+  if (!session) return null;
+  return (
+    <TailContext.Provider value={tail}>
+      {built.blocks.map((rows) => <RowBlock key={blockKey(rows)} rows={rows} sid={sessionId} />)}
+    </TailContext.Provider>
+  );
+}
+export { Live };
 
 const TAIL_BLOCKS = 3; // blocks of rows drawn first when a session opens, before the view says which
 const NONE: StoredEvent[] = [];

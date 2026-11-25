@@ -9,6 +9,11 @@
 //     fits the window;
 //   run (KEEL_FIXTURE_SHAPE=run): one turn of <events> tool calls with a short
 //     line before each: a run of calls longer than the part a page holds.
+//   coordinator (KEEL_FIXTURE_SHAPE=coordinator): a session that started agents
+//     (child sessions of it), over about three days: a few prompts of the
+//     owner's, each answered after some work, and between them stretches of
+//     turns the harness started (agents' reports, a failed one among them,
+//     wakes, a landing outcome whose entries landed), about <events> events.
 // KEEL_FIXTURE_FIND=word (turns): the word in the second turn's prompt (older
 // than the part a page opens with), in the prompt of a turn half way down that
 // part (far from the end the page opens at), and in the output of a call near
@@ -74,9 +79,74 @@ function run(id: string, model: string) {
   store.append(id, "turn_end", { reason: "end_turn", usage, ms: N * 900, steps: N + 1, tools: N });
 }
 
+// A coordinator's history (KEEL_FIXTURE_SHAPE=coordinator): four prompts of the owner's and, between
+// them, stretches of the harness's turns. Its events are spread over 65 hours before now.
+function coordinator(id: string, model: string) {
+  const per = Math.max(60, Math.floor(N / 5));
+  const t0 = Date.now() - 65 * 3600_000;
+  let n = 0, k = 0;
+  const step = (65 * 3600_000) / Math.max(1, N + 8);
+  const add = (kind: Parameters<Store["append"]>[1], data: unknown) => store.append(id, kind, data, undefined, Math.round(t0 + ++n * step));
+  store.db.exec(`CREATE TABLE IF NOT EXISTS landing_queue (
+  id TEXT PRIMARY KEY, repo TEXT NOT NULL, branch TEXT NOT NULL, pos INTEGER NOT NULL,
+  queued_by TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  holder TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  tip TEXT NOT NULL, state TEXT NOT NULL, step TEXT, built TEXT, landed TEXT, why TEXT, log TEXT,
+  batch TEXT, owed INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL)`);
+  // (The column the agents module adds when the daemon starts.)
+  if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE");
+  const kids = [1, 2, 3].map((i) => {
+    const c = store.createSession({ title: `Worker ${i}`, model, workspace: workspace! });
+    store.db.run("UPDATE sessions SET parent_id = ? WHERE id = ?", [id, c.id]);
+    return c.id;
+  });
+  // Its agents, finished (the base columns of the agents module's table; the daemon adds the rest).
+  store.db.exec(`CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, model TEXT NOT NULL, background INTEGER NOT NULL, status TEXT NOT NULL,
+  created INTEGER NOT NULL, ended INTEGER, result TEXT, handback INTEGER NOT NULL DEFAULT 0, first_seq INTEGER NOT NULL DEFAULT 0,
+  restarts INTEGER NOT NULL DEFAULT 0, def TEXT)`);
+  kids.forEach((c, i) => store.db.run("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, ended, handback) VALUES (?, ?, ?, ?, 'general-purpose', ?, 1, 'completed', ?, ?, 1)",
+    [`a-${c}`, id, c, `Worker ${i + 1}`, model, t0 + i * 1000, t0 + 3600_000]));
+  const work = (tag: string, last: string) => {
+    k++;
+    add("turn_start", { model });
+    add("assistant", { model, usage, stop: "tool_use", blocks: [
+      { type: "text", text: `Checking ${tag}. ${say(k, 12)}.` },
+      { type: "tool_use", id: `call-${k}`, name: "Bash", input: { command: `git log --oneline -3 ${tag}`, description: `Read ${tag}` } },
+    ] });
+    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${k}`, content: `${say(k, 8)}\n${say(k + 1, 8)}` }] });
+    add("assistant", { model, usage, stop: "end_turn", blocks: [{ type: "text", text: last }] });
+    add("turn_end", { reason: "end_turn", usage, ms: 38_000 + (k % 5) * 4000, steps: 2, tools: 1 });
+  };
+  const asks = [
+    "Start three workers on the parser lanes and land what passes.",
+    "How far are the lanes? Land the ones that are green.",
+    "Retry the failed lane with a smaller change.",
+    "Summarize what landed today.",
+  ];
+  for (let p = 0; p < asks.length; p++) {
+    add("user", { text: asks[p] });
+    work(`lane-${p}`, `Reply to your message ${p + 1}: ${say(p + 3, 30)}.`);
+    const until = n + per;
+    let j = 0;
+    while (n < until) {
+      j++;
+      if (j % 7 === 3) add("user", { text: "[harness] A wait fired.", kind: "wait", wait_id: `w-${p}-${j}`, outcome: "fired" });
+      else if (j % 11 === 5) {
+        const entries = [`land-${p}-${j}-a`, `land-${p}-${j}-b`];
+        for (const [i, e] of entries.entries()) store.db.run("INSERT INTO landing_queue (id, repo, branch, pos, queued_by, tip, state, created, updated) VALUES (?, '/repo', ?, ?, ?, 'abc', 'landed', 0, 0)", [e, `keel/lane-${j}-${i}`, j * 2 + i, id]);
+        add("user", { text: "[harness] Landing queue: two branches landed.", kind: "landing", entries, landed: 2, left: 0 });
+      } else add("user", { text: `[harness] Agent report: ${say(j, 10)}.`, kind: "subagent", agent_id: `a-${kids[j % 3]}`, status: p === 1 && j === 4 ? "failed" : "completed" });
+      work(`report-${p}-${j}`, `Noted report ${j}: ${say(j + p, 18)}.`);
+    }
+  }
+  add("compaction", { mode: "summary", summary: "Goal: a coordinator's history. State: the lanes ran; next, answer the newest prompt.", auto: true, tokens_before: 6400 });
+}
+
 const ids = titles.map((title) => {
   const s = store.createSession({ title, model: "scripted:stand-in", workspace: workspace! });
   if (process.env.KEEL_FIXTURE_SHAPE === "run") run(s.id, s.model);
+  else if (process.env.KEEL_FIXTURE_SHAPE === "coordinator") coordinator(s.id, s.model);
   else if (process.env.KEEL_FIXTURE_SHAPE === "turns") turns(s.id, s.model);
   else for (let i = 1; i <= N; i++) {
     store.append(s.id, "note", { text: `Generated note ${i} of ${count}. ${"A line of an earlier turn that a reconnect must not send again. ".repeat(12)}` });

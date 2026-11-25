@@ -11,6 +11,7 @@ import { searchContent, type ContentQuery } from "./routes/search-content.ts";
 import { findInSession, type FindAsk } from "./routes/find-read.ts";
 import { callAnswered, callsNamed, type AnsweredAsk, type NamedAsk } from "./routes/calls-read.ts";
 import { sessionWhole, type WholeAsk } from "./routes/session-read.ts";
+import { lensBodies, lensFacts, type LensAsk } from "./routes/lens-read.ts";
 import { settleStored } from "../engine/settle-read.ts";
 import { claudeMcpChoices } from "../mcp/claude-choices.ts";
 import type { SettleAsk } from "../engine/compact.ts";
@@ -61,6 +62,9 @@ export const tasks = {
   "calls.answered": (db: Database, a: AnsweredAsk) => callAnswered(db, a),
   // A whole session as the bytes of its answer (GET /api/sessions/:id with no page).
   "session.whole": (db: Database, a: WholeAsk) => sessionWhole(db, a),
+  // The Conversation lens: the facts of its inputs and turn ends, and the bodies of what it shows (routes/lens-read.ts).
+  "lens.facts": (db: Database, a: LensAsk) => lensFacts(db, a),
+  "lens.bodies": (db: Database, a: { ids: string[] }) => lensBodies(db, a),
   // The owner's approvals in Claude Code of project MCP servers (src/mcp/project.ts):
   // ~/.claude.json is large, so it is parsed here and only what is asked comes back.
   "claude.mcpChoices": (_db: Database, a: { files: string[]; roots: string[] }) => claudeMcpChoices(a.files, a.roots),

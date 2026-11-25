@@ -77,6 +77,7 @@ import { modelTrialRoutes } from "./model-trials.ts";
 import { settingTrialRoutes } from "./setting-trials.ts";
 import { timelineRoutes } from "./timeline.ts";
 import { hoursRoutes } from "./hours.ts";
+import { lensRoutes } from "./lens.ts";
 import { overviewRoutes } from "./overview.ts";
 import { stateRoutes } from "./state.ts";
 import { shellRoutes } from "./shell.ts";
@@ -177,6 +178,7 @@ const modules: Record<string, RouteModule> = {
   modelTrialRoutes, // after experiments: a trial is one
   settingTrialRoutes, // after experiments: a trial of a setting is one too
   timelineRoutes, // reads what the others record: events, activity, errors, telemetry
+  lensRoutes, // the Conversation lens: reads the events' index, their turn marks, the landing queue and the approvals
   hoursRoutes, // where a tree's hours went: reads the spans, turns, agents and waits the others record
   overviewRoutes, // every session's state, failure and spend as one answer
   stateRoutes, // last: it reads every module's cards and records to tell each session's state
