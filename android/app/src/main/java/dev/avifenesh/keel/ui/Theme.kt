@@ -34,6 +34,7 @@ data class Tokens(
     val ink: Color, val inkFg: Color, val inkSoft: Color, val ownerInk: Color,
     val danger: Color, val dangerSoft: Color, val code: Color,
     // A state's mark (a dot, an icon, an edge: 3:1 on every surface) and its word (the -Ink one: text, 4.5:1).
+    // (`done` and `doneInk` are the page's success green, --ok: a check, a diff's added line. The state done is drawn as idle: Tokens.of.)
     val need: Color, val work: Color, val fail: Color, val done: Color, val idle: Color,
     val needInk: Color, val workInk: Color, val failInk: Color, val doneInk: Color,
     /** The yellow fill (a button, a badge) and the ink on it. */
@@ -53,8 +54,8 @@ val Light = Tokens(
     fg = Color(0xFF11161F), muted = Color(0xFF464E58), faint = Color(0xFF626A73), line = Color(0xFFCCD1D7), lineStrong = Color(0xFFABB2BA),
     ink = Color(0xFF11161F), inkFg = Color(0xFFF3F5F8), inkSoft = Color(0xFFD5DBE3), ownerInk = Color(0xFF382F5E),
     danger = Color(0xFFCC2827), dangerSoft = Color(0xFFFFE8E6), code = Color(0xFFE7EAED),
-    need = pal("--st-need", false), work = pal("--st-work", false), fail = pal("--st-fail", false), done = pal("--st-done", false), idle = pal("--st-idle", false),
-    needInk = pal("--st-need-ink", false), workInk = pal("--st-work-ink", false), failInk = pal("--st-fail-ink", false), doneInk = pal("--st-done-ink", false),
+    need = pal("--st-need", false), work = pal("--st-work", false), fail = pal("--st-fail", false), done = pal("--ok", false), idle = pal("--st-idle", false),
+    needInk = pal("--st-need-ink", false), workInk = pal("--st-work-ink", false), failInk = pal("--st-fail-ink", false), doneInk = pal("--ok-ink", false),
     needFill = pal("--st-need-fill", false), needOn = pal("--st-need-on", false), unread = pal("--dot-unread", false),
     needSoft = pal("--st-need-fill", false).copy(alpha = 0.22f),
 )
@@ -65,8 +66,8 @@ val Dark = Tokens(
     fg = Color(0xFFE4E8ED), muted = Color(0xFFA5ACB4), faint = Color(0xFF80878F), line = Color(0xFF262C33), lineStrong = Color(0xFF3C434C),
     ink = Color(0xFFE4E8ED), inkFg = Color(0xFF11161D), inkSoft = Color(0xFF272E38), ownerInk = Color(0xFFC8B7FF),
     danger = Color(0xFFFA695E), dangerSoft = Color(0xFF431F1D), code = Color(0xFF0D1218),
-    need = pal("--st-need", true), work = pal("--st-work", true), fail = pal("--st-fail", true), done = pal("--st-done", true), idle = pal("--st-idle", true),
-    needInk = pal("--st-need-ink", true), workInk = pal("--st-work-ink", true), failInk = pal("--st-fail-ink", true), doneInk = pal("--st-done-ink", true),
+    need = pal("--st-need", true), work = pal("--st-work", true), fail = pal("--st-fail", true), done = pal("--ok", true), idle = pal("--st-idle", true),
+    needInk = pal("--st-need-ink", true), workInk = pal("--st-work-ink", true), failInk = pal("--st-fail-ink", true), doneInk = pal("--ok-ink", true),
     needFill = pal("--st-need-fill", true), needOn = pal("--st-need-on", true), unread = pal("--dot-unread", true),
     needSoft = pal("--st-need-fill", true).copy(alpha = 0.16f),
 )

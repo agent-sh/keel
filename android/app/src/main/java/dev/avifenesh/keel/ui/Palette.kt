@@ -11,7 +11,7 @@ object StatePalette {
         "--dot-need" to (0xFFEBB500L to 0xFFEFCC36L),
         "--dot-need-edge" to (0xFF966800L to 0xFFEFCC36L),
         "--dot-fail" to (0xFFCC2827L to 0xFFFA695EL),
-        "--dot-done" to (0xFF137738L to 0xFF4FCE74L),
+        "--dot-done" to (0xFF6F757DL to 0xFF878D95L),
         "--dot-unread" to (0xFF11161FL to 0xFFF8F8F8L),
         "--st-need" to (0xFF966800L to 0xFFEFCC36L),
         "--st-need-ink" to (0xFF735100L to 0xFFEFCC36L),
@@ -23,12 +23,18 @@ object StatePalette {
         "--st-wait-ink" to (0xFF0859ACL to 0xFF49A9FFL),
         "--st-fail" to (0xFFCC2827L to 0xFFFA695EL),
         "--st-fail-ink" to (0xFFBB0916L to 0xFFFA695EL),
-        "--st-done" to (0xFF137738L to 0xFF4FCE74L),
-        "--st-done-ink" to (0xFF09672EL to 0xFF6CC581L),
+        "--st-done" to (0xFF6F757DL to 0xFF878D95L),
+        "--st-done-ink" to (0xFF414853L to 0xFFABB2BAL),
         "--st-idle" to (0xFF6F757DL to 0xFF6C727AL),
     )
 
-    fun of(name: String, dark: Boolean): Long = tokens.getValue(name).let { if (dark) it.second else it.first }
+    /** The page's success green (`--ok`, `--ok-ink`): a check, a diff's added line. Done itself is the grey of a state at rest. PaletteTest keeps these equal to the stylesheet too. */
+    val success: Map<String, Pair<Long, Long>> = mapOf(
+        "--ok" to (0xFF137738L to 0xFF6CC581L),
+        "--ok-ink" to (0xFF09672EL to 0xFF6CC581L),
+    )
+
+    fun of(name: String, dark: Boolean): Long = (tokens[name] ?: success.getValue(name)).let { if (dark) it.second else it.first }
 
     /** The surfaces a state color sits on (the workbench's --bg, --panel, --raised, --sunken), light and dark: the colors are checked against each. */
     val surfaces: Map<String, Pair<Long, Long>> = mapOf(

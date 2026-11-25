@@ -56,7 +56,7 @@ class PaletteTest {
 
     @Test fun theTableIsTheStylesheetsPalette() {
         val wrong = mutableListOf<String>()
-        for ((name, pair) in StatePalette.tokens) for ((vars, have, theme) in listOf(Triple(root, pair.first, "light"), Triple(dark, pair.second, "dark"))) {
+        for ((name, pair) in StatePalette.tokens + StatePalette.success) for ((vars, have, theme) in listOf(Triple(root, pair.first, "light"), Triple(dark, pair.second, "dark"))) {
             val want = argb(resolve(vars, name))
             if (!near(want, have)) wrong += "$name $theme: has ${hex(have)}, the page has ${hex(want)}"
         }
