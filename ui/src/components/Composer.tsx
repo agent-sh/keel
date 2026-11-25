@@ -1283,13 +1283,20 @@ const CARDS = ["approval", "question", "plan-card", "secret-request", "trust-car
 // scrolls. It rests at its end, or, when what waits on the owner does not fit
 // whole, at the oldest of those, until it is scrolled. A card that arrives out
 // of view is brought into it, and whatever holds the focus here is in view:
-// Enter never answers a card that is not shown.
+// Enter never answers a card that is not shown. A request that arrives while the
+// oldest one is in view moves nothing: the region keeps its height and its place
+// (the new card is below, under the edge that fades), and goes to the next one
+// when the one in view is answered.
 function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactNode; onAsking?: (on: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const wait = useRef<HTMLDivElement>(null);
   const gauge = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  // What the owner has in view as the oldest request, as the last look saw it: the card, where its top stood
+  // and how tall the region was. `pin` holds the region's height while a request that came since waits below it.
+  const look = useRef<{ card: HTMLElement; top: number; height: number } | null>(null);
+  const pin = useRef<{ card: HTMLElement; height: number; count: number } | null>(null);
   const pad = () => parseFloat(getComputedStyle(ref.current!).paddingTop);
   const home = () => {
     const el = ref.current!;
@@ -1303,6 +1310,17 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
     stick.current = Math.abs(el.scrollTop - home()) < 4;
     // Where cards are scrolled out of view, that edge fades (styles.css).
     el.dataset.more = [el.scrollTop > 1 && "up", el.scrollHeight - el.scrollTop - el.clientHeight > 1 && "down"].filter(Boolean).join(" ");
+    if (!pin.current) watch();
+  };
+  // The oldest request, when half of it (or of the region, for a taller card) is in view.
+  const watch = () => {
+    const el = ref.current;
+    const card = wait.current?.querySelector<HTMLElement>(CARDS);
+    if (!el || !card || !el.offsetHeight) return (look.current = null);
+    const r = card.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    const seen = Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top);
+    return (look.current = seen >= Math.min(r.height, box.height) / 2 ? { card, top: r.top, height: el.offsetHeight } : null);
   };
   // Into the region's view: whole when it fits, else from its top.
   const show = (t: Element) => {
@@ -1341,12 +1359,15 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
     const c = inner.current!;
     const w = wait.current!;
     let raf = 0;
+    const unpin = () => { pin.current = null; el.style.maxHeight = ""; stick.current = true; };
     const settle = () => {
       // The cards keep as much as they need up to three tenths of the pane; a
       // long draft gives way to them down to its two lines, then they scroll.
       // While something waits on the owner the draft gives way first (styles.css).
       const pane = el.closest<HTMLElement>(".k-session");
-      el.style.minHeight = pane && c.offsetHeight ? `${Math.min(Math.ceil(c.offsetHeight + pad()), Math.round(pane.clientHeight * 0.3))}px` : "";
+      // A pin ends with the request it kept in view: answered, or gone with the cards that came after it.
+      if (pin.current && (!pin.current.card.isConnected || w.querySelectorAll(CARDS).length < pin.current.count)) unpin();
+      el.style.minHeight = pane && c.offsetHeight ? `${Math.min(Math.ceil(c.offsetHeight + pad()), Math.round(pane.clientHeight * 0.3), pin.current?.height ?? Infinity)}px` : "";
       el.toggleAttribute("data-asking", w.offsetHeight > 0);
       onAsking?.(w.offsetHeight > 0);
       // Said on the pane, which a phone's style sheet reads: an open question there takes the room of the session's tools row.
@@ -1356,7 +1377,7 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
       // The scroll bar sits in the column's side padding: the cards keep the box's edges.
       const bar = el.offsetWidth - el.clientWidth;
       el.style.marginRight = bar ? `calc(-0.25rem - ${bar}px)` : "";
-      if (!keepFocus() && stick.current) el.scrollTop = home();
+      if (!keepFocus() && stick.current && !pin.current) el.scrollTop = home();
       mark();
     };
     // Sizes are written a frame later: a write inside the observer's own call would loop it.
@@ -1370,6 +1391,21 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
     addEventListener("resize", later);
     const mo = new MutationObserver((list) => {
       const added = list.flatMap((m) => [...m.addedNodes]).filter((n): n is HTMLElement => n instanceof HTMLElement);
+      // Something came below the request the owner has in view (another request, or the line of the agent that
+      // asks it): the region keeps its height and its place, before that is drawn. Where it was drawn
+      // already the region goes by the rules below.
+      // (A row that joins the list the request stands in is the list's own growth, which shows its rows.)
+      const seen = look.current;
+      const same = seen?.card.closest(".k-ask-list");
+      if (seen && !pin.current && seen.card.isConnected && added.some((n) => w.contains(n) && !seen.card.contains(n) && !n.contains(seen.card) && !same?.contains(n))) {
+        pin.current = { card: seen.card, height: seen.height, count: w.querySelectorAll(CARDS).length };
+        el.style.maxHeight = `${seen.height}px`;
+        // Cards that came in before it would carry it down: the region follows it.
+        const moved = seen.card.getBoundingClientRect().top - seen.top;
+        if (Math.abs(moved) >= 0.5) el.scrollTop += moved;
+        mark();
+      }
+      if (pin.current) return later();
       // New cards, at any depth: the node added is one, or holds one. A node added inside a
       // card that is already there (a list a control of the card opens) is not a new card,
       // and moves nothing.
@@ -1379,7 +1415,7 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
       if (!held && el.contains(document.activeElement)) return; // in use on another card: nothing moves under the hand
       requestAnimationFrame(() => requestAnimationFrame(() => {
         // The pane may be gone by now (the owner went on as the card came): nothing is left to place.
-        if (!el.isConnected || !ref.current) return;
+        if (!el.isConnected || !ref.current || pin.current) return;
         if (keepFocus()) return mark();
         // A new request for the owner: the region goes to the oldest one waiting. Any other
         // new card is shown, unless a request waits: then the region stays on that.
