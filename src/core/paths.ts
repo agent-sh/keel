@@ -68,6 +68,15 @@ function accountHome(): string {
   return passwdHome || userInfo().homedir;
 }
 
+// The account's home folder when this daemon may not read it, else null: a scratch
+// daemon (a scratch HOME, or its own config folder under the account's HOME) can
+// have its workspace under the account's home, and a walk from a folder up to the
+// root would meet the owner's files there (his AGENTS.md among them).
+export function withheldHome(): string | null {
+  const account = resolve(accountHome());
+  return mayReadHome() && resolve(homeDir()) === account ? null : account;
+}
+
 // The home folder to read the owner's files from: the home, or for a daemon
 // that may not read it (mayReadHome) a folder that is never there, so every
 // "~/.something" read finds nothing.

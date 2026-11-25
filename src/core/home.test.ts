@@ -111,3 +111,40 @@ test("a daemon with a config folder of its own may not read the account's home, 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A scratch daemon's workspace can stand under the account's home (a scratch folder made there): the walk
+// from a folder up to the root must not list the owner's AGENTS.md on the way, whether the daemon has a
+// scratch HOME or only a config folder of its own. The owner's own daemon lists it.
+test("a scratch daemon's instruction list names no file of the account's home, wherever its workspace is", async () => {
+  const { instructionPaths } = await import("../engine/turn.ts");
+  const { defaultConfigDir } = await import("./paths.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-instr-home-"));
+  const keys = ["HOME", "KEEL_CONFIG_DIR", "KEEL_ACCOUNT_HOME"];
+  const was = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  try {
+    const account = join(dir, "account");
+    const scratch = join(dir, "scratch-home");
+    const ws = join(account, "scratch/dev/ws");
+    mkdirSync(ws, { recursive: true });
+    mkdirSync(scratch, { recursive: true });
+    writeFileSync(join(account, "AGENTS.md"), "the owner's rules\n");
+    writeFileSync(join(dir, "AGENTS.md"), "above the account\n");
+    process.env.KEEL_ACCOUNT_HOME = account;
+    // (The scratch folder may itself stand under a real home: only what is under it is looked at.)
+    const under = () => instructionPaths(ws).filter((f) => f.scope !== "owner" && f.path.startsWith(dir)).map((f) => f.path);
+    // A scratch HOME, its workspace elsewhere under the account's home.
+    process.env.HOME = scratch;
+    process.env.KEEL_CONFIG_DIR = join(dir, "config");
+    expect(under()).toEqual([join(dir, "AGENTS.md")]);
+    // The account's own HOME with a config folder of its own.
+    // (The walk ends at the home: nothing above it, and the home's own file is withheld.)
+    process.env.HOME = account;
+    expect(under()).toEqual([]);
+    // The owner's own daemon: its home's file is listed.
+    process.env.KEEL_CONFIG_DIR = defaultConfigDir();
+    expect(under()).toEqual([join(account, "AGENTS.md")]);
+  } finally {
+    for (const k of keys) { if (was[k] === undefined) delete process.env[k]; else process.env[k] = was[k]; }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

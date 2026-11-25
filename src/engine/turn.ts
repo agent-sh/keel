@@ -78,7 +78,7 @@ import { unreachable } from "../providers/unreachable.ts";
 import { reportedUsage } from "../providers/reported.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
-import { homeDir } from "../core/paths";
+import { homeDir, withheldHome } from "../core/paths";
 import { outsideRefusal } from "../core/watch.ts";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
@@ -295,7 +295,8 @@ export const instructionFilter: { file?: (path: string, text: string) => string 
 // (else CLAUDE.md) of each folder from the home folder down to `cwd` (from
 // the root, for a folder outside the home): the folders above the home are
 // other accounts' and the system's, as the agents' walk stops there too
-// (src/automation/agents.ts).
+// (src/automation/agents.ts). A daemon that may not read the account's home
+// (a scratch one, `withheldHome`) lists nothing of it, where its folder stands.
 // A file linked from two places is one source: it is listed once, where it is
 // met first from the root down (the owner's own file before a folder's).
 // `marks`: every path looked for is noted with its mark on disk, before it is
@@ -307,10 +308,13 @@ export function instructionPaths(cwd: string, marks?: Marks, family?: Family): {
   const native = family ? chainOf(family, cwd, nativeRoots(), marks) : null;
   const found: { path: string; scope: "owner" | "parent" | "folder"; limit?: number }[] = native ?? [];
   const seen = new Set<string>();
+  // A daemon that may not read the account's home (withheldHome) walks past it: nothing there is its own.
+  const withheld = withheldHome();
   for (let dir = cwd; !native && !seen.has(dir); dir = dirname(dir)) {
     seen.add(dir);
-    if (marks) for (const n of ["AGENTS.md", "CLAUDE.md"]) noteMark(marks, join(dir, n));
-    const name = ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
+    const theirs = withheld !== null && real(dir) === real(withheld);
+    if (marks && !theirs) for (const n of ["AGENTS.md", "CLAUDE.md"]) noteMark(marks, join(dir, n));
+    const name = theirs ? undefined : ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
     if (name) found.unshift({ path: join(dir, name), scope: dir === cwd ? "folder" : "parent" });
     if (dirname(dir) === dir || dir === homeDir()) break;
   }
