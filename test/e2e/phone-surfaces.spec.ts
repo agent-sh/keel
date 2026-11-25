@@ -1825,5 +1825,61 @@ for (const size of SIZES) {
         for (const e of mine) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } });
       }
     });
+    // MOB-S111 (the memory sweep card), MOB-S112 (the helper's panel with its name and face), MOB-S113 (the spend panel)
+    test("the memory sweep card, the helper's panel with its name and face, and the spend panel read whole inside a phone's page", async ({ browser, request }) => {
+      const now = Date.now();
+      const fig = (o: Record<string, number>) => o;
+      const card = {
+        id: "sweep-1", ts: now - 3600_000, since: now - 25 * 3600_000, until: now - 3600_000,
+        systems: [
+          { id: "tacit", label: "Memory store (tacit)", on: true, figures: fig({ asked: 12, recalls: 11, empty: 1, missed: 0, facts: 61, tokens: 6400, named: 21, checked: 53, rules: 4, followed: 3, broken: 1, falls: 2 }), helped: 0.4 },
+          { id: "helper", label: "Helper records", on: true, figures: fig({ asked: 2, recalls: 2, facts: 2, tokens: 40, recalls_used: 1, checked: 2, kept: 6, stale: 1 }), helped: 0.5 },
+          { id: "claude", label: "Claude Code auto memory", on: true, figures: fig({ loads: 3, sessions: 3, bytes: 2700, reads: 1, writes: 0, sessions_read: 1, sessions_wrote: 0, notes: 3, unindexed: 1, dangling: 0, over: 0 }), helped: 0.33 },
+          { id: "codex", label: "Codex memories", on: false, figures: {}, helped: null },
+          { id: "momentum", label: "Supervisor (momentum)", on: true, figures: fig({ acts: 3, steer: 2, queue: 1, interrupt: 0, ended: 2, interrupted: 0, failed: 1 }), helped: 0.66 },
+        ],
+        offers: [
+          { id: "sweep-1:0", kind: "drop_record", system: "helper", title: "Drop the record pref.coffee", why: "No turn used it in 60 days.", state: "open", target: { key: "pref.coffee" } },
+          { id: "sweep-1:1", kind: "tidy_index", system: "claude", title: "Add feedback_tests.md to the index", why: "One note is not in MEMORY.md.", state: "open", target: { dir: "/x", file: "feedback_tests.md" } },
+          { id: "sweep-1:2", kind: "tacit_note", system: "tacit", title: "Note that code-word corrections are marked wrong in Keel", why: "A fact given 8 times was never named.", state: "open", target: { name: "code-word", text: "x" } },
+        ],
+      };
+      await request.put("/api/helper", { data: { on: true, name: "Pip" } });
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", "base64");
+      await request.post("/api/helper/avatar", { data: png, headers: { "content-type": "image/png" } });
+      const helper = await (await request.get("/api/helper")).json();
+      try {
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.route("**/api/memory/sweep", (r) => r.request().method() === "GET" ? r.fulfill({ json: { card, history: [{ id: card.id, ts: card.ts }], running: false } }) : r.continue());
+            // The card in Settings > Usage.
+            await page.goto("/settings/usage?view=memory&tab=sweep");
+            const sweep = page.getByTestId("sweep-card");
+            await expect(sweep.getByTestId("sweep-offer")).toHaveCount(3);
+            expect(await phoneProblems(sweep), `the sweep card at ${scale * 100}% text`).toEqual([]);
+            await shoot(page, `phone-surfaces-48-sweep-${size.width}-${scale}`);
+            // The helper's panel: its name and face, its memory and the card.
+            await page.goto(`/s/${helper.session_id}`);
+            await page.getByTestId("panel-menu").tap();
+            await page.getByTestId("panel-pick-helper").tap();
+            const panel = page.getByTestId("helper-panel");
+            await expect(panel.getByTestId("helper-head-name")).toHaveText("Pip");
+            await expect(panel.getByTestId("helper-head-face")).toBeVisible();
+            expect(await phoneProblems(panel), `the helper's panel at ${scale * 100}% text`).toEqual([]);
+            await shoot(page, `phone-surfaces-49-helper-panel-${size.width}-${scale}`);
+            // The spend panel: the figure and what drove it.
+            await page.goto("/settings/usage");
+            const spend = page.getByTestId("usage-answer");
+            await expect(spend.getByTestId("tile-spend")).toBeVisible();
+            expect(await phoneProblems(spend), `the spend panel at ${scale * 100}% text`).toEqual([]);
+            await shoot(page, `phone-surfaces-50-spend-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await request.put("/api/helper", { data: { on: false, name: null } });
+        await request.delete("/api/helper/avatar");
+      }
+    });
   });
 }

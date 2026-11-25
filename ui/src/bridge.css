@@ -1680,7 +1680,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 @container set-box (max-width: 34rem) {
   .k-set-item { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "main status" "meta meta" "act act"; }
   .k-set-item[data-lead] { grid-template-columns: 1rem minmax(0, 1fr) auto; grid-template-areas: "lead main status" ". meta meta" ". act act"; }
-  .k-set-meta, .k-set-act { justify-content: flex-start; white-space: normal; }
+  .k-set-meta, .k-set-act { flex-wrap: wrap; justify-content: flex-start; white-space: normal; }
 }
 
 /* A status: one chip, one tone, the word of the vocabulary (src/core/state-words.ts) where it has one. */
