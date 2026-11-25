@@ -28,6 +28,8 @@ export function standIns(dir: string, { host = false } = {}): Record<string, str
     KEEL_GITHUB_API: "http://127.0.0.1:9",
     KEEL_IMPORT_CLAUDE_DIR: join(dir, "import/claude"),
     KEEL_IMPORT_CODEX_DIR: join(dir, "import/codex"),
+    // A Codex session answered in place talks to this stand-in of `codex app-server`, never the owner's codex.
+    KEEL_CODEX_BIN: fixture("codex-app-server.ts"),
     KEEL_IMPORT_AGY_DIR: join(dir, "import/agy"),
     KEEL_IMPORT_KEEL_DB: join(dir, "import/keel.db"),
     KEEL_IMPORT_HERMES_DIR: join(dir, "import/hermes"),

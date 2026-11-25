@@ -695,3 +695,26 @@ test("an approval the helper answers first is kept in the inbox, told nowhere, a
   expect(back.data.inbox_only).not.toEqual({ helper: true });
   expect(back.body).toStartWith("The Helper left this to you.");
 });
+
+// A session another harness runs raises nothing, but the cards its harness raised while Keel answers it in place:
+// those are filed and told on the owner's own screens only, never to a program of his (a channel such as the command).
+test("an outside session's in-place card is an alert for the owner's own devices; nothing else of it is", async () => {
+  const { store, session } = scratch();
+  const s = session("Codex work");
+  store.updateSession(s, { outside: { harness: "codex", source_id: "t-1", state: "working", since: Date.now(), files: 0, failures: 0 } });
+  let told = 0;
+  alerts.registerChannel({ id: "elsewhere", label: "a program", available: () => true, deliver: () => void told++ });
+  alerts.saveSettings({ route: { kind: "approval", channel: "elsewhere", on: true } });
+  alerts.saveSettings({ route: { kind: "finished", channel: "elsewhere", on: true } });
+  expect(alerts.raise("finished", s, "Codex work", "done")).toBeUndefined();
+  expect(alerts.raise("approval", s, "Approval: Codex work", "a summary without a card")).toBeUndefined();
+  const a = alerts.raise("approval", s, "Approval: Codex work", "Codex command: make test", { approval_id: "ap-1", open_session: s });
+  expect(a?.session_id).toBe(s);
+  expect(a?.channels).toEqual([]);
+  const q = alerts.raise("question", s, "Question: Codex work", "Which color?", { call_id: "codex-q1", open_session: s, ask_id: "7" });
+  expect(q?.session_id).toBe(s);
+  await settle();
+  expect(told).toBe(0);
+  alerts.saveSettings({ route: { kind: "approval", channel: "elsewhere", on: false } });
+  alerts.saveSettings({ route: { kind: "finished", channel: "elsewhere", on: false } });
+});

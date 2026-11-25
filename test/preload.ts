@@ -69,6 +69,8 @@ const scratch: Record<string, string> = {
   KEEL_IMPORT_HOME: made("import", "home"),
   KEEL_IMPORT_CLAUDE_DIR: join(dir, "import", "claude"),
   KEEL_IMPORT_CODEX_DIR: join(dir, "import", "codex"),
+  // A Codex session answered in place talks to the stand-in of `codex app-server`, never a codex of the machine's.
+  KEEL_CODEX_BIN: join(import.meta.dir, "e2e", "fixtures", "codex-app-server.ts"),
   KEEL_IMPORT_AGY_DIR: join(dir, "import", "agy"),
   KEEL_IMPORT_KEEL_DB: join(dir, "import", "keel.db"),
   KEEL_IMPORT_HERMES_DIR: join(dir, "import", "hermes"),

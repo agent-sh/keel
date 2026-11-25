@@ -65,6 +65,8 @@ export function route(f: Frame): Route {
         return { topics: [feedTopic("activity"), EVERY, ...(typeof sid === "string" ? [sessionTopic(sid)] : [])] };
       }
       if (f.name === "checkpoints" && f.session_id) return one(f.session_id);
+      // A send to a session of another harness answered in place (src/integrations/outside/codex-app.ts): its bar reads it.
+      if (f.name === "outside_sends" && f.session_id) return one(f.session_id);
       // An answer of the session kept as a standing ruling, marked just this once, or its ruling revoked: its card reads it.
       if (f.name === "rulings" && f.session_id) return one(f.session_id);
       // A call an MCP App in the session made: its card in the session's view reads it.

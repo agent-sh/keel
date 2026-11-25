@@ -601,14 +601,17 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     const s = sessionId ? store.session(sessionId) : undefined;
     if (sessionId && !s) return undefined;
     // A session another harness runs raises nothing: an alert's words go to the phone and other machines (src/core/outside.ts).
-    if (isOutside(s)) return undefined;
+    // Only a card its harness raised while Keel answers it in place (an approval, a question) is told, and only
+    // on the owner's own devices.
+    const own = isOutside(s);
+    if (own && !OWN_CARDS(kind, data)) return undefined;
     // A context the helper answers cards in raises nothing: what it did is told on the cards it answered.
     if (s?.settings.helper_cards) return undefined;
     // A subagent's alerts belong to its parent's session in the inbox, with the
     // agent named so two agents' alerts never read alike.
     const sid = s?.parent_id ?? sessionId;
     const child = s?.parent_id ? { child_session: sessionId, child_title: s.title || undefined } : {};
-    return file({ kind, sid, from: sessionId, source: s?.parent_id ? sessionId! : "", title, body, data, child, ...(silent ? { silent: true } : {}) });
+    return file({ kind, sid, from: sessionId, source: s?.parent_id ? sessionId! : "", title, body, data, child, ...(silent ? { silent: true } : {}), ...(own ? { own: true } : {}) });
   } catch (e) {
     capture(e, { at: "raise alert", kind });
     return undefined;
@@ -625,7 +628,14 @@ type Filing = {
   kind: AlertKind; sid: string | null; from: string | null; source: string; title: string; body: string; data?: unknown; child?: object;
   far?: { machine: string; id: string; read: boolean };
   silent?: boolean;
+  // Told on the owner's own devices only (OWN_DEVICES): a card of a session another harness runs.
+  own?: true;
 };
+// The channels that are the owner's own screens. A command of his (KEEL_NOTIFY_COMMAND) is a program like a
+// hook and gets none of another harness's words.
+const OWN_DEVICES = new Set(["desktop", "push"]);
+// A card a session of another harness raised while Keel answers it in place (src/integrations/outside/codex-app.ts).
+const OWN_CARDS = (kind: AlertKind, data: unknown) => (kind === "approval" && !!(data as { approval_id?: unknown } | undefined)?.approval_id) || (kind === "question" && !!(data as { ask_id?: unknown } | undefined)?.ask_id);
 // Alerts filed in one go keep their order: each is a millisecond after the last at least.
 let lastTs = 0;
 function file(x: Filing): Alert | undefined {
@@ -689,7 +699,7 @@ function file(x: Filing): Alert | undefined {
   }
   const chosen = st.routes[kind] ?? [];
   const quietKind = routine(kind, data, st);
-  const routed = chosen.filter((c) => channels.get(c)?.available() && !(quietKind && INTERRUPTS.has(c)));
+  const routed = chosen.filter((c) => channels.get(c)?.available() && !(quietKind && INTERRUPTS.has(c)) && (!x.own || OWN_DEVICES.has(c)));
   // A snoozed session's routine alert is put away read; a global snooze keeps
   // everything off the channels.
   const f = snooze.filter(kind, sid);

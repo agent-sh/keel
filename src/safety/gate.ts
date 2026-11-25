@@ -2243,7 +2243,8 @@ export class Gate {
     // A new card is about to open: the owner's PermissionRequest hooks first.
     // A deny refuses the call. An allow answers the card where a PreToolUse
     // hook's allow would have (hookMayAnswer), and no other card.
-    if (!parked && this.requestHook) {
+    // (Not for a session another harness runs: its card carries that harness's words, which no hook of the owner's gets: src/core/outside.ts.)
+    if (!parked && this.requestHook && !session.outside) {
       const r = await this.requestHook(session, call, name, { risk: ask.risk, why: ask.why, rule: ask.rule });
       if (r && "deny" in r) return r;
       if (r && "allow" in r && !once && !ask.autoOwner && this.hookMayAnswer(session, cls, ask)) {

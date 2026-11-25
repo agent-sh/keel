@@ -19,7 +19,7 @@ import { cardLines, fromSaid, type CardForm } from "../../safety/card.ts";
 import { spelled } from "../../safety/chars.ts";
 import type { Deps } from "../../server/app.ts";
 import { commandInFront, moveToBackground } from "../../tools/jobs.ts";
-import { answer, askedOf, closedQuestions, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
+import { allPendingQuestions, answer, askedOf, closedQuestions, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import * as alerts from "../../automation/alerts.ts";
 import * as loops from "../../automation/loops.ts";
 import { sessionState } from "../../automation/state.ts";
@@ -460,6 +460,13 @@ export function mobileApi(ctx: MobileCtx) {
   // not its row, its messages, its questions or its state. Every read of a session here is through these.
   const sessionShown = (sid: string) => { const s = store.session(sid); return s && !isOutside(s) ? s : undefined; };
   const sessionsShown = (o?: { archived?: boolean }) => store.sessions(o).filter((s) => !isOutside(s));
+  // Past them, the cards a session of another harness raised while Keel answers it in place: its questions
+  // (from its harness, `asked`) reach the phone as any card does, and nothing else of it.
+  const asking = (sid?: string): Session[] => {
+    const ids = new Set(allPendingQuestions().filter((q) => q.asked && (!sid || q.session_id === sid)).map((q) => q.session_id));
+    return [...ids].map((id) => store.session(id)).filter((s): s is Session => !!s && isOutside(s));
+  };
+  const askers = (sid?: string): Session[] => [...(sid ? [sessionShown(sid)].filter(Boolean) as Session[] : sessionsShown()), ...asking(sid)];
   const limiter = new PairLimiter();
   const lastSeq = (sid: string) => store.db.query<{ n: number | null }, [string]>("SELECT MAX(seq) AS n FROM events WHERE session_id = ?").get(sid)!.n ?? 0;
   const allSessions = () => [...sessionsShown(), ...sessionsShown({ archived: true })];
@@ -563,7 +570,7 @@ export function mobileApi(ctx: MobileCtx) {
   const questionId = (sessionId: string, callId: string, asked?: string) => `q-${sessionId}.${callId}${asked ? `-${asked}` : ""}`;
   // The pending question a card id is for.
   function questionFor(aid: string): { s: Session; callId: string; asked?: string } | undefined {
-    for (const s of sessionsShown()) for (const callId of pendingQuestions(s.id)) {
+    for (const s of askers()) for (const callId of pendingQuestions(s.id)) {
       const asked = askedOf(s.id, callId)?.id;
       if (questionId(s.id, callId, asked) === aid) return { s, callId, asked };
     }
@@ -608,7 +615,7 @@ export function mobileApi(ctx: MobileCtx) {
   }
   function questions(sessionId?: string) {
     const out: any[] = [];
-    for (const s of sessionId ? [sessionShown(sessionId)].filter(Boolean) as Session[] : sessionsShown()) {
+    for (const s of askers(sessionId)) {
       for (const callId of pendingQuestions(s.id)) out.push(questionCard(s, callId));
     }
     return out;
@@ -624,7 +631,7 @@ export function mobileApi(ctx: MobileCtx) {
   const pendingApprovals = (sessionId?: string) => {
     const gate = ctx.gate();
     const asks = gate?.approvals({ session: sessionId, pending: true }) ?? [];
-    const qs = (sessionId ? [sessionShown(sessionId)].filter(Boolean) as Session[] : sessionsShown()).flatMap((s) => pendingQuestions(s.id).map((callId) => ({ s, callId })));
+    const qs = askers(sessionId).flatMap((s) => pendingQuestions(s.id).map((callId) => ({ s, callId })));
     const ps = plansWaiting().filter((p) => !sessionId || p.session_id === sessionId);
     if (!asks.length && !qs.length && !ps.length) return [];
     const now = Date.now();

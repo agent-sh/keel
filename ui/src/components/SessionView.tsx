@@ -143,9 +143,9 @@ function OwnSessionView({ id, header, missingHeader, panel = true, focus = true,
               width a scroll bar takes on this page (lib/gutter.ts), so nothing in it moves sideways as it arrives. */}
           <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,var(--k-gutter,0px))]">
             <div className="k-compose-in mx-auto flex min-h-0 w-full max-w-[48rem] flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
-              {/* A session another harness runs is read-only here: its bar takes the box's place. */}
+              {/* A session another harness runs: its bar takes the box's place, with the cards its harness raised while Keel answers it. */}
               {session.outside
-                ? <OutsideBar session={session} />
+                ? <><Suspense fallback={null}><Questions sessionId={session.id} /></Suspense><Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense><OutsideBar session={session} /></>
                 : <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working" || compacting} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} panel={panel} />}
             </div>
           </div>

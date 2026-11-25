@@ -1,0 +1,131 @@
+#!/usr/bin/env bun
+// A stand-in for `codex app-server` over stdio, for the in-place answer of a
+// Codex session (src/integrations/outside/codex-app.ts): it speaks the part
+// of the protocol Keel uses (initialize, thread/resume, turn/start,
+// turn/steer, turn/interrupt, thread/unsubscribe), finds the thread's rollout
+// under $CODEX_HOME/sessions and writes to it what Codex writes for a turn,
+// and asks the client what Codex asks. No model: the prompt says what it does.
+//   - "ask me ...": one question with two choices, then a reply naming the pick.
+//   - "wait ...": works until turn/interrupt, then the turn is interrupted.
+//   - anything else: a command it asks to run (make test), then a reply naming
+//     the decision.
+// Every request it got is appended to <rollout>.standin.log, one JSON line each.
+//   bun codex-app-server.ts app-server
+import { appendFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
+const home = process.env.CODEX_HOME ?? "";
+let rollout = "";
+let thread = "";
+let nextId = 1000;
+const waits = new Map<number, (r: any) => void>();
+let turn: { id: string; stop?: () => void; stopped?: boolean } | undefined;
+
+const out = (m: object) => process.stdout.write(JSON.stringify(m) + "\n");
+const note = (method: string, params: object) => out({ method, params });
+const ask = (method: string, params: object) => new Promise<any>((ok) => { const id = nextId++; waits.set(id, ok); out({ id, method, params }); });
+const record = (type: string, payload: object) => appendFileSync(rollout, JSON.stringify({ timestamp: new Date().toISOString(), type, payload }) + "\n");
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function find(dir: string, id: string): string | undefined {
+  let names: string[] = [];
+  try { names = readdirSync(dir); } catch { return undefined; }
+  for (const n of names) {
+    const p = join(dir, n);
+    if (n.endsWith(`${id}.jsonl`)) return p;
+    if (!n.includes(".")) { const f = find(p, id); if (f) return f; }
+  }
+  return undefined;
+}
+
+async function reply(turnId: string, item: string, text: string) {
+  for (const w of text.split(/(?<= )/)) { note("item/agentMessage/delta", { threadId: thread, turnId, itemId: item, delta: w }); await sleep(30); }
+  record("response_item", { type: "message", role: "assistant", content: [{ type: "output_text", text }] });
+  record("event_msg", { type: "agent_message", message: text });
+}
+
+function finish(turnId: string, status: "completed" | "interrupted") {
+  record("event_msg", status === "completed" ? { type: "task_complete", turn_id: turnId } : { type: "turn_aborted", turn_id: turnId, reason: "interrupted" });
+  turn = undefined;
+  note("turn/completed", { threadId: thread, turn: { id: turnId, items: [], status, error: null } });
+}
+
+async function run(turnId: string, text: string) {
+  note("turn/started", { threadId: thread, turn: { id: turnId, items: [], status: "inProgress", error: null } });
+  record("event_msg", { type: "task_started", turn_id: turnId });
+  record("response_item", { type: "message", role: "user", content: [{ type: "input_text", text }] });
+  record("event_msg", { type: "user_message", message: text });
+  await sleep(100);
+  if (/^wait\b/i.test(text)) {
+    await reply(turnId, "m1", "Working on it.");
+    // (An interrupt that came before this point stops it at once.)
+    await new Promise<void>((ok) => { if (turn!.stopped) ok(); else turn!.stop = ok; });
+    return finish(turnId, "interrupted");
+  }
+  if (/^ask me\b/i.test(text)) {
+    const r = await ask("item/tool/requestUserInput", { threadId: thread, turnId, itemId: "q1", isBlocking: true, autoResolutionMs: null, questions: [{ id: "color", header: "Color", question: "Which color should the button be?", isOther: true, isSecret: false, options: [{ label: "Blue", description: "The brand color" }, { label: "Green", description: "" }] }] });
+    const picked = r?.answers?.color?.answers?.join(", ") || "nothing";
+    await reply(turnId, "m2", `You picked ${picked}.`);
+    return finish(turnId, "completed");
+  }
+  await reply(turnId, "m1", "Running the tests first.");
+  note("item/started", { threadId: thread, turnId, item: { type: "commandExecution", id: "c1", command: "make test", cwd: process.cwd(), status: "inProgress" } });
+  const r = await ask("item/commandExecution/requestApproval", { kind: "command", threadId: thread, turnId, itemId: "c1", startedAtMs: Date.now(), environmentId: null, reason: "It runs the project's tests", command: "make test", cwd: process.cwd() });
+  const decision = typeof r?.decision === "string" ? r.decision : "decline";
+  record("response_item", { type: "function_call", name: "shell", arguments: JSON.stringify({ command: ["make", "test"] }), call_id: "c1" });
+  record("response_item", { type: "function_call_output", call_id: "c1", output: decision === "accept" ? "ok" : "the owner declined" });
+  if (decision === "cancel") return finish(turnId, "interrupted");
+  await reply(turnId, "m3", `The command was ${decision === "accept" ? "allowed" : "declined"}: ${text}`);
+  finish(turnId, "completed");
+}
+
+async function handle(m: any) {
+  if (m.id !== undefined && !m.method) { waits.get(m.id)?.(m.result); waits.delete(m.id); return; }
+  if (m.id === undefined) return;
+  if (rollout) appendFileSync(`${rollout}.standin.log`, JSON.stringify({ method: m.method, params: m.params }) + "\n");
+  const ok = (result: unknown) => out({ id: m.id, result });
+  const fail = (code: number, message: string) => out({ id: m.id, error: { code, message } });
+  const p = m.params ?? {};
+  switch (m.method) {
+    case "initialize": return ok({ userAgent: "codex-standin/0.0.0", codexHome: home, platformFamily: "unix", platformOs: "linux" });
+    case "thread/resume": {
+      const f = find(join(home, "sessions"), String(p.threadId));
+      if (!f) return fail(-32600, `no rollout found for thread id ${p.threadId}`);
+      rollout = f;
+      thread = String(p.threadId);
+      appendFileSync(`${rollout}.standin.log`, JSON.stringify({ method: m.method, params: p }) + "\n");
+      return ok({ thread: { id: thread, path: f }, model: "standin", modelProvider: p.modelProvider ?? "openai", cwd: p.cwd ?? process.cwd(), approvalPolicy: p.approvalPolicy ?? "on-request", sandbox: { type: p.sandbox ?? "workspace-write" }, reasoningEffort: null });
+    }
+    case "turn/start": {
+      if (!rollout) return fail(-32600, "no thread");
+      const text = String(p.input?.[0]?.text ?? "");
+      const id = `turn-${Date.now()}`;
+      turn = { id };
+      ok({ turn: { id, items: [], status: "inProgress", error: null } });
+      return void run(id, text);
+    }
+    case "turn/steer": {
+      if (!turn || p.expectedTurnId !== turn.id) return fail(-32600, "no active turn to steer");
+      const text = String(p.input?.[0]?.text ?? "");
+      record("response_item", { type: "message", role: "user", content: [{ type: "input_text", text }] });
+      record("event_msg", { type: "user_message", message: text });
+      return ok({ turnId: turn.id });
+    }
+    case "turn/interrupt": {
+      if (turn) turn.stopped = true;
+      turn?.stop?.();
+      return ok({});
+    }
+    case "thread/unsubscribe": return ok({ status: "unsubscribed" });
+    default: return fail(-32601, `method not found: ${m.method}`);
+  }
+}
+
+let rest = "";
+process.stdin.on("data", (c) => {
+  rest += c.toString();
+  const lines = rest.split("\n");
+  rest = lines.pop() ?? "";
+  for (const l of lines) if (l.trim()) void handle(JSON.parse(l));
+});
+process.stdin.on("end", () => process.exit(0));

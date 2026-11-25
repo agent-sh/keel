@@ -36,7 +36,7 @@ import { navigate, phone, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, timeBucket, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { COUNTERS, WAITS_ON_YOU, backgroundOf, dotWord, DECLINED_WORD, agentsFailedWord, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, STALE_WORD, asOf, countWord, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, stateWords } from "../../../src/core/state-words.ts";
-import { OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
+import { holderSaid, OUTSIDE_LABEL, hhmm } from "../../../src/core/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
@@ -1487,7 +1487,9 @@ export function Sidebar({ open }: { open: boolean }) {
 // a while, nothing to vouch for it) says so beside the title, in a word.
 const outsideTip = (o: NonNullable<Session["outside"]>) => {
   const where = OUTSIDE_LABEL[o.harness] ?? o.harness;
-  return o.state === "stale" ? `Runs in ${where}: no record${o.since ? ` since ${hhmm(o.since)}` : ""}, read-only here` : `Runs in ${where}: read-only here`;
+  // A Codex session is answered in its row: the tooltip says who holds it now, the way the row's bar does.
+  const how = o.harness === "codex" ? (!o.holder || o.holder.kind === "free" ? "answer it here" : holderSaid(o.holder, where).toLowerCase()) : "read-only here";
+  return o.state === "stale" ? `Runs in ${where}: no record${o.since ? ` since ${hhmm(o.since)}` : ""}, ${how}` : `Runs in ${where}: ${how}`;
 };
 export function OutsideTag({ o }: { o: NonNullable<Session["outside"]> }) {
   if (o.state !== "stale") return null;

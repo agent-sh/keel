@@ -1,0 +1,470 @@
+// Answering a Codex session in place: the composer of a Codex session's row
+// sends to that same thread through Codex's own server, `codex app-server`
+// over stdio, started for the turn with the thread's own Codex home, provider,
+// folder, approval policy and sandbox. Keel is the thread's writer only while
+// nothing else holds it (src/integrations/outside/writer.ts, read right before
+// the child starts) and only for the turn: the child ends when the turn ends,
+// since Codex keeps the thread's writer lock for as long as its process lives
+// and would lock the owner's terminal out.
+//
+//   initialize, thread/resume (excludeTurns), turn/start; turn/steer while the
+//   turn runs; turn/interrupt for Stop; then the child's input closes.
+//
+// What Codex asks while it works becomes a Keel card, answered once: a command
+// to run, a file change, more permissions (the gate's one-call card, which the
+// phone gets as any card), and a question (requestUserInput, a question card).
+// Nothing here is stored as the session's events: the rollout stays the only
+// record, and the mirror (service.ts) stores what Codex writes there, the
+// owner's message and the reply included. The reply's words stream as delta
+// frames until the mirror stores the reply.
+//
+// A send is stored before its sender is answered and given to Codex once:
+// stored, then started (the rollout's size kept with it, before the request
+// goes), then delivered when the rollout holds the message. A send a restart
+// cut after it started is looked for in the rollout from that size: found, it
+// was delivered; not found, it says so and waits for the owner to send it
+// again. One that never started goes when the daemon is back, if the thread is
+// still free.
+import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { AcpConnection } from "../../acp/rpc.ts";
+import type { Bus } from "../../core/bus.ts";
+import type { Store } from "../../core/store.ts";
+import type { Holder, Session } from "../../core/types.ts";
+import { holderSaid } from "../../core/watch.ts";
+import { homeDir } from "../../core/paths.ts";
+import type { ToolCall } from "../../engine/hooks.ts";
+import { allPendingQuestions, askFor, DECLINED, type Answers } from "../../tools/interact.ts";
+import type { Tool, ToolContext } from "../../tools/types.ts";
+import { headTail } from "../import/files.ts";
+import { splitGrown } from "./facts.ts";
+
+type Json = any;
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS outside_sends (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  text TEXT NOT NULL,
+  state TEXT NOT NULL,
+  offset INTEGER,
+  said TEXT,
+  created INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS outside_sends_key ON outside_sends(session_id, key);
+`;
+
+// stored: taken, not yet given to Codex. started: given (turn/start or turn/steer written). delivered: the
+// rollout holds it. lost: it was given and the rollout does not hold it, or Codex refused it: sent again
+// only by the owner. failed: refused before it went (`said` says why).
+export type SendState = "stored" | "started" | "delivered" | "lost" | "failed";
+export type Send = { id: string; session_id: string; key: string; text: string; state: SendState; offset: number | null; said: string | null; created: number };
+
+export type CardGate = { askOnce(session: Session, call: ToolCall, name: string, why: string, shown?: string): Promise<{ deny: string } | void> };
+
+export type CodexAppDeps = {
+  store: Store;
+  bus: Bus;
+  outside: {
+    row(sessionId: string): { harness: string; source_id: string; path: string } | undefined;
+    holderNow(sessionId: string): Holder | undefined;
+    retell(sessionId: string): void;
+  };
+  gate: () => CardGate | undefined;
+  // The codex program and the Codex home the mirror reads (read when used).
+  bin: () => string | undefined;
+  home: () => string;
+  trouble: (e: unknown, at: string) => void;
+  // A question Codex asks is an alert like the model's own (the turn hooks' ownerAsked and ownerAnswered).
+  asked?: (sessionId: string, callId: string, text: string, askId: string) => void;
+  answered?: (sessionId: string, callId: string, answered: boolean, askId: string) => void;
+};
+
+// What the rollout says of the thread: its provider (a resume under another is refused with
+// modelProviderMismatch), its folder, and the approval policy and sandbox its last turn ran with.
+export type ThreadFacts = { provider?: string; cwd?: string; approval?: string; sandbox?: string };
+const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
+const APPROVALS = new Set(["untrusted", "on-failure", "on-request", "never"]);
+export function threadFacts(head: Json[], tail: Json[]): ThreadFacts {
+  const meta = head.find((r) => r?.type === "session_meta")?.payload ?? {};
+  const ctx = [...head, ...tail].filter((r) => r?.type === "turn_context").at(-1)?.payload ?? {};
+  const kebab = (v: unknown) => (typeof v === "string" ? v.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).replace(/_/g, "-") : undefined);
+  const sandbox = kebab(ctx.sandbox_policy?.type ?? ctx.sandbox_policy?.mode ?? ctx.sandbox_policy);
+  const approval = kebab(ctx.approval_policy);
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  return {
+    provider: str(meta.model_provider),
+    cwd: str(ctx.cwd) ?? str(meta.cwd),
+    ...(approval && APPROVALS.has(approval) ? { approval } : {}),
+    ...(sandbox && SANDBOXES.has(sandbox) ? { sandbox } : {}),
+  };
+}
+
+// Whether the records Codex wrote hold the owner's message: its user_message event or its user item.
+export function holdsMessage(records: Json[], text: string): boolean {
+  const want = text.trim();
+  const texts = (c: Json) => (Array.isArray(c) ? c.filter((p: Json) => p?.type === "input_text" || p?.type === "text").map((p: Json) => String(p.text ?? "")).join("\n") : "");
+  return records.some((r) => {
+    const p = r?.payload;
+    if (r?.type === "event_msg" && p?.type === "user_message") return String(p.message ?? "").trim() === want;
+    if (r?.type === "response_item" && p?.type === "message" && p.role === "user") return texts(p.content).trim() === want;
+    return false;
+  });
+}
+
+// The records of a file from a byte offset on (the bytes a send started at): what the thread gained since.
+function recordsFrom(path: string, offset: number): Json[] {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const from = Math.max(0, Math.min(offset, size));
+    const buf = Buffer.alloc(size - from);
+    readSync(fd, buf, 0, buf.length, from);
+    return splitGrown("", buf.toString("utf8") + "\n").records;
+  } catch { return []; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+type Run = {
+  sessionId: string;
+  threadId: string;
+  path: string;
+  conn: AcpConnection;
+  ready: Promise<boolean>;
+  turn?: string;
+  ending?: Promise<void>;
+  // The reply's items by their id, each a block of the streaming draft.
+  items: Map<string, number>;
+  // A file change's files and diff, from its item, for the card that asks about it.
+  changes: Map<string, { path: string; kind?: Json; diff?: string }[]>;
+  // The cards open now, by the request's id: withdrawn when Codex says it resolved one, or the turn stops.
+  cards: Map<string | number, AbortController>;
+  stopped: AbortController;
+  // Sends given to this child whose delivery is checked at the turn's end.
+  given: Set<string>;
+};
+
+export class CodexApp {
+  private runs = new Map<string, Run>();
+  private closed = false;
+
+  constructor(private d: CodexAppDeps) {
+    d.store.migrate(SCHEMA);
+  }
+
+  // Keel's own child holds the session now (until it has ended: it holds the writer lock until then).
+  ours(sessionId: string): boolean {
+    return this.runs.has(sessionId);
+  }
+
+  running(sessionId: string): boolean {
+    return !!this.runs.get(sessionId)?.turn;
+  }
+
+  // What a send does now: resume the thread (free), steer the turn Keel runs, nothing (another process
+  // holds it, or there is no codex program here).
+  route(sessionId: string, holder = this.d.outside.holderNow(sessionId)): "resume" | "steer" | "held" | "missing" {
+    if (this.ours(sessionId)) return "steer";
+    if (!this.d.bin()) return "missing";
+    return !holder || holder.kind === "free" ? "resume" : "held";
+  }
+
+  sends(sessionId: string): Send[] {
+    return this.d.store.db.query<Send, [string]>("SELECT * FROM outside_sends WHERE session_id = ? AND state != 'delivered' ORDER BY created").all(sessionId);
+  }
+
+  private one(sessionId: string, key: string): Send | undefined {
+    return this.d.store.db.query<Send, [string, string]>("SELECT * FROM outside_sends WHERE session_id = ? AND key = ?").get(sessionId, key) ?? undefined;
+  }
+
+  private byId(id: string): Send | undefined {
+    return this.d.store.db.query<Send, [string]>("SELECT * FROM outside_sends WHERE id = ?").get(id) ?? undefined;
+  }
+
+  private told(sessionId: string) {
+    this.d.bus.emit({ t: "feature", name: "outside_sends", session_id: sessionId, data: { sends: this.sends(sessionId) } });
+  }
+
+  private set(id: string, state: SendState, more: { offset?: number; said?: string } = {}) {
+    const s = this.byId(id);
+    if (!s) return;
+    this.d.store.db.query("UPDATE outside_sends SET state = ?, offset = COALESCE(?, offset), said = ? WHERE id = ?").run(state, more.offset ?? null, more.said ?? null, id);
+    this.told(s.session_id);
+  }
+
+  // A send by the owner. Answered once the send is stored (or refused before it is): `key` stores it once.
+  // `again`: a send that was lost, sent again now as this one (it goes in the same write).
+  send(sessionId: string, text: string, key: string, again?: string): { send: Send } | { error: string; status: number; holder?: Holder } {
+    const s = this.d.store.session(sessionId);
+    const row = this.d.outside.row(sessionId);
+    if (!s?.outside || !row) return { error: "not a session of another harness", status: 404 };
+    if (row.harness !== "codex") return { error: "Keel answers only Codex sessions in place for now", status: 409 };
+    if (!text.trim()) return { error: "nothing to send", status: 400 };
+    const had = this.one(sessionId, key);
+    if (had) return { send: had };
+    const holder = this.d.outside.holderNow(sessionId) ?? { kind: "free" as const };
+    const mine = holder.kind === "keel";
+    if (!mine && holder.kind !== "free") return { error: `${holderSaid(holder, "Codex")}: answer it there. Keel sends nothing to a session another process holds.`, status: 409, holder };
+    if (!mine && !this.d.bin()) return { error: "no codex program here: Keel answers a Codex session with the codex on your PATH (or KEEL_CODEX_BIN)", status: 409 };
+    const send: Send = { id: Bun.randomUUIDv7(), session_id: sessionId, key, text, state: "stored", offset: null, said: null, created: Date.now() };
+    this.d.store.db.transaction(() => {
+      if (again) this.d.store.db.query("DELETE FROM outside_sends WHERE id = ? AND session_id = ? AND state IN ('lost', 'failed')").run(again, sessionId);
+      this.d.store.db.query("INSERT INTO outside_sends (id, session_id, key, text, state, offset, said, created) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)").run(send.id, sessionId, key, text, "stored", send.created);
+    })();
+    this.told(sessionId);
+    void this.deliver(sessionId, send.id).catch((e) => { this.d.trouble(e, "answering a Codex session in place"); this.set(send.id, "lost", { said: `it could not go to Codex: ${(e as Error).message}` }); });
+    return { send };
+  }
+
+  // A lost or refused send, put away by the owner.
+  dismiss(sessionId: string, id: string): boolean {
+    const n = this.d.store.db.query("DELETE FROM outside_sends WHERE id = ? AND session_id = ? AND state IN ('lost', 'failed')").run(id, sessionId).changes;
+    if (n) this.told(sessionId);
+    return n > 0;
+  }
+
+  // The owner's Stop: the turn Keel runs is interrupted (its open cards are withdrawn with it).
+  async interrupt(sessionId: string): Promise<boolean> {
+    const r = this.runs.get(sessionId);
+    if (!r) return false;
+    for (const c of r.cards.values()) c.abort();
+    if (r.turn) await r.conn.request("turn/interrupt", { threadId: r.threadId, turnId: r.turn }).catch(() => {});
+    else void this.end(r);
+    return true;
+  }
+
+  private async deliver(sessionId: string, id: string) {
+    let r = this.runs.get(sessionId);
+    if (r?.ending) { await r.ending; r = undefined; }
+    if (!r) {
+      // Read again right before the child starts: another process may have taken the thread since.
+      const holder = this.d.outside.holderNow(sessionId);
+      if (holder && holder.kind !== "free" && holder.kind !== "keel") return this.set(id, "failed", { said: `${holderSaid(holder, "Codex")}: it did not go` });
+      r = this.begin(sessionId);
+      if (!r) return this.set(id, "failed", { said: "its rollout is no longer where it was" });
+    }
+    const run = r;
+    if (!(await run.ready)) {
+      if (this.byId(id)?.state === "stored") this.set(id, "failed", { said: "Codex did not resume the session" });
+      return;
+    }
+    const send = this.byId(id);
+    if (!send || send.state !== "stored") return;
+    const input = [{ type: "text", text: send.text, text_elements: [] }];
+    let size = 0;
+    try { size = statSync(run.path).size; } catch {}
+    // Started before it goes: a restart from here on looks for it in the rollout, never sends it again.
+    this.set(id, "started", { offset: size });
+    run.given.add(id);
+    if (run.turn) {
+      const steered = await run.conn.request("turn/steer", { threadId: run.threadId, input, expectedTurnId: run.turn, clientUserMessageId: id }).then(() => true, () => false);
+      if (steered) return;
+    }
+    try {
+      const res = await run.conn.request("turn/start", { threadId: run.threadId, input, clientUserMessageId: id });
+      if (typeof res?.turn?.id === "string" && res.turn.status === "inProgress") run.turn = res.turn.id;
+      this.d.outside.retell(sessionId);
+    } catch (e) {
+      run.given.delete(id);
+      this.set(id, "lost", { said: `Codex did not take it: ${(e as Error).message}` });
+      if (!run.turn) void this.end(run);
+    }
+  }
+
+  // The child for a turn: started, initialized and resumed on the thread (ready says whether it is).
+  private begin(sessionId: string): Run | undefined {
+    const row = this.d.outside.row(sessionId);
+    const bin = this.d.bin();
+    if (!row || !bin || !existsSync(row.path)) return undefined;
+    const { head, tail } = headTail(row.path, 64 * 1024);
+    const f = threadFacts(head, tail);
+    const home = this.d.home();
+    const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
+    const cwd = isDir(f.cwd) ? f.cwd! : homeDir();
+    // The owner's own coding agent, as an ACP agent is: the whole environment (it signs in from it), with the Codex
+    // home the mirror reads.
+    const conn = new AcpConnection([bin, "app-server"], { cwd, env: { CODEX_HOME: home } }, (m) => this.d.trouble(new Error(m), "codex app-server"));
+    const run: Run = { sessionId, threadId: row.source_id, path: row.path, conn, ready: Promise.resolve(false), items: new Map(), changes: new Map(), cards: new Map(), stopped: new AbortController(), given: new Set() };
+    this.runs.set(sessionId, run);
+    conn.onNotification = (method, p) => this.heard(run, method, p);
+    conn.onRequest = (method, p, rid) => this.asked(run, method, p, rid);
+    void conn.exited.then(() => this.gone(run));
+    run.ready = (async () => {
+      try {
+        await conn.request("initialize", { clientInfo: { name: "keel", title: "Keel", version: "1" }, capabilities: { experimentalApi: false, requestAttestation: false } });
+        conn.notify("initialized", undefined);
+        await conn.request("thread/resume", {
+          threadId: run.threadId, excludeTurns: true,
+          ...(f.provider ? { modelProvider: f.provider } : {}), ...(f.cwd && isDir(f.cwd) ? { cwd: f.cwd } : {}),
+          ...(f.approval ? { approvalPolicy: f.approval } : {}), ...(f.sandbox ? { sandbox: f.sandbox } : {}),
+        });
+        this.d.outside.retell(sessionId);
+        return true;
+      } catch (e) {
+        const msg = (e as Error).message;
+        // Another process became its writer between the look and the resume: Codex refuses, and says so.
+        const holder = /active writer/i.test(msg) ? this.d.outside.holderNow(sessionId) : undefined;
+        const said = holder && holder.kind !== "free" && holder.kind !== "keel" ? `${holderSaid(holder, "Codex")}: it did not go` : `Codex did not resume the session: ${msg}`;
+        for (const s of this.sends(sessionId)) if (s.state === "stored") this.set(s.id, "failed", { said });
+        void this.end(run);
+        return false;
+      }
+    })();
+    return run;
+  }
+
+  private heard(run: Run, method: string, p: Json) {
+    if (p?.threadId && p.threadId !== run.threadId) return;
+    switch (method) {
+      case "turn/started":
+        if (typeof p?.turn?.id === "string") run.turn = p.turn.id;
+        return;
+      case "item/started":
+        if (p?.item?.type === "fileChange" && Array.isArray(p.item.changes)) run.changes.set(String(p.item.id), p.item.changes);
+        return;
+      case "item/agentMessage/delta": {
+        const item = String(p?.itemId ?? "");
+        let index = run.items.get(item);
+        if (index === undefined) run.items.set(item, (index = run.items.size));
+        if (typeof p?.delta === "string" && p.delta) this.d.bus.emit({ t: "delta", session_id: run.sessionId, index, kind: "text", text: p.delta });
+        return;
+      }
+      case "serverRequest/resolved":
+        run.cards.get(p?.requestId)?.abort();
+        return;
+      case "turn/completed":
+        if (!p?.turn?.id || p.turn.id === run.turn) {
+          run.turn = undefined;
+          run.items.clear();
+          this.check(run);
+          // A send that came while the turn ended goes in a turn of its own; else the child ends now.
+          if (!this.sends(run.sessionId).some((s) => s.state === "stored")) void this.end(run);
+        }
+        return;
+    }
+  }
+
+  // Each send given to this child: delivered when the rollout holds it.
+  private check(run: Run, last = false) {
+    for (const id of [...run.given]) {
+      const s = this.byId(id);
+      if (!s || s.state !== "started") { run.given.delete(id); continue; }
+      if (holdsMessage(recordsFrom(run.path, s.offset ?? 0), s.text)) { this.set(id, "delivered"); run.given.delete(id); }
+      else if (last) { this.set(id, "lost", { said: "Codex ended before the session held it: send it again" }); run.given.delete(id); }
+    }
+  }
+
+  private async asked(run: Run, method: string, p: Json, rid: number | string): Promise<Json> {
+    const s = this.d.store.session(run.sessionId);
+    const gate = this.d.gate();
+    const ac = new AbortController();
+    run.cards.set(rid, ac);
+    const signal = AbortSignal.any([ac.signal, run.stopped.signal]);
+    const cwd = typeof p?.cwd === "string" ? p.cwd : s?.workspace ?? homeDir();
+    const ctx = { sessionId: run.sessionId, cwd, signal, seen: new Map(), spillDir: "" } as unknown as ToolContext;
+    const call = (tool: Partial<Tool> & { name: string }, input: Json): ToolCall => ({ id: `codex-${String(p?.itemId ?? rid)}-${String(p?.approvalId ?? rid)}`, tool: { description: "", input_schema: {}, readOnly: false, run: async () => ({ content: "" }), ...tool } as Tool, input, ctx });
+    // Why the card asks, in Codex's own words where it gave some.
+    const asks = (reason: unknown) => `asked by Codex${typeof reason === "string" && reason ? `: ${reason}` : ""}`;
+    const ask = async (tool: Partial<Tool> & { name: string }, input: Json, name: string, why: string, shown?: string) => {
+      if (!s || !gate) return false;
+      const v = await gate.askOnce(s, call(tool, input), name, why, shown);
+      return !v && !signal.aborted;
+    };
+    try {
+      switch (method) {
+        case "item/commandExecution/requestApproval": {
+          const command = typeof p?.command === "string" ? p.command : "";
+          const ok = await ask({ name: "Codex command", kind: "shell", input_schema: { properties: { command: {} } } }, { command, cwd }, "Codex command", asks(p?.reason), command ? undefined : "Codex asks to run a command it does not name");
+          return { decision: ok ? "accept" : signal.aborted ? "cancel" : "decline" };
+        }
+        case "item/fileChange/requestApproval": {
+          const changes = run.changes.get(String(p?.itemId)) ?? [];
+          const paths = changes.map((c) => String(c.path));
+          const shown = changes.length ? changes.map((c) => `${c.path}\n${c.diff ?? ""}`.trim()).join("\n\n") : `Codex asks to change files${p?.grantRoot ? ` under ${p.grantRoot}` : ""}`;
+          const ok = await ask({ name: "Codex file change", kind: "edit" }, { file_path: paths[0] ?? p?.grantRoot ?? cwd, paths, diff: changes.map((c) => c.diff ?? "").join("\n") }, "Codex file change", asks(p?.reason), shown);
+          return { decision: ok ? "accept" : signal.aborted ? "cancel" : "decline" };
+        }
+        case "item/permissions/requestApproval": {
+          const want = p?.permissions ?? {};
+          const lines = [
+            ...(want.network?.enabled ? ["the network"] : []),
+            ...((want.fileSystem?.write ?? []) as string[]).map((x) => `write to ${x}`),
+            ...((want.fileSystem?.read ?? []) as string[]).map((x) => `read ${x}`),
+          ];
+          const ok = await ask({ name: "Codex permissions" }, want, "Codex permissions", asks(p?.reason), `Codex asks for ${lines.join(", ") || "more permissions"} for this turn`);
+          const granted = ok ? { ...(want.network ? { network: want.network } : {}), ...(want.fileSystem ? { fileSystem: want.fileSystem } : {}) } : {};
+          return { permissions: granted, scope: "turn" };
+        }
+        case "item/tool/requestUserInput": {
+          const qs = (Array.isArray(p?.questions) ? p.questions : []) as Json[];
+          const askId = String(rid);
+          const callId = `codex-${String(p?.itemId ?? rid)}`;
+          const text = qs.map((q) => String(q?.question ?? "")).filter(Boolean).join("\n") || "Codex asks a question";
+          this.d.asked?.(run.sessionId, callId, text, askId);
+          let reply: Answers | typeof DECLINED | null = null;
+          try {
+            reply = await askFor({ ...ctx, callId, questionChanged: () => this.d.bus.emit({ t: "questions", pending: allPendingQuestions() }) } as ToolContext, {
+              id: askId, from: "Codex", message: "Codex asks", sensitive: qs.some((q) => q?.isSecret) || undefined,
+              questions: qs.map((q) => ({ id: String(q?.id ?? ""), header: q?.header || undefined, question: String(q?.question ?? ""), options: (Array.isArray(q?.options) ? q.options : []).map((o: Json) => ({ label: String(o?.label ?? ""), description: o?.description || undefined })), secret: q?.isSecret || undefined })),
+            });
+          } finally {
+            this.d.answered?.(run.sessionId, callId, !!reply && reply !== DECLINED, askId);
+          }
+          const answers: Record<string, { answers: string[] }> = {};
+          if (reply && reply !== DECLINED) for (const [qid, a] of Object.entries(reply)) if (!a.skipped) answers[qid] = { answers: [...a.picked, ...(a.other ? [a.other] : [])] };
+          return { answers };
+        }
+        case "mcpServer/elicitation/request":
+          // (A form of an MCP server's: not shown in this version.)
+          return { action: "decline", content: null, _meta: null };
+      }
+      throw Object.assign(new Error(`Keel does not answer ${method}`), { code: -32601 });
+    } finally {
+      run.cards.delete(rid);
+    }
+  }
+
+  // The turn is over: the child's input closes and it ends (its writer lock with it).
+  private end(run: Run): Promise<void> {
+    run.ending ??= (async () => {
+      run.stopped.abort();
+      this.d.outside.retell(run.sessionId);
+      await run.conn.request("thread/unsubscribe", { threadId: run.threadId }).catch(() => {});
+      await run.conn.finish(5000);
+      run.conn.close();
+      await run.conn.exited;
+    })();
+    return run.ending;
+  }
+
+  private gone(run: Run) {
+    run.stopped.abort();
+    if (this.closed) return;
+    if (this.runs.get(run.sessionId) === run) this.runs.delete(run.sessionId);
+    this.check(run, true);
+    this.d.outside.retell(run.sessionId);
+    // A send stored while this child ended goes with a new one.
+    for (const s of this.sends(run.sessionId)) if (s.state === "stored") void this.deliver(run.sessionId, s.id).catch((e) => this.d.trouble(e, "answering a Codex session in place"));
+  }
+
+  // At the daemon's start: a send a restart cut after it started is looked for in the rollout (never sent
+  // again by itself); one that never started goes now if the thread is free.
+  start() {
+    for (const s of this.d.store.db.query<Send, []>("SELECT * FROM outside_sends WHERE state IN ('stored', 'started') ORDER BY created").all()) {
+      const row = this.d.outside.row(s.session_id);
+      if (!row) { this.set(s.id, "lost", { said: "its session is no longer followed" }); continue; }
+      if (s.state === "started") {
+        if (holdsMessage(recordsFrom(row.path, s.offset ?? 0), s.text)) this.set(s.id, "delivered");
+        else this.set(s.id, "lost", { said: "Keel restarted while it went, and the session does not hold it: send it again" });
+        continue;
+      }
+      void this.deliver(s.session_id, s.id).catch((e) => this.d.trouble(e, "answering a Codex session in place"));
+    }
+  }
+
+  stop() {
+    this.closed = true;
+    for (const r of [...this.runs.values()]) { r.stopped.abort(); r.conn.close(); }
+    this.runs.clear();
+  }
+}
