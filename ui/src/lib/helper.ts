@@ -6,7 +6,7 @@ import type { DigestEvent } from "../../../src/helper/policy.ts";
 import type { Look } from "../../../src/helper/error-look.ts";
 import type { MemoryRecord } from "../../../src/helper/records.ts";
 import { api, onFeature, readAtOpen } from "./store.ts";
-import { navigate } from "./ui.ts";
+import { navigate, rememberPanel } from "./ui.ts";
 
 export type { DigestEvent, Look, MemoryRecord };
 export type HelperView = {
@@ -60,8 +60,7 @@ export async function openHelper() {
     await setHelper({ on: true });
     v = state.view!;
     if (!v.session_id) return;
-    const kept = JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string>;
-    localStorage.setItem("keel.stationPanel", JSON.stringify({ ...kept, [v.session_id]: "helper" }));
+    rememberPanel(v.session_id, "helper");
   }
   if (v.session_id) navigate({ name: "session", id: v.session_id });
 }

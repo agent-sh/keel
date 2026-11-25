@@ -28,7 +28,7 @@
   let frame = null;
   setInterval(async () => {
     const at = document.activeElement;
-    say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length} draft=${(document.querySelector("textarea") || { value: "" }).value.length} note=${!!document.querySelector("[data-testid=shell-note]")} win=${window.keelShell ? window.keelShell.window : "-"} inbox=${!!document.querySelector("[data-testid=inbox-panel]")} keys=${!!window.keelShell?.can?.shortcuts} gc=${typeof globalThis.gc} find=${findSaid()}`);
+    say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length} draft=${(document.querySelector("textarea") || { value: "" }).value.length} note=${!!document.querySelector("[data-testid=shell-note]")} win=${window.keelShell ? window.keelShell.window : "-"} inbox=${!!document.querySelector("[data-testid=inbox-panel]")} keys=${!!window.keelShell?.can?.shortcuts} gc=${typeof globalThis.gc} find=${findSaid()} popped=${!!document.querySelector("[data-testid=panel-popped]")} panelwin=${!!document.querySelector("[data-testid=panel-window]")}`);
     const m = location.pathname.match(/^\/s\/([\w-]+)$/);
     if (!m || shown) return;
     const r = await fetch(`/api/sessions/${m[1]}/artifacts`).then((x) => x.json()).catch(() => null);
@@ -60,6 +60,15 @@
     const r = b.getBoundingClientRect();
     const at = `${Math.round(r.left + r.width / 2)} ${Math.round(r.top + r.height / 2)} ${innerWidth} ${innerHeight}`;
     if (at !== attachAt && r.width > 0) { attachAt = at; say(`ATTACH ${at}`); }
+  }, 1000);
+  // Where the Dock back button of a panel's own window is, for the check's pointer (as the attach button's).
+  let dockAt = "";
+  setInterval(() => {
+    const b = document.querySelector("[data-testid=panel-dock-here]");
+    if (!b) return;
+    const r = b.getBoundingClientRect();
+    const at = `${Math.round(r.left + r.width / 2)} ${Math.round(r.top + r.height / 2)} ${innerWidth} ${innerHeight}`;
+    if (at !== dockAt && r.width > 0) { dockAt = at; say(`DOCK ${at}`); }
   }, 1000);
   // The files the message box holds (pictures and others), said when their number changes: for the file dialog's case.
   let filesHeld = -1;

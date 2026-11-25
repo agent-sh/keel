@@ -405,6 +405,13 @@ impl Shell {
                 self.others.borrow_mut().retain(|w| w.id() != win.id());
                 win.close();
             }
+            // A panel docked back asks its window to close; the main window stays.
+            Ask::Dock if !win.is_main() => {
+                self.others.borrow_mut().retain(|w| w.id() != win.id());
+                win.close();
+                self.note_done("docked", serde_json::json!({}));
+            }
+            Ask::Dock => {}
         }
     }
 

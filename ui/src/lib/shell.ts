@@ -12,7 +12,8 @@ export type Shell = {
   // (`saving`: the app answers a file the page announces; one from before that keeps files by its own rule.
   //  `shortcuts`: the desktop has global shortcuts for apps, and the app can ask for its own.)
   can: { titlebar: boolean; windows: boolean; links: boolean; notifications: boolean; tray: boolean; saving?: boolean; shortcuts?: boolean };
-  // To the shell: { t: "look", ... }, { t: "window", path }, { t: "start" }, and the
+  // To the shell: { t: "look", ... }, { t: "window", path }, { t: "dock" } (close this window, which is not the main one),
+  // { t: "start" }, and the
   // clipboard, which the page reaches only through the app there:
   // { t: "paste", id }, { t: "copying" }, { t: "copy", id, text };
   // { t: "can", paste, saving }: what this page does with the app (below), said as it loads;
@@ -33,8 +34,17 @@ export const shell: Shell | undefined = typeof window === "undefined" ? undefine
 // with its object, another host with the marker it puts on the window.
 export const inShell = !!shell || (typeof window !== "undefined" && "__electrobunWebviewId" in window);
 if (inShell) document.documentElement.dataset.shell = shell?.window ?? "";
-// One session in a window of its own: it shows that session alone and leaves the main window's layout as it is.
-export const soloWindow = shell?.window === "session";
+// A session's side panel in a window of its own (a tab in a browser): /s/ID?panel=NAME shows that panel
+// alone, with no conversation. The place is read once, as the page loads.
+export const panelPlace: { session: string; panel: string } | null = (() => {
+  if (typeof location === "undefined") return null;
+  const s = /^\/s\/([\w-]+)$/.exec(location.pathname);
+  const panel = new URLSearchParams(location.search).get("panel");
+  return s && panel && /^[\w-]+$/.test(panel) ? { session: s[1]!, panel } : null;
+})();
+// One session, or one panel of it, in a window of its own: it shows that alone and leaves the main window's
+// layout and choices as they are.
+export const soloWindow = shell?.window === "session" || !!panelPlace;
 
 // The owner was brought to the page from outside it: the desktop app opened
 // on a link, a second launch or its tray, or raised its window for one. Where

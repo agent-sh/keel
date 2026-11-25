@@ -169,7 +169,7 @@ static bool pagePath(QStringView p)
         if (eq < 0)
             return false;
         const QStringView k = pair.left(eq), v = pair.mid(eq + 1);
-        if (!((k == u"inbox" && v == u"1") || ((k == u"approval" || k == u"e") && isId(v))))
+        if (!((k == u"inbox" && v == u"1") || ((k == u"approval" || k == u"e") && isId(v)) || (k == u"panel" && parts[0] == u"s" && isId(v))))
             return false;
     }
     return true;

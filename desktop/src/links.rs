@@ -11,7 +11,8 @@ fn id(s: &str) -> bool {
 
 /// A page path the shell may open: `/`, `/s/<id>`, `/p/<id>`,
 /// `/settings[/<section>]`, `/customize[/<section>]`. The only queries are the ones the daemon itself
-/// writes for an alert's click: `inbox=1`, `approval=<id>`, `e=<id>`.
+/// writes for an alert's click: `inbox=1`, `approval=<id>`, `e=<id>`, and `panel=<id>`, which a session's
+/// side panel popped out into a window of its own is shown by.
 pub fn page_path(p: &str) -> Option<String> {
     if p.len() > 300 {
         return None;
@@ -20,7 +21,8 @@ pub fn page_path(p: &str) -> Option<String> {
         Some((a, b)) => (a, Some(b)),
         None => (p, None),
     };
-    let ok = match path.strip_prefix('/')?.split('/').collect::<Vec<_>>().as_slice() {
+    let parts = path.strip_prefix('/')?.split('/').collect::<Vec<_>>();
+    let ok = match parts.as_slice() {
         [""] => true,
         ["s", x] | ["p", x] => id(x),
         ["settings"] => true,
@@ -33,6 +35,8 @@ pub fn page_path(p: &str) -> Option<String> {
         q.split('&').all(|pair| match pair.split_once('=') {
             Some(("inbox", "1")) => true,
             Some(("approval" | "e", v)) => id(v),
+            // (A panel belongs to a session.)
+            Some(("panel", v)) => parts.first() == Some(&"s") && id(v),
             _ => false,
         })
     });

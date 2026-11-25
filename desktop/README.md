@@ -112,6 +112,13 @@ started: the first page says so.
 - **Keys in the window.** Ctrl+N starts a session, as in every desktop app
   (a browser tab cannot take that key; Ctrl+Shift+O works in both). The
   launcher's own menu (a right click on the app's icon) has New Session too.
+- **Side panels in a window.** The Pop out button in a side panel's header
+  (Changes, Files, Terminal and the rest) opens the place `/s/ID?panel=NAME` in a
+  window of the app: that panel alone, with the session's title in the window's
+  bar. The pane it came from says "In its own window" with Dock back, and takes
+  the panel back when the window closes. The window holds a lock of the page for
+  as long as its page lives, which is how the pane knows, so the app ends the
+  page with its window. Each window keeps its own panel choice.
 - **Text size.** Ctrl with plus, minus and zero change the text size
   setting of the page itself: one scale, the same one Settings shows. The
   window's size and the page's colors are remembered. The title bar follows
@@ -167,7 +174,7 @@ may use it:
 
 | Channel | Who may use it | What it does |
 | --- | --- | --- |
-| Messages to the app (`look`, `window`, `start`, `microphone`, and the clipboard below) | The top frame of a document of the daemon's own origin, and the app's away page. WebKit's channel is open to every frame and Qt's reaches the top frame only; under either, each message carries a value of that window alone, held in the top frame's script, and a message without it is dropped. | The title bar's colors (checked hex values); a window for a place of the page (at most eight); starting the daemon when it is down and the address is this machine's. No message opens the browser. |
+| Messages to the app (`look`, `window`, `dock`, `start`, `microphone`, and the clipboard below) | The top frame of a document of the daemon's own origin, and the app's away page. WebKit's channel is open to every frame and Qt's reaches the top frame only; under either, each message carries a value of that window alone, held in the top frame's script, and a message without it is dropped. | The title bar's colors (checked hex values); a window for a place of the page (at most eight); closing the window the message came from, never the main one (`dock`); starting the daemon when it is down and the address is this machine's. No message opens the browser. |
 | `window.keelShell` | The top frame of a document whose own origin is the daemon's. The script is injected for that host and tests the document's origin, so a sandboxed document the daemon serves (an artifact's raw address) gets none. | Read-only facts, and `post` above. |
 | Main-frame navigation | The page, to a place of the page at the daemon's origin (`/`, `/s/ID`, `/p/ID`, `/settings`, `/customize`). | Any other document, another origin's or one the daemon serves that is no page, is refused, and the page stays as it was. WebKit refuses when the answer arrives, so a navigation that turns out to be a file of the daemon's to keep is saved instead; Qt is asked before the request goes out and refuses that too (the page's own links to a file are no navigation, and save under both). |
 | A link out of the daemon's origin | The owner's click. A scripted click or `window.open` without one does nothing. (Qt says of a window asked for whether the owner asked, and says nothing of a link in the main frame: there the owner's press in that window, within a second, is what counts.) | Opens in the browser: http and https only. No other scheme starts a program. |

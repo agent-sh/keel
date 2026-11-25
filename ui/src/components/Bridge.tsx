@@ -27,7 +27,7 @@ import { usePanelBesideShown } from "./SidePanel.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
 import { getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
-import { getUI, navigate, savePref, setUI, stationPanels, useUI } from "../lib/ui.ts";
+import { getUI, keepPanels, navigate, savePref, setUI, stationPanels, useUI } from "../lib/ui.ts";
 import { watchPanes } from "../lib/automation.ts";
 import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
@@ -769,7 +769,7 @@ export function Bridge() {
     if (!helm) return;
     const m = panels();
     if (panel) m[helm] = panel; else delete m[helm];
-    localStorage.setItem("keel.stationPanel", JSON.stringify(m));
+    keepPanels(m);
   }, [panel]);
 
   // Phone: the page in view is the helm.

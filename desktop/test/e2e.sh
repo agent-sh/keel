@@ -18,6 +18,7 @@
 #
 #   desktop/test/e2e.sh                         an X11 workspace
 #   KEEL_E2E_UNTIL=tray-list desktop/test/e2e.sh   only as far as the tray's list of sessions
+#   KEEL_E2E_UNTIL=panel desktop/test/e2e.sh       only as far as a side panel popped out and docked back
 #   KEEL_E2E_ROOT=DIR desktop/test/e2e.sh       the same, of a package unpacked in DIR (see below)
 #   KEEL_E2E_BACKEND=kwin desktop/test/e2e.sh   a native Wayland workspace (KWin): also the clipboard's
 #                                               picture and the focus a launch's activation token gives
@@ -640,6 +641,50 @@ check "and the page loads by itself" "wait_for 15 \"[ \\\$(logged load) -ge 1 ] 
 sleep 4; shot 10-started-dark
 real=$(api /api/providers | py 'import json,sys; d=json.load(sys.stdin); d=d.get("providers", d); print(" ".join(x["id"] for x in d if x.get("available") and x["id"] not in ("scripted","acp","alibaba")))')
 check "the daemon it started is the scratch one (no real provider)" "[ -z \"$real\" ]"
+
+# --- 9b. a side panel popped out into a window of its own, and docked back (before the session's own window: one window to type in)
+# The page's own command opens the panel in a window of the app (the shell is asked for the place
+# /s/ID?panel=changes); closing that window docks the panel back in the pane it came from, and so does
+# the Dock back button in the window itself (the page asks the app to close it).
+win_of() { $A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
+ws=[w for w in json.load(sys.stdin).get("windows", []) if sys.argv[1] in w.get("title", "")]
+print(*([ws[0]["geometry"][k] for k in ("x","y","width","height")] if ws else []))' "$1"; }
+# (A command of the page's list, as the owner finds it: the keys of the keyboard are the page's own, checked elsewhere.)
+command() { $A key --id "$WS" ctrl+k > /dev/null 2>&1; sleep 1; $A type --id "$WS" "$1" > /dev/null 2>&1; sleep 1; $A key --id "$WS" Return > /dev/null 2>&1; sleep 1; }
+popout() { command "pop the side panel"; }
+"$SHELL_BIN" "keel://session/$other" 2> /dev/null; sleep 3
+read -r X Y W H _ <<< "$(geometry)"
+$A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 0.5
+command "changes panel"; sleep 1
+shot 11a-panel-in-pane
+mark=$(lines); asked=$(grep -c "\"path\":\"/s/$other?panel=changes\".*\"what\":\"present\"" "$D/shell.jsonl" || true)
+popout
+check "the command pops the open panel out: the app opens a window for the place of that panel" "wait_for 15 '[ \"\$(windows)\" = 2 ]' && [ \"\$(grep -c '\"path\":\"/s/$other?panel=changes\".*\"what\":\"present\"' '$D/shell.jsonl')\" = $((asked + 1)) ]"
+check "the window shows that panel alone, and the pane it came from says it is in its own window" "wait_for 15 \"since $mark | grep -aq '^PROBE AT $URL/s/$other .* panelwin=true'\" && wait_for 15 \"since $mark | grep -aq '^PROBE AT $URL/s/$other .* win=main .* popped=true'\""
+sleep 3; shot 11b-panel-popped all
+read -r PX PY PW PH <<< "$(win_of 'Changes')"
+check "the panel's window is named by its session and its panel" "[ -n '$PX' ] && [ -n '$PW' ]"
+mark=$(lines)
+[ -n "$PX" ] && shut "$PX" "$PY" "$PW"
+check "closing it ends the window, and the pane takes the panel back" "wait_for 15 '[ \"\$(windows)\" = 1 ]' && wait_for 20 \"since $mark | grep -aq '^PROBE AT $URL/s/$other .* win=main .* popped=false'\""
+sleep 4; shot 11c-panel-docked
+mark=$(lines)
+read -r X Y W H _ <<< "$(geometry)"
+$A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 0.5
+popout
+wait_for 15 '[ "$(windows)" = 2 ]'; sleep 3
+read -r PX PY PW PH <<< "$(win_of 'Changes')"
+read -r DX DY IW IH <<< "$(since "$mark" | grep -a '^PROBE DOCK ' | tail -1 | cut -d' ' -f3-)"
+if [ -n "$PX" ] && [ -n "$DX" ]; then
+  # (The page reaches the window's left, right and bottom edges: the button is found from those.)
+  $A click --id "$WS" $((PX + DX + (PW - IW) / 2)) $((PY + PH - (IH - DY))) > /dev/null 2>&1
+  check "Dock back in the panel's own window closes it, and the pane takes the panel back" "wait_for 15 '[ \"\$(windows)\" = 1 ]' && wait_for 20 \"since $mark | grep -aq '^PROBE AT $URL/s/$other .* win=main .* popped=false'\" && grep -q '\"what\":\"docked\"' '$D/shell.jsonl'"
+else
+  fail "the panel's window did not open or did not say where its Dock back button is"
+fi
+command "close the side panel"
+# KEEL_E2E_UNTIL=panel: stop here (a quick run of the popped out panel alone).
+if [ "${KEEL_E2E_UNTIL:-}" = panel ]; then echo "$((n - fails)) of $n passed (stopped after the panel window)"; [ "$fails" = 0 ]; exit; fi
 
 # --- 10. a session in a window of its own
 said_before=$(wc -l < "$D/shell.out")

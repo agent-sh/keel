@@ -28,6 +28,9 @@ pub enum Ask {
     Shortcuts,
     /// The owner closed the window.
     Close,
+    /// The page in a window of its own asks to close it (a side panel docked back). The main
+    /// window is not closed this way.
+    Dock,
     /// A load of the page failed: the daemon went away under it.
     Lost,
     /// The daemon says it is up and its page keeps failing to load: said in the window.

@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "rea
 import { ConfirmHost } from "./components/Confirm.tsx";
 import { ContextMenuHost } from "./components/ContextMenu.tsx";
 import { PageFind } from "./components/FindBar.tsx";
-import { inShell } from "./lib/shell.ts";
+import { inShell, panelPlace } from "./lib/shell.ts";
 import { Attention, setBaseTitle } from "./components/Attention.tsx";
 import { Boundary } from "./components/Boundary.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -39,6 +39,7 @@ const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) =
 // The bridge (stations, sessions) is its own chunk, fetched with the page.
 const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
 const ProjectPage = lazy(() => import("./components/ProjectPage.tsx").then((m) => ({ default: m.ProjectPage })));
+const PanelWindow = lazy(() => import("./components/PanelWindow.tsx").then((m) => ({ default: m.PanelWindow })));
 const Settings = lazy(() => import("./components/Settings.tsx").then((m) => ({ default: m.Settings })));
 
 // Mounts its child the first time `open` is true, then keeps it (for close animations).
@@ -156,6 +157,18 @@ export function App() {
       });
     };
   }, [drawer]);
+  // One side panel in a window of its own: no list, no conversation (components/PanelWindow.tsx).
+  if (panelPlace && route.name === "session" && route.id === panelPlace.session) {
+    return (
+      <Boundary>
+        <Attention />
+        <UndoToast />
+        <div className="k-shell"><Suspense fallback={null}><PanelWindow id={panelPlace.session} panel={panelPlace.panel} /></Suspense></div>
+        <ConfirmHost />
+        <ContextMenuHost />
+      </Boundary>
+    );
+  }
   const page = route.name === "settings" || route.name === "customize" || route.name === "project";
   return (
     <Boundary>

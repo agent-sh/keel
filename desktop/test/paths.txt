@@ -8,6 +8,8 @@ ok /s/01a1ffe5-99ea-7c2e-8f8f-000000000000
 ok /s/01a1-ff?e=ev_1&approval=x
 ok /s/abc?approval=ap-1
 ok /s/abc?e=ev1
+ok /s/abc?panel=changes
+ok /s/01a1-ff?panel=files
 ok /p/proj
 ok /p/proj_1-Z
 ok /settings
@@ -39,6 +41,13 @@ no /?
 no /s/a?
 no /s/a?approval=
 no /s/a?inbox=2
+no /s/a?panel=
+no /s/a?panel=a.b
+no /s/a?panel=a/b
+no /s/a?panel=changes&next=y
+no /s/a?panel=x y
+no /p/proj?panel=changes
+no /panel=changes
 no /s/a?e=x&next=y
 no /s/a?e=x&
 no /S/abc

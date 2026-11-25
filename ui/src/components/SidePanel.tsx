@@ -3,11 +3,12 @@
 // its top (ranked by use, or kept there on purpose), each named; each panel is
 // also a command in the palette. The panel beside the helm is remembered per station.
 import { Popover } from "@base-ui/react/popover";
-import { ChevronDown, PanelRight, Pin, PinOff, Search, X } from "lucide-react";
-import { Suspense, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { ChevronDown, ExternalLink, PanelRight, Pin, PinOff, Search, X } from "lucide-react";
+import { Suspense, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { panels, type Panel } from "../lib/extend.ts";
 import { composing, hasCommand, registerCommand } from "../lib/keys.ts";
+import { canPopOut, dockBack, isPopped, popOut, recover, usePopped } from "../lib/popout.ts";
 import { usePanelBeside } from "../lib/rail.ts";
 import { getUI, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
@@ -85,6 +86,13 @@ function registerPanelCommands() {
 }
 panels.subscribe(registerPanelCommands);
 registerPanelCommands();
+
+// The open panel in a window of its own (the header's button, for the keyboard).
+const poppable = () => {
+  const { route, panel } = getUI();
+  return route.name === "session" && panel && canPopOut && !phone() && !isPopped(route.id, panel) ? { session: route.id, panel } : null;
+};
+registerCommand({ id: "panel-popout", label: "Pop the side panel out into its own window", group: "View", words: "detach separate dock undock", when: () => !!poppable(), run: () => { const p = poppable(); if (p) popOut(p.session, p.panel); } });
 
 // `title`: the chooser is the open panel's own name in its head (the head says what it is and
 // switches it in one place); else the header's Panels button.
@@ -210,6 +218,9 @@ export function SidePanel({ session }: { session: Session }) {
   const list = visible(session);
   const cur = list.find((p) => p.id === open);
   const beside = usePanelBeside();
+  // A panel of this session popped out into a window of its own is shown there; its pane says so.
+  const popped = usePopped(session.id, open ?? "");
+  useEffect(() => { void recover(session.id); }, [session.id]);
   if (!cur) return null;
   const Body = cur.component;
   // Escape in one of the sheet's own one-line fields (a search box) leaves the
@@ -228,15 +239,27 @@ export function SidePanel({ session }: { session: Session }) {
         <span className="k-surface-icon">{cur.icon}</span>
         <h2 className="k-surface-title"><Picker list={list} open={open} testid="panel-switch" title={cur.label} /></h2>
         <span className="k-surface-end">
+          {canPopOut && !popped && !phone() && (
+            <button type="button" aria-label="Pop out the panel" title="Pop out into a window of its own" data-testid="panel-popout" onClick={() => popOut(session.id, cur.id)} className="k-surface-close">
+              <ExternalLink />
+            </button>
+          )}
           <button type="button" aria-label="Close the panel" title="Close the panel (Ctrl \)" onClick={() => openPanel(null)} className="k-surface-close">
             <X />
           </button>
         </span>
       </div>
       <div className="min-h-0 flex-1">
-        <Suspense fallback={null}>
-          <Body session={session} />
-        </Suspense>
+        {popped ? (
+          <div className="flex items-center gap-3 px-4 py-3" data-testid="panel-popped">
+            <p className="k-empty">In its own window</p>
+            <button type="button" className="k-btn" data-testid="panel-dock" onClick={() => dockBack(session.id, cur.id)}>Dock back</button>
+          </div>
+        ) : (
+          <Suspense fallback={null}>
+            <Body session={session} />
+          </Suspense>
+        )}
       </div>
     </aside>
   );

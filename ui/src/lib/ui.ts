@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 import type { PromptBlock } from "../../../src/core/types.ts";
 import { opened } from "./self-focus.ts";
 import { isCustomize } from "./customize-ids.ts";
+import { soloWindow } from "./shell.ts";
 
 export type Route =
   | { name: "new" }
@@ -153,9 +154,13 @@ if (state.route.name === "session" && location.pathname === "/") navigate(state.
 if (state.route.name === "customize") landed();
 
 // The side panel each session was left with: one the owner opened in a session comes back with it.
-export const stationPanels = () => { try { return JSON.parse(localStorage.getItem("keel.stationPanel") ?? "{}") as Record<string, string>; } catch { return {}; } };
+// The main window keeps them across restarts. A window of its own (a session or a panel popped out) keeps its
+// own, for as long as it lives: two windows never read or write one choice.
+const panelStore = () => (soloWindow ? sessionStorage : localStorage);
+export const stationPanels = () => { try { return JSON.parse(panelStore().getItem("keel.stationPanel") ?? "{}") as Record<string, string>; } catch { return {}; } };
+export const keepPanels = (m: Record<string, string>) => panelStore().setItem("keel.stationPanel", JSON.stringify(m));
 // A session that opens with this panel (the page goes to it next).
-export function rememberPanel(session: string, panel: string) { localStorage.setItem("keel.stationPanel", JSON.stringify({ ...stationPanels(), [session]: panel })); }
+export function rememberPanel(session: string, panel: string) { keepPanels({ ...stationPanels(), [session]: panel }); }
 
 export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" | "listW", v: unknown) {
   if (!(k === "sidebar" && isPhone()) && k !== "panel") localStorage.setItem(`keel.${k === "sidebar" ? "list" : k}`, JSON.stringify(v));

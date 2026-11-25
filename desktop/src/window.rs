@@ -864,6 +864,9 @@ impl View for Win {
     }
 
     fn close(&self) {
+        // The page ends with its window: the view outlives the window while its handlers hold it, and
+        // a page that went on would keep what it holds (a panel's lock, which its pane waits on).
+        self.view.load_uri("about:blank");
         self.window.destroy();
     }
 
