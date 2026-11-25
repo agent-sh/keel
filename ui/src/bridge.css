@@ -1610,6 +1610,9 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-card:where(:not(:first-child)) { margin-top: 0.875rem; }
 .k-card + .k-after-card { margin-top: 0.875rem; }
 .k-setting > div:first-child > div:first-child { font-weight: 600; }
+/* A box of settings is a column of rows with the control at the row's end: on a wide page it stops where the eye can still
+   take a label and its control together, instead of putting them a screen apart. */
+.k-card:has(> .k-setting), .k-set-group:has(.k-setting) { max-width: 52rem; }
 
 /* ---------- The Settings kit (components/settings/) ----------
    Every section is made of the same few parts: a page of groups, a group's head (its name, a

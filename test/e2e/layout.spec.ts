@@ -874,6 +874,18 @@ test("settings sections share one column and one title size, and the rail folds"
   expect(new Set(lefts.map((l) => Math.round(l))).size, `left edges ${lefts.join(", ")}`).toBe(1);
   // One title size, the type scale's title step (1.5rem).
   expect([...sizes]).toEqual([1.5]);
+  // A box of settings stops at 52rem on a wide page: a label and its control stay within one look of each other.
+  await page.goto("/settings/general");
+  await expect(page.locator(".k-setting").first()).toBeVisible();
+  const reach = await page.evaluate(() => {
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const row = document.querySelector<HTMLElement>(".k-setting")!;
+    const box = (row.closest(".k-card, .k-set-group") ?? row).getBoundingClientRect();
+    const label = row.firstElementChild!.getBoundingClientRect(), control = row.lastElementChild!.getBoundingClientRect();
+    return { box: box.width / rem, apart: (control.right - label.left) / rem };
+  });
+  expect(reach.box, "a box of settings on a wide page").toBeLessThanOrEqual(52.1);
+  expect(reach.apart, "from a label to the end of its control").toBeLessThanOrEqual(52.1);
 
   // The rail: This computer and Advanced are folded at rest, open on their head, and open when the section is in them.
   await page.goto("/settings/general");
