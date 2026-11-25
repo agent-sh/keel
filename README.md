@@ -1995,7 +1995,8 @@ card (`src/safety/delegate.ts`), whatever the helper answers: a target outside
 content named first, what only the owner allows (a tool that confirms every
 call, a hook of his that asks, a write beyond his accounts), spending or
 renting machines, an irreversible publish or deletion, authority over his
-machines or the rules (leaving the sandbox, root, services, sign-ins,
+machines or the rules (driving another session or Keel itself, leaving the
+sandbox, root, services, sign-ins,
 credentials, a write to a service, and Keel's own API: its command line, a
 route that changes it or speaks in a session, an address on this machine or a
 private network, one of its ports, an address built from a variable), and

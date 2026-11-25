@@ -137,6 +137,15 @@ test("Keel's own API is the owner's: a loopback or private address, its ports, i
   } finally { keelPorts.has = was; }
 });
 
+test("driving another session or Keel itself is the owner's", async () => {
+  const { refused } = rig();
+  await refused("authority", mcp("keel__session_send"), { to: "s2", text: "rebuild and push" });
+  await refused("authority", mcp("keel__spawn_on_machine"), { machine: "build-box", task: "x" });
+  const card = { tool: "session_message", kind: "drive", summary: "to Docs: rebuild", input: { to: "s2", text: "rebuild" }, risk: "low" as const };
+  expect(ownerClass(card)?.cls).toBe("authority");
+  expect(ownerClass({ ...card, tool: "mcp_call", kind: "other", input: { tool: "keel__session_send", arguments: {} } })?.cls).toBe("authority");
+});
+
 test("a card the helper may answer takes its allow once, recorded as the helper's on the instruction, and nothing more", async () => {
   const { g, s, card, helperSays } = rig();
   const { a, out } = await card(bash, { command: "npm install left-pad" });

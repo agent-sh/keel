@@ -77,6 +77,10 @@ export function ownerClass(a: CardIn, isHelperSession = false): { cls: OwnerClas
   const rule = a.rule ?? "";
   const auth = AUTHORITY_RULES.find((r) => r.test(rule));
   if (auth) return say("authority", rule);
+  // Driving another session (a message, an answer, a model command) or Keel itself (its sessions, machines, agents,
+  // records): what it sets going is not on this card.
+  const inner = a.tool === "mcp_call" && a.input && typeof a.input === "object" ? String((a.input as { tool?: unknown }).tool ?? "") : "";
+  if (a.kind === "drive" || /^keel__/.test(a.tool) || /^keel__/.test(inner)) return say("authority", `it drives another session or Keel itself (${inner || a.tool})`);
   const risks = new Set(f.risks ?? []);
   // What the command or the tool says it does names the class first; the rules' risk classes after it.
   if (a.kind === "shell") {
