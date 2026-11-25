@@ -73,6 +73,12 @@ under `~/.cache/keel-work/bun/research/`.
   its provider reports (`token_ratios`). A history too long for one summary
   request is read as a text transcript: long tool outputs shortened oldest first,
   then in parts, each with the summary of the parts before it.
+- At a cold point (the route's cache has surely lapsed, so the request writes the whole context anyway), a tree
+  that runs it (`cold_clear`, a trial's arm) sends old tool results as a line each (what the call was, its size,
+  the file with its full text) and leaves out the thinking of earlier turns where the wire takes the oldest run
+  out (`src/engine/cold-clear.ts`). The decision is a stored note of the session, so every later request projects
+  the same bytes; a warm cache is never touched, and the newest results, errors, the owner's answers, results with
+  anything but text and files a later call of another tool named stay whole.
 - A turn or an in-turn summary waits when the driver can tell the model request
   could not be sent (`src/providers/unreachable.ts`): DNS or connection setup
   failed, or the broker explicitly reports an upstream DNS or connect failure.

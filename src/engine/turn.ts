@@ -4,7 +4,7 @@ import { outward } from "../safety/egress.ts";
 import { timed } from "../admin/stall.ts";
 import { pace, yieldLoop } from "./pace.ts";
 import { heldFile } from "../core/store-files.ts";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
 import { crossing, crossingIn, routeOf, RouteRefused, sayCrossing } from "../safety/content-routes.ts";
@@ -54,6 +54,7 @@ import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successo
 import { cleanTitle, derivedTitle, firstReply, modelTitles, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { derived } from "../core/message-facts.ts";
+import { clearedFile, clearedText, clearingOf, pickCleared, stubOf } from "./cold-clear.ts";
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedFits, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, fixedContext } from "./compact.ts";
 import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention, switchWarning } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
@@ -193,6 +194,9 @@ export const MAX_CONTINUATIONS = 3;
 export function toMessages(events: readonly StoredEvent[]): Message[] {
   const cp = checkpointAt(events);
   const out: Message[] = [];
+  // What a cold point cleared (src/engine/cold-clear.ts): results as stubs, earlier thinking left out.
+  const clr = clearingOf(events, cp.keepFrom);
+  const calls = clr ? new Map<string, { name: string; input: unknown }>() : undefined;
   // (The blocks made here of a stored body are made once per body: the same objects each request, src/core/message-facts.ts.)
   if (cp.at >= 0 && events[cp.at]!.data.mode === "summary") { const d = events[cp.at]!.data; out.push(derived(d, "summary", () => summaryMessage(d))); }
   for (let i = cp.keepFrom; i < events.length; i++) {
@@ -210,10 +214,13 @@ export function toMessages(events: readonly StoredEvent[]): Message[] {
       // came after messages the summary replaced. One stored without a
       // fingerprint is marked stale, so the wire leaves it out as it does a
       // fingerprinted one (src/providers/wires/binding.ts).
-      const kept = i < cp.at ? e.data.blocks.map((b: any) => ((b.type === "thinking" || b.type === "redacted_thinking") && !b.bind ? { ...b, bind: STALE_BIND } : b)) : e.data.blocks;
+      // Thinking a cold point left out is marked the same way: the wire takes out that oldest run.
+      const dropped = clr && e.seq < clr.thinking;
+      const kept = i < cp.at || dropped ? e.data.blocks.map((b: any) => ((b.type === "thinking" || b.type === "redacted_thinking") && (dropped || !b.bind) ? { ...b, bind: STALE_BIND } : b)) : e.data.blocks;
+      if (calls) for (const b of e.data.blocks) if (b.type === "tool_use") calls.set(b.id, { name: b.name, input: b.input });
       if (kept.length) out.push({ role: "assistant", content: kept });
     } else if (e.kind === "tool_result") {
-      out.push({ role: "user", content: e.data.results });
+      out.push({ role: "user", content: clr ? e.data.results.map((r: ToolResultBlock) => { const dir = clr.ids.get(r.tool_use_id); return dir === undefined ? r : stubOf(r, calls!.get(r.tool_use_id), dir); }) : e.data.results });
     } else if (e.kind === "note" && e.data.model) {
       // A note meant for the model (a background job ended): stored, so the
       // same bytes come back on every later request.
@@ -3228,6 +3235,8 @@ export class Engine {
         } else if (!summaryFailed && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
         }
+        // The cache lapsed, so this request writes the whole context anyway: old results and earlier thinking are cleared first.
+        if (this.clearOn(session) && this.cacheCold(id, events, st) && await this.clearCold(id, session, events, st)) events = this.lineage(id);
         // A context no warm cache holds any more (just compacted or cleared, expired),
         // the owner's request, or a pin past its age: this build's tools and prompt from this request on.
         // An instruction file edited since the prompt was rendered: compared again now (instructionsEdited),
@@ -3754,6 +3763,37 @@ export class Engine {
     return warm > 0 && Date.now() - warm > retention(st.provider.wire, events, st.info.id).max;
   }
 
+  // Clearing at a cold point (src/engine/cold-clear.ts): whether this session's tree runs it (a trial's arm sets
+  // `cold_clear` on the tree's top session; the nearest session up the tree that has the setting decides).
+  private clearOn(session: Session): boolean {
+    for (let s: Session | undefined = session, up = 0; s && up < 32; s = s.parent_id ? this.store.session(s.parent_id) : undefined, up++) {
+      if (s.settings.cold_clear !== undefined) return s.settings.cold_clear === true;
+    }
+    return false;
+  }
+
+  // The results the model is least likely to need are stubs from this request on, and (on a wire that takes the
+  // oldest run of thinking out) so is the thinking of earlier turns. Stored as a note: every later request
+  // projects the same bytes. Each result is written to a file first when none holds it already; one that cannot
+  // be written stays. Only where the route's cache lifetime is documented, so a cache that may still hold is never cut.
+  private async clearCold(id: string, session: Session, events: readonly StoredEvent[], st: Step): Promise<boolean> {
+    if (longestSure(st.provider.wire) <= 0) return false;
+    const pick = pickCleared(events, checkpointAt(events).keepFrom, { thinking: st.provider.wire === "anthropic_messages", asks: asksOwner });
+    if (!pick) return false;
+    const dir = join(this.spillRoot, id);
+    const kept = new Set<string>();
+    try { mkdirSync(join(dir, "cleared"), { recursive: true }); } catch { return false; }
+    for (const f of pick.files) {
+      try { await Bun.write(clearedFile(dir, f.id), f.text); } catch { kept.add(f.id); }
+    }
+    const ids = pick.ids.filter((x) => !kept.has(x));
+    const chars = pick.chars - pick.files.filter((f) => kept.has(f.id)).reduce((n, f) => n + f.text.length, 0);
+    if (!ids.length && pick.thinking === undefined) return false;
+    const done = { ...pick, ids, chars };
+    this.append(id, "note", { kind: "cleared", text: clearedText(done), ids, dir, chars, ...(pick.thinking !== undefined ? { thinking: pick.thinking, thinking_chars: pick.thinking_chars } : {}) });
+    return true;
+  }
+
   // After a restart: idle sessions whose cache may still be warm get their timer
   // again. The pass reads no session's events: what the decision needs was
   // kept when the session last ended a turn (idle_facts), and it holds for as
@@ -3863,7 +3903,7 @@ export class Engine {
     try {
       past = this.store.db.query<{ ms: number }, [string, string]>("SELECT ms FROM telemetry_tools WHERE session_id = ? AND tool = ? AND ms IS NOT NULL ORDER BY ts DESC LIMIT 20").all(id, name).map((r) => r.ms);
     } catch {} // a store without telemetry
-    const limits = uses.map((u) => Number((u.input as any)?.timeout ?? (u.input as any)?.timeout_ms)).filter((x) => Number.isFinite(x) && x > 0);
+    const limits = uses.map((u) => Number((u.input as any)?.timeout ?? (u.input as any)?.timedroppedms)).filter((x) => Number.isFinite(x) && x > 0);
     return { kind: `tool:${name}`, ...(past.length ? { past } : {}), ...(limits.length === uses.length ? { deadline: Date.now() + Math.max(...limits) } : {}) };
   }
 

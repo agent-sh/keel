@@ -5,7 +5,7 @@
 // place: it counts each request it is sent (system and messages at 2.5 bytes
 // a token) and refuses one over its window.
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
@@ -592,4 +592,69 @@ test("a compaction lists the live agents and background commands, and nothing wh
     expect(cp.data.running_text).not.toContain("sleep 31");
     expect(text.split("Still running at this compaction").length).toBe(2);
   } finally { stopJob(job); stopJob(front); }
+});
+
+// Clearing at a cold point (src/engine/cold-clear.ts): a session whose tree runs it sends old results as stubs
+// when the cache has surely lapsed, the same bytes on every later request; a warm one, and one whose tree does
+// not run it, are sent whole.
+test("a lapsed cache clears old results once; a warm one and a tree that does not run it send them whole", async () => {
+  const { setSystemTime } = await import("bun:test");
+  const MIN = 60_000;
+  const T0 = Date.UTC(2026, 0, 1);
+  const r = rig();
+  const usage = { input: 10, output: 200, cache_read: 0, cache_write: 90_000, cache_write_1h: 90_000 };
+  const history = (setting: boolean | undefined) => {
+    setSystemTime(new Date(T0));
+    const id = r.session(BIG.id);
+    if (setting !== undefined) r.store.updateSession(id, { settings: { cold_clear: setting } });
+    r.store.append(id, "user", { text: "explore the repo" });
+    for (let i = 0; i < 14; i++) {
+      r.store.append(id, "assistant", { blocks: [{ type: "tool_use", id: `t${i}`, name: "Read", input: { file_path: `/repo/f${i}.ts` } }], model: BIG.id, stop: "tool_use", usage });
+      r.store.append(id, "tool_result", { results: [{ type: "tool_result", tool_use_id: `t${i}`, content: words(6_000, `file${i} `) }] });
+    }
+    r.store.append(id, "assistant", { blocks: [{ type: "text", text: "that is the layout" }], model: BIG.id, stop: "end_turn", usage });
+    return id;
+  };
+  const wholeRead = (req: any) => (req.messages as Message[]).flatMap((m) => m.content as any[]).filter((b) => b.type === "tool_result" && typeof b.content === "string" && b.content.length > 5_000).length;
+  const notes = (id: string) => r.store.events(id).filter((e) => e.kind === "note" && e.data.kind === "cleared");
+  try {
+    // Warm (minute 30 of a one-hour cache) and cold (minute 70), the tree running it.
+    const warm = history(true);
+    setSystemTime(new Date(T0 + 30 * MIN));
+    r.engine.send(warm, "and the tests?");
+    await r.idle(warm);
+    expect(notes(warm)).toEqual([]);
+    expect(wholeRead(r.sent.at(-1))).toBe(14);
+
+    const cold = history(true);
+    setSystemTime(new Date(T0 + 70 * MIN));
+    r.engine.send(cold, "and the tests?");
+    await r.idle(cold);
+    expect(notes(cold)).toHaveLength(1);
+    expect(notes(cold)[0]!.data.ids).toEqual(["t0", "t1", "t2", "t3"]);
+    expect(wholeRead(r.sent.at(-1))).toBe(10);
+    expect(existsSync(join(r.dir, "spill", cold, "cleared", "t0.txt"))).toBe(true);
+    const first = JSON.stringify(r.sent.at(-1)!.messages);
+    expect(first).toContain("the result of Read /repo/f0.ts, 6,000 characters");
+    // A minute later: the same stubs, the same bytes up to where the new words begin, and no second note.
+    setSystemTime(new Date(T0 + 71 * MIN));
+    r.engine.send(cold, "and the docs?");
+    await r.idle(cold);
+    expect(notes(cold)).toHaveLength(1);
+    const second = JSON.stringify(r.sent.at(-1)!.messages);
+    expect(second.startsWith(first.slice(0, first.indexOf("and the tests?")))).toBe(true);
+
+    // The same lapse, a tree that does not run it (nothing set, or switched off): whole.
+    for (const setting of [undefined, false]) {
+      setSystemTime(new Date(T0));
+      const id = history(setting);
+      setSystemTime(new Date(T0 + 70 * MIN));
+      r.engine.send(id, "and the tests?");
+      await r.idle(id);
+      expect(notes(id)).toEqual([]);
+      expect(wholeRead(r.sent.at(-1))).toBe(14);
+    }
+  } finally {
+    setSystemTime();
+  }
 });

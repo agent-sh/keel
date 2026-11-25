@@ -65,6 +65,22 @@ test("a summary the harness wrote: the kept turn's thinking goes, thinking writt
   expect(JSON.stringify(anthropicWire.body(req(toMessages(line)), ctx).messages)).toContain("kept reply");
 });
 
+test("a cold point left the earlier thinking out: it stays out, the thinking written after it goes back", () => {
+  let seq = 0;
+  const ev = (id: string, parent: string | null, kind: StoredEvent["kind"], data: any): StoredEvent => ({ id, session_id: "s", seq: ++seq, parent, kind, data, ts: 0 });
+  const line: StoredEvent[] = [ev("u1", null, "user", { text: "one" })];
+  const r1 = reply(req(toMessages(line)), "OLD", "r1");
+  line.push(ev("a1", "u1", "assistant", { blocks: r1.res.blocks }), ev("u2", "a1", "user", { text: "two, an hour later" }));
+  expect(sent(req(toMessages(line)))).toEqual(["OLD"]);
+  // The cache lapsed: the note names the prompt that opens the new turn.
+  line.push(ev("n1", "u2", "note", { kind: "cleared", text: "x", ids: [], dir: "/d", chars: 0, thinking: seq }));
+  expect(sent(req(toMessages(line)))).toEqual([]);
+  const r2 = reply(req(toMessages(line)), "NEW", "r2");
+  line.push(ev("a2", "n1", "assistant", { blocks: r2.res.blocks }), ev("u3", "a2", "user", { text: "three" }));
+  expect(sent(req(toMessages(line)))).toEqual(["NEW"]);
+  expect(JSON.stringify(anthropicWire.body(req(toMessages(line)), ctx).messages)).toContain("r1");
+});
+
 test("tools: a referenced deferred tool that changed drops the thinking; an unreferenced one never does", () => {
   const act = (v: string): ToolSpec => ({ name: "mcp__x__act", description: `version ${v}`, input_schema: { type: "object", properties: {} }, defer: true });
   const unused = (v: string): ToolSpec => ({ name: "mcp__x__unused", description: `version ${v}`, input_schema: { type: "object", properties: {} }, defer: true });
