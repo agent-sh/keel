@@ -1371,5 +1371,43 @@ for (const size of SIZES) {
         await drop(request, ...ids);
       }
     });
+    test("the declined card stacks its model picker, a full-width Retry and the checkbox, also at a large text size", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(120_000);
+      const id = await start(request, "Phone declined");
+      try {
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:refuse" } });
+        await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${id}`);
+            const card = page.getByTestId("refusal");
+            await expect(card).toBeVisible({ timeout: 30_000 });
+            await card.scrollIntoViewIfNeeded();
+            await page.waitForTimeout(300);
+            const rows = await card.evaluate((el) => {
+              const pick = el.querySelector<HTMLElement>('[data-testid="model-picker"]')!, retry = [...el.querySelectorAll<HTMLElement>("button")].find((b) => /Retry on it/.test(b.textContent ?? ""))!, label = el.querySelector<HTMLElement>("label")!;
+              const c = el.getBoundingClientRect(), r = (e: HTMLElement) => e.getBoundingClientRect();
+              return {
+                stacked: r(pick).bottom <= r(retry).top + 1 && r(retry).bottom <= r(label).top + 1,
+                retryWidth: Math.round(r(retry).width), card: Math.round(c.width), retryCut: retry.scrollWidth > retry.clientWidth + 1,
+                labelLines: Math.round(r(label).height / parseFloat(getComputedStyle(label).lineHeight)), labelInside: r(label).right <= c.right + 0.5,
+              };
+            });
+            expect(rows.stacked, `picker, Retry and the checkbox are three rows at ${scale * 100}% text: ${JSON.stringify(rows)}`).toBe(true);
+            expect(rows.retryWidth, "Retry is the card's width").toBeGreaterThanOrEqual(rows.card * 0.8);
+            expect(rows.retryCut, "Retry's words are whole").toBe(false);
+            expect(rows.labelInside, "the checkbox's words are inside the card").toBe(true);
+            expect(rows.labelLines, "the checkbox's words take at most two lines").toBeLessThanOrEqual(2);
+            expect((await phoneProblems(card)).filter((p) => p.startsWith("small")), "every control of the card is a finger's target").toEqual([]);
+            await noSideScroll(page);
+            await shoot(page, `phone-surfaces-35-declined-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }

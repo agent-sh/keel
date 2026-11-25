@@ -359,7 +359,7 @@ function Refusal({ e, sid, handled }: { e: StoredEvent; sid: string; handled?: b
       </div>
       {d.explanation && <p className="mt-1 text-muted">{d.explanation}</p>}
       <p className="mt-1 text-muted">Its partial reply is left out of the context.{handled ? " The fallback model took the request." : " Another model can take the same request."}</p>
-      {!handled && <div className="mt-2 flex items-center gap-2">
+      {!handled && <div className="mt-2 flex items-center gap-2 max-md:flex-col max-md:items-stretch">
         <div className="rounded-md border border-line"><ModelPicker value={pick || model} onChange={setPick} /></div>
         <button
           type="button"
@@ -373,11 +373,11 @@ function Refusal({ e, sid, handled }: { e: StoredEvent; sid: string; handled?: b
                 await actions.resume(sid);
               })
               .catch(reportError)}
-          className="h-8 rounded-md bg-accent px-3 font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40"
+          className="h-8 rounded-md bg-accent px-3 font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40 max-md:min-h-tap max-md:w-full"
         >
           Retry on it
         </button>
-        <label className="flex items-center gap-1.5 text-caption text-muted" title="When a model declines later in this session, the turn goes on by itself on this one">
+        <label className="flex items-center gap-1.5 text-caption text-muted max-md:min-h-tap" title="When a model declines later in this session, the turn goes on by itself on this one">
           <input type="checkbox" data-testid="refusal-keep-fallback" checked={keep} onChange={(x) => setKeep(x.target.checked)} className="accent-[var(--accent)]" />
           Also use it when a model declines later
         </label>
