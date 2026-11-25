@@ -773,8 +773,12 @@ const never = (why: string, f: Facts): Decision =>
     : onlyOwner(`the command ${why}`, why);
 
 // Why a line's writes by a remote's name, or by default, cannot be placed: the line itself changes where remotes point
-// (git config remote.*.url, -c url.*.insteadOf, GIT_CONFIG_*, GIT_DIR, git remote set-url, gh repo set-default).
+// (git config remote.*.url, -c url.*.insteadOf, GIT_CONFIG_*, GIT_DIR, git remote set-url, gh repo set-default), which
+// remote a push by default goes to (remote.pushDefault, branch.*.remote and .pushRemote), or has git read another config
+// file or take a key from the environment (include.path, includeIf.*.path, --config-env), which can say any of those.
 const REBOUND = /^(remote\.[^=\s]*\.(url|pushurl|gh-resolved)|url\..*\.(push)?insteadof)(=|$)/i;
+const REBOUND_DEFAULT = /^(remote\.pushdefault|branch\..*\.(remote|pushremote))(=|$)/i;
+const REBOUND_FILE = /^(include\.path|includeif\..*\.path)(=|$)/i;
 const REBOUND_ENV = /^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=/;
 function reboundBy(parts: Simple[]): string | undefined {
   for (const part of parts) {
@@ -783,6 +787,9 @@ function reboundBy(parts: Simple[]): string | undefined {
     for (let i = 0; i < w.length; i++) {
       const x = w[i]!;
       if (REBOUND.test(x)) return "the same line sets where a remote points";
+      if (REBOUND_DEFAULT.test(x)) return "the same line sets which remote a push goes to";
+      if (REBOUND_FILE.test(x)) return "the same line has git read another config file, which can say where a remote points";
+      if (/^--config-env(=|$)/.test(x)) return "the same line gives git a setting from the environment, which can say where a remote points";
       if (REBOUND_ENV.test(x)) return "the same line sets git's configuration or its folder through the environment";
       if (x === "remote" && /^(rename|remove|rm|set-head)$/.test(w[i + 1] ?? "") && w.slice(0, i).some((y) => baseName(y) === "git")) return "the same line changes a remote";
       if (x === "set-default" && w[i - 1] === "repo" && baseName(w[i - 2]) === "gh") return "the same line changes the repository gh acts on";

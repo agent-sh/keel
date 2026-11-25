@@ -432,6 +432,35 @@ test("a folder with a .. in it is asked of the disk as written, and not followed
   expect(where("cd -P /w/clone && git push")).toBe("github.com/them/lib");
 });
 
+// A config file the line has git read, a setting it takes from the environment, and the keys that pick the remote of a
+// push by default: each can send a push by name or by default somewhere the repository's remotes do not say.
+test("a line that has git read another config file, or sets which remote a push goes to, is not placed by the remotes on disk", () => {
+  const where = (command: string, cwd = "/w/own") => {
+    const d = run(command, cwd, "ask");
+    return how(d) === "account" ? ((d as { ask: { account: string } }).ask.account || "unplaced") : null;
+  };
+  for (const c of [
+    "git -c include.path=/w/other.config push",
+    "git -c Include.Path=/w/other.config push origin main",
+    "git -c includeIf.gitdir:/w/.path=/w/other.config push",
+    "git config include.path /w/other.config && git push",
+    "git config --local --add include.path /w/other.config; git push origin main",
+    "git config set include.path /w/other.config && git push",
+    "git config -f .git/config include.path /w/other.config && git push",
+    "git config 'includeIf.gitdir:/w/.path' /w/other.config && git push",
+    "X=/w/other.config git --config-env=include.path=X push",
+    "git --config-env remote.origin.url=X push",
+    "git -c remote.pushDefault=backup push",
+    "git config branch.main.pushRemote backup && git push",
+    "git config branch.main.remote backup; git push",
+    "git config include.path /w/other.config && gh pr create --fill",
+  ]) expect([c, where(c)]).toEqual([c, "unplaced"]);
+  // An address the push spells out is not placed either: the file can rewrite it (url.*.insteadOf).
+  expect(where("git -c include.path=/w/other.config push https://github.com/me/repo.git main")).toBe("unplaced");
+  // A line with no write asks nothing.
+  expect(where("git config --get include.path; git status")).toBeNull();
+});
+
 // ---- an MCP tool that writes with an account its server holds ----
 
 const mcpTool = { name: "slack__post", readOnly: false };

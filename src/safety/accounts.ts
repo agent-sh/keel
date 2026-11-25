@@ -480,7 +480,7 @@ function gitWrites(words: string[], env: Env): Write[] {
     if (o === "-C") { moved = true; const p = words[++i]; dir = p === undefined || dynamic(p) || dir === null ? null : p.startsWith("/") ? p : `${dir}/${p}`; }
     else if (o === "--git-dir") gitDir(words[++i]);
     else if (o.startsWith("--git-dir=")) gitDir(o.slice(10));
-    else if (o === "-c" || o === "--work-tree" || o === "--namespace" || o === "--exec-path") i++;
+    else if (o === "-c" || o === "--config-env" || o === "--work-tree" || o === "--namespace" || o === "--exec-path" || o === "--super-prefix" || o === "--attr-source") i++;
     i++;
   }
   if (words[i] !== "push") return [];
