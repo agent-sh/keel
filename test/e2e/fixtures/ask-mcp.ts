@@ -321,6 +321,11 @@ async function handle(m: any) {
   }
 }
 
+// A fixture lives as long as its client. The end of stdin says so, but not every client death shows there
+// (the write end can be held by a sibling that inherited it, or the end is never noticed), so the parent is
+// watched too: when it is not the process that started this one, the client is gone.
+const parent = process.ppid;
+setInterval(() => { if (process.ppid !== parent) process.exit(0); }, 500).unref();
 let buf = "";
 for await (const chunk of Bun.stdin.stream()) {
   buf += new TextDecoder().decode(chunk);
