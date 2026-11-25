@@ -349,11 +349,18 @@ export function ackReports(sessionId: string, reportIds: string[]) {
 // (its send and its settling are two writes; a failure that landed between
 // them stays owed), then what is still owed goes. Every owed row is one a
 // notice would tell, so only sessions with something to tell are looked at,
-// and an archived one gets its notice when it is restored. A stop can fall
+// and an archived one is settled below. A stop can fall
 // between the two writes only right after the send, so the notice it left
 // unsettled is the session's newest input: that one row is read, not the history.
+// What an archived session is owed is settled here: nothing sends it an input, so the notice
+// would wait for a restore and reach the owner days later as news; the owner closed the
+// session after the failure, and one that is restored starts with the failures it has then.
 export function recover() {
   const { store } = D();
+  for (const { session_id } of store.db.query<{ session_id: string }, []>("SELECT DISTINCT f.session_id FROM session_failures f JOIN sessions s ON s.id = f.session_id WHERE f.owed > 0 AND s.archived = 1").all()) {
+    for (const g of owedOf(session_id)) save(session_id, cleared(g));
+    notes.delete(session_id);
+  }
   const owing = store.db.query<{ session_id: string }, []>("SELECT DISTINCT f.session_id FROM session_failures f JOIN sessions s ON s.id = f.session_id WHERE f.owed > 0 AND s.archived = 0").all();
   for (const { session_id } of owing) {
     const last = store.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 1").get(session_id);

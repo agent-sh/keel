@@ -346,6 +346,24 @@ test("a failed shell call is told by its exit code and the cause line, and a sil
   expect(samples).toEqual(["Exit code 1", "Exit code 2\nmake: *** [all] Error 2"]);
 });
 
+// A failure of a turn rides with the session's next input. An archived session gets none, so what it is owed
+// is settled at the start (the owner closed it after the failure), and a session still in use keeps its row.
+test("a start settles what an archived session is owed and leaves the others owed", () => {
+  const closed = parentOf("Archived after a failed turn");
+  const open = parentOf("Failed turn, still in use");
+  const turn = { kind: "turn" as const, cls: "other", message: "ENOENT: no such file or directory, posix_spawn 'git'", tell: "ride" as const };
+  failures.record(closed.id, turn);
+  failures.record(open.id, turn);
+  expect([owedRows(closed.id), owedRows(open.id)]).toEqual([1, 1]);
+  store.updateSession(closed.id, { archived: true });
+  failures.recover();
+  expect([owedRows(closed.id), owedRows(open.id)]).toEqual([0, 1]);
+  // Restored, it starts with the failures it has then: the old one is not news.
+  store.updateSession(closed.id, { archived: false });
+  failures.recover();
+  expect(owedRows(closed.id)).toBe(0);
+});
+
 // Last in the file: it sets other daemon parts.
 test("the notice's rider goes with the daemon parts it was set up for", () => {
   const other = new Store(join(dir, "other")); // a store the notice was never set up on: no failures table
