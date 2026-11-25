@@ -96,6 +96,11 @@ test("only live questions mark an unopened session and its parent as Needs you",
     await expect(pane).toHaveText("Needs you");
     const childLink = page.getByRole("button", { name: /Color helper.*needs you: a question/ });
     await expect(childLink).toBeVisible();
+    // Under the agent's head, which says who asks, its question card has no head of its own.
+    const asks = page.getByTestId("child-asks");
+    await expect(asks.getByTestId("child-path")).toContainText("Color helper");
+    await expect(asks.getByTestId("question")).toBeVisible();
+    await expect(asks.getByTestId("question").getByTestId("question-from")).toHaveCount(0);
     await shoot(page, "pending-questions-04-child-wait");
     expect(loaded.has(child)).toBe(false);
     expect(await pending(parent)).toEqual([]);

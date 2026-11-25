@@ -292,7 +292,7 @@ export function Questions({ sessionId, agent, lead = true }: { sessionId: string
       {shown.map((u, i) => {
         const asked = at(asks, u.id);
         // (A card of its own per question: a server's next one on the same call starts empty and takes an answer.)
-        return <Docked key={asked ? `${u.id}:${asked.id}` : u.id} use={u} sessionId={sessionId} first={lead && i === 0} asked={asked} onLater={agent ? undefined : () => { later.put(sessionId, u.id); requestAnimationFrame(() => focusBox(sessionId)); }} />;
+        return <Docked key={asked ? `${u.id}:${asked.id}` : u.id} use={u} sessionId={sessionId} first={lead && i === 0} asked={asked} agent={agent} onLater={agent ? undefined : () => { later.put(sessionId, u.id); requestAnimationFrame(() => focusBox(sessionId)); }} />;
       })}
       {lost && (
         <p data-testid="question-unreadable" className="text-caption text-muted">
@@ -362,7 +362,8 @@ export function AskedUnder({ use, sessionId, children }: { use: ToolUseBlock; se
 // chosen. No key answers within the settle time of the keyboard arriving, by
 // being held, or under a dialog.
 // `asked`: the question is not the call's input but what a server asked while the call ran.
-function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; sessionId: string; first: boolean; asked?: Asked; onLater?: () => void }) {
+// `agent`: under its agent's head (ChildApprovals), which already says who asks: the card has no head of its own.
+function Docked({ use, sessionId, first, asked, onLater, agent }: { use: ToolUseBlock; sessionId: string; first: boolean; asked?: Asked; onLater?: () => void; agent?: boolean }) {
   const qs = useMemo(() => (asked ? askedQuestions(asked) : questions(use.name, use.input)), [asked, use.name, use.input]);
   const key = asked ? `${sessionId}:${use.id}:${asked.id}` : `${sessionId}:${use.id}`;
   const slimPhone = usePhoneWidth() && !asked;
@@ -575,7 +576,7 @@ function Docked({ use, sessionId, first, asked, onLater }: { use: ToolUseBlock; 
       onKeyDownCapture={dropRepeats}
       onKeyDown={onKeyDown}
     >
-      <Head open answered={false} from={asked?.from} slim={!asked} onLater={slimPhone ? undefined : onLater} waiting={first && !slimPhone ? sessionId : undefined} />
+      {!(agent && !asked) && <Head open answered={false} from={asked?.from} slim={!asked} onLater={slimPhone ? undefined : onLater} waiting={first && !slimPhone ? sessionId : undefined} />}
       <div className="flex flex-col gap-4 px-3.5 pt-3 max-md:pt-2">
         {asked && (
           // The server's own words: plain text set apart from the card's, never markup or a link.
