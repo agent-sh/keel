@@ -659,9 +659,11 @@ export class ScriptedProvider implements Provider {
       case "batch": {
         // `script:batch [{"name":...,"input":...}, ...]`: every call in one reply
         // (a parallel batch), then a reply quoting each result it got back.
+        // The first call's `say` is the reply's text before the calls.
         const at = msgs.findLastIndex((m) => m.role === "user" && textOf(m).includes("script:batch"));
         if (!msgs.slice(at + 1).some((m) => m.role === "assistant")) {
-          return reply("Running a batch.", "tool_use", callsAfter(owner, "script:batch").map((c, i) => ({ type: "tool_use", id: `batch-${msgs.length}-${i}`, name: String(c.name), input: c.input ?? {} })));
+          const batch = callsAfter(owner, "script:batch");
+          return reply(typeof batch[0]?.say === "string" ? batch[0].say : "Running a batch.", "tool_use", batch.map((c, i) => ({ type: "tool_use", id: `batch-${msgs.length}-${i}`, name: String(c.name), input: c.input ?? {} })));
         }
         const got = msgs.slice(at + 1).flatMap((m) => (m.role === "user" ? (m.content as any[]).filter((b) => b.type === "tool_result") : []));
         const said = (b: any) => (typeof b.content === "string" ? b.content : (b.content as any[]).map((c: any) => c.text ?? "").join("\n"));

@@ -1918,6 +1918,9 @@ for (const size of SIZES) {
             await page.goto(`/s/${id}`);
             const card = page.getByTestId("tool-call").last();
             const move = card.getByTestId("move-to-background");
+            // (A command that runs is one line: its card opens with a tap.)
+            await expect(card).toHaveAttribute("data-state", "running", { timeout: 30_000 });
+            await card.locator(".k-line").tap();
             await expect(move).toBeVisible({ timeout: 30_000 });
             expect(await phoneProblems(card.getByTestId("move-bar")), `the move bar at ${scale * 100}% text`).toEqual([]);
             await expect(card.getByTestId("move-keys"), "no key to name on a touch screen").toBeHidden();

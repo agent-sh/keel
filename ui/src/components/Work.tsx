@@ -2,8 +2,9 @@
 // line each (lib/work.ts makes the steps and what each line says). A step of
 // one call is that call's own line; a step of several opens to its calls.
 // What needs a look shows under a closed step: a call that runs, waits,
-// failed or was cut, and every call the daemon marks (lib/marks.ts), each on
-// a line of its own, so nothing that matters is behind "+N".
+// failed or was cut, and a call a hook of the owner's changed or let through,
+// each on a line of its own, so nothing that matters is behind "+N". (What the
+// gate would say of a call, lib/marks.ts, is said only on a call that asks.)
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Brain, ChevronDown } from "lucide-react";
 import { useKept } from "../lib/kept.ts";
@@ -11,7 +12,6 @@ import { Fragment, memo, useEffect, useMemo, useRef, useState, type KeyboardEven
 import type { Row } from "../lib/rows.ts";
 import { useBlocked } from "../lib/blocked.ts";
 import { useCallsLive } from "../lib/call-live.ts";
-import { marksOf, useMarked } from "../lib/marks.ts";
 import { callHeld, callKey, drop, letGo, thoughtHeld, thoughtKey, thoughtLive, useHeld, useLetGoUnseen } from "../lib/held.ts";
 import { resultText, splitDiagnostics, toolKind } from "../lib/tools.ts";
 import { agentStands, agentWords, besideOf, callsOf, carriedOut, edgeOf, isTable, lookOf, sentence, stateWords, summarize, type Live, type Step, type StepSummary, type WorkItem } from "../lib/work.ts";
@@ -102,9 +102,9 @@ function StepLine({ s, words }: { s: StepSummary; words: ReturnType<typeof state
 const Thoughts = ({ items }: { items: WorkItem[] }) => <>{items.map((i) => (i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : null))}</>;
 
 // What shows of a closed step's calls, each on a line of its own: every one that waits, was turned away, was
-// cut or is marked, every change a language server found something in, and the first few that run or failed
-// (the rest are counted, by what they are). Calls marked for the same reason stand together under that
-// reason, said once.
+// cut or that a hook changed or let through, every change a language server found something in, and the
+// first few that run or failed (the rest are counted, by what they are). Calls a hook did the same to stand
+// together under those words, said once.
 const PEEK = 3;
 type Call = ReturnType<typeof callsOf>[number];
 // `held`: the calls that ran on this page and stay as they stood until they leave the view: a
@@ -141,7 +141,6 @@ const found = (c: Call) => { const t = c.result ? resultText(c.result) : ""; ret
 const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, end }: { step: Step; sid: string; cwd?: string; remote: boolean; all: All; table: boolean; end: boolean }) {
   const calls = callsOf(step);
   const { working, waiting } = useCallsLive(sid, calls);
-  const marked = useMarked(sid, calls);
   const blocked = useBlocked(sid);
   // What the page knows of the step's calls beyond their records: which wait on a card, which were refused.
   const live: Live = useMemo(() => {
@@ -149,15 +148,16 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
     const refused = new Set(blocked.flatMap((b) => b.calls ?? []).filter((id) => mine.has(id)));
     return { working, waiting: new Set(waiting.split(" ").filter(Boolean)), refused, cwd };
   }, [working, waiting, blocked, cwd, step]);
-  // Why a call is marked, in the daemon's few words, or by a hook of the owner's (that rides with its result).
+  // What a hook of the owner's did to a call (it rides with its result). (The gate's words are not here:
+  // a call that asks is on a line of its own as one that waits, and one that ran without asking says none.)
   const markOf = useMemo(() => {
     const by = new Map<string, string>();
     for (const c of calls) {
-      const words = [...(marked.includes(c.id) ? marksOf(sid, c.id).filter((m) => m.kind !== "denied").map((m) => m.short) : []), ...(hookOf(c.result) ? [hookOf(c.result)!.input !== undefined ? "changed by a hook" : "allowed by a hook"] : [])];
-      if (words.length) by.set(c.id, words.join(", "));
+      const hook = hookOf(c.result);
+      if (hook) by.set(c.id, hook.input !== undefined ? "changed by a hook" : "allowed by a hook");
     }
     return (id: string) => by.get(id) ?? "";
-  }, [marked, step, sid]);
+  }, [step]);
   const [kept, setOpen] = useKept(`step:${sid}:${step.key}`);
   const open = kept ?? false;
   useEffect(() => { if (all.n) setOpen(all.open); }, [all]);
@@ -215,7 +215,8 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
             <span className="k-line-end">
               {s.thoughts > 0 && <ThoughtMark />}
               {(s.added > 0 || s.removed > 0) && <Delta added={s.added} removed={s.removed} />}
-              {s.looks.running > 0 && <span className="k-line-run" aria-hidden="true" />}
+              {/* The live mark is the one of what runs now: a call under the line that runs carries its own. */}
+              {s.looks.running > 0 && !!peek && peek.running > 0 && <span className="k-line-run" aria-hidden="true" />}
             </span>
           </Collapsible.Trigger>
           {peek && (peek.alone.length > 0 || peek.same.length > 0 || peek.running > 0 || peek.failed > 0) && (
@@ -223,7 +224,7 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
               {/* The reason once, the calls it is said of under it. */}
               {peek.same.map((g) => (
                 <div key={g.why} className="k-peek-same" data-testid="peek-same">
-                  <p className="k-peek-why"><span className="k-line-count">{g.calls.length} calls</span><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark">{g.why}</span></p>
+                  <p className="k-peek-why"><span className="k-line-count">{g.calls.length} calls</span><span className="k-line-state k-line-mark" data-tone="idle" data-testid="hook-mark">{g.why}</span></p>
                   {g.calls.map((c) => <ToolCall named={many} key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto quiet />)}
                 </div>
               ))}

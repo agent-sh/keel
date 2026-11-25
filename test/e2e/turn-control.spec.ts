@@ -288,8 +288,9 @@ test("a tool the owner stopped reads stopped, not failed", async ({ page, reques
     await expect(call.getByTestId("tool-ended")).toHaveText("stopped");
     await expect(call).not.toContainText("failed");
     await expect(page.getByTestId("turn-reason")).toHaveText(/Stopped/);
-    // The command printed nothing: its output says who stopped it, not that output may still come.
-    await expect(call.getByTestId("live-output").or(call.getByTestId("no-output"))).toHaveText("Nothing printed before you stopped the turn.");
+    // The command printed nothing: opened, its output says who stopped it, not that output may still come.
+    await call.locator(".k-line").click();
+    await expect(call.getByTestId("no-output")).toHaveText("Nothing printed before you stopped the turn.");
     await shoot(page, "turn-09-stopped-tool");
   } finally {
     await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });

@@ -98,8 +98,16 @@ button.k-heard-line:hover { color: var(--fg); }
    target named is whole, under the column the first row's targets stand in. */
 .k-line-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: var(--k-hang, 4.75rem); text-indent: calc(-1 * var(--k-hang, 4.75rem)); }
 .k-line-text[data-wrap] { flex: 1 1 0; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
-/* The verbs stand in a column, so what each was done to lines up down the rail. */
-.k-line-verb { display: inline-block; min-width: var(--k-verb, 4.25rem); margin-right: 0.25rem; font-weight: 600; color: var(--fg); text-indent: 0; white-space: nowrap; }
+/* The verbs stand in a column, so what each was done to lines up down the rail. Quiet as the rest of the
+   line (regular weight, muted ink): the reply is what the rail stands beside, and it reads first. */
+.k-line-verb { display: inline-block; min-width: var(--k-verb, 4.25rem); margin-right: 0.25rem; font-weight: 400; color: var(--muted); text-indent: 0; white-space: nowrap; }
+/* A command the model said what it does: its line is those words, and under them the command's start, one
+   row cut at its end in the code face, small and faint. The press opens the whole of it. */
+.k-line-text[data-note] { padding-left: 0; text-indent: 0; }
+.k-line-note { overflow-wrap: anywhere; }
+.k-line-cmd { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-micro); line-height: 1.4; color: var(--faint); }
+/* How long the command has run, beside its live mark. */
+.k-line-clock { color: var(--faint); }
 /* How it stands, beside the verb and at the line's own size, each in its tone: it waits on the owner; it ran
    and failed; it failed while only looking (a note); the owner denied it; the policy refused it, or a restart
    cut it, or it is marked; it was stopped or never answered. */
@@ -161,15 +169,11 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-pips > i { width: 0.3125rem; height: 0.625rem; border-radius: 1px; background: var(--st-idle); }
 .k-pips > i[data-done] { background: var(--ok); }
 
-/* A call the daemon marks (the policy rates it high risk, it writes outside the
-   folder, it left the sandbox, a rule or a hook let it run): its line says why
-   in a few words in the warning ink (the sentence is their title, and stands in
-   the opened call), and what it was made on is whole on the page in that ink,
-   every line of it: never cut by the line's end and never inside a "+N". */
-.k-tool-call[data-marked] > .k-line .k-line-what { color: var(--warn-ink); white-space: pre-wrap; }
-.k-step-calls .k-tool-call[data-marked], .k-peek-same { box-shadow: inset 1px 0 0 var(--warn); }
-.k-peek-same > .k-tool-call[data-marked] { box-shadow: none; }
-/* Calls marked for one reason: the reason once, with how many, and the calls under it. */
+/* A call that asks the owner, and that the gate marks (the policy rates it high risk, it writes outside the
+   folder, it leaves the sandbox): its line says why in a few words in the warning ink (the sentence is their
+   title, and stands in the opened call). A call that ran without asking carries no such words. */
+.k-tool-call[data-marked] > .k-line .k-line-what { white-space: pre-wrap; }
+/* Calls a hook did the same to: the words once, quiet, with how many, and the calls under it. */
 .k-peek-why { display: flex; align-items: baseline; gap: 0.25rem; padding: 0.25rem 0.375rem 0; font-size: var(--text-ui); line-height: 1.45; color: var(--muted); }
 /* In an opened call: the sentence of what it is marked for. */
 .k-mark-why { font-size: var(--text-caption); line-height: 1.45; color: var(--warn-ink); }
@@ -318,7 +322,6 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* The calls of a step, under its line: a rule of their own, a step in. */
 .k-step-calls { display: flex; flex-direction: column; margin-left: 0.375rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
 .k-step-calls .k-line { padding-block: 0.1875rem; }
-.k-step-calls .k-line-verb { font-weight: 400; color: var(--muted); }
 /* A call that ran and failed says so in its verb too; one that failed while only looking does not. */
 .k-step-calls .k-tool-call[data-state="error"]:not([data-soft]) .k-line-verb { color: var(--danger-ink); }
 /* What a call holds, opened. */

@@ -82,18 +82,21 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
     await expect(page.locator('.k-step[data-state="error"]')).toHaveCount(1);
     const failedRun = page.locator('[data-testid="tool-call"][data-tool="Bash"][data-state="error"]');
     await expect(page.locator('.k-step[data-state="error"]').locator('[data-testid="tool-call"]')).toHaveAttribute("data-call", (await failedRun.getAttribute("data-call"))!);
-    // How it stands is said beside the verb: it ran, and ended with exit 1. Its reason is under its target.
-    await expect(failedRun.locator(".k-line-verb")).toHaveText("Ran");
+    // How it stands is said beside what the model said it does: it ended with exit 1, and its reason follows.
+    // The command's start is under them.
+    await expect(failedRun.getByTestId("call-note")).toHaveText("Run the export tests");
+    await expect(failedRun.getByTestId("call-command")).toHaveText("bun test test/export");
     await expect(failedRun.getByTestId("call-state")).toHaveText("exit 1");
     await expect(failedRun.getByTestId("call-state")).toHaveAttribute("data-tone", "fail");
     await expect(failedRun.getByTestId("tool-why")).toContainText("expect(received).toEqual(expected)");
-    // One line: the step, the tool and a short reason, in the UI face; the reason in the danger ink, its whole text the tooltip.
+    // One line and the command's start: the words and a short reason in the UI face, the reason in the danger ink,
+    // its whole text the tooltip.
     const why = failedRun.getByTestId("tool-why");
     const face = (l: typeof why) => l.evaluate((el) => getComputedStyle(el).fontFamily);
     expect(await face(why), "the reason is in the UI face").toMatch(/Plex Sans/);
-    expect(await face(failedRun.locator(".k-line-what").first()), "what it ran on is in the UI face").toMatch(/Plex Sans/);
+    expect(await face(failedRun.getByTestId("call-note")), "what it does is in the UI face").toMatch(/Plex Sans/);
     const rem1 = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
-    expect((await failedRun.locator(".k-line").boundingBox())!.height, "the failed call is one line").toBeLessThanOrEqual(2 * rem1);
+    expect((await failedRun.locator(".k-line").boundingBox())!.height, "the failed call is a line and the command's start").toBeLessThanOrEqual(3 * rem1);
     await expect(why).toHaveAttribute("title", /expect\(received\)\.toEqual\(expected\)/);
     expect(await why.evaluate((el) => getComputedStyle(el).color)).toBe(await failedRun.getByTestId("call-state").evaluate((el) => getComputedStyle(el).color));
 
@@ -194,25 +197,31 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
   }
 });
 
-test("a running command shows its output as it arrives, stays as it stood when it ends, and is a line once it has left the view", async ({ page, request }) => {
+test("a running command is one line, opens to its output as it arrives, and stays as it stood when it ends", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   await page.goto(`/s/${session.id}`);
   const command = 'for i in 1 2 3 4 5 6; do echo "part $i of 6 written"; sleep 1; done';
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command, description: "Write the parts" } }])}` } });
   const call = page.locator('[data-testid="tool-call"][data-tool="Bash"]');
-  // While it runs the line says so and the output is on the page, a line at a time.
+  // While it runs it is one closed line: what the model says it does, the command's start, a live mark and its clock.
   await expect(call).toHaveAttribute("data-state", "running", { timeout: 30_000 });
-  await expect(call.locator(".k-line")).toContainText("Running");
+  await expect(call.getByTestId("call-note")).toHaveText("Write the parts");
+  await expect(call.getByTestId("call-command")).toHaveText(command);
+  await expect(call.getByTestId("call-clock")).toHaveText(/^\d+s$/);
+  await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "false");
+  await expect(call.getByTestId("terminal")).toHaveCount(0);
+  // Opened, the output is on the page as it comes, a line at a time.
+  await call.locator(".k-line").click();
   await expect(call.getByTestId("live-output")).toContainText("part 2 of 6 written", { timeout: 15_000 });
   await expect(call).toHaveAttribute("data-state", "running");
   await expect(call.getByTestId("live-output")).not.toContainText("part 6 of 6 written");
   await shoot(page, "work-08-running-output");
-  // Over, its line says it ran, and its card stays as it stood with the end of its output: folding it
-  // under a reader who follows the end would drop every line below it. It asks for no more output.
+  // Over, it is the same line with no live mark, and its card stays as it stood with the end of its output.
+  // It asks for no more output.
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
   await expect(call).toHaveAttribute("data-state", "ok");
-  await expect(call.locator(".k-line")).toContainText("Ran");
+  await expect(call.getByTestId("call-clock")).toHaveCount(0);
   await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "true");
   await expect(call.getByTestId("live-output")).toContainText("part 6 of 6 written");
   let asked = 0;
@@ -220,13 +229,9 @@ test("a running command shows its output as it arrives, stays as it stood when i
   await page.waitForTimeout(3500);
   // (At most the one read of what was left when it ended.)
   expect(asked).toBeLessThanOrEqual(1);
-  // Once it has left the view it is a line: what ran, and nothing to scroll past. A long reply pushes it out.
-  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:say ${Array.from({ length: 60 }, (_, i) => `Paragraph ${i + 1} of a long reply.`).join("\\n\\n")}` } });
-  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
-  await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "false");
+  // The owner's own fold is theirs: closed, it stays closed; opened again, it has the whole output.
+  await call.locator(".k-line").click();
   await expect(call.getByTestId("terminal")).toHaveCount(0);
-  // The owner's own fold is theirs: opened, it has the whole output; closed, it stays closed.
-  await call.locator(".k-line").scrollIntoViewIfNeeded();
   await call.locator(".k-line").click();
   await expect(call.getByTestId("terminal")).toContainText("part 6 of 6 written");
   await call.locator(".k-line").click();
@@ -234,6 +239,74 @@ test("a running command shows its output as it arrives, stays as it stood when i
   // After a reload everything is folded as stored.
   await page.reload();
   await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "false");
+});
+
+test("a reply then two commands that run without asking: the reply stays in view, each command is one quiet line", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const ws = join(ROOT, `quiet-calls-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: ws } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await page.goto(`/s/${session.id}`);
+  // The model answers the owner's question, then runs two commands in one reply; the gate rates the first one as
+  // destroying work, but in full auto nothing asks.
+  const answer = "The docs build failed because it reads the old checkout. I remove that worktree and build the docs again.";
+  const calls = [
+    { name: "Bash", input: { command: "sleep 25; git worktree remove --force old-checkout", description: "Remove the old checkout" }, say: answer },
+    { name: "Bash", input: { command: "sleep 25; echo docs-built", description: "Build the docs" } },
+  ];
+  const marksRead = page.waitForResponse((r) => r.url().includes("/call-marks"), { timeout: 30_000 });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:batch ${JSON.stringify(calls)}` } });
+  const lines = page.locator('[data-testid="tool-call"][data-tool="Bash"][data-state="running"]');
+  await expect(lines).toHaveCount(2, { timeout: 30_000 });
+  await marksRead;
+  // The gate does mark the first command (what a card would say), yet a command that runs without asking says none of it.
+  const events = ((await (await request.get(`/api/sessions/${session.id}/events`)).json()) as any).events as { id: string; kind: string; data: any }[];
+  const asked = events.filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use")).at(-1)!;
+  const marks = ((await (await request.post(`/api/sessions/${session.id}/call-marks`, { data: { events: [asked.id] } })).json()) as any).marks as Record<string, { short: string }[]>;
+  expect(Object.values(marks).flat().map((m) => m.short)).toContain("destroys work or data");
+  await page.waitForTimeout(500);
+  await shoot(page, "work-20-reply-then-two-commands");
+  // The reply is the thing in view while the commands run.
+  await expect(page.getByTestId("assistant-text").filter({ hasText: answer })).toBeInViewport();
+  // Each command is one line: what the model says it does, the command's start under it, a live mark and its clock.
+  await expect(lines.getByTestId("call-note")).toHaveText(["Remove the old checkout", "Build the docs"]);
+  await expect(lines.nth(0).getByTestId("call-command")).toHaveText("sleep 25; git worktree remove --force old-checkout");
+  await expect(lines.nth(1).getByTestId("call-command")).toHaveText("sleep 25; echo docs-built");
+  for (const n of [0, 1]) {
+    const line = lines.nth(n).locator("> .k-line");
+    await expect(line).toHaveAttribute("aria-expanded", "false");
+    await expect(lines.nth(n).getByTestId("call-clock")).toHaveText(/^\d+s$/);
+    // Two rows at most: its words and the command's start (one row, cut at its end).
+    const rows = await lines.nth(n).getByTestId("call-command").evaluate((el) => ({ one: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)), nowrap: getComputedStyle(el).whiteSpace === "nowrap" }));
+    expect(rows).toEqual({ one: 1, nowrap: true });
+    expect((await line.boundingBox())!.height).toBeLessThan(56);
+  }
+  // No gate words, no terminal, no box saying nothing came yet, no key caps.
+  await expect(page.getByTestId("call-mark")).toHaveCount(0);
+  await expect(page.getByTestId("mark-why")).toHaveCount(0);
+  await expect(page.getByTestId("terminal")).toHaveCount(0);
+  await expect(page.getByTestId("no-output")).toHaveCount(0);
+  await expect(page.getByTestId("move-keys")).toHaveCount(0);
+  // The line's words are quiet: regular weight, in no colour of a state.
+  const look = await lines.nth(0).getByTestId("call-note").evaluate((el) => ({ weight: getComputedStyle(el).fontWeight, color: getComputedStyle(el).color }));
+  const muted = await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--muted)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; });
+  expect(look).toEqual({ weight: "400", color: muted });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(lines).toHaveCount(2);
+  await shoot(page, "work-20-reply-then-two-commands-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  // Opened, a command is the whole call: the command, its output as it comes, and the way to the background.
+  await lines.nth(1).locator("> .k-line").click();
+  const opened = lines.nth(1);
+  await expect(opened.getByTestId("terminal-command")).toContainText("sleep 25; echo docs-built");
+  await expect(opened.getByTestId("live-output")).toBeVisible();
+  await expect(opened.getByTestId("move-to-background")).toBeVisible();
+  await expect(opened.getByTestId("move-keys")).toBeVisible();
+  await shoot(page, "work-20-command-opened");
+  await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });
+  await request.delete(`/api/sessions/${session.id}`);
 });
 
 // Whether a line of a box of output stands inside what the box shows (it scrolls on its own).
@@ -261,8 +334,9 @@ test("a failed command's output opens at its first error line, and its line quot
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command, description: "Run the tests" } }])}` } });
   const call = page.locator('[data-testid="tool-call"][data-tool="Bash"]');
   await expect(call).toHaveAttribute("data-state", "running", { timeout: 30_000 });
+  await call.locator(".k-line").click();
   await expect(call.getByTestId("live-output")).toContainText("> app@1.0.0 test", { timeout: 15_000 });
-  // Followed while it runs, then held open when it fails: the box shows the error line, not the stack's end.
+  // Opened while it runs, followed, then held as it stood when it fails: the box shows the error line, not the stack's end.
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
   await expect(call).toHaveAttribute("data-state", "error");
   const live = call.getByTestId("live-output");
@@ -343,58 +417,45 @@ test("an edit's diff is numbered from the file's own lines and folds what did no
   await expect(diff.locator('tr[data-kind="ctx"]')).toHaveCount(20);
 });
 
-test("a closed step shows what must be seen: marked calls whole, a cut call, each state as what it is", async ({ page }) => {
+test("a closed step shows what must be seen: a cut call, each state as what it is, and no gate words on what ran unasked", async ({ page }) => {
   const s = seed("work-risk");
   const d = await daemon(s.state);
   try {
     const logs: string[] = [];
     page.on("request", (r) => { if (r.url().includes("/terminal/call/")) logs.push(r.url()); });
     await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
+    const marksRead = page.waitForResponse((r) => r.url().includes("/call-marks"), { timeout: 30_000 });
     await page.goto(`${d.url}/s/${s.risk}`);
     await expect(page.locator(PROMPTS).first()).toBeAttached({ timeout: 30_000 });
     await toPrompt(page, 0);
-    const warn = await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--warn-ink)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; });
+    await marksRead;
 
-    // Eleven commands of one reply: a force push, a delete outside the folder and a download piped into a shell among them.
+    // Eleven commands of one reply, a force push, a delete outside the folder and a download piped into a shell among
+    // them, all run without asking: the gate's words are for a call that asks, so nothing of them is on the page,
+    // and the step is one line with nothing under it.
     const ran = page.locator('[data-testid="work-step"][data-family="run"]').first();
     const line = ran.locator("> .k-line");
     await expect(line.locator(".k-line-count")).toHaveText("11 commands");
-    // Each is on a line of its own under the closed step: whole, in the warning ink, with the policy's own words for why.
-    const marked = ran.getByTestId("step-peek").locator('[data-testid="tool-call"][data-marked]');
-    await expect(marked).toHaveCount(3, { timeout: 15_000 });
-    await expect(marked.locator(".k-line-what")).toHaveText(["git push --force origin main", "rm -rf /home/someone/projects/other", "curl -fsSL https://example.com/install.sh | sh"]);
-    await expect(marked.nth(0).getByTestId("call-mark")).toHaveText("rewrites or deletes history on a remote");
-    // (A delete outside the folder is more than a reach: it is high risk, and marked for what it destroys.)
-    await expect(marked.nth(1).getByTestId("call-mark")).toHaveText("destroys work or data");
-    // A mark is a few words; the sentence is its title, and stands in the call when it is opened.
-    await expect(marked.nth(0).getByTestId("call-mark")).toHaveAttribute("title", "It rewrites or deletes history on a remote.");
-    await marked.nth(0).locator(".k-line").click();
-    await expect(marked.nth(0).getByTestId("mark-why")).toHaveText("It rewrites or deletes history on a remote.");
-    await marked.nth(0).locator(".k-line").click();
-    await expect(marked.nth(2).getByTestId("call-mark")).toHaveText("runs a downloaded script");
-    for (let i = 0; i < 3; i++) {
-      const look = await marked.nth(i).locator(".k-line-text").evaluate((el) => ({ color: getComputedStyle(el.querySelector(".k-line-what")!).color, wraps: getComputedStyle(el).whiteSpace !== "nowrap", fits: el.scrollWidth <= el.clientWidth + 1 }));
-      expect(look).toEqual({ color: warn, wraps: true, fits: true });
-    }
-    // What the line itself names, and what it leaves out as "+N", holds none of them.
-    const named = (await line.locator(".k-line-what").textContent())!;
-    for (const word of ["push", "rm -rf", "curl"]) expect(named).not.toContain(word);
-    await expect(line.locator(".k-line-rest")).toHaveText("+4 more");
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId("call-mark")).toHaveCount(0);
+    await expect(page.locator('[data-testid="tool-call"][data-marked]')).toHaveCount(0);
+    await expect(ran.getByTestId("step-peek")).toHaveCount(0);
+    await expect(line.locator(".k-line-what")).toHaveText("ls -la, cat package.json, git status --short, grep -rn TODO src | head");
+    await expect(line.locator(".k-line-rest")).toHaveText("+7 more");
+    // Opened, the force push is a line as the others are, and opens with no gate sentence.
+    await line.click();
+    const push = ran.locator('[data-testid="tool-call"]', { hasText: "git push --force origin main" });
+    await push.locator(".k-line").click();
+    await expect(push.getByTestId("terminal")).toBeVisible();
+    await expect(push.getByTestId("mark-why")).toHaveCount(0);
+    await push.locator(".k-line").click();
+    await line.click();
 
-    // Eight edits: a git hook and two files outside the folder are marked, each with its folder;
-    // the others are all named, a file under a hidden folder with that folder.
+    // Eight edits, three of them outside the folder or in a git hook: every file is named on the step's line.
     const edited = page.locator('[data-testid="work-step"][data-family="change"]').first();
     await expect(edited.locator("> .k-line .k-line-count")).toHaveText("8 files");
-    // Two of them are marked for one reason: it is said once, with how many, and the two are under it.
-    const same = edited.getByTestId("peek-same");
-    await expect(same).toHaveCount(1);
-    await expect(same.locator(".k-peek-why")).toHaveText("2 callsoutside the folder");
-    await expect(same.locator('[data-testid="tool-call"][data-marked] .k-line-what')).toHaveText(["/etc/hosts", "../elsewhere/.bashrc"]);
-    await expect(same.locator('[data-testid="tool-call"]').getByTestId("call-mark")).toHaveCount(0);
-    const hookEdit = edited.getByTestId("step-peek").locator('[data-testid="tool-call"][data-marked]', { hasText: ".git/hooks/pre-commit" });
-    await expect(hookEdit.getByTestId("call-mark")).toHaveText("runs later, outside the sandbox");
-    await expect(hookEdit.getByTestId("call-mark")).toHaveAttribute("title", "It changes .git/hooks/pre-commit, which runs or configures things outside the sandbox later.");
-    await expect(edited.locator("> .k-line .k-line-what")).toHaveText("a.ts, b.ts, c.ts, d.ts, .changes/notes.yml");
+    await expect(edited.getByTestId("step-peek")).toHaveCount(0);
+    await expect(edited.getByTestId("peek-same")).toHaveCount(0);
     await expect(edited.locator("> .k-line .k-line-rest")).toHaveCount(0);
     await shoot(page, "work-10-marked-calls");
 
@@ -423,12 +484,11 @@ test("a closed step shows what must be seen: marked calls whole, a cut call, eac
     await expect(refusedCall.getByTestId("tool-refused")).toHaveText("refused");
     await expect(refusedCall.getByTestId("tool-refusal")).toHaveText("Reviewerit publishes a release.");
     await expect(refusedCall.getByTestId("tool-why")).toHaveCount(0);
-    // The step's line names what has no line of its own under it: the command that ran.
-    await expect(turned.locator("> .k-line .k-line-what")).toHaveText("bun test test/export");
-    // A command that asked to leave the sandbox says so, and an edit a language server found an error in
-    // shows it under its closed step, in the same rows as every other word under a line.
-    const left = page.locator('[data-testid="tool-call"][data-marked]', { hasText: "git gc --prune=now" });
-    await expect(left.getByTestId("call-mark")).toHaveText("asks to leave the sandbox");
+    // The step's line names what has no line of its own under it: the commands that ran, the one that left the
+    // sandbox with no card among them (it says nothing of the sandbox: the gate's words are for a call that asks).
+    await expect(turned.locator("> .k-line .k-line-what")).toHaveText("bun test test/export, git gc --prune=now");
+    // An edit a language server found an error in shows it under its closed step, in the same rows as every other
+    // word under a line.
     const checked = page.locator('[data-testid="work-step"]', { has: page.getByTestId("tool-diagnostics") });
     await expect(checked.locator("> .k-line .k-line-count")).toHaveText("2 files");
     await expect(checked.getByTestId("step-peek").getByTestId("tool-call")).toHaveCount(1);
@@ -446,6 +506,8 @@ test("a closed step shows what must be seen: marked calls whole, a cut call, eac
     await expect(changed).toHaveCount(1);
     await expect(changed.locator(".k-line-what")).toHaveText("touch hook-made.txt");
     await expect(changed.getByTestId("tool-rewritten")).toHaveText("changed by a hook");
+    // (A hook's words are the owner's own rule at work: muted, in no colour of a state.)
+    await expect(changed.getByTestId("tool-rewritten")).toHaveAttribute("data-tone", "idle");
     await expect(changed.getByTestId("tool-asked")).toHaveText("echo asked-by-model");
     await expect(changed.getByTestId("tool-hook-allowed")).toHaveText("Hookallowed it: commands in this repository are fine");
     await expect(hooked.locator("> .k-line .k-line-what")).toHaveText("pwd, date");
@@ -497,16 +559,6 @@ test("a closed step shows what must be seen: marked calls whole, a cut call, eac
       expect(at).toBe(true);
     }
     await expect(line.locator(".k-line-count")).toHaveText("11 commands");
-    // There a marked call is its verb, why in a few words and what it was made on under that: the reason is a line
-    // (the policy's longest is two), and the line's end stays on the verb's row.
-    for (let i = 0; i < 3; i++) {
-      const at = await marked.nth(i).locator(".k-line").evaluate((line) => {
-        const mark = line.querySelector('[data-testid="call-mark"]')!, verb = line.querySelector(".k-line-verb")!.getBoundingClientRect(), end = line.querySelector(".k-line-end")!.getBoundingClientRect();
-        return { rows: Math.round(mark.getBoundingClientRect().height / parseFloat(getComputedStyle(mark).lineHeight)), endOnFirst: end.top < verb.bottom && end.bottom > verb.top };
-      });
-      expect(at.rows).toBeLessThanOrEqual(i === 0 ? 2 : 1);
-      expect(at.endOnFirst).toBe(true);
-    }
     await shoot(page, "work-12-marked-phone");
   } finally {
     d.proc.kill();
@@ -535,7 +587,13 @@ test("a call waiting for approval says so, closed, and asks for no output", asyn
   await page.setViewportSize({ width: 390, height: 844 });
   await shoot(page, "work-13-waiting-approval-phone");
   await page.setViewportSize({ width: 1920, height: 1040 });
-  // The approval card carries the command: the line is the tool's name and a mark that it waits, said once.
+  // The approval card carries the command: the line is the tool's name and a mark that it waits, said once,
+  // with the gate's few words for why it asks (a call that asks is where they are said).
+  const asked = (((await (await request.get(`/api/sessions/${session.id}/events`)).json()) as any).events as { id: string; kind: string; data: any }[]).filter((e) => e.kind === "assistant").at(-1)!;
+  const gate = (((await (await request.post(`/api/sessions/${session.id}/call-marks`, { data: { events: [asked.id] } })).json()) as any).marks as Record<string, { short: string; kind: string }[]>);
+  const words = Object.values(gate).flat().filter((m) => m.kind !== "denied").map((m) => m.short);
+  expect(words.length).toBeGreaterThan(0);
+  await expect(call.getByTestId("call-mark")).toHaveText(words);
   await expect(call.getByTestId("call-state")).toHaveAttribute("aria-label", "needs you: an approval");
   await expect(call.getByTestId("call-state")).toHaveText("");
   await expect(call.locator(".k-line-what")).toHaveCount(0);
@@ -553,6 +611,8 @@ test("a call waiting for approval says so, closed, and asks for no output", asyn
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
   await expect(call).toHaveAttribute("data-state", "ok");
   await expect(call.locator(".k-line-verb")).toHaveText("Ran");
+  // Once it is no longer asking, the gate's words go with its card.
+  await expect(call.getByTestId("call-mark")).toHaveCount(0);
   await request.delete(`/api/sessions/${session.id}`);
 });
 
@@ -686,8 +746,8 @@ const watchMoves = (page: Page, id: string, foot: boolean) => page.evaluate(([se
 }, [READING(id), foot] as const);
 const movesSeen = (page: Page) => page.evaluate(() => { const w = window as any; cancelAnimationFrame(w.__raf); return w.__moves as { frames: number; down: number; up: number; largestDown: number; awayFromEnd: number; at: string[] }; });
 
-// The turns that fold something as they go: commands that print 1, 12 and 200 lines with a read between
-// them (each card opens as it runs), and one that ends right after a command of 200 lines.
+// The turns that grow as they go: commands that print 1, 12 and 200 lines with a read between
+// them (each a line of its own as it runs), and one that ends right after a command of 200 lines.
 const printing = (n: number, each: number) => `for i in $(seq 1 ${n}); do echo "line $i of ${n} ... ok"; sleep ${each}; done`;
 const SEVEN = [
   { name: "Bash", input: { command: printing(1, 0.6) }, after_ms: 300 },
@@ -780,8 +840,8 @@ test("no line moves down while a turn runs, at its end or after it, and nothing 
     expect(seen.frames, where).toBeGreaterThan(200);
     if (w.scrolledUp) expect([seen.down, seen.up], where).toEqual([0, 0]);
     else {
-      // The cards did open (the lines above went up as they grew), the reader stayed at the end, and no
-      // line dropped in any frame: not as a card's command ended, not at the turn's end, not after it.
+      // The run grew (the lines above went up as calls came), the reader stayed at the end, and no
+      // line dropped in any frame: not as a command ended, not at the turn's end, not after it.
       expect(seen.up, where).toBeGreaterThan(2);
       expect([seen.down, seen.at], where).toEqual([0, []]);
       // The conversation ends at the message box as after any turn: no room is kept under it.
@@ -958,16 +1018,16 @@ test("a program's calls stand under its line and mark it, after a reload too", a
     await expect(under).toHaveCount(1);
     await expect(under.locator(".k-line-what")).toHaveText("git push --force origin main");
     await expect(under.getByTestId("call-state")).toHaveText("denied by you");
-    await expect(under.getByTestId("call-mark")).toHaveText("rewrites or deletes history on a remote");
+    // (Its card is answered: the gate's words went with it, and the denial says what happened.)
+    await expect(under.getByTestId("call-mark")).toHaveCount(0);
     await expect(under.getByTestId("tool-denial")).toHaveText("Younot from a program");
-    await expect(under).toHaveAttribute("data-marked", "");
   };
   // It ran on this page, so it stays open as it stood, with both its calls, until it leaves the view;
   // folded, as after a reload, the push stands under its line.
   const made = program.getByTestId("code-calls").getByTestId("tool-call");
   await expect(made).toHaveCount(2);
   await expect(made.nth(1).getByTestId("call-state")).toHaveText("denied by you");
-  await expect(made.nth(1).getByTestId("call-mark")).toHaveText("rewrites or deletes history on a remote");
+  await expect(made.nth(1).getByTestId("call-mark")).toHaveCount(0);
   await page.reload();
   await stands();
   await shoot(page, "work-16-program-calls");

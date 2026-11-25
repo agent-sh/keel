@@ -38,10 +38,12 @@ test("a running command moves behind its call from the card, the key and the ter
   const ids: string[] = [];
   await page.goto(`/s/${session.id}`);
 
-  // 1. The control on the running card.
+  // 1. The control on the running card, once the owner opened its line (a command that runs is one line until then).
   await say(cmds[0]!);
   const card = page.getByTestId("tool-call").last();
   await expect(card).toHaveAttribute("data-state", "running", { timeout: 30_000 });
+  await expect(card.getByTestId("move-to-background")).toHaveCount(0);
+  await card.locator(".k-line").click();
   const control = card.getByTestId("move-to-background");
   await expect(control).toBeVisible();
   await expect(card.getByTestId("move-keys")).toContainText("Alt");
@@ -117,6 +119,7 @@ test.describe("on a phone", () => {
     await say("sleep 25; echo phone-done");
     const card = page.getByTestId("tool-call").last();
     await expect(card).toHaveAttribute("data-state", "running", { timeout: 30_000 });
+    await card.locator(".k-line").tap();
     const control = card.getByTestId("move-to-background");
     await expect(control).toBeVisible();
     const box = (await control.boundingBox())!;

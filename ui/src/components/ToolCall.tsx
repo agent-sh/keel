@@ -10,7 +10,7 @@ import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import type { SavedFile } from "../../../src/tools/blob.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import type { PatchLine } from "../../../src/safety/patch.ts";
-import { actions, api, failed, reportError } from "../lib/store.ts";
+import { actions, api, failed, reportError, useStore } from "../lib/store.ts";
 import { bounded } from "../lib/scrollback.ts";
 import { scrollToError } from "../lib/error-scroll.ts";
 import { CALL_STOPPED, NOT_RUN, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, shortPaths, smallChange } from "../lib/work.ts";
@@ -21,6 +21,7 @@ import { useAuto } from "../lib/automation.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { commandOf } from "../../../src/core/command.ts";
 import { ThoughtMark } from "./Work.tsx";
+import { elapsed, useNow } from "./Mark.tsx";
 import { CallDiff, type CallFile } from "./DiffView.tsx";
 import { RESTART_RAN, denialReason, notRun, quietEnd, stopKind, stoppedByUser } from "../../../src/core/stops.ts";
 import { allowRetry, useBlocked } from "../lib/blocked.ts";
@@ -55,7 +56,7 @@ const LABEL: Partial<Record<ToolKind, [string, string, string]>> = {
 
 // `lead`: what the model thought on the way to it, shown when the call is opened.
 // `auto`: the call stands on the rail by itself (a step of one call, or a call shown under its closed
-// step): a command that runs is open there, and its output follows. In an opened step it is a line.
+// step). Every call is one line until the owner opens it, a command that runs too: its output is a press away.
 // `peek`: a copy of the call shown while its step is closed: a search hit is not taken by it.
 // `quiet`: why the call is marked is said once above it, for every call marked the same: its own line does not repeat it.
 // `event`: the event the call is of (a program asks for its marks again as it makes calls).
@@ -191,6 +192,14 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto,
   return <AskedUnder use={use} sessionId={result ? undefined : sessionId}>{call}{app ? <McpApp sessionId={sessionId} shown={app} /> : null}</AskedUnder>;
 }
 
+// How long a command has run: the time since the turn's tools started, on the page's one clock.
+// (Its own component: the second's tick draws this, not the call.)
+function CallClock({ sessionId }: { sessionId: string }) {
+  const since = useStore((x) => { const s = x.status[sessionId]; return s?.kind === "tool" ? s.since : undefined; });
+  const now = useNow(since !== undefined);
+  return since === undefined ? null : <span className="k-line-clock" data-testid="call-clock">{elapsed(now - since)}</span>;
+}
+
 // A command longer than this, or of more than one line, is shown whole where the call is opened; a shorter one is all on its line.
 const LINE_COMMAND = 72;
 const NO_CALLS: { id: string; result?: unknown }[] = [];
@@ -219,15 +228,15 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   const isShell = kind === "shell" || kind === "stdin";
   const shell = isShell ? shellStatus(out) : {};
   const plan = kind === "plan" ? planItems(use.name, input) : null;
-  // Closed until asked for: its line says what it did. A command that runs is
-  // open while it does, so its output shows as it arrives.
-  // When it ends it stays as it stood, with the tail of its output, until it has left the view
-  // (lib/held.ts): folding it then would drop every line under it. The owner's own fold lets it go.
+  // Closed until asked for: its line says what it does or did, a command that runs too (its output
+  // is a press away), so the reply above it stays the thing on screen.
+  // A command that ran on this page keeps its line under its closed step until it has left the view
+  // (lib/held.ts): dropping it then would move every line under it. The owner's own fold lets it go.
   const [picked, pick] = useKept(live ? null : `call:${sessionId ?? ""}:${use.id}`);
   useHeld();
   const held = !!auto && callHeld(use.id, state === "running" && !!sessionId);
   const setPicked = (to: boolean) => { pick(to); if (!to) letGo(callKey(use.id)); };
-  const open = picked ?? (!!auto && kind === "shell" && !!sessionId && (state === "running" || held));
+  const open = picked ?? false;
   const files = useMemo(() => (open ? callFiles(kind, use, cwd, (result as { shown?: { line?: number } } | undefined)?.shown?.line) : null), [open, kind, use, cwd, result]);
   const change = useMemo(() => (kind === "edit" || kind === "write" || kind === "patch" ? changeOf(use) : null), [kind, use]);
   // A search hit on this call or its output opens this card (not a sibling call of the same reply).
@@ -254,16 +263,24 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // A wait for agents says whom it waited for, by their titles, and for how long at most.
   const waits = use.name === "wait_agent";
   const waitsFor = useAuto((s) => (!waits ? "" : Array.isArray(input.targets) && input.targets.length ? input.targets.map((id: string) => s.agents[id]?.title ?? "an agent").join(", ") : "every running agent"));
-  // A marked command is on its line whole, every line of it: it is never cut by the line's end.
-  const isMarked = marks.length > 0 || !!hook;
-  const whole = isMarked && kind === "shell";
-  // (A plan update that was not applied says so as its verb, with the reason under its line: no state word, no step.)
-  const what = rejected ? "" : waits ? `for ${waitsFor}, up to ${fmtWait(Number(input.timeout_ms ?? 300_000))}` : plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : whole ? command.trim() : summary(kind, use.name, input, cwd);
-  const more = kind === "shell" && !whole ? moreLines(use) : 0;
+  // The gate's words (why it would ask) are for a call that asks the owner now: its approval card is
+  // open. A call that ran without asking says nothing of them. (A hook's words are the owner's own
+  // rule at work: said quietly, on any call.)
+  const gate = state === "waiting" ? marks.filter((m) => m.kind !== "denied") : [];
+  const isMarked = gate.length > 0;
   // A check the ledger answered (src/checks): it passed on these same files before, and did not run.
   const ledger = !!(result as (ToolResultBlock & { shown?: { ledger?: boolean } }) | undefined)?.shown?.ledger;
   // Its approval card was answered by the owner's helper, on his standing instruction (src/helper/cards.ts).
   const card = (result as (ToolResultBlock & { shown?: { card?: { by: "helper"; choice: "once" | "deny"; said: string; reason?: string } } }) | undefined)?.shown?.card;
+  // What the model says a command does (a shell tool's own `description`): the line says that, and the
+  // command's start stands under it, one row. (Only a shell tool's: another tool's `description` is
+  // what it writes, an issue's body, not what the call does.)
+  const note = kind === "shell" && !ledger && state !== "unrun" && typeof input.description === "string" ? input.description.trim() : "";
+  // (A plan update that was not applied says so as its verb, with the reason under its line: no state word, no step.)
+  const what = rejected ? "" : waits ? `for ${waitsFor}, up to ${fmtWait(Number(input.timeout_ms ?? 300_000))}` : plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : summary(kind, use.name, input, cwd);
+  const more = kind === "shell" ? moreLines(use) : 0;
+  // The command's start under the model's words: cut by the row's end, and said to go on when it has more lines.
+  const head = note && (state !== "waiting" || named) ? `${what}${more ? " …" : ""}` : "";
   const words = kind === "plan" || kind === "skill" || kind === "other" || kind === "mcp" || kind === "stop";
   const verb = rejected ? "Plan update not applied" : state === "unrun" ? NOT_RUN : waits ? (state === "running" || state === "live" ? STATE_WORD.wait : ran ? "Waited" : "Wait") : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
   // What a change that was made, is being made or waits to be made adds and removes: one that failed or was turned away changed nothing.
@@ -284,12 +301,12 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
     void import("./CallMenu.tsx").then((m) => m.openCallMenu({ sessionId, callId: use.id, x, y }));
   };
   return (
-    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-quote-from={`the ${use.name} call`} data-quote-out={`the output of ${use.name}`} data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-movable={isShell && movable(use.name, input) ? "" : undefined} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined} onContextMenu={restorable ? onMenu : undefined}>
-      <Collapsible.Trigger className="k-line" title={isShell && input.description ? `The model's note: ${input.description}` : undefined}>
-        {/* The line's words, as one run of text: the verb, how it stands, why it is marked, what it was made on.
-            A marked call's words wrap, so what it was made on is whole on the page. */}
-        <span className="k-line-text" data-wrap={isMarked ? "" : undefined}>
-          <span className="k-line-verb">{ledger ? "Not run" : verb}</span>{" "}
+    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-quote-from={`the ${use.name} call`} data-quote-out={`the output of ${use.name}`} data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-movable={isShell && movable(use.name, input) ? "" : undefined} data-marked={isMarked ? "" : undefined} data-hooked={hook ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined} onContextMenu={restorable ? onMenu : undefined}>
+      <Collapsible.Trigger className="k-line" title={note && command ? command.slice(0, 2000) : isShell && input.description ? `The model's note: ${input.description}` : undefined}>
+        {/* The line's words, as one run of text: the verb (or what the model says the command does), how it
+            stands, why the gate asks, what it was made on. Such a line wraps; the command's start under it does not. */}
+        <span className="k-line-text" data-wrap={isMarked || note ? "" : undefined} data-note={note ? "" : undefined}>
+          {note ? <span className="k-line-note" data-testid="call-note">{note}</span> : <span className="k-line-verb">{ledger ? "Not run" : verb}</span>}{" "}
           {ledger && <><span className="k-line-state" data-tone="idle" data-testid="call-ledger" title="It passed on these same files before: the answer is from the check ledger.">passed before, same files</span>{" "}</>}
           {state === "waiting" && <><WaitMark words={NEEDS_APPROVAL} testid="call-state" />{" "}</>}
           {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{noSuchTool(result) ? "no such tool" : shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
@@ -299,28 +316,31 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {state === "unfinished" && <><span className="k-line-state" data-tone="idle" data-testid="call-state" title="The turn ended before this call had a result.">no result</span>{" "}</>}
           {state === "unrun" && <><span className="k-line-state" data-tone="idle" data-testid="call-state" title={resultText(result)}>{notRun(result?.content)}</span>{" "}</>}
           {/* Why it is marked, in a few words; the sentence is its title and stands in the opened call. */}
-          {!quiet && marks.filter((m) => m.kind !== "denied").map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
-          {hook?.input !== undefined && <><span className="k-line-state k-line-mark" data-tone="warn" data-testid="tool-rewritten">changed by a hook</span>{" "}</>}
-          {hook?.allowed !== undefined && hook.input === undefined && <><span className="k-line-state k-line-mark" data-tone="warn" title="A hook of yours allowed it without asking you.">allowed by a hook</span>{" "}</>}
+          {!quiet && gate.map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
+          {hook?.input !== undefined && <><span className="k-line-state k-line-mark" data-tone="idle" data-testid="tool-rewritten">changed by a hook</span>{" "}</>}
+          {hook?.allowed !== undefined && hook.input === undefined && <><span className="k-line-state k-line-mark" data-tone="idle" title="A hook of yours allowed it without asking you.">allowed by a hook</span>{" "}</>}
           {card?.choice === "once" && <><span className="k-line-state k-line-mark" data-tone="own" data-testid="call-helper" title={`Its card was ${card.said}. This one call only: nothing more was granted.`}>allowed by the Helper</span>{" "}</>}
           {/* While its approval card is open the card carries what is asked: the line says only that it waits. */}
           {/* (When more than one call of its step waits, each line names its call, trimmed: it matches its card.) */}
           {/* (A change's line keeps its path while its card is open: the card shows the lines, not where they go.) */}
-          {(state !== "waiting" || named || change) && <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{state === "waiting" && !change && what.length > NAMED_CHARS ? `${what.slice(0, NAMED_CHARS).trimEnd()}…` : what}</span>}
+          {!note && (state !== "waiting" || named || change) && <span className="k-line-what" data-words={words ? "" : undefined}>{state === "waiting" && !change && what.length > NAMED_CHARS ? `${what.slice(0, NAMED_CHARS).trimEnd()}…` : what}</span>}
           {/* Why it failed, short, at the end of the line: the whole output is under the line when it opens. */}
           {why && <>{" "}<span className="k-line-why" data-tone={soft ? "note" : "fail"} data-testid="tool-why" title={why}>{why}</span></>}
+          {head && <span className="k-line-cmd" data-testid="call-command">{state === "waiting" && head.length > NAMED_CHARS ? `${head.slice(0, NAMED_CHARS).trimEnd()}…` : head}</span>}
         </span>
         <span className="k-line-end">
-          {(more > 0 || (plan && plan.length > 0) || (change && changed) || nested.length > 0 || shell.background || shell.session) && <Apart />}
+          {((more > 0 && !note) || (plan && plan.length > 0) || (change && changed) || nested.length > 0 || shell.background || shell.session) && <Apart />}
           {/* The lines of a command after its first: at the line's end, where nothing cuts it. */}
-          {more > 0 && <span className="k-line-rest" data-testid="more-lines">+{more} {more === 1 ? "line" : "lines"}</span>}
+          {more > 0 && !note && <span className="k-line-rest" data-testid="more-lines">+{more} {more === 1 ? "line" : "lines"}</span>}
           <MachineBadge sessionId={sessionId} callId={use.id} />
           {plan && plan.length > 0 && !rejected && <span className="k-line-plan" data-testid="plan-count"><Pips done={planDone} total={plan.length} />{planDone}/{plan.length}</span>}
           {change && changed && (change.added > 0 || change.removed > 0) && <Delta added={change.added} removed={change.removed} />}
-          {nested.length > 0 && <span className="k-line-chip" data-testid="tool-nested" title={nested.map((n) => n.path).join("\n")}>+ {nested.length === 1 ? shortPath(nested[0]!.path, cwd) : `${nested.length} instruction files`}</span>}
-          {shell.background && <span className="k-line-chip" data-testid="tool-background">background</span>}
-          {shell.session && <span className="k-line-chip">session {shell.session}</span>}
+          {/* What it brought along and where it went on: quiet words, no chips (nothing of it needs the owner). */}
+          {nested.length > 0 && <span className="k-line-rest" data-testid="tool-nested" title={nested.map((n) => n.path).join("\n")}>+ {nested.length === 1 ? shortPath(nested[0]!.path, cwd) : `${nested.length} instruction files`}</span>}
+          {shell.background && <span className="k-line-rest" data-testid="tool-background">background</span>}
+          {shell.session && <span className="k-line-rest">session {shell.session}</span>}
           {lead && <ThoughtMark />}
+          {state === "running" && sessionId && <CallClock sessionId={sessionId} />}
           {(state === "running" || state === "live") && <span className="k-line-run" aria-label="running" />}
         </span>
       </Collapsible.Trigger>
@@ -351,10 +371,10 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
       {diagnostics.map((d, i) => <DiagnosticsRows key={i} d={d} />)}
       <Collapsible.Panel className="k-tool-panel overflow-hidden">
         <div className="k-tool-body">
-          {marks.length > 0 && <p className="k-mark-why" data-testid="mark-why">{marks.map((m) => m.why).join(" ")}</p>}
+          {gate.length > 0 && <p className="k-mark-why" data-testid="mark-why">{gate.map((m) => m.why).join(" ")}</p>}
           {lead}
           {/* (A stop's or a restart's words are written for the model, not printed by the command.) */}
-          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} movable={movable(use.name, input)} held={held && picked === null && !shell.background} failed={state === "error"} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : state === "waiting" ? WAITS_FOR_YOU : undefined} />}
+          {isShell && <Terminal name={use.name} input={input} command={command} onLine={!note} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} movable={movable(use.name, input)} held={held && !shell.background} failed={state === "error"} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : state === "waiting" ? WAITS_FOR_YOU : undefined} />}
           {plan && plan.length > 0 && <div className={rejected ? "opacity-60" : undefined}><PlanCard items={plan} explanation={input.explanation} /></div>}
           {files && (
             <CallDiff files={files} actions={(f) => (
@@ -473,9 +493,10 @@ const TOO_LARGE = /^Output too large \(([\d.]+ ?KB)\)\. Full output saved to: \S
 const CUT = /\n\n\[\.\.\. (\d+) (?:characters|chars) cut[^\]]*\]\n\n/;
 
 // The output of a command, in the program's own colors (a test run's red and green): a failed
-// command's passing lines are not red. The command stands above it only where the call's line
-// cannot hold it (several lines, or a long one); `whole`: the line shows all of it already.
-// `held`: the command has ended and its card stays as it stood: the tail of the output it was following.
+// command's passing lines are not red. The command stands above it where the call's line does not
+// hold it: several lines, a long one, or a line that says the model's words for it (`onLine` false).
+// `held`: the command ran with its card open, has ended, and the card stays as it stood until it has
+// left the view: the tail of the output it was following.
 // (Not a command that was moved to the background: its result says so, and that is what its card shows.)
 // A command that has not run has no output to be missing: it says why instead of "No output.".
 const WAITS_FOR_YOU = "Not run: waits for your approval";
@@ -483,7 +504,7 @@ const WAITS_FOR_YOU = "Not run: waits for your approval";
 // `failed`: the command failed: its output opens at the first line that says the error, not at its start or its end.
 const movable = (name: string, input: any) => MOVABLE.has(name) && !input?.run_in_background && !input?.is_background;
 
-function Terminal({ name, input, command, whole: onLine, out, running, movable: canMove, held, failed, sessionId, callId, quiet = "No output." }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; movable?: boolean; held?: boolean; failed?: boolean; sessionId?: string; callId?: string; quiet?: string }) {
+function Terminal({ name, input, command, onLine, out, running, movable: canMove, held, failed, sessionId, callId, quiet = "No output." }: { name: string; input: any; command: string; onLine: boolean; out: string; running?: boolean; movable?: boolean; held?: boolean; failed?: boolean; sessionId?: string; callId?: string; quiet?: string }) {
   const body = shellBody(name, out).trimEnd();
   const big = TOO_LARGE.exec(body);
   const cut = big ? null : CUT.exec(body);
@@ -495,7 +516,7 @@ function Terminal({ name, input, command, whole: onLine, out, running, movable: 
   const barred = useRef(false);
   if (running && canMove) barred.current = true;
   useLayoutEffect(() => { if (failed && box.current) scrollToError(box.current); }, [failed, shown]);
-  const above = !!command && !onLine && (command.includes("\n") || command.length > LINE_COMMAND);
+  const above = !!command && (!onLine || command.includes("\n") || command.length > LINE_COMMAND);
   return (
     <div className="k-terminal k-copyable overflow-hidden rounded-md border border-line bg-code font-mono text-caption leading-relaxed" data-testid="terminal">
       {above && (
