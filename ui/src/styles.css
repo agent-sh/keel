@@ -923,6 +923,11 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 @media (pointer: coarse) and (max-width: 767px) {
   .k-docket-line { height: auto; min-height: var(--spacing-tap); }
   .k-docket-job { flex-wrap: wrap; row-gap: 0; }
+  /* The line above wraps: the plan has its own row, and the agents and the commands stand under it where they would
+     leave the plan no room (it would be the glyph and the chevron with nothing between). */
+  .k-docket-row { flex-wrap: wrap; }
+  .k-docket-row > .k-docket-planline { flex: 1 1 100%; }
+  .k-docket-row > .k-agents-line { flex: 1 1 0; max-width: none; }
   /* The agents line: its counts keep their words, and what it waits on goes under them where the row is short. */
   .k-agents-line { flex-wrap: wrap; row-gap: 0; }
   .k-agents-parts { flex: 0 1 auto; height: auto; overflow: visible; }

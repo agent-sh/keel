@@ -1311,6 +1311,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-compose-tools[data-short][data-talk]:not([data-busy]) :is(.k-effort-chev, .k-ctx-num) { display: none; }
   .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-effort-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-model-pick { min-width: 0; }
+  /* The dictate and conversation buttons stand beside the attach button and the mode, so the model is its mark here (its name
+     is in its menu, as while a turn runs) and Dictate is left to the keyboard's own: the row holds seven targets a finger's size. */
+  .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-model-mark { display: block; }
+  .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-model-chev { display: none; }
+  .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-model-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .k-compose-tools[data-short][data-talk] [data-testid="dictate"] { display: none; }
   /* Where the tools do not fit one row (a large text size: seven targets of a finger's size), the right group goes to a
      row of its own under the left one: none is clipped to a sliver or reached only by a sideways swipe. */
   .k-compose-tools[data-busy] { flex-wrap: wrap; }
