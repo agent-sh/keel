@@ -715,3 +715,36 @@ test("home: start in the background keeps the box and says what started", async 
   await expect(box).toHaveValue("");
   await shoot(page, "start-background-03-phone");
 });
+
+// Feature (UX-S142): on a phone every count of the headline is whole and in view, at the usual text size and at 150%:
+// a count that does not fit beside the others goes to the next line, never past the screen's edge.
+for (const scale of [1, 1.5]) {
+  test.describe(`home on a phone at ${scale * 100}% text`, () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    test("the headline's counts all fit the screen", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      await page.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+      const gate = join(mkdtempSync(join(tmpdir(), "keel-home-")), "go");
+      const ids: string[] = [];
+      try {
+        ids.push((await asking(request, "Home phone: clean the output", [bash("rm -rf dist")])).id);
+        ids.push((await make(request, "Home phone: reindex the docs", `script:hold ${gate}`)).id);
+        for (const text of ["script:billing", "script:refuse"]) {
+          const s = await make(request, `Home phone: ${text}`, text);
+          ids.push(s.id);
+          await expect.poll(() => ended(request, s.id), { timeout: 60_000 }).toBe(true);
+        }
+        await page.goto("/");
+        const watch = page.getByTestId("home-watch");
+        for (const w of ["need", "work", "fail", "declined"]) await expect(watch.getByTestId(`home-count-${w}`), `the ${w} count`).toBeVisible({ timeout: 30_000 });
+        const seen = await watch.evaluate((h) => ({ over: h.scrollWidth - h.clientWidth, counts: [...h.querySelectorAll<HTMLElement>("[data-testid^='home-count']")].map((c) => { const b = c.getBoundingClientRect(); return { id: c.dataset.testid!, right: b.right, width: b.width, text: c.textContent!.trim() }; }) }));
+        expect(seen.over, "the headline does not scroll sideways").toBeLessThanOrEqual(0);
+        for (const c of seen.counts) expect(c.right, `${c.id} ("${c.text}") ends inside the screen`).toBeLessThanOrEqual(390);
+        await shoot(page, `home-phone-counts-${scale}`);
+      } finally {
+        writeFileSync(gate, "");
+        await drop(request, ids);
+      }
+    });
+  });
+}

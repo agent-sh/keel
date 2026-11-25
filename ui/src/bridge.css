@@ -1863,9 +1863,9 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   .k-station .k-terminal { min-height: calc(var(--spacing-tap) + 0.5rem); }
   .k-terminal > .k-copy-corner.k-copy-second { right: calc(var(--spacing-tap) + 0.5rem); }
   .k-home-row-main { align-items: center; }
-  /* The headline's counts keep one line, scrolled sideways when there are more than fit: a count that
-     comes or goes never pushes the rows under it (and the Allow a finger is on its way to) down. */
-  .k-home-state:not([data-quiet]) { flex-wrap: nowrap; column-gap: 1rem; overflow-x: auto; scrollbar-width: none; padding: 0.25rem; margin-inline: -0.25rem; }
+  /* The headline's counts are all in view: one that does not fit beside the others goes to the line under them, whole
+     (a count cut at the screen's edge, or reached by a sideways scroll, hid a state). */
+  .k-home-state:not([data-quiet]) { column-gap: 1rem; row-gap: 0.125rem; }
   .k-home-state:not([data-quiet]) > .k-home-count { flex-shrink: 0; white-space: nowrap; }
   /* A question's choice is a row as tall as a target: its words stand in its middle. */
   .k-q-option { align-items: center; }
