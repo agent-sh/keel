@@ -68,6 +68,36 @@ const sessionOf = (store: Store, sourceId: string) => store.sessions({ outside: 
 const stored = (store: Store, id: string) => store.db.query<{ n: number; event_id: string }, [string]>("SELECT n, event_id FROM outside_events WHERE session_id = ? ORDER BY n").all(id);
 
 describe("outside sessions", () => {
+  test("a source copied into Keel loses its session here, is never made again, and still says what it is doing", async () => {
+    const r = rig();
+    try {
+      const cwd = join(r.dir, "w");
+      mkdirSync(cwd);
+      const folder = join(r.claude, "-w");
+      mkdirSync(folder);
+      await until(() => (r.o as any).watchers.has(folder));
+      const path = join(folder, "c9.jsonl");
+      const t = transcript(path, cwd, "c9");
+      t.user("name a fruit");
+      t.reply("m1", "quince");
+      t.end();
+      const s = await until(() => sessionOf(r.store, "c9"));
+      // A copy is made: the session this record showed of the source goes.
+      let copied = false;
+      (r.o as any).d.copied = () => copied;
+      copied = true;
+      r.o.copiedNow("claude", "c9");
+      expect(r.store.session(s.id)).toBeUndefined();
+      expect(sessionOf(r.store, "c9")).toBeUndefined();
+      // The source goes on: no session of its own comes back, and its state is still told.
+      t.user("and another");
+      await until(() => r.o.status().reads >= 2);
+      await new Promise((res) => setTimeout(res, 200));
+      expect(sessionOf(r.store, "c9")).toBeUndefined();
+      expect(r.o.runningOf("claude", "c9")?.state).toBe("working");
+    } finally { r.done(); }
+  });
+
   test("a copy appends only what the file gained; a rewind reads it again and goes on as a new branch", async () => {
     const r = rig();
     try {

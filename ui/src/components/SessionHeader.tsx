@@ -401,8 +401,8 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
           <h1
             className="k-session-title min-w-0 truncate rounded-sm px-1 text-base font-medium hover:bg-hover"
             data-testid="session-title"
-            onDoubleClick={() => setEditing(true)}
-            title="Double-click to rename"
+            onClick={session.outside ? undefined : () => setEditing(true)}
+            title={session.outside ? undefined : "Click to rename"}
           >
             {session.title || "New session"}
           </h1>

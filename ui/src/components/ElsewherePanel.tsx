@@ -89,10 +89,14 @@ export function ElsewherePanel() {
       </div>
     );
   }
+  // A session with a copy in Keel is a mark on that Keel session (its page says where it runs): not a row here.
+  const own = list.sessions.filter((s) => !s.imported);
+  const copied = list.sessions.length - own.length;
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="elsewhere-panel">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 text-caption text-faint">
-        <span>{list.sessions.filter((s) => s.live).length} live, {list.sessions.filter((s) => !s.live).length} ended</span>
+        <span>{own.filter((s) => s.live).length} live, {own.filter((s) => !s.live).length} ended</span>
+        {copied > 0 && <span data-testid="elsewhere-copied" title="Sessions you imported or took over are Keel sessions now, marked with where they came from">· {copied} in Keel</span>}
         {list.at && <span title={when(list.at)}>· read {ago(list.at)}</span>}
         <button aria-label="Read the list again" title="Read the list again" onClick={() => load(true)} className="ml-auto grid size-7 place-items-center rounded-md hover:bg-hover hover:text-fg">
           <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
@@ -106,7 +110,7 @@ export function ElsewherePanel() {
       ))}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {GROUPS.map((g) => {
-          const rows = list.sessions.filter((s) => g.states.includes(s.state)).sort((a, b) => (b.last_activity_ms ?? 0) - (a.last_activity_ms ?? 0));
+          const rows = own.filter((s) => g.states.includes(s.state)).sort((a, b) => (b.last_activity_ms ?? 0) - (a.last_activity_ms ?? 0));
           if (!rows.length) return null;
           return (
             <section key={g.id} className="mb-3" data-testid={`elsewhere-group-${g.id}`}>
@@ -115,7 +119,7 @@ export function ElsewherePanel() {
             </section>
           );
         })}
-        {!list.sessions.length && !list.not_listed && <p className="k-empty p-4">The agent view lists no sessions.</p>}
+        {!own.length && !list.not_listed && <p className="k-empty p-4">{copied ? "Every session the agent view lists is in Keel." : "The agent view lists no sessions."}</p>}
       </div>
     </div>
   );

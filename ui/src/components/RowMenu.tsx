@@ -3,7 +3,7 @@
 // folders, archive; a pinned row can be moved among the pinned. A session is filed from here in
 // whatever way the list is grouped: no switch to "By my folders" and no drag.
 import { Menu } from "@base-ui/react/menu";
-import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronRight, Columns2, FolderInput, FolderMinus, FolderPlus, MailOpen, Pin, PinOff } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, ChevronRight, Columns2, FolderInput, FolderMinus, FolderPlus, MailOpen, Pencil, Pin, PinOff } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import { folders, getFolders, loadFolders, tree, useFolders } from "../lib/folders.ts";
 import { listActed } from "../lib/list-hold.ts";
@@ -12,11 +12,13 @@ import { Kbd } from "./Kbd.tsx";
 import { itemClass, popupClass } from "./ui.tsx";
 
 export type RowMenuAt = { x: number; y: number };
-export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, onUnread, session }: {
+export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, onUnread, onRename, session }: {
   at: RowMenuAt; onClose: () => void; pinned: boolean; archived: boolean; beside: boolean;
   onPin: () => void; onMove?: (by: -1 | 1) => void; onBeside: () => void; onArchive: () => void;
   // Set where the row can be marked unread (a row that is read, of a session of this machine's own, not an agent's).
   onUnread?: () => void;
+  // Set where the owner may name the session (one of Keel's own): F2 on the row does the same.
+  onRename?: () => void;
   session?: { id: string; folder?: string | null };
 }) {
   // The owner's folders are read when a menu first needs them (a list grouped another way has not).
@@ -35,6 +37,7 @@ export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, 
         <Menu.Positioner anchor={anchor} side="bottom" align="start" sideOffset={2} className="z-50 outline-none">
           {/* (The menu is drawn in a portal but stands under its row in the tree: a press in it must not open the session as a press on the row does.) */}
           <Menu.Popup className={`${popupClass} min-w-48`} data-testid="row-menu" onClick={(e) => e.stopPropagation()}>
+            {onRename && item("row-menu-rename", <Pencil />, "Rename", onRename, "f2")}
             {!archived && item("row-menu-pin", pinned ? <PinOff /> : <Pin />, pinned ? "Unpin" : "Pin to the top", onPin)}
             {pinned && onMove && item("row-menu-up", <ArrowUp />, "Move up", () => onMove(-1), "alt+arrowup")}
             {pinned && onMove && item("row-menu-down", <ArrowDown />, "Move down", () => onMove(1), "alt+arrowdown")}

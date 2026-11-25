@@ -54,6 +54,9 @@ const columns = (f: Found | null): (string | number | null)[] =>
   f ? [f.id, f.kind, f.cwd ?? null, f.title, f.updated_ms, f.size_bytes, haystack(f), offered(f) ? 1 : 0, keyHash(f)] : [null, null, null, null, null, null, null, null, null];
 const isIndexed = (h?: Harness): h is "claude" | "codex" => h === "claude" || h === "codex";
 
+// A row of the index whose source a Keel session on this machine holds a copy of.
+const COPIED = "NOT EXISTS (SELECT 1 FROM import_links l WHERE l.harness = import_index.harness AND l.source_id = import_index.sid AND l.source_path NOT GLOB 'm????????:/*' AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = l.session_id))";
+
 // A row of the index as a listing orders it, before it is decoded.
 type IndexKey = { rowid: number; path: string; harness: Harness; id: string; updated_ms: number; size_bytes: number; title: string };
 
@@ -120,6 +123,10 @@ export class Imports {
   complete = false;
   // Set by the daemon (routes/imports.ts): a session this index just made from another harness's.
   created?: (sessionId: string) => void;
+  // Told when a source of this machine is copied into a new Keel session (src/integrations/outside/service.ts
+  // drops the session it showed of that source). A listener is held by its key: a module made again replaces its own.
+  private copyListeners = new Map<string, (harness: Harness, sourceId: string) => void>();
+  onCopy(key: string, fn: (harness: Harness, sourceId: string) => void) { this.copyListeners.set(key, fn); }
   // How many serialized rows of the index were decoded: a page costs its rows, a lookup one.
   decodes = 0;
 
@@ -387,12 +394,13 @@ export class Imports {
   // `insideRows`: the index's rows of the files of `inside` (what `inside()` gives with them).
   list(q: ListQuery & { offered?: boolean; insideRows?: readonly number[] }, max = 500) {
     const db = this.store.db;
-    const scope = q.offered ? "offered" : "";
+    // A source with a copy in Keel is a mark on that copy, not a row of this list (`hideImported`).
+    const scope = (q.offered ? "offered" : "") + (q.hideImported ? "|fresh" : "");
     const limit = pageLimit(q, max);
     const c = readCursor(q, scope);
     const sort = q.sort ?? "updated";
     const cmp = order(sort);
-    const side = select(q.offered ? this.side(q.harness).filter(offered) : this.side(q.harness), q);
+    const side = select((q.offered ? this.side(q.harness).filter(offered) : this.side(q.harness)).filter((f) => !q.hideImported || !this.importedAs(f)), q);
     const index = { complete: this.complete, building: !!this.building };
 
     const where = ["found IS NOT NULL"];
@@ -410,6 +418,7 @@ export class Imports {
       args.push(...words, ...(q.inside ? [JSON.stringify(q.insideRows ?? [])] : []));
     }
     if (q.offered) where.push("offered = 1");
+    if (q.hideImported) where.push(COPIED);
     const W = where.join(" AND ");
     const KEY = "rowid, path, harness, sid AS id, updated_ms, size_bytes, title";
     const indexed = !q.harness || isIndexed(q.harness);
@@ -594,6 +603,17 @@ export class Imports {
         (machine || !path || l.source_path === path || !sourceStat({ harness, path: l.source_path } as Found)));
   }
 
+  // The Keel session that holds a copy of a conversation the agent view lists (its session or thread id, or its
+  // transcript's file), newest copy first.
+  copyOfRow(raw: { tool?: unknown; session?: unknown; thread?: unknown; transcript?: unknown }): string | undefined {
+    const ids = [raw.session, raw.thread].filter((x): x is string => typeof x === "string" && !!x);
+    const path = typeof raw.transcript === "string" ? raw.transcript : "";
+    if (!ids.length && !path) return undefined;
+    return this.store.db.query<{ session_id: string }, [string, string, string, string, string]>(
+      "SELECT l.session_id FROM import_links l WHERE l.harness = ? AND (l.source_id IN (?, ?) OR (? != '' AND l.source_path = ?)) AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = l.session_id) ORDER BY l.imported_ms DESC LIMIT 1")
+      .get(String(raw.tool), ids[0] ?? "", ids[1] ?? "", path, path)?.session_id;
+  }
+
   link(sessionId: string): Link | undefined {
     return this.store.db.query<Link, [string]>("SELECT * FROM import_links WHERE session_id = ?").get(sessionId) ?? undefined;
   }
@@ -709,6 +729,7 @@ export class Imports {
     // Told once the copy is stored: the daemon titles a session whose title is only the source's first prompt.
     // What it does is its own: a failure there never fails the import (the callback says it).
     try { this.created?.(id); } catch { /* said by the callback */ }
+    if (!o.from) for (const fn of this.copyListeners.values()) { try { fn(f.harness, f.id); } catch { /* the listener's own */ } }
     return { action: "created", session: this.store.session(id)!, imported_events: r.events.length, read: r };
   }
 }

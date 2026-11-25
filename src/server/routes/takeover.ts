@@ -2,7 +2,7 @@
 // list: POST /api/import/takeover and GET /api/import/running for the owner,
 // keel__session_import for a model (a take-over is a card only the owner
 // answers; a copy is judged like a send).
-import { sharedDrive, DriveError, type Found } from "../../drive/drive.ts";
+import { sharedDrive, DriveError, copies, type Found } from "../../drive/drive.ts";
 import { HttpError, TakeOver, type Answer } from "../../drive/takeover.ts";
 import { sharedImports } from "../../integrations/import/service.ts";
 import { registerCatalog, type CatalogTool } from "../../tools/catalog.ts";
@@ -42,6 +42,8 @@ export const takeoverRoutes: RouteModule = (deps: Deps) => {
   const drive = sharedDrive();
   const imports = sharedImports(deps.store);
   const t = (takeover = new TakeOver(deps, drive, imports));
+  // A conversation the agent view lists that a Keel session holds a copy of shows on that session (drive.ts `imported`).
+  copies.of = (raw) => (raw.host ? undefined : imports.copyOfRow(raw));
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
 
   const judged = new WeakMap<object, Found>();

@@ -20,6 +20,7 @@ import { contains } from "../../core/paths.ts";
 import { attachmentPath, dropAttachment, saveAttachment } from "../../engine/attachments.ts";
 import { fleet } from "./fleet.ts";
 import { takeover } from "./takeover.ts";
+import { outside } from "./outside.ts";
 import { grantedMachine, resumes } from "./resume.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -281,7 +282,7 @@ export const importRoutes: RouteModule = (deps) => {
         // folders and prompts. The answer says which harnesses' text was searched and which was not.
         const q = u.get("q") ?? undefined;
         const found = u.has("inside") && q?.trim() ? await imports.inside(q, { harness: harness as Harness | undefined, show: u.get("show") ?? undefined, signal: req.signal }) : undefined;
-        const r = listed(() => imports.list({ harness: harness as Harness | undefined, q, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor, inside: found?.paths ?? undefined, insideRows: found?.rows }));
+        const r = listed(() => imports.list({ harness: harness as Harness | undefined, q, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor, inside: found?.paths ?? undefined, insideRows: found?.rows, hideImported: u.get("copies") === "hide" }));
         if (r instanceof Response) return r;
         return json({ ...r, harnesses: imports.harnesses(), ...(found ? { inside: { searched: found.searched, not: found.not } } : {}) });
       },
@@ -419,7 +420,10 @@ export const importRoutes: RouteModule = (deps) => {
         const machine = fm ? { id: fm.id, name: fm.name, ssh: fleet!.isSsh(fm) } : undefined;
         // `went_on`: the copy took a turn here (or runs one now), so it no longer takes the original's later turns.
         const went_on = takeover ? takeover.wentOn(l.session_id) : imports.wentOn(l.session_id);
-        return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id), machine, went_on }, source });
+        // The source still at work in its harness (its own records say so), told on the copy in place of a row of its own.
+        const at = !far && (l.harness === "claude" || l.harness === "codex") ? outside?.runningOf(l.harness, l.source_id) : undefined;
+        const running = at && (at.state === "working" || at.state === "waiting") ? at : undefined;
+        return json({ origin: { ...l, label: HARNESSES.find((h) => h.harness === l.harness)?.label, live_source: imports.liveSource(l.session_id), running, machine, went_on }, source });
       },
     },
     "/api/sessions/:id/export": {

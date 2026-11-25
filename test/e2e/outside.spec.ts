@@ -201,17 +201,26 @@ test("a live Claude Code session shows in the list read-only and goes on in Keel
     await panel.getByRole("button", { name: `Show sessions in ${cwd} again` }).click();
     await expect(panel.getByTestId("outside-excluded")).toHaveCount(0);
 
-    // It goes on there and then writes nothing: past the stale time it is stale, out of the working count.
-    expect((await request.patch("/api/settings", { data: { outside: { stale_minutes: 0.05 } } })).ok()).toBe(true);
+    // The source has no session of its own once it is copied: its row left the list, and the copy carries it.
+    await expect.poll(async () => await sessionOf()).toBeUndefined();
+    await expect(row).toHaveCount(0);
+    await expect(page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${copy}"]`)).toHaveCount(1);
+    await page.goto(`/s/${copy}`);
+    await expect(page.getByTestId("origin-mark")).toContainText("From Claude Code");
+
+    // It goes on there: the copy says it still runs, and past the stale time it says nothing of it. What it
+    // wrote since is offered as resuming the import on the copy, never a row of its own.
     write({ type: "user", message: { role: "user", content: `And the tests ${tag}` } });
     reply("m5", [{ type: "tool_use", id: "t5", name: "Bash", input: { command: "make test" } }]);
-    await page.goto(`/s/${sid}`);
-    await expect(row.getByTestId("row-outside")).toHaveAttribute("data-state", "stale", { timeout: 15_000 });
-    await expect(row.getByTestId("row-outside")).toContainText("stale");
-    await expect(page.getByTestId("outside-bar")).toHaveAttribute("data-state", "stale");
-    await expect(page.getByTestId("outside-state")).toContainText("No record from Claude Code");
-    await expect(row).not.toHaveAttribute("data-watch", "work");
-    await shoot(page, "outside-stale");
+    await expect(page.getByTestId("live-source")).toContainText("still runs in Claude Code", { timeout: 15_000 });
+    await shoot(page, "outside-copy-source-runs");
+    expect((await request.patch("/api/settings", { data: { outside: { stale_minutes: 0.05 } } })).ok()).toBe(true);
+    await expect(page.getByTestId("live-source")).toHaveCount(0, { timeout: 20_000 });
+    expect(await sessionOf()).toBeUndefined();
+    await page.getByTestId("origin-resume").click();
+    await expect(page.getByTestId("transcript").getByText(`And the tests ${tag}`).first()).toBeVisible();
+    await expect(page.getByTestId("origin-resume")).toHaveCount(0);
+    await shoot(page, "outside-copy-resumed");
 
     // The other harness's file holds what it wrote, and nothing of Keel's.
     const hash = (s: string) => createHash("sha256").update(s).digest("hex");

@@ -26,6 +26,8 @@ export type Row = {
   transcript: boolean;
   drive: { send: boolean; answer: boolean; model: boolean; resume: boolean };
   changed?: boolean;
+  // The Keel session that holds a copy of it (imported or taken over): the list shows it there, as a mark on that session.
+  imported?: string;
 };
 export type ReadPrompt = Prompt & { hash: string };
 
@@ -43,6 +45,9 @@ const err = (code: Code, m: string) => new DriveError(code, m);
 
 const epochMs = (v: unknown) => (typeof v === "number" && v > 0 ? Math.round(v * 1000) : null);
 const str = (v: unknown) => (typeof v === "string" ? v : "");
+
+// Who knows the copies: the import index (src/integrations/import/service.ts), set by the daemon.
+export const copies: { of?: (raw: av.Raw) => string | undefined } = {};
 
 // One agent view row in the shape every row of the list has.
 export function toRow(raw: av.Raw, here = ""): Row {
@@ -69,8 +74,10 @@ export function toRow(raw: av.Raw, here = ""): Row {
   // An ended session the agent view can bring back: an interactive Claude one
   // (by session), a Codex thread, an agy conversation.
   const resumable = !live && !stale && (kind === "claude" ? has("session") && !job : kind === "codex" ? has("thread") : kind === "agy" && has("session"));
+  const imported = copies.of?.(raw);
   return {
     id: av.rowId(raw),
+    ...(imported ? { imported } : {}),
     name: str(raw.name) || str(raw.title),
     kind,
     host: str(raw.host) || here,

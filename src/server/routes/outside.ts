@@ -33,7 +33,10 @@ export const outsideRoutes: RouteModule = (deps) => {
     // The session's failures, grouped by cause as its own would be; nothing is owed to a model (none runs here).
     failed: (id, f) => { record(id, { kind: f.kind, cls: f.kind === "tool" ? f.tool : classOf(f.text), message: f.text }); },
     trouble: (e, at) => errors.capture("server", e, { at }),
+    // A source with a copy in Keel shows on the copy, not as a session of its own.
+    copied: (h, id) => sharedImports(store).links(h, id).length > 0,
   });
+  sharedImports(store).onCopy("outside", (h, id) => { if (h === "claude" || h === "codex") outside?.copiedNow(h, id); });
   outside.start();
   const o = outside;
   return {

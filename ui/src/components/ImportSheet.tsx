@@ -198,7 +198,8 @@ function Running({ onDone }: { onDone: () => void }) {
     }, (e) => { setRows([]); setWhy({ text: failed(e, { at: "ImportSheet running" }) }); });
   }, []);
   useEffect(list, [list]);
-  const shown = rows.filter((r) => r.harness);
+  // One that has a copy in Keel is that copy's mark (its page says it still runs, and takes it over), not a row here.
+  const shown = rows.filter((r) => r.harness && !r.imported);
   if (!shown.length && !why) return null;
   const go = async (p: Promise<{ session: { id: string } } | null>) => {
     setErr("");
@@ -244,6 +245,8 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const [harnesses, setHarnesses] = useState<HarnessState[]>([]);
   const [q, setQ] = useState("");
   const [all, setAll] = useState(false);
+  // Sessions already imported are marks on their Keel sessions; this brings their rows back (a second copy of one).
+  const [copies, setCopies] = useState(false);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
   // The search inside what the transcripts say (a second request once the typing pauses): under way, or
@@ -306,6 +309,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     if (shownFor.q) u.set("q", shownFor.q);
     if (shownFor.all) u.set("show", "all");
     if (shownFor.inside) u.set("inside", "1");
+    if (!copies && !from) u.set("copies", "hide");
     // Read to the end; a list that changed above a page while it was read is read again whole.
     let items: Item[] = [];
     for (let tries = 0, cursor: string | undefined, done = false; !done; ) {
@@ -348,6 +352,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     if (cursor) u.set("cursor", cursor);
     if (q.trim()) u.set("q", q.trim());
     if (all) u.set("show", "all");
+    if (!copies && !from) u.set("copies", "hide");
     if (refresh) u.set("refresh", "1");
     if (!cursor && !deep && opening.current) { u.set("opened", "1"); opening.current = false; }
     if (inText) u.set("inside", "1");
@@ -379,7 +384,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
       if (cursor && (e as { status?: number }).status === 400) return load(undefined, false, shown.current + 60);
       reportError(e);
     }
-  }, [harness, q, all, from]);
+  }, [harness, q, all, copies, from]);
 
   useEffect(() => {
     if (!open) return;
@@ -444,7 +449,10 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               label="Where to import from"
               value={harness}
               onChange={setHarness}
-              options={(harnesses.length ? harnesses : [{ harness: "claude", label: "Claude Code" }, { harness: "codex", label: "Codex" }, { harness: "keel", label: "Keel (Rust)" }] as HarnessState[]).map((h) => ({
+              options={(harnesses.length ? harnesses : [{ harness: "claude", label: "Claude Code" }, { harness: "codex", label: "Codex" }, { harness: "keel", label: "Keel (Rust)" }] as HarnessState[])
+                // A harness with no store on this machine is not a tab (with every harness Keel reads they would not fit); the one on show stays.
+                .filter((h) => h.installed !== false || h.total > 0 || h.harness === harness)
+                .map((h) => ({
                 value: h.harness,
                 testid: `import-tab-${h.harness}`,
                 className: cn(h.installed === false && "opacity-50"),
@@ -492,6 +500,14 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               <div className="flex items-center gap-2 border-b border-line px-3 py-2">
                 <Search className="size-4 shrink-0 text-faint" />
                 <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, folder, prompt or reply" className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
+                {!from && (
+                  <label className="flex shrink-0 items-center gap-1.5 text-caption text-faint" title="Sessions already imported show on their Keel session, not here. Show them to make another copy.">
+                    Imported
+                    <Switch.Root checked={copies} onCheckedChange={setCopies} className="k-switch" data-testid="import-copies">
+                      <Switch.Thumb className="k-switch-thumb" />
+                    </Switch.Root>
+                  </label>
+                )}
                 <label className="flex shrink-0 items-center gap-1.5 text-caption text-faint" title="Also subagents and sessions nobody sat at (headless, loops)">
                   All
                   <Switch.Root checked={all} onCheckedChange={setAll} className="k-switch">

@@ -18,14 +18,14 @@
 import { ArrowLeft, ArrowRight, Bug, ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, Plus, X } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { isMac, registerCommand } from "../lib/keys.ts";
+import { composing, isMac, registerCommand } from "../lib/keys.ts";
 import { offerUndo } from "../lib/undo.ts";
 import { AIMS, keepLook, leaveHome, leaveLook, lookNow, noteLook, paneMove, paneSay, paneUnsay, setAim, tellSwap, useAim, useAimed, useNeedUnderLooks, usePaneNote, type Aim } from "../lib/looks.ts";
 import { paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { useSeenFailure } from "./Attention.tsx";
 import { usePanelBesideShown } from "./SidePanel.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
-import { getState, storeGate, useStore } from "../lib/store.ts";
+import { actions, getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
 import { getUI, keepPanels, navigate, savePref, setUI, stationPanels, useUI } from "../lib/ui.ts";
 import { watchPanes } from "../lib/automation.ts";
@@ -174,7 +174,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         {/* An agent's way up its tree, before its own title: the root and each agent between, each a link. */}
         {s.parent_id && <Crumbs s={s} />}
         {/* Its folder is the title's tooltip: the bar keeps the title, the state and the tools. */}
-        <h2 className="k-station-title" data-testid="station-title" title={`${s.title || "New session"}\n${s.workspace}`}>{s.title || "New session"}</h2>
+        <StationTitle s={s} />
         {/* Another machine's session names it beside the title, at any width of the pane (the folder and model give way first). */}
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
@@ -194,6 +194,37 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
       </div>
       {!helm && <p className="k-station-line truncate">{line || " "}</p>}
     </header>
+  );
+}
+
+// The title: a press on it names the session (Enter keeps the name, Escape leaves it). A name the owner
+// gives is the session's own: no auto title and no import replaces it. A session another harness runs has none of Keel's to give.
+function StationTitle({ s }: { s: Session }) {
+  const [editing, setEditing] = useState(false);
+  const [v, setV] = useState(s.title);
+  const input = useRef<HTMLInputElement>(null);
+  const over = useRef(false);
+  useEffect(() => setV(s.title), [s.title]);
+  useEffect(() => { if (editing) { over.current = false; input.current?.select(); } }, [editing]);
+  const keep = (save: boolean) => {
+    if (over.current) return;
+    over.current = true;
+    setEditing(false);
+    const t = v.trim();
+    if (save && t && t !== s.title) actions.patch(s.id, { title: t }).catch(reportError);
+    else setV(s.title);
+  };
+  if (editing) {
+    return (
+      <input ref={input} autoFocus value={v} aria-label="Session title" data-testid="station-title-edit" draggable={false}
+        onChange={(e) => setV(e.target.value)} onBlur={() => keep(true)} onDragStart={(e) => e.preventDefault()}
+        onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") keep(true); if (e.key === "Escape") keep(false); }}
+        className="k-station-title-edit" />
+    );
+  }
+  return (
+    <h2 className="k-station-title" data-testid="station-title" data-renamable={s.outside ? undefined : ""} title={`${s.title || "New session"}\n${s.workspace}${s.outside ? "" : "\nClick to rename"}`}
+      onClick={s.outside ? undefined : () => setEditing(true)}>{s.title || "New session"}</h2>
   );
 }
 

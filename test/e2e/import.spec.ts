@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { APIRequestContext } from "./isolate.ts";
+import type { APIRequestContext, Page } from "./isolate.ts";
 import { emptyKeel } from "./peer.ts";
 import { HAIKU, shoot, inHead, leaveHead } from "./shots.ts";
 
@@ -27,6 +27,11 @@ function claudeFile(dir: string, cwd: string, id: string, recs: any[]) {
   const path = join(dir, `${id}.jsonl`);
   writeFileSync(path, recs.map((r, i) => { const uuid = `${id}-${i}`; const x = { cwd, sessionId: id, version: "2.1.300", isSidechain: false, userType: "external", entrypoint: "cli", timestamp: new Date().toISOString(), uuid, parentUuid: parent, ...r }; parent = uuid; return JSON.stringify(x); }).join("\n") + "\n");
   return path;
+}
+// Sessions imported before are marks on their Keel sessions, not rows of the sheet: this brings their rows back.
+async function showCopies(page: Page) {
+  const sw = page.getByTestId("import-sheet").getByTestId("import-copies").first();
+  if ((await sw.getAttribute("aria-checked")) !== "true") await sw.click();
 }
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
@@ -102,6 +107,7 @@ test("import and export", async ({ page, request }) => {
   await page.getByTestId("palette-input").fill("Import sessions");
   await page.keyboard.press("Enter");
   await page.getByTestId("import-search").fill(tag);
+  await showCopies(page);
   await expect(rows.first().getByTestId("import-imported")).toHaveText("imported · grew", { timeout: 15_000 });
   await rows.first().click();
   await expect(preview).toContainText("the copy went on here and the original too");
@@ -123,6 +129,7 @@ test("import and export", async ({ page, request }) => {
   };
   await openSheet();
   await page.getByTestId("import-search").fill(tag);
+  await showCopies(page);
   await rows.first().click();
   await expect(preview.getByTestId("import-copy")).toHaveCount(2);
   await shoot(page, "import-06-copies");
@@ -259,6 +266,7 @@ test("import and export", async ({ page, request }) => {
   claudeFile(bulkDir, bulkCwd, `b2000000-0000-4000-8000-${tag.padStart(12, "0")}`, [{ type: "user", message: { role: "user", content: "Soon gone" } }]);
   await sheet.getByTestId("import-retry-failed").click();
   await expect(sheet.getByTestId("import-total")).toHaveText("Imported 1");
+  await showCopies(page);
   await expect(sheet.getByTestId("import-imported")).toHaveCount(3);
   await page.keyboard.press("Escape");
 

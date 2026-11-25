@@ -2,7 +2,7 @@
 // the machine's colour, and whether it answers when it does not. A session of
 // this machine carries nothing. The same tag is on every surface that names a
 // session (rows, marks, the pane and session headers, the palette).
-import { Monitor, Server, ServerOff } from "lucide-react";
+import { ExternalLink, Monitor, Server, ServerOff } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineColour, machineName, machineReach, useFleet, type Reach } from "../lib/fleet.ts";
@@ -71,14 +71,17 @@ export function machineRuns<T extends Pick<Session, "machine">>(list: T[]): { ma
 // The line between machines in the list: this machine's sessions, then each
 // other machine's under its name in its colour, with whether it answers.
 // `testid` and `className` for a list that is not the sidebar's; `note`: a word after the name (when the list was last read).
-export function MachineSep({ machine, count, testid = "machine-sep", className, note }: { machine?: string; count: number; testid?: string; className?: string; note?: ReactNode }) {
+// `external`: the sessions of other harnesses that Keel has not copied (not Keel's own), on this machine or on `machine`:
+// the same line, with its own name.
+export function MachineSep({ machine, count, testid = "machine-sep", className, note, external }: { machine?: string; count: number; testid?: string; className?: string; note?: ReactNode; external?: boolean }) {
   const w = useWhere(machine ? { machine } : undefined);
-  const Icon = w?.reach === "offline" ? ServerOff : machine ? Server : Monitor;
+  const Icon = external ? ExternalLink : w?.reach === "offline" ? ServerOff : machine ? Server : Monitor;
+  const name = external ? `External${w ? ` on ${w.name}` : " on this machine"}` : w?.name ?? "This machine";
   return (
-    <div className={cn("k-machine-sep", className)} data-testid={testid} data-machine={machine ?? "local"} data-reach={w?.reach} title={w?.title ?? "Sessions on this machine"} style={whereStyle(w?.colour)} role="separator" aria-label={w ? `${w.name}${w.word ? `, ${w.word}` : ""}` : "This machine"}>
+    <div className={cn("k-machine-sep", className)} data-testid={testid} data-machine={machine ?? "local"} data-section={external ? "external" : undefined} data-reach={w?.reach} title={external ? "Sessions of other harnesses that are not in Keel. Import or take one over and it moves up into Keel's list." : w?.title ?? "Sessions on this machine"} style={whereStyle(w?.colour)} role="separator" aria-label={external ? name : w ? `${w.name}${w.word ? `, ${w.word}` : ""}` : "This machine"}>
       <Icon aria-hidden="true" />
-      <span className="k-machine-sep-name">{w?.name ?? "This machine"}</span>
-      {w?.word && <span className="k-machine-sep-reach">{w.word}</span>}
+      <span className="k-machine-sep-name">{name}</span>
+      {w?.word && !external && <span className="k-machine-sep-reach">{w.word}</span>}
       {note && <span className="k-machine-sep-note">{note}</span>}
       <span className="k-machine-sep-count">{count}</span>
     </div>

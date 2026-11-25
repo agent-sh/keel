@@ -9,7 +9,7 @@ import type { Found, Harness } from "./types.ts";
 // `cursor`: the `next_cursor` of the page before, as it was given; none (or "0") starts the list.
 // `inside`: the files a search inside the transcripts found holding every word (inside.ts): such a row
 // matches too, though its title, folder and prompts do not hold the words.
-export type ListQuery = { harness?: Harness; q?: string; cwd?: string; show?: string; sort?: "updated" | "size" | "title"; limit?: number; cursor?: string; inside?: ReadonlySet<string> };
+export type ListQuery = { harness?: Harness; q?: string; cwd?: string; show?: string; sort?: "updated" | "size" | "title"; limit?: number; cursor?: string; inside?: ReadonlySet<string>; hideImported?: boolean };
 
 // The index keeps the answer of `offered` with each file's row (import_index.offered):
 // a change of this pattern needs a new READER_V there, so every row is read again.

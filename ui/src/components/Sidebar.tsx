@@ -14,7 +14,7 @@
 import { Archive, ArchiveRestore, ArrowDown, Blocks, Bug, ChevronRight, Columns2, Folder, Gauge, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sun, SunMoon, Tag, X } from "lucide-react";
 import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { runCommand } from "../lib/keys.ts";
+import { composing, runCommand } from "../lib/keys.ts";
 import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
 import { getStations, stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
@@ -263,6 +263,9 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const panes = useStations((x) => x.count);
   const [placing, setPlacing] = useState(false);
   const [menu, setMenu] = useState<RowMenuAt | null>(null);
+  // Renamed in place (F2, or Rename in the row's menu): the name the owner gives is the session's own and no
+  // auto title or import replaces it (title_by is empty then, as when it is renamed in the header).
+  const [renaming, setRenaming] = useState(false);
   const row = useRef<HTMLDivElement>(null);
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
   const pinned = !!s.settings.pinned_ms && !restore;
@@ -277,7 +280,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const on = !narrow && lines === "one" && !offline && !gone ? (w === "need" ? WAITS_ON_YOU : w === "declined" ? DECLINED_WORD : "") : "";
   // A menu of the row is the hand on the list: the list is held while one is open.
   const keep = useContext(HandCtx).keep;
-  const over = placing || !!menu;
+  const over = placing || !!menu || renaming;
   useEffect(() => { if (!over) return; keep?.(true); return () => keep?.(false); }, [over, keep]);
   // A pinned row moves among the pinned (Alt Up, Alt Down, its menu); the keyboard stays on it.
   const move = (by: -1 | 1) => {
@@ -296,6 +299,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const dotWords = !offline && !left && (!SPELLED.includes(w) || !!backgroundOf(st) || news);
   // The card beside the row is away while a menu of the row is open over it.
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
+  // A session of another harness that Keel only shows has no name of Keel's to give.
+  const canRename = !left && !s.outside && !phone();
   const open = (beside: boolean) => {
     if (left === "deleted") return;
     if (beside) return openBeside(s.id);
@@ -337,6 +342,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       }}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
+        if (e.key === "F2" && canRename) { e.preventDefault(); e.stopPropagation(); return setRenaming(true); }
         if (e.altKey && pinned && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); e.stopPropagation(); return move(e.key === "ArrowUp" ? -1 : 1); }
         if (e.key !== "Enter") return;
         // Shift Enter: the menu of panes, to place the session in one of them.
@@ -352,7 +358,9 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           and are on the card beside the row where it does not; in a row of two they are the second
           line, as wide as the row. A session at rest says no word the mark already says. */}
       <span className="k-row-main">
-        <span className="k-row-title">{s.title || "New session"}</span>
+        {renaming
+          ? <RowName s={s} done={() => { setRenaming(false); requestAnimationFrame(() => row.current?.focus()); }} />
+          : <span className="k-row-title">{s.title || "New session"}</span>}
         <span className="k-row-sub">
           {/* A machine that does not answer says nothing new: the row's word is Offline (at the line's end), with when it last told here and what under the pointer. */}
           {offline
@@ -447,6 +455,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           onPin={() => togglePin(true)}
           onMove={pinnedNow().length > 1 ? move : undefined}
           onBeside={() => openBeside(s.id)}
+          onRename={canRename ? () => setRenaming(true) : undefined}
           onArchive={() => { listActed(s.id); archive(s, !restore).catch(reportError); }}
           // The same mark the row's dot reads (the command and the session menu set it too): kept until the session is opened again.
           onUnread={!unread && !s.machine && !s.parent_id ? () => { listActed(s.id); auto.unreadSession(s.id).catch(reportError); } : undefined}
@@ -454,6 +463,48 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         />
       )}
     </div>
+  );
+}
+
+// A row's title as a field: Enter or leaving it keeps the name, Escape leaves it as it was. An empty name
+// asks for none (the title stays).
+function RowName({ s, done }: { s: Session; done: () => void }) {
+  const [v, setV] = useState(s.title);
+  const input = useRef<HTMLInputElement>(null);
+  const over = useRef(false);
+  // From the row's menu the menu gives the focus back to the row as it closes: the field takes it again, and
+  // a blur before that is not the owner leaving it.
+  const armed = useRef(false);
+  useEffect(() => {
+    input.current?.focus(); input.current?.select();
+    const t = setTimeout(() => { armed.current = true; if (document.activeElement !== input.current) { input.current?.focus(); input.current?.select(); } }, 150);
+    return () => clearTimeout(t);
+  }, []);
+  const keep = (save: boolean) => {
+    if (over.current) return;
+    over.current = true;
+    const t = v.trim();
+    if (save && t && t !== s.title) actions.patch(s.id, { title: t }).catch(reportError);
+    done();
+  };
+  return (
+    <input
+      ref={input}
+      value={v}
+      data-testid="row-rename"
+      aria-label="Session name"
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => { if (armed.current) keep(true); }}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (composing(e)) return;
+        if (e.key === "Enter") { e.preventDefault(); keep(true); }
+        if (e.key === "Escape") { e.preventDefault(); keep(false); }
+      }}
+      className="k-row-title k-row-name"
+    />
   );
 }
 
@@ -1153,8 +1204,11 @@ function Index({ current }: { current: string | null }) {
   const pinned = pinnedOrder(listed);
   // Keep the open branch in the list even when its root finishes.
   const root = rootSessionId(sessions, current);
-  const rest = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current && s.id !== root && !actedOn(s.id)));
-  const hidden = listed.length - pinned.length - rest.length;
+  const shown = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current && s.id !== root && !actedOn(s.id)));
+  // Sessions of other harnesses that are not Keel's own go under a line of their own at the list's end; an
+  // imported or taken-over one is a Keel session (its copy), and the source is no row anywhere.
+  const rest = shown.filter((s) => !s.outside || s.machine);
+  const hidden = listed.length - pinned.length - shown.length;
   const cmp = order<Session>(arr, watches);
   // Where the order moves rows as their sessions work, the folder of the row the hand is on keeps
   // its place among the folders, as the row does in it (see Group).
@@ -1187,6 +1241,7 @@ function Index({ current }: { current: string | null }) {
     return out;
   }, [grouped]);
   const sections = useMemo(() => machineRuns(rest), [rest]);
+  const external = useMemo(() => shown.filter((s) => s.outside && !s.machine).sort(cmp), [shown, cmp]);
   return (
     <>
       {/* What scrolls: on a phone the tabs, the tags and the counts go with the rows (the find stays),
@@ -1221,7 +1276,7 @@ function Index({ current }: { current: string | null }) {
         {pinned.length > 0 && (
           <PinnedGroup list={pinned} current={current} every={!!q} />
         )}
-        {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && late.length === 0 && (
+        {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && late.length === 0 && external.length === 0 && (
           q
             ? <p className="k-empty" data-testid="filter-empty">No sessions match {q}. <button type="button" className="k-link text-accent-ink underline-offset-2 hover:underline" onClick={() => setQ("")}>Clear the filter</button></p>
             : hidden > 0
@@ -1255,6 +1310,14 @@ function Index({ current }: { current: string | null }) {
             </Fragment>
           );
         })}
+        {external.length > 0 && (
+          <>
+            <MachineSep external count={external.length} />
+            <section className="k-group" data-testid="external-group">
+              <Group list={external} current={current} every={!!q} where />
+            </section>
+          </>
+        )}
         {hidden > 0 && (grouped.length > 0 || flat.length > 0) && (
           <button type="button" className="k-more" data-testid="hidden-done" onClick={() => setArrange({ hideDone: false })}>{hidden} finished hidden</button>
         )}

@@ -128,6 +128,9 @@ export type OutsideDeps = {
   trouble?: (e: unknown, at: string) => void;
   // The settings, read when used (a test gives its own).
   settings?: () => OutsideSettings;
+  // Whether a Keel session holds a copy of the source (an import or a take-over): a source with a copy has
+  // no session of its own here, it shows on the copy (its mark and, while it runs, its state).
+  copied?: (harness: OutsideHarness, sourceId: string) => boolean;
 };
 
 export type OutsideStatus = {
@@ -215,6 +218,10 @@ export class Outside {
     this.since = Date.now();
     this.cfg = this.settings();
     this.unsettle ??= onSettings(() => this.settled());
+    // A session this record showed of a source that was copied before is gone: the copy carries it.
+    for (const r of this.d.store.db.query<{ harness: OutsideHarness; source_id: string }, []>("SELECT harness, source_id FROM outside_sessions").all()) {
+      if (this.d.copied?.(r.harness, r.source_id)) this.copiedNow(r.harness, r.source_id);
+    }
     if (this.cfg.enabled) this.begin();
     // A session that worked or waited when the daemon stopped is read again: it may have ended since.
     for (const row of this.d.store.db.query<{ path: string; harness: OutsideHarness }, []>(
@@ -631,19 +638,60 @@ export class Outside {
     if (t.session && this.d.viewed?.(t.session)) this.later(t.session);
   }
 
+  // What a source's records say now, with the staleness the settings give.
+  private factsOf(t: Tracked) {
+    const { facts: said, vouched } = withOwn(t, this.own, this.keeps);
+    const staleMs = this.cfg.stale_minutes * 60_000;
+    const seen = Math.max(said.last_ts || 0, t.mtime || 0);
+    return { facts: aged(said, seen, staleMs, vouched), said, vouched, seen, staleMs };
+  }
+
+  // A source that was copied into Keel loses its session here: the copy carries it.
+  private fold(t: Tracked) {
+    const row = this.d.store.db.query<{ session_id: string }, [string, string]>("SELECT session_id FROM outside_sessions WHERE harness = ? AND source_id = ?").get(t.harness, t.found!.id);
+    const id = t.session ?? row?.session_id;
+    t.session = undefined;
+    t.mark = undefined;
+    if (!id) return;
+    this.live.delete(id);
+    const x = this.d.store.session(id);
+    if (!x?.outside) return;
+    this.d.store.deleteSession(id);
+    this.d.bus.emit({ t: "session", session: { ...x, archived: true, phase: "idle" }, deleted: true });
+  }
+
+  // Told that a copy of a source was made: the session this record showed of it goes.
+  copiedNow(harness: OutsideHarness, sourceId: string) {
+    for (const t of this.files.values()) if (t.harness === harness && t.found?.id === sourceId) { this.fold(t); return; }
+    // (Not followed in this run: its session of an earlier run, if any.)
+    const row = this.d.store.db.query<{ session_id: string }, [string, string]>("SELECT session_id FROM outside_sessions WHERE harness = ? AND source_id = ?").get(harness, sourceId);
+    const x = row && this.d.store.session(row.session_id);
+    if (x?.outside) { this.d.store.deleteSession(x.id); this.d.bus.emit({ t: "session", session: { ...x, archived: true, phase: "idle" }, deleted: true }); }
+  }
+
+  // What the source of a copy is doing now, from its records: it is running (working or waiting) or it is not.
+  // Nothing when this daemon does not follow it.
+  runningOf(harness: OutsideHarness, sourceId: string): { state: OutsideMark["state"]; since: number; waiting_for?: string } | undefined {
+    for (const t of this.files.values()) {
+      if (t.harness !== harness || t.found?.id !== sourceId) continue;
+      const { facts } = this.factsOf(t);
+      return { state: facts.state, since: facts.since || t.mtime, ...(facts.waiting_for ? { waiting_for: facts.waiting_for } : {}) };
+    }
+    return undefined;
+  }
+
   // The session's row from what its records say now: made the first time, then written only when it changed.
   private tell(t: Tracked) {
     const f = t.found!;
     clearTimeout(t.aging);
     // A folder the owner excluded: not made, not told.
     if (excluded(f.cwd, this.cfg.exclude)) return;
-    const { facts: said, vouched } = withOwn(t, this.own, this.keeps);
-    const staleMs = this.cfg.stale_minutes * 60_000;
-    const seen = Math.max(said.last_ts || 0, t.mtime || 0);
-    const facts = aged(said, seen, staleMs, vouched);
+    const { facts, said, vouched, seen, staleMs } = this.factsOf(t);
     // Told again when it would go stale with no record before then.
     if (facts !== said || vouched || (said.state !== "working" && said.state !== "waiting")) t.aging = undefined;
     else { t.aging = setTimeout(() => this.tell(t), Math.max(0, seen + staleMs - Date.now()) + 50); (t.aging as any).unref?.(); }
+    // A source a Keel session holds a copy of is that copy's mark, not a row of its own.
+    if (this.d.copied?.(t.harness, f.id)) { this.fold(t); return; }
     const id = t.session ?? this.made(t, facts);
     if (!id) return;
     const s = this.d.store.session(id);
