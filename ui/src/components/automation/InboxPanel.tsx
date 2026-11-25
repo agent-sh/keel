@@ -255,7 +255,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
                   {part === "need" && (() => {
                     const now = live[a.id] ?? a.wait_now ?? a.data?.wait;
                     return costs(now) && (
-                      <span className="block pb-0.5 pl-6 text-caption leading-snug text-muted sm:truncate" data-testid="inbox-cost" title="What this wait costs now. The wait that cost most as it began is listed first.">
+                      <span className="block pb-0.5 pl-6 text-micro leading-snug text-faint sm:truncate" data-testid="inbox-cost" title="What this wait costs now. The wait that cost most as it began is listed first.">
                         {costLine(now, Date.now())}
                       </span>
                     );
@@ -294,13 +294,11 @@ function Inbox({ onClose }: { onClose: () => void }) {
   );
 }
 
-// A part's head: its name and how many it holds. What needs the owner carries their mark.
+// A part's head: its name, quiet. Its rows' marks say their state, and how many it holds is a reader's words.
 function PartHead({ part, n }: { part: AlertGroup; n: number }) {
   return (
     <li className="flex items-center gap-2 px-2.5 pb-1 pt-3 first:pt-1.5" data-testid="inbox-part" data-part={part} role="presentation">
-      {part === "need" && <Mark w="need" className="size-2" />}
-      <h3 className={cn("k-label", part === "need" && "text-st-need")}>{ALERT_GROUP_WORD[part]}</h3>
-      <span className="k-face-figure text-micro text-faint">{n}</span>
+      <h3 className="k-label">{ALERT_GROUP_WORD[part]}<span className="sr-only">, {n}</span></h3>
     </li>
   );
 }
@@ -364,12 +362,13 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
             </div>
             {tab === "inbox" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex min-h-0 flex-1 flex-col"><Inbox onClose={close} /></div>}
             {tab === "activity" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex min-h-0 flex-1 flex-col"><ActivityList onClose={close} /></div>}
-            {/* Delivery, once for the list: where alerts go besides here, and the two controls over it. */}
+            {/* Delivery, once for the list: the two controls over it. Where alerts go besides here is the Routes button's
+                tooltip and a reader's words: a line of what is not set up, always on screen, asked nothing of the owner. */}
             <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-1 border-t border-line px-3 py-2">
-              <p className="min-w-0 flex-1 basis-full px-1 text-caption leading-snug text-faint sm:basis-56" data-testid="inbox-routes">{routesLine(routes, channels)}</p>
               <GlobalSnoozeButton />
-              <button type="button" data-testid="alert-routes-link" onClick={() => { close(); navigate({ name: "settings", section: "alerts" }); }} className={actCls}>
+              <button type="button" data-testid="alert-routes-link" title={routesLine(routes, channels)} onClick={() => { close(); navigate({ name: "settings", section: "alerts" }); }} className={actCls}>
                 <Settings2 className="size-3.5" /> Routes
+                <span className="sr-only" data-testid="inbox-routes">. {routesLine(routes, channels)}</span>
               </button>
             </div>
           </div>

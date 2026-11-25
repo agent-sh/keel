@@ -235,9 +235,12 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   // The model's markdown is read as words.
   const finished = rows.filter({ hasText: "Done" }).first();
   await expect(finished.getByTestId("inbox-line")).toHaveText(/^The parser, moved: The change is in notes\/plan\.md:2/);
-  // Routes: once for the list, on no row.
+  // Routes: once for the list, on no row, and no standing line: the Routes button's tooltip and a reader's words.
+  const routes = page.getByTestId("alert-routes-link");
   await expect(page.getByTestId("inbox-routes")).toHaveCount(1);
-  await expect(page.getByTestId("inbox-routes")).toContainText(/also go to .*Command hook|stay here/);
+  await expect(routes.getByTestId("inbox-routes")).toContainText(/also go to .*Command hook|stay here/);
+  await expect(routes).toHaveAttribute("title", /also go to .*Command hook|stay here/);
+  expect(await page.getByTestId("inbox-routes").evaluate((el) => el.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
   for (const row of await rows.all()) {
     await expect(row).not.toContainText(/inbox only|sent to|sending to|not set up/i);
     // The state word is followed by the line, never by a separator with nothing after it.

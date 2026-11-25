@@ -333,7 +333,7 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   const n = Number((await need.innerText()).match(/\d+/)![0]);
   expect(n).toBeGreaterThanOrEqual(2);
   await expect(page).toHaveTitle(new RegExp(`^\\(${n}\\) `));
-  await expect(need).toHaveAttribute("title", new RegExp(`^${n} things wait on you: approvals, questions, plans and secrets`));
+  await expect(need).toHaveAttribute("title", new RegExp(`^${n} needs? you\\. ${n} things wait on you: approvals, questions, plans and secrets`));
   // The bug counts Keel's own errors.
   await expect(page.getByTestId("errors-button")).toHaveAccessibleName(/errors? in Keel/);
 
@@ -342,7 +342,7 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   await page.getByTestId("inbox-unread-filter").check();
   const items = page.getByTestId("inbox-item");
   await expect(items).toHaveCount(5);
-  await expect(page.getByTestId("inbox-part")).toHaveText([/^Needs you\s*2$/, /^New since you looked\s*3$/]);
+  await expect(page.getByTestId("inbox-part")).toHaveText([/^Needs you, 2$/, /^New since you looked, 3$/]);
   expect(await items.evaluateAll((els) => els.map((e) => e.getAttribute("data-part")))).toEqual(["need", "need", "new", "new", "new"]);
   expect(await items.evaluateAll((els) => els.map((e) => e.querySelector('[data-testid="inbox-word"]')?.textContent))).toEqual(["Approval", "Approval", "Done", "Done", "Done"]);
   // What waits is in the order it was asked: the oldest request first.
@@ -470,7 +470,7 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   await expect.poll(async () => (await unread()).total, { timeout: 15_000 }).toBeGreaterThan(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/?inbox");
-  await expect(page.getByTestId("inbox-part")).toHaveText([/^Needs you\s*2$/, /^New since you looked\s*1$/, /^Earlier\s*\d+$/]);
+  await expect(page.getByTestId("inbox-part")).toHaveText([/^Needs you, 2$/, /^New since you looked, 1$/, /^Earlier, \d+$/]);
   await shoot(page, "state-words-06-inbox-phone");
 });
 
