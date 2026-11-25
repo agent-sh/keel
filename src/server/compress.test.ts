@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliDecompressSync } from "node:zlib";
-import { bundleRoutes, compressJson, MIN_BYTES, pick } from "./compress.ts";
+import { ASYNC_BYTES, bundleRoutes, compressJson, encodeAsync, MIN_BYTES, pick } from "./compress.ts";
 
 const req = (ae: string | null, extra: Record<string, string> = {}) => new Request("http://x/", { headers: { ...(ae ? { "accept-encoding": ae } : {}), ...extra } });
 const big = { events: Array.from({ length: 200 }, (_, i) => ({ i, text: "the handler records the failure once" })) };
@@ -99,4 +99,24 @@ test("a built bundle is served precompressed, with per-coding ETags and 304s", a
 
   expect(bundleRoutes({ index: join(dir, "index.html") }, ["/"], () => {})).toBeUndefined();
   rmSync(dir, { recursive: true });
+});
+
+// A big body is compressed on the thread pool: the loop runs other callbacks meanwhile, and the bytes are the same coding.
+test("a big JSON answer is compressed off the loop under every coding", async () => {
+  let seed = 7;
+  const text = Array.from({ length: 120_000 }, () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) % 99_991).toString(36)).join(" ");
+  const raw = new TextEncoder().encode(JSON.stringify({ text })) as Uint8Array<ArrayBuffer>;
+  expect(raw.length).toBeGreaterThan(ASYNC_BYTES);
+  const read = { gzip: Bun.gunzipSync, br: brotliDecompressSync, zstd: Bun.zstdDecompressSync } as const;
+  for (const e of ["gzip", "br", "zstd"] as const) {
+    let ran = false;
+    const p = encodeAsync(raw, e);
+    setImmediate(() => { ran = true; });
+    const packed = await p;
+    expect(ran).toBe(true);
+    expect(new TextDecoder().decode(read[e](packed))).toBe(new TextDecoder().decode(raw));
+  }
+  // Under the floor it is made at once, as before.
+  const small = new TextEncoder().encode(JSON.stringify(big)) as Uint8Array<ArrayBuffer>;
+  expect(Bun.gunzipSync(await encodeAsync(small, "gzip")).length).toBe(small.length);
 });

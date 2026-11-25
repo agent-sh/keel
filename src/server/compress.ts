@@ -9,7 +9,7 @@
 // gzip 9 for the clients that send only gzip (browsers over plain http).
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { brotliCompress, brotliCompressSync, constants } from "node:zlib";
+import { brotliCompress, brotliCompressSync, constants, gzip, zstdCompress } from "node:zlib";
 
 export type Enc = "zstd" | "br" | "gzip";
 
@@ -45,6 +45,19 @@ export const encode = (raw: Uint8Array<ArrayBuffer>, e: Enc) =>
   : e === "br" ? brotliCompressSync(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 4, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length } })
   : Bun.gzipSync(raw, { level: 4 })) as Uint8Array<ArrayBuffer>;
 
+// From this size a body is compressed on the runtime's thread pool, not on the loop: a few megabytes of JSON
+// take tens of milliseconds to compress, and every other session waits for them.
+export const ASYNC_BYTES = 512 * 1024;
+export function encodeAsync(raw: Uint8Array<ArrayBuffer>, e: Enc): Promise<Uint8Array<ArrayBuffer>> {
+  if (raw.length < ASYNC_BYTES) return Promise.resolve(encode(raw, e));
+  const done = (ok: (b: Uint8Array<ArrayBuffer>) => void, no: (err: Error) => void) => (err: Error | null, out: Buffer) => (err ? no(err) : ok(new Uint8Array(out.buffer, out.byteOffset, out.length) as Uint8Array<ArrayBuffer>));
+  return new Promise((ok, no) => {
+    if (e === "zstd") zstdCompress(raw, { params: { [constants.ZSTD_c_compressionLevel]: 3 } }, done(ok, no));
+    else if (e === "br") brotliCompress(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 4, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length } }, done(ok, no));
+    else gzip(raw, { level: 4 }, done(ok, no));
+  });
+}
+
 // A JSON answer at or above MIN_BYTES, compressed with the cheapest coding the
 // request accepts. Anything else comes back as it was.
 export async function compressJson(req: Request, res: Response): Promise<Response> {
@@ -67,7 +80,7 @@ export async function compressJson(req: Request, res: Response): Promise<Respons
   vary(headers);
   headers.set("content-encoding", e);
   headers.delete("content-length");
-  return new Response(encode(raw, e), init());
+  return new Response(await encodeAsync(raw, e), init());
 }
 
 // Types worth compressing; images and fonts come compressed already.
