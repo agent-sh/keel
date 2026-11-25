@@ -17,7 +17,7 @@ import { ago, cn, fmtSize } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { OwnerWords } from "./Words.tsx";
-import { MachineJumps, MachineSections, readable, SessionRow, useFarLists } from "./ImportMachines.tsx";
+import { MachineJumps, MachineSections, noStore, readable, SessionRow, useFarLists } from "./ImportMachines.tsx";
 import { MachineSep } from "./Where.tsx";
 
 // `original`, `wait`: on a machine reached over ssh, what the harness that still runs it does, and a resume waiting for it.
@@ -437,15 +437,15 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
           data-testid="import-sheet"
  className="fixed inset-x-4 top-[6vh] bottom-[6vh] z-50 mx-auto flex max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
-          <div className="flex items-center gap-3 border-b border-line px-4 py-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 max-md:gap-x-1 md:flex-nowrap">
             <History className="size-4 text-muted" />
-            <Dialog.Title className="font-semibold">Import sessions</Dialog.Title>
+            <Dialog.Title className="shrink-0 whitespace-nowrap font-semibold">Import sessions</Dialog.Title>
             <Seg
               kind="tabs"
               // Each source is listed over the network and a change drops the pick: the arrows only move, Space or Enter chooses.
               manual
               panel={panel}
-              className="ml-2"
+              className="order-last min-w-0 basis-full md:order-none md:ml-2 md:basis-auto"
               label="Where to import from"
               value={harness}
               onChange={setHarness}
@@ -460,12 +460,12 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               }))}
             />
             <input ref={pick} type="file" accept=".jsonl,application/x-ndjson,application/jsonl" hidden data-testid="import-keel-file-input" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void importKeelFile(f); }} />
-            <button type="button" data-testid="import-keel-file" title="A session exported from another Keel as a Keel file" disabled={keelFile?.state === "sending"} onClick={() => pick.current?.click()} className="ml-auto flex h-7 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
+            <button type="button" data-testid="import-keel-file" title="A session exported from another Keel as a Keel file" disabled={keelFile?.state === "sending"} onClick={() => pick.current?.click()} className="ml-auto flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
               <FileUp className="size-3.5" />
-              Import a Keel file
+              <span className="max-md:sr-only">Import a Keel file</span>
             </button>
             {linked.length > 0 && (
-              <label className="flex items-center gap-1.5 text-caption text-faint">
+              <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption text-faint">
                 On
                 <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="k-field-sm">
                   <option value="">all machines</option>
@@ -559,11 +559,11 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                   <SessionRow key={r.path + r.id} r={r} picked={!sel?.machine && sel?.id === r.id} onPick={() => { setSel(r); setIntent(null); }}
                     strip={fromSsh ? <OriginalStrip target={{ machine: from, harness: r.harness, id: r.id }} tool={TOOL[r.harness] ?? r.harness} onPick={(i) => { setSel(r); setIntent(i); }} onOpen={(id) => { onOpenChange(false); navigate({ name: "session", id }); }} /> : undefined} />
                 ))}
-                {rows?.length === 0 && <p className="k-empty px-3 py-4">No sessions match.</p>}
+                {rows?.length === 0 && <p className="k-empty px-3 py-4" data-testid="import-empty">{noStore(harnesses, harness, q) ?? "No sessions match."}</p>}
                 {next !== undefined && (
                   <button type="button" onClick={() => load(next)} className="w-full py-2 text-caption text-accent hover:bg-hover">More</button>
                 )}
-                <MachineSections machines={others} far={farLists.far} pickedKey={sel?.machine ? `${sel.machine}:${sel.harness}:${sel.id}` : ""} more={farLists.more} again={farLists.again}
+                <MachineSections machines={others} far={farLists.far} harness={harness} q={q} pickedKey={sel?.machine ? `${sel.machine}:${sel.harness}:${sel.id}` : ""} more={farLists.more} again={farLists.again}
                   onPick={(r, i) => { setSel(r); setIntent(i); }} onOpen={(id) => { onOpenChange(false); navigate({ name: "session", id }); }} />
               </div>
             </div>
@@ -571,9 +571,9 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               <PreviewPane row={sel} from={at} resume={ssh ? { machineName: ssh.name } : undefined} intent={intent} onIntent={setIntent} onDone={() => onOpenChange(false)} />
             ) : (
               <div className="flex-1 p-6">
-                <div className="k-empty max-w-md">
+                <div className="k-empty max-w-md" data-testid="import-pick-hint">
                   <b>No session picked</b>
-                  <p>Pick a session to see what an import brings.</p>
+                  <p>{total > 0 || (rows && rows.length > 0) ? "Pick a session in the list: its counts and last messages show here, and Import makes a copy." : "Nothing here to pick."}</p>
                   <p className="mt-1">{from ? "That machine reads its own stores and never writes to them. The copy goes on here with any model, and its tools run on that machine." : "Keel reads the other harness's store and never writes to it. The copy keeps its folder and goes on here with any model."}</p>
                 </div>
               </div>

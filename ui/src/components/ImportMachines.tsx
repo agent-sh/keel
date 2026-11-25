@@ -16,8 +16,16 @@ import { TOOL } from "./TakeOver.tsx";
 import { MachineSep } from "./Where.tsx";
 
 export type RowData = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean }; original?: Original; wait?: Wait; in_text?: true; machine?: string };
-type Listed = { sessions: RowData[]; total: number; next_cursor?: string; changed?: boolean; cached_ms?: number; stale?: string; none?: boolean };
+type Listed = { sessions: RowData[]; total: number; harnesses?: Store[]; next_cursor?: string; changed?: boolean; cached_ms?: number; stale?: string; none?: boolean };
 type Running = { sessions: RowData[]; supported: boolean; offline?: string };
+
+// What a harness reports of its store on a machine. An empty list there is no store when it is not installed.
+export type Store = { harness: string; label?: string; installed?: boolean };
+// The words for an empty list of a harness whose store is not on the machine (not for a search that found nothing).
+export const noStore = (stores: Store[] | undefined, harness: string, q: string) => {
+  const h = stores?.find((x) => x.harness === harness);
+  return h && h.installed === false && !q.trim() ? `No ${h.label ?? h.harness} store on this machine.` : undefined;
+};
 
 const home = (p?: string) => (p ?? "").replace(/^\/home\/[^/]+/, "~");
 
@@ -45,7 +53,7 @@ export function SessionRow({ r, picked, onPick, testid = "import-row", strip }: 
 
 // What one machine's part of the list holds. `at`: when the daemon last read the machine, set while the
 // list shown is the kept one (the live one has not come, or the machine does not answer: `why`).
-export type Far = { rows: RowData[] | null; total: number; next?: string; at?: number; why?: string; error?: string; running: RowData[]; runOff?: string };
+export type Far = { rows: RowData[] | null; total: number; harnesses?: Store[]; next?: string; at?: number; why?: string; error?: string; running: RowData[]; runOff?: string };
 const EMPTY: Far = { rows: null, total: 0, running: [] };
 
 // The machines whose sessions the sheet shows: one reached over ssh, or a paired daemon (one that is out of
@@ -85,7 +93,7 @@ export function useFarLists({ open, machines, harness, q, all }: { open: boolean
       if (n !== seqs.current[id]) return;
       noteRows(id, r.sessions);
       const rows = tag(id, r.sessions);
-      setFar((f) => ({ ...f, [id]: { ...EMPTY, ...f[id], rows: cursor ? [...(f[id]?.rows ?? []), ...rows] : rows, total: r.total, next: r.next_cursor, at: r.cached_ms, why: r.stale, error: undefined } }));
+      setFar((f) => ({ ...f, [id]: { ...EMPTY, ...f[id], rows: cursor ? [...(f[id]?.rows ?? []), ...rows] : rows, total: r.total, harnesses: r.harnesses, next: r.next_cursor, at: r.cached_ms, why: r.stale, error: undefined } }));
     } catch (e) {
       if (n !== seqs.current[id]) return;
       patch(id, { error: failed(e, { at: "ImportSheet machine" }) });
@@ -140,7 +148,7 @@ type Pick = (r: RowData, intent: Intent) => void;
 
 // Each machine's part: its separator (name, whether it answers, how many), the date of the list when it is
 // the kept one, what runs there now, and its sessions.
-export function MachineSections({ machines, far, pickedKey, onPick, onOpen, more, again }: { machines: Machine[]; far: Record<string, Far>; pickedKey: string; onPick: Pick; onOpen: (sessionId: string) => void; more: (id: string) => void; again: (id: string) => void }) {
+export function MachineSections({ machines, far, harness, q, pickedKey, onPick, onOpen, more, again }: { machines: Machine[]; far: Record<string, Far>; harness: string; q: string; pickedKey: string; onPick: Pick; onOpen: (sessionId: string) => void; more: (id: string) => void; again: (id: string) => void }) {
   return (
     <>
       {machines.map((m) => {
@@ -174,7 +182,7 @@ export function MachineSections({ machines, far, pickedKey, onPick, onOpen, more
             )}
             {/* A session shown under Running now is not shown again below it. */}
             {f.rows?.filter((r) => !f.running.some((x) => key(x) === key(r))).map((r) => <SessionRow key={key(r) + r.path} r={r} testid="import-machine-row" picked={pickedKey === key(r)} onPick={() => onPick(r, null)} strip={strip(r)} />)}
-            {f.rows?.length === 0 && <p className="k-empty px-3 py-3">No sessions match.</p>}
+            {f.rows?.length === 0 && <p className="k-empty px-3 py-3" data-testid="import-machine-empty">{noStore(f.harnesses, harness, q) ?? "No sessions match."}</p>}
             {f.next !== undefined && !kept && <button type="button" onClick={() => more(m.id)} className="w-full py-2 text-caption text-accent hover:bg-hover">More</button>}
           </section>
         );

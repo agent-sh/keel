@@ -633,6 +633,30 @@ test("the import sheet lists every harness and imports from each", async ({ page
   rmSync(longDir, { recursive: true, force: true });
 });
 
+// The sheet's head is one line, the empty pane says what a pick brings, and a harness with no store on the
+// machine says so instead of "No sessions match".
+test("the import sheet's head is one line and an empty store is named", async ({ page, request }) => {
+  const first = await (await request.get("/api/import/sessions?limit=1")).json();
+  const bare = first.harnesses.find((h: any) => h.installed === false);
+  test.skip(!bare, "every harness has a store on this machine");
+  await page.goto("/");
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("Import sessions");
+  await expect(page.getByRole("option", { name: "Import sessions" })).toBeVisible();
+  await page.keyboard.press("Enter");
+  const sheet = page.getByTestId("import-sheet");
+  await expect(sheet).toBeVisible();
+  await expect(page.getByTestId("import-pick-hint")).toContainText("No session picked");
+  // One line: the title and the Keel file button are each one line tall, and the head holds all its controls in one row.
+  const high = async (loc: ReturnType<typeof sheet.locator>) => (await loc.evaluate((e) => e.getBoundingClientRect().height / parseFloat(getComputedStyle(document.documentElement).fontSize)));
+  expect(await high(sheet.getByRole("heading", { name: "Import sessions" }))).toBeLessThan(1.75);
+  expect(await high(page.getByTestId("import-keel-file"))).toBeLessThan(2.25);
+  expect(await high(sheet.locator("> div").first())).toBeLessThan(4);
+  await page.getByTestId(`import-tab-${bare.harness}`).click();
+  await expect(page.getByTestId("import-empty")).toHaveText(/^No .* store on this machine\.$/);
+  await shoot(page, "import-no-store");
+});
+
 // The resume line the dialog shows runs as it is pasted, whatever the
 // session's folder is called: here a name with a space and an apostrophe. A
 // stub stands in for the harness and records where it ran and what it was given.
