@@ -141,12 +141,12 @@ export function BackgroundPopup({ sessionId, agents, waits, loops, side }: Pick<
                   >
                     <AgentMark w={st.watch} />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate" data-testid="bg-agent-title">{title}</div>
-                      <div className="truncate text-micro text-faint" title={st.title}><span data-testid="bg-agent-state">{st.phrase}</span> · {a.type} · {ago(a.created)}</div>
+                      <div className="truncate max-md:whitespace-normal max-md:break-words" data-testid="bg-agent-title">{title}</div>
+                      <div className="truncate text-micro text-faint max-md:whitespace-normal max-md:break-words" title={st.title}><span data-testid="bg-agent-state">{st.phrase}</span> · {a.type} · {ago(a.created)}</div>
                     </div>
                     <ExternalLink className="size-3.5 shrink-0 text-faint" />
                   </div>
-                  <span className="grid size-6 shrink-0 place-items-center">{isLive(a) && <StopAgent a={a} title={title} testid="bg-agent-stop" />}</span>
+                  <span className="grid size-6 shrink-0 place-items-center pointer-coarse:size-auto">{isLive(a) && <StopAgent a={a} title={title} testid="bg-agent-stop" />}</span>
                 </div>
               );
             })}
@@ -156,8 +156,8 @@ export function BackgroundPopup({ sessionId, agents, waits, loops, side }: Pick<
               <div key={w.id} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-ui hover:bg-hover" data-testid="bg-wait">
                 <Timer className="size-3.5 shrink-0 text-warn" />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-caption">{waitLabel(w)}</div>
-                  <div className="truncate text-micro text-faint">
+                  <div className="truncate font-mono text-caption max-md:whitespace-normal max-md:break-words">{waitLabel(w)}</div>
+                  <div className="truncate text-micro text-faint max-md:whitespace-normal max-md:break-words">
                     {w.note || "no note"} · {w.kind === "monitor" || w.kind === "websocket" ? `${w.events} events · ` : ""}
                     {/* A timer fires at its time (on the next check), it does not give up. */}
                     {w.kind === "timer" ? `due ${inMs((w.spec as any).at_ms)}, fires on the next check` : `gives up ${inMs(w.deadline)}`}{w.last_error ? ` · ${w.last_error}` : ""}

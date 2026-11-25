@@ -1208,5 +1208,28 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    test("the agents list the dock opens reads whole and keeps each Stop inside its row, also at a large text size", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(180_000);
+      const id = await fullDock(request, "Phone agents list");
+      try {
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${id}`);
+            await page.getByTestId("dock-agents").tap();
+            const popup = page.getByTestId("background-popup");
+            await expect(popup.getByTestId("bg-agent")).toHaveCount(1);
+            await page.waitForTimeout(400);
+            await expect(popup.getByTestId("bg-agent-stop")).toBeVisible();
+            expect(await phoneProblems(popup), `the agents list at ${scale * 100}% text`).toEqual([]);
+            expect(await overlaps(popup, "button, [role=button]"), `controls over each other at ${scale * 100}% text`).toEqual([]);
+            await shoot(page, `phone-surfaces-31-agents-list-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        await drop(request, id);
+      }
+    });
   });
 }
