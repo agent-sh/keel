@@ -2,6 +2,7 @@ import { type Wire, wireOf, wireScope } from "../providers/wiretap.ts";
 import { during, duringSync } from "../admin/activity.ts";
 import { outward } from "../safety/egress.ts";
 import { timed } from "../admin/stall.ts";
+import { pace, yieldLoop } from "./pace.ts";
 import { heldFile } from "../core/store-files.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -2364,7 +2365,7 @@ export class Engine {
     // ones that add to a conversation add only to a turn's.
     // Whether it may be sent at all (the spend limit) is asked of every request, a bare one too.
     for (const h of allHooks()) h.mayRequest?.(session, req);
-    if (!bare) for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+    if (!bare) for (const h of allHooks()) if (h.beforeRequest) { await yieldLoop(); req = { ...req, ...(await h.beforeRequest(session, req)) }; }
     if (session.parent_id && !bare && purpose !== "sampling") req.cacheLife = this.cacheLife(id, st, purpose);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
@@ -2387,6 +2388,7 @@ export class Engine {
     // Shown while copies are made: after a restart a history with many large
     // images takes seconds before its first request is sent.
     const preparing = quiet ? undefined : () => this.status(id, { kind: "model", since: Date.now(), model: st.info.name, preparing: "images" });
+    await yieldLoop();
     req.messages = await fitForWire(whole, limits, out, preparing);
     // What an image refusal changed for this request; kept for the session once it passes.
     let fixed: { cause: unknown; edge?: number; out?: string[]; large?: boolean } | undefined;
@@ -2450,6 +2452,7 @@ export class Engine {
     for (;;) {
       partial.clear();
       let lastAt: number | undefined;
+      await yieldLoop();
       this.measure(id, (h) => h.requestSent?.(session, req));
       const since = Date.now();
       // (A retry the account's line holds keeps its retry status until the line lets it go.)
@@ -3707,7 +3710,7 @@ export class Engine {
           // Its events are read: a session that is not in memory is brought in off the loop first
           // (this pass and the start's own pass over the same sessions run side by side).
           if (!this.store.isKept(id)) {
-            await during("start", () => this.store.warm(id, false), "idle compaction pass: reading a session's rows");
+            await during("start", () => this.store.warm(id, false, 0, true), "idle compaction pass: reading a session's rows");
             if (this.running.has(id) || this.store.session(id)?.head !== s.head) continue;
           }
           // And the bodies its count reads (its context from the last checkpoint on), off the loop too.
@@ -4492,7 +4495,13 @@ export class Engine {
       if (!s || s.archived || this.draining || this.held.has(id) || this.running.has(id) || !this.owed.has(id) || !this.store.queue(id).length) return;
       try {
         await waitModel(s.model);
-        return this.startOwed(id);
+        const release = await pace();
+        try {
+          if (this.draining || this.held.has(id) || this.running.has(id) || !this.owed.has(id)) return;
+          this.startOwed(id);
+          await this.untilSent(id, FIRST_REQUEST_WAIT_MS);
+          return;
+        } finally { release(); }
       } catch (e) {
         if (!said) {
           const rec = this.errors.capture("provider", e, { session: id, at: "queued prompt after restart" });
@@ -4602,10 +4611,10 @@ export class Engine {
     const slots = new Slots(resumeAtOnce(), resumeGapMs());
     // Only the sessions whose branch ends in a turn a restart cut are read:
     // the store finds them from each session's last event.
-    const sessions = this.store.cutSessions();
+    const sessions = await this.store.cutSessionsOff();
     await Promise.all(sessions.map(async (s) => {
       // Not in memory after a start: its pages are read off the loop first (store.warm).
-      await during("start", () => this.store.warm(s.id, false), "the start's recovery: reading a cut session's rows");
+      await during("start", () => this.store.warm(s.id, false, 0, true), "the start's recovery: reading a cut session's rows");
       const line = this.lineage(s.id);
       const end = line.at(-1);
       if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;
@@ -4647,10 +4656,17 @@ export class Engine {
         // turn stopped) is not continued, as if the stop had come first.
         const again = allHooks().map((h) => h.cutTurn?.(now, { stalled })).find(Boolean);
         if (again && again !== "continue") return held(again.hold);
-        this.acceptRestart(s.id);
-        this.start(s.id);
-        this.emitQueue(s.id);
-        this.tellCut(s, cut, "continued");
+        // One turn's first request is prepared at a time (src/engine/pace.ts); the checks above are read again after the wait.
+        const release = await pace();
+        try {
+          const later = this.store.session(s.id);
+          if (!later || later.archived || this.running.has(s.id) || later.head !== end.id) return this.tellCut(s, cut, "moved", !later ? "not continued: its session was deleted" : later.archived ? "not continued: its session was archived" : undefined);
+          this.acceptRestart(s.id);
+          this.start(s.id);
+          this.emitQueue(s.id);
+          this.tellCut(s, cut, "continued");
+          await this.untilSent(s.id, FIRST_REQUEST_WAIT_MS);
+        } finally { release(); }
         // Held until the turn ends or its first steps had time to run: a turn that
         // then waits on the owner (an approval) does not hold back the others.
         if (!cards && slots.limited) await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS), ...(owed ? [this.untilOnOwner(s.id, RESUME_HOLD_MS)] : [])]);
@@ -4658,6 +4674,20 @@ export class Engine {
         if (!cards) slots.give();
       }
     }));
+  }
+
+  // Resolves once the turn has prepared its first request (its status is no longer idle: the request
+  // is on its way, or it waits for tools or the owner), or has ended, or `ms` have passed.
+  private untilSent(id: string, ms: number): Promise<void> {
+    const r = this.running.get(id);
+    if (!r || this.statusOf(id).kind !== "idle") return Promise.resolve();
+    return new Promise<void>((ok) => {
+      let off = () => {};
+      const t = setTimeout(done, ms);
+      function done() { clearTimeout(t); off(); ok(); }
+      off = this.bus.on((f) => { if (f.t === "status" && f.session_id === id && f.status.kind !== "idle") done(); });
+      void r.done.then(done, done);
+    });
   }
 
   // Resolves once the session's turn only waits on the owner (or ended, or `ms` passed).
@@ -4929,6 +4959,8 @@ const queuedRetryMs = () => Number(process.env.KEEL_QUEUED_RETRY_MS ?? 30_000);
 const resumeAtOnce = () => Number(process.env.KEEL_RESUME_AT_ONCE || Infinity);
 const resumeGapMs = () => Number(process.env.KEEL_RESUME_GAP_MS || 0);
 const RESUME_HOLD_MS = 30_000;
+// How long a start waits for a continued turn to prepare its first request before the next turn is let go.
+const FIRST_REQUEST_WAIT_MS = 2_000;
 // How often a drain looks again at which running turns only wait on the owner.
 const SETTLE_CHECK_MS = 250;
 

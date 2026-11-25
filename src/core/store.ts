@@ -300,6 +300,8 @@ const NEWEST_PART = 32;
 
 const pause = () => new Promise<void>((r) => setImmediate(r));
 const BODIES = "SELECT data FROM events WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq";
+const CUT_SESSIONS = `SELECT s.* FROM sessions s JOIN events e ON e.id = s.head
+  WHERE s.archived = 0 AND e.kind = 'turn_end' AND json_extract(e.data, '$.reason') = 'restart' ORDER BY s.updated DESC`;
 const BARE_PART = "SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT 4096";
 // KEEL_TRACE_COLD=1: each whole-session read and each read of bodies made on the loop is a line of the log, with who asked; =stack: and its call stack.
 const TRACE_COLD = process.env.KEEL_TRACE_COLD;
@@ -426,6 +428,9 @@ export class Store {
   // The rows of a statement, read on the read thread and handed over; undefined when that cannot
   // be had now (no thread, or no answer in time): set by the daemon (Reads.rowsOff).
   readOff?: (sql: string, params: (string | number | null)[]) => Promise<any[] | undefined>;
+  // The same for a caller that is owed nothing in a hurry: it waits behind a long read on the thread
+  // instead of being told to read for itself (Reads.rowsLater).
+  readLater?: (sql: string, params: (string | number | null)[]) => Promise<any[] | undefined>;
   // A summary settled against its branch on the read thread (src/engine/settle-read.ts), set by the
   // daemon: without it the caller settles on the loop.
   settleOff?: (ask: SettleAsk) => Promise<Settled>;
@@ -968,11 +973,15 @@ export class Store {
   // by its id (the head), so a start reads one small row a session and
   // parses no session to find the few it has to continue.
   cutSessions(): Session[] {
-    return this.db
-      .query<SessionRow, []>(`SELECT s.* FROM sessions s JOIN events e ON e.id = s.head
-        WHERE s.archived = 0 AND e.kind = 'turn_end' AND json_extract(e.data, '$.reason') = 'restart' ORDER BY s.updated DESC`)
-      .all()
-      .map(rowToSession);
+    return this.db.query<SessionRow, []>(CUT_SESSIONS).all().map(rowToSession);
+  }
+
+  // The same, read on the read thread: one lookup of an event's row for each unarchived session is
+  // work for a store of thousands of sessions, and a start asks for it with the daemon answering.
+  // Without a thread, or when it does not answer, the loop reads it.
+  async cutSessionsOff(): Promise<Session[]> {
+    const rows = await (this.readLater ?? this.readOff)?.(CUT_SESSIONS, []).catch(() => undefined);
+    return rows ? (rows as SessionRow[]).map(rowToSession) : this.cutSessions();
   }
 
   // `updated` is the session's last activity (lists sort by it, "the last
@@ -1508,7 +1517,9 @@ export class Store {
   // `bodies: false`: the events alone, for a reader that takes a part of the
   // session (it reads the bodies of that part, and no other).
   // `fromSeq`: the bodies from that event on alone (a turn reads its context: what follows the last checkpoint).
-  async warm(session_id: string, bodies = true, fromSeq = 0): Promise<void> {
+  // `patient`: for a caller that is owed nothing in a hurry (the start's passes): the rows wait behind a
+  // report on the read thread rather than being read on the loop.
+  async warm(session_id: string, bodies = true, fromSeq = 0, patient = false): Promise<void> {
     let k = this.kept.get(session_id);
     if (!k) {
       // A session that is not in memory is read from the database file, and
@@ -1534,7 +1545,7 @@ export class Store {
       // waits for no page of them (a disk busy with other work makes each read slow, wherever the
       // page is). What was stored meanwhile, and everything where no thread answers, is read here.
       while (this.readOff) {
-        const part: Bare[] | undefined = await this.readOff(BARE_PART, [session_id, rows.at(-1)?.seq ?? 0]).catch(() => undefined);
+        const part: Bare[] | undefined = await ((patient && this.readLater) || this.readOff)(BARE_PART, [session_id, rows.at(-1)?.seq ?? 0]).catch(() => undefined);
         if (!part) break;
         for (const r of part) rows.push(r);
         if (part.length < 4096) break;

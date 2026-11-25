@@ -107,6 +107,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // A session that is not in memory has its pages read by the read thread before the loop reads them.
   store.offLoop = (sql, params) => readsOf(store).readAhead(sql, params);
   store.readOff = (sql, params) => readsOf(store).rowsOff<any>(sql, params);
+  store.readLater = (sql, params) => readsOf(store).rowsLater<any>(sql, params);
   // A side row that could not be written is a gap in a ledger: said once a kind, never a failure of a turn.
   store.sideFailed = (e, what) => errors.capture("server", e, { at: "a side write", what });
   store.timed = timed;
@@ -280,7 +281,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
       for (const { id } of recent) {
         const kept = store.keptEvents();
         if (kept.bytes > kept.budget / 2) break;
-        await spanning("start", () => store.warm(id, false), "the start's warm pass: a session's rows");
+        await spanning("start", () => store.warm(id, false, 0, true), "the start's warm pass: a session's rows");
         await new Promise((r) => setImmediate(r));
       }
     })()), "the start's warm pass over the sessions used in the last hour").catch((e) => errors.capture("server", e, { at: "warming recent sessions" }));

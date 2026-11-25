@@ -47,6 +47,8 @@ const AHEAD_QUEUED_MS = 300;
 // And how long a caller waits for rows handed over (rowsOff) behind other reads like them: each is
 // a part of a session, a few thousand rows or a run of bodies, and a dozen sessions may ask at once.
 const ROWS_QUEUED_MS = 2_000;
+// And how long a start waits for rows behind a report on the thread (rowsLater).
+const LATER_MS = 10_000;
 
 // A statement of `sql` is named by its label (src/core/statement-label.ts: no value of its text can be in it), so a
 // memory step or a stall says which statement it was among the many that share this one task. Each text is labelled once.
@@ -148,6 +150,19 @@ export class Reads {
       const t = setTimeout(() => ok(undefined), ms);
       t.unref?.();
       (this.run("sql", { sql, params }, true) as Promise<T[]>).then((rows) => { clearTimeout(t); ok(rows); }, () => { clearTimeout(t); ok(undefined); }).finally(() => { this.ahead--; });
+    });
+  }
+
+  // The rows of one statement for a caller that is owed nothing in a hurry (the start's passes): it
+  // goes behind whatever the thread is reading, a report of seconds included, and is waited for `ms`
+  // (a long wait: the loop reads for itself after it, where it would hold everyone). Undefined where
+  // no thread runs.
+  rowsLater<T>(sql: string, params: (string | number | null)[], ms = LATER_MS): Promise<T[] | undefined> {
+    if (!this.thread || !this.start()) return Promise.resolve(undefined);
+    return new Promise<T[] | undefined>((ok) => {
+      const t = setTimeout(() => ok(undefined), ms);
+      t.unref?.();
+      (this.run("sql", { sql, params }, true) as Promise<T[]>).then((rows) => { clearTimeout(t); ok(rows); }, () => { clearTimeout(t); ok(undefined); });
     });
   }
 

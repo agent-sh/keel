@@ -185,6 +185,12 @@ under `~/.cache/keel-work/bun/research/`.
   it would send the name in CONNECT and the proxy would resolve it again after the local check, so the
   built-in fetch is used then (`viaProxy`, `src/tools/pinned.ts`): it resolves once, vets every address and
   connects to a vetted one, the proxy getting that address.
+- A start holds the loop for under 100 ms at any moment (`src/engine/start-hold.test.ts`). The turns a
+  restart cut go on one at a time, each let go when the one before has prepared its first request
+  (`src/engine/pace.ts`), and a request's preparation yields the loop between its hooks and before its
+  send. What a start reads of the store for nobody in a hurry (the cut sessions, the rows of the sessions
+  used in the last hour) waits behind a report on the read thread (`Reads.rowsLater`) instead of being
+  read on the loop.
 - A turn ends as "interrupted" only when `Engine.interrupt` was called for it,
   and every caller says who it is with a word of `src/core/stoppers.ts`, kept
   on the turn's end (`stopped_by`). What is said of the stop and what follows
