@@ -25,7 +25,7 @@ import { deliver } from "../automation/core.ts";
 import type { Frame } from "../core/types.ts";
 import * as perm from "../server/routes/permissions.ts";
 import type { Approval, Gate } from "../safety/gate.ts";
-import { CLASS_WORDS, ownerClass, type OwnerClass } from "../safety/delegate.ts";
+import { CLASS_WORDS, ownerClass } from "../safety/delegate.ts";
 import { digestZone } from "./policy.ts";
 import type { Helper } from "./helper.ts";
 
@@ -56,7 +56,8 @@ export function fingerprint(a: Approval): string {
 
 // A card as the helper reads it: where it is, why the gate asked (its own words and facts), the judge's verdict on
 // the same shape when there is one, who may answer it, and the whole request.
-export function cardText(a: Approval, title: string, owners: { cls: OwnerClass; why: string } | null, verdict?: { by: string; decision: string; risk: string | null } ): string {
+// `who`: who answers it, in words.
+export function cardText(a: Approval, title: string, who: string, verdict?: { by: string; decision: string; risk: string | null } ): string {
   const f = a.facts ?? {};
   const facts = [
     f.owner_only && "only the owner allows it", f.account !== undefined && `a write beyond the owner's accounts${f.account ? ` (${f.account})` : ""}`,
@@ -72,12 +73,14 @@ export function cardText(a: Approval, title: string, owners: { cls: OwnerClass; 
     facts.length ? `Facts: ${facts.join("; ")}` : "",
     a.at?.cwd ? `Runs in: ${a.at.cwd}${a.at.away ? " (not the session's folder)" : ""}` : "",
     verdict ? `The ${verdict.by}'s last verdict on a call of this shape here: ${verdict.decision}${verdict.risk ? ` (risk ${verdict.risk})` : ""}` : "",
-    owners ? `Who answers: the owner (${owners.why}). Not yours to answer.` : "Who answers: you may (allow once, deny with a reason, or leave it to the owner).",
+    `Who answers: ${who}`,
     "The whole request:",
     a.kind === "shell" ? a.summary : JSON.stringify(a.input, null, 2),
     "</card>",
   ].filter(Boolean).join("\n");
 }
+
+const YOURS = "you may (allow once, deny with a reason, or leave it to the owner).";
 
 const PROMPT_HEAD = (n: number) => `[helper approvals] ${n === 1 ? "A session waits" : `${n} requests wait`} on an approval card (${digestZone()}).
 The owner's standing instruction (${SOURCE}): ${INSTRUCTION}. Code keeps the cards it recognises as risky with the owner, but it does not recognise every form: what reaches you can still spend money, touch someone else's repository, publish or delete for good, change the machine or the rules, or run code the card does not show. Judging that is yours.
@@ -86,7 +89,13 @@ Read each request whole. Answer each with helper__approval: allow (this one call
 export class HelperCards {
   private offered = new Map<string, Offer>();
   private off: (() => void)[] = [];
-  constructor(private h: HelperOf, private gate: () => Gate | undefined = () => perm.gate) {}
+  // `io`: how a card is sent to the helper and raised for the owner (a test keeps both).
+  private send: typeof deliver;
+  private raise: typeof alerts.raiseApproval;
+  constructor(private h: HelperOf, private gate: () => Gate | undefined = () => perm.gate, io: { send?: typeof deliver; raise?: typeof alerts.raiseApproval } = {}) {
+    this.send = io.send ?? deliver;
+    this.raise = io.raise ?? alerts.raiseApproval;
+  }
 
   on(): boolean {
     const st = this.h.state();
@@ -155,8 +164,8 @@ export class HelperCards {
     const o: Offer = { at: Date.now(), timer };
     this.offered.set(a.id, o);
     const verdict = this.gate()?.verdictOf(a);
-    const text = `${PROMPT_HEAD(1)}\n\n${cardText(a, title, null, verdict)}`;
-    const sent = deliver(helper.id, text, { kind: "helper_approvals", cards: [a.id] }, {
+    const text = `${PROMPT_HEAD(1)}\n\n${cardText(a, title, YOURS, verdict)}`;
+    const sent = this.send(helper.id, text, { kind: "helper_approvals", cards: [a.id] }, {
       settle: SETTLE,
       onSent: (e) => { o.sent = e.id; },
     });
@@ -187,17 +196,22 @@ export class HelperCards {
     this.drop(id);
     const a = this.gate()?.approval(id);
     if (!a || a.state !== "pending") return;
-    alerts.raiseApproval(a, false, note);
+    this.raise(a, false, note);
   }
 
-  // The open cards of other sessions, as the helper reads them.
+  // The open cards of other sessions, as the helper reads them. Only a card sent to it and not gone back to the owner
+  // is its to answer (`mine`); every other one says whose it is.
   open(): { a: Approval; text: string; mine: boolean }[] {
     const gate = this.gate();
     if (!gate) return [];
     return gate.approvals({ pending: true }).filter((a) => !this.h.isHelper(a.session_id)).map((a) => {
       const owners = ownerClass(a, false);
       const title = this.h.deps.store.session(a.session_id)?.title || "untitled";
-      return { a, mine: !owners && this.on(), text: cardText(a, title, this.on() ? owners : owners ?? { cls: "owner-only", why: `answering approvals is off (${SOURCE})` }, gate.verdictOf(a)) };
+      const mine = !owners && this.on() && this.offered.has(a.id);
+      const who = mine ? YOURS : owners ? `the owner (${owners.why}). Not yours to answer.`
+        : !this.on() ? `the owner (answering approvals is off: ${SOURCE}). Not yours to answer.`
+        : "the owner (it was not sent to you, or it went back to him). Not yours to answer.";
+      return { a, mine, text: cardText(a, title, who, gate.verdictOf(a)) };
     });
   }
 
@@ -211,6 +225,8 @@ export class HelperCards {
     const a = gate.approval(cardId.trim());
     if (!a) return { error: `no card ${cardId}` };
     if (a.state !== "pending") return { error: `the card is no longer open (${a.state})` };
+    // Only a card sent to it, while it is with it: one it never got, or one gone back to the owner, is his.
+    if (!this.offered.has(a.id)) return { error: "this card is not yours to answer: it was not sent to you, or it went back to the owner, who answers it" };
     const why = reason.trim().slice(0, 500);
     if (how === "owner") {
       this.toOwner(a.id, `The Helper left this to you${why ? `: ${why}` : "."}`);

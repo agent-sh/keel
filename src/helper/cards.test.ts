@@ -39,7 +39,16 @@ const helper = {
   changed: () => {},
   deps: { store, bus, errors },
 } as any;
-const cards = new HelperCards(helper, () => gate);
+// What the cards send the helper, kept here instead of delivered.
+const sent: { session: string; text: string; cards: string[] }[] = [];
+const send = (session: string, text: string, meta: Record<string, unknown>, opts: { onSent?: (e: any) => void } = {}) => {
+  sent.push({ session, text, cards: meta.cards as string[] });
+  opts.onSent?.({ id: `input-${sent.length}` });
+  return true;
+};
+// What goes to the owner, by card and the note before its line.
+const raised: { id: string; note?: string }[] = [];
+const cards = new HelperCards(helper, () => gate, { send: send as any, raise: ((a: any, _silent: boolean, note?: string) => { raised.push({ id: a.id, note }); return undefined; }) as any });
 
 let runs = 0;
 const tool = { name: "Bash", description: "", kind: "shell", readOnly: false, input_schema: { type: "object", properties: { command: {} } },
@@ -53,12 +62,11 @@ test("an allowed card runs the call once and records the helper on the owner's s
   gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
   const result = run(s, "npm install left-pad", "call-1");
   const card = await open(s.id);
-  // Seen once: the card is kept by its fingerprint, so the same card put back (a restart) is not sent to the helper again.
-  answering = false;
-  expect(cards.take(card.id)).toBe(false);
+  // Sent once: the card is kept by its fingerprint, so the same card put back (a restart) is not sent to the helper again.
+  expect(cards.take(card.id)).toBe(true);
+  expect(sent.at(-1)!.cards).toEqual([card.id]);
   expect(store.db.query("SELECT fp FROM helper_told WHERE key = ?").get(`card:${card.id}`)).toEqual({ fp: fingerprint(card) });
-  answering = true;
-  expect(cards.take(card.id)).toBe(false);
+  expect(cards.open().find((c) => c.a.id === card.id)).toMatchObject({ mine: true });
   answering = false;
   // Switched off, the helper's answer is refused.
   expect(cards.answer(card.id, "allow", "routine install", { session: helperSession.id, call: "h1" })).toMatchObject({ error: expect.stringContaining("off") });
@@ -79,6 +87,7 @@ test("an allowed card runs the call once and records the helper on the owner's s
   const again = run(s, "npm install left-pad", "call-2");
   const second = await open(s.id);
   expect(second.id).not.toBe(card.id);
+  expect(cards.take(second.id)).toBe(true);
   expect(cards.answer(second.id, "deny", "", { session: helperSession.id })).toMatchObject({ error: expect.stringContaining("reason") });
   expect(cards.answer(second.id, "deny", "installed already", { session: helperSession.id })).toHaveProperty("ok");
   expect((await again).content).toContain("Refused by the Helper (on the owner's standing instruction): installed already");
@@ -91,6 +100,7 @@ test("after the helper denied a session's last three cards in a row, its next on
   for (let i = 0; i < 3; i++) {
     const r = run(s, `npm install pkg-${i}`, `deny-${i}`);
     const card = await open(s.id);
+    expect(cards.take(card.id)).toBe(true);
     expect(cards.answer(card.id, "deny", "not needed", { session: helperSession.id })).toHaveProperty("ok");
     await r;
   }
@@ -99,4 +109,30 @@ test("after the helper denied a session's last three cards in a row, its next on
   expect(cards.take(card.id)).toBe("The Helper denied this session's last 3 requests, so this one is yours.");
   gate.resolve(card.id, s.id, { choice: "deny" });
   await r;
+});
+
+test("the helper answers only a card sent to it while it is with it: one never sent, or gone back to the owner, is his", async () => {
+  const s = store.createSession({ model: "fixture:m", workspace: ws, title: "Hand back" });
+  gate.setPerm(s.id, { mode: "ask", sandbox: "off" });
+  // Opened while answering was off: never sent to the helper, so never its.
+  answering = false;
+  const first = run(s, "npm install never-sent", "back-1");
+  const never = await open(s.id);
+  expect(cards.take(never.id)).toBe(false);
+  answering = true;
+  expect(cards.open().find((c) => c.a.id === never.id)).toMatchObject({ mine: false, text: expect.stringContaining("it was not sent to you, or it went back to him") });
+  expect(cards.answer(never.id, "allow", "fine", { session: helperSession.id })).toMatchObject({ error: expect.stringContaining("not yours to answer") });
+  gate.resolve(never.id, s.id, { choice: "deny" });
+  await first;
+  // Sent, then gone back to the owner (its turn ended, it timed out, it left it): no longer the helper's.
+  const second = run(s, "npm install handed-back", "back-2");
+  const back = await open(s.id);
+  expect(cards.take(back.id)).toBe(true);
+  cards.toOwner(back.id, "The Helper did not answer it in time.");
+  expect(raised.at(-1)).toEqual({ id: back.id, note: "The Helper did not answer it in time." });
+  expect(cards.open().find((c) => c.a.id === back.id)).toMatchObject({ mine: false });
+  expect(cards.answer(back.id, "allow", "fine", { session: helperSession.id })).toMatchObject({ error: expect.stringContaining("went back to the owner") });
+  expect(gate.approval(back.id)!.state).toBe("pending");
+  gate.resolve(back.id, s.id, { choice: "deny" });
+  await second;
 });
