@@ -210,7 +210,7 @@ test("an agent waits on its own background command, and reports after its end", 
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`/s/${session.id}`);
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
-    const agent = async () => ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { id: string; session_id: string; status: string; result?: string }[])[0];
+    const agent = async () => ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { id: string; session_id: string; status: string }[])[0];
     const events = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as { kind: string; seq: number; data: any }[];
     await expect.poll(async () => (await agent())?.status, { timeout: 30_000 }).toBe("waiting");
     const a = (await agent())!;
@@ -230,7 +230,8 @@ test("an agent waits on its own background command, and reports after its end", 
     expect(told).toHaveLength(1);
     expect(told[0]!.data.text).toMatch(new RegExp(`^\\[harness\\] Your background command "Slow check run" \\(ID ${job.id}\\) exited with code 0, after 2\\d s\\. Its output is in \\S+\\.$`));
     expect(child.filter((e) => e.kind === "turn_start")).toHaveLength(2);
-    const report = (await agent())!.result ?? "";
+    // (The list of agents carries no report: it is read from the agent's own route.)
+    const report = ((await (await request.get(`/api/sessions/${session.id}/agents/${a.id}/report`)).json()) as { report: string | null }).report ?? "";
     expect(report).toContain(`(ID ${job.id}) exited with code 0`);
     // The parent: its prompt, then the one report, with no park line riding it.
     await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 30_000 });
