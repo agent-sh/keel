@@ -38,6 +38,8 @@ export type Goal = {
   // The turn end counted last (its event id), saved before the judge is asked:
   // a restart while it judges, or a second look at the same turn, counts it once.
   counted?: string | null;
+  // The turn end whose check was put off because more work was lined up (an agent still worked); cleared by its check.
+  deferred?: string | null;
   // The turn end whose check ran to its outcome (a continuation, a pause, an
   // end). A goal still pursuing after a turn end that is not this one is owed
   // a check; one from before these marks (neither is set) is owed none.
@@ -283,7 +285,7 @@ function reverify(g: Goal) {
   const ours = (x?: Goal) => !!x && instance(x) === mine;
   const key = `${id} ${mine}`;
   // The check's outcome is saved with the turn end counted last.
-  const done = (x: Goal) => save({ ...x, checked: x.counted ?? null });
+  const done = (x: Goal) => save({ ...x, checked: x.counted ?? null, deferred: null });
   const judged = g.last_reason ?? "";
   // The verifier of this check was started after the turn it checks ended. One
   // from before that is the check before's, left in a row the build before
@@ -360,6 +362,15 @@ async function ready(model: string) {
   }
 }
 
+// An agent of the session ended. A turn that ended while it still worked was counted and not judged
+// (more was lined up), and nothing follows an agent that hands nothing back (a goal's old verifier
+// stopped by a replaced goal): the check it left owed is made now, once nothing else is lined up.
+export function agentEnded(sessionId: string) {
+  const g = get(sessionId);
+  if (!active(g) || g!.verifying || !g!.deferred || g!.deferred !== g!.counted) return;
+  owed(sessionId).catch((e) => capture(e, { at: "goal check after an agent", session: sessionId }));
+}
+
 async function owed(sessionId: string) {
   const g = get(sessionId);
   const s = D().store.session(sessionId);
@@ -396,7 +407,7 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
   const key = `${sessionId} ${mine}`;
   const facts = turnFacts(sessionId);
   // The check's outcome, saved with the turn it was for.
-  const done = (x: Goal) => save({ ...x, checked: facts.id ?? null });
+  const done = (x: Goal) => save({ ...x, checked: facts.id ?? null, deferred: null });
   if (!opts.recheck && facts.id && g!.counted !== facts.id) {
     g!.counted = facts.id;
     g!.tokens_used += facts.tokens;
@@ -423,7 +434,8 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     // Stopped by anything else: the goal stays on, and this end is checked like any other.
   }
   // A check of this goal already under way decides: this turn is counted, not judged twice.
-  if (opts.judge === false || judging.has(key)) return void save(g!);
+  if (opts.judge === false) return void save({ ...g!, deferred: facts.id ?? null });
+  if (judging.has(key)) return void save(g!);
   save(g!);
   if (D().engine.isDraining?.()) return; // owed to the next start
   judging.add(key);

@@ -242,6 +242,13 @@ function init(deps: Deps) {
     },
   });
 
+  // An agent that ended may have been all that held a goal's check back (a turn ends while it works, and the check waits).
+  deps.bus.on((f) => {
+    if (f.t !== "feature" || f.name !== "automation") return;
+    const d = f.data as { kind?: string; data?: { parent_id?: string; status?: string } };
+    if (d.kind === "agent" && d.data?.parent_id && d.data.status && d.data.status !== "running" && d.data.status !== "waiting") goals.agentEnded(d.data.parent_id);
+  });
+
   // A deleted session's remembered renames go with it, and what was lined up for it or owed to it.
   deps.bus.on((f) => {
     if (f.t !== "session" || !f.deleted) return;
