@@ -73,7 +73,7 @@ function ChangesLine({ changed, ready, land }: { changed: Changed | null; ready:
     <div className="k-docket-line" data-testid="dock-changes" data-ready={ready || undefined}>
       <FileDiff className="k-docket-glyph" />
       {changed && (
-        <span className="flex min-w-0 shrink items-baseline gap-1.5 truncate" data-testid="dock-changes-count">
+        <span className="flex min-w-0 shrink items-baseline gap-1.5 truncate max-md:flex-wrap" data-testid="dock-changes-count">
           <span className="whitespace-nowrap text-fg">{changed.files} {changed.files === 1 ? "file" : "files"}</span>
           <span className="font-mono text-micro text-ok">+{changed.added}</span>
           <span className="font-mono text-micro text-danger">-{changed.removed}</span>
@@ -166,11 +166,11 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
           <Collapsible.Trigger className="k-docket-line" data-testid="dock-plan">
             <ListChecks className="k-docket-glyph" />
             {state === "stale" && known ? (
-              <span className="min-w-0 truncate text-faint" data-testid="dock-plan-stale">{planLine("stale", { ...known, now: clock, items: plan })}</span>
+              <span className="min-w-0 truncate text-faint max-md:whitespace-normal max-md:break-words" data-testid="dock-plan-stale">{planLine("stale", { ...known, now: clock, items: plan })}</span>
             ) : (
               <>
                 <span className="k-face-figure k-docket-n">{done}/{plan.length}</span>
-                <span className="min-w-0 truncate">{now ? (now.active ?? now.text) : "Plan"}</span>
+                <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words">{now ? (now.active ?? now.text) : "Plan"}</span>
                 <span className="k-docket-track" aria-hidden="true"><span style={{ width: `${(100 * done) / plan.length}%` }} /></span>
               </>
             )}
@@ -182,18 +182,21 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
         </Collapsible.Root>
       )}
       {jobs.map((j) => (
-        <div key={j.id} className="k-docket-line" data-testid="dock-job" data-running={j.running || undefined}>
+        <div key={j.id} className="k-docket-line k-docket-job" data-testid="dock-job" data-running={j.running || undefined}>
           {/* A command at work is drawn in work's color; one that ended steps back. */}
           <SquareTerminal className="k-docket-glyph" />
-          <span className="min-w-0 max-w-[40%] shrink-0 truncate text-fg" title={j.id}>{j.description ?? j.command}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint" title={j.last} data-testid="dock-job-last">{j.last}</span>
-          {/* Its id is the tooltip of its name at a desk; a phone opens no tooltip, so there it is a word. */}
-          <span className="shrink-0 font-mono text-micro text-faint md:hidden" data-testid="dock-job-id">{j.id}</span>
-          <span className="k-face-figure shrink-0 text-micro text-faint">
-            {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}`
-              // Its call was cut by a restart and the command went on without it: said as that, not as a bare exit code beside "cut".
-              : j.call_id && cut.has(j.call_id) ? (j.exit_code == null ? "went on after the restart, then ended" : j.exit_code === 0 ? "went on after the restart and finished" : `went on after the restart and failed (exit ${j.exit_code})`)
-              : j.exit_code == null ? "ended, exit unknown" : `exit ${j.exit_code}`}
+          <span className="min-w-0 max-w-[40%] shrink-0 truncate text-fg max-md:max-w-none max-md:shrink max-md:flex-1 max-md:whitespace-normal max-md:break-words" title={j.id}>{j.description ?? j.command}</span>
+          {/* On a phone what it last wrote, its id and its time are a line under its name. */}
+          <span className="k-job-meta">
+            <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint max-md:whitespace-normal max-md:break-all" title={j.last} data-testid="dock-job-last">{j.last}</span>
+            {/* Its id is the tooltip of its name at a desk; a phone opens no tooltip, so there it is a word. */}
+            <span className="shrink-0 font-mono text-micro text-faint md:hidden" data-testid="dock-job-id">{j.id}</span>
+            <span className="k-face-figure shrink-0 text-micro text-faint">
+              {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}`
+                // Its call was cut by a restart and the command went on without it: said as that, not as a bare exit code beside "cut".
+                : j.call_id && cut.has(j.call_id) ? (j.exit_code == null ? "went on after the restart, then ended" : j.exit_code === 0 ? "went on after the restart and finished" : `went on after the restart and failed (exit ${j.exit_code})`)
+                : j.exit_code == null ? "ended, exit unknown" : `exit ${j.exit_code}`}
+            </span>
           </span>
           {j.running && (
             <button
@@ -201,7 +204,7 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
               title={`Stop ${j.id}`}
               data-testid="dock-job-stop"
               onClick={() => actions.stopJob(sessionId, j.id).catch(reportError)}
-              className="-mr-1 grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
+              className="k-job-stop -mr-1 grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
             >
               <Square className="size-3" />
             </button>

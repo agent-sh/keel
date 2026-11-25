@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
+import { expect, test, type APIRequestContext, type Browser, type Locator, type Page } from "./isolate.ts";
 import { ask, calls, colors, create, folder, pending, settle } from "./answering.ts";
 import { SHOTS, inHead, leaveHead, shoot } from "./shots.ts";
 
@@ -29,6 +29,47 @@ const idle = async (request: APIRequestContext, id: string) => { const d = await
 const drop = async (request: APIRequestContext, ...ids: string[]) => {
   for (const id of ids) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
 };
+// A session whose dock says everything at once: a changed file in a repository, a plan, a command left running, and an
+// agent it waits on. Returns its id (the caller drops it).
+async function fullDock(request: APIRequestContext, title: string) {
+  const repo = folder(`phone-dock-${Date.now().toString(36)}`);
+  const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: repo, encoding: "utf8" });
+  mkdirSync(repo, { recursive: true });
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(repo, "notes.md"), "one\ntwo\nthree\n");
+  git("add", "-A");
+  git("commit", "-qm", "init");
+  const id = await create(request, title, repo);
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  const todos = ["Read the release notes", "Check the changelog against the tags", "Write the summary"].map((content, i) => ({ content, activeForm: `${content} (now)`, status: ["completed", "in_progress", "pending"][i] }));
+  const child = `Hold the lane\n${calls([{ name: "Bash", input: { command: "sleep 120" } }])}`;
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([
+    { name: "Bash", input: { command: "printf 'four\\nfive\\n' >> notes.md; printf 'x\\n' > new.txt" } },
+    { name: "TodoWrite", input: { todos } },
+    { name: "Bash", input: { command: "sleep 200", run_in_background: true, description: "the long migration" } },
+    { name: "spawn_agent", input: { message: child, isolation: "none" } },
+  ]) } });
+  await expect.poll(async () => ((await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as unknown[]).length, { timeout: 60_000 }).toBe(1);
+  await expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+  return id;
+}
+// The page at a text scale, as a phone with that setting holds it.
+async function atScale(browser: Browser, size: { width: number; height: number }, scale: number) {
+  const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: size, hasTouch: true, isMobile: true });
+  await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+  return { ctx, page: await ctx.newPage() };
+}
+// Two controls that overlap are a press that may land on either.
+const overlaps = (box: Locator, selector: string) => box.evaluate((root, sel) => {
+  const els = [...root.querySelectorAll<HTMLElement>(sel)].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 1 && r.height > 1; });
+  const name = (e: HTMLElement) => e.dataset.testid ?? `${e.tagName.toLowerCase()} "${(e.textContent ?? "").trim().slice(0, 16)}"`;
+  const out: string[] = [];
+  for (let i = 0; i < els.length; i++) for (let j = i + 1; j < els.length; j++) {
+    const a = els[i]!.getBoundingClientRect(), b = els[j]!.getBoundingClientRect();
+    if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) out.push(`${name(els[i]!)} over ${name(els[j]!)}`);
+  }
+  return out;
+}, selector);
 // Whether what is at the middle of the box's first line is the box (or part of it), not something over it.
 const onTop = (box: Locator) => box.evaluate((el) => {
   const r = el.getBoundingClientRect();
@@ -1109,6 +1150,30 @@ for (const size of SIZES) {
         await expect.poll(() => small(pill.locator("xpath=..")), { message: "the head's controls are finger targets" }).toEqual([]);
         await pill.tap();
         await expect(card).toBeVisible();
+      } finally {
+        await drop(request, id);
+      }
+    });
+    test("the dock's plan, command and changes lines are targets that touch no other and read whole, also at a large text size", async ({ browser, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(180_000);
+      const id = await fullDock(request, "Phone dock");
+      try {
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.goto(`/s/${id}`);
+            const dock = page.getByTestId("session-dock");
+            await expect(dock.getByTestId("dock-job")).toBeVisible({ timeout: 30_000 });
+            await expect(dock.getByTestId("dock-changes")).toBeVisible();
+            await expect(dock.getByTestId("dock-plan")).toBeVisible();
+            await page.waitForTimeout(400);
+            // A button of one line reaches only its own line: Stop on the command and Review on the changes never cover each other.
+            expect(await overlaps(dock, "button"), `controls over each other at ${scale * 100}% text`).toEqual([]);
+            for (const line of ["dock-plan", "dock-job", "dock-changes"]) expect(await phoneProblems(dock.getByTestId(line)), `${line} at ${scale * 100}% text`).toEqual([]);
+            await shoot(page, `phone-surfaces-29-dock-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
       } finally {
         await drop(request, id);
       }
