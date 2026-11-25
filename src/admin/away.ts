@@ -118,6 +118,9 @@ export class Presence {
   }
 
   get lastSeen() { return this.last; }
+
+  // When the owner last did something, while they are away (no input for a gap); null while they are here, or never seen.
+  awaySince(now = Date.now()): number | null { return this.gone(now) ? this.last : null; }
 }
 
 // The daemon's own record, for the route that takes the pages' reports.
@@ -125,6 +128,8 @@ let bound: Presence | undefined;
 export const bindPresence = (p: Presence) => void (bound = p);
 // `idleMs`: how long ago the page's owner last did something in it.
 export const ownerSeen = (idleMs: number, now = Date.now()) => bound?.seen(now - Math.max(idleMs, 0), now);
+// The owner is away by the digest's rule: when they last did something, or null while they are here.
+export const ownerAwaySince = (now = Date.now()): number | null => bound?.awaySince(now) ?? null;
 
 // --- the digest
 export type DigestRow = {

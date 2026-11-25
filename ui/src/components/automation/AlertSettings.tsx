@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { auto, useAuto, type AlertSettings as Settings } from "../../lib/automation.ts";
+import { auto, useAuto, useReachLine, type AlertSettings as Settings } from "../../lib/automation.ts";
 import { every } from "../../lib/clock.ts";
 import { api, onFeature, reportError } from "../../lib/store.ts";
 import { composing } from "../../lib/keys.ts";
@@ -69,6 +69,7 @@ function PushBudgetRow({ limit }: { limit: number }) {
 export default function AlertSettings() {
   const settings = useAuto((s) => s.settings);
   const channels = useAuto((s) => s.channels);
+  const reach = useReachLine();
   const [tested, setTested] = useState("");
   if (!settings) return null;
   // One switch is one change: saved on its own, so two quick clicks keep both.
@@ -106,6 +107,9 @@ export default function AlertSettings() {
           <Toggle on={settings.sound} label="Play a sound" testid="alert-sound" onChange={(sound) => auto.saveSettings({ sound }).catch(reportError)} />
         </SettingRow>
         <PushBudgetRow limit={settings.push_per_hour} />
+        <SettingRow label="Reminders" hint="A request that still waits for you while you are away is told again after 15 minutes, 1 hour and 4 hours away, then every 4 hours: one notification a session that takes the place of the one before. It stops when you answer or come back.">
+          <span role="status" data-testid="reach-line-settings" className="text-caption text-muted">{reach ?? "Reminders reach this desktop and your phone"}</span>
+        </SettingRow>
         <SettingRow label="Test" hint="An alert of the kind From the agent, through its routes.">
           <div className="flex items-center gap-3">
             {tested && <span role="status" data-testid="alert-test-result" className="text-caption text-muted">{tested}</span>}

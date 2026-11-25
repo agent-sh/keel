@@ -31,6 +31,7 @@ import type { Frame } from "../../core/types.ts";
 import type { RouteModule } from "../app.ts";
 import { ackShell, attachShell, shellAttached, shellList, shellTakes, tellShells } from "../shell.ts";
 import { trayFrame } from "../shell-list.ts";
+import { reach } from "../../automation/reminders.ts";
 import { board } from "./state.ts";
 
 const json = (v: unknown, status = 200) => Response.json(v, { status });
@@ -54,7 +55,7 @@ export const shellRoutes: RouteModule = (deps) => {
     }
     unread = unreadCounts().sessions;
   };
-  const frame = () => trayFrame(needs, working, unread, (id) => deps.store.session(id)?.title ?? undefined, (id) => deps.store.session(id)?.updated ?? 0);
+  const frame = () => trayFrame(needs, working, unread, (id) => deps.store.session(id)?.title ?? undefined, (id) => deps.store.session(id)?.updated ?? 0, reach().line);
   // The top-level sessions a stop of the daemon would cut: their own turn, or an agent of theirs, at work.
   const running = () => {
     const titles = new Map<string, string>();
@@ -75,6 +76,8 @@ export const shellRoutes: RouteModule = (deps) => {
     // A rename of a session the menu lists.
     if (f.t === "session") { if (JSON.parse(told || "{}").list?.some((l: { id: string }) => l.id === f.session.id)) tellNeeds(); return; }
     if (f.t !== "feature") return;
+    // A phone paired or taken away changes the line that says where reminders reach.
+    if (f.name === "mobile") { tellNeeds(); return; }
     if (f.name === "state" && f.session_id) {
       const st = f.data as { watch?: string; asks?: number } | null;
       needs.delete(f.session_id);
@@ -113,7 +116,7 @@ export const shellRoutes: RouteModule = (deps) => {
             told = JSON.stringify(now);
             const word = crypto.randomUUID();
             detach = attachShell({ engine: (q.get("engine") ?? "").slice(0, 40), version: (q.get("version") ?? "").slice(0, 40), acks: q.get("acks") === "1" }, put, () => { clearInterval(ping); try { c.close(); } catch {} }, word);
-            put("hello", { pid: process.pid, started_ms: Math.round(Date.now() - process.uptime() * 1000), needs: now.n, unread: now.unread, list: now.list, snooze_until: snooze.global()?.until_ms ?? null, stream: word, takes: shellTakes(word) });
+            put("hello", { pid: process.pid, started_ms: Math.round(Date.now() - process.uptime() * 1000), needs: now.n, unread: now.unread, list: now.list, reach: now.reach, snooze_until: snooze.global()?.until_ms ?? null, stream: word, takes: shellTakes(word) });
             // Under the server's idle timeout, and how a shell that died is noticed.
             ping = setInterval(() => { try { c.enqueue(enc.encode(": ping\n\n")); } catch { stop(); } }, 5000);
             req.signal.addEventListener("abort", () => { stop(); try { c.close(); } catch {} }, { once: true });

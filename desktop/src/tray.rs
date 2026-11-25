@@ -117,6 +117,8 @@ pub struct Shown {
     pub keys: Keys,
     /// The panel's theme, which the dots are drawn for.
     pub panel: Panel,
+    /// Where a reminder of a request that waits reaches when it is this desktop only (a phone takes none): the daemon's words.
+    pub reach: Option<String>,
 }
 
 /// The first line of the menu and the mark's tooltip.
@@ -171,7 +173,12 @@ fn item_id(id: &str, taken: &[i32]) -> i32 {
 
 /// The menu, top to bottom: id, label (empty for a line), enabled, what it picks.
 pub fn menu(s: &Shown) -> Vec<Item> {
-    let mut m: Vec<Item> = vec![(1, headline(s), false, None, None), (2, String::new(), true, None, None)];
+    let mut m: Vec<Item> = vec![(1, headline(s), false, None, None)];
+    // Under the count, while something waits: a phone does not take the reminders.
+    if let (Link::Up, true, Some(reach)) = (&s.link, s.needs > 0, &s.reach) {
+        m.push((17, plain(reach), false, None, None));
+    }
+    m.push((2, String::new(), true, None, None));
     // The sessions that wait, from the frame the count came in; none while the daemon is away.
     if s.link == Link::Up && !s.list.is_empty() {
         let mut taken: Vec<i32> = Vec::new();
@@ -376,7 +383,7 @@ pub struct Tray {
 
 impl Tray {
     pub fn new(conn: &gio::DBusConnection, symbolic: bool, on_pick: impl Fn(Pick) + 'static, on_host: impl Fn(bool) + 'static) -> Result<Self, glib::Error> {
-        let shown = Rc::new(RefCell::new(Shown { needs: 0, list: Vec::new(), unread: 0, paused: false, link: Link::Down, refused: false, elsewhere: false, keys: Keys::None, panel: Panel::Unknown }));
+        let shown = Rc::new(RefCell::new(Shown { needs: 0, list: Vec::new(), unread: 0, paused: false, link: Link::Down, refused: false, elsewhere: false, keys: Keys::None, panel: Panel::Unknown, reach: None }));
         let revision = Rc::new(Cell::new(1u32));
         let available = Rc::new(Cell::new(false));
         let on_pick = Rc::new(on_pick);
@@ -594,7 +601,7 @@ mod tests {
     use super::*;
 
     fn s(needs: u32, paused: bool, link: Link) -> Shown {
-        Shown { needs, list: Vec::new(), unread: 0, paused, link, refused: false, elsewhere: false, keys: Keys::None, panel: Panel::Unknown }
+        Shown { needs, list: Vec::new(), unread: 0, paused, link, refused: false, elsewhere: false, keys: Keys::None, panel: Panel::Unknown, reach: None }
     }
 
     fn listed(id: &str, title: &str, word: &str) -> Listed {
@@ -629,6 +636,11 @@ mod tests {
         let told = menu(&Shown { elsewhere: true, ..s(0, false, Link::Up) });
         assert!(told.iter().any(|(_, label, enabled, pick, _)| label == "Another Keel app shows the notifications" && !enabled && pick.is_none()));
         assert!(!menu(&s(0, false, Link::Up)).iter().any(|(_, label, _, _, _)| label.starts_with("Another")));
+        // Where reminders reach: said under the count while something waits and the daemon says only this desktop does.
+        let reach = |needs: u32, link: Link| menu(&Shown { reach: Some("No phone paired: reminders reach this desktop only".into()), ..s(needs, false, link) }).into_iter().map(|i| i.1).collect::<Vec<_>>();
+        assert_eq!(&reach(2, Link::Up)[..3], ["2 need you", "No phone paired: reminders reach this desktop only", ""]);
+        assert!(!reach(0, Link::Up).iter().any(|l| l.starts_with("No phone")));
+        assert!(!reach(2, Link::Down).iter().any(|l| l.starts_with("No phone")));
         // The desktop's global shortcuts: offered where it has them, shown to be changed once held, with the daemon up or not.
         assert_eq!(picks(&Shown { keys: Keys::Offer, ..s(0, false, Link::Up) }), [Pick::Open, Pick::New, Pick::Pause, Pick::Shortcuts, Pick::Quit, Pick::QuitAll]);
         assert_eq!(picks(&Shown { keys: Keys::Change, ..s(0, false, Link::Down) }), [Pick::Open, Pick::Start, Pick::Shortcuts, Pick::Quit]);

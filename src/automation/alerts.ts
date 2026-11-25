@@ -71,7 +71,11 @@ export type AlertChannel = {
   id: string;
   label: string;
   available(): boolean;
-  deliver(a: Alert): void | Promise<void>;
+  // `reminder`: the card is told again while the owner is away (src/automation/reminders.ts); the channel
+  // has no reason of its own to hold it back, and it takes the place of what it showed before.
+  deliver(a: Alert, opts?: { reminder?: boolean }): void | Promise<void>;
+  // Whether a phone is paired to this channel (the phone's only), for the line that says where reminders reach.
+  paired?(): boolean;
   // The owner read the session: take back what is still shown for it.
   withdraw?(sessionId: string): void | Promise<void>;
   // One alert was read (an approval answered) while its session still has another unread:
@@ -92,7 +96,8 @@ export type AlertSettings = {
 
 const channels = new Map<string, AlertChannel>();
 export const registerChannel = (c: AlertChannel) => void channels.set(c.id, c);
-export const channelList = () => [...channels.values()].map((c) => ({ id: c.id, label: c.label, available: c.available() }));
+export const channelList = () => [...channels.values()].map((c) => ({ id: c.id, label: c.label, available: c.available(), ...(c.paired ? { paired: c.paired() } : {}) }));
+export const channelOf = (id: string) => channels.get(id);
 
 const KEEP_MS = 30 * 86400_000;
 
@@ -394,12 +399,12 @@ const scrub = (t: string) => t.replace(SECRETS, "[secret]");
 
 // Hands the alert to each channel on its own: one that throws or rejects is
 // recorded on the alert and never stops the others.
-function deliverTo(a: Alert, ids: string[]) {
+export function deliverTo(a: Alert, ids: string[], opts?: { reminder?: boolean }) {
   for (const c of ids) {
     const ch = channels.get(c);
     if (!ch) continue;
     Promise.resolve()
-      .then(() => ch.deliver(a))
+      .then(() => ch.deliver(a, opts))
       .then(() => setDelivery(a.id, c, { state: "sent" }))
       .catch((e) => {
         setDelivery(a.id, c, { state: "failed", error: clip(String((e as Error)?.message ?? e), 200) });
@@ -955,6 +960,19 @@ export function tickWithheld(now = Date.now()) {
     capture(e, { at: "withheld alerts" });
   }
 }
+
+// The cards that wait on the owner and were told to them: unread asks of this daemon whose card still
+// waits, none held back (attended, not yet sent) and none while alerts are snoozed. The reminders'
+// candidates (src/automation/reminders.ts).
+export function openAsks(): Alert[] {
+  const g = snooze.global();
+  if (g && g.until_ms && g.until_ms > Date.now()) return [];
+  const rows = D().store.db.query<Row, []>("SELECT * FROM alerts WHERE read = 0 AND far_id IS NULL AND kind IN ('approval', 'question') ORDER BY ts, id").all();
+  return rows.map(toAlert).filter((a) => !a.data?.withheld && !a.data?.far && !!a.session_id && waits(a));
+}
+
+// Where a card's reminder goes: the channels the owner routed this kind to that interrupt them and are set up.
+export const reminderChannels = (kind: AlertKind): string[] => (settings().routes[kind] ?? []).filter((c) => INTERRUPTS.has(c) && channels.get(c)?.available());
 
 // The snoozes whose time came: each session wakes with one alert, and the end
 // of a global snooze says how many alerts it held.

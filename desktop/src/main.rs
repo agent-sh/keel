@@ -95,6 +95,8 @@ struct Shell {
     /// The sessions the tray lists and the unread count: from the frame the count came in.
     listed: RefCell<Vec<daemon::Listed>>,
     unread: Cell<u32>,
+    /// Where a reminder reaches when it is this desktop only, from the same frame.
+    reach: RefCell<Option<String>>,
     paused_until: Cell<Option<i64>>,
     starting: Cell<bool>,
     note: RefCell<String>,
@@ -176,7 +178,7 @@ impl Shell {
 
     fn show_tray(&self) {
         if let Some(t) = self.tray.borrow().as_ref() {
-            t.show(Shown { needs: self.needs.get(), list: self.listed.borrow().clone(), unread: self.unread.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get(), keys: self.keys(), panel: t.shown().panel });
+            t.show(Shown { needs: self.needs.get(), list: self.listed.borrow().clone(), unread: self.unread.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get(), keys: self.keys(), panel: t.shown().panel, reach: self.reach.borrow().clone() });
             self.note_done("tray", serde_json::json!({ "needs": self.needs.get(), "listed": self.listed.borrow().iter().map(|l| l.id.clone()).collect::<Vec<_>>(), "unread": self.unread.get(), "paused": self.paused(), "headline": tray::headline(&t.shown()) }));
         }
     }
@@ -445,7 +447,8 @@ impl Shell {
                 }
                 self.show_tray();
             }
-            Event::Needs { n, unread, list } => {
+            Event::Needs { n, unread, list, reach } => {
+                *self.reach.borrow_mut() = reach;
                 self.needs.set(n);
                 self.unread.set(unread);
                 *self.listed.borrow_mut() = list;
@@ -660,6 +663,7 @@ fn main() -> glib::ExitCode {
             needs: Cell::new(0),
             listed: RefCell::new(Vec::new()),
             unread: Cell::new(0),
+            reach: RefCell::new(None),
             paused_until: Cell::new(None),
             starting: Cell::new(false),
             // Known before the first window: an address the app does not speak to says so in its first page.

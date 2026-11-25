@@ -104,13 +104,18 @@ fn listed(v: &Value) -> Vec<Listed> {
         .unwrap_or_default()
 }
 
+/// The daemon's words on where a reminder reaches, when it says it is this desktop only.
+fn reach(v: &Value) -> Option<String> {
+    v.get("reach").and_then(Value::as_str).filter(|r| !r.trim().is_empty()).map(|r| r.chars().take(120).collect())
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     Link { link: Link, url: String },
     /// Why the app does not speak to the address it was given.
     Refused(String),
     /// One frame: what waits on the owner and the sessions the tray's menu lists, so the two never differ.
-    Needs { n: u32, unread: u32, list: Vec<Listed> },
+    Needs { n: u32, unread: u32, list: Vec<Listed>, reach: Option<String> },
     /// `ack` and `stream` go back to the daemon once the notification is on screen.
     Notify { key: String, alert: String, title: String, body: String, icon: String, urgent: bool, silent: bool, ack: Option<u64>, stream: String },
     Withdraw(String),
@@ -323,8 +328,8 @@ fn told(event: &str, data: &str, stream: &str) -> Option<Event> {
     let v: Value = serde_json::from_str(data).ok()?;
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     Some(match event {
-        "hello" => Event::Needs { n: v.get("needs")?.as_u64()? as u32, unread: v.get("unread").and_then(Value::as_u64).unwrap_or(0) as u32, list: listed(&v) },
-        "needs" => Event::Needs { n: v.get("n")?.as_u64()? as u32, unread: v.get("unread").and_then(Value::as_u64).unwrap_or(0) as u32, list: listed(&v) },
+        "hello" => Event::Needs { n: v.get("needs")?.as_u64()? as u32, unread: v.get("unread").and_then(Value::as_u64).unwrap_or(0) as u32, list: listed(&v), reach: reach(&v) },
+        "needs" => Event::Needs { n: v.get("n")?.as_u64()? as u32, unread: v.get("unread").and_then(Value::as_u64).unwrap_or(0) as u32, list: listed(&v), reach: reach(&v) },
         "notify" => Event::Notify { key: s("key"), alert: s("alert"), title: s("title"), body: s("body"), icon: s("icon"), urgent: v.get("urgency").and_then(Value::as_u64) == Some(2), silent: v.get("sound").and_then(Value::as_bool) == Some(false), ack: v.get("ack").and_then(Value::as_u64), stream: stream.to_string() },
         "withdraw" => Event::Withdraw(s("key")),
         "snooze" => Event::Snooze(v.get("until_ms").and_then(Value::as_i64)),
@@ -632,12 +637,13 @@ mod tests {
 
     #[test]
     fn the_stream_is_read_into_events() {
-        assert!(matches!(told("hello", r#"{"pid":1,"needs":3,"snooze_until":null}"#, ""), Some(Event::Needs { n: 3, unread: 0, list }) if list.is_empty()));
+        assert!(matches!(told("hello", r#"{"pid":1,"needs":3,"snooze_until":null}"#, ""), Some(Event::Needs { n: 3, unread: 0, list, reach: None }) if list.is_empty()));
         assert!(matches!(told("needs", r#"{"n":0}"#, ""), Some(Event::Needs { n: 0, .. })));
         // The count and the list come in one frame; an id that is not the page's shape is left out, and no more than five are kept.
         let many = (0..8).map(|i| format!(r#"{{"id":"s{i}","title":"T{i}","state":"need","word":"Needs you"}}"#)).collect::<Vec<_>>().join(",");
-        match told("needs", &format!(r#"{{"n":2,"unread":4,"list":[{{"id":"../x","title":"bad","word":"w"}},{many}]}}"#), "") {
-            Some(Event::Needs { n, unread, list }) => {
+        match told("needs", &format!(r#"{{"n":2,"unread":4,"reach":"No phone paired: reminders reach this desktop only","list":[{{"id":"../x","title":"bad","word":"w"}},{many}]}}"#), "") {
+            Some(Event::Needs { n, unread, list, reach }) => {
+                assert_eq!(reach.as_deref(), Some("No phone paired: reminders reach this desktop only"));
                 assert_eq!((n, unread, list.len()), (2, 4, 5));
                 assert_eq!(list[0], Listed { id: "s0".into(), title: "T0".into(), state: Some(Dot::Need), word: "Needs you".into() });
             }

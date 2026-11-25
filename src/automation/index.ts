@@ -33,6 +33,7 @@ import * as windowCap from "./window-cap.ts";
 import { dollars, raisedCap } from "./cap-rules.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
+import * as reminders from "./reminders.ts";
 import { waitCost, waitNow } from "./wait-cost.ts";
 import * as failures from "./failures.ts";
 import * as outage from "./outage.ts";
@@ -120,6 +121,7 @@ function init(deps: Deps) {
   waits.migrate();
   loops.migrate();
   alerts.migrate();
+  reminders.migrate();
   activity.migrate();
   snooze.migrate();
   consult.migrate();
@@ -403,6 +405,8 @@ function init(deps: Deps) {
   g.__keelAutomationLeave = joinPulse("automation", () => {
     // A notification held back while the owner attended its session goes out when they no longer do.
     alerts.tickWithheld();
+    // A card that waits while the owner is away is told again, at growing gaps (src/automation/reminders.ts).
+    reminders.tick();
     // The dollar caps' figures: a read every ten seconds while any is set (src/automation/caps.ts).
     caps.pulse();
     windowCap.pulse();
@@ -430,7 +434,7 @@ export function nextDue(deps: Deps, now: number): number | undefined {
     EXISTS (SELECT 1 FROM waits WHERE status = 'active') AS waits,
     (SELECT MIN(next_ms) FROM loops WHERE enabled = 1 AND next_ms IS NOT NULL) AS loop,
     (SELECT MIN(until_ms) FROM snoozes WHERE until_ms IS NOT NULL) AS snooze`).get();
-  const times = [r?.waits ? waits.nextDue(now) : undefined, r?.loop ?? undefined, r?.snooze ?? undefined, alerts.withheldDue()].filter((t): t is number => typeof t === "number");
+  const times = [r?.waits ? waits.nextDue(now) : undefined, r?.loop ?? undefined, r?.snooze ?? undefined, alerts.withheldDue(), reminders.due(now)].filter((t): t is number => typeof t === "number");
   return times.length ? Math.min(...times) : undefined;
 }
 

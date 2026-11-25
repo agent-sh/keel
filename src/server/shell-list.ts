@@ -7,7 +7,9 @@ export const TRAY_SESSIONS = 5;
 const TITLE_MAX = 80;
 
 export type TrayLine = { id: string; title: string; state: "need" | "unread" | "work"; word: string };
-export type TrayFrame = { n: number; unread: number; list: TrayLine[] };
+// `reach`: where a card's reminder goes when it is only this desktop (src/automation/reminder-schedule.ts), said under the
+// sessions that wait; none when a phone takes them too.
+export type TrayFrame = { n: number; unread: number; list: TrayLine[]; reach: string | null };
 
 // A title as one plain line: control characters and line breaks are a space, the characters that
 // reorder text are dropped, and it is cut on a whole character.
@@ -21,11 +23,11 @@ export function plainTitle(title: string | null | undefined): string {
 // `needs`: what waits on the owner per top-level session (the count `n` adds it up, listed or
 // not); `working`: the top-level sessions at work; `unread`: unread alerts per inbox session;
 // `titleOf` is undefined for a session this machine does not hold; `recent`: when a session last did anything.
-export function trayFrame(needs: ReadonlyMap<string, number>, working: ReadonlySet<string>, unread: Record<string, number>, titleOf: (id: string) => string | undefined, recent: (id: string) => number): TrayFrame {
+export function trayFrame(needs: ReadonlyMap<string, number>, working: ReadonlySet<string>, unread: Record<string, number>, titleOf: (id: string) => string | undefined, recent: (id: string) => number, reach: string | null = null): TrayFrame {
   const byRecent = (ids: string[]) => ids.sort((a, b) => recent(b) - recent(a));
   const line = (state: TrayLine["state"], word: string) => (id: string): TrayLine => ({ id, title: plainTitle(titleOf(id)), state, word });
   const unreadIds = Object.keys(unread).filter((id) => unread[id]! > 0 && !needs.has(id) && titleOf(id) !== undefined);
   const workIds = [...working].filter((id) => !needs.has(id) && !(unread[id]! > 0));
   const list = [...byRecent([...needs.keys()]).map(line("need", STATE_WORD.need)), ...byRecent(unreadIds).map(line("unread", UNREAD_WORD)), ...byRecent(workIds).map(line("work", STATE_WORD.work))].slice(0, TRAY_SESSIONS);
-  return { n: [...needs.values()].reduce((a, b) => a + b, 0), unread: Object.values(unread).reduce((a, b) => a + b, 0), list };
+  return { n: [...needs.values()].reduce((a, b) => a + b, 0), unread: Object.values(unread).reduce((a, b) => a + b, 0), list, reach };
 }

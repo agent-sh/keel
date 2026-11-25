@@ -16,7 +16,7 @@ test("the list is the sessions that need the owner, then the unread, then the wo
 });
 
 test("none that waits, is unread or works gives no list", () => {
-  expect(trayFrame(new Map(), new Set(), {}, (id) => titles[id], at)).toEqual({ n: 0, unread: 0, list: [] });
+  expect(trayFrame(new Map(), new Set(), {}, (id) => titles[id], at)).toEqual({ n: 0, unread: 0, list: [], reach: null });
 });
 
 test("a title is one plain line", () => {
@@ -24,4 +24,8 @@ test("a title is one plain line", () => {
   expect(plainTitle("<b>x</b>")).toBe("<b>x</b>");
   expect(plainTitle("  ")).toBe("Untitled session");
   expect([...plainTitle("x".repeat(200))].length).toBe(80);
+});
+
+test("the frame carries where reminders reach, for the tray's line", () => {
+  expect(trayFrame(new Map([["a", 1]]), new Set(), {}, () => "A", () => 0, "No phone paired: reminders reach this desktop only").reach).toBe("No phone paired: reminders reach this desktop only");
 });

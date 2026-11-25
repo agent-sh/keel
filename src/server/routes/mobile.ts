@@ -181,7 +181,8 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     id: "push",
     label: "Phone push",
     available: () => push.configured() && mobile.pushTargets().length > 0,
-    async deliver(a) {
+    paired: () => mobile.devices().some((d) => !d.revoked),
+    async deliver(a, opts) {
       const read = () => !!store.db.query<{ read: number }, [string]>("SELECT read FROM alerts WHERE id = ?").get(a.id)?.read;
       const stillOpen = () => {
         if (read()) return false;
@@ -196,6 +197,12 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         }
         return true;
       };
+      // A reminder is sent while the owner is away by the digest's rule, which the reminder's own look settled:
+      // no wait of its own, no look at the desk. It still goes through the hour's budget.
+      if (opts?.reminder) {
+        if (stillOpen()) await budget.offer({ id: a.id, ts: a.ts, kind: a.kind, wait: a.data?.wait, label: a.title, alert: a, open: stillOpen });
+        return;
+      }
       await holdThenSend({
         needsAnswer: a.kind === "approval" || a.kind === "question",
         stillOpen,

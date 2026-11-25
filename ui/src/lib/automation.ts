@@ -20,10 +20,12 @@ import { remoteId, splitId } from "./fleet-ids.ts";
 import { clock } from "./utils.ts";
 import { machineLabel } from "./reach.ts";
 import { every } from "./clock.ts";
+import { reachLine } from "../../../src/automation/reminder-schedule.ts";
 
 export type { Goal, Task };
 export type { Activity, AgentRecord, Alert, AlertSettings, LoopRecord, RunRecord, Snooze, WaitRecord };
-export type Channel = { id: string; label: string; available: boolean };
+// `paired`: set on the phone's channel: a phone is paired (it may still be unable to be pushed to).
+export type Channel = { id: string; label: string; available: boolean; paired?: boolean };
 
 type State = {
   agents: Record<string, AgentRecord>;
@@ -267,6 +269,8 @@ onFeature({
       if (lines.length) set({ now: { ...state.now, ...Object.fromEntries(lines.map((l) => [l.agent_id, l])) } });
       return;
     }
+    // A phone paired or taken away: where a reminder reaches changes (the line on the cards and in Settings).
+    if (f.name === "mobile") { void api<{ channels: Channel[] }>("/api/alerts/settings").then((r) => set({ channels: r.channels }), reportError); return; }
     if (f.name !== "automation") return;
     const { kind, data: d, counts } = f.data as { kind: string; data: any; counts?: Unread };
     // Records are ordered by the bus rev: a frame older than what a snapshot already showed is dropped.
@@ -612,3 +616,10 @@ export function snoozeText(s: Snooze): string {
   if (s.suspended) return "Snooze paused: it needs you";
   return [t ? `until ${t}` : "", s.until_needed ? "until it needs you" : ""].filter(Boolean).join(" or ");
 }
+
+// What the cards, the tray and Settings > Alerts say of where a reminder of a card that waits reaches: the line, or
+// null when a phone takes them too (src/automation/reminder-schedule.ts).
+export const useReachLine = (): string | null => useAuto((s) => {
+  const push = s.channels.find((c) => c.id === "push");
+  return reachLine({ paired: !!push?.paired, available: !!push?.available });
+});
