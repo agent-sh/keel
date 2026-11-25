@@ -1996,7 +1996,9 @@ content named first, what only the owner allows (a tool that confirms every
 call, a hook of his that asks, a write beyond his accounts), spending or
 renting machines, an irreversible publish or deletion, authority over his
 machines or the rules (leaving the sandbox, root, services, sign-ins,
-credentials, Keel's permissions and settings, a write to a service), and
+credentials, a write to a service, and Keel's own API: its command line, a
+route that changes it or speaks in a session, an address on this machine or a
+private network, one of its ports, an address built from a variable), and
 what the helper cannot see in the card: a card that does not hold its whole
 request, or a command that runs code the card does not show (a script, a
 package's script, a recipe of make or just, a git alias, code handed to a

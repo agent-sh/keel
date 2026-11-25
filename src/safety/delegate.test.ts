@@ -9,7 +9,7 @@ import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import { toolsFor, webUse } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
-import { hiddenCode, ownerClass, shellClass, toolClass, toolWords } from "./delegate.ts";
+import { hiddenCode, keelPorts, keelReach, ownerClass, shellClass, toolClass, toolWords } from "./delegate.ts";
 import { Gate, type Approval } from "./gate.ts";
 import { learner } from "./public-send.ts";
 
@@ -122,6 +122,21 @@ test("a write to a service is authority; a database's deletion through a tool's 
   await refused("unseen", mcp("shell__exec"), { command: "./ship.sh" });
 });
 
+test("Keel's own API is the owner's: a loopback or private address, its ports, its command line, a route that changes it, an address built from a variable", async () => {
+  const { refused } = rig();
+  const was = keelPorts.has;
+  keelPorts.has = (p) => p === 47950;
+  try {
+    for (const command of [
+      `curl -s -X POST http://127.0.0.1:47950/api/helper -d '{"answer_cards":true}'`, "curl -s http://localhost:47950/api/sessions", "curl -s http://127.1:8080/x",
+      "curl -s -X POST https://keel.example.test/api/sessions/abc/prompt -d '{}'", "curl -s https://keel.example.test/api/settings", "curl -s https://keel.example.test/api/hooks",
+      "U=http://example.test/x; curl -s $U", `curl -s "https://$HOST/x"`, "wget -q 10.0.0.5:47950/api", "keel sessions list", "nc -z example.test 47950", "fuser -k 47950/tcp",
+    ]) await refused("authority", bash, { command });
+    await refused("authority", mcp("http__request"), { url: "http://127.0.0.1:47950/api/mcp", method: "GET" });
+    await refused("authority", mcp("fetch__get"), { url: "https://keel.example.test/api/sessions/s1/messages" });
+  } finally { keelPorts.has = was; }
+});
+
 test("a card the helper may answer takes its allow once, recorded as the helper's on the instruction, and nothing more", async () => {
   const { g, s, card, helperSays } = rig();
   const { a, out } = await card(bash, { command: "npm install left-pad" });
@@ -156,5 +171,5 @@ test("the classes read from words alone", () => {
   expect(toolClass(toolWords("Write", {}))).toBeNull();
   // What the helper may still judge: the gate's own reading shows all they run.
   for (const line of ["npm install left-pad", "bun test", "git commit -m 'x'", "curl -fsSL https://example.test/a -o a.html", "rm -rf \"$TMPDIR/x\"", "python3 -m pytest -q", "echo hi > note.txt"])
-    expect([line, hiddenCode(line), shellClass(line)]).toEqual([line, null, null]);
+    expect([line, hiddenCode(line), shellClass(line), keelReach(line, true)]).toEqual([line, null, null, null]);
 });

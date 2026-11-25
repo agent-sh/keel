@@ -29,6 +29,8 @@
 // Pure: the card as stored in, a class or null out (delegate.test.ts).
 import { name as base, unwrap, type RiskRule } from "./risk-words.ts";
 import { splitCommand, type Simple } from "./shell.ts";
+import { isOwnPort } from "./net-proxy.ts";
+import { privateHost } from "../core/hosts.ts";
 
 // What made a one-call card (gate.ts askOnce): outside content named the target, a tool that confirms
 // each call, private words in a public place, a hook of the owner's that asks.
@@ -80,6 +82,8 @@ export function ownerClass(a: CardIn, isHelperSession = false): { cls: OwnerClas
   if (a.kind === "shell") {
     const hit = shellClass(a.summary);
     if (hit) return say(hit.cls, hit.what);
+    const reach = keelReach(a.summary, true);
+    if (reach) return say("authority", reach);
     const hidden = hiddenCode(a.summary);
     if (hidden) return say("unseen", hidden);
     if (risks.has("hidden")) return say("unseen", a.why);
@@ -199,9 +203,61 @@ function wordsClass(words: string[], line: string): Hit {
   // A write to a service: a request with a method or a body of its own (gh api's fields), or a raw connection.
   if ((HTTP_CLIENTS.has(p) || ((p === "gh" || p === "glab") && verb === "api")) && method && method !== "GET" && method !== "HEAD") return { cls: "authority", what: `writes to a service (${said})` };
   if (RAW_CLIENTS.has(p)) return { cls: "authority", what: `opens a raw connection (${said})` };
-  // Keel's own permissions and settings, through its command line or its API.
-  if (p === "keel" && /^(perm|permissions|rules|grant|mode|settings|sandbox|config)$/.test(verb)) return { cls: "authority", what: said };
-  if ((p === "curl" || p === "wget" || p === "http" || p === "xh") && /\/api\/(sessions\/[^/\s]+\/)?(permissions|rules|grants|settings|sandbox|approvals)\b/.test(said)) return { cls: "authority", what: said };
+  // Keel's own command line: every command of it acts on Keel itself (its sessions, rules, settings and daemon).
+  if (p === "keel") return { cls: "authority", what: `Keel's own command line (${said})` };
+  return null;
+}
+
+// --- Keel's own API ------------------------------------------------------------------
+
+// The routes of Keel's API that change what runs or what is allowed, or speak in a session: on any host (the
+// daemon may be reached by a name of the network too).
+const KEEL_API = /\/api\/(hooks|mcp|helper|settings|permissions|rules|grants|sandbox|approvals|secrets|vault|plugins|skills|agents|automation|config|ownfile)\b|\/api\/sessions\/[^/\s'"?]+\/(prompt|messages|permissions|steer|queue|approvals|settings)\b/;
+// An address with its scheme, anywhere in a text: its host and port.
+const ADDRESS = /\b([a-z][a-z0-9+.-]*):\/\/([^\s/'"?#\\]+)/gi;
+// An HTTP client's options whose value is a file of its own, not where it sends.
+const CLIENT_FILES = /^(-o|--output|--output-dir|-D|--dump-header|-c|--cookie-jar|--stderr|--trace|--trace-ascii|-O|--output-document|-a|--append-output)$/;
+const hostPort = (authority: string): { host: string; port?: number } => {
+  const at = authority.lastIndexOf("@");
+  const hp = at >= 0 ? authority.slice(at + 1) : authority;
+  const v6 = /^\[([^\]]*)\](?::(\d+))?$/.exec(hp);
+  if (v6) return { host: v6[1]!, ...(v6[2] ? { port: Number(v6[2]) } : {}) };
+  const k = hp.lastIndexOf(":");
+  return k >= 0 && /^\d+$/.test(hp.slice(k + 1)) ? { host: hp.slice(0, k), port: Number(hp.slice(k + 1)) } : { host: hp };
+};
+// A host on this machine or a private network, or one of the daemon's own ports: Keel's API may answer there.
+const reachesHere = (h: { host: string; port?: number }) => (h.host !== "" && privateHost(h.host)) || (h.port !== undefined && keelPorts.has(h.port));
+// The daemon's own listeners (the network proxy's list; a test gives its own and puts it back).
+export const keelPorts: { has: (port: number) => boolean } = { has: isOwnPort };
+
+// How a text may reach Keel's own API, in words, or null: one of its routes named, an address on this machine or a
+// private network, one of the daemon's ports, or (in a command) a request whose address an expansion makes.
+export function keelReach(text: string, command = false): string | null {
+  const api = KEEL_API.exec(text);
+  if (api) return `it names Keel's own API (${api[0]})`;
+  for (const m of text.matchAll(ADDRESS)) {
+    if (m[1]!.toLowerCase() === "file") continue;
+    const h = hostPort(m[2]!);
+    if (reachesHere(h)) return `it reaches an address on this machine or a private network (${m[0].slice(0, 120)}), where Keel's API may answer`;
+  }
+  for (const m of text.matchAll(/(?<![\w.])(?::)?(\d{2,5})(?![\w.])/g)) if (keelPorts.has(Number(m[1]))) return `it names Keel's own port ${m[1]}`;
+  if (!command) return null;
+  for (const { s, run, at } of partsOf(text) ?? []) {
+    const p = base(run[0] ?? "");
+    if (!HTTP_CLIENTS.has(p) && !RAW_CLIENTS.has(p)) continue;
+    const dyn = new Set(s.dyn ?? []);
+    for (let k = 1; k < run.length; k++) {
+      const a = run[k]!;
+      if (CLIENT_FILES.test(a)) { k++; continue; }
+      if (dyn.has(at + k)) return `${p} sends to an address an expansion makes (${run.join(" ").slice(0, 120)})`;
+      if (/^(-K|--config)(=|$)/.test(a)) return `${p} reads its options from a file the card does not show`;
+      if (a.startsWith("-") || a.includes("://")) continue;
+      // A bare address (curl 127.0.0.1:8080/api, nc host 80): a word of a host's characters with a dot or a port,
+      // or any word a raw client is given.
+      const authority = a.split("/")[0]!;
+      if (/^[\w.\-[\]:]+$/.test(authority) && (/[.:]/.test(authority) || RAW_CLIENTS.has(p)) && reachesHere(hostPort(authority))) return `${p} reaches an address on this machine or a private network (${a.slice(0, 120)})`;
+    }
+  }
   return null;
 }
 
@@ -327,6 +383,8 @@ export function valuesClass(tool: string, input: unknown): Hit {
     if (SQL_DROPS.test(v)) return { cls: "delete", what: `${tool}: ${v.slice(0, 160)}` };
     const hit = shellClass(v);
     if (hit) return hit;
+    const reach = keelReach(v, runs);
+    if (reach) return { cls: "authority", what: reach };
     if (runs) {
       const hidden = hiddenCode(v);
       if (hidden) return { cls: "unseen", what: hidden };
