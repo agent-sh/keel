@@ -40,6 +40,23 @@ function readsTerminal(args: string[]): boolean {
   return true;
 }
 
+// Shells whose line editor holds a bracketed paste's Enter keys as text (readline, zsh's zle, fish). Any other shell
+// (dash, sh, ash, ksh, csh...) takes the markers for keys and runs the text after them.
+export const PASTES = /^(bash|zsh|fish)$/;
+
+// Whether a launch command may come to have a shell reading the terminal that the foreground does not show yet: a
+// chain of commands (the shell is a later one), a command that names a shell or an interpreter (it runs one, or is
+// one), or `exec` (the shell replaces the launcher). Until then, and whatever runs in front in between, a line typed
+// ahead is read by that shell.
+export function launchMayRunShell(command: string): boolean {
+  const line = command.replace(/\d*[<>]&\d*-?/g, " ");
+  if (/[;&|\n`]|\$\(/.test(line) || /(^|\s)exec(\s|$)/.test(line)) return true;
+  return line.split(/[\s'"()<>=]+/).some((w) => {
+    const name = basename(w).replace(/^-/, "");
+    return SHELLS.test(name) || INTERPRETERS.test(name);
+  });
+}
+
 // One program, by its command line.
 export function readerOf(argv: string[], cwd?: string): Reader {
   const name = basename(argv[0] ?? "").replace(/^-/, "");

@@ -45,7 +45,11 @@ function keyOfEscape(esc: string): Key | undefined {
   return "unknown"; // up and down (history), a modifier on an arrow (a word moved), the rest
 }
 
-export function step(from: Typing, chars: string): { lines: TypedLine[]; next: Typing } {
+// `opens`: the write holds the start of a bracketed paste (or one was open before it). Only a line editor that honours the
+// markers (readline in bash, zsh and fish) holds Enter keys inside it as text; dash and sh read ESC [ 200 ~ as keys and
+// run what follows, so for any other shell a paste is a write that is asked about (typed.ts).
+export function step(from: Typing, chars: string): { lines: TypedLine[]; next: Typing; opens: boolean } {
+  let opens = from.paste;
   let text = [...from.text], at = from.at, unsure = from.unsure, paste = from.paste, esc = from.esc;
   const lines: TypedLine[] = [];
   const insert = (c: string) => { text.splice(at, 0, c); at++; };
@@ -66,7 +70,7 @@ export function step(from: Typing, chars: string): { lines: TypedLine[]; next: T
         case "home": at = 0; break;
         case "end": at = text.length; break;
         case "delete": if (at < text.length) text.splice(at, 1); break;
-        case "paste": paste = true; break;
+        case "paste": paste = true; opens = true; break;
         case "pasted": paste = false; break;
         default:
           unsure = true;
@@ -100,5 +104,5 @@ export function step(from: Typing, chars: string): { lines: TypedLine[]; next: T
     else if (code < 0x20 || (code >= 0x80 && code < 0xa0)) unsure = true; // Tab (completion), Ctrl-Y, Ctrl-T, Ctrl-R, Ctrl-V...
     else insert(c);
   }
-  return { lines, next: { text, at, unsure, paste, esc, n: from.n + 1 } };
+  return { lines, next: { text, at, unsure, paste, esc, n: from.n + 1 }, opens };
 }

@@ -18,7 +18,7 @@
 //     write whose judgement started from another value (two writes in one reply, one changed the line) is refused
 //     and sent again.
 import { findJob, running, type Job } from "./jobs.ts";
-import { readerOfTerminal } from "./foreground.ts";
+import { launchMayRunShell, PASTES, readerOfTerminal } from "./foreground.ts";
 import { EMPTY, step, type Typing } from "./typed-lines.ts";
 import type { Tool } from "./types.ts";
 
@@ -36,19 +36,27 @@ export async function typedTarget(input: any, sessionId: string): Promise<Target
   const job = findJob(sessionId, Number(input?.session_id));
   if (!job || !job.pty || !job.unconfined || !running(job)) return null;
   const before = lineOf(job);
-  const { lines } = step(before, chars);
-  if (!lines.length) return null;
-  // (A write that completes a line is looked at, whatever the look finds: it runs from this value of the line only.)
+  const { lines, opens } = step(before, chars);
+  if (!lines.length && !opens) return null;
+  // (A write that completes a line, or one in a paste, is looked at, whatever the look finds: it runs from this value
+  // of the line only.)
   const seen = (job.typedJudged ??= new Set());
   if (seen.size >= 64) seen.clear();
   seen.add(before.n);
+  // (The /proc walk is about 2 ms with a thousand processes, once a line-completing write. The job's cgroup, or the
+  // children of its process, would bound it to the job's own processes if it ever shows.)
   const reader = await readerOfTerminal(job.pid);
   const unsure = lines.some((l) => l.unsure);
   const code = (grant: string): Target => ({ name: "write_stdin", readOnly: false, input, cls: { kind: "other", grant } });
   // (What cannot be read is read as a shell, the strictest, and so is a terminal that has just started: until its
-  // program has taken over, the processes in it are the launcher's.)
-  if (reader?.kind === "program" && Date.now() - job.started > YOUNG_MS) return null;
+  // program has taken over, the processes in it are the launcher's. So is a terminal whose launch runs a shell later
+  // (a chain, `exec`, a shell or an interpreter named): what is typed ahead is that shell's, whatever runs in front.)
+  if (reader?.kind === "program" && Date.now() - job.started > YOUNG_MS && !launchMayRunShell(job.command)) return null;
   if (reader?.kind === "interpreter") return code(`write_stdin:${reader.name}`);
+  // A bracketed paste holds Enter keys as text only in a line editor that honours its markers; in any other shell
+  // (dash, sh) the text after ESC [ 200 ~ runs as typed, which this reading of the keys does not follow.
+  if (opens && !(reader?.kind === "shell" && PASTES.test(reader.name))) return code("write_stdin:bracketed paste");
+  if (!lines.length) return null;
   if (unsure) return code("write_stdin:edited line");
   const command = lines.map((l) => l.text).filter((t) => t.trim()).join("\n");
   if (!command) return null;

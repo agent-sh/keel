@@ -147,6 +147,26 @@ test("what a terminal's program is decides how a line is read: a prompt is answe
   expect((await r.write(repl, "\x03")).verdict).toBe("ran");
 }, 30_000);
 
+test("an open bracketed paste is followed only in a shell whose line editor honours it", async () => {
+  const open = "\x1b[200~\n";
+  for (const [argv, ruled] of [[["sh", "-i"], "card"], [["bash", "--norc", "--noprofile", "-i"], "ran"]] as const) {
+    const r = rig("ask");
+    const t = await r.terminal(false, [...argv]);
+    // (The write that opens it, approved and run; then the line typed after it, which dash and sh run.)
+    const first = { session_id: t.num, chars: open, yield_time_ms: 250 };
+    expect(await r.decide(writeStdin, first)).toBe(ruled === "ran" ? "ran" : "card");
+    await writeStdin.run(first, r.ctx());
+    expect([argv[0], (await r.write(t, `${REFUSED}\n`)).verdict]).toEqual([argv[0], ruled]);
+  }
+}, 30_000);
+
+test("a terminal that starts its shell later is read as a shell while another program runs in front", async () => {
+  const r = rig("ask");
+  const late = await r.terminal(false, ["bash", "-c", "sleep 6; exec bash --norc --noprofile -i"]);
+  expect((await readerOfTerminal(late.pid))?.kind).toBe("program");
+  expect((await r.write(late, `${REFUSED}\n`)).verdict).toBe("card");
+}, 30_000);
+
 test("a terminal that has just started is read as a shell", async () => {
   const r = rig("ask");
   const cat = await r.terminal(false, ["cat"]);

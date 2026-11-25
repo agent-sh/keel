@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { readerOf } from "./foreground.ts";
+import { launchMayRunShell, readerOf } from "./foreground.ts";
 import { EMPTY, step, type Typing } from "./typed-lines.ts";
 
 // The lines a series of writes completes, as `text` or `text?` for a line whose text is not known.
@@ -66,4 +66,16 @@ test("a program is read from its command line", () => {
   for (const p of ["node", "psql", "ssh", "docker", "vim", "gdb", "sqlite3"]) expect(readerOf([p]).kind).toBe("interpreter");
   expect(readerOf(["./installer", "--yes"])).toEqual({ kind: "program", name: "installer" });
   expect(readerOf(["cat"]).kind).toBe("program");
+});
+
+test("a write says whether it holds a paste's start", () => {
+  expect(step(EMPTY, "ls\n").opens).toBe(false);
+  expect(step(EMPTY, "\x1b[200~ls\n\x1b[201~").opens).toBe(true);
+  expect(step(step(EMPTY, "\x1b[200~\n").next, "x\n").opens).toBe(true); // still open
+  expect(step(step(step(EMPTY, "\x1b[200~a").next, "\x1b[201~").next, "ls\n").opens).toBe(false);
+});
+
+test("a launch that may come to run a shell is known by its command", () => {
+  for (const c of ["wait 6; exec bash -i", "make && sh", "cat | less", "exec zsh", "bash install.sh", "sudo python3 setup.py", "echo $(date)"]) expect([c, launchMayRunShell(c)]).toEqual([c, true]);
+  for (const c of ["cat", "sudo apt-get install foo", "npm init", "./configure --prefix=/usr 2>&1", "make test"]) expect([c, launchMayRunShell(c)]).toEqual([c, false]);
 });
