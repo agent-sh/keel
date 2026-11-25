@@ -8,6 +8,7 @@ import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { Outcomes } from "./outcomes.ts";
 import { Telemetry } from "./telemetry.ts";
+import { readsOf } from "../server/reads.ts";
 
 // A store of its own; the hooks its ledgers registered go with it.
 function fixture() {
@@ -154,5 +155,25 @@ test("a turn's tokens and its cost are summed over the same rows: a cut or faile
     call.run(s.id, T + 2, 10, 1, 0, 0.125, "ok", "judge", a);
     new Outcomes(store);
     expect(turnRows(store)[a]).toMatchObject({ requests: 3, input: 130, output: 11, cache_read: 50, cost: 0.875 });
+  } finally { close(); }
+});
+
+test("the hourly regression check reads through the read thread's path and finds the rows the loop's read finds", async () => {
+  const { store, close } = fixture();
+  try {
+    const s = store.createSession({ model: "p:m", workspace: "/" });
+    const call = store.db.query("INSERT INTO telemetry_calls (session_id, ts, model, input, output, cache_read, outcome, purpose, attempt) VALUES (?, ?, 'p:m', 10, 1, ?, ?, 'turn', 1)");
+    const now = T + 20 * 86_400_000;
+    // 15 days of 1 or 2 failures in 100 requests and a cache share that moves a little: nothing is outside its limits, so nothing alerts.
+    for (let day = 0; day <= 14; day++) {
+      for (let i = 0; i < 100; i++) call.run(s.id, now - day * 86_400_000 - 1000 - i, 90 - (day % 2) * 5, i < 1 + (day % 2) ? "error" : "ok");
+    }
+    const outcomes = new Outcomes(store);
+    const reads = readsOf(store);
+    const before = reads.counts.thread + reads.counts.loop;
+    const rows = await outcomes.regressionCheck(now);
+    expect(reads.counts.thread + reads.counts.loop).toBe(before + 1);
+    expect(rows).toEqual(outcomes.regressions(now, false));
+    expect(rows.find((r) => r.metric === "error_rate")).toMatchObject({ status: "ok", baseline_days: 14, regression: false });
   } finally { close(); }
 });

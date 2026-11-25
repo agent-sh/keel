@@ -41,7 +41,7 @@ export const experimentRoutes: RouteModule = ({ store, errors }) => {
   const g = globalThis as { __keelRegressionTimer?: ReturnType<typeof setInterval> };
   if (g.__keelRegressionTimer) clearInterval(g.__keelRegressionTimer);
   g.__keelRegressionTimer = setInterval(() => {
-    try { o.regressions(); } catch (e) { errors.capture("server", e, { at: "regression check" }); }
+    o.regressionCheck().catch((e) => errors.capture("server", e, { at: "regression check" }));
     // A trial's time limit comes even when no turn ends (nothing else looks at the running experiment then).
     try { x.check(""); } catch (e) { errors.capture("server", e, { at: "experiment time limit" }); }
   }, HOUR);
@@ -92,7 +92,7 @@ export const experimentRoutes: RouteModule = ({ store, errors }) => {
         return o.features({ since, until });
       }),
     },
-    "/api/features/check": { POST: () => run(() => ({ regressions: o.regressions() })) },
+    "/api/features/check": { POST: () => run(async () => ({ regressions: await o.regressionCheck() })) },
     "/api/features/rating": {
       POST: async (req: Request) => run(async () => {
         const b = await body(req);

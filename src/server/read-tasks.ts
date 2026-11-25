@@ -25,6 +25,7 @@ import { egressReport, type EgressAsk } from "../safety/egress-report.ts";
 import { scanFiles, type FilesAsk } from "../admin/health-files.ts";
 import { mineRead, untagged } from "../automation/lessons-mine.ts";
 import { BUDGET_MS, trialRead, type TrialAsk } from "../safety/trial-read.ts";
+import { regressionRows } from "../admin/regressions.ts";
 import { readProcs, type ProcAsk } from "../admin/proc-read.ts";
 import { sealBundleTo, sealRoots, sealVerify } from "../admin/seal-read.ts";
 import { liveReport, type Experiment } from "../admin/experiment-report.ts";
@@ -39,6 +40,8 @@ export const tasks = {
     try { return st.all(...(a.params ?? [])); } finally { st.finalize(); }
   },
   "telemetry.report": (db: Database, a: { q: Filter; limits: Limits }) => reportOf(db, a.q, a.limits),
+  // The hourly regression check's sums over the telemetry tables (src/admin/regressions.ts).
+  "outcomes.regressions": (db: Database, a: { now: number }) => regressionRows(db, a.now),
   "telemetry.tokens": (db: Database, a: { q: Filter }) => tokensOf(db, a.q),
   "telemetry.side": (db: Database, a: { q: Filter }) => sideOf(db, a.q),
   "search.content": (db: Database, a: ContentQuery) => searchContent(db, a),
