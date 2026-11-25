@@ -32,14 +32,18 @@ const paneOf = (page: Page, id: string) => page.getByTestId("station").and(page.
 // What the action says it covers (the button also holds its widest label, unseen, to keep its width).
 const label = (all: Locator) => all.getByTestId("allow-all-label");
 
-// Framed: the violet border of a request that has the keyboard or that a pointed "allow all" covers.
+// Framed: the state's edge (red for a high risk) on a request that has the keyboard or that a pointed
+// "allow all" covers. Every request has the page's own line; the rest have no edge.
 const framed = (card: Locator) => card.evaluate((el) => {
-  const probe = document.createElement("i");
-  probe.style.color = "var(--st-need)";
-  el.append(probe);
-  const need = getComputedStyle(probe).color;
-  probe.remove();
-  return getComputedStyle(el).borderTopColor === need;
+  const edge = (v: string) => {
+    const probe = document.createElement("i");
+    probe.style.boxShadow = `inset 0.1875rem 0 0 var(${v})`;
+    el.append(probe);
+    const shown = getComputedStyle(probe).boxShadow;
+    probe.remove();
+    return shown;
+  };
+  return [edge("--st-need"), edge("--st-fail")].includes(getComputedStyle(el).boxShadow);
 });
 const frames = async (page: Page) => Promise.all((await page.getByTestId("approval").all()).map(framed));
 

@@ -1193,16 +1193,14 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-composer-box:focus-within { box-shadow: 0 0 0 2px var(--ring); border-color: transparent; }
 .k-send { border-radius: var(--radius-md); }
 /* Approvals and open questions: the one thing in yellow. */
-.k-approval, .k-question[data-state="open"] { border-radius: var(--radius-md); border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 13%, transparent); }
-.k-approval[data-risk="high"] { border-color: var(--st-fail); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-fail) 13%, transparent); }
-/* Several requests: the yellow frame is on the one that has the keyboard (Enter answers it) and on
-   the ones a pointed "allow all" covers. The rest step back to a yellow edge, and only the one with
-   the keyboard keeps a filled Allow. A lone request steps back the same way while another list's
+/* A request is a card of the page's own line, not a yellow frame: what it waits on is its agent's dot and its
+   words. The one Enter answers carries the state's edge (red for a high risk); the others are plain cards, and only
+   the one with the keyboard keeps a filled Allow. A lone request steps back the same way while another list's
    request (an agent's) has the keyboard. */
-:is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within, [data-hot]) { border-color: var(--line-strong); box-shadow: inset 0.1875rem 0 0 var(--st-need); }
-:is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval)[data-risk="high"]:not(:focus-within, [data-hot]) { box-shadow: inset 0.1875rem 0 0 var(--st-fail); }
+.k-approval, .k-question[data-state="open"] { border-radius: var(--radius-md); border: 1px solid var(--line-strong); box-shadow: inset 0.1875rem 0 0 var(--st-need); }
+.k-approval[data-risk="high"] { box-shadow: inset 0.1875rem 0 0 var(--st-fail); }
+:is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within, [data-hot]) { box-shadow: none; }
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within) .k-allow { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.k-approval[data-many]:is(:focus-within, [data-hot]) { box-shadow: 0 0 0 3px color-mix(in oklch, var(--st-need) 13%, transparent); }
 /* What waits, over a list of requests: a state word (its face is the state role's, styles.css). */
 .k-ask-count { font-weight: 600; font-size: var(--text-micro); line-height: 1.25rem;  color: var(--st-need-ink); }
 .k-allow-all { border-radius: var(--radius-md); }

@@ -56,7 +56,7 @@ button.k-heard-line:hover { color: var(--fg); }
 .k-heard[data-kind="loop"] .k-heard-line > svg:first-child { color: var(--ok-ink); }
 .k-heard[data-tone="danger"] .k-heard-line > svg:first-child { color: var(--st-fail); }
 .k-heard-who { flex-shrink: 0; font-weight: 600; color: var(--fg); }
-.k-heard[data-tone="danger"] .k-heard-who { color: var(--danger-ink); }
+/* A failure notice keeps the red on its glyph; its name is in ink, as every notice's is. */
 .k-heard-what { min-width: 0; color: var(--faint); }
 .k-heard-chev { flex-shrink: 0; width: 0.75rem; height: 0.75rem; margin-left: auto; color: var(--faint); transition: transform var(--dur-move) var(--ease-out); }
 .k-heard-body { margin: 0.25rem 0 0.375rem 0.4375rem; padding-left: 0.75rem; border-left: 1px solid var(--line-strong); }

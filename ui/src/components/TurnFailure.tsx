@@ -49,13 +49,13 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
   const gaveUp = typeof e.data.continued === "number" ? e.data.continued : 0;
   const round = s.settings.continue_at?.round ?? 0;
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-danger/25 bg-danger-soft px-3.5 py-2.5 text-ui" data-testid="turn-error" data-event-id={e.id} data-kind={kind}>
+    <div className="flex flex-col gap-2 rounded-lg border border-line bg-raised px-3.5 py-2.5 text-ui" data-testid="turn-error" data-event-id={e.id} data-kind={kind}>
       <div className="flex items-start gap-2.5">
         <CircleAlert className="mt-0.5 size-4 shrink-0 text-danger" />
         <div className="min-w-0 flex-1">
           <p className="font-medium text-fg" data-testid="failure-lead">{kind ? LEAD[kind] : <Linked text={words} />}</p>
           {kind && (
-            <p className="mt-0.5 whitespace-pre-wrap break-words text-danger" data-testid="failure-words">
+            <p className="mt-0.5 whitespace-pre-wrap break-words text-muted" data-testid="failure-words">
               <Linked text={words} />
               {status !== undefined && <span className="ml-2 whitespace-nowrap rounded-sm bg-raised/60 px-1 py-px text-micro tabular-nums text-muted" data-testid="failure-status">HTTP {status}</span>}
             </p>
