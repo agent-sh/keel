@@ -601,11 +601,15 @@ export class Worktrees {
     return { removed: true, branch_deleted: branchDeleted };
   }
 
-  // The base a branch is compared with: the managed worktree's, else what
-  // origin/HEAD names, else a local main or master. Nothing is fetched.
+  // The base a branch is compared with: the managed worktree's, else the local branch origin/HEAD names (its
+  // remote ref when no such branch exists), else a local main or master: the base the overlap forecast, the
+  // board and the landing queue use. Nothing is fetched.
   private async defaultBase(cwd: string): Promise<string | null> {
     const origin = (await git(cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { ok: true })).trim();
-    if (origin) return origin;
+    if (origin) {
+      const local = origin.slice(origin.indexOf("/") + 1);
+      return local && (await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${local}`], { ok: true })).trim() ? local : origin;
+    }
     for (const b of ["main", "master"]) if ((await git(cwd, ["rev-parse", "--verify", "--quiet", b], { ok: true })).trim()) return b;
     return null;
   }

@@ -119,6 +119,13 @@ export const forecastOf = (store: Store): Overlaps | undefined => byStore.get(st
 // (its session is no longer held, or git failed).
 export type AgainstBase = { base: string; base_tip: string; tip: string } & ({ state: "clean" } | { state: "conflict"; files: string[] } | { state: "nothing" } | { state: "error"; why: string } | { state: "stale" });
 
+// The local branch a remote ref names (refs/remotes/origin/main -> refs/heads/main) when it exists, else the ref itself.
+async function localOf(repo: string, ref: string): Promise<string> {
+  if (!ref.startsWith("refs/remotes/")) return ref;
+  const local = `refs/heads/${ref.split("/").slice(3).join("/")}`;
+  return (await git(repo, ["rev-parse", "-q", "--verify", local], { read: true })).code === 0 ? local : ref;
+}
+
 export class Overlaps {
   private bases = new Map<string, string | null>(); // repo → the base's full ref name
   private lands = new Map<string, boolean>(); // `${tip} ${baseTip}` → landing it changes the base
@@ -210,13 +217,16 @@ export class Overlaps {
     this.store.db.query("INSERT INTO overlap_branches (repo, branch, session_id, seen) VALUES (?, ?, ?, ?) ON CONFLICT(repo, branch) DO UPDATE SET session_id = excluded.session_id, seen = excluded.seen").run(repo, branch, sessionId, Date.now());
   }
 
-  // The base the repository's branches land on: what origin/HEAD names, else
-  // a local main or master. Nothing is fetched. Kept until a pass finds it gone.
+  // The base the repository's branches land on: the local branch origin/HEAD names (its remote ref when no
+  // such branch exists), else a local main or master. One base for the forecast, the board, the landing
+  // queue and the diffs of a session: a landing committed and not yet pushed is on the local branch only.
+  // Nothing is fetched. Kept until a pass finds it gone.
   async baseOf(repo: string): Promise<string | null> {
     if (this.bases.has(repo)) return this.bases.get(repo)!;
     const origin = (await git(repo, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], { read: true })).out.trim();
     let base: string | null = origin || null;
-    if (!base) for (const b of ["main", "master"]) if ((await git(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${b}`], { read: true })).code === 0) { base = `refs/heads/${b}`; break; }
+    if (base) base = await localOf(repo, base);
+    else for (const b of ["main", "master"]) if ((await git(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${b}`], { read: true })).code === 0) { base = `refs/heads/${b}`; break; }
     this.bases.set(repo, base);
     return base;
   }

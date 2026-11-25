@@ -400,3 +400,32 @@ test("edits not committed yet are forecast: the pair conflicts, marked uncommitt
     unbindLedger();
   }
 });
+
+// A landing committed on the local base and not yet pushed: the remote ref lags it. Every reader of the base
+// (the forecast, the board, the landing queue) means the local branch, so a branch cut from the local base is
+// not credited with the unpushed commits, and one that landed there has nothing left to land.
+test("the base is the local branch origin/HEAD names, so an unpushed landing is not counted as a branch's own", async () => {
+  const { repo, store, ov } = setup();
+  const origin = join(root, `origin-${n}.git`);
+  g(root, "init", "-q", "--bare", "-b", "main", origin);
+  g(repo, "remote", "add", "origin", origin);
+  g(repo, "push", "-q", "origin", "main");
+  g(repo, "remote", "set-head", "origin", "main");
+  // A commit lands on the local main and is not pushed; a branch cut from it holds nothing more.
+  writeFileSync(join(repo, "landed.txt"), "landed\n");
+  g(repo, "add", "-A");
+  g(repo, "commit", "-qm", "landed, not pushed");
+  g(repo, "branch", "keel/landed", "main");
+  expect(g(repo, "rev-list", "--count", "origin/main..main")).toBe("1");
+  const c = store.createSession({ model: "scripted:stand-in", workspace: repo, title: "L" });
+  ov.committed(repo, "keel/landed", c.id);
+  expect(await ov.baseOf(repo)).toBe("refs/heads/main");
+  await ov.scan(repo);
+  expect(await ov.againstBase(repo, "keel/landed")).toMatchObject({ base: "main", state: "nothing" });
+  expect(ov.view(c.id).base).toBe("main");
+  // With no local branch of that name the remote ref is the base.
+  g(repo, "checkout", "-q", "-b", "other");
+  g(repo, "branch", "-D", "main");
+  const fresh = new Overlaps(store, { changed: () => {}, failed: (e: unknown) => { throw e; } } as any);
+  expect(await fresh.baseOf(repo)).toBe("refs/remotes/origin/main");
+});

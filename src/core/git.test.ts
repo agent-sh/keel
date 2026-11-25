@@ -812,3 +812,26 @@ test("gitEach stops git when told to and when its reader throws", async () => {
   await expect(gitEach(dir, ["cat-file", "blob", "HEAD:big"], { timeout: 30_000 }, () => { throw new Error("reader failed"); })).rejects.toThrow("reader failed");
   expect(await gone()).toBe(true);
 });
+
+test("a session with no managed worktree is diffed against the local base, not a remote ref that lags it", async () => {
+  const dir = repo("lagging");
+  const origin = join(root, "lagging-origin.git");
+  must(root, "init", "-q", "--bare", "-b", "main", origin);
+  must(dir, "remote", "add", "origin", origin);
+  must(dir, "push", "-q", "origin", "main");
+  must(dir, "remote", "set-head", "origin", "main");
+  // A landing committed on main and not pushed, then a branch cut from it with one change of its own.
+  writeFileSync(join(dir, "landed"), "landed\n");
+  must(dir, "add", "-A");
+  must(dir, "commit", "-qm", "landed, not pushed");
+  must(dir, "checkout", "-q", "-b", "work");
+  writeFileSync(join(dir, "mine"), "mine\n");
+  must(dir, "add", "-A");
+  must(dir, "commit", "-qm", "mine");
+  const wts = new Worktrees(new Store(join(root, "lagging-state")), join(root, "lagging-wts"));
+  const d = await wts.branchDiff({ id: "l1", workspace: dir } as any);
+  expect(d.base).toBe("main");
+  expect(d.commits).toBe(1);
+  expect(d.files.map((f) => f.path)).toEqual(["mine"]);
+  expect((await wts.changeDiff({ id: "l1", workspace: dir } as any, "branch")).files.map((f) => f.path)).toEqual(["mine"]);
+});
