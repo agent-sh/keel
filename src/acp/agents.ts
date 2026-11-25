@@ -87,6 +87,7 @@ export function writeCustom(agents: Record<string, CustomAgent>, path = agentsPa
 // first start, which takes a minute or more on a slow link; past this the
 // probe is a failure, kept until the agent's program changes.
 const PROBE_MS = 180_000;
+const COMMANDS_GRACE_MS = 1_000;
 
 // Which program an agent is now: its command, arguments and the command's
 // file time (an upgrade in place changes it). What it stated is kept under this.
@@ -187,9 +188,10 @@ export class AcpAgents {
         const id = r?.sessionId;
         if (id && caps.sessionCapabilities?.close) await c.request("session/close", { sessionId: id }).catch(() => {});
         if (id && caps.sessionCapabilities?.delete) await c.request("session/delete", { sessionId: id }).catch(() => {});
-        // What it advertises once the session is made can come after these answers: it is read until the agent ends
-        // with its input, given as long as its setup took.
-        await c.finish(took);
+        // What it advertises once the session is made comes after these answers, in its own time (not the time of one
+        // round trip, which a busy machine makes shorter than the agent's own wake-up): it is read until the agent
+        // ends with its input, given at least COMMANDS_GRACE_MS, and as long as its setup took when that was longer.
+        await c.finish(Math.max(took, COMMANDS_GRACE_MS));
         return r;
       })();
       const r = await Promise.race([work, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`no answer in ${PROBE_MS / 1000} s`)), PROBE_MS); })]);
