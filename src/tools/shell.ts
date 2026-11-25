@@ -12,6 +12,7 @@ import type { ToolContext } from "./types.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { contains } from "../core/paths.ts";
 import { markSeen } from "./shell-seen.ts";
+import { shellSaw } from "./reading.ts";
 
 const cwds = new SessionMap<string>(1024);
 
@@ -129,7 +130,8 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   }
   const output = said + takeUnread(job);
   // What the command showed or made is a file the session knows (the overwrite guard of Write).
-  if (job.exitCode === 0 && !job.signal) markSeen(ctx, o.command, cwd, output);
+  // (And a file the session has only a reader's reading of, that the command names, is one it looked at itself.)
+  if (job.exitCode === 0 && !job.signal) { markSeen(ctx, o.command, cwd, output); shellSaw(ctx, o.command); }
   return { state: "done", output, exitCode: job.exitCode ?? null, signal: job.signal, cwdNote, job };
 }
 

@@ -3,6 +3,7 @@
 import { realOf } from "../core/paths.ts";
 import { heldWrite } from "../core/store-files.ts";
 import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, mtime, mtimeOf, readFile, ripgrep, writeFile } from "./files.ts";
+import { CLAUDE_RAW } from "./reading.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
 import { noMatch } from "./no-match.ts";
@@ -107,6 +108,8 @@ const TaskStop: Tool = {
 
 const Read: Tool = {
   name: "Read",
+  // A long text file comes back as a reader's compiled reading unless `raw` asks for the file itself (src/tools/reading.ts).
+  urgent: "read-through-reader",
   readOnly: true,
   inputAlias: { file_path: ["path"] },
   // It pages the file itself (READ_CHARS a page, the range the model asked
@@ -114,24 +117,31 @@ const Read: Tool = {
   // copy of the file in the spill would serve worse than the next page.
   resultCap: Infinity,
   description:
-    "Read a file by absolute path. Text comes back with line numbers (cat -n style); by default up to 2000 lines " +
-    "from the start, use offset and limit for other parts of long files. Images (PNG, JPEG, GIF, WebP) come back " +
-    "as images. PDFs: short ones whole as text; for longer ones pass pages, e.g. \"1-5\" (max 20), to see them " +
-    "as page images. Jupyter notebooks come back as cells with outputs. Read files, not directories (use ls).",
+    "Read a file by absolute path. A short text file comes back as it is, with line numbers (cat -n style). A longer " +
+    "one is read for you by a reader model and comes back as a compiled reading: what the file is, its parts with " +
+    "their line ranges, what matters for your aim, and the file's own lines (numbered) where you need exact text. " +
+    "Say what you want from the file in `for`. Pass raw: true to get the file itself (by default up to 2000 lines " +
+    "from the start; offset and limit name a range): do that for the lines you will edit when the reading does " +
+    "not show them, and for a text you must follow to the letter (instructions, a brief, a spec). Images (PNG, JPEG, GIF, WebP) come back as images. PDFs: short ones whole as text; for longer " +
+    "ones pass pages, e.g. \"1-5\" (max 20), to see them as page images. Jupyter notebooks come back as cells " +
+    "with outputs. Read files, not directories (use ls).",
   input_schema: obj({
     file_path: { type: "string", description: "The absolute path to the file to read" },
     offset: { type: "integer", description: "The line number to start reading from" },
     limit: { type: "integer", description: "The number of lines to read" },
     pages: { type: "string", description: "Page range for PDF files, e.g. \"1-5\"" },
     allow_large: { type: "boolean", description: "Read a text file, or a line range of one, over the usual size limits, up to what still fits in your context. Only when you need all of it." },
+    raw: { type: "boolean", description: "The file's own text instead of a compiled reading. For lines you will edit or must see exactly." },
+    for: { type: "string", description: "What you want from the file, in a sentence: the reader looks for that and shows the lines it needs." },
   }, ["file_path"]),
   async run(input, ctx) {
     const at = fileOf(input, "file_path", ctx);
     if ("error" in at) return { content: at.error, is_error: true };
     const r = await readFile(at.p, ctx, {
       offset: Number(input.offset) || undefined, limit: Number(input.limit) || (input.offset || input.allow_large ? undefined : 2000), pages: input.pages, large: !!input.allow_large,
+      raw: input.raw === true, aim: input.for, form: CLAUDE_RAW,
     });
-    return { content: r.content, is_error: r.error };
+    return { content: r.content, is_error: r.error, ...(r.shown ? { shown: r.shown } : {}) };
   },
 };
 
@@ -163,13 +173,16 @@ const Write: Tool = {
 
 const Edit: Tool = {
   name: "Edit",
+  // An edit of lines the session has only a reader's reading of is refused once (src/tools/reading.ts editGuard).
+  urgent: "edit-after-reading",
   readOnly: false,
   inputAlias: { file_path: ["path"] },
   kind: "edit",
   description:
     "Replace an exact string in a file. old_string must match the file exactly (whitespace and indentation " +
     "included) and appear once, unless replace_all is set; add surrounding lines to make it unique. Read the " +
-    "file first and copy the text after the line-number prefix.",
+    "file first and copy the text after the line-number prefix. Of a file you have as a compiled reading, edit " +
+    "the lines it shows with their numbers; read other lines with raw: true first.",
   input_schema: obj({
     file_path: { type: "string", description: "The absolute path to the file to modify" },
     old_string: { type: "string", description: "The text to replace" },

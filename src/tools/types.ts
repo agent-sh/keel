@@ -2,7 +2,7 @@ import type { ImageBlock, TextBlock, ToolRefBlock, ToolResultBlock } from "../co
 import type { ToolSpec } from "../providers/types.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { Material } from "../engine/reader.ts";
-import type { ReadOutcome } from "../engine/readers.ts";
+import type { ReadOpts, ReadOutcome } from "../engine/readers.ts";
 import type { WebUse } from "../safety/addresses.ts";
 
 export type ToolContext = {
@@ -79,7 +79,15 @@ export type ToolContext = {
   read?: (source: string, text: string, prompt: string) => Promise<{ text: string; model: string; compiled?: boolean; unread?: string[] }>;
   // Set by the engine: one reading job over many sources, split across reader
   // models and compiled into one answer (src/engine/readers.ts).
-  readMaterial?: (items: Material[], question: string, callId?: string) => Promise<ReadOutcome>;
+  // `opts`: a job that is not an answer to a question (a file read through a reader, src/tools/reading.ts);
+  // its `signal` ends the job besides the turn's own.
+  readMaterial?: (items: Material[], question: string, callId?: string, opts?: ReadOpts & { signal?: AbortSignal }) => Promise<ReadOutcome>;
+  // Set by the engine: false when this session's file reads are the file itself, not a reader's compiled
+  // reading (the session setting `read_through`, else the owner's default for agents: src/engine/agent-defaults.ts).
+  readThrough?: boolean;
+  // Set by the engine: what the session is doing, for a reader that reads a file for it with no aim stated:
+  // its task and what it last said, shortened (src/engine/read-aim.ts).
+  aim?: () => string;
   // Set by the engine: the most characters one reading job of the session
   // reads, from the model listing; the readers tool gathers no more.
   readBudget?: () => Promise<number>;

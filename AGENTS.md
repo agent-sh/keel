@@ -30,7 +30,14 @@ under `~/.cache/keel-work/bun/research/`.
   file past an inline part sized by what carrying it costs the session
   (`src/tools/spill.ts`, `src/tools/carry.ts`), long material (pages, files, logs, a saved output)
   read in parts by cheaper reader models and compiled into one answer
-  (`src/engine/reader.ts`, `src/engine/readers.ts`), idle compaction before a long context's cache
+  (`src/engine/reader.ts`, `src/engine/readers.ts`), a long text file read with a family's read form
+  (Claude's Read, Gemini's read_file, a bare `cat FILE` in the GPT family's shell) answered by default with the
+  reader model's compiled reading of the page: what the file is, its parts with their lines, what matters for
+  the caller's aim (`for`, else its task and last words), and the file's own lines put by Keel where the reader
+  marked them (`src/tools/reading.ts`; the file itself with `raw`, a printed range, a page under the carry size,
+  a program's read, or when the reader fails or is slower than a minute, said once; an edit of lines a reading
+  did not show is refused once with the read to make first; `read_through` in a session's settings and
+  `agents.read_through` turn it off, and a trial tries it on agent trees), idle compaction before a long context's cache
   expires (`src/engine/compact.ts`), and a cache plan for a session that waits past its cache's
   lifetime, on a wait it set or a long tool step: a one-token read keeps the cache warm (where the
   provider documents that a read refreshes it), its summary is prepared while warm, or it lapses,

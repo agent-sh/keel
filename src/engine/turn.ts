@@ -50,7 +50,7 @@ import { allHooks, cacheBreaks, hookChanged, type TurnHooks, type CutState, type
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
 import { trialModel } from "./model-trial.ts";
-import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOutcome } from "./readers.ts";
+import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOpts, type ReadOutcome } from "./readers.ts";
 import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successor.ts";
 import { cleanTitle, derivedTitle, firstReply, modelTitles, overLong, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
@@ -62,7 +62,8 @@ import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
 import { cacheState, capsuleText, decideFollowUp, freshStartText, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
 import { anchorsOf, TRAIL_BYTES } from "./trail.ts";
-import { cachePlanOn, compactLimit } from "./agent-defaults.ts";
+import { cachePlanOn, compactLimit, readThrough } from "./agent-defaults.ts";
+import { readAim } from "./read-aim.ts";
 import { priceCompaction, residual, type PriceVerdict, type Residual } from "./price-compact.ts";
 import { PriceFacts } from "./price-facts.ts";
 import type { WaitShape } from "./cache-plan.ts";
@@ -416,8 +417,8 @@ export function cutInstructions(path: string, text: string, limit: number, lines
     const src = lines?.length ? lines.findLast((x) => x.at <= at) ?? lines[0]! : { at: 0, path, line: 1 };
     const line = src.line + (text.slice(src.at, at).split("\n").length - 1);
     where = src.path === path
-      ? `Read ${path} from line ${line} with the Read tool before you work on what they may cover.`
-      : `Read ${src.path} from line ${line} with the Read tool (${path} imports it), and then the rest of ${path} after the line that imports it, before you work on what they may cover.`;
+      ? `Read ${path} from line ${line} with the Read tool, as the file itself (raw), before you work on what they may cover.`
+      : `Read ${src.path} from line ${line} with the Read tool, as the file itself (raw) (${path} imports it), and then the rest of ${path} after the line that imports it, before you work on what they may cover.`;
   }
   return `${kept.trimEnd()}\n\n${said} ${where})`;
 }
@@ -3083,8 +3084,11 @@ export class Engine {
       questionChanged: () => this.bus.emit({ t: "questions", pending: allPendingQuestions() }),
       inContext: (text) => JSON.stringify(toMessages(this.lineage(id))).includes(JSON.stringify(text).slice(1, -1)),
       read: (source, text, prompt) => this.read(id, source, text, prompt, signal),
-      readMaterial: (items, question, callId) => this.readMaterial(id, items, question, signal, callId),
-      readBudget: () => readBudget(this.readerHost(id)) };
+      readMaterial: (items, question, callId, opts) => this.readMaterial(id, items, question, opts?.signal ? AbortSignal.any([signal, opts.signal]) : signal, callId, opts),
+      readBudget: () => readBudget(this.readerHost(id)),
+      // A file read comes back as a reader's compiled reading (src/tools/reading.ts), for the task and the last words of this branch.
+      readThrough: readThrough(session, (sid) => this.store.session(sid)),
+      aim: () => readAim(this.lineage(id)) };
 
     const t0 = Date.now();
     let usage: Usage = emptyUsage();
@@ -5004,8 +5008,8 @@ export class Engine {
   // One reading job for the session: no conversation and no cache go with it,
   // each request is booked with purpose "reader", and `callId` gets the job's
   // progress on the bus (feature "readers").
-  async readMaterial(id: string, items: Material[], question: string, signal: AbortSignal, callId?: string): Promise<ReadOutcome> {
-    return readMaterial(this.readerHost(id, callId), items, question, signal);
+  async readMaterial(id: string, items: Material[], question: string, signal: AbortSignal, callId?: string, opts?: ReadOpts): Promise<ReadOutcome> {
+    return readMaterial(this.readerHost(id, callId), items, question, signal, opts);
   }
 
   // One reply of the session's model for an MCP server's sampling request,

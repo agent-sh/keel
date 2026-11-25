@@ -397,6 +397,43 @@ export class ScriptedProvider implements Provider {
       if (f) return reply(`- "${f[3]}" (${f[1]}:${f[2]})\n- "${f[4]}" (${f[1]}:${Number(f[2]) + 4})`);
     }
 
+    // A reader asked for a compiled reading of a file (src/tools/reading.ts): a
+    // stand-in reading of the page it was given: what it is, a line for each
+    // run of forty lines, and a mark for the lines the caller's aim names
+    // (`script:read-lines A-B`, else its first three). In the aim,
+    // `script:read-refuse` makes it decline, `script:read-fail` fails the
+    // request, `script:read-slow <ms>` answers after that long (or ends
+    // when the request is aborted), and `script:read-full` writes as many
+    // words and marks as many lines as the request allows: the longest
+    // reading a reader that keeps to its request gives.
+    if (req.purpose === "reader" && lastText.includes("A coding agent asked to read this file.")) {
+      const aim = lastText.slice(lastText.lastIndexOf("</material>"));
+      if (aim.includes("script:read-fail")) throw classify("Scripted", 400, new Headers(), JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "The scripted reader fails this request" } }));
+      if (aim.includes("script:read-refuse")) return { ...(await reply("I will not read this.")), stop: "refusal", stop_details: { category: "cyber", explanation: "Scripted refusal for the test." } };
+      const slow = Number(aim.match(/script:read-slow[ \t]+(\d+)/)?.[1] ?? 0);
+      for (const until = Date.now() + Math.min(slow, 60_000); Date.now() < until && !req.signal.aborted;) await Bun.sleep(20);
+      if (req.signal.aborted) throw reportUsage(req.signal.reason ?? Object.assign(new Error("interrupted"), { name: "AbortError" }), usage);
+      const f = /<file path="([^"]+)"[^>]* lines="(\d+)-(\d+) of (\d+)">\n([\s\S]*?)\n<\/file>/.exec(lastText);
+      if (f) {
+        const rows = f[5]!.split("\n").map((r) => { const tab = r.indexOf("\t"); return { n: Number(r.slice(0, tab)), text: r.slice(tab + 1) }; });
+        const first = Number(f[2]), last = Number(f[3]);
+        const parts: string[] = [];
+        for (let i = 0; i < rows.length; i += 40) {
+          const head = rows.slice(i, i + 40).find((r) => r.text.trim());
+          parts.push(`- lines ${rows[i]!.n}-${rows[Math.min(rows.length, i + 40) - 1]!.n}: ${(head?.text ?? "").trim().slice(0, 70)}`);
+        }
+        const want = aim.match(/script:read-lines[ \t]+(\d+)-(\d+)/);
+        const from = want ? Number(want[1]) : first;
+        let to = want ? Number(want[2]) : Math.min(last, first + 2);
+        if (aim.includes("script:read-full")) {
+          const words = Number(aim.match(/at most about (\d+) words/)?.[1] ?? 0), mark = Number(aim.match(/Mark at most (\d+) lines/)?.[1] ?? 0);
+          for (let n = parts.join(" ").split(/\s+/).length, i = 0; n < words; n += 12, i++) parts.push(`- a definition near line ${first + ((i * 37) % rows.length)}: what it does, said in a dozen words here`);
+          to = Math.min(last, Math.max(to, from + mark - 1));
+        }
+        return reply([`${f[1]} is a text file; this reading covers its lines ${first}-${last} of ${f[4]}.`, "Parts:", ...parts, "The lines the aim needs:", `@@ ${from}-${to}`].join("\n"));
+      }
+    }
+
     // The owner's newest prompt: the newest user text that is neither a harness
     // note nor a tagged context block (in a summary: the last owner words it kept).
     const own = (m: Message) => (m.content as any[]).filter((b) => b.type === "text").map((b) => {

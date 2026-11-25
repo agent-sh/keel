@@ -166,6 +166,10 @@ export type SessionSettings = {
   // whole tree, set on its first agent (a trial's arm, src/admin/setting-trials.ts); absent = the owner's `agents` setting.
   compact_share?: number;
   cache_plan?: boolean;
+  // Whether a file read comes back as a reader model's compiled reading (src/tools/reading.ts): for the session and
+  // the tree under it (a trial's arm sets it on the tree's first agent); absent = on, and for an agent the owner's
+  // `agents.read_through`.
+  read_through?: boolean;
   // An agent told at a run of read-only steps what each step costs and what else there is (src/engine/read-run.ts):
   // "batch" (parallel reads), "reader" (that, and an Explore agent on the reader model) or "code" (that, and run_code
   // for the reads it knows it needs), for its whole tree, set at the top (a trial's arm).

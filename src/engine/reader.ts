@@ -119,8 +119,14 @@ export function materialCap(current: ModelInfo, reader: ModelInfo, listPrice?: (
 
 // One thing to read: `source` is what a reference names (a path relative to the
 // working directory, or the file a page was saved to); `label` what it came
-// from when that differs (the page's URL); `text` the content.
-export type Material = { source: string; text: string; label?: string };
+// from when that differs (the page's URL); `text` the content. `first`: the
+// line of the source the text starts at, when it is a run of its lines and not
+// the whole (a page of a file), and `total` the source's lines when known: the
+// numbers a reader sees, and the ones an answer is checked against, are the
+// source's own.
+export type Material = { source: string; text: string; label?: string; first?: number; total?: number };
+const firstOf = (m: Material) => Math.max(1, m.first ?? 1);
+const totalOf = (m: Material, rows: number) => m.total ?? firstOf(m) - 1 + rows;
 // A run of lines of one source, numbered from `from` (1-based); `chars` is
 // what the run is in the source, without the numbers a reader sees.
 export type Part = { source: string; label?: string; from: number; to: number; total: number; body: string; chars: number };
@@ -133,13 +139,13 @@ const wrapSize = (m: Material, total: number) => partBlock({ source: m.source, l
 // minified line cannot outgrow a part.
 const PIECE = 4_000;
 
-function rowsOf(text: string): string[][] {
+function rowsOf(text: string, first = 1): string[][] {
   const lines = text.split("\n");
   if (lines.length > 1 && lines.at(-1) === "") lines.pop();
   return lines.map((l, i) => {
-    if (l.length <= PIECE) return [`${i + 1}\t${l}`];
+    if (l.length <= PIECE) return [`${first + i}\t${l}`];
     const out: string[] = [];
-    for (let at = 0; at < l.length; at += PIECE) out.push(`${i + 1}\t${l.slice(at, at + PIECE)}`);
+    for (let at = 0; at < l.length; at += PIECE) out.push(`${first + i}\t${l.slice(at, at + PIECE)}`);
     return out;
   });
 }
@@ -150,7 +156,7 @@ const rowSize = (r: string[]) => r.reduce((k, y) => k + y.length + 1, 0);
 // size. A source that fits stays whole in one chunk; a longer one is split at
 // line boundaries and its parts say which lines they hold.
 export function chunkMaterial(items: Material[], maxChars: number): Chunk[] {
-  const all = items.map((m) => ({ m, rows: rowsOf(m.text) })).filter((x) => x.m.text.length > 0).map((x) => ({ ...x, wrap: wrapSize(x.m, x.rows.length) }));
+  const all = items.map((m) => ({ m, rows: rowsOf(m.text, firstOf(m)) })).filter((x) => x.m.text.length > 0).map((x) => ({ ...x, wrap: wrapSize(x.m, totalOf(x.m, x.rows.length)) }));
   const sizes = all.map((x) => x.rows.reduce((n, r) => n + rowSize(r), 0) + x.wrap);
   const total = sizes.reduce((a, b) => a + b, 0);
   const target = Math.ceil(total / Math.max(1, Math.ceil(total / maxChars)));
@@ -160,10 +166,11 @@ export function chunkMaterial(items: Material[], maxChars: number): Chunk[] {
   const put = (m: Material, r: string[][], from: number, n: number) => {
     const lines = r.slice(from, from + n);
     // Each line without its number, with its newline (the last line may have none).
-    const chars = lines.reduce((k, x, j) => k + x.reduce((q, y) => q + y.length, 0) - x.length * (String(from + j + 1).length + 1), 0)
+    const base = firstOf(m);
+    const chars = lines.reduce((k, x, j) => k + x.reduce((q, y) => q + y.length, 0) - x.length * (String(base + from + j).length + 1), 0)
       + n - (from + n === r.length && !m.text.endsWith("\n") ? 1 : 0);
-    cur.parts.push({ source: m.source, label: m.label, from: from + 1, to: from + n, total: r.length, body: lines.flat().join("\n"), chars });
-    cur.chars += lines.reduce((k, x) => k + rowSize(x), 0) + wrapSize(m, r.length);
+    cur.parts.push({ source: m.source, label: m.label, from: base + from, to: base + from + n - 1, total: totalOf(m, r.length), body: lines.flat().join("\n"), chars });
+    cur.chars += lines.reduce((k, x) => k + rowSize(x), 0) + wrapSize(m, totalOf(m, r.length));
   };
   all.forEach(({ m, rows, wrap }, idx) => {
     const whole = sizes[idx]!;
@@ -312,6 +319,29 @@ export function findingsPreview(found: (Finding & { k: number })[], cap: number)
   return { text: blocks.join("\n\n"), whole: shown.length - cut, cut, left: found.length - shown.length };
 }
 
+// One reader's request for a compiled reading of a file (src/tools/reading.ts):
+// the working model asked to read the file and gets this reading in its place.
+// The reader writes what the file is, its parts with their lines and what
+// matters for the aim; where the working model will need the text itself it
+// writes a line `@@ START-END` and Keel puts the file's own lines there, so
+// exact text is never retyped by a model. `words`: about how long the reading
+// may be; `mark`: the most lines it may ask for.
+export const QUOTE_MARK = "@@";
+export function readingPrompt(chunk: Chunk, aim: string, k: number, n: number, o: { words: number; mark: number }): string {
+  const p = chunk.parts[0];
+  const head = n > 1 ? `You read part ${k} of ${n} of the file${p ? ` (lines ${p.from}-${chunk.parts.at(-1)!.to})` : ""}; other readers have the rest. Write the reading of this part only.\n\n` : "";
+  return `${head}<material>\n${chunk.parts.map(partBlock).join("\n")}\n</material>\n\n` +
+    "A coding agent asked to read this file. It gets your reading in place of the file: it sees only what you write and the lines you mark.\n" +
+    `${aim}\n\n` +
+    "Write the reading:\n" +
+    `1. ${n > 1 && k > 1 ? "Skip this point: another reader has the file's start." : "One line: what the file is."}\n` +
+    "2. Its parts in order, one line each, with the line range (start-end) and what the part holds.\n" +
+    "3. What matters for the agent's aim: the definitions (functions, types, constants, settings) with their line numbers and what they do, and anything it must not miss (a side effect, a limit, what a caller must hold to).\n" +
+    `4. Where the agent will need the exact text (lines it is likely to change, call or copy), do not retype it: write a line of its own, \`${QUOTE_MARK} START-END\`, with the file's line numbers. ` +
+    `The harness puts the file's lines there. Mark at most ${o.mark} lines in all, the ones the aim needs most.\n\n` +
+    `The number at the start of each line is its line number. Use the material only. No preamble, and at most about ${o.words} words besides the marked lines.`;
+}
+
 export const READER_SYSTEM = "You read material for a coding agent and answer its request from that material.";
 
 // ---- the answer checked against the material ---------------------------------
@@ -344,6 +374,8 @@ export function checkAnswer(answer: string, items: Material[], read?: Span[]): C
   for (const m of items) {
     const ls: (string | undefined)[] = m.text.split("\n");
     if (ls.length > 1 && ls.at(-1) === "") ls.pop();
+    // (A run of a source's lines: the lines before it are ones no reader read.)
+    if (firstOf(m) > 1) ls.unshift(...new Array<undefined>(firstOf(m) - 1).fill(undefined));
     if (read) {
       const got = new Uint8Array(ls.length);
       for (const s of readOf.get(m.source) ?? []) got.fill(1, Math.max(0, s.from - 1), Math.min(ls.length, s.to));

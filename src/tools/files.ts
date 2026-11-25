@@ -14,6 +14,7 @@ import { removedNote } from "./spill.ts";
 import { readText } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
 import { credentialAt, homeOf, placesOf, storesUnder } from "../safety/credentials.ts";
+import { CLAUDE_RAW, edited, editGuard, knownOf, pageOf, sawText, throughReader, type RawForm } from "./reading.ts";
 
 // The file a tool's path names, as the kernel reaches it (links followed, `..` applied where the walk stands): the
 // path the gate judged (realOf), and the one every file tool opens, so the two cannot differ.
@@ -287,7 +288,21 @@ const BINARY = new Set([".zip", ".gz", ".tgz", ".xz", ".zst", ".7z", ".tar", ".x
   ".mov", ".avi", ".mkv", ".flac", ".wav", ".ttf", ".otf", ".woff", ".woff2", ".ico", ".safetensors", ".gguf", ".pt", ".npy"]);
 const IMAGE = /^image\/(png|jpeg|gif|webp)$/;
 
-export type ReadResult = { content: string | (TextBlock | ImageBlock)[]; error?: boolean; partial?: boolean };
+// `compiled`: the text is a reader's compiled reading of the page, not the page (src/tools/reading.ts);
+// `shown`: what such a read leaves for the transcript and the savings ledger.
+export type ReadResult = { content: string | (TextBlock | ImageBlock)[]; error?: boolean; partial?: boolean; compiled?: boolean; shown?: unknown };
+
+// A page of a text file as the read answers it: a reader's compiled reading of it by default, the page itself
+// when the caller asked for it (`raw`), when it is short, or when no reader gave a reading (said above it once).
+// `numbered`: the page's rows carry their line numbers; `first`: its first line.
+export async function textPage(p: string, ctx: ToolContext, mtime: number, body: string, partial: boolean,
+  o: { raw?: boolean; aim?: unknown; form?: RawForm; numbered?: boolean; first?: number; total?: number }): Promise<ReadResult> {
+  const page = pageOf(body, o.numbered !== false, Math.max(1, o.first ?? 1), o.total);
+  const via = await throughReader(p, ctx, page, { raw: o.raw, aim: o.aim, mtime, form: o.form });
+  if ("content" in via) return { content: via.content, partial, compiled: true, shown: via.shown };
+  sawText(ctx, p, mtime, { from: page.first, to: page.last, whole: page.first <= 1 && !partial && o.total !== undefined && page.last >= o.total });
+  return { content: via.note ? `${via.note}\n${body}` : body, partial };
+}
 
 // Lines `offset`.. of a text file, numbered from 1 (`N<tab>line`), cut to one
 // page; the result says where to continue.
@@ -397,7 +412,10 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
 
 // `large` (Claude Code's allow_large): a text read sized to the context left
 // (ctx.room) instead of one page and the whole-file limit.
-export async function readFile(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean } = {}): Promise<ReadResult> {
+// `raw`: the file itself, never a reader's reading of it; `aim`: what the caller wants from the file, for the
+// reader; `form`: how the caller's family reads a file itself (the words a reading names it by).
+export type ReadAsk = { offset?: number; limit?: number; pages?: string; large?: boolean; raw?: boolean; aim?: unknown; form?: RawForm };
+export async function readFile(p: string, ctx: ToolContext, o: ReadAsk = {}): Promise<ReadResult> {
   // The file is held for the whole read: what is read is the file that was judged (hold).
   const h = await hold(p, ctx, "read");
   if ("refused" in h) return { content: h.refused, error: true };
@@ -405,7 +423,7 @@ export async function readFile(p: string, ctx: ToolContext, o: { offset?: number
   if (!h.existed) { h.close(); return { content: removedNote(p, ctx.spillDir) ?? notFound(p, ctx.cwd), error: true }; }
   try { return await readHeld(p, ctx, o); } finally { h.close(); }
 }
-async function readHeld(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean }): Promise<ReadResult> {
+async function readHeld(p: string, ctx: ToolContext, o: ReadAsk): Promise<ReadResult> {
   let st;
   // A spilled output the storage retention removed is said to be that, not a file that never was.
   try { st = statSync(ioOf(p)); } catch { return { content: removedNote(p, ctx.spillDir) ?? notFound(p, ctx.cwd), error: true }; }
@@ -437,16 +455,15 @@ async function readHeld(p: string, ctx: ToolContext, o: { offset?: number; limit
     // A range of a file too large to read whole: only the lines up to the page's end are read.
     const r = await lineRange(p, { offset: o.offset, limit: o.limit, signal: ctx.signal });
     if (r.stopped) return { content: `The read of ${p} was stopped before it reached line ${Math.max(1, o.offset ?? 1)}.`, error: true };
-    ctx.seen.set(p, st.mtimeMs);
-    if (r.past) return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true };
-    return { content: r.body, partial: r.partial };
+    if (r.past) { ctx.seen.set(p, st.mtimeMs); return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true }; }
+    return textPage(p, ctx, st.mtimeMs, r.body, r.partial, { raw: o.raw, aim: o.aim, form: o.form, first: o.offset, total: r.total });
   }
   const { text } = decodeText(new Uint8Array(await f.arrayBuffer()));
-  ctx.seen.set(p, st.mtimeMs);
-  if (!text) return { content: `${p} exists but is empty.` };
+  if (!text) { ctx.seen.set(p, st.mtimeMs); return { content: `${p} exists but is empty.` }; }
   const r = numbered(text, o.offset, o.limit, true, o.large ? roomChars : READ_CHARS);
-  if (o.offset && o.offset > r.total) return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true };
-  return { content: r.body, partial: r.partial };
+  if (o.offset && o.offset > r.total) { ctx.seen.set(p, st.mtimeMs); return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true }; }
+  // (A read sized to the context left is a request for all of it: the file itself.)
+  return textPage(p, ctx, st.mtimeMs, r.body, r.partial, { raw: o.raw || o.large, aim: o.aim, form: o.form, first: o.offset, total: r.total });
 }
 
 function pageRange(spec: string, count: number): [number, number] | string {
@@ -535,6 +552,8 @@ export async function guardOverwrite(p: string, ctx: ToolContext): Promise<strin
   const m = await mtimeOf(p);
   if (m === -1) return await heldWriteOf(p) ?? null;
   { const held = await heldWriteOf(p); if (held) return held; }
+  // (Read through a reader only: the session has a reading of it, not its text.)
+  const reading = !!knownOf(ctx, p);
   const seen = ctx.seen.get(p);
   if (seen === undefined) {
     ctx.seen.set(p, m);
@@ -546,7 +565,7 @@ export async function guardOverwrite(p: string, ctx: ToolContext): Promise<strin
       const fh = await open(h.io, "r");
       try { const buf = Buffer.alloc(8192); const { bytesRead } = await fh.read(buf, 0, buf.length, 0); head = buf.subarray(0, bytesRead).toString("utf8").slice(0, 2000); } finally { await fh.close(); }
     } catch {} finally { h.close(); }
-    return `${p} exists and was not read in this session. Its start is below. To replace it whole, send the same Write again now. To keep what it holds, Read it first, or use Edit to change part of it.\n\n${head}`;
+    return `${p} exists and ${reading ? "you have only a compiled reading of it, not its text" : "was not read in this session"}. Its start is below. To replace it whole, send the same Write again now. To keep what it holds, Read it first, or use Edit to change part of it.\n\n${head}`;
   }
   if (seen !== m) return `${p} changed on disk since it was read. Read it again before replacing it, or use Edit to change part of it.`;
   return null;
@@ -716,7 +735,8 @@ export function editShown(before: string, oldS: string): { line: number } | unde
   return at < 0 ? undefined : { line: before.slice(0, at).split("\n").length };
 }
 
-export async function editFile(p: string, oldS: string, newS: string, all: boolean, ctx: ToolContext): Promise<{ ok: string; before: string; after: string } | { error: string }> {
+// `form`: how the caller's family reads a file itself, for an edit refused over lines it has only a reading of.
+export async function editFile(p: string, oldS: string, newS: string, all: boolean, ctx: ToolContext, form: RawForm = CLAUDE_RAW): Promise<{ ok: string; before: string; after: string } | { error: string }> {
   const m = mtime(p);
   if (m === -1) return { error: notFound(p, ctx.cwd) };
   { const held = heldWrite(p); if (held) return { error: held }; }
@@ -731,8 +751,11 @@ export async function editFile(p: string, oldS: string, newS: string, all: boole
   const before = new TextDecoder().decode(bytes);
   const r = applyEdit(before, oldS, newS, all);
   if ("error" in r) return r;
+  // A file read through a reader: only the lines the reading showed as they are, or read since, are changed (once refused, then applied).
+  { const no = editGuard(ctx, p, m, before, r.text, form); if (no) return { error: no }; }
   const seen = ctx.seen.get(p);
   { const no = await writeFile(p, bom ? `\uFEFF${r.text}` : r.text, ctx); if (no) return { error: no }; }
+  edited(ctx, p, before, r.text, await mtimeOf(p));
   const notes = [r.note, seen === undefined ? undefined : seen !== m ? "the file had other changes since it was read; read it again before edits that depend on them" : undefined].filter(Boolean);
   return { ok: notes.length ? ` (${notes.join("; ")})` : "", before, after: r.text };
 }

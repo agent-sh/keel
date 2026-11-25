@@ -5,7 +5,8 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { atCwd, realOf } from "../core/paths.ts";
 import { heldFile } from "../core/store-files.ts";
-import { hold } from "./files.ts";
+import { hold, mtime, READ_CHARS } from "./files.ts";
+import { edited, editGuard, sawText, shellSaw, SHELL_RAW, throughReader, wholePrint, type Page } from "./reading.ts";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { cleanTerm, findJob, hasUnread, running, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
@@ -36,9 +37,10 @@ function truncate(text: string, maxTokens: number, log?: string): { text: string
 const MAX_TOKENS = 50_000;
 const EXEC_CAP = MAX_TOKENS * 4 + 1000;
 
-function execResult(job: Job, t0: number, maxTokens: number): string {
-  const raw = takeUnread(job);
-  const cut = truncate(job.pty ? cleanTerm(raw) : raw, maxTokens, job.log);
+// `raw`: what the job printed since the last read, when the caller took it already; `reading`: what goes in the
+// output's place (a reader's compiled reading of the file a bare `cat` printed).
+function execResult(job: Job, t0: number, maxTokens: number, raw = takeUnread(job), reading?: string): string {
+  const cut = reading === undefined ? truncate(job.pty ? cleanTerm(raw) : raw, maxTokens, job.log) : { text: reading };
   const text = cut.text;
   // Counted on everything this read covered, not only the part kept in memory.
   const original = cut.original || (job.taken ?? 0) > raw.length ? Math.max(cut.original ?? 0, Math.ceil((job.taken ?? 0) / 4)) : undefined;
@@ -56,12 +58,49 @@ async function runPatch(text: string, base: string, ctx: ToolContext) {
     // them): one outside the session's folder that it let through is written, as a Write there is. (The judged
     // paths when the gate named them; else the patch's own targets.)
     const cleared = patchTargetPaths(text).map((p) => realOf(atCwd(base, p)));
-    const r = await applyPatch(ctx.cwd, text, { base, allowOutside: ctx.judged ?? cleared, judged: ctx.judged, looked: ctx.looked, sessionId: ctx.sessionId });
+    // A file the session has as a reader's compiled reading: only the lines it has as they are are changed
+    // (once refused, then applied: src/tools/reading.ts), and its known lines follow the patch.
+    const changes: { real: string; before: string; after: string }[] = [];
+    const check = (real: string, before: string, after: string) => {
+      const no = editGuard(ctx, real, mtime(real), before, after, SHELL_RAW);
+      if (!no) changes.push({ real, before, after });
+      return no;
+    };
+    const r = await applyPatch(ctx.cwd, text, { base, allowOutside: ctx.judged ?? cleared, judged: ctx.judged, looked: ctx.looked, sessionId: ctx.sessionId, check });
     for (const f of r.files) ctx.seen.set(resolve(base, f.path), Date.now());
+    for (const c of changes) edited(ctx, c.real, c.before, c.after, mtime(c.real));
     return ok(r.summary);
   } catch (e) {
     return fail(`apply_patch verification failed: ${(e as Error).message}`);
   }
+}
+
+// The read form of this family: it has no read tool, and reads a file by printing it. A command that is one
+// `cat FILE` and nothing else, of a long text file, answers with a reader's compiled reading of the file in the
+// output's place (src/tools/reading.ts); a printed range (`sed -n 'A,Bp' FILE`, head, tail, any pipeline) is the
+// family's own way to ask for the lines themselves. What the reader reads is what the command printed, so the
+// command ran under the session's own gate and sandbox first.
+async function catReading(cmd: string, cwd: string, job: Job, raw: string, tty: boolean, ctx: ToolContext): Promise<{ reading: string; shown: unknown } | { note: string } | undefined> {
+  if (tty || running(job) || job.exitCode !== 0 || job.signal || raw.includes("\0")) return undefined;
+  const file = wholePrint(cmd, cwd);
+  if (!file) return undefined;
+  const p = realOf(file);
+  let st;
+  try { st = statSync(p); } catch { return undefined; }
+  // What it printed is the file, whole: nothing before or after it, nothing cut.
+  if (!st.isFile() || Buffer.byteLength(raw) !== st.size || (job.taken ?? 0) !== st.size) return undefined;
+  const lines = raw.split("\n");
+  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  const rows = new Map<number, string>();
+  let chars = 0, last = 0;
+  for (const l of lines) { if (chars + l.length > READ_CHARS && last) break; rows.set(++last, l); chars += l.length + 1; }
+  const page: Page = { rows, first: 1, last, total: lines.length, chars,
+    more: last < lines.length ? `[This reading covers lines 1-${last} of ${lines.length}. For the rest: ${SHELL_RAW.range(last + 1, lines.length, p)}]` : "" };
+  const via = await throughReader(p, ctx, page, { mtime: st.mtimeMs, form: SHELL_RAW });
+  if ("content" in via) return { reading: via.content, shown: via.shown };
+  // (Printed whole: the session has the file itself.)
+  if (last === lines.length) sawText(ctx, p, st.mtimeMs);
+  return via.note ? { note: via.note } : undefined;
 }
 
 const execCwd = (ctx: ToolContext, input: any) => input?.workdir ? resolve(shellCwd(ctx), input.workdir) : shellCwd(ctx);
@@ -71,7 +110,9 @@ const execShell = (input: any): string => (typeof input?.shell === "string" && i
 
 const exec_command: Tool = {
   name: "exec_command",
-  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
+  // wait-poll: a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts);
+  // cat-through-reader: a bare `cat` of a long text file answers with a reader's compiled reading (catReading).
+  urgent: "wait-poll,cat-through-reader",
   resultCap: EXEC_CAP,
   readOnly: false,
   kind: "shell",
@@ -81,7 +122,9 @@ const exec_command: Tool = {
   interpreter: (input) => { const sh = execShell(input); return sh === process.env.SHELL && /(^|\/)bash$/.test(sh) ? "bash" : sh; },
   autoShell: ({ cmd, ...options }) => typeof cmd === "string" && options.shell === "bash" && options.login === false && !extractShellApplyPatch(cmd)
     ? { command: cmd, interpreter: "bash -c", options } : undefined,
-  description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
+  description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction. " +
+    "A command that is only `cat FILE`, of a long text file, returns a reader model's compiled reading of the file in place of its text: its parts with their line ranges, " +
+    "what matters for your task, and the file's own lines (as `N<tab>text`) where exact text matters. Print a range (`sed -n 'START,ENDp' FILE`) to get the lines themselves.",
   input_schema: obj({
     cmd: { type: "string", description: "Shell command to execute." },
     workdir: { type: "string", description: "Working directory for the command. Defaults to the turn cwd." },
@@ -114,7 +157,13 @@ const exec_command: Tool = {
       argv: [shell, input.login === false ? "-c" : "-lc", cmd], wrap: ctx.wrapSpawn, vars: true, callId: ctx.callId, handle: "num",
     }, slot);
     await waitJob(job, clamp(input.yield_time_ms, 10_000, 250, 30_000), ctx.signal);
-    return ok(waitedLine(slot) + execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, MAX_TOKENS)));
+    const maxTokens = clamp(input.max_output_tokens, 10_000, 100, MAX_TOKENS);
+    const raw = takeUnread(job);
+    const read = await catReading(cmd, cwd, job, raw, !!input.tty, ctx);
+    if (read && "reading" in read) return { ...ok(waitedLine(slot) + execResult(job, t0, maxTokens, raw, read.reading)), shown: read.shown };
+    // A command that ran to its end and names a file the session has a reading of looked at the file itself.
+    if (!running(job) && job.exitCode === 0 && !job.signal) shellSaw(ctx, cmd);
+    return ok(waitedLine(slot) + (read ? `${read.note}\n` : "") + execResult(job, t0, maxTokens, raw));
   },
 };
 
@@ -151,11 +200,14 @@ const write_stdin: Tool = {
 
 export const applyPatchTool: Tool = {
   name: "apply_patch",
+  // A change of lines the session has only a reader's reading of is refused once (src/tools/reading.ts editGuard).
+  urgent: "edit-after-reading",
   inputAlias: { input: ["patch"] },
   readOnly: false,
   kind: "edit",
   cwdOf: shellCwd,
-  description: "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+  description: "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON. " +
+    "Of a file you have as a compiled reading, change the lines it shows with their numbers; print other lines first.",
   freeform: { syntax: "lark", definition: grammar },
   input_schema: obj({ input: { type: "string", description: "The entire contents of the apply_patch command" } }, ["input"]),
   run: (input, ctx) => runPatch(typeof input === "string" ? input : String(input.input ?? input.patch ?? ""), shellCwd(ctx), ctx),

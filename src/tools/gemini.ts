@@ -6,7 +6,8 @@ import { heldFile } from "../core/store-files.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
-import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, lineRange, mtime, mtimeOf, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
+import { abs, editFile, editShown, fileOf, globFiles, guardOverwrite, hold, lineRange, mtime, mtimeOf, numbered, readFile, ripgrep, textPage, WHOLE_FILE_BYTES, writeFile, type ReadResult } from "./files.ts";
+import { GEMINI_RAW } from "./reading.ts";
 import { answerText, ask, ruledText, shownOf, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
 import { noMatch } from "./no-match.ts";
@@ -63,14 +64,21 @@ const run_shell_command: Tool = {
 
 const read_file: Tool = {
   name: "read_file",
+  // A long text file comes back as a reader's compiled reading unless `raw` asks for the file itself (src/tools/reading.ts).
+  urgent: "read-through-reader",
   inputAlias: { file_path: ["path"] },
   readOnly: true,
   resultCap: Infinity, // it pages the file itself, as Read does
-  description: "Reads and returns the content of a specified file. Use start_line and end_line for targeted reads of long files. Handles text, images and PDF files.",
+  description: "Reads and returns the content of a specified file. Use start_line and end_line for targeted reads of long files. Handles text, images and PDF files. " +
+    "A long text file is read for you by a reader model and comes back as a compiled reading: what the file is, its parts with their line ranges, what matters for your aim, " +
+    "and the file's own lines (as `N<tab>text`) where you need exact text. Say what you want from the file in `for`. Set raw to true to get the file's content itself: " +
+    "do that for the lines you will change when the reading does not show them, and for a text you must follow to the letter (instructions, a brief, a spec).",
   input_schema: obj({
     file_path: { type: "string", description: "The path to the file to read." },
     start_line: { type: "integer", description: "Optional: the 1-based line number to start reading from." },
     end_line: { type: "integer", description: "Optional: the 1-based line number to end reading at (inclusive)." },
+    raw: { type: "boolean", description: "Optional: the file's own content instead of a compiled reading. For lines you will change or must see exactly." },
+    for: { type: "string", description: "Optional: what you want from the file, in a sentence: the reader looks for that and shows the lines it needs." },
   }, ["file_path"]),
   async run(input, ctx) {
     const at = fileOf(input, "file_path", ctx);
@@ -78,6 +86,8 @@ const read_file: Tool = {
     const p = at.p;
     const s = Number(input.start_line) || undefined;
     const e = Number(input.end_line) || undefined;
+    const asked = { raw: input.raw === true, aim: input.for, form: GEMINI_RAW };
+    const page = (r: ReadResult) => ({ content: r.content, is_error: r.error, ...(r.shown ? { shown: r.shown } : {}) });
     if (s || e) {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
       { const held = heldFile(p); if (held) return fail(held); }
@@ -92,21 +102,22 @@ const read_file: Tool = {
         // Too large to read whole: only the lines up to the range's end are read.
         const r = await lineRange(p, { offset: s ?? 1, limit, number: false, signal: ctx.signal });
         if (r.stopped) return fail(`The read of ${p} was stopped before it reached line ${s ?? 1}.`);
-        ctx.seen.set(p, mtime(p));
-        return r.past ? fail(`${p} has ${r.total} lines; line ${s} is past the end.`) : ok(r.body);
+        if (r.past) { ctx.seen.set(p, mtime(p)); return fail(`${p} has ${r.total} lines; line ${s} is past the end.`); }
+        return page(await textPage(p, ctx, mtime(p), r.body, r.partial, { ...asked, numbered: false, first: s ?? 1, total: r.total }));
       }
       const { text } = decodeText(new Uint8Array(await Bun.file(h.io).arrayBuffer()));
-      ctx.seen.set(p, mtime(p));
       // As a whole read says it: an empty file has no line 1 to be past.
-      if (!text) return ok(`${p} exists but is empty.`);
+      if (!text) { ctx.seen.set(p, mtime(p)); return ok(`${p} exists but is empty.`); }
       const r = numbered(text, s ?? 1, limit, false);
       // The same answer as for a file read in chunks: a start past the end is said, not an empty success.
-      return s && s > r.total ? fail(`${p} has ${r.total} lines; line ${s} is past the end.`) : ok(r.body);
+      if (s && s > r.total) { ctx.seen.set(p, mtime(p)); return fail(`${p} has ${r.total} lines; line ${s} is past the end.`); }
+      return page(await textPage(p, ctx, mtime(p), r.body, r.partial, { ...asked, numbered: false, first: s ?? 1, total: r.total }));
       } finally { h.close(); }
     }
-    const r = await readFile(p, ctx, {});
-    if (typeof r.content === "string" && !r.error) return ok(r.content.replace(/^ *\d+\t/gm, ""));
-    return { content: r.content, is_error: r.error };
+    const r = await readFile(p, ctx, asked);
+    // (A reading keeps the numbers of the lines it shows: they say which lines are the file's own.)
+    if (typeof r.content === "string" && !r.error && !r.compiled) return ok(r.content.replace(/^ *\d+\t/gm, ""));
+    return { content: r.content, is_error: r.error, ...(r.shown ? { shown: r.shown } : {}) };
   },
 };
 
@@ -134,13 +145,16 @@ const write_file: Tool = {
 
 const replace: Tool = {
   name: "replace",
+  // A change of lines the session has only a reader's reading of is refused once (src/tools/reading.ts editGuard).
+  urgent: "edit-after-reading",
   inputAlias: { file_path: ["path"] },
   inputOptional: ["instruction"], // the run reads no instruction
   readOnly: false,
   kind: "edit",
   description:
     "Replaces text within a file. By default, the tool expects to find and replace exactly ONE occurrence of `old_string`. " +
-    "Set `allow_multiple` to replace every occurrence. Include enough surrounding context to target one place.",
+    "Set `allow_multiple` to replace every occurrence. Include enough surrounding context to target one place. " +
+    "Of a file you have as a compiled reading, change the lines it shows with their numbers; read other lines with read_file and raw first.",
   input_schema: obj({
     file_path: { type: "string", description: "The path to the file to modify." },
     instruction: { type: "string", description: "A clear, semantic instruction for the code change." },
@@ -156,7 +170,7 @@ const replace: Tool = {
       { const no = await writeFile(p, String(input.new_string ?? ""), ctx); if (no) return fail(no); }
       return ok(`Created new file: ${p} with provided content.`);
     }
-    const r = await editFile(p, String(input.old_string ?? ""), String(input.new_string ?? ""), !!input.allow_multiple, ctx);
+    const r = await editFile(p, String(input.old_string ?? ""), String(input.new_string ?? ""), !!input.allow_multiple, ctx, GEMINI_RAW);
     if ("error" in r) return fail(`Failed to edit: ${r.error}`);
     return { ...ok(`Successfully modified file: ${p}.${r.ok}`), shown: editShown(r.before, String(input.old_string ?? "")) };
   },

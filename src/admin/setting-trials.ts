@@ -10,6 +10,8 @@
 //   owner's default for agents is `agents.window_share`). The other arm compacts at half of the share.
 // - cache_plan: whether an agent's waits get a cache plan (session `cache_plan`; `agents.cache_plan`).
 //   The other arm lets the cache lapse, as before the plan.
+// - read_through: whether an agent's file reads come back as a reader's compiled reading (session
+//   `read_through`; `agents.read_through`; src/tools/reading.ts). The other arm reads the files itself.
 import { MIN_WINDOW_SHARE } from "../engine/agent-defaults.ts";
 import { COMPACT_SHARE } from "../engine/compact.ts";
 import { FAMILIES_PER_ARM, type Experiment } from "./experiments.ts";
@@ -17,8 +19,8 @@ import { FAMILIES_PER_ARM, type Experiment } from "./experiments.ts";
 export const SETTING_TRIAL_KIND = "setting_trial";
 const DAY = 86_400_000;
 
-export type AgentSettings = { window_share: number | null; cache_plan: boolean };
-export type SettingTrialId = "agent_window" | "cache_plan";
+export type AgentSettings = { window_share: number | null; cache_plan: boolean; read_through: boolean };
+export type SettingTrialId = "agent_window" | "cache_plan" | "read_through";
 type Value = number | boolean;
 type Def = {
   id: SettingTrialId;
@@ -27,7 +29,7 @@ type Def = {
   ask: string;
   // The owner's setting under `agents` and the session setting an arm sets.
   key: keyof AgentSettings;
-  session: "compact_share" | "cache_plan";
+  session: "compact_share" | "cache_plan" | "read_through";
   current: (a: AgentSettings) => Value;
   // The value the other arm runs with; none when there is nothing lower or other to try.
   other: (current: Value) => Value | undefined;
@@ -53,6 +55,14 @@ export const SETTING_TRIALS: readonly Def[] = [
     current: (a) => a.cache_plan,
     other: (c) => !c,
     say: (v) => (v ? "plans its waits" : "lets its cache lapse"),
+  },
+  {
+    id: "read_through", label: "Agents' file reads",
+    ask: "Do agents cost less a tree when a long file comes back as a reader model's compiled reading, with the file's own lines only where the agent needs them, though some lines are then read a second time?",
+    key: "read_through", session: "read_through",
+    current: (a) => a.read_through,
+    other: (c) => !c,
+    say: (v) => (v ? "reads long files through a reader" : "reads files itself"),
   },
 ];
 

@@ -1,8 +1,9 @@
 // What an agent does by default where a trial can try the other way (src/admin/setting-trials.ts): the
-// working window it compacts at and whether its cache plan runs. The owner's setting is the section
+// working window it compacts at, whether its cache plan runs, and whether its file reads come back as a
+// reader's compiled reading (src/tools/reading.ts). The owner's setting is the section
 // `agents` (settings.json); a trial's arm sets the session setting on the tree's first agent, and every
 // agent under it reads that one. Only agents are covered: a session the owner talks to keeps the window
-// share and the cache plan it always had.
+// share and the cache plan it always had, and reads through a reader unless its own setting says otherwise.
 import { registerSettings, settings } from "../admin/settings.ts";
 import type { Session, SessionSettings } from "../core/types.ts";
 import { COMPACT_SHARE } from "./compact.ts";
@@ -11,11 +12,12 @@ import { COMPACT_SHARE } from "./compact.ts";
 // summary leave too little room for a step in a small window, and the agent would compact at every step.
 export const MIN_WINDOW_SHARE = 0.3;
 
-export const AGENT_DEFAULTS = { window_share: null as number | null, cache_plan: true };
+export const AGENT_DEFAULTS = { window_share: null as number | null, cache_plan: true, read_through: true };
 const DEFAULTS = AGENT_DEFAULTS;
 const check = (v: any) =>
   v.window_share !== null && !(typeof v.window_share === "number" && v.window_share >= MIN_WINDOW_SHARE && v.window_share <= 1) ? `window_share is a share of the model's window from ${MIN_WINDOW_SHARE} to 1, or null for the usual ${COMPACT_SHARE}`
-  : typeof v.cache_plan !== "boolean" ? "cache_plan is true or false" : undefined;
+  : typeof v.cache_plan !== "boolean" ? "cache_plan is true or false"
+  : typeof v.read_through !== "boolean" ? "read_through is true or false" : undefined;
 registerSettings("agents", DEFAULTS, check);
 
 const agents = (): typeof DEFAULTS => settings().agents;
@@ -41,4 +43,10 @@ export const compactLimit = (s: Session, context: number, parentOf: (id: string)
 // Whether the session's waits are planned (src/engine/cache-plans.ts).
 export function cachePlanOn(s: Session, parentOf: (id: string) => Session | undefined): boolean {
   return up("cache_plan", s, parentOf) ?? (s.parent_id ? agents().cache_plan : true);
+}
+
+// Whether the session's file reads come back as a reader's compiled reading (src/tools/reading.ts): its own
+// setting or the nearest one up its tree, else the owner's default for agents; every other session reads so.
+export function readThrough(s: Session, parentOf: (id: string) => Session | undefined): boolean {
+  return up("read_through", s, parentOf) ?? (s.parent_id ? agents().read_through : true);
 }

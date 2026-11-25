@@ -192,6 +192,7 @@ test("keeping a trial sets the owner's setting for agents, dropping leaves it, a
     expect(rate.trials.map((x: any) => [x.id, x.now, x.other])).toEqual([
       ["agent_window", "compacts at 85% of the window", "compacts at 42.5% of the window"],
       ["cache_plan", "plans its waits", "lets its cache lapse"],
+      ["read_through", "reads long files through a reader", "reads files itself"],
     ]);
     // Agents started by a top-level session at a rate a trial can be drawn from (200 a day).
     const top = store.createSession({ model: "p:m", workspace: "/" });

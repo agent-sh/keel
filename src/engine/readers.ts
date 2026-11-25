@@ -61,6 +61,7 @@ export type ReadOutcome = {
   uncompiled?: { findings: string; error: string; whole: number; cut: number; left: number };
   checked?: Checked;       // the answer held against the material
   skipped?: string[];      // reader choices whose route takes no work now, each with why
+  none?: boolean;          // `others`: no model but the session's own could read, and nothing was asked
 };
 
 const short = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 200);
@@ -80,13 +81,25 @@ export async function readBudget(host: Pick<ReaderHost, "models" | "current" | "
   return materialCap(cur, readerChoices(models, cur, needFor(READ_CHUNK_CHARS, cur), host.env ?? process.env, list, host.small ?? smallModels())[0]!, list);
 }
 
-export async function readMaterial(host: ReaderHost, items: Material[], question: string, signal: AbortSignal): Promise<ReadOutcome> {
+// How a job differs from an answer to a question (a file read through a reader, src/tools/reading.ts):
+// `prompt`: each part's request, in place of the one that asks for findings; `join`: the answers of several
+// parts are the answer in part order, with no compile step (each stands for its own lines); `others`: only
+// models other than the session's own read, and none that costs more to read with than it (a reader on the
+// session's model, or a dearer one, costs more than the session reading the text itself).
+export type ReadOpts = { prompt?: (chunk: Chunk, k: number, n: number) => string; join?: boolean; others?: boolean };
+
+export async function readMaterial(host: ReaderHost, items: Material[], question: string, signal: AbortSignal, opts: ReadOpts = {}): Promise<ReadOutcome> {
   const env = host.env ?? process.env;
   const [models, cur] = await Promise.all([host.models(), host.current()]);
   const list = (m: ModelInfo) => host.listPrice?.(m);
   const total = items.reduce((n, m) => n + m.text.length, 0);
   // Choices that hold one full part; the first one sizes the parts.
-  const choices = readerChoices(models, cur, needFor(total, cur), env, list, host.small ?? smallModels());
+  let choices = readerChoices(models, cur, needFor(total, cur), env, list, host.small ?? smallModels());
+  if (opts.others) {
+    const own = readRate(cur, list);
+    choices = choices.filter((m) => { const r = readRate(m, list); return m.id !== cur.id && (own === undefined || r === undefined || r <= own); });
+    if (!choices.length) return { text: "", models: [], parts: [], unread: [], chars: 0, usage: emptyUsage(), compiled: false, none: true };
+  }
   const first = choices[0]!;
   const unread: string[] = [];
   // Past the cap the material is not read: named, so the working model knows.
@@ -99,7 +112,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
       const cut = m.text.lastIndexOf("\n", room);
       const text = m.text.slice(0, cut > 0 ? cut : room);
       kept.push({ ...m, text });
-      unread.push(`${m.source} after line ${text.split("\n").length} (past what one job reads, ${cap} characters)`);
+      unread.push(`${m.source} after line ${(m.first ?? 1) - 1 + text.split("\n").length} (past what one job reads, ${cap} characters)`);
       room = 0;
       continue;
     }
@@ -157,7 +170,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     const p = parts[i]!;
     p.state = "reading";
     tell();
-    const r = await ask(partPrompt(c, question, i + 1, chunks.length), { part: `${i + 1}/${chunks.length}` }, (m) => { p.model = m.name; tell(); });
+    const r = await ask(opts.prompt?.(c, i + 1, chunks.length) ?? partPrompt(c, question, i + 1, chunks.length), { part: `${i + 1}/${chunks.length}` }, (m) => { p.model = m.name; tell(); });
     if (!("error" in r)) partTokens += r.input;
     if ("error" in r) {
       p.state = "unread";
@@ -230,6 +243,8 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     text = parts.some((p) => p.state === "nothing") ? "Nothing in the material bears on the request." : "";
   } else if (found.length === 1) {
     text = found[0]!.text;
+  } else if (opts.join) {
+    text = found.map((f) => f.text).join("\n\n");
   } else {
     tell(true);
     const r = await compile();
