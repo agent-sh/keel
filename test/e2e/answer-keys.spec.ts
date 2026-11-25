@@ -625,6 +625,8 @@ test("what waits across sessions is answered in sequence, one key each", async (
   // Each Enter answers, and the next one opens by itself with the keyboard on it.
   await press("Enter");
   await ready(b);
+  // What it asks is said by its card (and the head): the line over the message box does not say it again.
+  await expect(pane(page, b).getByTestId("dock-action")).toHaveCount(0);
   // The card says that it is a sequence and how many more wait.
   await expect(page.getByTestId("waiting-elsewhere")).toHaveAttribute("data-on", "true");
   await expect(page.getByTestId("waiting-elsewhere")).toContainText("2 other sessions wait · next opens after this");
