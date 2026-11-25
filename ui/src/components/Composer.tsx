@@ -79,6 +79,9 @@ const SHORT_REM = 28;
 const REST_RING = 0.8;
 // A finger, not a pointer and keys: hints name what is tapped.
 const TOUCH = matchMedia("(hover: none) and (pointer: coarse)");
+// A session's message box on a phone has no mic of its own: its tools row holds the conversation button instead (bridge.css,
+// `.k-dictate`), and the keyboard dictates. The box says so where the mic would be looked for.
+const MIC_AWAY = "Reply, or dictate with the keyboard's mic";
 
 function useSlashItems() {
   const [, force] = useState(0);
@@ -1120,7 +1123,7 @@ const SessionComposer = memo(function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? (crowded ? "Steer it" : "Steer or queue") : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? (session ? "Reply" : "Start a session") : session ? "Reply, / for commands, @ for files and sessions" : "Describe the task, / for commands, @ for files and sessions"}
+        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? (crowded ? "Steer it" : "Steer or queue") : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? (session ? "Reply" : "Start a session") : session ? (TOUCH.matches && short ? MIC_AWAY : "Reply, / for commands, @ for files and sessions") : "Describe the task, / for commands, @ for files and sessions"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}

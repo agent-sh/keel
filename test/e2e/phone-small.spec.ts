@@ -1,5 +1,6 @@
 import { expect, test, type WebSocketRoute } from "./isolate.ts";
 import { ask, create, folder, scripted } from "./answering.ts";
+import { shoot } from "./shots.ts";
 
 // Feature: the small things a phone needs said. A request that came while the socket was down is read out
 // to a screen reader once the page has caught up (one line, when what waits grew). In a session the
@@ -56,6 +57,24 @@ for (const size of SIZES) {
         // Said once: the page catching up further does not say it again.
         await page.waitForTimeout(3000);
         expect((await told()).filter((t) => /Back online/.test(t))).toHaveLength(1);
+      });
+
+      test("the box says the keyboard is the mic where the session has none of its own", async ({ page, request }) => {
+        const id = await create(request, "Mic in the keyboard", folder("phone-small-mic"));
+        await page.goto(`/s/${id}`);
+        const pane = page.locator(".k-station[data-helm]");
+        const box = pane.getByTestId("composer");
+        await expect(box).toBeVisible();
+        // At rest the box is one line and its tools are one tap away; with them open the mic's place is the hint's.
+        if (await pane.getByTestId("composer-open").isVisible()) await pane.getByTestId("composer-open").click();
+        await expect(pane.getByTestId("composer-tools")).toBeVisible();
+        await expect(pane.getByTestId("dictate")).toBeHidden();
+        await expect(box).toHaveAttribute("placeholder", /keyboard's mic/);
+        // The hint is whole: the box holds it on the lines it has, and the tools stay in the page.
+        const fit = await box.evaluate((el: HTMLTextAreaElement) => ({ rows: el.scrollHeight <= el.clientHeight + 1 }));
+        expect(fit.rows, "the hint is not cut off").toBe(true);
+        await expect(pane.getByTestId("converse")).toBeInViewport({ ratio: 1 });
+        await shoot(page, `phone-small-mic-${size.width}x${size.height}-${scale * 100}`);
       });
     });
   }
