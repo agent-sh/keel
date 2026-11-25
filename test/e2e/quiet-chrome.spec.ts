@@ -184,3 +184,17 @@ test("a session's box on a desk is one quiet line in the workbench: the pickers 
   await expect(page.getByTestId("box-more-popup").getByTestId("permission-menu")).toBeVisible();
   await shoot(page, "quiet-08-box-one-line");
 });
+
+test("a step of long commands is one row beside the reply", async ({ page, request }) => {
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Quiet step" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  const long = (n: number) => ({ name: "Bash", input: { command: `echo ${n} && echo "a command long enough to pass the width of the reading column when it stands beside another one of its kind ${n}"` } });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([long(1), long(2), long(3)])}` } });
+  await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as { kind: string }[]).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(1);
+  await page.goto(`/s/${session.id}`);
+  const line = page.locator('.k-work [data-testid="work-step"] > .k-line[data-step] > .k-line-text').first();
+  await expect(line).toContainText("3 commands", { timeout: 30_000 });
+  const rows = await line.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
+  expect(rows).toBe(1);
+  await shoot(page, "quiet-09-step-one-row");
+});

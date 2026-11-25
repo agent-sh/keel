@@ -99,6 +99,11 @@ button.k-heard-line:hover { color: var(--fg); }
    target named is whole, under the column the first row's targets stand in. */
 .k-line-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: var(--k-hang, 4.75rem); text-indent: calc(-1 * var(--k-hang, 4.75rem)); }
 .k-line-text[data-wrap] { flex: 1 1 0; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+/* In a pane with room for the reading size a step's own line is one row as well, cut at its end: a row of
+   commands never stands taller than the reply beside it, and each call is whole on the lines the step opens to. */
+@container reading (min-width: 28.0625rem) {
+  .k-line[data-step] > .k-line-text[data-wrap] { flex: 0 1 auto; overflow: hidden; white-space: nowrap; }
+}
 /* The verbs stand in a column, so what each was done to lines up down the rail. Quiet as the rest of the
    line (regular weight, muted ink): the reply is what the rail stands beside, and it reads first. */
 .k-line-verb { display: inline-block; min-width: var(--k-verb, 4.25rem); margin-right: 0.25rem; font-weight: 400; color: var(--muted); text-indent: 0; white-space: nowrap; }
