@@ -376,6 +376,17 @@ test("a write after a cd that may not land where it says is placed where the she
     ["cd /w/own | cat; git push", "github.com/them/lib", "/w/clone"],
     ["cd /w/own; cd /w/fork; git push", "github.com/them/lib", "/w/clone"],
     ["cd /w/own; npm publish", "npm:@them/tool", "/w/clone"],
+    // A cd the shell may pass over or make in a shell of its own, the push joined to it by &&: the folder before it counts.
+    ["true || cd /w/own && git push", "github.com/them/lib", "/w/clone"],
+    ["test -d .git || cd /w/own && git add -A && git push", "github.com/them/lib", "/w/clone"],
+    ["(true) || cd /w/own && git push", "github.com/them/lib", "/w/clone"],
+    ["{ true; } || cd /w/own && git push", "github.com/them/lib", "/w/clone"],
+    ["true ||\n\ncd /w/own && git push", "github.com/them/lib", "/w/clone"],
+    ["true | cd /w/own && git push", "github.com/them/lib", "/w/clone"],
+    ["! cd /w/own && git push", "github.com/them/lib", "/w/clone"],
+    ["true || cd /w/own && bash -c 'git push'", "unplaced", "/w/clone"],
+    ["true && cd /w/own && git push", null, "/w/clone"],
+    ["true; cd /w/own && git push", null, "/w/clone"],
     // A folder with nothing in it now, reached by the line: not placed. Where the line started, it is no write.
     ["cd /w/nowhere; git push", "unplaced", "/w/clone"],
     ["cd /w/nowhere && git push", "unplaced"],

@@ -247,10 +247,12 @@ export function firmOf(parts: Simple[], runs: Run[], start = true): boolean[] {
 // real folders (`cd -P`, `set -P`: the `..` then leaves a link's target, where `dirsOf` leaves the link), a `pushd`
 // or `popd` that turns the stack, a relative one inside a loop, a condition or a function's body (it may run again)
 // and an `eval` of a `cd` may land anywhere: null, a folder the rules cannot name.
-// `cd X || exit` leaves nothing to run where it failed.
+// `cd X || exit` leaves nothing to run where it failed. A `cd` that may not run in the shell at all (after `||`, in a pipe,
+// negated) leaves what its `&&` joins where the shell was.
 // For a reader that must know every folder a write can happen in (the account rules): more folders, never fewer.
 const NO_DIRS: readonly (string | null)[] = [];
 const MOVES = /^(cd|pushd|popd)$/;
+const NEGATED = /^(?:(?:if|while|until|elif|then|else|do|time|\{)\s+)*!\s/;
 export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[]): (readonly (string | null)[])[] {
   const out = new Array<readonly (string | null)[]>(parts.length).fill(NO_DIRS);
   const evals = (w: string[]) => w[0] === "eval" && w.some((x, k) => k > 0 && /(^|[\s;&|({])(cd|pushd|popd)(\s|$)/.test(x));
@@ -303,7 +305,11 @@ export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[]): (
     if (unsure(w, s)) next.add(null);
     // Where the shell stays when this one fails: for what follows it, or for what follows its `&&` chain.
     const stay = [dirs[i] ?? null, ...others];
-    if (s.sep === "&&") for (const x of stay) pending.add(x);
+    // A cd the shell may pass over, or make in a shell of its own, though what follows is joined to it by `&&`: one after
+    // `||` (not run when what stands before it worked), one side of a pipe (the shell itself stays), a negated one (what
+    // its `&&` joins runs where it failed). What follows runs where the shell was, too.
+    const passed = s.led !== undefined || NEGATED.test(s.text);
+    if (s.sep === "&&") { for (const x of stay) pending.add(x); if (passed) for (const x of stay) next.add(x); }
     else if (ends(i)) pending = new Set();
     else { for (const x of [...stay, ...pending]) next.add(x); pending = new Set(); }
     others = next.size > 8 ? new Set([null]) : next;
