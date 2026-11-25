@@ -1156,6 +1156,25 @@ export function matchRule(pattern: string, s: Simple): boolean {
   return end >= at && cmd.endsWith(last) && !cmd.slice(at, end).includes("\n");
 }
 
+// A glob in the form a hook's `if` and a skill's disallowed tools use: `*` stands for any text (a line break too),
+// everything else is literal, the whole of `s` must match. The pieces between the stars are found left to right, each at
+// its first place, which is enough for a glob: one pass, however long `s` is and however many stars the rule has.
+export function globMatch(pattern: string, s: string): boolean {
+  const pieces = pattern.split("*");
+  if (pieces.length === 1) return s === pattern;
+  const first = pieces[0]!;
+  const last = pieces[pieces.length - 1]!;
+  if (s.length < first.length + last.length || !s.startsWith(first) || !s.endsWith(last)) return false;
+  const end = s.length - last.length;
+  let at = first.length;
+  for (let i = 1; i < pieces.length - 1; i++) {
+    const found = s.indexOf(pieces[i]!, at);
+    if (found < 0 || found + pieces[i]!.length > end) return false;
+    at = found + pieces[i]!.length;
+  }
+  return true;
+}
+
 const MULTI = new Set(["git", "npm", "pnpm", "yarn", "bun", "bunx", "npx", "cargo", "go", "docker", "podman", "kubectl", "gh", "uv", "pip", "python", "python3", "make", "systemctl", "brew", "apt", "deno", "rustup", "terraform", "aws"]);
 
 // ---- launchers: programs that fetch a package from a registry and run it ----

@@ -30,7 +30,7 @@ import { hookSaid } from "../engine/hooks.ts";
 import { cutTitle } from "../engine/title.ts";
 import { homeOf } from "../safety/credentials.ts";
 import { shellText } from "../safety/policy.ts";
-import { splitCommand } from "../safety/shell.ts";
+import { globMatch, splitCommand } from "../safety/shell.ts";
 import { timed } from "../admin/stall.ts";
 import { headHold } from "../safety/head-trust.ts";
 import { enabledUnits, type Unit } from "../plugins/registry.ts";
@@ -441,7 +441,8 @@ export function ifHolds(rule: string, names: string[] | undefined, input: any, c
   if (!names.includes(m[1]!)) return false;
   if (m[2] === undefined || m[2] === "*" || m[2] === "") return true;
   // (`npm run:*`, the older way to write a prefix, is `npm run *`.)
-  const glob = new RegExp(`^${m[2].replace(/:\*$/, " *").split("*").map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "s");
+  const rulePattern = m[2].replace(/:\*$/, " *");
+  const glob = { test: (x: string) => globMatch(rulePattern, x) };
   const command = shellText(input);
   if (command !== null) {
     const parts = splitCommand(command);
