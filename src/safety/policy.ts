@@ -13,7 +13,7 @@ import type { AskedPart } from "./summary.ts";
 import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
-import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
+import { PARTS_MAX, WORDS_MAX, elseOf, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { unstartedAct, unstartedWhy } from "./unstarted.ts";
 import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains, homeDir } from "../core/paths.ts";
@@ -792,21 +792,43 @@ function reboundBy(parts: Simple[]): string | undefined {
 }
 
 // What a line has set so far for the commands after it: the variables it gave a value, and the ones it exported.
-type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string> };
+// `moved`: the script starts in a folder the line went to. `unsure`: or in another one, which the rules cannot name.
+type Scope = { vars: Map<string, string>; exported: Set<string>; rebinds?: string; added: Map<string, string>; moved?: boolean; unsure?: boolean };
+const ELSE_WHY = "a cd before it may not land where it says (it can fail, the line names CDPATH, or it is not one the rules follow), so the folder it runs in is not known to the rules";
 
 // Every write with an account the parts of a line make, found through what wraps them and in the folder each runs in.
 // A script a shell is given with -c (or eval) is read as a line of its own. Exports before a command count for it.
 export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: Pick<Facts, "looked" | "home">, depth = 0, from?: Scope): Write[] {
   const out: Write[] = [];
   const scope: Scope = { vars: new Map(from?.vars), exported: new Set(from?.exported), rebinds: from?.rebinds ?? reboundBy(parts), added: new Map(from?.added) };
+  // The folder the line starts in, and for each part the other folders it may run in (a cd before it that failed).
+  const start = pre.dirs[0] ?? null, or = elseOf(parts, pre.runs, pre.dirs);
+  const key = (w: Write) => `${w.does}\0${w.account ? say(w.account) : ""}`;
   parts.forEach((part, i) => {
     if (part.heredoc) return;
     const run = pre.runs[i]!;
     const kept = [...scope.exported].filter((k) => scope.vars.has(k)).map((k) => `${k}=${scope.vars.get(k)}`);
-    const env = { dir: pre.dirs[i] ?? null, set: [...kept, ...run.set], ...(scope.rebinds ? { rebinds: scope.rebinds } : {}), ...(scope.added.size ? { added: scope.added } : {}),
+    const dir = pre.dirs[i] ?? null;
+    const others = from?.unsure && !or[i]!.includes(null) ? [...or[i]!, null] : or[i]!;
+    const base = { set: [...kept, ...run.set], ...(scope.rebinds ? { rebinds: scope.rebinds } : {}), ...(scope.added.size ? { added: scope.added } : {}),
       ...(f.looked?.remotes ? { remotes: (d: string) => f.looked!.remotes!(d) } : {}), ...(f.looked?.manifest ? { manifest: (d: string) => f.looked!.manifest!(d) } : {}),
       ...(f.looked?.hostname ? { hostname: (h: string) => f.looked!.hostname!(h) } : {}) };
-    out.push(...writesToAccounts(run.words, env));
+    const at = (d: string | null) => ({ ...base, dir: d, ...(from?.moved || d !== start ? { moved: true as const } : {}) });
+    const env = at(dir);
+    const found = writesToAccounts(run.words, env);
+    out.push(...found);
+    // The same command where the shell may be instead: what it writes there counts too.
+    if (others.length) {
+      const seen = new Set(found.map(key));
+      for (const o of others) {
+        if (o === dir) continue;
+        for (const w of writesToAccounts(run.words, at(o))) {
+          if (seen.has(key(w))) continue;
+          seen.add(key(w));
+          out.push(w.account ? { ...w, does: `${w.does} (in ${o}, where the line is if a cd before it fails)` } : o === null ? { ...w, why: ELSE_WHY } : w);
+        }
+      }
+    }
     const first = baseName(run.words[0]);
     // sh -c 'git push ...', bash -lc "...", eval '...'
     let script: string | undefined;
@@ -814,7 +836,7 @@ export function accountWrites(parts: Simple[], pre: ReturnType<typeof laid>, f: 
     else if (first === "eval") script = run.words.slice(1).join(" ");
     if (script !== undefined) {
       const inner = depth < 2 ? splitCommand(script) : null;
-      if (inner) out.push(...accountWrites(inner, laid(inner, pre.dirs[i] ?? null, f.home ?? homeDir()), f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added }));
+      if (inner) out.push(...accountWrites(inner, laid(inner, pre.dirs[i] ?? null, f.home ?? homeDir()), f, depth + 1, { vars: new Map([...scope.vars, ...run.set.map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] as [string, string])]), exported: new Set([...scope.exported, ...run.set.map((a) => a.slice(0, a.indexOf("=")))]), rebinds: scope.rebinds, added: scope.added, moved: !!env.moved, unsure: others.length > 0 }));
       else if (/\b(push|publish|upload)\b|\b(gh|glab) /.test(script)) out.push({ does: first, account: null, why: "the script it runs is nested deeper than the rules read, or not one they can read" });
     }
     // What this part gives the parts after it.

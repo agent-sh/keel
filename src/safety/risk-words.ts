@@ -239,6 +239,72 @@ export function firmOf(parts: Simple[], runs: Run[], start = true): boolean[] {
   return out;
 }
 
+// The other folders a part may run in, besides the one `dirsOf` follows: where the shell is when a `cd` before it did
+// not land where it says. A `cd` joined by `;`, a newline, `||`, `|` or `&` may have failed (a folder that is not
+// there, or not there for the shell that runs the line), and what follows runs where the shell was; one joined by
+// `&&` gives that folder to what comes after the chain. A relative `cd` from such a folder lands under it. A `cd`
+// with more than one operand, a relative one in a line that names CDPATH, a `pushd` or `popd` that turns the stack,
+// a relative one inside a loop, a condition or a function's body (it may run again) and an `eval` of a `cd` may land
+// anywhere: null, a folder the rules cannot name. `cd X || exit` leaves nothing to run where it failed.
+// For a reader that must know every folder a write can happen in (the account rules): more folders, never fewer.
+const NO_DIRS: readonly (string | null)[] = [];
+const MOVES = /^(cd|pushd|popd)$/;
+export function elseOf(parts: Simple[], runs: Run[], dirs: (string | null)[]): (readonly (string | null)[])[] {
+  const out = new Array<readonly (string | null)[]>(parts.length).fill(NO_DIRS);
+  const evals = (w: string[]) => w[0] === "eval" && w.some((x, k) => k > 0 && /(^|[\s;&|({])(cd|pushd|popd)(\s|$)/.test(x));
+  if (!runs.some((r) => MOVES.test(r.words[0] ?? "") || evals(r.words))) return out;
+  const cdpath = parts.some((s) => !s.heredoc && /\bCDPATH\b/.test(s.text));
+  // What a cd is given: its operands, past its options.
+  const read = (w: string[]) => {
+    let k = 1;
+    while (k < w.length && /^-[A-Za-z@]+$/.test(w[k]!)) k++;
+    if (w[k] === "--") k++;
+    return { ops: w.slice(k) };
+  };
+  const relative = (w: string[]) => { const arg = read(w).ops[0]; return arg !== undefined && !/^(\/|~(\/|$))/.test(arg) ? arg : undefined; };
+  const unsure = (w: string[], s: Simple) => {
+    const { ops } = read(w);
+    const arg = ops[0];
+    if (ops.length > 1 || w[0] === "popd") return true;
+    // (In a loop or a function a relative one may run again, from where the last one left the shell.)
+    if (s.flow && relative(w) !== undefined) return true;
+    // (pushd alone, or with a number, turns its stack: where that leads is not in the line's words.)
+    if (w[0] === "pushd" && (arg === undefined || /^[+-]\d+$/.test(arg))) return true;
+    if (arg === undefined) return false;
+    return cdpath && !/^(\/|~|\.{1,2}(\/|$))/.test(arg);
+  };
+  let others = new Set<string | null>(), pending = new Set<string | null>(), nested = false;
+  const ends = (i: number) => { const n = runs[i + 1]?.words[0]; return parts[i]!.sep === "||" && n === "exit" && !parts[i + 1]!.nested; };
+  for (let i = 0; i < parts.length; i++) {
+    const s = parts[i]!, w = runs[i]!.words;
+    if (!s.heredoc && !s.nested) nested = false;
+    if (others.size || nested) out[i] = nested && !others.has(null) ? [...others, null] : [...others];
+    if (s.heredoc) continue;
+    const moves = MOVES.test(w[0] ?? "");
+    if (s.nested) {
+      // In a subshell or a substitution `dirsOf` follows a cd along its `&&` chain only: what is left is where it starts from.
+      if (evals(w) || (moves && (unsure(w, s) || (others.size > 0 && relative(w) !== undefined)))) nested = true;
+      continue;
+    }
+    if (!moves) {
+      if (evals(w)) others.add(null);
+      if (s.sep !== "&&" && pending.size) { for (const x of pending) others.add(x); pending = new Set(); }
+      continue;
+    }
+    const next = new Set<string | null>();
+    const from = relative(w);
+    if (from !== undefined) for (const o of others) { const at = o === null ? null : resolve(o, from); next.add(at !== null && at.length > PATH_MAX ? null : at); }
+    if (unsure(w, s)) next.add(null);
+    // Where the shell stays when this one fails: for what follows it, or for what follows its `&&` chain.
+    const stay = [dirs[i] ?? null, ...others];
+    if (s.sep === "&&") for (const x of stay) pending.add(x);
+    else if (ends(i)) pending = new Set();
+    else { for (const x of [...stay, ...pending]) next.add(x); pending = new Set(); }
+    others = next.size > 8 ? new Set([null]) : next;
+  }
+  return out;
+}
+
 // ---- variables the line itself gives a value ----
 
 // A name is read as its value only when the line gives it one value, once, in

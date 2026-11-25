@@ -119,7 +119,9 @@ export type Answer<T> = T | null | "late";
 // `added`: the remotes the same line gave an address before this command (`git remote add NAME URL`, `set-url`).
 // `set`: what the line sets for the command (`NAME=value`, the last of a name wins). `rebinds`: why the same line moves
 // where a remote points (a write by a remote's name or by default then lands where the rules cannot tell).
-export type Env = { dir: string | null; remotes?: (dir: string) => Answer<Remotes>; manifest?: (dir: string) => Answer<Manifest>; hostname?: (host: string) => Answer<string>; set?: string[]; rebinds?: string; added?: ReadonlyMap<string, string> };
+// `moved`: the line went to `dir` itself (a cd, git -C): a folder with nothing in it to write from may be one the line
+// fills first (a clone, a build), or not the one the shell ends up in, so a write there is not placed rather than none.
+export type Env = { dir: string | null; moved?: true; remotes?: (dir: string) => Answer<Remotes>; manifest?: (dir: string) => Answer<Manifest>; hostname?: (host: string) => Answer<string>; set?: string[]; rebinds?: string; added?: ReadonlyMap<string, string> };
 
 // What a line sets for a name: the last assignment of it.
 export const setOf = (set: readonly string[] | undefined, name: string): string | undefined => {
@@ -190,6 +192,8 @@ const nowhere = (does: string): Write[] => [{ does, account: null, why: "the fol
 // A command whose repository is read from a disk the rules have no view of (a session on another machine).
 const blind = (does: string): Write[] => [{ does, account: null, why: "the repository it runs in is on a disk the rules do not read" }];
 const rebound = (does: string, env: Env): Write[] => [{ does, account: null, why: env.rebinds! }];
+// Nothing to write from in the folder (no repository, no manifest): no write where the line started, not placed where it moved to.
+const empty = (does: string, env: Env, what: string): Write[] => (env.moved ? [{ does, account: null, why: `the rules find no ${what} in the folder the line moves to (${(env.dir ?? "").slice(0, 120)}): it may be made by the same line, or not be where the command runs` }] : []);
 
 function viaRemote(does: string, name: string | null, env: Env): Write[] {
   if (env.rebinds) return rebound(does, env);
@@ -201,7 +205,7 @@ function viaRemote(does: string, name: string | null, env: Env): Write[] {
   if (env.dir === null) return nowhere(does);
   const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("where the remote points") }];
-  if (r === null) return [];
+  if (r === null) return empty(does, env, "repository");
   const remote = name ?? pushRemote(r);
   const added = env.added?.get(remote);
   const urls = added !== undefined ? [added] : r.push[remote] ?? (r.fetch[remote] ? [r.fetch[remote]!] : []);
@@ -278,7 +282,7 @@ function gh(words: string[], env: Env, set: string[]): Write[] {
   if (env.dir === null) return nowhere(does);
   const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("the repository gh acts on") }];
-  if (r === null) return [];
+  if (r === null) return empty(does, env, "repository");
   const base = ghBase(r, lower(setOf(set, "GH_HOST") ?? "github.com"));
   return base ? [{ does, account: shown(base), own: true }] : [];
 }
@@ -329,6 +333,7 @@ function glab(words: string[], env: Env): Write[] {
   if (env.dir === null) return nowhere(does);
   const r = env.remotes(env.dir);
   if (r === "late") return [{ does, account: null, why: lateWhy("the project glab acts on") }];
+  if (r === null) return empty(does, env, "repository");
   const base = r ? ghBase(r, "gitlab.com") : null;
   return base ? [{ does, account: shown(base), own: true }] : [];
 }
@@ -344,7 +349,7 @@ function publish(words: string[], env: Env): Write[] {
     if (env.dir === null) return nowhere(does);
     const m = env.manifest(env.dir);
     if (m === "late") return [{ does, account: null, why: lateWhy("the package's manifest") }];
-    if (m === null) return []; // (no manifest in the folder: there is no package to publish)
+    if (m === null) return empty(does, env, "package manifest"); // (no manifest in the folder the line started in: there is no package to publish)
     const name = pick(m);
     return name ? [{ does, account: { kind: "package", registry, name: lower(name) } }] : [{ does, account: null, why: "its manifest does not name the package" }];
   };
@@ -463,15 +468,16 @@ function resolveHost(w: Write, env: Env): Write {
 
 // git [-C dir] push ...: the folder of a -C is the one asked about.
 function gitWrites(words: string[], env: Env): Write[] {
-  let i = 1, dir = env.dir;
+  let i = 1, dir = env.dir, moved = env.moved;
   const gitDir = (p: string | undefined) => {
+    moved = true;
     if (p === undefined || dynamic(p) || !/(^|\/)\.git\/?$/.test(p)) { dir = null; return; }
     const base = p.replace(/\/?\.git\/?$/, "");
     dir = base.startsWith("/") ? base : p.startsWith("/") ? "/" : base === "" ? env.dir : env.dir === null ? null : `${env.dir}/${base}`;
   };
   while (i < words.length && words[i]!.startsWith("-")) {
     const o = words[i]!;
-    if (o === "-C") { const p = words[++i]; dir = p === undefined || dynamic(p) || dir === null ? null : p.startsWith("/") ? p : resolve(dir, p); }
+    if (o === "-C") { moved = true; const p = words[++i]; dir = p === undefined || dynamic(p) || dir === null ? null : p.startsWith("/") ? p : resolve(dir, p); }
     else if (o === "--git-dir") gitDir(words[++i]);
     else if (o.startsWith("--git-dir=")) gitDir(o.slice(10));
     else if (o === "-c" || o === "--work-tree" || o === "--namespace" || o === "--exec-path") i++;
@@ -479,7 +485,7 @@ function gitWrites(words: string[], env: Env): Write[] {
   }
   if (words[i] !== "push") return [];
   if (env.rebinds) return rebound("git push", env);
-  return gitPush(words.slice(i + 1), { ...env, dir });
+  return gitPush(words.slice(i + 1), { ...env, dir, ...(moved ? { moved } : {}) });
 }
 
 // The first write in a line the owner has no namespace for, or null. `unsure`: writes the rules could not place.

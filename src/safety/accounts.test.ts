@@ -351,6 +351,59 @@ test("a write behind a folder spelled with a variable or a substitution is not p
   expect(accountContext('D=/w/own; cd "$D" && git push', "/w/own", looked(), parseNamespaces(names), "/home/u")).toContain("where it lands is unknown");
 });
 
+// A cd says where the shell goes only when it works. What runs after one that may have failed (not joined by &&) also
+// runs where the shell was; a folder the line moves to that holds no repository or manifest now may be filled by the line
+// itself; and a cd with more than one operand, a relative one beside CDPATH, an eval of one or a turn of pushd's stack
+// lands where the rules cannot tell. Each is the owner's write, never no write.
+test("a write after a cd that may not land where it says is placed where the shell may be, or not placed", () => {
+  const where = (command: string, cwd = "/w/own") => {
+    const d = run(command, cwd, "ask");
+    return how(d) === "account" ? ((d as { ask: { account: string } }).ask.account || "unplaced") : null;
+  };
+  const rows: [string, string | null, string?][] = [
+    // Joined by &&: the folder it names, and nothing else.
+    ["cd /w/own && git push", null, "/w/clone"],
+    ["(cd /w/own && git push)", null, "/w/clone"],
+    ["cd /w/own || exit 1; git push", null, "/w/clone"],
+    ["cd /w/own || return; git push", "github.com/them/lib", "/w/clone"],
+    ["cd /w/own\ngit add -A\ngit push", null, "/w/fork"],
+    // Not joined by &&: the folder before it counts too.
+    ["cd /w/own; git push", "github.com/them/lib", "/w/clone"],
+    ["cd /w/own\ngit push", "github.com/them/lib", "/w/clone"],
+    ["cd /w/own && git add .; git push", "github.com/them/lib", "/w/clone"],
+    ["cd /w/own | cat; git push", "github.com/them/lib", "/w/clone"],
+    ["cd /w/own; cd /w/fork; git push", "github.com/them/lib", "/w/clone"],
+    ["cd /w/own; npm publish", "npm:@them/tool", "/w/clone"],
+    // A folder with nothing in it now, reached by the line: not placed. Where the line started, it is no write.
+    ["cd /w/nowhere; git push", "unplaced", "/w/clone"],
+    ["cd /w/nowhere && git push", "unplaced"],
+    ["git clone https://github.com/them/lib.git /w/new && cd /w/new && git push", "unplaced"],
+    ["git -C /w/nowhere push", "unplaced"],
+    ["cd /w/nowhere && gh pr create --fill", "unplaced"],
+    ["cd /w/nowhere && npm publish", "unplaced"],
+    ["bash -c 'cd /w/nowhere; git push'", "unplaced", "/w/clone"],
+    ["git push", null, "/w/nowhere"],
+    ["npm publish", null, "/w/nowhere"],
+    // A cd the shell may read another way.
+    ["cd /w/own extra 2>/dev/null; git push", "unplaced", "/w/clone"],
+    ["cd /w/own extra && git push", "unplaced", "/w/clone"],
+    ["CDPATH=/w/clone; cd sub && git push", "unplaced"],
+    ["export CDPATH=/w; cd own && git push", "unplaced", "/w/clone"],
+    ["CDPATH=/w; cd ./sub && git push", "unplaced"],
+    ["eval 'cd /w/clone'; git push", "unplaced"],
+    ["pushd /w/own && pushd && git push", "unplaced", "/w/clone"],
+    ["cd /w/own; cd sub; git push", "unplaced", "/w/clone"],
+    // A relative cd that may run more than once.
+    ["for i in 1 2; do cd ../own && git push; done", "unplaced", "/w/clone"],
+    ["f() { cd ../own; }; f; f; git push", "unplaced", "/w/clone"],
+    ["for i in 1 2; do cd /w/own && git push; done", null, "/w/clone"],
+  ];
+  for (const [command, want, cwd] of rows) expect([command, where(command, cwd)]).toEqual([command, want]);
+  // The card says which folder the write is in.
+  const d = run("cd /w/own; git push", "/w/clone", "full-auto") as { ask: { why: string } };
+  expect(d.ask.why).toContain("in /w/clone, where the line is if a cd before it fails");
+});
+
 // ---- an MCP tool that writes with an account its server holds ----
 
 const mcpTool = { name: "slack__post", readOnly: false };
