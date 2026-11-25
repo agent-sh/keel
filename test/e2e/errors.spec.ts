@@ -383,6 +383,12 @@ test("a row offers the acts that fit its failure, and Fix this only where an age
     await expect(row.getByTestId("error-where")).toBeHidden();
     // And the folded line names the session, so the owner need not open the row or hover it to know which failed.
     await expect(row.getByTestId("error-in")).toHaveText(`in Nightly report ${tag}`);
+    // The message has the width: at least half of the folded line, and where it came from is said once the row is open.
+    await expect(row.getByTestId("error-source")).toBeHidden();
+    {
+      const msg = (await row.getByTestId("error-message").boundingBox())!, head = (await row.getByTestId("error-head").boundingBox())!;
+      expect(msg.width / head.width, "the message takes half the line or more").toBeGreaterThanOrEqual(0.5);
+    }
     // The acts show on the row when it is hovered or a key is in it, and are in the tab order meanwhile.
     const shown = () => acts.evaluate((el) => getComputedStyle(el).opacity);
     expect(await shown()).toBe("0");
