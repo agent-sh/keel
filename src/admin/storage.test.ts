@@ -2,7 +2,7 @@
 // events and an attachment, restore it into an empty state folder, and read
 // the same thing back from a fresh Store. A changed file fails the check.
 import { Database } from "bun:sqlite";
-import { expect, mock, setDefaultTimeout, setSystemTime, test } from "bun:test";
+import { afterAll, beforeAll, expect, mock, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -14,12 +14,18 @@ import { Store } from "../core/store.ts";
 import { attachmentPath, saveAttachment, setAttachmentsRoot } from "../engine/attachments.ts";
 import { adminCommands } from "../cli/admin.ts";
 import { mobileCommands } from "../cli/mobile.ts";
+import { patchSettings } from "./settings.ts";
 import { HASH_CHUNK, hashFile, REPORT_MAX_AGE_MS, restore, shownReport, Storage, undoCutRestore, verify } from "./storage.ts";
 
 // These tests write a database of their own to disk; under a disk stall of a
 // shared machine a write waits seconds, and the 5 s default was passed in
 // whole-suite runs by tests that take milliseconds alone.
 setDefaultTimeout(20_000);
+
+// The tests below read a list of the newest backups made seconds apart: the count of the newest that stay
+// is what they set (the retention by days has its own test, retain.test.ts).
+beforeAll(() => void patchSettings({ backup: { recent: 5, days: 0 } }));
+afterAll(() => void patchSettings({ backup: { recent: null, days: null } }));
 
 test("a backup restores into an empty state folder", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
@@ -1442,6 +1448,29 @@ test("a write to the database while no daemon runs is in the next backup, which 
     expect(written.texts).toContain("OUT 7".padEnd(12));
     expect(written.title).toEqual(["changed outside"]);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The backups kept are the newest few and the newest of each recent day (src/admin/retain.ts), with the full
+// backup a kept delta is read over: the others are removed before the backup call returns, and the newest never is.
+test("older backups of the same day go, the newest stays with its full backup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    patchSettings({ backup: { recent: 1, days: 7 } });
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (t: string) => src.append(s.id, "user", { text: t.padEnd(12) + "x".repeat(3000) });
+    for (let i = 0; i < 300; i++) say(`one ${i}`);
+    const storage = new Storage(src, {} as any, new Bus(), {} as any);
+    const full = await storage.backup("full");
+    const deltas = [];
+    for (let i = 0; i < 3; i++) { say(`more ${i}`); deltas.push(await storage.backup(`delta ${i}`)); }
+    expect(deltas.map((d) => d.base)).toEqual(deltas.map(() => full.name));
+    expect(storage.backups().map((b) => b.reason)).toEqual(["delta 2", "full"]);
+    expect(readdirSync(join(src.stateDir, "backups")).filter((d) => d.startsWith("keel-"))).toHaveLength(2);
+  } finally {
+    patchSettings({ backup: { recent: 5, days: 0 } });
     rmSync(root, { recursive: true, force: true });
   }
 });

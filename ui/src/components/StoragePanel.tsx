@@ -301,7 +301,7 @@ export function StoragePanel() {
       )}
 
       <Group title="Backups" count={backups?.length || undefined}
-        hint={<>A checked copy of the conversations, their attached files and the settings{settings?.backup.before_restart ? ", made before every restart" : ""}. The last {settings?.backup.keep ?? 5} are kept; one that holds only what changed keeps the full backup it is read over. Restore with <span className="font-mono">keel restore NAME</span> while the daemon is stopped.</>}
+        hint={<>A checked copy of the conversations, their attached files and the settings{settings?.backup.before_restart ? ", made before every restart" : ""}. <span data-testid="backups-retention">The newest {settings?.backup.recent ?? 2}{(settings?.backup.days ?? 7) > 0 ? <> and the newest of each of the last {settings?.backup.days ?? 7} days</> : null} are kept{backups?.length ? <>, {fmtBytes(backups.reduce((n, b) => n + (b.bytes ?? 0), 0))} now</> : null}; one that holds only what changed keeps the full backup it is read over. Older ones are removed after each backup.</span> Restore with <span className="font-mono">keel restore NAME</span> while the daemon is stopped.</>}
         actions={<button type="button" className={btn} data-testid="backup-now" onClick={() => api("/api/backups", { method: "POST" }).then(() => load(true)).catch(reportError)}>Back up now</button>}>
         {backupsFailed ? <p className="py-4 text-ui text-danger" data-testid="backups-failed">The list of backups could not be read.</p>
           : !owed && backups?.length === 0 ? <Empty>No backups yet.</Empty>

@@ -37,7 +37,10 @@ Health says so. To let it read them, start it with a `HOME` of its own, or set
 The copy is opened and checked before it counts: SQLite's integrity check, and
 the same sessions and at least the same events as the live database. A backup
 that fails the check is removed. `keel backups` lists them, newest first; the
-newest five are kept (`backup.keep` in the settings). The daemon also makes
+newest two are kept (`backup.recent`) with the newest of each of the last seven
+days (`backup.days`), and the full backup a kept delta is read over; the rest
+are removed after each backup, off the event loop, and the newest never is.
+Settings > Storage says so with their size. The daemon also makes
 one before a restart when `backup.before_restart` is on: before the restart
 when it holds the pages that changed, and right after the start, with the
 reason "after a restart", when it would be a full copy (the README's Backups

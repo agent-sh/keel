@@ -7,6 +7,7 @@ import { checkpointerOf } from "../core/checkpoint.ts";
 import { NOT_EMPTIED, TRIED } from "../core/checkpoint-shared.ts";
 import { createHash } from "node:crypto";
 import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeOwnFile } from "../core/ownfile.ts";
@@ -20,6 +21,7 @@ import { logOf, witnessed } from "../core/log-pages.ts";
 import { storeFd, storePath } from "../core/store-files.ts";
 import type { Engine } from "../engine/turn.ts";
 import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
+import { DEFAULT_RETENTION, retained } from "./retain.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
 import { pumpLines, readText } from "../core/proc.ts";
 import { readsOf } from "../server/reads.ts";
@@ -37,8 +39,11 @@ registerSettings(
 );
 registerSettings(
   "backup",
-  { keep: 5, before_restart: true },
-  (v) => (!Number.isInteger(v.keep) || v.keep < 1 ? "keep is a whole number of at least 1" : typeof v.before_restart !== "boolean" ? "before_restart is true or false" : undefined),
+  // `keep`: how large a delta may be (at most 1/keep of the store). `recent` and `days`: which backups stay (src/admin/retain.ts).
+  { keep: 5, before_restart: true, ...DEFAULT_RETENTION },
+  (v) => (!Number.isInteger(v.keep) || v.keep < 1 ? "keep is a whole number of at least 1" : typeof v.before_restart !== "boolean" ? "before_restart is true or false"
+    : !Number.isInteger(v.recent) || v.recent < 1 ? "recent is a whole number of at least 1: the newest backups that are kept"
+    : !Number.isInteger(v.days) || v.days < 0 || v.days > 366 ? "days is a whole number from 0 to 366: the newest backup of each of that many days is kept" : undefined),
 );
 
 // Folders under the state folder by what they hold. Durable state is the
@@ -574,7 +579,7 @@ export class Storage {
     // The changes since the last full backup have grown: each backup holds them all again. A full
     // one is made soon, by the daemon itself and never while a restart waits (later).
     this.fullDue = !!done.grown;
-    timed(() => "removing older backups", () => this.prune());
+    await this.prune();
     this.diskStale = true;
     return this.backups().find((b) => b.name === basename(final))!;
   }
@@ -772,14 +777,17 @@ export class Storage {
     return { checked: done.backups.length, failed: names, store_ok: done.store?.ok ?? null, ...(full ? { full: full.name } : {}) };
   }
 
-  private prune() {
-    const keep = settings().backup.keep as number;
+  // What is not kept (src/admin/retain.ts) is removed off the loop: a backup holds files of gigabytes, whose
+  // unlinking takes the disk's time.
+  private async prune() {
+    const { recent, days } = settings().backup as { recent: number; days: number };
     const list = this.backups().filter((b) => !b.unreadable);
-    // A full backup stays for as long as a kept backup is read over it.
-    const bases = new Set(list.slice(0, keep).map((b) => b.base));
-    for (const b of list.slice(keep)) if (!bases.has(b.name)) rmSync(join(this.backupRoot, b.name), { recursive: true, force: true });
+    const keep = retained(list, Date.now(), { recent, days });
+    const gone = list.filter((b) => !keep.has(b.name)).map((b) => b.name);
     // A partial copy left by a crash during a backup.
-    if (existsSync(this.backupRoot)) for (const d of readdirSync(this.backupRoot)) if (d.endsWith(".partial")) rmSync(join(this.backupRoot, d), { recursive: true, force: true });
+    if (existsSync(this.backupRoot)) for (const d of readdirSync(this.backupRoot)) if (d.endsWith(".partial")) gone.push(d);
+    await Promise.all(gone.map((n) => rm(join(this.backupRoot, n), { recursive: true, force: true }).catch((e) => this.errors.capture?.("server", e, { at: "removing an older backup", name: n }))));
+    return gone.length;
   }
 
   backups(): Backup[] { return listBackups(this.backupRoot); }

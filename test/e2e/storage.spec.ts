@@ -54,8 +54,11 @@ test("storage, cleanup and backups", async ({ page, request }) => {
 
   const before = (await (await request.get("/api/backups")).json()).backups.length;
   await panel.getByTestId("backup-now").click();
-  // Five are kept, and with them the full backup a kept one is read over.
-  await expect(panel.getByTestId("backup-row")).toHaveCount(Math.min(before + 1, 6));
+  // The newest two and the newest of each of seven days are kept, and with them the full backup a kept one is
+  // read over: older ones of the same day are gone, the newest never is, and the panel says so with the size.
+  await expect(panel.getByTestId("backups-retention")).toContainText("The newest 2 and the newest of each of the last 7 days are kept");
+  await expect.poll(async () => (await (await request.get("/api/backups")).json()).backups.length).toBeLessThanOrEqual(Math.max(before, 1) + 1);
+  await expect(panel.getByTestId("backup-row").first()).toBeVisible();
   await panel.getByTestId("backup-now").scrollIntoViewIfNeeded();
   await shoot(page, "storage-03-policy-backups");
 
