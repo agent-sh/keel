@@ -4,7 +4,7 @@ import { ArrowDownToLine, Brain, Check, Circle, CircleDot, FileText, Link2, Rota
 import { BACKGROUND_COMMAND_KEYS, MOVABLE, moveToBackground } from "../lib/background.ts";
 import { keyLabel } from "../lib/keys.ts";
 import { useKept } from "../lib/kept.ts";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import type { SavedFile } from "../../../src/tools/blob.ts";
@@ -269,8 +269,20 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // A small change shows its lines under the closed line, as a failure shows its reason.
   // (Not while its approval card is open: the card carries the lines, the call's line says the tool and the path.)
   const small = useMemo(() => (!open && !peek && change && changed && state !== "waiting" ? smallChange(use) : null), [open, peek, change, changed, state, use]);
+  // A call that ran and may have changed files has a quiet menu (right click, or the Menu key on its line):
+  // "Revert from here", when it did. Text selected in it keeps the browser's own menu (copy).
+  const restorable = !!sessionId && !peek && !!result && (isShell || kind === "edit" || kind === "write" || kind === "patch" || kind === "notebook");
+  const onMenu = (e: MouseEvent<HTMLElement>) => {
+    if (!sessionId || getSelection()?.toString()) return;
+    const at = (e.target as Element).closest("a, input, textarea");
+    if (at) return;
+    e.preventDefault();
+    const box = e.clientX || e.clientY ? null : e.currentTarget.getBoundingClientRect();
+    const x = box ? box.left + 16 : e.clientX, y = box ? box.top + 24 : e.clientY;
+    void import("./CallMenu.tsx").then((m) => m.openCallMenu({ sessionId, callId: use.id, x, y }));
+  };
   return (
-    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-quote-from={`the ${use.name} call`} data-quote-out={`the output of ${use.name}`} data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-movable={isShell && movable(use.name, input) ? "" : undefined} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined}>
+    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-quote-from={`the ${use.name} call`} data-quote-out={`the output of ${use.name}`} data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-movable={isShell && movable(use.name, input) ? "" : undefined} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined} onContextMenu={restorable ? onMenu : undefined}>
       <Collapsible.Trigger className="k-line" title={isShell && input.description ? `The model's note: ${input.description}` : undefined}>
         {/* The line's words, as one run of text: the verb, how it stands, why it is marked, what it was made on.
             A marked call's words wrap, so what it was made on is whole on the page. */}

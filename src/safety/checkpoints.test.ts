@@ -554,6 +554,9 @@ test("a twelve-step turn: revert from step 7 keeps f1..f6, undo brings f7..f12 b
 
   const preview = await t.c.rewind(t.s, { step: steps[6]!.id, preview: true });
   expect(preview.files.sort()).toEqual(["f10", "f11", "f12", "f7", "f8", "f9"]);
+  // The call itself names its step (the transcript's menu knows the call, not the step); a call that changed nothing has none.
+  expect((await t.c.rewind(t.s, { call: "call-7", preview: true })).files.sort()).toEqual(preview.files.sort());
+  await expect(t.c.rewind(t.s, { call: "read", preview: true })).rejects.toThrow(/changed no files/);
   const done = await t.c.rewind(t.s, { step: steps[6]!.id });
   expect(done.removes.length).toBe(6);
   for (let i = 1; i <= 12; i++) expect(existsSync(join(t.ws, `f${i}`))).toBe(i <= 6);

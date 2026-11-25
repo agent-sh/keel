@@ -212,10 +212,10 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         }
         // From a prompt of the branch shown: the chat, the files, or both go back to before it.
         if (typeof b.prompt_event === "string") return rewindPrompt(s, b, paths, confirm);
-        if (typeof b.step === "string" && b.mode && b.mode !== "files") return bad("a step is not a prompt: only the files go back to before it, the chat stays");
+        if ((typeof b.step === "string" || typeof b.call === "string") && b.mode && b.mode !== "files") return bad("a step is not a prompt: only the files go back to before it, the chat stays");
         const h = b.preview ? null : await held(s, !!b.stop_shells);
         if (h) return h;
-        const res = await c.rewind(s, { turn: b.turn, step: typeof b.step === "string" ? b.step : undefined, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside, confirm });
+        const res = await c.rewind(s, { turn: b.turn, step: typeof b.step === "string" ? b.step : undefined, call: typeof b.call === "string" ? b.call : undefined, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside, confirm });
         // A preview of a revert to before a turn: what that turn and the ones after it did that no restore takes back.
         if (b.preview && Number.isInteger(b.turn)) {
           const said = await reach.fromPrompt(s, b.turn - 1).catch((e) => (void errors.capture("server", e, { at: "rewind not undone" }), undefined));

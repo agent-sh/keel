@@ -585,7 +585,7 @@ export class Checkpoints {
   // and only while each is still the version the preview showed.
   // `note`: where the note for the model goes instead of the end of the branch shown (a chat rewind or
   // an edit makes the new branch first); `quiet`: no note (an undo that brings the branch it was told on back).
-  async rewind(s: Session, opts: { turn?: number; step?: string; checkpoint?: string; paths?: string[]; preview?: boolean; includeOutside?: boolean; confirm?: { paths: string[]; versions: Record<string, string> }; note?: (data: NoteData) => void; quiet?: boolean }): Promise<RewindResult> {
+  async rewind(s: Session, opts: { turn?: number; step?: string; call?: string; checkpoint?: string; paths?: string[]; preview?: boolean; includeOutside?: boolean; confirm?: { paths: string[]; versions: Record<string, string> }; note?: (data: NoteData) => void; quiet?: boolean }): Promise<RewindResult> {
     const sh = this.shadow(s.workspace);
     let target: string;
     let scopePaths: string[] | null;
@@ -611,9 +611,11 @@ export class Checkpoints {
       const after = this.here(s).find((c) => c.at === "after" && c.of_id === cp.id && c.tree);
       if (after) undoOf = { after, touched: new Set(await sh.changed(cp.tree, after.tree, scopePaths ?? undefined)) };
       else incomplete = true;
-    } else if (opts.step) {
+    } else if (opts.step || opts.call) {
       // Before one call of a turn: the files as that call found them, from the same protection of outside edits.
-      const cp = this.get(opts.step);
+      // (A call of the transcript is named by its own id: the step it made, when it changed files.)
+      const cp = opts.step ? this.get(opts.step) : this.list(s.id).findLast((c) => c.at === "step" && c.of_id === opts.call);
+      if (!cp && opts.call) throw new Bad("that call changed no files, so it has no restore point", 404);
       if (!cp || cp.session_id !== s.id || cp.at !== "step") throw new Bad("no such step", 404);
       if (cp.workspace && cp.workspace !== s.workspace) throw new Bad(`that step ran in ${cp.workspace}; the session is in ${s.workspace} now, so its files cannot be put back here`, 409);
       if (!cp.tree) throw new Bad("that step was let go by retention", 410);
