@@ -200,11 +200,15 @@ export function HelperSettings() {
       <Card>
         <HelperIdentity />
         <SettingRow label="Helper" hint="One conversation that never ends, at the top of the list (Ctrl J). It follows your sessions, checks your mail, and keeps what is worth remembering. Off: no wakes and no mail checks; the conversation and the list stay.">
-          <button type="button" role="switch" aria-checked={view.on} data-testid="helper-on" aria-label="Helper on"
-            onClick={() => (view.on ? setHelper({ on: false }) : openHelper()).catch(reportError)}
-            className="k-switch">
-            <span className="k-switch-thumb" />
-          </button>
+          <div className="flex items-center gap-3">
+            {view.on && view.session_id && <button type="button" data-testid="helper-open" onClick={() => openHelper().catch(reportError)} className="k-link rounded-sm text-ui text-accent-ink hover:underline">Open the conversation</button>}
+            {/* The switch stays in Settings: turning it on does not take the page to the conversation (the link beside it does). */}
+            <button type="button" role="switch" aria-checked={view.on} data-testid="helper-on" aria-label="Helper on"
+              onClick={() => setHelper({ on: !view.on }).catch(reportError)}
+              className="k-switch">
+              <span className="k-switch-thumb" />
+            </button>
+          </div>
         </SettingRow>
         <SettingRow label="Mail" hint={view.mail.available ? `${view.mail.label} as ${view.mail.account ?? "your account"}. Sending always asks you first, on a card for that message.` : `Not connected: the helper reads the Google sign-in file named by KEEL_GOOGLE_TOKEN (by default the one Hermes keeps).`}>
           <span className={cn("inline-flex items-center gap-1.5 text-ui", view.mail.available ? "text-fg" : "text-muted")}>

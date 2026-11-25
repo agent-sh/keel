@@ -196,3 +196,32 @@ test("usage compare: both sides and the change read together on a phone", async 
 
   for (const id of made) await request.delete(`/api/sessions/${id}`);
 });
+
+// Feature: the Usage page fills the room beside the rail (the page does not stop short of the right edge at 1920),
+// its eleven views stand in four groups with a rule between them, and the doors to a view are plain links, not
+// underlined like a stranger's.
+test("usage: fills the page, groups its views, plain links", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto("/settings/usage");
+  const panel = page.getByTestId("usage-panel");
+  await expect(panel).toBeVisible();
+  const room = await panel.evaluate((el) => {
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const scroll = document.querySelector(".k-settings-scroll")!.getBoundingClientRect();
+    return (scroll.right - el.getBoundingClientRect().right) / rem;
+  });
+  // What is left of the right edge is the page's own gutter (3rem), not a fixed column's leftover.
+  expect(room).toBeLessThanOrEqual(3.25);
+  const views = panel.getByRole("radiogroup", { name: "View" });
+  await expect(views.getByRole("radio")).toHaveCount(11);
+  await expect(views.getByTestId("usage-view-gap")).toHaveCount(3);
+  // The views, the range and its help mark are one row at this width: the mark does not drop under them alone.
+  const tops = await panel.locator('[role="radiogroup"], [data-testid="set-help"]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+  expect(new Set(tops).size, `tops ${tops}`).toBeLessThanOrEqual(2);
+  const door = panel.getByTestId("usage-go-causes");
+  await expect(door).toBeVisible();
+  expect(await door.evaluate((el) => getComputedStyle(el).textDecorationLine)).toBe("none");
+  await door.hover();
+  expect(await door.evaluate((el) => getComputedStyle(el).textDecorationLine)).toBe("underline");
+  await shoot(page, "usage-1920-groups");
+});

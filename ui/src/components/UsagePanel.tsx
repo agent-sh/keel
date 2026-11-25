@@ -242,11 +242,13 @@ export function UsagePanel() {
   const ranged = view !== "compare" && view !== "trials" && !(view === "memory" && (memoryTab === "given" || memoryTab === "search" || memoryTab === "sweep"));
   return (
     <div className="flex flex-col gap-4" data-testid="usage-panel">
-      <div className="flex flex-wrap items-center gap-3">
-        {/* Eleven views: where they do not fit one line (a phone) they go on to the next, whole, not cut mid-word behind a scroll. */}
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-3">
+        {/* Eleven views in four groups: where they do not fit one line (a phone) they go on to the next, whole, not cut mid-word behind a scroll. */}
         <Seg<View> wrap label="View" value={view} onChange={setView} options={[
-          { value: "overview", label: "Overview" }, { value: "causes", label: "Causes" }, { value: "sessions", label: "Sessions" }, { value: "calls", label: "Speed and tools" }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
-          { value: "compactions", label: "Compactions" }, { value: "yield", label: "Review yield" }, { value: "memory", label: "Memory" }, { value: "compare", label: "Compare" }, { value: "trials", label: "Trials" },
+          { value: "overview", label: "Overview" }, { value: "causes", label: "Causes" }, { value: "sessions", label: "Sessions" },
+          { value: "calls", label: "Speed and tools", before: GROUP_GAP }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
+          { value: "compactions", label: "Compactions", before: GROUP_GAP }, { value: "yield", label: "Review yield" }, { value: "memory", label: "Memory" },
+          { value: "compare", label: "Compare", before: GROUP_GAP }, { value: "trials", label: "Trials" },
         ]} />
         {ranged && <Segmented<Range> label="Range" value={range} onChange={setRange} options={RANGE_OPTIONS} />}
         <Help label="where it is measured">Measured on this machine. Nothing is sent anywhere.</Help>
@@ -455,7 +457,9 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
   );
 }
 
-const LINK = "rounded-sm text-accent-ink underline decoration-line-strong underline-offset-2 outline-none hover:decoration-fg focus-visible:ring-2 focus-visible:ring-ring";
+// A rule between the groups of views (money, requests, context, experiments); a phone's wrapped rows go without.
+const GROUP_GAP = <span className="block h-4 w-px self-center bg-line-strong max-md:hidden" data-testid="usage-view-gap" aria-hidden />;
+const LINK = "k-link rounded-sm text-accent-ink outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring";
 
 // How fast the calls and the tools were, and whether the cache held, over the range.
 function CallsView({ range }: { range: Range }) {

@@ -123,6 +123,14 @@ test("helper: remembered list, send-mail card, digest of sessions and mail", asy
   await expect(page.getByTestId("helper-settings")).toBeVisible();
   await expect(page.getByTestId("helper-on")).toHaveAttribute("aria-checked", "true");
   await shoot(page, "helper-04-settings");
+  // The switch stays in Settings, both ways; the link beside it opens the conversation.
+  await page.getByTestId("helper-on").click();
+  await expect(page.getByTestId("helper-on")).toHaveAttribute("aria-checked", "false");
+  await page.getByTestId("helper-on").click();
+  await expect(page.getByTestId("helper-on")).toHaveAttribute("aria-checked", "true");
+  await expect(page).toHaveURL(/\/settings\/helper$/);
+  await page.getByTestId("helper-open").click();
+  await expect(page).toHaveURL(new RegExp(`/s/${helper.session_id}$`));
 });
 
 // A helper with nothing in its conversation says what it does and offers things to ask it;

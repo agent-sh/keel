@@ -1527,7 +1527,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* One column for every page of Settings and Customize, in the free space beside the rail, from one left edge and to
    one width: wide enough for a table or a list beside its detail, and the same for a form, so the page does not change
    its width from one section to the next. The title is the column's first line, on the type scale. */
-.k-settings-body { max-width: 64rem; margin-inline: 0 auto; padding: 1rem 1rem 1.5rem; }
+.k-settings-body { max-width: 80rem; margin-inline: 0 auto; padding: 1rem 1rem 1.5rem; }
 /* A line cut short with an ellipsis: a section's names, URLs and paths, a panel's file names. A phone writes it whole:
    no hover shows the rest, and a title is no way to read it on a touch screen. */
 /* (In the components layer, as the utility it replaces was: a width or a wrap a part's own classes give still applies.) */
