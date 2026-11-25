@@ -314,7 +314,7 @@ export function startJob(o: StartOpts): Job {
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
-  const scoped = (a: string[]) => box.slice ? [...scopeHead(), "--slice=app.slice", `--unit=${unit}`, ...props, "--", ...a] : a;
+  const scoped = (a: string[]) => box.slice ? [...scopeHead(), "--slice=app.slice", `--unit=${unit}`, ...props, ...maxRuntime(), "--", ...a] : a;
   // Known secret values never reach the log: its output is filtered on the way in.
   const pairs = secretPairs();
   if (o.pty) {
@@ -419,6 +419,15 @@ function trim() {
       for (const j of over) if (!(by.get(markOf(j)) ?? []).some((pid) => !self.has(pid) && lives(pid))) jobs.delete(j.id);
     }, () => {})
     .finally(() => { trimming = false; if (again) { again = false; trim(); } });
+}
+
+// A daemon whose commands nothing will ever take back (a test run, a scratch daemon of a spec: its state folder is
+// removed with it, and a run that is killed never stops its commands) names a longest life for a job's scope in
+// KEEL_JOB_MAX_SEC: systemd ends the scope then, whatever became of the daemon. Read when a job starts. The owner's
+// daemon sets none.
+function maxRuntime(): string[] {
+  const n = Math.floor(Number(process.env.KEEL_JOB_MAX_SEC));
+  return n > 0 ? ["-p", `RuntimeMaxSec=${n}`] : [];
 }
 
 // Where jobs' scopes go: the user manager's app.slice, when systemd --user

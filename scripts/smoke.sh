@@ -77,6 +77,8 @@ if [ "${1:-}" != "__inside" ]; then
     KEEL_KEYRING_SERVICE=keel-scratch-empty KEEL_CRED_GET=/bin/false
     DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR="$root/home/run"
     KEEL_DESKTOP_NOTIFY=off
+    # The daemon is thrown away with its folder: the scopes of its commands end by themselves, killed or not.
+    KEEL_JOB_MAX_SEC=7200
     # The sizes and themes each screenshot is taken at (test/e2e/shots.ts), when the caller names them.
     KEEL_SHOT_SIZES="${KEEL_SHOT_SIZES:-}" KEEL_SHOT_THEMES="${KEEL_SHOT_THEMES:-}"
     # A pictures run's instant: the scripted daemon's ids and clock are fixed from it (src/core/fixed-world.ts).

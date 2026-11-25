@@ -87,6 +87,8 @@ const scratch: Record<string, string> = {
   KEEL_MAIL_STANDIN: join(dir, "mail"),
   KEEL_PHONE_SOCKET: join(made("phone"), "phone.sock"),
   KEEL_DESKTOP_NOTIFY: "off",
+  // A run that is killed never stops the commands its tests started: their scopes end by themselves (src/tools/jobs.ts).
+  KEEL_JOB_MAX_SEC: "1800",
   // No test looks a key up in the owner's keyring or runs their credential
   // helper: both answer "no key" at once (the helper took seconds at times,
   // and a test that named a made-up key timed out waiting for it).

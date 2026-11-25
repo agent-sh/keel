@@ -3,6 +3,7 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync
 import { join } from "node:path";
 import { stopKind } from "../core/stops.ts";
 import { ackNotices, adoptJobs, adoptStats, awaited, cutCommand, drainNotices, jobEnded, findJob, jobsOf, procfs, running, startJob, stateIdFrom, stateIdOf, stopJob, takeUnread, toolEnv, waitJob, registerEnvDrop } from "./jobs.ts";
+import { sandboxStatus } from "../safety/sandbox.ts";
 import { ownEnv } from "../../test/env.ts";
 
 // Every test's folder is in this run's own: the commands the tests start run there, and a test
@@ -799,4 +800,21 @@ test("a state folder's id is its inode and birth time, not its device, whose num
   const moved = { ...st, dev: st.dev + 7n };
   expect(stateIdFrom(moved)).toBe(stateIdFrom(st));
   expect(stateIdFrom({ ...st, ino: st.ino + 1n })).not.toBe(stateIdFrom(st));
+});
+
+test.skipIf(!sandboxStatus().scope)("a job's scope ends by itself after the longest life its daemon names", async () => {
+  const root = mkdtempSync(join(RUN, "jobs-"));
+  const keep = process.env.KEEL_JOB_MAX_SEC;
+  process.env.KEEL_JOB_MAX_SEC = "654";
+  let j: ReturnType<typeof startJob> | undefined;
+  try {
+    j = startJob({ sessionId: "s-life", command: "sleep 30", cwd: root, logDir: join(root, "spill/s-life/jobs"), background: true });
+    expect(j.contain).toBe("cgroup");
+    const unit = j.cgroup!.split("/").pop()!;
+    const shown = Bun.spawnSync(["systemctl", "--user", "show", unit, "-p", "RuntimeMaxUSec", "--value"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim();
+    expect(shown).toBe("10min 54s");
+  } finally {
+    if (keep === undefined) delete process.env.KEEL_JOB_MAX_SEC; else process.env.KEEL_JOB_MAX_SEC = keep;
+    if (j && running(j)) await stopJob(j);
+  }
 });
