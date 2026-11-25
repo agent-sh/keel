@@ -31,9 +31,13 @@ export function sentBy(text: string, known: (digest: string) => boolean): boolea
   return known(digest(text)) || (lines.length > 0 && lines.every((l) => known(digest(l)))) || lines.some((l) => known(CUT + digest(l)));
 }
 
-// The words of one call by a send tool, called by its name or through mcp_call.
+// The words of one call by a send tool, called by its name or through mcp_call. keel__session_send is also the
+// fleet's tool that messages one of Keel's own sessions (a session id, a title, `<machine>/<id>`): a call of it is the
+// drive's only when its `to` is an id of the agent view's, `<harness>:<key>` (a title with a colon counts too, which
+// errs on the side of holding).
 function sentWords(name: unknown, input: any): string | undefined {
   if (name === "mcp_call") [name, input] = [input?.tool ?? input?.name, input?.arguments];
+  if (name === "keel__session_send" && !(typeof input?.to === "string" && input.to.includes(":"))) return undefined;
   const key = typeof name === "string" ? SENDS[name] : undefined;
   const words = key && input && typeof input === "object" ? input[key] : undefined;
   return typeof words === "string" ? words : undefined;

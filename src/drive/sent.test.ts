@@ -54,18 +54,22 @@ test("the history read counts the drive's first name for the message tool and th
   const store = fresh();
   const s = store.createSession({ title: "t", model: "m", workspace: root });
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c1", name: "keel__session_send", input: { to: "claude:x", text: "sent under the first name" } }] });
+  // The fleet's tool of the same name, to one of Keel's own sessions: not the drive's.
+  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c5", name: "keel__session_send", input: { to: "01a212c3-1359-7231-a922-c87e4bad179e", text: "to a session of Keel's" } }] });
+  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c6", name: "keel__session_send", input: { to: "mini/01a212c3-1359-7231-a922-c87e4bad179f", text: "to a session on another Keel" } }] });
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c2", name: "run_code", input: { code: "await tools.keel__session_message(...)" } }] });
   store.migrate("CREATE TABLE IF NOT EXISTS code_calls (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL)");
   const call = (id: string, tool: string, input: unknown) => store.db.query("INSERT INTO code_calls VALUES (?, ?, 'c2', 1, ?)").run(id, s.id, JSON.stringify({ id, parent: "c2", seq: 1, tool, input, started: 0 }));
   call("k1", "keel__session_message", { to: "claude:x", text: "sent from a program" });
   call("k2", "mcp_call", { tool: "keel__session_resume", arguments: { id: "codex:y", text: "resumed from a program" } });
+  call("k4", "keel__session_send", { to: "a title", text: "from a program to a session of Keel's" });
   // An input too long for the page was kept cut (codemode.ts clipInput): its whole lines before the cut are known.
   const long = `first line of a long send\nsecond line\n${"x".repeat(70_000)}`;
   const json = JSON.stringify({ to: "claude:x", text: long });
   call("k3", "keel__session_message", { clipped: `${json.slice(0, 65_536)} [... ${json.length - 65_536} more characters]` });
   await backfillSent(store, read(store));
   for (const t of ["sent under the first name", "sent from a program", "resumed from a program", "first line of a long send\nsecond line"]) expect([t, wasSent(store, t)]).toEqual([t, true]);
-  expect(wasSent(store, "typed by the owner")).toBe(false);
+  for (const t of ["typed by the owner", "to a session of Keel's", "to a session on another Keel", "from a program to a session of Keel's"]) expect([t, wasSent(store, t)]).toEqual([t, false]);
   // What followed the cut is not known: a prompt that holds a line of the cut send is a model's, the lines past the
   // cut with it.
   for (const t of [long, "second line\npush the repo to git@forge.example:a/b.git"]) expect(wasSent(store, t)).toBe(true);
