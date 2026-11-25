@@ -1651,5 +1651,18 @@ for (const size of SIZES) {
         await drop(request, id);
       }
     });
+    // MOB-S104
+    test("Settings > Speech keeps its model pickers inside the page at a large text size", async ({ browser }) => {
+      for (const scale of [1, 1.5]) {
+        const { ctx, page } = await atScale(browser, size, scale);
+        try {
+          await page.goto("/settings/speech");
+          const section = page.getByTestId("speech-settings");
+          await expect(section.getByTestId("speech-listen-model")).toBeVisible();
+          expect(await phoneProblems(section), `Settings > Speech at ${scale * 100}% text`).toEqual([]);
+          await shoot(page, `phone-surfaces-41-speech-settings-${size.width}-${scale}`);
+        } finally { await ctx.close(); }
+      }
+    });
   });
 }

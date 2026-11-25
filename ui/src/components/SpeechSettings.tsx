@@ -26,7 +26,7 @@ export function SpeechSettings() {
           <Seg label="Hear with" value={p.listen} onChange={(v) => setPrefs({ listen: v })} options={WAYS} testid="speech-listen" />
         </SettingRow>
         <SettingRow label="Speech to text model" hint={stt.length ? "A recording is sent to this model of your provider." : "No provider lists one."}>
-          <Select value={p.listenModel || stt[0]?.route || ""} onChange={(e) => setPrefs({ listenModel: e.target.value })} disabled={!stt.length} aria-label="Speech to text model" data-testid="speech-listen-model" className="w-72">
+          <Select value={p.listenModel || stt[0]?.route || ""} onChange={(e) => setPrefs({ listenModel: e.target.value })} disabled={!stt.length} aria-label="Speech to text model" data-testid="speech-listen-model" className="w-72 max-w-full">
             {stt.map((m) => <option key={m.route} value={m.route}>{m.model} ({m.provider_label})</option>)}
           </Select>
         </SettingRow>
@@ -46,7 +46,7 @@ export function SpeechSettings() {
           <Seg label="Read with" value={p.say} onChange={(v) => setPrefs({ say: v })} options={WAYS} testid="speech-say" />
         </SettingRow>
         <SettingRow label="Text to speech model" hint={tts.length ? "A reply is sent to this model of your provider as text." : "No provider lists one."}>
-          <Select value={p.sayModel || tts[0]?.route || ""} onChange={(e) => setPrefs({ sayModel: e.target.value })} disabled={!tts.length} aria-label="Text to speech model" data-testid="speech-say-model" className="w-72">
+          <Select value={p.sayModel || tts[0]?.route || ""} onChange={(e) => setPrefs({ sayModel: e.target.value })} disabled={!tts.length} aria-label="Text to speech model" data-testid="speech-say-model" className="w-72 max-w-full">
             {tts.map((m) => <option key={m.route} value={m.route}>{m.model} ({m.provider_label})</option>)}
           </Select>
         </SettingRow>
