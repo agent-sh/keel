@@ -66,6 +66,12 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   await page.goto(`/s/${session.id}`);
   await expect(page.getByTestId("turn-end")).toHaveCount(3);
   await expect(page.getByTestId("memory-note")).toHaveCount(1);
+  // As quiet as the reply's other actions: a glyph with no box; the word and the count are its tooltip and a reader's.
+  const chip = page.getByTestId("memory-note").getByRole("button");
+  expect(await chip.evaluate((el) => getComputedStyle(el).boxShadow), "no box around it").toBe("none");
+  expect(await chip.evaluate((el) => [...el.childNodes].filter((n) => !(n instanceof Element && n.classList.contains("sr-only"))).map((n) => n.textContent ?? "").join("").trim()), "no word or figure drawn").toBe("");
+  await expect(chip).toHaveAttribute("title", /^Memory from tacit/);
+  await expect(chip).toContainText(/memory/);
   await shoot(page, "memory-usage-01-session");
 
   // Memory has a view of its own on the usage page.

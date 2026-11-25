@@ -30,7 +30,7 @@ export function MemoryNote({ text, hooks, label = "Memory from tacit" }: { text:
 }
 
 // Notes the harness adds around a turn (memory, a hook, a continue after a daemon restart),
-// folded into one quiet row of chips on the turn's footer; a chip opens its text.
+// folded into the turn's footer as quiet marks with no box (a glyph, or the restart's word); one opens its text.
 export function TurnNotes({ notes, working }: { notes: StoredEvent[]; working: boolean }) {
   if (!notes.length) return null;
   return (
@@ -49,15 +49,16 @@ export function TurnNotes({ notes, working }: { notes: StoredEvent[]; working: b
         const hooks: string[] = hook ? [hook] : e.data.memory?.hooks ?? [];
         // The helper's own note (src/helper/): the events and remembered items a prompt brought.
         const mine = e.data.memory?.source === "helper";
-        // On a phone the word gives way to the glyph (the reply's row keeps one line); the count stays.
+        // The note is its glyph alone, as quiet as the reply's other actions: the word and the count are its tooltip and
+        // its popup (what it added is read where the owner looks), and a reader hears them.
         const word = hook ? "hook" : mine ? "helper" : "memory";
         const from = hook ? "From a hook" : mine ? "Helper context" : "Memory from tacit";
         return (
           <span key={e.id} className="k-note-chip-wrap" data-testid="memory-note">
             <Popover.Root>
               <Popover.Trigger className="k-note-chip" title={`${from}${facts ? `, ${facts} fact${facts === 1 ? "" : "s"}` : ""}${hooks.length ? `, ${hooks.join(", ")}` : ""}`}>
-                {hook ? <Webhook className="size-3" /> : <Brain className="size-3" />} <span className="max-md:sr-only">{word}</span>{!hook && facts ? ` ${facts}` : ""}
-                <span className="sr-only">{hooks.join(", ")}</span>
+                {hook ? <Webhook className="size-3.5" /> : <Brain className="size-3.5" />}
+                <span className="sr-only">{word}{!hook && facts ? ` ${facts}` : ""}{hooks.length ? `, ${hooks.join(", ")}` : ""}</span>
               </Popover.Trigger>
               <Popover.Portal>
                 <Popover.Positioner sideOffset={6} align="start" className="z-50 outline-none">
