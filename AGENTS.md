@@ -428,6 +428,14 @@ under `~/.cache/keel-work/bun/research/`.
   alias made to run them), not a sandbox: a program that reaches the forge by a route it does not know, or a
   script on disk, is beyond it. `--force-with-lease` and the delete of a branch are refused there by design,
   an agent's own branch included. A stored shell rule covers nothing in Read only and Plan.
+- A card is the last resort, and one call opens one. A push or a gh write the owner would be asked about because the
+  line spells where it goes or what it sends with a variable or a substitution (`cd "$D" && git push`,
+  `git push origin $H:main`) goes back to the model once to be written out (`src/safety/written-out.ts`, the gate's
+  `writeOut`): the rules place nothing by such a word, the model knows the value, and the line that comes back is read
+  exactly. The same line again is judged as it is, at most `WRITE_OUT_MAX` lines of a turn are sent back, and a
+  refusal stands where a card stood: nothing runs that did not. `git -C ~/folder` is read as the home folder the shell
+  writes out, only when the word is unquoted and the line cannot give HOME another value. What the owner alone can
+  allow for one call (private words, a target outside content named, an account beyond his) is said on one card.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files
