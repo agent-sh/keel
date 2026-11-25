@@ -294,3 +294,46 @@ test("an input method's Enter does not save a title, a folder name, a tag, a lab
     await request.delete(`/api/sessions/${session.id}`);
   }
 });
+
+// A side answer goes back to the conversation and is not missed: one that lands while another panel
+// is shown marks the panel chooser and the Side questions row until the panel is shown; Put in
+// message puts the answer, quoted, in the message box.
+test("a side answer is marked while another panel shows, and goes into the message box", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", text: "first" } })).json();
+  try {
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase, { timeout: 20_000 }).toBe("idle");
+    await page.goto(`/s/${session.id}`);
+    const side = new RegExp(`/api/sessions/${session.id}/side$`);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    await page.route(side, async (r) => { if (r.request().method() === "POST") await held; await r.fallback(); });
+    await page.getByTestId("composer").fill("/btw what was first?");
+    await page.getByTestId("composer").press("Enter");
+    await expect(page.getByTestId("side-pending")).toHaveCount(1);
+    // The owner moves to Files before the answer lands: no mark yet, then the answer comes.
+    await openPanel(page, "files");
+    await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "files");
+    const mark = page.getByTestId("panel-switch").getByTestId("panel-news");
+    await expect(mark).toHaveCount(0);
+    release();
+    await expect(mark).toBeVisible({ timeout: 20_000 });
+    await shoot(page, "side-04-news");
+    await page.getByTestId("panel-switch").click();
+    await expect(page.getByTestId("panel-news-row")).toHaveCount(1);
+    await page.getByTestId("panel-pick-side").click();
+    await expect(page.getByTestId("side-exchange")).toHaveCount(1);
+    await expect(page.getByTestId("panel-news")).toHaveCount(0);
+    // Put in message: the answer, quoted, in the box.
+    const answer = ((await page.getByTestId("side-answer").first().innerText()) ?? "").trim();
+    expect(answer.length).toBeGreaterThan(0);
+    await page.getByTestId("side-put").click();
+    const box = page.getByTestId("composer");
+    await expect(box).toHaveValue(/^> /);
+    const lines = (await box.inputValue()).trim().split("\n").map((l) => l.replace(/^>\s?/, "")).join(" ").replace(/\s+/g, " ");
+    expect(lines).toContain(answer.replace(/\s+/g, " ").slice(0, 20));
+    await shoot(page, "side-05-put");
+    await page.unroute(side);
+  } finally { await request.delete(`/api/sessions/${session.id}`); }
+});

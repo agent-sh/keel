@@ -8,6 +8,7 @@ import { Suspense, useEffect, useMemo, useState, useSyncExternalStore, type Keyb
 import type { Session } from "../../../src/core/types.ts";
 import { panels, type Panel } from "../lib/extend.ts";
 import { composing, hasCommand, registerCommand } from "../lib/keys.ts";
+import { anyNews, useNews } from "../lib/news.ts";
 import { canPopOut, dockBack, isPopped, popOut, recover, usePopped } from "../lib/popout.ts";
 import { usePanelBeside } from "../lib/rail.ts";
 import { getUI, phone, savePref, useUI } from "../lib/ui.ts";
@@ -98,6 +99,10 @@ registerCommand({ id: "panel-popout", label: "Pop the side panel out into its ow
 // switches it in one place); else the header's Panels button.
 function Picker({ list, open, label, testid = "panel-menu", title }: { list: Panel[]; open: string | null; label?: boolean; testid?: string; title?: string }) {
   usePrefs();
+  const route = useUI((s) => s.route);
+  const sid = route.name === "session" ? route.id : undefined;
+  const hasNews = useNews(sid);
+  const mark = anyNews(sid, open);
   const [show, setShow] = useState(false);
   const [q, setQ] = useState("");
   // The matches as the list shows them, group by group: Enter takes the one at the top.
@@ -119,11 +124,11 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
     <Popover.Root open={show} onOpenChange={(o) => { setShow(o); if (!o) setQ(""); }}>
       {title ? (
         <Popover.Trigger className="k-surface-switch" title="Switch to another panel" data-testid={testid}>
-          {title}<ChevronDown className="k-surface-switch-more" />
+          {title}{mark && <span className="k-sum-dot" data-testid="panel-news" title="A panel has news" />}<ChevronDown className="k-surface-switch-more" />
         </Popover.Trigger>
       ) : (
         <Popover.Trigger className="k-hand" data-words={label || undefined} aria-label="Panels" title="Every panel" data-testid={testid}>
-          <PanelRight /><span className="k-hand-word">Panels</span><ChevronDown className="k-hand-more" />
+          <PanelRight /><span className="k-hand-word">Panels</span>{mark && <span className="k-sum-dot" data-testid="panel-news" title="A panel has news" />}<ChevronDown className="k-hand-more" />
         </Popover.Trigger>
       )}
       <Popover.Portal>
@@ -149,7 +154,7 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
                     {items.map((p) => (
                       <div key={p.id} className={open === p.id ? "k-picker-row k-picked" : "k-picker-row"} aria-current={open === p.id ? "true" : undefined}>
                         <button type="button" className="k-picker-pick" data-testid={`panel-pick-${p.id}`} onClick={() => pick(p.id)}>
-                          {p.icon}<span>{p.label}</span><span className="k-picker-hint" data-testid="panel-hint">{hintOf(p)}</span>
+                          {p.icon}<span>{p.label}</span>{open !== p.id && hasNews(p.id) && <span className="k-sum-dot" data-testid="panel-news-row" />}<span className="k-picker-hint" data-testid="panel-hint">{hintOf(p)}</span>
                         </button>
                         <button
                           type="button"

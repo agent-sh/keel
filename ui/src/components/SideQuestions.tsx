@@ -1,10 +1,12 @@
 // Side questions (/btw) in the side panel: asked from the conversation as it
 // stands, answered without tools, never added to it. Follow-ups continue the
 // thread; a new thread starts clean.
-import { Plus, Trash2 } from "lucide-react";
+import { CornerDownLeft, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { composing } from "../lib/keys.ts";
+import { news } from "../lib/news.ts";
+import { boxOf } from "../lib/quote.ts";
 import { reportError } from "../lib/store.ts";
 import { side, type SideState } from "../lib/side.ts";
 import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
@@ -23,6 +25,8 @@ export function SideQuestions({ session }: { session: Session }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { if (!threads) side.load(session.id).catch(reportError); }, [session.id]);
   useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [threads, pending]);
+  // Shown, so seen: what landed while it was not is read now.
+  useEffect(() => { news.clear(session.id, "side"); }, [session.id, threads]);
   const ask = () => {
     const q = text.trim();
     if (!q) return;
@@ -59,6 +63,11 @@ export function SideQuestions({ session }: { session: Session }) {
               <div key={x.id} className="flex flex-col gap-2" data-testid="side-exchange">
                 <div className="self-end max-w-[85%] rounded-xl rounded-br-sm bg-accent-soft px-3.5 py-2 text-ui whitespace-pre-wrap">{x.question}</div>
                 <div className="text-ui" data-testid="side-answer"><Markdown text={x.answer} /></div>
+                <div className="flex">
+                  <button type="button" data-testid="side-put" onClick={() => boxOf(session.id)?.quote(x.answer)} title="Put this answer, quoted, in the message box" className="flex h-6 items-center gap-1 rounded-md px-1.5 text-micro text-muted hover:bg-hover hover:text-fg">
+                    <CornerDownLeft className="size-3" /> Put in message
+                  </button>
+                </div>
                 <p className="text-micro tabular-nums text-faint">
                   {fmtTokens(x.usage.input + x.usage.cache_read + x.usage.cache_write)} in
                   {x.usage.cache_read ? `, ${Math.round((100 * x.usage.cache_read) / (x.usage.input + x.usage.cache_read + x.usage.cache_write))}% cached` : ""}

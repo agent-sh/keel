@@ -4,6 +4,7 @@ import { createElement, lazy } from "react";
 import type { Usage } from "../../../src/core/types.ts";
 import { panels, slash } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
+import { news } from "./news.ts";
 import { api, getState } from "./store.ts";
 import { getUI, savePref } from "./ui.ts";
 
@@ -54,6 +55,9 @@ export const side = {
         // only if the owner did not pick another meanwhile (New thread).
         const still = st.current[id] === asked;
         set({ threads: { ...st.threads, [id]: list }, current: still ? { ...st.current, [id]: r.thread_id } : st.current, branched: { ...st.branched, [id]: r.branched || undefined } });
+        // An answer that lands while another panel (or another session) is shown is news for the Side questions panel.
+        const ui = getUI();
+        if (!(ui.panel === "side" && ui.route.name === "session" && ui.route.id === id)) news.mark(id, "side");
       } catch (e) {
         if ((cleared.get(id) ?? 0) !== at || (e as { body?: { cleared?: boolean } }).body?.cleared) return;
         set({ error: { ...st.error, [id]: (e as Error).message }, failed: { ...st.failed, [id]: question } });
