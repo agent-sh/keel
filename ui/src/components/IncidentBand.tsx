@@ -54,7 +54,7 @@ function Details({ i, head = true }: { i: Incident; head?: boolean }) {
             <li key={t.id}>
               <button type="button" onClick={() => open(t.id)} data-testid="incident-session" data-session={t.id} data-state={t.state}
                 className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left text-caption outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
-                <span className={cn("size-1.5 shrink-0 rounded-full", t.state === "failed" ? "bg-st-fail" : t.state === "waiting" ? "bg-st-wait" : t.state === "cut" ? "bg-warn" : "bg-st-done")} />
+                <span className={cn("size-1.5 shrink-0 rounded-full", t.state === "failed" ? "bg-st-fail" : t.state === "waiting" ? "bg-st-wait" : t.state === "cut" ? "bg-warn" : "bg-ok")} />
                 <span className="min-w-0 flex-1 truncate text-fg">{t.title}</span>
                 <span className="shrink-0 text-faint">{t.parent ? "agent" : "session"} · {t.state === "failed" && t.n > 1 ? `failed ${t.n} times` : STATE[t.state]}</span>
                 <ExternalLink className="size-3 shrink-0 text-faint" />

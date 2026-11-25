@@ -266,11 +266,11 @@ test("a row red for its agents says how many failed, and a calm list says a time
     })));
     await expect.poll(async () => (await kinds()).filter((r) => r.kinds.length > 1)).toEqual([]);
     expect((await kinds()).find((r) => r.id === busy)!.kinds).toEqual(["row-time"]);
-    // The line above the list counts news as the rows show it: the number of rows with the dot at their end. A row at work keeps its
-    // clock in the end slot and has the dot beside it, so its news is in "new" too.
-    const news = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="session-row"] [data-testid="row-unread"]')].length);
+    // The line above the list counts news as the rows show it: the number of rows with the title's weight. A row at work keeps its
+    // clock in the end slot and its news is in "new" too.
+    const news = () => page.evaluate(() => document.querySelectorAll<HTMLElement>('[data-testid="session-row"][data-news]').length);
     await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the rows that say they are new" }).toBe(await news());
-    await expect(row(page, busy).getByTestId("row-unread")).toHaveCount(1);
+    await expect(row(page, busy)).toHaveAttribute("data-news", "true");
     await expect(row(page, busy).getByTestId("row-new")).toHaveText("New");
     expect((await kinds()).find((r) => r.id === coord)!.kinds).toHaveLength(1);
     await shoot(page, "rest-bar-04-rows");

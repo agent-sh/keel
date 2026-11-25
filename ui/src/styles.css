@@ -55,7 +55,7 @@
   /* The other two ambers (brass, and "working" among the state colors) read as words in the same ink. */
   --brass-ink: var(--warn-ink);
   /* Red and green as text, for the same reason: the fills are under 4.5:1 on the rail and on their own tints.
-     Green is the hue of the done dot (--dot-done), so a success mark and the done state are one green. */
+     Green is a success mark's hue (--ok); the done state's dot is the quiet grey. */
   --danger-ink: oklch(0.5 0.2 27);
   --ok-ink: oklch(0.45 0.12 150);
   --code-bg: oklch(0.95 0.005 250);
@@ -85,7 +85,7 @@
   --st-fail: var(--dot-fail);
   --st-fail-ink: var(--danger-ink);
   --st-done: var(--dot-done);
-  --st-done-ink: var(--ok-ink);
+  --st-done-ink: var(--muted);
   --st-idle: oklch(0.56 0.015 255); /* 3:1 on a hovered row of the rail */
   /* Steel blue: the chart's own color for time spent waiting on others (the hours bars). Not a state's. */
   --steel: oklch(0.5 0.11 240);
@@ -96,7 +96,8 @@
   --dot-need: oklch(0.8 0.17 88);
   --dot-need-edge: oklch(0.55 0.12 80);
   --dot-fail: oklch(0.55 0.2 27);
-  --dot-done: oklch(0.5 0.13 150);
+  /* Done is the quiet dot: colour is for what needs the owner, failed and at work. A success mark (a check, a saved note) stays green: --ok. */
+  --dot-done: var(--st-idle);
   /* News is a "white" dot. On the light rail a white dot is invisible (1.3:1), so it is the ink, the one neutral that is
      as far from the rail as white is in the dark theme (14:1 here, 18:1 there). */
   --dot-unread: var(--fg);
@@ -207,7 +208,7 @@
   --dot-need: oklch(0.85 0.16 95);
   --dot-need-edge: var(--dot-need);
   --dot-fail: oklch(0.7 0.18 27);
-  --dot-done: oklch(0.76 0.17 150);
+  --dot-done: var(--st-idle);
   --dot-unread: oklch(0.98 0 0);
   /* At night the band is steel, not a white bar across the screen. */
   --band: oklch(0.52 0.018 255);

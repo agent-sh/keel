@@ -12,7 +12,7 @@ import { clock, cn, when } from "../lib/utils.ts";
 
 // The color of a state: what still waits is quiet, what went wrong is the failure color, what is done is plain.
 const TONE: Record<PeerState, string> = {
-  queued: "text-st-wait", outbound: "text-st-wait", held: "text-st-need", delivered: "text-fg", handled: "text-st-done", dropped: "text-st-fail",
+  queued: "text-st-wait", outbound: "text-st-wait", held: "text-st-need", delivered: "text-fg", handled: "text-ok", dropped: "text-st-fail",
 };
 
 export function PeerMessages({ sessionId }: { sessionId: string }) {

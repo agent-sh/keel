@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { openPanel, shoot } from "./shots.ts";
 
 // Feature: one palette for a state, wherever it shows. A row's dot sets the hue (blue works, yellow needs you,
-// red failed, green done) and the state's word, its card's edge, its band and its chips wear that hue: a "Needs
+// red failed; done is the quiet grey, with no hue of its own) and the state's word, its card's edge, its band and its chips wear that hue: a "Needs
 // you" in violet beside a yellow dot was the bug. Yellow is the light one, so its word and its marks are a darker
 // amber of the same hue in the light theme (their contrast is checked in contrast.spec.ts). The spec opens each
 // surface that shows a state (the list, a pane's head, the approval and question cards, the agents line, the work
@@ -95,7 +95,7 @@ test("every surface that shows a state wears the hue of its dot, in both themes"
     // The dots set the hues. Each state's word in its pane's head, and in its row, is that hue; so is the card of what needs the owner.
     for (const theme of [false, true]) {
       await dark(page, theme);
-      const dots: Record<string, { hue: number }> = {};
+      const dots: Record<string, { hue: number; chroma?: number }> = {};
       for (const [id, watch] of [[asking, "need"], [working, "work"], [failed, "fail"], [done, "done"]] as const) {
         await page.goto(`/s/${id}`);
         const dot = row(page, id).locator(".k-mark");
@@ -105,7 +105,11 @@ test("every surface that shows a state wears the hue of its dot, in both themes"
         const word = page.getByTestId("station-word").first();
         await expect(word).toBeVisible();
         const where = `${theme ? "dark" : "light"} ${watch}`;
-        await sameHue(page, `${where}: the pane head's word`, word, dots[watch]!);
+        // Done is quiet: a muted grey dot and a muted word, colour being for what needs the owner, failed and at work.
+        if (watch === "done") {
+          expect((dots.done as { chroma?: number }).chroma, `${where}: the dot is a grey`).toBeLessThan(0.04);
+          expect((await look(page, word)).chroma, `${where}: the word is a grey`).toBeLessThan(0.04);
+        } else await sameHue(page, `${where}: the pane head's word`, word, dots[watch]!);
         // (A list row's word is quiet: only what needs the owner keeps its ink.)
         if (watch === "need") await sameHue(page, `${where}: the row's word`, row(page, id).getByTestId("row-state"), dots.need!);
         if (watch === "need") {

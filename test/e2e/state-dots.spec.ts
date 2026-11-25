@@ -5,9 +5,9 @@ import { shoot } from "./shots.ts";
 
 // Feature: a session's state is one small dot in its row. Working is a solid blue dot, the size of the others, with a soft
 // glow that breathes slowly (no spin, and still under reduced motion); it is never a dot inside a ring, which reads as a
-// selected radio button. Needs you is yellow, failed or declined red, done green. A session that only waits on its
+// selected radio button. Needs you is yellow, failed or declined red, done a quiet grey (colour is for what needs the owner, failed and at work). A session that only waits on its
 // agents or on a command in the background wears a hollow ring of blue dashes and says so. News is
-// a white dot at the row's right end (the ink in the light theme). Every dot keeps its state word for a reader and
+// the title's weight, not a dot. Every dot keeps its state word for a reader and
 // in its tooltip. The sidebar says no number of agents: the row has a chevron that opens their tree, and the
 // session itself says how many work, wait, failed or are done. Contrast of each dot on the rail is 3:1 or more.
 const STAND_IN = "scripted:stand-in";
@@ -151,12 +151,12 @@ test("a row's state is one dot, and a session that waits on what it left going h
     await expect(mark(working)).toHaveAttribute("data-watch", "work");
     await page.emulateMedia({ reducedMotion: "no-preference" });
 
-    // The count above the list says how many are new: the number of rows that carry the dot. A row that needs the owner or
-    // failed says more than a dot, so it has none and is not in the count.
-    const dots = page.getByTestId("session-list").getByTestId("row-unread");
-    await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the dots" }).toBe(await dots.count());
-    expect(await dots.count()).toBeGreaterThanOrEqual(2);
-    for (const id of [asking, failed, declined]) await expect(row(page, id).getByTestId("row-unread")).toHaveCount(0);
+    // The count above the list says how many are new: the number of rows that carry the title's weight. A row that needs the owner or
+    // failed says more than news, so it carries none and is not in the count.
+    const heavy = page.getByTestId("session-list").locator('[data-testid="session-row"][data-news]');
+    await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the rows" }).toBe(await heavy.count());
+    expect(await heavy.count()).toBeGreaterThanOrEqual(2);
+    for (const id of [asking, failed, declined]) await expect(row(page, id)).not.toHaveAttribute("data-news", /./);
     // The line above the list says its counts in words, not a dot and a figure: "failed or declined" gives up its second half
     // for the room (its tooltip keeps it), so the counts after it keep theirs for as long as there is room.
     const sum = page.getByTestId("list-summary");
@@ -166,23 +166,21 @@ test("a row's state is one dot, and a session that waits on what it left going h
     await expect(page.getByTestId("inbox-count")).toHaveText("1");
     await expect(page.getByTestId("inbox-button").locator(".k-inbox-dot")).toHaveCount(0);
 
-    // News: a white dot at the row's right end, outside the row's end slot; read, it is gone.
-    const unread = row(page, news).getByTestId("row-unread");
-    await expect(unread).toBeVisible();
-    await expect(row(page, done).getByTestId("row-unread")).toHaveCount(0);
-    const at = async () => { const r = await row(page, news).boundingBox(), d = await unread.boundingBox(); return { gap: r!.x + r!.width - (d!.x + d!.width), mid: d!.y + d!.height / 2 - r!.y }; };
-    const where = await at();
-    expect(where.gap, "at the row's right end").toBeLessThan(10);
-    expect(where.mid, "on the title's line").toBeLessThan(24);
-    expect(await row(page, news).locator(".k-row-end").getByTestId("row-unread").count(), "not in the end slot").toBe(0);
-    await dark(page, true);
-    const white = await paint(page, "--dot-unread");
-    expect(await unread.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(white.color);
-    expect(Math.min(...white.rgb), "white in the dark theme").toBeGreaterThan(235);
+    // News is the title's weight, never a second dot: the row has one dot, the state's. A reader is told in words.
+    await expect(row(page, news)).toHaveAttribute("data-news", "true");
+    await expect(row(page, done)).not.toHaveAttribute("data-news", /./);
+    expect(await page.getByTestId("session-list").getByTestId("row-unread").count(), "no news dot in any row").toBe(0);
+    await expect(row(page, news).getByTestId("row-new")).toHaveText("New");
+    const weight = (id: string) => row(page, id).locator(".k-row-title").evaluate((el) => Number(getComputedStyle(el).fontWeight));
+    expect(await weight(news), "news is heavier than a session seen").toBeGreaterThan(await weight(done));
+    // The done dot is the quiet grey (it has no hue), the news row's dot the same.
+    for (const isDark of [false, true]) {
+      await dark(page, isDark);
+      const rgb = (await paint(page, "--dot-done")).rgb;
+      expect(Math.max(...rgb) - Math.min(...rgb), `a done dot has no colour (${rgb}), ${isDark ? "dark" : "light"}`).toBeLessThan(25);
+      for (const id of [done, news]) expect(await mark(id).evaluate((el) => getComputedStyle(el).backgroundColor), "the done dot wears that grey").toBe((await paint(page, "--dot-done")).color);
+    }
     await dark(page, false);
-    const ink = await paint(page, "--dot-unread");
-    expect(await unread.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(ink.color);
-    expect(Math.max(...ink.rgb), "the ink in the light theme").toBeLessThan(90);
 
     await shootList(page, "state-dots-01-list", working, async () => {
       // (A page that has just loaded shows each row as its session record says, until the states it is told arrive and settle.)

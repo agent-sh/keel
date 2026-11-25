@@ -159,7 +159,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-line-plan { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--muted); }
 .k-pips { display: inline-flex; gap: 2px; }
 .k-pips > i { width: 0.3125rem; height: 0.625rem; border-radius: 1px; background: var(--st-idle); }
-.k-pips > i[data-done] { background: var(--st-done); }
+.k-pips > i[data-done] { background: var(--ok); }
 
 /* A call the daemon marks (the policy rates it high risk, it writes outside the
    folder, it left the sandbox, a rule or a hook let it run): its line says why

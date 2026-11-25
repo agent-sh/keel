@@ -46,10 +46,11 @@ test("a row says one state, in one weight, and the line above the list is one qu
     await page.goto("/");
     await expect(row(page, fresh)).toHaveAttribute("data-unread", "true");
     await expect(row(page, seen)).not.toHaveAttribute("data-unread", "true");
-    // News is its title's ink at the weight of a read row, and a dot in the right gutter: the row's end keeps its time, and a reader hears "New".
-    await expect(row(page, fresh).getByTestId("row-unread")).toHaveCount(1);
-    await expect(row(page, seen).getByTestId("row-unread")).toHaveCount(0);
-    expect(await style(page, fresh, ".k-row-title", "fontWeight"), "a row with news is heavier than a read one: reading it reflows").toBe(await style(page, seen, ".k-row-title", "fontWeight"));
+    // News is its title's ink and weight, with no dot of its own (the row's one dot is its state): the row's end keeps its time, and a reader hears "New".
+    await expect(row(page, fresh)).toHaveAttribute("data-news", "true");
+    await expect(row(page, seen)).not.toHaveAttribute("data-news", /./);
+    await expect(row(page, fresh).getByTestId("row-unread")).toHaveCount(0);
+    expect(Number(await style(page, fresh, ".k-row-title", "fontWeight")), "a row with news is heavier than a read one").toBeGreaterThan(Number(await style(page, seen, ".k-row-title", "fontWeight")));
     await expect(row(page, fresh).getByTestId("row-time")).toHaveCount(1);
     await expect(row(page, fresh).getByTestId("row-new"), "a reader is not told the row is new").toHaveText("New");
     await expect(row(page, seen).getByTestId("row-new")).toHaveCount(0);
@@ -58,8 +59,8 @@ test("a row says one state, in one weight, and the line above the list is one qu
     expect(await style(page, fresh, ".k-row-title", "color"), "a row with news is in the ink").not.toBe(await style(page, seen, ".k-row-title", "color"));
     expect(await style(page, asks, ".k-row-title", "color"), "a row that needs the owner is in ink").not.toBe(await style(page, seen, ".k-row-title", "color"));
     expect(await style(page, failed, ".k-row-title", "color")).toBe(await style(page, asks, ".k-row-title", "color"));
-    // What calls the owner is the heavier row, never lighter than news.
-    expect(Number(await style(page, asks, ".k-row-title", "fontWeight")), "a row that needs the owner is not heavier than news").toBeGreaterThan(Number(await style(page, fresh, ".k-row-title", "fontWeight")));
+    // What calls the owner is never lighter than news.
+    expect(Number(await style(page, asks, ".k-row-title", "fontWeight")), "a row that needs the owner is not lighter than news").toBeGreaterThanOrEqual(Number(await style(page, fresh, ".k-row-title", "fontWeight")));
     expect(await style(page, failed, ".k-row-title", "fontWeight")).toBe(await style(page, asks, ".k-row-title", "fontWeight"));
     // The row's end is one slot and it holds the age of every row. Before the age, the word of a row that waits on the
     // owner (you) or was declined; a failure's class is not in the slot (it is on the row's line and in the tooltip).
@@ -91,12 +92,11 @@ test("a row says one state, in one weight, and the line above the list is one qu
     // No mark or dot of its own in the sentence: the rows' marks say each state.
     await expect(line.locator(".k-mark")).toHaveCount(0);
     await shoot(page, "quiet-rows-01-list");
-    // Read, the row keeps its width: only its ink steps back.
-    const wide = () => row(page, fresh).locator(".k-row-title").evaluate((el) => el.getBoundingClientRect().width);
-    const before = await wide();
+    // Read, the row steps back to the weight and ink of a seen one.
     await request.post(`/api/sessions/${fresh}/marks`, { data: { unread: false } });
     await expect(row(page, fresh)).not.toHaveAttribute("data-unread", "true");
-    expect(await wide(), "reading the row changed its title's width").toBe(before);
+    await expect(row(page, fresh)).not.toHaveAttribute("data-news", /./);
+    expect(await style(page, fresh, ".k-row-title", "fontWeight")).toBe(await style(page, seen, ".k-row-title", "fontWeight"));
     expect(await style(page, fresh, ".k-row-title", "color")).toBe(await style(page, seen, ".k-row-title", "color"));
 
     // The note that the order changed is a hint for one load.

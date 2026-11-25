@@ -337,10 +337,6 @@
 .k-row { position: relative; display: flex; align-items: center; gap: 0.5625rem; height: var(--spacing-ctl-md); padding: 0 1rem 0 0.5625rem; border-radius: var(--radius-md); font-size: var(--text-ui); line-height: 1.25rem; color: var(--muted); user-select: none; }
 .k-row-main { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; column-gap: 0.5rem; height: 1.25rem; overflow: hidden; }
 .k-row-end { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: 1.25rem; }
-/* News: a dot in the row's right gutter, the first line's height whatever the row's lines. White in the dark theme, the ink in the light one (--dot-unread). */
-.k-row-unread { position: absolute; right: 0.3125rem; top: 50%; width: 0.375rem; height: 0.375rem; margin-top: -0.1875rem; border-radius: 50%; background: var(--dot-unread); pointer-events: none; }
-.k-index[data-lines="two"] .k-row-unread { top: 0.875rem; }
-.k-rail[data-narrow] .k-row-unread { right: 0.125rem; }
 /* The chevron of a session that started agents: it opens their tree under the row. */
 .k-row .k-row-kids-toggle { display: grid; width: 1rem; margin: 0 -0.3125rem 0 -0.25rem; }
 .k-row-kids-fold { transition: transform var(--dur-quick) var(--ease-out); }
@@ -412,6 +408,9 @@
    open row is in ink too, and the rest steps back. The row's end then holds one thing. */
 .k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); font-weight: 600; }
 .k-row[data-unread]:not([data-gone]):is([data-watch="done"], [data-watch="idle"], [data-watch="stop"]) .k-row-title { color: var(--fg); }
+/* News at rest is the title's weight: a session with something new reads heavier than one you have seen, and no second dot
+   stands in the row beside the state's. */
+.k-row[data-news]:not([data-gone]) .k-row-title { font-weight: 600; }
 /* A quiet row's time is in its tooltip where it says what the row above said (Sidebar.tsx, calm). */
 .k-row-time[data-calm] { display: none; }
 /* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
@@ -1765,7 +1764,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-starter:hover { box-shadow: inset 0 0 0 1px var(--line-strong), inset 3px 0 0 var(--fg); }
 .k-first-steps { color: var(--muted); }
 /* Plan: done steps take the done color, the one in progress the work color. */
-.k-plan [data-status="completed"] svg { color: var(--st-done); }
+.k-plan [data-status="completed"] svg { color: var(--ok); }
 .k-plan [data-status="in_progress"] svg { color: var(--st-work); }
 /* Review: the reviewer's report is an instrument panel; each finding has an edge, one to act on is stronger. */
 .k-review, .k-reviewer { border-radius: var(--radius-md); box-shadow: none; }

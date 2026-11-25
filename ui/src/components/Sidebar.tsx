@@ -295,8 +295,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   const left = !gone ? null : deleted || (!live && !given.archived) ? "deleted" : given.archived ? "restored" : "archived";
   // News is a dot at the row's end, where the list's count of what is new counts it (lib/list-order.ts: isNews).
   const news = unread && !gone && !left && !offline && isNews(w);
-  // The dot's word a phone shows in the row (bridge.css): the states the row does not say in words, what it waits on in the background, news.
-  const dotWords = !offline && !left && (!SPELLED.includes(w) || !!backgroundOf(st) || news);
+  // The dot's word a phone shows in the row (bridge.css): the states the row does not say in words, what it waits on in the background.
+  const dotWords = !offline && !left && (!SPELLED.includes(w) || !!backgroundOf(st));
   // The card beside the row is away while a menu of the row is open over it.
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
   // A session of another harness that Keel only shows has no name of Keel's to give.
@@ -317,6 +317,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       data-watch={w}
       data-shown={shown || undefined}
       data-unread={unread || undefined}
+      data-news={news || undefined}
       data-offline={offline || undefined}
       data-dotword={dotWords ? (backgroundOf(st) ? "long" : "short") : undefined}
       data-gone={gone || undefined}
@@ -371,7 +372,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           {/* On a phone there is no tooltip to read the dot's word in: a state the row does not say in words (a session at rest,
               what it waits on in the background) and the white news dot are said here, in the row (bridge.css shows it there only). */}
           {dotWords && (
-            <span className="k-row-dot-word" aria-hidden="true" data-testid="row-dot-word" data-bg={backgroundOf(st)}>{[!SPELLED.includes(w) || backgroundOf(st) ? dotWord(st) : "", news ? NEW : ""].filter(Boolean).join(" · ")}</span>
+            <span className="k-row-dot-word" aria-hidden="true" data-testid="row-dot-word" data-bg={backgroundOf(st)}>{dotWord(st)}</span>
           )}
           {/* A state that is not current because the page does not hear the daemon says since when. (A machine out of reach: above.) */}
           {!left && !offline && !!st.as_of && <span className="shrink-0 whitespace-nowrap text-micro text-muted" data-testid="row-asof">{asOf(clock(st.as_of))}</span>}
@@ -443,8 +444,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         </button>
         )}
       </span>
-      {/* News: a white dot at the row's right end (its ink in the light theme: bridge.css). The word for a reader is in the time's place. */}
-      {news && <><span className="k-row-unread" data-testid="row-unread" aria-hidden="true" /><span className="sr-only" data-testid="row-new">{NEW}</span></>}
+      {/* News is the title's weight (bridge.css), not a dot: the state's dot is the row's one colour. A reader is told in words. */}
+      {news && <span className="sr-only" data-testid="row-new">{NEW}</span>}
       {menu && (
         <RowMenu
           at={menu}

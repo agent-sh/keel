@@ -24,7 +24,7 @@ type Entry = {
 type Filter = "all" | "running" | "failed";
 
 const live = (e: Entry) => e.state === "running" || e.state === "background";
-const TONE: Record<Entry["state"], string> = { running: "bg-st-work", background: "bg-st-work", ok: "bg-st-done", failed: "bg-st-fail", stopped: "bg-st-idle" };
+const TONE: Record<Entry["state"], string> = { running: "bg-st-work", background: "bg-st-work", ok: "bg-ok", failed: "bg-st-fail", stopped: "bg-st-idle" };
 
 function took(e: Entry, now: number) {
   const ms = (e.ended ?? now) - e.started;

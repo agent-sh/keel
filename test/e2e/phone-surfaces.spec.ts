@@ -1405,7 +1405,9 @@ for (const size of SIZES) {
               await row(id).scrollIntoViewIfNeeded();
               expect(await shown(row(id), word), `"${word}" shown in the row at ${scale * 100}% text`).toBe(true);
             }
-            expect(await shown(row(news), "New"), "the white dot's word").toBe(true);
+            // News is the title's weight (no word beside it, no second dot): heavier than the title of a row read.
+            const weight = (id: string) => row(id).locator(".k-row-title").evaluate((el) => Number(getComputedStyle(el).fontWeight));
+            expect(await weight(news), "news is the title's weight").toBeGreaterThan(await weight(done));
             expect(await row(done).evaluate((el) => (el as HTMLElement).innerText), "a row read has no news").not.toContain("New");
             await noSideScroll(page);
             await shoot(page, `phone-surfaces-33-dot-words-${size.width}-${scale}`);
