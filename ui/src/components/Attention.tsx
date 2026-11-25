@@ -4,7 +4,9 @@
 // in the background, or the app in the dock, says when to come back.
 // Each waiting thing is counted once: an agent's question is its parent's
 // to answer and is in the parent's state, so only top-level sessions are read.
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { countWord } from "../../../src/core/state-words.ts";
+import { announce } from "../lib/announce.ts";
 import { attends } from "../lib/automation.ts";
 import { agentFailNews, failStamp, failUnseen, isFailure } from "../lib/home.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
@@ -53,12 +55,36 @@ function favicon(state: "need" | "work" | null) {
   icon.onload = icon.onerror = draw;
 }
 
+// How long the count must stand still after a reconnect before it is read: the cards of each session come
+// in one by one as the page catches up, and the line says the whole, once.
+const CAUGHT_UP_MS = 1200;
+
+// A request that came while the socket was down reaches a screen reader once the page has caught up: one line,
+// said when what waits on the owner is more than it was when the connection dropped. A first open says nothing.
+function useAnnounceReturn(n: number) {
+  const synced = useStore((s) => s.synced);
+  const seen = useRef<number | null>(null); // the count as it was while the page was in step
+  const away = useRef<number | null>(null); // the count the socket went down with
+  useEffect(() => {
+    if (!synced) { away.current ??= seen.current; return; }
+    if (away.current === null) { seen.current = n; return; }
+    const t = setTimeout(() => {
+      const was = away.current!;
+      away.current = null;
+      seen.current = n;
+      if (n > was) announce(`Back online: ${countWord("need", n)}, ${n - was} new.`);
+    }, CAUGHT_UP_MS);
+    return () => clearTimeout(t);
+  }, [synced, n]);
+}
+
 export function Attention() {
   const sessions = useStore((s) => s.sessions);
   const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
   const states = useSessionStates(list);
   // The one count of what waits on the owner: the home headline, the list's line and the phone's dock show the same number.
   const n = useNeedCount();
+  useAnnounceReturn(n);
   const working = list.some((s) => states[s.id]?.watch === "work");
   const state = n > 0 ? "need" : working ? "work" : null;
   useEffect(() => {
