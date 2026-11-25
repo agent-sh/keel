@@ -131,12 +131,13 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
 // Claude Code marks what was not typed with keys of its own (textNotTyped, handedOff, isVirtual, promptRewritten,
 // fromAnotherSession, fromConnector, a wake's wakeupSource and scheduledTaskId, hookText, modelOnlyText, the queue's
 // queueSkipAttachments and queueTranscriptOnly, and more each release), so a key it adds later counts against the
-// record until it is read and added here. The set is every key on the typed prompts of a store of 48,000
-// transcripts (versions to 2.1.3xx).
+// record until it is read and added here. The set is the keys Claude Code writes on typed prompts (versions to
+// 2.1.3xx), less sessionKind: a background session's records carry it, and `claude --bg PROMPT` starts one from any
+// program with a first prompt its record does not tell from a typed one.
 const TYPED_KEYS = new Set([
   "type", "uuid", "parentUuid", "timestamp", "message", "sessionId", "cwd", "gitBranch", "version", "userType", "entrypoint", "slug",
   "isSidechain", "permissionMode", "origin", "promptSource", "turnOrigin", "promptId", "turnPosition", "turnPromptId", "dataFlowOn",
-  "sessionKind", "queueSkipSlashCommands", "imagePasteIds",
+  "queueSkipSlashCommands", "imagePasteIds",
 ]);
 const typedRecord = (r: any): boolean =>
   r?.type === "user" && r.isSidechain !== true && (r.promptSource === "typed" || r.promptSource === "queued") && r.turnOrigin === "human"

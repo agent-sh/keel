@@ -70,6 +70,9 @@ test("Claude Code: a prompt typed (or queued) by a human counts; tool results, h
     cc("no turn origin", { turnOrigin: undefined }),
     cc("an origin with more in it", { origin: { kind: "human", via: "relay" } }),
     cc("a key from a later release", { notYetKnown: true }),
+    // A background session's: `claude --bg PROMPT` starts one from any program, and its record does not say whether
+    // a person or a program gave the words.
+    cc("a background session's prompt", { sessionKind: "bg" }),
   ];
   for (const r of records) conv.push(r, 0);
   // Records that are no message: a queue's record, an attachment (a hook's added context), command output.
@@ -98,6 +101,7 @@ test("Claude Code: a prompt typed (or queued) by a human counts; tool results, h
     ["no turn origin", false],
     ["an origin with more in it", false],
     ["a key from a later release", false],
+    ["a background session's prompt", false],
   ]);
   // The hand-back and the scheduled prompt are notes; the tool result is a result: neither is a user event.
   expect(conv.b.events.filter((e) => e.kind === "note").length).toBe(3);
