@@ -789,6 +789,9 @@ const textOf = (content: unknown): string =>
 const MODEL_WORDS = "the model's words";
 const MODEL_CALL = "the model's own call";
 
+// The event a loop run carries (src/automation/loops.ts start): its tag is made inert inside the body, so the first close is its end.
+const EVENT_BLOCK = /<untrusted_(mcp_event|webhook_body)>[\s\S]*?<\/untrusted_\1>/;
+
 export class ProvenanceBook {
   private first = new Map<string, Origin>();
   private calls = new Map<string, { name: string; input: any }>();
@@ -939,6 +942,17 @@ export class ProvenanceBook {
         // whoever the harness wrapped it for (src/steward/rules.ts). Outside, as a channel event is. Its turn's report
         // to a parent comes up as outside through the agent's own book (the subagent branch below).
         else if (d.kind === "steward") await this.noteAll(text, "outside", `a PR Steward turn (GitHub text${d.repo ? ` of ${String(d.repo).slice(0, 80)}` : ""})`, e);
+        else if (d.kind === "loop") {
+          // A run of a loop started by an event a server or a request sent: the event's words (framed as untrusted data
+          // by src/automation/loops.ts, its tags made inert inside) are outside content, the loop's own prompt is not.
+          // The prompt comes first, so a host it names is first seen as its own.
+          const m = EVENT_BLOCK.exec(text);
+          if (!m) await this.noteAll(text, "inside", "a message", e);
+          else {
+            await this.noteAll(text.slice(0, m.index) + text.slice(m.index + m[0].length), "inside", "a loop's prompt", e);
+            await this.noteAll(m[0], "outside", m[1] === "mcp_event" ? "an MCP server's event" : "a webhook's body", e);
+          }
+        }
         else if (d.kind === "subagent") {
           const kid = typeof d.agent_id === "string" ? this.child(d.agent_id) : null;
           const outside = !!kid?.hasOutside();
