@@ -140,14 +140,14 @@
   // The microphone, as the page asks for it at the owner's press (ui/src/lib/speech.ts): F11 says so to the app and asks
   // the engine; F12 asks without saying. What the engine answered is said: no device here, so a granted request
   // ends in "NotFoundError" and a refused one in "NotAllowedError".
-  const mic = async (said, tag) => {
+  const walkMic = async (said, tag) => {
     if (said && window.keelShell) { window.keelShell.post({ t: "microphone" }); await new Promise((r) => setTimeout(r, 80)); }
     try { const st = await navigator.mediaDevices.getUserMedia({ audio: true }); st.getTracks().forEach((t) => t.stop()); say(`MIC ${tag} granted`); }
     catch (e) { say(`MIC ${tag} ${e && e.name}`); }
   };
   addEventListener("keydown", (e) => {
-    if (e.key === "F11") mic(true, "said");
-    if (e.key === "F12") mic(false, "unsaid");
+    if (e.key === "F11") walkMic(true, "said");
+    if (e.key === "F12") walkMic(false, "unsaid");
   }, true);
   // Calls between browsers: a local page has no use for them, and they must find no address here.
   setTimeout(() => {
