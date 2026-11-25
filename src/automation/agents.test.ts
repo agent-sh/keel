@@ -247,6 +247,21 @@ test("a turn that declined or ran out of steps is not a completed agent, and a d
   expect(declined).toContain("Keel started no fresh context for it: 2 successors were started");
 });
 
+test("the landing facts of an agent are fields of its record, and a new task clears them", async () => {
+  const a = await spawn();
+  const facts = { base: "main", tip: "a".repeat(40), behind: 2, dirty: 0, conflict: { state: "conflict", files: ["x.ts"] }, checks: { state: "none" }, branch: "keel/x", ahead: 1, landed: false, proof: "Checks: none" };
+  store.db.query("UPDATE agents SET landing = ? WHERE id = ?").run(JSON.stringify(facts), a.id);
+  expect(agents.get(a.id)!.landing).toEqual(facts as any);
+  expect(agents.list(parent.id).find((x) => x.id === a.id)!.landing).toEqual(facts as any);
+  end(a, "end_turn", "Conflicts with main: none");
+  await settled();
+  // The end wrote what it found (a task with no worktree has none): a quoted line is not the fact.
+  expect(agents.get(a.id)!.landing ?? null).toBeNull();
+  await agents.send(a.id, "go on");
+  end(a, "end_turn", "done");
+  await settled();
+});
+
 test("a message to an agent whose context the model declined is decided as a declined one, never as a cut mid-work", async () => {
   const a = await spawn();
   spendSuccessors(a);

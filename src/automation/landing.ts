@@ -25,6 +25,14 @@ export type Landing = {
   checks: ChecksOn;
 };
 
+// The same facts as fields of the agent's record (`landing` on GET /api/sessions/ID/agents and on its report's
+// route), written by the harness when the agent ends: a line quoted in the agent's own words is never one of
+// them. `ahead`: commits of the branch the base lacks; `landed`: the base holds all of them or its merge changes
+// nothing (null: not known). `proof`: the proof line of the report (src/checks/proof.ts). At most FILES_KEPT
+// conflicted files are kept.
+export type AgentLanding = Landing & { branch: string; ahead: number | null; landed: boolean | null; proof: string };
+export const FILES_KEPT = 50;
+
 export const FILES_NAMED = 6; // conflicted files named on the line; the rest is a count
 
 const count = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;

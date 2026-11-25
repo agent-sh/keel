@@ -45,6 +45,7 @@ import { readerFor, readRunsOf } from "../engine/read-run.ts";
 import { smallModels } from "../engine/readers.ts";
 import { trialModel } from "../engine/model-trial.ts";
 import { parentLine as routeLine } from "../engine/route-change.ts";
+import type { AgentLanding } from "./landing.ts";
 import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, parentLine, successorOrder, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
 import { firstOpen, skippedWords } from "../providers/account.ts";
 import { routeShut } from "./incidents.ts";
@@ -136,6 +137,7 @@ export type AgentRecord = {
   task_at?: number | null; // when its current task began: what its budget counts from
   start?: AgentStart | null; // where its last follow-up started, and why (src/engine/follow-up.ts)
   start_force?: Way | null; // the owner's choice of where its follow-ups start (none: Keel decides)
+  landing?: AgentLanding | null; // what landing its branch needs, as fields, written by the harness when it ended (src/automation/landing.ts)
   lost?: Lost[]; // the contexts its current task lost, each taken up by a successor (src/automation/successor.ts)
   reviews?: string[]; // the branches it reviews (its spawn named them, or its task did): the work board's reviewer of them
   api?: ApiGrant | null; // its parent granted its commands the daemon's read-only lists at its start ("read"), or the owner took it back ("revoked") (src/automation/api-grant.ts)
@@ -239,7 +241,7 @@ CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('runni
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
   writeAsks.migrate(); // the questions an agent asked its parent about a write outside its scope
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"], ["reviews", "TEXT"], ["api", "TEXT"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"], ["reviews", "TEXT"], ["api", "TEXT"], ["landing", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
   // A budget's read of the tree under a task walks the sessions' parents (TREE_SPEND_SQL).
@@ -263,11 +265,11 @@ const wts = () => {
 // `task`: its first prompt, kept until it is in its session (sendTask).
 // `start_from`: the last follow-up's start, as JSON (AgentStart).
 // `reviews`: the branches it reviews with their tips as it started, as JSON (reviewsAt), for the work board.
-type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews" | "api" | "api_off"> & { api: string | null; lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task?: string | null; parked: number | null; result?: string | null; report_chars?: number; start_from: string | null; start_force: string | null; reviews?: string | null };
+type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews" | "api" | "api_off" | "landing"> & { landing?: string | null; api: string | null; lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task?: string | null; parked: number | null; result?: string | null; report_chars?: number; start_from: string | null; start_force: string | null; reviews?: string | null };
 // What a read of many rows asks the database once (`toRecs`); one row asks for itself.
 type RowFacts = { waiting: number; line: (parentId: string) => Line | undefined };
 const toRec = (r: Row, facts?: RowFacts): AgentLean & { result?: string | null } => {
-  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, api, report_chars, ...rest } = r;
+  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, api, landing: landingJson, report_chars, ...rest } = r;
   let external: ExternalInfo | undefined;
   if (def?.includes('"external"')) try { external = (JSON.parse(def) as AgentDef).external; } catch {}
   void schema_tries; void restarts; void park_told; void task; void parked;
@@ -277,9 +279,11 @@ const toRec = (r: Row, facts?: RowFacts): AgentLean & { result?: string | null }
   try { start = start_from ? JSON.parse(start_from) : undefined; } catch {}
   let lost: Lost[] | undefined;
   try { lost = lostJson ? JSON.parse(lostJson) : undefined; } catch {}
+  let landing: AgentLanding | undefined;
+  try { landing = landingJson ? JSON.parse(landingJson) : undefined; } catch {}
   let reviews: string[] | undefined;
   try { reviews = reviewsRaw ? (JSON.parse(reviewsRaw) as { branch: string }[]).map((x) => x.branch) : undefined; } catch {}
-  return { ...rest, ...(report_chars !== undefined ? { report_chars } : {}), ...(external ? { external } : {}), ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: facts ? facts.waiting : waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...apiOf(r.session_id, api) };
+  return { ...rest, ...(report_chars !== undefined ? { report_chars } : {}), ...(external ? { external } : {}), ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: facts ? facts.waiting : waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...(landing ? { landing } : {}), ...apiOf(r.session_id, api) };
 };
 // Its grant of the daemon's lists, and why it does not take effect when one above it lost its own.
 function apiOf(sessionId: string, api: string | null): Pick<AgentRecord, "api" | "api_off"> {
@@ -369,6 +373,7 @@ function update(id: string, patch: Partial<Omit<AgentFull, "id">>, quiet = false
     if (v === undefined) continue;
     // (A follow-up's start is kept as JSON in a column of its own name.)
     if (k === "start") { sets.push("start_from = ?"); vals.push(v ? JSON.stringify(v) : null); continue; }
+    if (k === "landing") { sets.push("landing = ?"); vals.push(v ? JSON.stringify(v) : null); continue; }
     if (k === "lost") { sets.push("lost = ?"); vals.push(Array.isArray(v) && v.length ? JSON.stringify(v) : null); continue; }
     sets.push(`${k} = ?`);
     vals.push(typeof v === "boolean" ? (v ? 1 : 0) : k === "budget" ? (v ? JSON.stringify(v) : null) : v);
@@ -2320,6 +2325,8 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // the daemon restarted) is brought in first, off the loop.
   await D().store.warm(a.parent_id, false).catch(() => {});
   result += work;
+  // The facts under that note, as data (leftovers.ts landingOf): a work agent's branch is written once, as it ended.
+  const landed = a.worktree && !a.machine ? leftovers.takeLanding(a.session_id) : undefined;
   if (work && !/\(The agent changed no files; its worktree[^)]* was removed[^)]*\.\)\s*$/.test(work)) cause = "";
   const silent = !!defOf(a.id)?.silent;
   // A blocking agent's result is held by the call that started it: while that
@@ -2334,7 +2341,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
     if (!get(a.id)) return undefined; // deleted while its end was read: nothing is owed
     if (status === "failed") grouped = failures.agentFailed({ ...a, report: reportId(a) }, cls, cause || got.error || how.note || result, !!cause && !blocked);
     if (owes) beforeRun.owe(ran!.id, a.id, before);
-    return update(a.id, { status, ended: Date.now(), result: lines ? `${result}${result ? "\n\n" : ""}${lines}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true);
+    return update(a.id, { status, ended: Date.now(), result: lines ? `${result}${result ? "\n\n" : ""}${lines}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason, landing: landed ? { ...landed, proof } : null }, true);
   })();
   if (!rec) return;
   emit("agent", brief(rec));
@@ -2724,7 +2731,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
       const last = store.lastSeq(a!.session_id);
       // (Each task has a report of its own: two started with no event between them do not share its id.)
       // (Its budget counts again from this task, the one the message gives if it gives one.)
-      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), lost: [], ...(budget ? { budget } : {}), ...(start ? { start: { ...without(start), task: a!.tasks + 1 } } : {}) });
+      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), lost: [], landing: null, ...(budget ? { budget } : {}), ...(start ? { start: { ...without(start), task: a!.tasks + 1 } } : {}) });
       if (start) activity.record("agent", "follow_up", a!.parent_id, `Agent "${a!.title}" ${WAY_WORDS[start.way]}`, { agent_id: id, child_session: a!.session_id, way: start.way, why: start.why, ...(start.forced ? { forced: true } : {}) });
       release?.(); // the running row now occupies the slot
       // The stop that ended it was the sending side's: its hold goes before anything starts.
@@ -2936,7 +2943,7 @@ export function onTurnStart(sessionId: string) {
   const evs = D().store.events(sessionId);
   const prompt = evs.findLast((e) => e.kind === "user");
   // (A new task: it has both successors again, and its brief is this prompt.)
-  update(a.id, { status: "running", ended: null, first_seq: prompt ? prompt.seq - 1 : (evs.at(-1)?.seq ?? 0), tasks: a.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), lost: [] });
+  update(a.id, { status: "running", ended: null, first_seq: prompt ? prompt.seq - 1 : (evs.at(-1)?.seq ?? 0), tasks: a.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), lost: [], landing: null });
 }
 
 // The one decision on an agent's turn that a daemon restart cut, asked by the

@@ -571,7 +571,7 @@ export const automationRoutes: RouteModule = (deps) => {
       GET: (req: any) => {
         const a = agents.get(req.params.agent_id);
         if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent", 404);
-        return json({ id: a.id, status: a.status, report: a.result ?? null });
+        return json({ id: a.id, status: a.status, report: a.result ?? null, landing: a.landing ?? null });
       },
     },
     "/api/sessions/:id/agents/:agent_id/stop": {

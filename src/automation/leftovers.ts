@@ -29,7 +29,7 @@ import { readsOf } from "../server/reads.ts";
 import * as rules from "./leftover-rules.ts";
 import * as scopes from "./scopes.ts";
 import { HOLDS_SELF } from "./foreign-scopes.ts";
-import { checksOnTree, landingLines, type BaseConflict, type ChecksOn } from "./landing.ts";
+import { checksOnTree, FILES_KEPT, landingLines, type AgentLanding, type Landing, type BaseConflict, type ChecksOn } from "./landing.ts";
 import { forecastOf } from "../worktree/overlap-scan.ts";
 import { decidedOn, inputsOf, namedFor, repoOf, treeOf } from "../checks/ledger.ts";
 
@@ -376,6 +376,13 @@ async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessi
 // conflict with the base from the overlap forecast's table, and the named checks that passed on its files as
 // they are (the check ledger, by the tree they ran on). Read as the agent ends; nothing is fetched.
 const FORECAST_WAIT_MS = 10_000;
+// The facts of the lines just written, for the agent's record: taken once by the end that wrote them.
+const landings = new Map<string, Omit<AgentLanding, "proof">>();
+export function takeLanding(sessionId: string): Omit<AgentLanding, "proof"> | undefined {
+  const l = landings.get(sessionId);
+  landings.delete(sessionId);
+  return l;
+}
 async function landingOf(store: Store, w: Worktree, sha: string | null, dirty: number): Promise<string> {
   try {
     const ov = forecastOf(store);
@@ -394,7 +401,16 @@ async function landingOf(store: Store, w: Worktree, sha: string | null, dirty: n
       : { state: against.state };
     const behindOut = sha ? await run(w.repo_root, ["rev-list", "--count", `${sha}..${against?.base_tip ?? base}`, "--"]) : undefined;
     const behind = behindOut === undefined || !/^\d+$/.test(behindOut.trim()) ? null : Number(behindOut.trim());
-    return landingLines({ base, tip: sha, behind, dirty, conflict, checks: await checksAt(w.path) });
+    const aheadOut = sha ? await run(w.repo_root, ["rev-list", "--count", `${against?.base_tip ?? base}..${sha}`, "--"]) : undefined;
+    const ahead = aheadOut === undefined || !/^\d+$/.test(aheadOut.trim()) ? null : Number(aheadOut.trim());
+    const checks = await checksAt(w.path);
+    const landing: Landing = { base, tip: sha, behind, dirty, conflict, checks };
+    landings.set(w.session_id, {
+      ...landing,
+      conflict: conflict.state === "conflict" ? { state: "conflict", files: conflict.files.slice(0, FILES_KEPT) } : conflict,
+      branch: w.branch, ahead, landed: ahead === 0 || conflict.state === "nothing" ? true : ahead === null ? null : false,
+    });
+    return landingLines(landing);
   } catch {
     return "";
   }

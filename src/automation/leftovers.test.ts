@@ -474,6 +474,13 @@ test("the work note says the tip, the commits behind, the conflict with the base
     record({ ...run, name: "unit", command: "bun test", tree: "0".repeat(40), result: "fail" });
     const tip = git(k.wt.path, "rev-parse", "HEAD").trim();
     expect(await k.own()).toEndWith(`(git merge ${k.wt.branch}).\nTip: ${tip}\nBehind main: 1 commit\nConflicts with main: yes, 1 file: a.txt\nChecks passed on this tree: typecheck, unit (\`bun test src/x\`)`);
+    // The same facts are fields, for the agent's record: no line of text is read for them.
+    expect(leftovers.takeLanding(k.s.id)).toMatchObject({
+      branch: k.wt.branch, base: "main", tip, behind: 1, ahead: 1, landed: false, dirty: 0,
+      conflict: { state: "conflict", files: ["a.txt"] },
+      checks: { state: "known", passed: ["typecheck", "unit (`bun test src/x`)"], failed: [], notRun: [] },
+    });
+    expect(leftovers.takeLanding(k.s.id)).toBeUndefined();
     // A clean branch merges clean; uncommitted files are said to be outside the merge.
     const c = await keelMade("land-clean");
     new Overlaps(c.store, { changed: () => {}, failed: (e) => { throw e; } });
@@ -482,6 +489,7 @@ test("the work note says the tip, the commits behind, the conflict with the base
     git(c.wt.path, "commit", "-qm", "b");
     writeFileSync(join(c.wt.path, "c.txt"), "c\n");
     const note = await c.own();
+    expect(leftovers.takeLanding(c.s.id)).toMatchObject({ conflict: { state: "clean" }, ahead: 1, landed: false, dirty: 1, checks: { state: "none" } });
     expect(note).toContain("\nBehind main: 0 commits\nConflicts with main: none, it merges clean (its commits only: 1 uncommitted file not in it)\nChecks passed on this tree: none named (the repository names no checks)");
   } finally {
     unbindLedger();
