@@ -730,6 +730,8 @@ bun scripts/release.ts && scripts/release-check.sh   # a release packaged in dis
 bun scripts/build.ts --ui dist/keel-ui.tar.gz && keel ui install dist/keel-ui.tar.gz --url URL
                                # a UI-only change on a running daemon: no restart, turns go on, pages reload;
                                # refused when src/ differs from the daemon's build (that needs a restart)
+bun scripts/icons.ts             # the icon files from the one mark (the page's icon, the installed page's PNGs, the desktop
+                               # app's two icons), after a change of the mark or of the inks it reads from ui/src/styles.css
 desktop/build.sh                # desktop/dist/keel-desktop, the desktop app (install: for this account; deb: a package);
                                # and dist/keel-desktop-qt, its Qt WebEngine engine, where Qt's development files are installed
 desktop/qt/check.sh             # the Qt engine built in a container (no Qt needed here) and its --self-test run offscreen;

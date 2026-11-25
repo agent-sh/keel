@@ -1729,7 +1729,7 @@ a{display:block;text-align:center;text-decoration:none;font-weight:600;border-ra
 .open{background:var(--ink);color:var(--ink-fg)}.alt{border:1px solid var(--line);background:var(--raised);color:var(--fg);font-weight:500}
 small{color:var(--muted)}
 </style>
-<main><svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#0e6a80"/><path d="M6 11.5h20c-1.1 4.9-5 7.6-10 7.6s-8.9-2.7-10-7.6z" fill="#f4faf9"/><path d="M14.6 18.6h2.8l-.7 6.4h-1.4z" fill="#f4faf9"/></svg>
+<main><svg width="44" height="44" viewBox="1.5 1.5 21 21" aria-hidden="true" style="color:var(--muted)" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.5H8L11.5 17.5H14.5L15.5 6.5H21.5"/></svg>
 <h1>Pair this phone</h1><p>Open the link in the Keel app on this phone. The code works once and expires soon.</p>
 <a class="open" data-app="keel" href="${keel}">Open in Keel</a>
 <a class="alt" data-app="hermes" href="${hermes}">Open in the Hermes app instead</a>

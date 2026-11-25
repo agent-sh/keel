@@ -17,8 +17,8 @@ const manifest = {
   display: "standalone",
   background_color: "#f7faf9",
   theme_color: "#f7faf9",
+  // (The page's own icon, /icons/icon.svg, is the bare mark for a tab: an installed page gets the ones with a ground.)
   icons: [
-    { src: "/icons/icon.svg", sizes: "any", type: "image/svg+xml" },
     { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
     { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
     { src: "/icons/maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },

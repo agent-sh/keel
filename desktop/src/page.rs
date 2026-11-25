@@ -77,7 +77,7 @@ pub fn away(l: &Look, a: &Away, post: &str, key: &str) -> String {
 html, body {{ height: 100%; margin: 0; }}
 body {{ background: {bg}; color: {fg}; font: {font}px/1.5 "IBM Plex Sans Variable", "IBM Plex Sans", "Inter", system-ui, sans-serif; display: grid; place-items: center; -webkit-user-select: none; user-select: none; cursor: default; }}
 main {{ width: min(26rem, 86vw); display: grid; justify-items: start; gap: 0; transform: translateY(-6vh); }}
-svg {{ width: 2.75rem; height: 2.75rem; display: block; margin-bottom: 1.5rem; }}
+svg {{ width: 2.75rem; height: 2.75rem; display: block; margin-bottom: 1rem; color: {muted}; }}
 h1 {{ font-size: 1.5rem; line-height: 1.25; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 0.5rem; }}
 p {{ margin: 0; color: {muted}; max-width: 24rem; }}
 .act {{ height: 2.25rem; margin-top: 1.5rem; display: flex; align-items: center; gap: 0.875rem; }}
@@ -92,7 +92,7 @@ button:focus-visible {{ outline: 2px solid {need}; outline-offset: 2px; }}
 .where {{ margin-top: 2.5rem; padding-top: 0.875rem; border-top: 1px solid {line}; width: 100%; font: 0.75rem/1.4 "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace; color: {muted}; opacity: 0.8; }}
 [hidden] {{ display: none !important; }}
 </style></head><body><main data-testid="shell-away">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Keel"><rect width="32" height="32" rx="8" fill="#0e6a80"/><path d="M6 11.5h20c-1.1 4.9-5 7.6-10 7.6s-8.9-2.7-10-7.6z" fill="#f4faf9"/><path d="M14.6 18.6h2.8l-.7 6.4h-1.4z" fill="#f4faf9"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="1.5 1.5 21 21" role="img" aria-label="Keel" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.5H8L11.5 17.5H14.5L15.5 6.5H21.5"/></svg>
 <h1 id="head">{head}</h1><p id="line">{sub}</p>
 <div class="act" id="act" {hide_act}><button id="start" type="button" {hide_button}>Start Keel</button><div class="bar" id="bar" role="progressbar" aria-label="Working" {hide_bar}></div></div>
 <p class="note" id="note" {hide_note}>{note}</p>

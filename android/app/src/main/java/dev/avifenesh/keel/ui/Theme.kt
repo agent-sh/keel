@@ -42,7 +42,6 @@ data class Tokens(
     /** News: the dot at a row's end. */
     val unread: Color,
     val needSoft: Color,
-    val sea: Color = Color(0xFF0E6A80), val hull: Color = Color(0xFFF4FAF9),
 )
 
 private fun surf(name: String, dark: Boolean) = Color(StatePalette.surface(name, dark))

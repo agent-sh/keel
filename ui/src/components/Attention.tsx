@@ -38,14 +38,15 @@ function favicon(state: "need" | "work" | null) {
     const g = c.getContext("2d")!;
     // The app's icon when it loaded, else the dot alone says it.
     if (icon!.naturalWidth > 0) g.drawImage(icon!, 0, 0, 64, 64);
-    const css = getComputedStyle(document.documentElement);
+    // The icon has no ground of its own: the mark under the dot's ring is taken out, not painted over.
+    g.globalCompositeOperation = "destination-out";
     g.beginPath();
     g.arc(48, 16, 15, 0, Math.PI * 2);
-    g.fillStyle = css.getPropertyValue("--bg").trim() || "#fff";
     g.fill();
+    g.globalCompositeOperation = "source-over";
     g.beginPath();
     g.arc(48, 16, 11, 0, Math.PI * 2);
-    g.fillStyle = css.getPropertyValue(state === "need" ? "--st-need" : "--st-work").trim();
+    g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(state === "need" ? "--st-need" : "--st-work").trim();
     g.fill();
     link!.type = "image/png";
     link!.href = c.toDataURL("image/png");

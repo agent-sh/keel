@@ -37,13 +37,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
@@ -157,20 +157,20 @@ fun Head(title: String, sub: (@Composable () -> Unit)? = null, lead: (@Composabl
 /** A line between rows. */
 @Composable fun Rule(modifier: Modifier = Modifier) = Box(modifier.fillMaxWidth().height(1.dp).background(k().line))
 
-/** The Keel mark: a hull over its keel on the sea tile. */
+/**
+ * The Keel mark: a level waterline and the keel under it, one stroke in the page's ink, no tile. The path is the
+ * workbench's (ui/public/icon.svg, a grid of 24), set a stroke's half to the left so its edge is the text's below it.
+ */
 @Composable
 fun Mark(size: Dp = 40.dp, modifier: Modifier = Modifier) {
     val k = k()
     Canvas(modifier.size(size)) {
-        val u = this.size.minDimension / 32f
-        drawRoundRect(k.sea, cornerRadius = CornerRadius(8 * u))
-        val hull = Path().apply {
-            moveTo(6 * u, 11.5f * u); lineTo(26 * u, 11.5f * u)
-            cubicTo(24.9f * u, 16.4f * u, 21 * u, 19.1f * u, 16 * u, 19.1f * u)
-            cubicTo(11 * u, 19.1f * u, 7.1f * u, 16.4f * u, 6 * u, 11.5f * u); close()
+        val u = this.size.minDimension / 24f
+        val keel = Path().apply {
+            moveTo(1f * u, 6.5f * u); lineTo(6.5f * u, 6.5f * u); lineTo(10f * u, 17.5f * u)
+            lineTo(13f * u, 17.5f * u); lineTo(14f * u, 6.5f * u); lineTo(20f * u, 6.5f * u)
         }
-        drawPath(hull, k.hull)
-        drawPath(Path().apply { moveTo(14.6f * u, 18.6f * u); lineTo(17.4f * u, 18.6f * u); lineTo(16.7f * u, 25 * u); lineTo(15.3f * u, 25 * u); close() }, k.hull)
+        drawPath(keel, k.fg, style = Stroke(width = 2f * u, cap = StrokeCap.Round, join = StrokeJoin.Round))
     }
 }
 

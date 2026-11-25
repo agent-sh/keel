@@ -309,21 +309,21 @@ fn pixmap(size: i32, s: &Shown, mark: bool) -> Option<(i32, i32, Vec<u8>)> {
         if mark {
             let dim = if s.link == Link::Up { 0.96 } else { 0.5 };
             c.set_source_rgba(0.96, 0.98, 0.98, dim);
-            // The hull and the fin of ui/public/icon.svg, a little larger: the mark has no plate behind it here.
-            c.translate(16.0, 17.0);
-            c.scale(1.28, 1.28);
-            c.translate(-16.0, -17.5);
-            c.move_to(6.0, 11.5);
-            c.rel_line_to(20.0, 0.0);
-            c.rel_curve_to(-1.1, 4.9, -5.0, 7.6, -10.0, 7.6);
-            c.rel_curve_to(-5.0, 0.0, -8.9, -2.7, -10.0, -7.6);
-            c.close_path();
-            c.move_to(14.6, 18.6);
-            c.rel_line_to(2.8, 0.0);
-            c.rel_line_to(-0.7, 6.4);
-            c.rel_line_to(-1.4, 0.0);
-            c.close_path();
-            c.fill().ok()?;
+            // The waterline and the keel of ui/public/icon.svg on its grid of 24, a little heavier: the mark has no
+            // plate behind it here. Paused, the two bars stand in the place of the waterline's last stretch.
+            let paused = s.paused && s.link == Link::Up && badge(s.needs).is_none();
+            c.scale(32.0 / 24.0, 32.0 / 24.0);
+            c.set_line_width(2.6);
+            c.set_line_cap(cairo::LineCap::Round);
+            c.set_line_join(cairo::LineJoin::Round);
+            c.move_to(2.5, 6.5);
+            for (x, y) in [(8.0, 6.5), (11.5, 17.5), (14.5, 17.5), (15.5, 6.5)] {
+                c.line_to(x, y);
+            }
+            if !paused {
+                c.line_to(21.5, 6.5);
+            }
+            c.stroke().ok()?;
             c.identity_matrix();
             c.scale(k, k);
         }
@@ -339,10 +339,10 @@ fn pixmap(size: i32, s: &Shown, mark: bool) -> Option<(i32, i32, Vec<u8>)> {
             c.move_to(cx - e.width() / 2.0 - e.x_bearing(), cy - e.height() / 2.0 - e.y_bearing());
             c.show_text(&text).ok()?;
         } else if mark && s.paused && s.link == Link::Up {
-            // Paused: two short bars where the badge sits.
+            // Paused: two short bars on the waterline, where its last stretch was.
             c.set_source_rgba(0.96, 0.98, 0.98, 0.96);
-            c.rectangle(20.5, 4.0, 2.4, 8.0);
-            c.rectangle(25.0, 4.0, 2.4, 8.0);
+            c.rectangle(24.4, 4.7, 2.4, 8.0);
+            c.rectangle(28.6, 4.7, 2.4, 8.0);
             c.fill().ok()?;
         }
     }
@@ -750,6 +750,14 @@ mod tests {
         assert!(px.chunks(4).any(|p| p[0] > 200));
         let plain = pixmap(24, &s(0, false, Link::Up), true).unwrap().2;
         assert_ne!(px, plain);
+        // The mark is a waterline with the keel under it: ink on the line and at the keel's foot, none under the line beside it.
+        let alpha = |px: &[u8], x: usize, y: usize| px[(y * 24 + x) * 4];
+        assert!(alpha(&plain, 5, 6) > 200 && alpha(&plain, 19, 6) > 200 && alpha(&plain, 13, 17) > 200);
+        assert_eq!((alpha(&plain, 5, 14), alpha(&plain, 19, 14)), (0, 0));
+        // Paused, the bars stand where the waterline's last stretch was.
+        let paused = pixmap(24, &s(0, true, Link::Up), true).unwrap().2;
+        assert_eq!(alpha(&paused, 17, 6), 0);
+        assert!(alpha(&paused, 19, 4) > 200 && alpha(&paused, 22, 4) > 200);
     }
 
     // The review's case: fixed near-white ink was invisible on a light panel.
@@ -759,10 +767,10 @@ mod tests {
         assert_eq!((name, pixels.len(), over.len()), (SYMBOLIC, 0, 0));
         let (name, pixels, over) = icons(&s(2, false, Link::Up), true);
         assert_eq!((name, pixels.len(), over.len()), (SYMBOLIC, 0, 2));
-        // The overlay is the badge alone: nothing is drawn where the mark's hull is.
+        // The overlay is the badge alone: nothing is drawn where the mark's waterline is.
         let (size, _, px) = &over[0];
         let at = |x: i32, y: i32| px[((y * size + x) * 4) as usize];
-        assert_eq!(at(6, 14), 0);
+        assert_eq!(at(5, 6), 0);
         assert!(at(17, 7) > 200);
         // No count while the daemon is away, and the drawn mark only where the theme has no symbolic icon.
         assert_eq!(icons(&s(2, false, Link::Down), true).2.len(), 0);
