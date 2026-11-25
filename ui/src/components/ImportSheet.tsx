@@ -39,7 +39,8 @@ const ident = (row: Row) => (row.harness === "keel" ? { harness: row.harness, id
 
 let open = false;
 // What the sheet opens on, when another view sends the owner to a session of another harness (the palette's search).
-export type ImportAt = { q: string; harness: Harness; id: string; path: string };
+// `machine`: the session is on that machine of the fleet, not here.
+export type ImportAt = { q: string; harness: Harness; id: string; path: string; machine?: string };
 let openAt: ImportAt | null = null;
 const subs = new Set<() => void>();
 export function setImportOpen(o: boolean, at?: ImportAt) { open = o; if (at) openAt = at; subs.forEach((f) => f()); }
@@ -400,9 +401,10 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     if (!open || !openAt) return;
     const at = openAt;
     openAt = null;
-    const row = { harness: at.harness, id: at.id, path: at.path, title: "" } as Row;
+    const row = { harness: at.harness, id: at.id, path: at.path, title: "", ...(at.machine ? { machine: at.machine } : {}) } as Row;
     setQ(at.q);
     // (A change of harness or machine drops the pick: it is made once that change is on show.)
+    // A machine's session is picked under that machine's part (`machine`), which the sheet shows with this one's.
     if (at.harness === harness && !from) setSel(row);
     else { picking.current = row; setFrom(""); setHarness(at.harness); }
   }, [open]);

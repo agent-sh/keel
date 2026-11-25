@@ -14,7 +14,8 @@ import { itemClass, popupClass } from "./ui.tsx";
 export type RowMenuAt = { x: number; y: number };
 export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, onBeside, onArchive, onUnread, onRename, onSelect, session }: {
   at: RowMenuAt; onClose: () => void; pinned: boolean; archived: boolean; beside: boolean;
-  onPin: () => void; onMove?: (by: -1 | 1) => void; onBeside: () => void; onArchive: () => void;
+  // Unset for a row this daemon cannot pin or archive (a session another harness runs on another machine).
+  onPin?: () => void; onMove?: (by: -1 | 1) => void; onBeside: () => void; onArchive?: () => void;
   // Set where the row can be marked unread (a row that is read, of a session of this machine's own, not an agent's).
   onUnread?: () => void;
   // Set where the owner may name the session (one of Keel's own): F2 on the row does the same.
@@ -40,14 +41,14 @@ export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, 
           {/* (The menu is drawn in a portal but stands under its row in the tree: a press in it must not open the session as a press on the row does.) */}
           <Menu.Popup className={`${popupClass} min-w-48`} data-testid="row-menu" data-press-on={session?.id} onClick={(e) => e.stopPropagation()}>
             {onRename && item("row-menu-rename", <Pencil />, "Rename", onRename, "f2")}
-            {!archived && item("row-menu-pin", pinned ? <PinOff /> : <Pin />, pinned ? "Unpin" : "Pin to the top", onPin)}
+            {!archived && onPin && item("row-menu-pin", pinned ? <PinOff /> : <Pin />, pinned ? "Unpin" : "Pin to the top", onPin)}
             {pinned && onMove && item("row-menu-up", <ArrowUp />, "Move up", () => onMove(-1), "alt+arrowup")}
             {pinned && onMove && item("row-menu-down", <ArrowDown />, "Move down", () => onMove(1), "alt+arrowdown")}
             {onSelect && !archived && item("row-menu-select", <ListChecks />, "Select", onSelect, "space")}
             {beside && item("row-menu-beside", <Columns2 />, "Open beside", onBeside)}
             {onUnread && !archived && item("row-menu-unread", <MailOpen />, "Mark as unread", onUnread)}
             {session && !archived && <MoveTo id={session.id} at={session.folder ?? null} />}
-            {item("row-menu-archive", archived ? <ArchiveRestore /> : <Archive />, archived ? "Restore" : "Archive", onArchive)}
+            {onArchive && item("row-menu-archive", archived ? <ArchiveRestore /> : <Archive />, archived ? "Restore" : "Archive", onArchive)}
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

@@ -183,6 +183,8 @@ onFeature({
       const fr = relayed(f.data.machine, f.data.frame);
       if (fr) apply(fr);
     } else if (f.name === "fleet_machines") reloadMachines();
+    // What Claude Code or Codex runs on a machine reached over ssh changed (src/fleet/far-outside.ts).
+    else if (f.name === "fleet_outside") reloadView();
     else if (f.name === "fleet_sessions") {
       reloadView();
       // The link to that machine came back: transcripts of its sessions open

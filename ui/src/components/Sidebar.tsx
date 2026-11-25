@@ -16,6 +16,7 @@ import { createContext, Fragment, memo, useCallback, useContext, useEffect, useL
 import type { Session } from "../../../src/core/types.ts";
 import { composing, runCommand } from "../lib/keys.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
+import { splitId } from "../lib/fleet-ids.ts";
 import { getStations, stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, scrollerOf, useActed, useAnchor, useCounts, useHand, usePhoneWidth, useUnderLook, type Hand } from "../lib/list-hold.ts";
@@ -309,6 +310,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
   // A session of another harness that Keel only shows has no name of Keel's to give.
   const canRename = !left && !s.outside && !phone();
+  // A session another harness runs on a machine reached over ssh: this daemon has its row and nothing to pin or archive.
+  const fixed = !!s.outside && !!splitId(s.id);
   // Beside the title: its project's name, else its folder's (`where`: the list is not grouped by either).
   const project = useProjects((x) => (where && x.members[s.id] ? x.projects.find((p) => p.id === x.members[s.id])?.name : undefined));
   const place = where ? project ?? folderOf(s) : "";
@@ -445,7 +448,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         {/* (A row whose session left has no actions: there is nothing to act on.) */}
         {/* (Pressed with the pointer, it leaves the keyboard where it was: a focus the owner did not give
             the row would hold the list after the pointer left, and the pinned row would not take its place.) */}
-        {!left && !restore && !phone() && (
+        {!left && !restore && !fixed && !phone() && (
           <button type="button" tabIndex={-1} title={pinned ? "Unpin" : "Pin to the top of the list"} aria-label={pinned ? "Unpin" : "Pin"} aria-pressed={pinned} data-testid="row-pin" onClick={(e) => { e.stopPropagation(); if (e.detail > 0) e.currentTarget.blur(); togglePin(e.detail === 0); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
             {pinned ? <PinOff /> : <Pin />}
           </button>
@@ -460,7 +463,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
             <PanelsTopLeft />
           </PaneMenu>
         )}
-        {!left && (
+        {!left && !fixed && (
         <button
           type="button"
           tabIndex={-1}
@@ -490,11 +493,11 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           pinned={pinned}
           archived={restore}
           beside={!restore && !shown}
-          onPin={() => togglePin(true)}
-          onMove={pinnedNow().length > 1 ? move : undefined}
+          onPin={fixed ? undefined : () => togglePin(true)}
+          onMove={pinnedNow().length > 1 && !fixed ? move : undefined}
           onBeside={() => openBeside(s.id)}
           onRename={canRename ? () => setRenaming(true) : undefined}
-          onArchive={() => { listActed(s.id); archive(s, !restore).catch(reportError); }}
+          onArchive={fixed ? undefined : () => { listActed(s.id); archive(s, !restore).catch(reportError); }}
           // The same mark the row's dot reads (the command and the session menu set it too): kept until the session is opened again.
           onSelect={() => toggleSelected(s.id)}
           onUnread={!unread && !s.machine && !s.parent_id ? () => { listActed(s.id); auto.unreadSession(s.id).catch(reportError); } : undefined}
@@ -1147,9 +1150,10 @@ function Index({ current }: { current: string | null }) {
   // Keep the open branch in the list even when its root finishes.
   const root = rootSessionId(sessions, current);
   const shown = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current && s.id !== root && !actedOn(s.id)));
-  // Sessions of other harnesses that are not Keel's own go under a line of their own at the list's end; an
-  // imported or taken-over one is a Keel session (its copy), and the source is no row anywhere.
-  const rest = shown.filter((s) => !s.outside || s.machine);
+  // Sessions of other harnesses that are not Keel's own go under a line of their own at the list's end, one for
+  // this machine and one for each machine reached over ssh (src/fleet/far-outside.ts); an imported or taken-over
+  // one is a Keel session (its copy), and the source is no row anywhere.
+  const rest = shown.filter((s) => !s.outside);
   const hidden = listed.length - pinned.length - shown.length;
   const cmp = order<Session>(arr, watches);
   // Where the order moves rows as their sessions work, the folder of the row the hand is on keeps
@@ -1183,7 +1187,7 @@ function Index({ current }: { current: string | null }) {
     return out;
   }, [grouped]);
   const sections = useMemo(() => machineRuns(rest), [rest]);
-  const external = useMemo(() => shown.filter((s) => s.outside && !s.machine).sort(cmp), [shown, cmp]);
+  const external = useMemo(() => machineRuns(shown.filter((s) => s.outside).sort(cmp)), [shown, cmp]);
   return (
     <>
       {/* What scrolls: on a phone the tabs, the tags and the counts go with the rows (the find stays),
@@ -1222,7 +1226,7 @@ function Index({ current }: { current: string | null }) {
         {pinned.length > 0 && (
           <PinnedGroup list={pinned} current={current} every={!!q} />
         )}
-        {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && late.length === 0 && external.length === 0 && (
+        {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && late.length === 0 && !external.some((x) => x.list.length) && (
           q
             ? <p className="k-empty" data-testid="filter-empty">No sessions match {q}. <button type="button" className="k-link text-accent-ink underline-offset-2 hover:underline" onClick={() => setQ("")}>Clear the filter</button></p>
             : hidden > 0
@@ -1255,14 +1259,14 @@ function Index({ current }: { current: string | null }) {
             </Fragment>
           );
         })}
-        {external.length > 0 && (
-          <>
-            <MachineSep external count={external.length} />
-            <section className="k-group" data-testid="external-group">
-              <Group list={external} current={current} every={!!q} where />
+        {external.filter((x) => x.list.length > 0).map((x) => (
+          <Fragment key={`external:${x.machine ?? "local"}`}>
+            <MachineSep external machine={x.machine} count={x.list.length} />
+            <section className="k-group" data-testid="external-group" data-machine={x.machine ?? "local"}>
+              <Group list={x.list} current={current} every={!!q} where />
             </section>
-          </>
-        )}
+          </Fragment>
+        ))}
         {hidden > 0 && (grouped.length > 0 || flat.length > 0) && (
           <button type="button" className="k-more" data-testid="hidden-done" onClick={() => setArrange({ hideDone: false })}>{hidden} finished hidden</button>
         )}

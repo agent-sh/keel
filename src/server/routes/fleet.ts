@@ -42,6 +42,9 @@ import { sandboxScope, scopeDir } from "../../safety/sandbox-scope.ts";
 import { skillHome } from "../../tools/skills.ts";
 import { peerSkills } from "../../fleet/skills.ts";
 import { forPeers } from "../../core/outside.ts";
+import { FarOutside } from "../../fleet/far-outside.ts";
+import { seesOutside } from "../admission.ts";
+import { feedHeard } from "../feed-heard.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -67,6 +70,11 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   const g = globalThis as { __keelFleet?: Fleet };
   g.__keelFleet?.stop();
   const f = (fleet = g.__keelFleet = new Fleet(store, bus, errors));
+  // What Claude Code and Codex run now on the machines reached over ssh: rows of the list, read-only (src/fleet/far-outside.ts).
+  const gfo = globalThis as { __keelFarOutside?: FarOutside };
+  gfo.__keelFarOutside?.stop();
+  const farOutside = (gfo.__keelFarOutside = new FarOutside({ fleet: f, bus, heard: () => feedHeard.lists(), capture: (e, c) => errors.capture("server", e, c) }));
+  farOutside.start();
   const msgs = new Messages(store, bus, engine, f, (id) => (gate ? gate.perm(id) : undefined), (m, s) => {
     alerts.raise("agent", s.id, `Message waiting: ${s.title || "a session"}`, `From ${m.from.title || m.from.session_id}${m.from.daemon_id !== f.id ? ` on ${m.from.machine ?? m.from.daemon_id}` : ""}: ${m.reason}. ${m.text.slice(0, 300)}`, { open_session: s.id, message_id: m.id });
   });
@@ -314,13 +322,19 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   // `others`: the other machines alone. A page holds this daemon's own
   // sessions already (its session list), and reads no list of recents: it is
   // not sent every local session twice more with each view.
-  // (A session another harness runs is in no list of this view: src/core/outside.ts.)
-  const fleetView = (showQuestions: boolean, others = false) => {
+  // (A session another harness runs on a paired daemon is in no list of this view: src/core/outside.ts. One that
+  // Claude Code or Codex runs on an ssh machine is, as a row and its title, for the owner's own pages: `outside`.)
+  const fleetView = (showQuestions: boolean, others = false, outside = false) => {
     const local = others ? [] : store.sessions();
     const machines: any[] = others ? [] : [{ id: "local", name: f.name, state: "ready", sessions: local }];
     const recents: any[] = local.map((s) => ({ machine_id: "local", machine: f.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" }));
     for (const m of f.rows()) {
-      if ((!m.link_key && m.state === "unknown") || f.isSsh(m)) continue; // an ssh machine has no sessions of its own
+      // An ssh machine has no Keel sessions of its own: what its harnesses run now, when the page may see it.
+      if (f.isSsh(m)) {
+        if (outside) machines.push({ id: m.id, name: m.name, state: m.state, sessions: farOutside.sessions(m.id), reason: m.reason ?? undefined, colour: m.colour ?? undefined, since_ms: m.offline_since ?? undefined });
+        continue;
+      }
+      if (!m.link_key && m.state === "unknown") continue;
       const r = f.remoteSessions(m.id);
       const v = f.view(m);
       machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, states: r.states, states_rev: r.states_rev, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, since_ms: m.offline_since ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
@@ -398,7 +412,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   return {
     // Only the browser's fleet view needs third-party question snapshots. A
     // paired daemon gets this daemon's questions from its own relay stream.
-    "/api/fleet": { GET: (req: Request) => json(fleetView(!forwardedStanding(req), new URL(req.url).searchParams.has("others"))) },
+    "/api/fleet": { GET: (req: Request) => json(fleetView(!forwardedStanding(req), new URL(req.url).searchParams.has("others"), seesOutside(req))) },
 
     "/api/fleet/identity": {
       GET: (req: Request) => proven(json(f.identity()), paired(req), f.id),

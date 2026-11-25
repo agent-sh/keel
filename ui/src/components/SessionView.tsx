@@ -14,6 +14,8 @@ import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
 import { openPanel, SidePanel, usePanelSheet } from "./SidePanel.tsx";
 import { LiveSourceBanner } from "./TakeOver.tsx";
 import { OutsideBar } from "./OutsideBar.tsx";
+import { FarOutside } from "./FarOutside.tsx";
+import { splitId } from "../lib/fleet-ids.ts";
 import { TranscriptLoading } from "./TranscriptLoading.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { actions, getState, reportError, scope, useStore } from "../lib/store.ts";
@@ -48,7 +50,14 @@ export { Boundary };
 // `back`: the view lies over something it leads back to (a look over a pane's
 // session): Escape goes back, as it does from an agent's session, and the turn
 // is stopped by its Stop button, the same one as in every pane.
-export function SessionView({ id, header, missingHeader, panel = true, focus = true, back }: { id: string; header?: ReactNode; missingHeader?: ReactNode; panel?: boolean; focus?: boolean; back?: () => void }) {
+type ViewProps = { id: string; header?: ReactNode; missingHeader?: ReactNode; panel?: boolean; focus?: boolean; back?: () => void };
+export function SessionView(props: ViewProps) {
+  // A session Claude Code or Codex runs on a machine reached over ssh: its row is all this daemon has of it.
+  const far = useStore((s) => { const x = s.sessions[props.id]; return x?.outside && splitId(x.id) ? x : null; });
+  return far ? <FarOutside session={far} /> : <OwnSessionView {...props} />;
+}
+
+function OwnSessionView({ id, header, missingHeader, panel = true, focus = true, back }: ViewProps) {
   const session = useStore((s) => s.sessions[id]);
   const said = useAppSays() ?? "Keel is not reachable";
   // A link to a session that is gone (deleted, another daemon's) says so instead of loading forever.
