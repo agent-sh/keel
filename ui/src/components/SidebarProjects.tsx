@@ -61,7 +61,8 @@ export function ProjectGroups({ list, cmp, current, every }: { list: Session[]; 
         return (
           <section key={p.id} className="k-group" data-testid="project-group" data-project={p.id}>
             <ProjectHead id={p.id} name={p.name} n={mine.length} />
-            {mine.length ? <Group list={mine} current={current} every={every} where /> : <p className="k-empty px-2 pb-1">No sessions yet</p>}
+            {/* The project is the group's head: no project on its rows. */}
+            {mine.length ? <Group list={mine} current={current} every={every} /> : <p className="k-empty px-2 pb-1">No sessions yet</p>}
           </section>
         );
       })}

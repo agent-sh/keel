@@ -58,6 +58,7 @@ import { RowMenu, type RowMenuAt } from "./RowMenu.tsx";
 import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
+import { useProjects } from "../lib/projects.ts";
 import { HelperFace, useHelperName } from "./HelperFace.tsx";
 import { StuckStrip } from "./Stuck.tsx";
 import { selected, selectRange, toggleSelected, useIsSelected } from "../lib/select.ts";
@@ -307,6 +308,9 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
   // A session of another harness that Keel only shows has no name of Keel's to give.
   const canRename = !left && !s.outside && !phone();
+  // Beside the title: its project's name, else its folder's (`where`: the list is not grouped by either).
+  const project = useProjects((x) => (where && x.members[s.id] ? x.projects.find((p) => p.id === x.members[s.id])?.name : undefined));
+  const place = where ? project ?? folderOf(s) : "";
   const open = (beside: boolean) => {
     if (left === "deleted") return;
     if (beside) return openBeside(s.id);
@@ -378,8 +382,8 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
     >
       <Mark w={w} st={st} />
       <AgentsToggle id={s.id} />
-      {/* The title and the row's own line: the state with why (and the folder, where the list is not
-          grouped by it). In a row of one line the words follow the title where it leaves them room,
+      {/* The title (with its project or folder beside it, where the list is not grouped by either) and the
+          row's own line: the state with why. In a row of one line the words follow the title where it leaves them room,
           and are on the card beside the row where it does not; in a row of two they are the second
           line, as wide as the row. A session at rest says no word the mark already says. */}
       <span className="k-row-main">
@@ -387,7 +391,10 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           ? <RowName s={s} done={() => { setRenaming(false); requestAnimationFrame(() => row.current?.focus()); }} />
           : (
             /* Another harness's session says which in its tooltip, not in a chip beside the title. */
-            <span className="k-row-title" title={s.outside ? outsideTip(s.outside) : undefined}>{s.title || "New session"}</span>
+            <span className="k-row-head">
+              <span className="k-row-title" title={s.outside ? outsideTip(s.outside) : undefined}>{s.title || "New session"}</span>
+              {place && <span className="k-row-in" data-testid="row-folder" title={s.workspace}>{place}</span>}
+            </span>
           )}
         <span className="k-row-sub">
           {/* A machine that does not answer says nothing new: the row's word is Offline (at the line's end), with when it last told here and what under the pointer. */}
@@ -406,7 +413,6 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
           {!offline && w === "fail" && failWord(st.cls) && !on && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
           {!offline && SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{briefText(st, now)}</span>}
           {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
-          {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
         </span>
       </span>
       {/* The first line's end: the tag, the marks, the time, and under the pointer the row's actions in the time's place. */}

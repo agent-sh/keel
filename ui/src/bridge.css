@@ -277,7 +277,8 @@
 /* A list arranged away from the default says so with a dot on the menu. */
 .k-find-on { color: var(--fg); }
 .k-find-on::after { content: ""; position: absolute; top: 0.1875rem; right: 0.1875rem; width: 0.3125rem; height: 0.3125rem; border-radius: 50%; background: var(--accent); }
-.k-row-in { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--faint); }
+/* Its project or folder, beside the title where the list is not grouped by either: small, regular, the quiet ink. */
+.k-row-in { flex: 0 1 auto; min-width: 1.5rem; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); font-weight: 400; color: var(--muted); }
 .k-index { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0.625rem 0.75rem; }
 /* The tags to filter by: quiet words, not a wall of chips; on a narrow list they take another line
    (none is hidden). The one chosen takes the sunken well, as a picked row does. */
@@ -359,7 +360,7 @@
 .k-index[data-lines="two"] .k-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem 1rem; column-gap: 0.5625rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
 .k-index[data-lines="two"] .k-row-main { display: contents; overflow: visible; }
 .k-index[data-lines="two"] .k-row > .k-mark { grid-area: 1 / 1; }
-.k-index[data-lines="two"] .k-row-title { grid-area: 1 / 2; }
+.k-index[data-lines="two"] :is(.k-row-head, .k-row-title) { grid-area: 1 / 2; }
 .k-index[data-lines="two"] .k-row-end { grid-area: 1 / 3; min-width: 0; flex-shrink: 1; }
 .k-index[data-lines="two"] .k-row-sub { grid-column: 2 / -1; grid-row: 2; flex: none; height: 1rem; line-height: 1rem; }
 /* Where a finger presses, a row of one line is high enough to hit. */
@@ -377,13 +378,13 @@
   /* A short word (Done, New) follows the title on its line, the title giving way; a long one (what it waits on in the
      background) is the line under the title, where a row says it whole at a large text size too. */
   .k-row[data-dotword="short"] .k-row-main { flex-wrap: nowrap; }
-  .k-row[data-dotword="short"] .k-row-main > .k-row-title { flex: 0 1 auto; min-width: 2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .k-row[data-dotword="short"] .k-row-main > :is(.k-row-head, .k-row-title) { flex: 0 1 auto; min-width: 2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .k-row[data-dotword="short"] .k-row-main > .k-row-sub { flex: 0 0 auto; }
   /* A word that does not follow the title is the line under it, as wide as the row (the two-line row of the list). */
   .k-index .k-row[data-dotword="long"] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem auto; column-gap: 0.5625rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
   .k-index .k-row[data-dotword="long"] .k-row-main { display: contents; }
   .k-index .k-row[data-dotword="long"] > .k-mark { grid-area: 1 / 1; }
-  .k-index .k-row[data-dotword="long"] .k-row-title { grid-area: 1 / 2; }
+  .k-index .k-row[data-dotword="long"] :is(.k-row-head, .k-row-title) { grid-area: 1 / 2; }
   .k-index .k-row[data-dotword="long"] .k-row-end { grid-area: 1 / 3; min-width: 0; flex-shrink: 1; }
   .k-index .k-row[data-dotword="long"] .k-row-dot-word { white-space: normal; overflow: visible; }
   .k-index .k-row[data-dotword="long"] .k-row-sub { grid-column: 2 / -1; grid-row: 2; flex: none; height: auto; min-height: 1rem; line-height: 1rem; overflow: visible; }
@@ -394,7 +395,7 @@
     .k-index .k-row[data-dotword="short"] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem auto; column-gap: 0.5625rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
     .k-index .k-row[data-dotword="short"] .k-row-main { display: contents; }
     .k-index .k-row[data-dotword="short"] > .k-mark { grid-area: 1 / 1; }
-    .k-index .k-row[data-dotword="short"] .k-row-title { grid-area: 1 / 2; flex: none; min-width: 0; }
+    .k-index .k-row[data-dotword="short"] :is(.k-row-head, .k-row-title) { grid-area: 1 / 2; flex: none; min-width: 0; }
     .k-index .k-row[data-dotword="short"] .k-row-end { grid-area: 1 / 3; min-width: 0; flex-shrink: 1; }
     .k-index .k-row[data-dotword="short"] .k-row-dot-word { white-space: normal; overflow: visible; }
     .k-index .k-row[data-dotword="short"] .k-row-sub { grid-column: 2 / -1; grid-row: 2; flex: none; height: auto; min-height: 1rem; line-height: 1rem; overflow: visible; }
@@ -415,6 +416,8 @@
 .k-row[data-shown]::before { content: ""; position: absolute; left: -0.625rem; top: 0.3125rem; bottom: 0.3125rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-row[aria-current]::before { background: var(--fg); }
 .k-row-title { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The title and its project or folder: one line that gives way as a whole; the title is cut first. */
+.k-row-head { flex: 0 1 auto; min-width: 0; max-width: 100%; display: flex; align-items: baseline; gap: 0.375rem; overflow: hidden; }
 .k-row-name { flex: 1 1 auto; height: 1.5rem; padding: 0 0.375rem; margin: -0.125rem -0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--fg); font-size: inherit; font-weight: inherit; outline: none; box-shadow: 0 0 0 2px var(--ring); }
 /* Every row is one weight: the dot says the state. What calls the owner (needs them, failed, declined), news,
    a session at work and the open row are in ink; the rest steps back to the quiet ink. The row's end holds one thing. */
@@ -495,7 +498,6 @@
    that is not shown); a row of two lines has it under the title. */
 .k-row-sub { flex: 1 0 7rem; max-width: 100%; display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; height: 1.25rem; line-height: 1.25rem; overflow: hidden; }
 .k-row-sub:empty { display: none; }
-.k-row-sub:has(> .k-row-in:only-child) { flex-basis: 3rem; }
 .k-row-sub .k-row-state { flex: 0 1 auto; min-width: 0; margin-top: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* What a session at rest last said or did (two lines a row): quieter than a reason. */
 .k-row-sub .k-row-last { color: var(--faint); }
@@ -605,16 +607,13 @@
 }
 /* A machine that does not answer: its rows say the last it told, stepped back, the clock's place saying offline.
    A session that left the list while the hand held it still looks the same until the hand has gone. */
-.k-row:is([data-offline], [data-gone]) :is(.k-row-title, .k-row-state, .k-row-why, .k-row-class, .k-row-time) { color: var(--faint); font-weight: 400; }
+.k-row:is([data-offline], [data-gone]) :is(.k-row-title, .k-row-in, .k-row-state, .k-row-why, .k-row-class, .k-row-time) { color: var(--faint); font-weight: 400; }
 .k-row:is([data-offline], [data-gone]) .k-row-class { box-shadow: inset 0 0 0 1px var(--line-strong); }
 .k-row:is([data-offline], [data-gone]) > .k-mark, .k-tick[data-gone] { opacity: 0.45; filter: grayscale(1); }
 .k-row-time[data-offline] { letter-spacing: 0.02em; }
 .k-row-sub .k-row-class { align-self: center; }
 /* A message that waits for the daemon to be back: it goes out by itself, so it is said in the waiting ink, not the owner's. */
 .k-row-send { flex-shrink: 0; white-space: nowrap; font-size: var(--text-micro); font-weight: 400; color: var(--st-wait-ink); }
-/* Where it runs, at the line's end, when the list is not grouped by folder. */
-.k-row-sub .k-row-in { flex-shrink: 1; min-width: 2rem; max-width: 40%; margin-left: auto; }
-.k-row-sub .k-row-in:first-child { max-width: 100%; margin-left: 0; }
 .k-row-sub .k-where { flex-shrink: 1; }
 /* A row's actions take the time's place under the pointer and its line's height (1.25rem): the row is as high as at rest, and the rows under it stay where they are. */
 .k-row-act { flex-shrink: 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: var(--radius-sm); color: var(--faint); }
@@ -643,12 +642,12 @@
 .k-rail[data-narrow] .k-rail-acts .k-act-mark { position: absolute; right: 0.25rem; top: 0.25rem; width: 0.5rem; height: 0.5rem; padding: 0; border-radius: 50%; overflow: hidden; color: transparent; }
 .k-rail[data-narrow] .k-index { padding-inline: 0.375rem; }
 .k-rail[data-narrow] .k-row { gap: 0.4375rem; padding: 0 0.25rem 0 0.4375rem; }
-.k-rail[data-narrow] :is(.k-row-sub, .k-row-end) { display: none; }
+.k-rail[data-narrow] :is(.k-row-sub, .k-row-end, .k-row-in) { display: none; }
 /* A row that calls the owner keeps its reason, on a line of its own under the title (the mark says the state). */
 .k-rail[data-narrow] .k-row[data-reason] { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 1.25rem 1rem; column-gap: 0.4375rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
 .k-rail[data-narrow] .k-row[data-reason] .k-row-main { display: contents; }
 .k-rail[data-narrow] .k-row[data-reason] > .k-mark { grid-area: 1 / 1; }
-.k-rail[data-narrow] .k-row[data-reason] .k-row-title { grid-area: 1 / 2; }
+.k-rail[data-narrow] .k-row[data-reason] :is(.k-row-head, .k-row-title) { grid-area: 1 / 2; }
 .k-rail[data-narrow] .k-row[data-reason] .k-row-sub { display: flex; grid-column: 2 / -1; grid-row: 2; height: 1rem; line-height: 1rem; gap: 0.25rem; }
 .k-rail[data-narrow] .k-row[data-reason] .k-row-sub > :not(.k-row-why, .k-row-class) { display: none; }
 .k-rail[data-narrow] .k-row[data-shown]::before { left: -0.375rem; top: 0.25rem; bottom: 0.25rem; }
