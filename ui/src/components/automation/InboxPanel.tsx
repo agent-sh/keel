@@ -110,7 +110,14 @@ function Inbox({ onClose }: { onClose: () => void }) {
       if (part === "need") {
         const ranked = nextLook(named, (r) => r.a);
         needIds.current = ranked.map((r) => r.a.id);
-        const rows = holdOrder(ranked, (r) => r.a.id, held).map((r) => ({ ...r, first: true, last: true, alone: wide, fresh: true, asks: true }));
+        // The agents that wait behind an ask are the tree's: said once, under the first of its rows. (Each ask's own cache is its own.)
+        const said = new Set<string>();
+        const rows = holdOrder(ranked, (r) => r.a.id, held).map((r) => {
+          const tree = r.a.session_id ?? r.a.id;
+          const cost = !said.has(tree);
+          said.add(tree);
+          return { ...r, first: true, last: true, alone: wide, fresh: true, asks: true, cost };
+        });
         return { part, n: of.length, rows };
       }
       const groups = new Map<string, typeof named>();
@@ -204,7 +211,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
         {shown.length === 0 && <li><Empty>{onlyUnread ? "Nothing unread." : `Nothing ${STATE_WORD.need.toLowerCase()}.`}</Empty></li>}
         {/* What could land is its own part, after what waits on the owner and counted in neither it nor the unread. */}
         {!parts.some((p) => p.part === "need") && <ReadyToLand inbox />}
-        {parts.flatMap(({ part, n, rows }) => [<PartHead key={part} part={part} n={n} />, ...rows.map(({ a, first, last, alone, place, fresh, asks, word, declined }) => {
+        {parts.flatMap(({ part, n, rows }) => [<PartHead key={part} part={part} n={n} />, ...rows.map(({ a, first, last, alone, place, fresh, asks, word, declined, ...more }) => {
           // On a phone a row that waits gives its line the width: its mark and its "Review" say what it is, and its age is in the tooltip.
           // A row offers the card that answers it only while that card waits: an ask whose card is gone (answered, or its turn stopped) has nothing to answer.
           const offers = !!a.open;
@@ -252,9 +259,11 @@ function Inbox({ onClose }: { onClose: () => void }) {
                     {offers && <span className="shrink-0 text-micro font-medium text-accent-ink" data-testid="inbox-opens">{askAction(a)}</span>}
                     <span className={cn("shrink-0 text-micro text-faint tabular-nums", tight && "sr-only")} title={when(a.ts)}>{ago(a.ts)}</span>
                   </span>
-                  {/* What the wait costs, under what it is: why it stands where it does in the queue. */}
+                  {/* What the wait costs, under what it is: why it stands where it does in the queue. The agents that
+                      wait are said under the first row of their tree only. */}
                   {part === "need" && (() => {
-                    const now = live[a.id] ?? a.wait_now ?? a.data?.wait;
+                    const was = live[a.id] ?? a.wait_now ?? a.data?.wait;
+                    const now = was && "cost" in more && !more.cost ? { ...was, agents: 0 } : was;
                     return costs(now) && (
                       <span className="block pb-0.5 pl-6 text-micro leading-snug text-faint sm:truncate" data-testid="inbox-cost" title="What this wait costs now. The wait that cost most as it began is listed first.">
                         {costLine(now, Date.now())}

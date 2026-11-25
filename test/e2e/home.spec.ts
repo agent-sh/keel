@@ -856,6 +856,15 @@ test("home: every count of what needs you counts sessions, not their agents' req
     expect(await ink("home-count-fail"), "a failure is in ink").toBe(await ink("home-count-need"));
     await expect(page.getByTestId("inbox-count")).toHaveText("1");
     await shoot(page, "home-12-counted-sessions");
+    // The Inbox lists each request, and says once, under the first of them, that agents of the tree wait.
+    await page.getByTestId("inbox-button").click();
+    // (The failed session is under Needs you too: the tree's rows are its two approvals.)
+    const asks = page.locator('[data-testid="inbox-item"][data-part="need"]').filter({ has: page.getByTestId("inbox-word").filter({ hasText: "Approval" }) });
+    await expect(asks).toHaveCount(2);
+    await expect(page.getByTestId("inbox-list").getByTestId("inbox-cost").filter({ hasText: /agents? waits?/ }), "the tree's waiting agents are said once").toHaveCount(1);
+    await expect(asks.first().getByTestId("inbox-cost")).toContainText(/agents? waits?/);
+    await shoot(page, "home-12b-inbox-once");
+    await page.keyboard.press("Escape");
     // The failed session's page: one other session waits, however many of its agents ask.
     await page.goto(`/s/${failed.id}`);
     await expect(page.getByTestId("waiting-elsewhere")).toContainText("1 other session waits");
