@@ -107,7 +107,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
           owner, the recent sessions. With the width for it, what needs the owner stands beside
           the start box, so nothing under it moves the box. */}
       <div className="@container flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
-        <div className={cn("k-home mt-auto grid w-full max-w-[46rem] grid-cols-1 pb-[8vh] pt-6 md:mb-auto md:pb-8 md:pt-0", beside ? "md:mt-5" : "md:mt-[9vh] @[74rem]:max-w-[88rem] @[74rem]:grid-cols-[minmax(0,46rem)_minmax(0,1fr)] @[74rem]:gap-x-14")}>
+        <div className={cn("k-home mt-auto grid w-full max-w-[46rem] grid-cols-1 pb-[8vh] pt-6 md:mb-auto md:pb-8 md:pt-0", beside ? "md:mt-5" : "md:mt-[4vh] @[74rem]:max-w-[88rem] @[74rem]:grid-cols-[minmax(0,46rem)_minmax(0,1fr)] @[74rem]:gap-x-14")}>
         <div className="min-w-0" data-testid="home-start">
           {/* On a phone the helper comes first: ask it across the sessions, by voice or typed. */}
           {phone && <HelperAsk />}

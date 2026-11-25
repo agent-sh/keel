@@ -54,6 +54,11 @@ test("home: the sessions' state, what needs you, and a place to start", async ({
     // The headline has no caption of help under it: the start box is its own part of the page.
     await expect(page.getByText("Paste screenshots")).toHaveCount(0);
     await expect(page.getByTestId("home-start")).toContainText("Start a session");
+    // No blank band over the counts: the headline starts under the top row, at a laptop and at a desk.
+    for (const [width, height] of [[1366, 768], [1920, 1040]] as const) {
+      await page.setViewportSize({ width, height });
+      await expect.poll(async () => (await watch.boundingBox())!.y / (await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))), { message: `the headline's top at ${width}` }).toBeLessThanOrEqual(6.5);
+    }
     // The count is said once on the page: the list under the headline is not headed by its word again
     // (a screen reader still has the heading to move by).
     const drawn = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>("h2, h3, [data-testid^='home-count']")]
