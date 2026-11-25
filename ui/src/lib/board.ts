@@ -2,7 +2,7 @@
 // session, again when an agent of its tree changes state, its repository's landing queue moves, a
 // pair of its branches was checked together or a branch's pictures moved on,
 // and on the owner's Refresh. Nothing is read while the panel is closed.
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { Board, BoardRow } from "../../../src/board/rules.ts";
 import { useAuto } from "./automation.ts";
 import { api, onFeature, reportUnlessGone } from "./store.ts";
@@ -41,6 +41,19 @@ export function useTreeMark(root: string): string {
     walk(root, 0);
     return out.sort().join(",");
   });
+}
+
+// The rows a hover card says of a session, from the work board of its tree: the session's own row when it is an
+// agent, the rows of its agents when it has some (a session with none costs no read). The board is read once when
+// the card shows (the daemon answers from what it keeps), and the rows are whatever the page then holds.
+const NONE: BoardRow[] = [];
+export function useBoardRows(sessionId: string, root: string, hasAgents: boolean): BoardRow[] {
+  const on = root !== sessionId || hasAgents;
+  useEffect(() => {
+    if (on) loadBoard(root).catch(reportUnlessGone);
+  }, [root, on]);
+  const board = useSyncExternalStore(subscribe, () => (on ? byId[root] : undefined));
+  return useMemo(() => (!board ? NONE : root === sessionId ? board.rows : board.rows.filter((r) => r.session_id === sessionId)), [board, root, sessionId]);
 }
 
 export function useBoard(id: string): Board | undefined {

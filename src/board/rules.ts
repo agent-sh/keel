@@ -507,6 +507,28 @@ export const readyToLand = (r: BoardRow) =>
   toLand(r) && r.landed?.state === "no" && !live(r.state) && r.checks?.state === "known" && r.checks.failed.length === 0 && r.checks.notRun.length === 0 && r.checks.passed.length > 0
   && !!r.work && !r.work.uncommitted && !(r.review && (r.review.verdict === "refused" || r.review.verdict === "disputed"));
 
+// The one "Work" line of a session's hover card: the branch it made (an agent's own, or the branches of a
+// coordinator's agents), what they change, what their checks said on these trees and whether nothing is left
+// but the landing. null: no branch, so nothing to say.
+export function workLine(rows: readonly BoardRow[]): string | null {
+  const own = rows.filter((r) => r.branch && !branchGone(r));
+  if (!own.length) return null;
+  const parts: string[] = [];
+  const one = own.length === 1 ? own[0]! : null;
+  parts.push(one ? one.branch! : `${own.length} branches`);
+  const changes = own.map((r) => r.work?.branch ?? r.work?.uncommitted).filter((c): c is Change => !!c);
+  if (changes.length) parts.push(changeWords(changes.reduce<Change>((t, c) => ({ files: t.files + c.files, added: t.added + c.added, removed: t.removed + c.removed, ...(t.more || c.more ? { more: true as const } : {}) }), { files: 0, added: 0, removed: 0 })));
+  const known = own.map((r) => r.checks).filter((c): c is Extract<BoardChecks, { state: "known" }> => c?.state === "known");
+  const failed = [...new Set(known.flatMap((c) => c.failed))];
+  if (failed.length) parts.push(`${failed.join(", ")} failed on ${one ? "this tree" : "a tree"}`);
+  else if (known.length === own.length && known.every((c) => c.passed.length && !c.notRun.length)) parts.push(one ? "checks green on this tree" : "checks green on every tree");
+  const open = own.filter(toLand);
+  if (!open.length && own.every((r) => r.landed?.state === "yes")) parts.push(one ? "landed" : "all landed");
+  else if (one) { if (readyToLand(one)) parts.push("ready to land"); }
+  else if (open.length) parts.push(`${open.filter(readyToLand).length} of ${open.length} ready to land`);
+  return parts.join(", ");
+}
+
 // The board in a few hundred tokens: each agent that needs the coordinator in a line of its own (one that
 // works, or whose branch is not landed), the rest by their ids on one line. `all`: every row in full;
 // `agent`: that row alone, in full.

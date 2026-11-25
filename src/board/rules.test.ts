@@ -161,3 +161,28 @@ describe("the overlap forecast", () => {
     expect(R.rowLine(held, true)).toContain("would conflict with keel/b (b2) in notes.md");
   });
 });
+
+// UX-S170: the hover card's one Work line.
+describe("workLine", () => {
+  const row = (o: Partial<BoardRow> = {}): BoardRow => ({
+    id: "a1", session_id: "s1", parent_id: "root", depth: 1, title: "Lane", type: "general-purpose", model: "m", state: "completed", created: 1, ended: 2, machine: null,
+    branch: "keel/a", repo: "/r", base: "main", head: "a".repeat(40), ahead: 1, behind: 0, worktree: "here",
+    checks: { state: "known", passed: ["typecheck"], failed: [], notRun: [] }, review: null, reviews: [],
+    landed: { state: "no", missing: 1 }, queue: null, live: null, work: { uncommitted: null, branch: { files: 3, added: 12, removed: 4 } }, together: [], ...o,
+  });
+  test("one branch: its name, its change, its checks and that nothing is left but the landing", () => {
+    expect(R.workLine([row()])).toBe("keel/a, 3 files +12 -4, checks green on this tree, ready to land");
+  });
+  test("a failed check is named, and the branch is not ready", () => {
+    expect(R.workLine([row({ checks: { state: "known", passed: [], failed: ["unit"], notRun: [] } })])).toBe("keel/a, 3 files +12 -4, unit failed on this tree");
+  });
+  test("no branch says nothing", () => {
+    expect(R.workLine([row({ branch: null, checks: null, landed: null, work: null })])).toBeNull();
+    expect(R.workLine([])).toBeNull();
+  });
+  test("several branches are counted together", () => {
+    const b = row({ branch: "keel/b", session_id: "s2", id: "b2", work: { uncommitted: null, branch: { files: 1, added: 2, removed: 0 } } });
+    expect(R.workLine([row(), b])).toBe("2 branches, 4 files +14 -4, checks green on every tree, 2 of 2 ready to land");
+    expect(R.workLine([row(), row({ branch: "keel/c", state: "running", landed: { state: "no", missing: 1 } })])).toContain("1 of 2 ready to land");
+  });
+});

@@ -40,6 +40,9 @@ import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where
 import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
 import { useLink } from "./Stale.tsx";
 import { useReach } from "../lib/reach.ts";
+import { rootOf } from "../lib/agent-tree.ts";
+import { useBoardRows } from "../lib/board.ts";
+import { workLine } from "../../../src/board/rules.ts";
 import { auto, useAuto } from "../lib/automation.ts";
 import { setAgentsOpen, useAgentsOpen } from "../lib/agents-open.ts";
 import { isCounted } from "../../../src/core/agent-count.ts";
@@ -962,6 +965,14 @@ function Marks({ current }: { current: string | null }) {
 
 // The card beside an entry: what the session is, where, and what it last did.
 const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
+// The card's Work line: an agent's branch, what it changes, its checks and whether it is ready to land, from the work
+// board of its tree, read when the card shows. A session that is no agent's, or has no branch, has none.
+function CardWork({ s }: { s: Session }) {
+  const root = useStore((x) => rootOf((id) => x.sessions[id]?.parent_id, s.id));
+  const has = useAuto((x) => Object.values(x.agents).some((a) => a.parent_id === s.id));
+  const line = workLine(useBoardRows(s.id, root, has));
+  return line ? <p className="k-rail-card-work" data-testid="rail-card-work"><b>Work</b>{line}</p> : null;
+}
 function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left: number; row?: boolean; cut?: boolean }) {
   const s = useStore((x) => x.sessions[given.id]) ?? given;
   const st = useSessionState(s);
@@ -985,6 +996,7 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
         {cut && <p className="k-rail-card-title">{s.title}</p>}
         {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={offline ? "offline" : st.why}>{why}</p>}
         {line && line !== why && <p className="k-rail-card-line">{line}</p>}
+        <CardWork s={s} />
         <dl className="k-rail-card-meta">
           {s.outside && <><dt>Runs in</dt><dd>{OUTSIDE_LABEL[s.outside.harness] ?? s.outside.harness}</dd></>}
           <dt>Model</dt><dd>{modelOf(s.model)}</dd>
@@ -1011,6 +1023,7 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
       {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={offline ? "offline" : st.why}>{why}</p>}
       {line && line !== why && <p className="k-rail-card-line">{line}</p>}
       {unread > 0 && w !== "need" && <p className="k-rail-card-new">{NEW_SINCE}</p>}
+      <CardWork s={s} />
       <dl className="k-rail-card-meta">
         {s.outside && <><dt>Runs in</dt><dd>{OUTSIDE_LABEL[s.outside.harness] ?? s.outside.harness}</dd></>}
         <dt>Folder</dt><dd title={s.workspace}><b>{folderOf(s)}</b>{s.machine ? ` on ${machineName(s.machine)}` : ""} in {home(s.workspace.replace(/\/[^/]*\/?$/, "")) || "/"}</dd>
