@@ -1867,8 +1867,15 @@ for (const size of SIZES) {
             await shoot(page, `phone-surfaces-48-sweep-${size.width}-${scale}`);
             // The helper's panel: its name and face, its memory and the card.
             await page.goto(`/s/${helper.session_id}`);
-            await page.getByTestId("panel-menu").tap();
-            await page.getByTestId("panel-pick-helper").tap();
+            // The Panels button, or at a large text size (the top bar's tools are in the menu) the menu's list of panels.
+            await expect(page.getByTestId("session-menu").first()).toBeVisible();
+            if (await page.getByTestId("panel-menu").count()) {
+              await page.getByTestId("panel-menu").tap();
+              await page.getByTestId("panel-pick-helper").tap();
+            } else {
+              await page.getByTestId("session-menu").first().tap();
+              await page.getByTestId("header-more").getByTestId("menu-panel-helper").tap();
+            }
             const panel = page.getByTestId("helper-panel");
             await expect(panel.getByTestId("helper-head-name")).toHaveText("Pip");
             await expect(panel.getByTestId("helper-head-face")).toBeVisible();
