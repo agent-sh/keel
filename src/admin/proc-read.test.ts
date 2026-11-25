@@ -7,7 +7,14 @@ const live = process.platform === "linux";
 test.skipIf(!live)("a child is found with its command line, and its environment is read once", async () => {
   const kid = Bun.spawn(["sleep", "30"], { env: { ...process.env, KEEL_SESSION: "s-test" } });
   try {
-    const first = readProcs({ self: process.pid, jobs: [], seen: [] });
+    // The child can be seen between the new command line and the new name of its exec (the
+    // name then is still its parent's): read until the name is the program's own, as a pass
+    // of the sampler would a moment later.
+    let first = readProcs({ self: process.pid, jobs: [], seen: [] });
+    for (let i = 0; i < 200 && first.procs.find((p) => p.pid === kid.pid)?.name !== "sleep"; i++) {
+      await Bun.sleep(5);
+      first = readProcs({ self: process.pid, jobs: [], seen: [] });
+    }
     const one = first.procs.find((p) => p.pid === kid.pid);
     expect(one?.cmdline.split("\0").filter(Boolean)).toEqual(["sleep", "30"]);
     expect(one?.ppid).toBe(process.pid);
