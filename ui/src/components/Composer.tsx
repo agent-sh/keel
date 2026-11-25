@@ -1544,7 +1544,7 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
               onMouseDown={(e) => e.preventDefault()}
               // It goes to the request: the keyboard rests on it (the region keeps the card with the keyboard in view).
               onClick={() => { const c = next.current; if (!c?.isConnected) return; takeKeys(c, true, false); show(c); }}
-              className="inline-flex items-center gap-1 rounded-sm px-1 text-micro leading-none text-muted hover:text-fg focus-visible:text-fg"
+              className="inline-flex items-center gap-1 text-micro leading-none text-muted hover:text-fg focus-visible:text-fg"
             >
               {more} more below
               <ChevronDown aria-hidden="true" className="size-3" />

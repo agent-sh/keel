@@ -778,12 +778,13 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .k-tray[data-more="down"] { mask-image: linear-gradient(to top, transparent, #000 1.25rem); }
 .k-tray[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem, #000 calc(100% - 1.25rem), transparent); }
 /* While a request is kept in view and others wait below it, the foot says so (Composer's Tray): the chip stands
-   at the region's foot, where no fade lies over it. It takes no room: the cards stay where they are. */
+   at the region's foot, where no fade lies over it. It takes no room: the cards stay where they are. It has its own
+   ground: over a card's label line it was bare text printed on text. */
 .k-tray[data-cue][data-more="down"] { mask-image: none !important; }
 .k-tray[data-cue][data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem) !important; }
 .k-tray[data-cue][data-more="up down"]:has(.k-ask-list[data-bar-stays]) { mask-image: none !important; }
 .k-tray-cue { position: sticky; bottom: 0; z-index: 2; height: 0; pointer-events: none; }
-.k-tray-cue > button { position: absolute; right: 0.625rem; bottom: 0.4375rem; pointer-events: auto; }
+.k-tray-cue > button { position: absolute; right: 0.625rem; bottom: 0.4375rem; pointer-events: auto; padding: 0.25rem 0.5rem; border-radius: var(--radius-lg); background: var(--raised); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line-strong); }
 /* No fade over the control that holds the keyboard. */
 .k-tray:focus-within { mask-image: none; }
 /* While something there waits on the owner's answer, a long draft gives way before the cards do. */

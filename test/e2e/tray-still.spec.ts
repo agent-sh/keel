@@ -94,6 +94,8 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
         return { in: c.top >= box.top && c.bottom <= box.bottom + 1, clear: c.left >= a.right || c.top >= a.bottom };
       });
       expect(inside).toEqual({ in: true, clear: true });
+      // It is a chip with a ground of its own: over a card's label line it was bare text printed on text.
+      expect(await cue.evaluate((el) => { const c = getComputedStyle(el); return c.backgroundColor !== "rgba(0, 0, 0, 0)" && c.backgroundColor !== "transparent"; })).toBe(true);
       await shoot(page, `tray-cue-01-${size.width}`);
       await cue.click();
       await expect.poll(() => page.evaluate(() => {
