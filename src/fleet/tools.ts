@@ -98,13 +98,30 @@ const runOn: Tool = {
   },
 };
 
-const sessionsList: Tool = {
+// The sessions one call of keel__sessions_list shows.
+export const LIST_MAX = 100;
+// The rows that match (title or directory), from `offset`, at most LIST_MAX, one line each; what a cut list
+// leaves out is said at its end, with the offset that shows it.
+export function pageOfSessions<T extends { session: { title?: string; workspace: string } }>(rows: readonly T[], o: { match?: string; offset?: number }, line: (r: T) => string): string {
+  const want = (o.match ?? "").trim().toLowerCase();
+  const hits = want ? rows.filter((r) => `${r.session.title ?? ""}\n${r.session.workspace}`.toLowerCase().includes(want)) : rows;
+  if (!hits.length) return want ? `No other session matches "${o.match!.trim()}".` : "No other sessions.";
+  const at = o.offset ?? 0;
+  if (at >= hits.length) return `Nothing at offset ${at}: ${hits.length} session${hits.length === 1 ? "" : "s"}${want ? " match" : ""}.`;
+  const shown = hits.slice(at, at + LIST_MAX);
+  const more = hits.length - at - shown.length;
+  return [...shown.map(line), ...(more > 0 ? [`${more} more: call again with offset ${at + shown.length}${want ? " and the same match" : ""}.`] : [])].join("\n");
+}
+
+export const sessionsList: Tool = {
   name: "keel__sessions_list",
-  description: "List the owner's other sessions, on this daemon and on linked machines: the address to send to, title, machine, directory and state (needs you, working, failed, stopped, done, not started; a session whose agents still work is working, with how many). Leaves out this session and archived ones. report: true gives one short report instead: the agents you started, then this daemon's other sessions by what needs the owner, what failed and why, and what runs and for how long, with the turns and spend since a time.",
+  description: `List the owner's other sessions, on this daemon and on linked machines: the address to send to, title, machine, directory and state (needs you, working, failed, stopped, done, not started; a session whose agents still work is working, with how many). Leaves out this session and archived ones. Shows ${LIST_MAX} at a time: a cut list ends with how many more there are, and offset takes the next ones; match keeps those whose title or directory holds a text. report: true gives one short report instead: the agents you started, then this daemon's other sessions by what needs the owner, what failed and why, and what runs and for how long, with the turns and spend since a time.`,
   input_schema: {
     type: "object",
     properties: {
       machine: { type: "string", description: "Only this machine's sessions" },
+      match: { type: "string", description: "Only sessions whose title or directory holds this text (any case)." },
+      offset: { type: "integer", description: "Skip this many sessions of the list: the next ones after a list that ended with \"N more\"." },
       report: { type: "boolean", description: "The short report instead of the list." },
       since: { type: "string", description: "With report, what was done and spent since: a span back from now (90s, 30m, 1h, 2d) or an ISO time. A day by default, at most 7 days." },
       max: { type: "integer", description: `With report, the other sessions listed, the ones that need the owner first (default ${MAX}).` },
@@ -127,13 +144,14 @@ const sessionsList: Tool = {
       }
     }
     if (!messages) return fail("The fleet is not running.");
+    if (input.offset !== undefined && !(Number.isInteger(input.offset) && input.offset >= 0)) return fail("offset is a whole number from 0 up");
     const want = typeof input.machine === "string" ? input.machine.toLowerCase() : "";
     const rows = messages.addressable().filter((a) => a.session.id !== ctx.sessionId && !a.session.parent_id && (!want || a.machine.toLowerCase() === want || a.machine_id === want));
     if (!rows.length) return ok("No other sessions.");
     // A linked daemon's row says what that daemon last showed of it.
-    const counts = agentCounts();
-    const state = (a: (typeof rows)[number]) => (a.local ? sessionState(a.session, { counts }).word : watchWord(watchOf(a.session, undefined)));
-    return ok(rows.slice(0, 100).map((a) => `${a.to}\t${a.session.title || "(untitled)"}\t${a.machine}\t${a.session.workspace}\t${state(a)}`).join("\n"));
+    let counts: ReturnType<typeof agentCounts> | undefined;
+    const state = (a: (typeof rows)[number]) => (a.local ? sessionState(a.session, { counts: (counts ??= agentCounts()) }).word : watchWord(watchOf(a.session, undefined)));
+    return ok(pageOfSessions(rows, { match: typeof input.match === "string" ? input.match : "", offset: Number(input.offset ?? 0) }, (a) => `${a.to}\t${a.session.title || "(untitled)"}\t${a.machine}\t${a.session.workspace}\t${state(a)}`));
   },
 };
 
