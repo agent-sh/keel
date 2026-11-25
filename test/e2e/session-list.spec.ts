@@ -60,27 +60,35 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     const toggle = row(page, parent).getByTestId("children-toggle");
     const dock = page.getByTestId("dock-agents");
     const line = page.getByTestId("dock-agents-line");
-    const parts = line.getByTestId("dock-agent");
+    const count = page.getByTestId("dock-agents-count");
+    const rows = page.getByTestId("background-popup").getByTestId("bg-agent");
     await expect(dock).toHaveAttribute("aria-label", "Agents: 8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
-    expect((await parts.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")))).sort()).toEqual(["fail", "work"]);
+    // The line counts what is live or owed to the owner (the failed one and the working one), and names none.
+    await expect(count).toHaveText("2");
+    await expect(line.getByTestId("dock-agent")).toHaveCount(0);
     expect(reads).toEqual([""]);
     expect(await wrap.innerText(), "the sidebar says no number of agents").not.toMatch(/\b\d+ agents?\b/);
-    // One form whatever the states: each is its dot and its name, on one line, and a press opens it.
+    // Its popup: each is its dot and its name, and a press opens it.
+    await dock.click();
     for (const [watch, title] of [["fail", `Failing helper ${tag}`], ["work", `Working helper ${tag}`]] as const) {
-      const one = parts.and(page.locator(`[data-watch="${watch}"]`));
+      const one = rows.and(page.locator(`[data-watch="${watch}"]`));
       await expect(one.locator(".k-mark")).toBeVisible();
-      await expect(one).toHaveText(title);
+      await expect(one.getByTestId("bg-agent-title")).toHaveText(title);
     }
-    // The line names what is live or owed to the owner: the six that finished are in its word's name and its popup, not on the line.
-    await expect(parts.filter({ hasText: "Finished helper" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("background-popup")).toBeHidden();
+    // (The popup gives the focus back to the word, and the pointer rests on it; the pictures show the line at rest.)
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.mouse.move(1, 1);
+    // The six that finished are in its word's name and its popup, not on the line.
     await expect(line).not.toContainText("Finished helper");
-    // Every name lies inside the line's box, at the two desk sizes, in both themes: none peeks out cut under it.
+    // The line is one line with its count at the two desk sizes, in both themes: nothing of it is cut.
     for (const size of [{ width: 1920, height: 1040 }, { width: 1366, height: 768 }]) {
       await page.setViewportSize(size);
       await expect.poll(() => line.evaluate((el) => {
-        const box = el.getBoundingClientRect();
-        return [...el.querySelectorAll<HTMLElement>("[data-testid=dock-agent]")].filter((p) => { const r = p.getBoundingClientRect(); return r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5 || r.right > box.right + 0.5; }).length;
-      }), { message: `the names of the agents line lie inside it at ${size.width}` }).toBe(0);
+        const box = el.getBoundingClientRect(), c = el.querySelector<HTMLElement>("[data-testid=dock-agents-count]")?.getBoundingClientRect();
+        return !!c && box.height <= 30 && c.top >= box.top - 0.5 && c.bottom <= box.bottom + 0.5 && c.right <= box.right + 0.5;
+      }), { message: `the agents line is one line with its count at ${size.width}` }).toBe(true);
       await shoot(page, `session-list-01-agents-line-${size.width}`);
     }
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -97,8 +105,9 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     await toggle.click();
     await expect(kids.getByTestId("child-row")).toHaveCount(8);
     expect(reads).toEqual(["", `?agents_of=${parent}`]);
-    // A press on an agent's name over the box opens that agent.
-    await parts.filter({ hasText: `Working helper ${tag}` }).click();
+    // A press on an agent's name in the line's popup opens that agent.
+    await dock.click();
+    await rows.filter({ hasText: `Working helper ${tag}` }).getByTestId("bg-agent-open").click();
     await expect(page).toHaveURL(new RegExp(`/s/${working}$`));
     await page.goBack();
     await expect(page).toHaveURL(new RegExp(`/s/${parent}$`));
@@ -142,7 +151,7 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
       await page.goto(`/s/${parent}`);
       await expect(dock).toHaveAttribute("aria-label", "Agents: 8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
       await expect(toggle).toBeVisible();
-      const fit = () => line.evaluate((el) => { const sum = el.getBoundingClientRect(); return { h: Math.round(sum.height), over: Math.max(0, ...[...el.querySelectorAll<HTMLElement>("[data-testid=dock-agent]")].filter((e) => e.getBoundingClientRect().top < sum.bottom).map((e) => Math.round(e.getBoundingClientRect().right - sum.right))) }; });
+      const fit = () => line.evaluate((el) => { const sum = el.getBoundingClientRect(), c = el.querySelector<HTMLElement>("[data-testid=dock-agents-count]")?.getBoundingClientRect(); return { h: Math.round(sum.height), over: c ? Math.max(0, Math.round(c.right - sum.right)) : 99 }; });
       await expect.poll(async () => { const f = await fit(); return f.h <= 30 && f.over <= 0; }, { message: `the agents line at ${width}, list ${listW || "default"}: ${JSON.stringify(await fit())}` }).toBe(true);
       await shoot(page, `session-list-01-agents-line-${width}-${listW || "wide"}`);
     }

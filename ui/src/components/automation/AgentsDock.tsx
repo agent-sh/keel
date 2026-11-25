@@ -1,7 +1,8 @@
-// The session's agents in the session itself, over its box: each live agent (at work, waiting, needing the owner,
-// or failed and not looked at) by its name and its state's dot, a press on it opens that agent. The word Agents
-// opens all of them (the background popup: each agent, its state, open, stop, the done ones too). The sidebar
-// says nothing of how many agents a session has: its row only has a chevron that opens their tree.
+// The session's agents in the session itself, over its box. At a desk it is one quiet item: the word Agents, how
+// many are live (at work, waiting, needing the owner, or failed and not looked at), and the dot of one that needs
+// the owner; a press opens the background popup (each agent, its state, open, stop, the done ones too). On a
+// phone outside Focus the line also lists each live agent by its name and its state's dot, a press on one opens
+// it. The sidebar says nothing of how many agents a session has: its row only has a chevron that opens their tree.
 import { Popover } from "@base-ui/react/popover";
 import { ChevronRight } from "lucide-react";
 import { useMemo } from "react";
@@ -16,6 +17,7 @@ import { Mark } from "../Mark.tsx";
 import { agentSaid } from "./bits.tsx";
 import { BackgroundPopup, useBackground } from "./BackgroundPopover.tsx";
 import { useCalm } from "../../lib/focus.ts";
+import { usePhoneWidth } from "../../lib/list-hold.ts";
 
 // The tally of the agents the session's counts name (src/core/agent-count.ts), its tree's included; null with none.
 // `shown` is what the line draws: only what is live or owed to the owner (needs you, working, waiting, and a failure
@@ -41,8 +43,11 @@ export function AgentsDock({ sessionId }: { sessionId: string }) {
   const st = useSessionState(session);
   // The session's own turn is at rest and it waits on them: the line below says it, as its row's dot does.
   const waiting = backgroundOf(st) === "agents";
-  // Focus: one quiet item, the word and how many are live; the names and their dots are in the popup it opens.
-  const calm = useCalm();
+  // One quiet item, the word and how many are live; the names and their dots are in the popup it opens. A phone
+  // outside Focus keeps the names on the line.
+  const focus = useCalm();
+  const phone = usePhoneWidth();
+  const calm = focus || !phone;
   if (!tally) return null;
   if (calm) {
     return (
@@ -50,6 +55,7 @@ export function AgentsDock({ sessionId }: { sessionId: string }) {
         <Popover.Root>
           <Popover.Trigger className="k-agents-all" data-testid="dock-agents" aria-label={`Agents: ${tally.text}`} aria-description={waiting ? WAITING_ON_AGENTS : undefined} title={tally.text}>
             <span className="k-agents-label">Agents</span>
+            {tally.named.some((n) => n.w === "need") && <Mark w="need" className="size-2" />}
             {tally.named.length > 0 && <span className="k-agents-count tabular-nums" data-testid="dock-agents-count">{tally.named.length}</span>}
             <ChevronRight className="k-docket-more" aria-hidden="true" />
           </Popover.Trigger>

@@ -57,10 +57,23 @@ test("a parent with an agent at work reads as working until the agent ends", asy
     await expect(r).toHaveAttribute("data-watch", "work");
     // (A row of one line says no number of agents: the session says it.)
     await expect(r.getByTestId("row-state")).toHaveText("Working");
-    // The head says the word alone; the line over the box names the agent, by its dot and title.
+    // The head says the word alone. The line over the box is quiet in the workbench too: the word and how many are
+    // live, no agent's name; its popup names the agent, by its dot and title.
     await expect(page.getByTestId("station-word")).toHaveText("Working");
-    await expect(page.getByTestId("dock-agent")).toHaveCount(1);
-    await expect(page.getByTestId("dock-agent")).toHaveAttribute("data-watch", "work");
+    const agentsLine = page.getByTestId("dock-agents-line");
+    await expect(agentsLine).toHaveAttribute("data-calm", "");
+    await expect(page.getByTestId("dock-agents")).toContainText("Agents");
+    await expect(page.getByTestId("dock-agents-count")).toHaveText("1");
+    await expect(agentsLine.getByTestId("dock-agent")).toHaveCount(0);
+    await expect(agentsLine).not.toContainText("Slow helper");
+    await page.getByTestId("dock-agents").click();
+    await expect(page.getByTestId("bg-agent")).toHaveCount(1);
+    await expect(page.getByTestId("bg-agent")).toHaveAttribute("data-watch", "work");
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("background-popup")).toBeHidden();
+    // (The popup gives the focus back to the word, and the pointer rests on it; the pictures show the line at rest.)
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.mouse.move(1, 1);
     // The palette's mark says the same.
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill("Parent with an agent");

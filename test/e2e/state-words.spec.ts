@@ -84,22 +84,38 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     // Eight agents started together are one line in the conversation, which opens to each agent's own line.
     const started = station(page, coord).locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
     const open = async () => { await expect(started).toContainText("Started 8 agents"); if ((await started.getAttribute("aria-expanded")) !== "true") await started.click(); };
-    // The session itself counts every agent by state (its dock's word Agents says them all), and names each live one over
-    // the box by its dot and title: what works, waits, needs the owner or failed unseen; the done one is in the list it opens.
+    // The session itself counts every agent by state (its dock's word Agents says them all), and says over the box how
+    // many are live (what works, waits, needs the owner or failed unseen); the list it opens names each by its dot and title.
     // The sidebar says no number: its row has a chevron that opens the tree.
     const toggle = row(page, coord).getByTestId("children-toggle");
     const dock = page.getByTestId("dock-agents");
     const summary = { toHaveText: (text: string, o?: { timeout?: number }) => expect(dock).toHaveAttribute("aria-label", `Agents: ${text}`, o) };
     await summary.toHaveText("8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
     await expect(dock).toHaveAttribute("title", "8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
-    const named = page.getByTestId("dock-agents-summary").getByTestId("dock-agent");
-    // Check the unseen failure before touching the pane: clicking to switch
-    // views marks it seen, so that click and this check must not race.
-    const namedStates = () => named.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch") ?? "").sort());
-    const live = async () => (await named.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch") ?? ""))).filter((w) => w !== "fail").sort();
-    await expect.poll(namedStates).toEqual(["fail", "need", "wait", "wait", "work", "work", "work"]);
+    const agentsLine = page.getByTestId("dock-agents-line");
+    const named = page.getByTestId("background-popup").getByTestId("bg-agent");
+    // The states of the agents in the line's popup, read with it open and closed again.
+    const popped = async () => {
+      await dock.click();
+      await expect(named.first()).toBeVisible();
+      const ws = await named.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch") ?? ""));
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("background-popup")).toBeHidden();
+      return ws;
+    };
+    // The live ones the line counts, by state (a failure stays counted until the owner looked at it).
+    const live = async () => (await popped()).filter((w) => ["need", "work", "wait", "resume"].includes(w)).sort();
+    // Check the unseen failure before touching the pane: a press there marks it seen, so the count that holds it
+    // (one asking, one failed unseen, three at work, two waiting) is read first.
+    await expect(page.getByTestId("dock-agents-count")).toHaveText("7");
+    await expect(agentsLine.getByTestId("dock-agent")).toHaveCount(0);
+    expect((await popped()).filter((w) => w !== "done" && w !== "fail").sort()).toEqual(["need", "wait", "wait", "work", "work", "work"]);
+    await dock.click();
     for (const l of LANES.filter((x) => x.word !== "Done")) await expect(named.filter({ hasText: l.title }).locator(".k-mark"), `named: ${l.title}`).toBeVisible();
-    await expect(named.filter({ hasText: "Summarize the open issues" })).toHaveCount(0);
+    await expect(named.filter({ hasText: "Summarize the open issues" })).toHaveAttribute("data-watch", "done");
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("background-popup")).toBeHidden();
+    await expect(agentsLine).not.toContainText("Summarize the open issues");
     // The Conversation lens is the default, and the call rows are in the full stream.
     await station(page, coord).getByTestId("lens-to-stream").click();
     await open();
@@ -180,7 +196,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working");
     await expect(station(page, coord).getByTestId("station-word")).toHaveText("Working");
     await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", /^Agents: 8 agents: .*3 working, 2 waiting/);
-    await expect(page.getByTestId("dock-agent").and(page.locator('[data-watch="work"]'))).toHaveCount(3);
+    expect((await popped()).filter((w) => w === "work")).toHaveLength(3);
     // (The background list rests in the session menu since the bar holds one menu.)
     await expect(await inHead(page, "background-button")).toHaveText("3 working, 2 waiting");
     await leaveHead(page);
@@ -270,9 +286,13 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
     await page.reload();
     await expect(kids.getByTestId("child-session").first()).toBeVisible();
-    // (The session's own line holds every name it shows, whole, at the largest text.)
-    const box = (await page.getByTestId("dock-agents-line").boundingBox())!;
-    for (const part of await named.all()) { const b = (await part.boundingBox())!; if (b.y < box.y + box.height) expect(b.x + b.width, "a name is whole at the largest text").toBeLessThanOrEqual(box.x + box.width); }
+    // (The session's own line is one line with its count whole at the largest text.)
+    const box = (await agentsLine.boundingBox())!;
+    const c = (await page.getByTestId("dock-agents-count").boundingBox())!;
+    expect(c.y + c.height, "the count is on the line at the largest text").toBeLessThanOrEqual(box.y + box.height + 0.5);
+    expect(c.x + c.width, "the count is whole at the largest text").toBeLessThanOrEqual(box.x + box.width + 0.5);
+    const label = (await dock.locator(".k-agents-label").boundingBox())!;
+    expect(Math.abs(label.y + label.height / 2 - (c.y + c.height / 2)), "the word and the count are one line at the largest text").toBeLessThanOrEqual(2);
     await shoot(page, "state-words-13-text-size-1-5");
     await page.evaluate(() => localStorage.removeItem("keel.textScale"));
 
@@ -630,7 +650,10 @@ test("one status a session: every surface counts working and waiting alike, and 
     await expect(await inHead(page, "background-button")).toHaveText("1 working");
     await leaveHead(page);
     await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", /^Agents: 1 agent: 1 working/);
-    await expect(page.getByTestId("dock-agent")).toHaveAttribute("data-watch", "work");
+    await page.getByTestId("dock-agents").click();
+    await expect(page.getByTestId("background-popup").getByTestId("bg-agent")).toHaveAttribute("data-watch", "work");
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("background-popup")).toBeHidden();
     await openPanel(page, "board");
     // On the board its blue dot says it: no word beside the dot, and the summary says only what is the owner's to do.
     await expect(page.getByTestId("board-row").locator(".k-mark")).toHaveAttribute("data-watch", "work");

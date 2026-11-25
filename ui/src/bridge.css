@@ -2040,8 +2040,9 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-composer-box[data-line] > * { grid-column: 1 / -1; }
 .k-composer-box[data-line] > textarea { grid-column: 1; padding-bottom: 0.625rem; }
 .k-composer-box[data-line] > .k-compose-tools { grid-column: 2; flex-wrap: nowrap; padding: 0 0.375rem 0.375rem 0; }
-/* The agents of the dock in Focus: one item in muted ink, the word and how many are live (AgentsDock.tsx). */
-.k-shell[data-mode="focus"] .k-agents-line[data-calm] .k-agents-label { font-weight: 400; color: var(--muted); }
+/* The calm agents line of the dock (every desk view, and Focus on a phone): one item in muted ink, the word and
+   how many are live, with one dot when an agent needs the owner (AgentsDock.tsx). */
+.k-agents-line[data-calm] .k-agents-label { font-weight: 400; color: var(--muted); }
 .k-agents-count { color: var(--muted); }
 
 /* ---------- A phone's Focus (lib/focus.ts) ----------

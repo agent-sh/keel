@@ -429,11 +429,16 @@ test("agents started together are one line, and the parent's row moves once for 
     await expect.poll(async () => (await agents()).map((a) => a.status).sort().join(" "), { timeout: 60_000 }).toBe("completed running running running running running");
     const dock = page.getByTestId("dock-agents");
     await expect(dock).toHaveAttribute("aria-label", "Agents: 6 agents: 5 working, 1 done", { timeout: 20_000 });
-    // One total, the line over the box's: its word Agents counts every agent it started and it names the five at work;
-    // the head says its word alone and the row says none.
+    // One total, the line over the box's: its word Agents counts every agent it started and says the five at work, its
+    // popup names them; the head says its word alone and the row says none.
     await expect(row.getByTestId("row-state")).toHaveText("Working", { timeout: 20_000 });
     await expect(page.getByTestId("station-word")).toHaveText("Working");
-    await expect.poll(async () => (await page.getByTestId("dock-agent").allInnerTexts()).sort(), { timeout: 20_000 }).toEqual([...lanes].sort());
+    await expect(page.getByTestId("dock-agents-count")).toHaveText("5", { timeout: 20_000 });
+    await dock.click();
+    const working = page.getByTestId("background-popup").locator('[data-testid="bg-agent"][data-watch="work"]').getByTestId("bg-agent-title");
+    await expect.poll(async () => (await working.allInnerTexts()).sort(), { timeout: 20_000 }).toEqual([...lanes].sort());
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("background-popup")).toBeHidden();
     // The row and its line changed a few times for six agents (they came, one reported), not at each.
     const said = await page.evaluate(() => (window as unknown as { __said: string[] }).__said);
     expect(said.length, said.join(" ;; ")).toBeLessThanOrEqual(3);

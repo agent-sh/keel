@@ -507,10 +507,20 @@ test("an agent that asks the owner is marked as asking in the tree, on its card 
     // The parent needs the owner, and says which agent asks what.
     await expect(row(page, parent)).toHaveAttribute("data-watch", "need");
     await expect(row(page, parent).getByTestId("row-why")).toHaveText(/^Agent Ask about scope.*: Question: Should the check cover the staging cluster\?$/);
-    // The count is in the session: one asks, one runs, each named over the box by its dot. The row says none, and its dot is the owner's.
+    // The count is in the session: one asks, one runs, the line over the box says how many with the one dot of the
+    // owner's, and its popup names each by its dot. The row says none, and its dot is the owner's.
     const kids = page.getByTestId("session-list").getByTestId("session-children");
-    await expect(page.getByTestId("dock-agent").and(page.locator('[data-watch="need"]'))).toContainText("Ask about scope");
-    await expect(page.getByTestId("dock-agent").and(page.locator('[data-watch="work"]'))).toContainText("Count the handlers");
+    await expect(page.getByTestId("dock-agents-count")).toHaveText("2");
+    await expect(page.getByTestId("dock-agents").locator('.k-mark[data-watch="need"]')).toBeVisible();
+    await page.getByTestId("dock-agents").click();
+    const popRows = page.getByTestId("background-popup").getByTestId("bg-agent");
+    await expect(popRows.and(page.locator('[data-watch="need"]'))).toContainText("Ask about scope");
+    await expect(popRows.and(page.locator('[data-watch="work"]'))).toContainText("Count the handlers");
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("background-popup")).toBeHidden();
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.mouse.move(1, 1);
+    await shoot(page, "session-state-agents-need");
     await expect(page.getByTestId("dock-agents")).toHaveAttribute("aria-label", "Agents: 2 agents: 1 needs you, 1 working");
     await expect(row(page, parent).locator('.k-mark[data-watch="need"]')).toBeVisible();
     // The tree: the asking agent is marked, the running one is not.

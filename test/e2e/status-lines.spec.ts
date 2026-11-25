@@ -171,23 +171,25 @@ test.describe("at a desk", () => {
       writeFileSync(gate, "go");
       await page.emulateMedia({ reducedMotion: "no-preference" });
 
-      // 4. The clicks. The word Agents: the list of agents, each to open. An agent's name: that agent. The changes: the
+      // 4. The clicks. The word Agents: the list of agents, each to open. An agent's name there: that agent. The changes: the
       // Changes panel. The folder and the file the action names: the Files panel, the file open.
       await page.goto(`/s/${id}`);
       await expect(page.getByTestId("dock-agents")).toBeVisible({ timeout: 30_000 });
+      // The line says how many are live and names none; its popup names each by its dot and title, a press opens it.
+      await expect(page.getByTestId("dock-agents-count")).toHaveText("2");
+      await expect(page.getByTestId("dock-agents-line").getByTestId("dock-agent")).toHaveCount(0);
       await page.getByTestId("dock-agents").click();
       await expect(page.getByTestId("background-popup")).toBeVisible();
-      await expect(page.getByTestId("bg-agent")).toHaveCount(2);
-      await shoot(page, "status-04-agents");
-      await page.keyboard.press("Escape");
-      await expect(page.getByTestId("background-popup")).toHaveCount(0);
-      // Each live agent is named over the box by its dot and title, and a press opens it.
-      const named = page.getByTestId("dock-agent");
+      const named = page.getByTestId("bg-agent");
       await expect(named).toHaveCount(2);
+      await shoot(page, "status-04-agents");
       await expect(named.filter({ hasText: "Reader" }).locator(".k-mark")).toBeVisible();
       await expect(named.filter({ hasText: "Checker" })).toHaveAttribute("data-watch", "work");
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("background-popup")).toHaveCount(0);
       const kids = (await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as { session_id: string; title?: string }[];
-      await named.filter({ hasText: "Reader" }).click();
+      await page.getByTestId("dock-agents").click();
+      await named.filter({ hasText: "Reader" }).getByTestId("bg-agent-open").click();
       await expect(page).toHaveURL(new RegExp(`/s/(${kids.map((k) => k.session_id).join("|")})$`));
       await expect(page).not.toHaveURL(new RegExp(`/s/${id}$`));
       await page.goto(`/s/${id}`);
