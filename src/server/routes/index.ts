@@ -21,6 +21,7 @@ import { secretRoutes } from "./secrets.ts";
 import { trustRoutes } from "./trust.ts";
 import { nestedRoutes } from "./nested.ts";
 import { repeatRoutes } from "./repeat.ts";
+import { pointerRoutes } from "./pointer.ts";
 import { readRunRoutes } from "./read-runs.ts";
 import { planRoutes } from "./plan.ts";
 import { providersRoutes } from "./providers.ts";
@@ -95,6 +96,7 @@ const modules: Record<string, RouteModule> = {
   permissionRoutes, // first: its beforeTool gate decides before the others run
   checkRoutes, // after the gate: a check is looked at (its files hashed) and answered only once the call may run
   planRoutes,
+  pointerRoutes,
   trustRoutes, // protected files are watched around calls the gate let through
   nestedRoutes, // after trust: nested instruction files go through its filter
   checkpointRoutes,

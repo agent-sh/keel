@@ -1,5 +1,5 @@
 import { Menu } from "@base-ui/react/menu";
-import { ArrowUp, ChevronDown, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
+import { ArrowUp, ChevronDown, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, MessageSquare, Slash, SlidersHorizontal, Square, X } from "lucide-react";
 import { lazy, memo, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
@@ -13,7 +13,7 @@ import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, keepText, keptText, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
-import { getState, onFeature, readAtOpen, reportError, reportUnlessGone, useStore, useModels, failed, whileHeard, type ListedModel } from "../lib/store.ts";
+import { api, getState, onFeature, readAtOpen, reportError, reportUnlessGone, useStore, useModels, failed, whileHeard, type ListedModel } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
 import { menuClosed, stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
@@ -603,7 +603,7 @@ const SessionComposer = memo(function SessionComposer({
     const am = sm ? null : promptArgAt(before, completedPrompt);
     const next: Menu | null = sm ? { kind: "slash", query: sm[1]!, start: 0 }
       : am && am.value && !/\s/.test(am.value.slice(0, 1)) ? { kind: "arg", query: am.value, ...am }
-      : fm && workspace ? { kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 } : null;
+      : fm ? { kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 } : null;
     if (!next || closed.current !== `${next.kind} ${next.start}`) closed.current = null;
     if (!next || closed.current) return setMenu(null);
     // (The servers' prompts and the agent's commands are read when the menu opens, not at each key typed in it.)
@@ -717,7 +717,34 @@ const SessionComposer = memo(function SessionComposer({
         },
       }));
     }
-    return files.map((f) => ({
+    // Another session named by its title (or a part of its id): a short pointer to it goes into the prompt, never its history.
+    const sessions = menu.query ? Object.values(getState().sessions)
+      .filter((o) => o.id !== sid && !o.archived)
+      .map((o) => ({ o, s: Math.max(fuzzy(menu.query, o.title || ""), menu.query.length >= 6 && o.id.toLowerCase().includes(menu.query.toLowerCase()) ? 50 : 0) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s || b.o.updated - a.o.updated)
+      .slice(0, 4)
+      .map(({ o }): Option => ({
+        key: `session:${o.id}`,
+        icon: <MessageSquare className="size-3.5" />,
+        label: <span className="text-fg" data-testid="mention-session">{o.title || "Untitled"}</span>,
+        detail: "session",
+        apply: () => {
+          const el = ref.current!;
+          const caret = el.selectionStart;
+          const start = menu.start;
+          // The word stays closed while the pointer is on its way: the box's own select event reads the mention again.
+          closed.current = `file ${start}`;
+          setMenu(null);
+          api<{ pointer: string }>(`/api/sessions/${o.id}/pointer`).then((r) => {
+            const next = `${text.slice(0, start)}${r.pointer} ${text.slice(caret)}`;
+            setText(next);
+            const pos = start + r.pointer.length + 1;
+            requestAnimationFrame(() => el.setSelectionRange(pos, pos));
+          }, (e) => { setNotice(`The session could not be named: ${(e as Error).message}`); reportError(e, { kind: "session-mention" }); });
+        },
+      })) : [];
+    return [...sessions, ...files.map((f) => ({
       key: f.path,
       icon: f.dir ? <Folder className="size-3.5" /> : <FileIcon className="size-3.5" />,
       label: <span className="font-mono text-caption text-fg">{f.path}</span>,
@@ -731,7 +758,7 @@ const SessionComposer = memo(function SessionComposer({
         requestAnimationFrame(() => { el.focus(); el.setSelectionRange(pos, pos); detect(next, pos); });
         if (!f.dir) setMenu(null);
       },
-    }));
+    }))];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menu, slashItems, files, text, listed, suggested, argKey]);
 
@@ -938,6 +965,7 @@ const SessionComposer = memo(function SessionComposer({
     ref.current?.focus();
   };
 
+  const mentionName = workspace ? `Files in ${workspace.split("/").pop()} and sessions` : "Sessions";
   const open = menu && options.length > 0;
   const canSend = !!text.trim() || images.length > 0;
   // What the box says about itself: among the tools, or on a line of its own
@@ -1009,7 +1037,7 @@ const SessionComposer = memo(function SessionComposer({
           data-testid={menu.kind === "slash" ? "slash-menu" : menu.kind === "arg" ? "arg-menu" : "mention-menu"}
           className="absolute inset-x-0 bottom-[calc(100%+8px)] z-30 max-h-72 overflow-y-auto rounded-lg border border-line bg-raised p-1 shadow-3 animate-pop"
         >
-          <div id={`${listId}-name`} className="px-2 pb-1 pt-1.5 k-label">{menu.kind === "slash" ? "Commands" : menu.kind === "arg" ? `${menu.arg} for /${menu.server}:${menu.prompt}, as ${menu.server} suggests` : `Files in ${workspace?.split("/").pop()}`}</div>
+          <div id={`${listId}-name`} className="px-2 pb-1 pt-1.5 k-label">{menu.kind === "slash" ? "Commands" : menu.kind === "arg" ? `${menu.arg} for /${menu.server}:${menu.prompt}, as ${menu.server} suggests` : mentionName}</div>
           <div role="listbox" id={listId} aria-labelledby={`${listId}-name`}>
             {options.map((o, i) => (
               <div
@@ -1079,7 +1107,7 @@ const SessionComposer = memo(function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? "Send steers, the list button queues" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
+        placeholder={cardKeys && !TOUCH.matches ? `${cardKeys}; Tab to the box to steer` : busy ? (TOUCH.matches ? (calm && asking ? "Tap to steer the turn" : onQueue ? "Send steers, the list button queues" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files and sessions" : "Describe the task, / for commands, @ for files and sessions"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
