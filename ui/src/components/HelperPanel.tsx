@@ -229,7 +229,7 @@ export function HelperSettings() {
         <SettingRow label="Memory" hint="Keyed records kept in this daemon's state, searched and edited in the helper's panel. Other agents' MCP servers set up in Settings reach the helper too.">
           <span className="text-ui tabular-nums text-muted">{memory} records</span>
         </SettingRow>
-        <SettingRow label="Answer approvals" hint={`Other sessions' approval cards go to the helper first, on your standing instruction: ${view.instruction.words}. An allow covers that one call. Spending, someone else's repository, what cannot be taken back, authority over your machine or rules, and targets outside content named stay yours, with a notification, and so does every card it leaves to you or does not answer.`}>
+        <SettingRow label="Answer approvals" hint={`Other sessions' approval cards go to the helper first, on your standing instruction: ${view.instruction.words}. It answers each in a fresh context of its own, with no tool but the answer, and an allow covers that one call. Spending, someone else's repository, what cannot be taken back, authority over your machine, your rules or Keel, code the card does not show, and targets outside content named stay yours, with a notification, and so does every card it leaves to you or does not answer.`}>
           <button type="button" role="switch" aria-checked={view.answer_cards} data-testid="helper-answer-cards" aria-label="Answer approvals"
             onClick={() => setHelper({ answer_cards: !view.answer_cards }).catch(reportError)} className="k-switch">
             <span className="k-switch-thumb" />

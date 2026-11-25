@@ -6,7 +6,8 @@ import { shoot } from "./shots.ts";
 // Feature: the helper answers other sessions' approval cards on the owner's standing instruction
 // (Settings > Helper > Answer approvals, on by default). A session asks to run a command; its card goes
 // to the helper first, which allows it once: the call runs, its line says the Helper allowed it and why,
-// the session's timeline names the helper, and Settings > Helper lists the answer. A card held because
+// the session's timeline names the helper, and Settings > Helper lists the answer. The card is answered in a fresh
+// context of the helper's own (no history, no tool but the answer), closed when its turn ends. A card held because
 // outside content named its target first stays the owner's: the helper is told of it as the owner's and
 // never sent it to answer. The model is the scripted stand-in in both sessions, so the calls are exact.
 test.use({ viewport: { width: 1920, height: 1040 } });
@@ -25,7 +26,10 @@ test("helper: answers a session's card once on the standing instruction; a prove
   expect(on).toMatchObject({ on: true, answer_cards: true });
   const helperId = on.session_id as string;
   await request.patch(`/api/sessions/${helperId}`, { data: { model: "scripted:stand-in" } });
-  const helperInputs = async () => ((await (await request.get(`/api/sessions/${helperId}`)).json()).events as any[]).filter((e) => e.kind === "user" && e.data.kind === "helper_approvals");
+  // The contexts the helper answers cards in: fresh sessions of its own, closed (archived) when their turn ends.
+  const inputsOf = async (id: string) => ((await (await request.get(`/api/sessions/${id}`)).json()).events as any[]).filter((e) => e.kind === "user" && e.data.kind === "helper_approvals");
+  const contexts = async () => [...(await (await request.get("/api/sessions?agents=all")).json()).sessions, ...(await (await request.get("/api/sessions?archived")).json()).sessions].filter((x: any) => x.settings?.helper_cards);
+  const before = new Set((await contexts()).map((x: any) => x.id));
 
   // A provenance hold: a page read with curl names an address and asks for a send there, as an injected page does
   // (the owner never typed the address). Full auto, so the read runs with no card; the send waits on the owner's
@@ -64,17 +68,24 @@ test("helper: answers a session's card once on the standing instruction; a prove
   // The card keeps who answered, on what instruction and where the owner gave it; one call, no grant.
   const answered = (await (await request.get(`/api/sessions/${asks.id}/approvals?all`)).json()).approvals;
   expect(answered).toHaveLength(1);
-  expect(answered[0]).toMatchObject({ state: "allowed", choice: "once", by: { client: "helper", seen: "whole", helper: { session: helperId, source: "Settings > Helper > Answer approvals", reason: "the stand-in answers allow" } } });
+  expect(answered[0]).toMatchObject({ state: "allowed", choice: "once", by: { client: "helper", seen: "whole", helper: { session: expect.any(String), source: "Settings > Helper > Answer approvals", reason: "the stand-in answers allow" } } });
   const grants = (await (await request.get("/api/permissions/grants")).json()).grants ?? [];
   expect(grants.filter((g: any) => g.session_id === asks.id)).toEqual([]);
   // The session's timeline names the helper.
   await expect.poll(async () => JSON.stringify(await (await request.get(`/api/sessions/${asks.id}/timeline`)).json())).toContain("the Helper, on the owner's standing instruction");
 
-  // The provenance card was never sent to the helper and still waits on the owner.
-  const inputs = await helperInputs();
+  // It answered in a fresh context of its own, not in its conversation: one input, that card, closed after its turn.
+  const ctxId = answered[0].by.helper.session as string;
+  expect(ctxId).not.toBe(helperId);
+  const inputs = await inputsOf(ctxId);
   expect(inputs.length).toBe(1);
   expect(inputs[0].data.cards).toEqual([answered[0].id]);
-  expect(JSON.stringify(inputs)).not.toContain(hold.id);
+  expect((await inputsOf(helperId)).length).toBe(0);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${ctxId}`)).json()).session.archived).toBe(true);
+  // The provenance card was never sent to any context of the helper and still waits on the owner.
+  const fresh = (await contexts()).filter((x: any) => !before.has(x.id));
+  expect(fresh.map((x: any) => x.id)).toEqual([ctxId]);
+  for (const x of fresh) expect(JSON.stringify(await inputsOf(x.id))).not.toContain(hold.id);
   expect((await (await request.get(`/api/sessions/${held.id}/approvals`)).json()).approvals.map((a: any) => a.id)).toEqual([hold.id]);
   await page.goto(`/s/${held.id}`);
   const card = page.getByTestId("approval");

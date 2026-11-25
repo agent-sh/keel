@@ -1987,8 +1987,13 @@ standing instruction: allow what they ask for unless it is really risky
 (Settings > Helper > Answer approvals, on by default). The helper reads the
 whole card: the request, its risk, why the gate asked, the facts it judged by
 and the last verdict of the reviewer or the judge on a call of the same shape.
-It allows the one call, denies it with a reason the session reads, or leaves it
-to the owner.
+It reads it in a fresh context of its own, not in its conversation: a session
+with no history and no tool but its answer (no mail, calendar, web, shell,
+files or other session; the gate refuses any other call there), closed when
+its turn ends, so nothing it read elsewhere is in the context that judges the
+card. Its answer is taken only from that context, only for a card sent there
+and not gone back to the owner. It allows the one call, denies it with a
+reason the session reads, or leaves it to the owner.
 
 Some cards never go to it, decided in code from what the gate stored with the
 card (`src/safety/delegate.ts`), whatever the helper answers: a target outside

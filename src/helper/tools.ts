@@ -14,7 +14,8 @@ import type { Store } from "../core/store.ts";
 import { askedOf, pendingAsks, pendingQuestions, relay } from "../tools/interact.ts";
 import * as activityLog from "../automation/activity.ts";
 import { relayAnswers } from "./relay.ts";
-import { registerSessionTools } from "../tools/registry.ts";
+import { registerSessionTools, registerToolsOff, toolFacts } from "../tools/registry.ts";
+import { CARD_TOOLS } from "./cards.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Helper } from "./helper.ts";
 import { memoryTools } from "./memtools.ts";
@@ -302,13 +303,18 @@ const relayTool: Tool = {
 };
 
 const memory = memoryTools(() => H!.records);
-const ALL = [...memory, sessions, sessionRead, activity, approvals, approval, relayTool, mailSearch, mailRead, mailLabel, mailSend, calendar];
+// The helper's conversation reads the cards; only a context of its own for them answers them (cards.ts).
+const ALL = [...memory, sessions, sessionRead, activity, approvals, relayTool, mailSearch, mailRead, mailLabel, mailSend, calendar];
+const CARDS = [approvals, approval];
 
 // The helper whose deps the tools read (a test gives its own and puts back undefined).
 export function useHelper(h: Helper | undefined) { H = h; }
-export const helperTool = (name: string) => ALL.find((t) => t.name === name);
+export const helperTool = (name: string) => [...ALL, approval].find((t) => t.name === name);
 
 export function bindHelperTools(h: Helper) {
   useHelper(h);
-  registerSessionTools("helper", (id) => (H?.isHelper(id) ? ALL : []));
+  registerSessionTools("helper", (id) => (H?.isHelper(id) ? ALL : H?.isCards(id) ? CARDS : []));
+  // A context of the cards is offered no tool of its family or of the shared ones (no shell, file, web or other
+  // session): its answer only. (Its calls are refused in code too: the gate's tool limit in cards.ts.)
+  registerToolsOff("helper-cards", (id) => (H?.isCards(id) ? toolFacts().map((t) => t.name).filter((n) => !CARD_TOOLS.has(n)) : []));
 }

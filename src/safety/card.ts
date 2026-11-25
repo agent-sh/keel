@@ -208,7 +208,7 @@ export function refusal(f: CardForm, choice: string, seen: unknown, client?: Cli
 //   client: only the helper's own tool answers as it, and the gate checks the card's class first.
 export const CLIENTS = ["page", "phone", "notification", "cli", "script", "acp", "api"] as const;
 export type Client = (typeof CLIENTS)[number] | "helper";
-// What the helper's answer is kept with: its conversation and the call that answered (who), the instruction it
+// What the helper's answer is kept with: its context for the card and the call that answered (who), the instruction it
 // answered on and where the owner gave it, and the reason it gave.
 export type HelperAnswer = { session: string; call?: string; instruction: string; source: string; reason?: string };
 export type AnsweredBy = { client: Client; device?: string; peer?: string; seen?: "whole"; grant?: true; helper?: HelperAnswer };

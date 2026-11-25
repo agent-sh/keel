@@ -205,6 +205,8 @@ export type SessionSettings = {
   folder_id?: string;  // the owner's folder of sessions it is filed in (src/server/routes/session-folders.ts)
   project?: string;    // a project's id, or "none"; absent = the project that holds its folder (src/server/routes/projects.ts)
   helper?: boolean; // the owner's always-on helper conversation (src/helper/)
+  // A fresh context the helper answers other sessions' approval cards in, with no tool but its answer (src/helper/cards.ts).
+  helper_cards?: boolean;
   // The last turn failed because the provider asked for a wait longer than a turn waits: the session
   // continues by itself at `at`, while the failure `after` is still the last thing in it (src/engine/turn.ts).
   // `round`: how many times in a row it already did, each wait twice the one before.

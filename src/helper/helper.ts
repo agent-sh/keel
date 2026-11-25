@@ -35,7 +35,7 @@ import type { Look } from "./error-look.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { pendingQuestions } from "../tools/interact.ts";
 import { ASK_LINE, askRefusal, answerOf, type Answer, type AskFrom } from "./ask.ts";
-import { HelperCards, INSTRUCTION, SOURCE } from "./cards.ts";
+import { CARDS_PROMPT, HelperCards, INSTRUCTION, SOURCE } from "./cards.ts";
 
 export type HelperSettings = {
   on: boolean;
@@ -126,6 +126,22 @@ ${TOLD_SCHEMA}`);
     return s && !s.archived ? s : undefined;
   }
   isHelper = (id: string | null | undefined) => !!id && id === this.state().session_id;
+  // A context the helper answers approval cards in (cards.ts): a session of its own, open or closed.
+  isCards = (id: string | null | undefined) => !!id && !!this.deps.store.session(id)?.settings.helper_cards;
+  // A fresh context for cards: no history, the helper's model, no tool but the answer (tools.ts, cards.ts).
+  cardsContext(): Session | undefined {
+    const h = this.session();
+    if (!h) return undefined;
+    const s = this.deps.store.createSession({ title: `${this.name()}: approvals`, model: h.model, workspace: h.workspace, settings: { helper_cards: true, ...(h.settings.effort ? { effort: h.settings.effort } : {}) } });
+    this.deps.bus.emit({ t: "session", session: s });
+    return s;
+  }
+  // A context whose turn ended is closed: archived, its record kept (the cards name it as who answered).
+  closeCards(id: string) {
+    const s = this.deps.store.session(id);
+    if (!s?.settings.helper_cards || s.archived) return;
+    this.deps.bus.emit({ t: "session", session: this.deps.store.updateSession(id, { archived: true }) });
+  }
 
   view() {
     const st = this.state();
@@ -481,7 +497,7 @@ ${TOLD_SCHEMA}`);
     g.__keelHelper = this;
     const h = this;
     registerHooks({
-      system: (s) => (s.settings.helper ? HELPER_PROMPT : ""),
+      system: (s) => (s.settings.helper ? HELPER_PROMPT : s.settings.helper_cards ? CARDS_PROMPT : ""),
       // The name the owner gave it is theirs: a change of it reaches a warm conversation as a note (hooks.ts SystemBlock).
       sessionSystem: (s) => {
         if (!s.settings.helper) return "";

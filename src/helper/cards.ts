@@ -11,8 +11,11 @@
 //   the gate's facts in code) never goes to the helper: its alert reaches the
 //   owner at once, as before.
 // - Any other card goes to the helper first: its alert waits in the inbox, told
-//   on no channel, and the helper is sent the whole card at once (a short settle
-//   gathers the cards of one reply). It answers with helper__approval: allow this
+//   on no channel, and the whole card is sent at once to a fresh context of the
+//   helper's own (a short settle gathers the cards of one reply into one): a
+//   session with no history and no tool but the answer, so nothing it read
+//   elsewhere (mail, a page) is in the context that judges the card, and it can
+//   reach nothing but the answer. The context is closed when its turn ends. It answers with helper__approval: allow this
 //   one call, deny it with a reason, or leave it to the owner. A card it leaves,
 //   one the gate refuses its answer on, one it does not answer in its turn or
 //   within HELPER_ANSWER_MS, goes to the owner with a notification.
@@ -30,7 +33,11 @@ import { digestZone } from "./policy.ts";
 import type { Helper } from "./helper.ts";
 
 // What of the helper the cards read (a test gives a stand-in).
-export type HelperOf = Pick<Helper, "state" | "session" | "isHelper" | "changed"> & { deps: Pick<Helper["deps"], "store" | "bus" | "errors"> };
+export type HelperOf = Pick<Helper, "state" | "session" | "isHelper" | "isCards" | "cardsContext" | "closeCards" | "changed"> & { deps: Pick<Helper["deps"], "store" | "bus" | "errors"> };
+
+// The only tools of a context the cards are answered in: no mail, calendar, web, shell, file or other session.
+export const CARD_TOOLS: ReadonlySet<string> = new Set(["helper__approval", "helper__approvals"]);
+export const CARDS_PROMPT = `You answer approval cards of the owner's other Keel sessions, on his standing instruction. This context holds the cards and nothing else: you have no tool but helper__approvals (the open cards) and helper__approval (your answer). Answer every card you were sent, then end with one line.`;
 
 // The instruction the helper answers on, and where the owner gave it.
 export const INSTRUCTION = "allow what other sessions ask for unless it is really risky";
@@ -47,7 +54,8 @@ export const DENIAL_STREAK = 3;
 const SETTLE = { quietMs: 1_500, maxMs: 5_000 };
 
 export type CardAnswer = "allow" | "deny" | "owner";
-type Offer = { at: number; timer: ReturnType<typeof setTimeout>; sent?: string };
+// `ctx`: the context the card was sent to (the only session whose answer is taken for it); `sent`: the input that carried it.
+type Offer = { at: number; timer: ReturnType<typeof setTimeout>; ctx: string; sent?: string };
 
 // What a card is told by: it is told again only when one of these changed.
 export function fingerprint(a: Approval): string {
@@ -88,6 +96,8 @@ Read each request whole. Answer each with helper__approval: allow (this one call
 
 export class HelperCards {
   private offered = new Map<string, Offer>();
+  // The context cards are gathered into until its input is sent; a card after that opens a new one.
+  private batch?: { id: string; sent: boolean };
   private off: (() => void)[] = [];
   // `io`: how a card is sent to the helper and raised for the owner (a test keeps both).
   private send: typeof deliver;
@@ -106,14 +116,21 @@ export class HelperCards {
     this.stop();
     alerts.helperFirst.take = (a) => this.take(a.id);
     const gate = this.gate();
-    if (gate) gate.helperSession = this.h.isHelper;
-    this.off.push(() => { alerts.helperFirst.take = undefined; if (gate) gate.helperSession = undefined; });
+    if (gate) {
+      // Neither the helper's conversation nor a context of its cards has a card of its own answered by it.
+      gate.helperSession = (id) => this.h.isHelper(id) || this.h.isCards(id);
+      // A context of the cards runs nothing but its answer, refused in code whatever it is offered.
+      gate.toolLimits.set("helper-cards", (s) => (this.h.isCards(s.id)
+        ? (tool) => (CARD_TOOLS.has(tool.name) ? undefined : `Refused: this context only answers approval cards (helper__approvals, helper__approval); ${tool.name} is not one of them.`)
+        : undefined));
+    }
+    this.off.push(() => { alerts.helperFirst.take = undefined; if (gate) { gate.helperSession = undefined; gate.toolLimits.delete("helper-cards"); } });
     this.off.push(this.h.deps.bus.on((f: Frame) => {
       try {
         // A card answered or closed meanwhile waits on the helper no more.
         if (f.t === "feature" && f.name === "approval" && (f.data as Approval).state !== "pending") this.drop((f.data as Approval).id);
-        // The helper's turn ended: what it was sent in that turn and left open goes to the owner.
-        if (f.t === "event" && f.event.kind === "turn_end" && this.h.isHelper(f.event.session_id)) this.turnEnded();
+        // A context's turn ended: what it was sent and left open goes to the owner, and the context is closed.
+        if (f.t === "event" && f.event.kind === "turn_end" && this.h.isCards(f.event.session_id)) this.turnEnded(f.event.session_id);
       } catch (e) { this.h.deps.errors.capture("server", e, { at: "helper cards" }); }
     }));
   }
@@ -121,6 +138,7 @@ export class HelperCards {
   stop() {
     for (const o of this.offered.values()) clearTimeout(o.timer);
     this.offered.clear();
+    this.batch = undefined;
     for (const f of this.off) f();
     this.off = [];
   }
@@ -153,21 +171,26 @@ export class HelperCards {
   said(id: string): { words: string; sent: boolean } | undefined {
     const a = this.gate()?.approval(id);
     if (!a || this.h.isHelper(a.session_id)) return undefined;
-    if (this.offered.has(id)) return { words: "sent to you to answer", sent: true };
+    if (this.offered.has(id)) return { words: "sent to a context of its own to answer, with no other tool", sent: false };
     const owners = ownerClass(a, false);
     return { words: owners ? `the owner's: ${CLASS_WORDS[owners.cls]}` : "the owner's", sent: false };
   }
 
+  // A card goes to a fresh context of its own: a session with no history, no tool but the answer, and no mail,
+  // calendar or web (CARD_TOOLS). Cards that open within a moment of each other share one; it is closed when its
+  // turn ends.
   private offer(a: Approval, title: string) {
-    const helper = this.h.session()!;
+    const ctx = this.batch && !this.batch.sent && this.h.deps.store.session(this.batch.id)?.archived === false ? this.batch.id : this.h.cardsContext()?.id;
+    if (!ctx) { this.toOwner(a.id, "The Helper could not be reached."); return; }
+    const batch = this.batch?.id === ctx ? this.batch : (this.batch = { id: ctx, sent: false });
     const timer = setTimeout(() => this.toOwner(a.id, "The Helper did not answer it in time."), HELPER_ANSWER_MS);
-    const o: Offer = { at: Date.now(), timer };
+    const o: Offer = { at: Date.now(), timer, ctx };
     this.offered.set(a.id, o);
     const verdict = this.gate()?.verdictOf(a);
     const text = `${PROMPT_HEAD(1)}\n\n${cardText(a, title, YOURS, verdict)}`;
-    const sent = this.send(helper.id, text, { kind: "helper_approvals", cards: [a.id] }, {
+    const sent = this.send(ctx, text, { kind: "helper_approvals", cards: [a.id] }, {
       settle: SETTLE,
-      onSent: (e) => { o.sent = e.id; },
+      onSent: (e) => { o.sent = e.id; batch.sent = true; },
     });
     if (!sent) this.toOwner(a.id, "The Helper could not be reached.");
   }
@@ -187,8 +210,10 @@ export class HelperCards {
     this.offered.delete(id);
   }
 
-  private turnEnded() {
-    for (const [id, o] of [...this.offered]) if (o.sent) this.toOwner(id, "The Helper ended its turn without answering it.");
+  private turnEnded(ctx: string) {
+    for (const [id, o] of [...this.offered]) if (o.ctx === ctx) this.toOwner(id, "The Helper ended its turn without answering it.");
+    if (this.batch?.id === ctx) this.batch = undefined;
+    this.h.closeCards(ctx);
   }
 
   // The card goes to the owner, with a notification, and the helper's word or silence before its line.
@@ -220,13 +245,15 @@ export class HelperCards {
   answer(cardId: string, how: CardAnswer, reason: string, from: { session: string; call?: string }): { ok: string } | { error: string } {
     const gate = this.gate();
     if (!gate) return { error: "the permission gate is not running" };
-    if (!this.h.isHelper(from.session)) return { error: "only the owner's helper answers cards on his standing instruction" };
+    if (!this.h.isCards(from.session)) return { error: "only a context of the owner's helper for its cards answers them on his standing instruction" };
     if (!this.on()) return { error: `answering approvals is off (${SOURCE}): the owner answers them` };
     const a = gate.approval(cardId.trim());
     if (!a) return { error: `no card ${cardId}` };
     if (a.state !== "pending") return { error: `the card is no longer open (${a.state})` };
     // Only a card sent to it, while it is with it: one it never got, or one gone back to the owner, is his.
-    if (!this.offered.has(a.id)) return { error: "this card is not yours to answer: it was not sent to you, or it went back to the owner, who answers it" };
+    const o = this.offered.get(a.id);
+    if (!o) return { error: "this card is not yours to answer: it was not sent to you, or it went back to the owner, who answers it" };
+    if (o.ctx !== from.session) return { error: "this card was sent to another context of the helper: it answers it there" };
     const why = reason.trim().slice(0, 500);
     if (how === "owner") {
       this.toOwner(a.id, `The Helper left this to you${why ? `: ${why}` : "."}`);

@@ -595,6 +595,8 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     if (sessionId && !s) return undefined;
     // A session another harness runs raises nothing: an alert's words go to the phone and other machines (src/core/outside.ts).
     if (isOutside(s)) return undefined;
+    // A context the helper answers cards in raises nothing: what it did is told on the cards it answered.
+    if (s?.settings.helper_cards) return undefined;
     // A subagent's alerts belong to its parent's session in the inbox, with the
     // agent named so two agents' alerts never read alike.
     const sid = s?.parent_id ?? sessionId;
