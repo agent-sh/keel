@@ -1065,11 +1065,13 @@ for (const size of SIZES) {
       test.skip(!(await scripted(request)), "requires the scripted provider");
       const id = await start(request, "Phone head one line with a title long enough to be cut by the room the bar leaves it");
       try {
-        await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 30", description: "Building the whole documentation cache from every source folder in the checkout module" } }]) } });
+        const slow = { name: "Bash", input: { command: "sleep 30", description: "Building the whole documentation cache from every source folder in the checkout module" } };
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([slow]) } });
         await page.goto(`/s/${id}`);
         const station = page.locator(".k-station[data-helm]");
         const why = station.getByTestId("station-why");
-        await expect(why).toContainText("Building the whole documentation cache", { timeout: 30_000 });
+        // The reason is the line over the message box and the word's tooltip, not the bar's (DockNow.tsx).
+        await expect(station.getByTestId("dock-action-text")).toContainText("Building the whole documentation cache", { timeout: 30_000 });
         // One line: the bar is as tall as one row of its controls, whichever the state, and the title is cut inside its room.
         const bar = async () => station.locator(".k-top").evaluate((el) => Math.round(el.getBoundingClientRect().height));
         const working = await bar();
@@ -1096,6 +1098,30 @@ for (const size of SIZES) {
         await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
         await expect.poll(() => idle(request, id), { timeout: 30_000 }).toBe(true);
         expect(await bar(), "and at rest").toBeLessThanOrEqual(Math.ceil(3.25 * rem));
+      } finally {
+        await drop(request, id);
+      }
+    });
+    test("the head's height holds while a turn runs: its reason is the line over the message box, whole in its tip", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Phone head reason");
+      try {
+        const slow = { name: "Bash", input: { command: "sleep 30", description: "Building the whole documentation cache from every source folder in the checkout module" } };
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([slow]) } });
+        await page.goto(`/s/${id}`);
+        const pane = page.locator(".k-station[data-helm]");
+        // The reason wrapped under the word and moved the conversation down by a line at every step: it is not in the bar.
+        const action = pane.getByTestId("dock-action-text");
+        await expect(action).toContainText("Building the whole documentation cache", { timeout: 30_000 });
+        await expect(pane.getByTestId("station-why")).toHaveCount(0);
+        await expect(pane.getByTestId("station-word")).toHaveAttribute("title", /Building the whole documentation cache/);
+        // The line holds one row inside the page, whatever the reason's length.
+        const line = await pane.getByTestId("dock-now").evaluate((e) => { const r = e.getBoundingClientRect(); return { right: Math.round(r.right), height: Math.round(r.height) }; });
+        expect(line.right).toBeLessThanOrEqual(size.width);
+        expect(line.height).toBeLessThanOrEqual(56);
+        await noSideScroll(page);
+        await shoot(page, `phone-surfaces-27-head-reason-${size.width}`);
+        await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
       } finally {
         await drop(request, id);
       }

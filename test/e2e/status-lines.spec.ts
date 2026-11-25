@@ -51,6 +51,15 @@ const stop = async (request: APIRequestContext, ids: string[]) => {
   for (const id of ids) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
 };
 
+// The errors the page reports for a size observer that changes what it watches from inside its own call
+// ("ResizeObserver loop completed with undelivered notifications"): started before the page loads, read at the end.
+function watchLoops(page: Page) {
+  const seen: string[] = [];
+  void page.exposeFunction("__loopSeen", (m: string) => seen.push(m));
+  void page.addInitScript(() => addEventListener("error", (e: ErrorEvent) => { if (/ResizeObserver loop/.test(e.message)) (window as any).__loopSeen(e.message); }));
+  return async () => seen;
+}
+
 // The block over the box and the box, as laid out (px).
 const measure = (page: Page) => page.evaluate(() => {
   const pane = document.querySelector<HTMLElement>(".k-station[data-helm]") ?? document.body;
@@ -89,6 +98,7 @@ type Seen = Awaited<ReturnType<typeof measure>>;
 test.describe("at a desk", () => {
   test("the block is two lines, the marker says what the turn is in, and the parts open their panels", async ({ page, request }) => {
     const made_: string[] = [];
+    const loops = watchLoops(page);
     try {
       const ws = folder("status");
       const id = await busy(request, ws);
@@ -178,6 +188,7 @@ test.describe("at a desk", () => {
       await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "files");
       await expect(page.getByTestId("file-view")).toHaveAttribute("aria-label", "File src/a.ts");
       await shoot(page, "status-06-file");
+      expect(await loops(), "the page reports no observer loop").toEqual([]);
     } finally {
       await stop(request, made_);
       for (const id of made_) await request.delete(`/api/sessions/${id}`).catch(() => {});
@@ -189,6 +200,7 @@ test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test("the same two lines fold to what fits, with targets a finger can press", async ({ page, request }) => {
     const ids: string[] = [];
+    const loops = watchLoops(page);
     try {
       const id = await busy(request, folder("status-phone"));
       ids.push(id);
@@ -220,6 +232,7 @@ test.describe("on a phone", () => {
       await pane.getByTestId("dock-action-path").tap();
       await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "files");
       await expect(page.getByTestId("file-view")).toHaveAttribute("aria-label", "File src/a.ts");
+      expect(await loops(), "the page reports no observer loop").toEqual([]);
     } finally {
       await stop(request, ids);
       for (const id of ids) await request.delete(`/api/sessions/${id}`).catch(() => {});

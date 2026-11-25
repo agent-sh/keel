@@ -428,10 +428,13 @@ export function Approvals({ sessionId, asker, where }: { sessionId: string; aske
       el.toggleAttribute("data-bar-stays", stays);
       el.style.setProperty("--k-ask-bar", stays ? `${bar.offsetHeight}px` : "0px");
     };
-    const sized = new ResizeObserver(fit);
+    // Written a frame after the size changed: the list is one of the elements watched, and what fit sets on it
+    // (its bar's stay, the room under the bar) changes its layout from inside the observer's own call.
+    let frame = 0;
+    const sized = new ResizeObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(fit); });
     for (const x of [bar, el, trayGauge(tray)]) if (x) sized.observe(x);
     fit();
-    return () => sized.disconnect();
+    return () => { sized.disconnect(); cancelAnimationFrame(frame); };
   }, [many]);
 
   // Later: the cards go to the count in the head, and the keyboard goes back to the message box (their buttons are gone).
