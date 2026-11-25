@@ -7,12 +7,13 @@
 /* ---------- The state mark: one small dot ---------- */
 /* Its color is the state (tokens in styles.css, contrast checked in both themes); every mark keeps its word for a reader and
    in its tooltip (Mark.tsx), so the color is never the only signal.
-   Working: blue with a soft halo that breathes slowly while motion is allowed (opacity and scale only, so it costs the
-   compositor and no layout; it stands still under reduced motion and while the page is hidden). It does not spin: a
-   ring that turns reads as a loader, and in the rail it stood still, as a ring with a gap that looked stuck.
+   Working: a solid blue dot, the size of the others, with a soft glow around it that breathes slowly (opacity and
+   scale only, so it costs the compositor and no layout; it also breathes under reduced motion, with no scale, and
+   stands still while the page is hidden). The glow is a blurred shadow that starts at the dot's edge, with no gap and no hard
+   edge: a ring around a dot reads as a selected radio button. It does not spin: a ring that turns reads as a loader.
    Needs you: yellow. Failed: red. Done: green. Waiting on what it left going (its agents, a command in the
-   background): the blue dot inside a ring. Waiting on a timer or another thing that will wake it: a half-full ring. At
-   rest, not started or stopped: the quiet grey of old. */
+   background): a hollow ring of blue dashes, never a dot inside a ring (that is a radio button). Waiting on a
+   timer or another thing that will wake it: a half-full ring. At rest, not started or stopped: the quiet grey of old. */
 .k-mark { position: relative; display: inline-block; flex-shrink: 0; width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--dot-done); }
 .k-mark[data-watch="need"] { background: var(--dot-need); box-shadow: 0 0 0 1px var(--dot-need-edge); }
 .k-mark[data-watch="fail"] { background: var(--dot-fail); }
@@ -24,14 +25,14 @@
 .k-mark[data-watch="resume"] { background: transparent; border: 2px solid var(--st-idle); border-right-color: transparent; }
 .k-mark[data-watch="wait"] { background: linear-gradient(to top, var(--dot-work) 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px var(--dot-work); }
 .k-mark[data-watch="work"] { background: var(--dot-work); }
-.k-mark[data-watch="work"]::after { content: ""; position: absolute; inset: -45%; border-radius: 50%; pointer-events: none; will-change: opacity; background: radial-gradient(circle closest-side, transparent 52%, color-mix(in oklch, var(--dot-work) 55%, transparent) 64%, transparent 100%); animation: k-dot-breathe 3.4s ease-in-out infinite; }
+.k-mark[data-watch="work"]::after { content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none; will-change: opacity; box-shadow: 0 0 0.4375rem 0.125rem color-mix(in oklch, var(--dot-work) 75%, transparent); animation: k-dot-breathe 3.4s ease-in-out infinite; }
 @keyframes k-dot-breathe { 0%, 100% { opacity: 0.3; transform: scale(0.92); } 50% { opacity: 1; transform: scale(1.08); } }
-@media (prefers-reduced-motion: reduce) { .k-mark[data-watch="work"]::after { animation: none; opacity: 0.7; } }
+@keyframes k-dot-breathe-still { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .k-mark[data-watch="work"]::after { animation-name: k-dot-breathe-still; } }
 /* A count's mark and an alert's are small and in a crowd (and inside lines that clip): the halo is not drawn there. */
 :is(.k-marks-head, .k-alert-icon, .k-tick, .k-sum, .k-sum-mark) .k-mark[data-watch="work"]::after { display: none; }
-/* Waiting on its agents or a command in the background: the work dot inside a ring. */
-.k-mark[data-bg] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--dot-work); }
-.k-mark[data-bg]::before { content: ""; position: absolute; inset: 30%; border-radius: 50%; background: var(--dot-work); }
+/* Waiting on its agents or a command in the background: a hollow ring of dashes in the work blue. */
+.k-mark[data-bg] { background: transparent; box-shadow: none; border: 1.5px dashed var(--dot-work); }
 .k-mark[data-bg]::after { display: none; }
 
 

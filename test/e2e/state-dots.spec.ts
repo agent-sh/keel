@@ -3,9 +3,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
-// Feature: a session's state is one small dot in its row. Working is blue with a soft halo that breathes slowly
-// (no spin; still under reduced motion); needs you is yellow, failed or declined red, done green. A session that
-// only waits on its agents or on a command in the background wears the blue dot inside a ring and says so. News is
+// Feature: a session's state is one small dot in its row. Working is a solid blue dot, the size of the others, with a soft
+// glow that breathes slowly (no spin, and still under reduced motion); it is never a dot inside a ring, which reads as a
+// selected radio button. Needs you is yellow, failed or declined red, done green. A session that only waits on its
+// agents or on a command in the background wears a hollow ring of blue dashes and says so. News is
 // a white dot at the row's right end (the ink in the light theme). Every dot keeps its state word for a reader and
 // in its tooltip. The sidebar says no number of agents: the row has a chevron that opens their tree, and the
 // session itself says how many work, wait, failed or are done. Contrast of each dot on the rail is 3:1 or more.
@@ -107,7 +108,7 @@ test("a row's state is one dot, and a session that waits on what it left going h
       await expect(mark(id)).toHaveAttribute("aria-label", word);
       await expect(mark(id)).toHaveAttribute("title", word);
     }
-    // Waiting on what it left going: the same blue dot in a ring, and the word says what.
+    // Waiting on what it left going: a ring of blue dashes, and the word says what.
     await expect(mark(command)).toHaveAttribute("data-bg", "command");
     await expect(mark(command)).toHaveAttribute("aria-label", "Command in background");
     await expect(mark(command)).toHaveAttribute("title", "Command in background");
@@ -128,20 +129,25 @@ test("a row's state is one dot, and a session that waits on what it left going h
         expect(ratio, `${token} on the rail, ${isDark ? "dark" : "light"}`).toBeGreaterThanOrEqual(3);
       }
       expect((await paint(page, "--dot-unread")).ratio, `news on the rail, ${isDark ? "dark" : "light"}`).toBeGreaterThanOrEqual(7);
-      // Declined is red too (a hollow dot), and a command that waits is the work dot's blue.
+      // Declined is red too (a hollow dot), and a command that waits is a ring of the work dot's blue with nothing inside it.
       expect(await mark(declined).evaluate((el) => getComputedStyle(el).boxShadow)).toContain((await paint(page, "--dot-fail")).color);
-      expect(await mark(command).evaluate((el) => getComputedStyle(el).boxShadow)).toContain((await paint(page, "--dot-work")).color);
-      expect(await mark(command).evaluate((el) => getComputedStyle(el, "::before").backgroundColor)).toBe((await paint(page, "--dot-work")).color);
+      expect(await mark(command).evaluate((el) => ({ color: getComputedStyle(el).borderTopColor, style: getComputedStyle(el).borderTopStyle, inner: getComputedStyle(el, "::before").content }))).toEqual({ color: (await paint(page, "--dot-work")).color, style: "dashed", inner: "none" });
     }
     await dark(page, false);
 
-    // Working breathes (opacity and scale of a halo, never a turn); under reduced motion it stands still.
-    const motion = (id: string) => mark(id).evaluate((el) => ({ own: getComputedStyle(el).animationName, halo: getComputedStyle(el, "::after").animationName, haloOn: getComputedStyle(el, "::after").content !== "none" && getComputedStyle(el, "::after").display !== "none" }));
-    expect(await motion(working)).toEqual({ own: "none", halo: "k-dot-breathe", haloOn: true });
+    // Working is a solid dot the size of the others; its glow is a shadow that starts at the dot's edge (no gap, so no ring
+    // around the dot), and it breathes (opacity and scale, never a turn), under reduced motion too.
+    const motion = (id: string) => mark(id).evaluate((el) => {
+      const a = getComputedStyle(el, "::after"), r = el.getBoundingClientRect();
+      return { own: getComputedStyle(el).animationName, halo: a.animationName, haloOn: a.content !== "none" && a.display !== "none", glow: a.boxShadow !== "none" && a.backgroundImage === "none", same: Math.abs(parseFloat(a.width) - r.width) < 0.5, width: r.width };
+    });
+    const worked = await motion(working);
+    expect(worked).toMatchObject({ own: "none", halo: "k-dot-breathe", haloOn: true, glow: true, same: true });
+    expect(worked.width, "the working dot is the size of the others").toBe((await motion(done)).width);
     expect((await motion(done)).haloOn).toBe(false);
     expect((await motion(command)).haloOn, "a session that waits has no halo").toBe(false);
     await page.emulateMedia({ reducedMotion: "reduce" });
-    expect((await motion(working)).halo).toBe("none");
+    expect((await motion(working)).halo, "it breathes under reduced motion too").not.toBe("none");
     await expect(mark(working)).toHaveAttribute("data-watch", "work");
     await page.emulateMedia({ reducedMotion: "no-preference" });
 
