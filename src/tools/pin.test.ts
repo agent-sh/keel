@@ -62,6 +62,17 @@ test("a tool in the prompt that is gone, takes another input or is marked urgent
   expect([marked.urgent, marked.waiting]).toEqual([undefined, []]);
 });
 
+test("an urgent mark moves a session that has used the tool, and waits for one that has not", () => {
+  const pinned = [tool("Read", "Reads."), tool("Bash", "Runs.")].map((t) => pinOf(t));
+  const reworded = [tool("Read", "Reads."), tool("Bash", "Runs. Never force push.")];
+  const marks = { Bash: "force-push" };
+  expect(mergeTools(pinned, reworded, marks, (n) => n === "Bash").urgent).toBe("Bash has an urgent change");
+  // Not used: no whole-context write for it. The change waits like any other, and the pin keeps the old mark.
+  const idle = mergeTools(pinned, reworded, marks, (n) => n === "Read");
+  expect([idle.urgent, idle.waiting]).toEqual([undefined, ["Bash"]]);
+  expect(idle.tools.find((t) => t.name === "Bash")?.description).toBe("Runs.");
+});
+
 test("deferred tools follow the build: they are not in the cached prefix", () => {
   const pinned = [tool("Read", "Reads."), tool("Glob", "Finds.", undefined, { defer: true }), tool("Old", "Was.", undefined, { defer: true }), tool("Grep", "Searches.", undefined, { defer: true })].map((t) => pinOf(t));
   const now = [

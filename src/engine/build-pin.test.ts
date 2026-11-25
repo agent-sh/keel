@@ -135,6 +135,24 @@ test("an urgent block, the session's own tools and the owner's request do not wa
   expect(pins.due(s, at, v1, never)).toBe("the owner asked");
 }));
 
+test("an urgent tool mark moves a session that used the tool at its next request, and one that never did waits", () => withPins((pins, store, s) => {
+  const v1 = [tool("Read", "Reads."), tool("Bash", "Runs.")], v2 = [tool("Read", "Reads."), tool("Bash", "Runs, and never force pushes.")];
+  store.db.exec("CREATE TABLE IF NOT EXISTS telemetry_tools (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, tool TEXT NOT NULL)");
+  pins.prompt(s.id, undefined, blocks("one"), [], false);
+  pins.tools(s, at, v1);
+  URGENT.tools.Bash = "no-force-push";
+  try {
+    // Never called Bash: the change waits, and the request carries the pinned description.
+    expect(pins.due(s, at, v2, never)).toBeUndefined();
+    expect(pins.tools(s, at, v2).map((t) => t.description)).toEqual(["Reads.", "Runs."]);
+    // Its first call: the next request takes the build's, once.
+    store.db.query("INSERT INTO telemetry_tools (session_id, ts, tool) VALUES (?, 1, 'Bash')").run(s.id);
+    expect(pins.due(s, at, v2, never)).toBe("Bash has an urgent change");
+    expect(pins.tools(s, at, v2).map((t) => t.description)).toEqual(["Reads.", "Runs, and never force pushes."]);
+    expect(pins.due(s, at, v2, never)).toBeUndefined();
+  } finally { delete URGENT.tools.Bash; }
+}));
+
 test("a subagent on this machine starts on its parent's pinned list", () => withPins((pins, store, s) => {
   const v1 = [tool("Read", "Reads.")], v2 = [tool("Read", "Reads, in parts.")];
   pins.prompt(s.id, undefined, blocks("one"), [], false);

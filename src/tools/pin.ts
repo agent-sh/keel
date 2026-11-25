@@ -88,12 +88,14 @@ export type Merged = {
 //   the build's implementation.
 // - A pinned tool in the prompt that the build removed, or whose input it can
 //   no longer take, makes the whole list urgent: offering it would end in a
-//   failed call. So does an urgent mark the pinned copy does not carry.
+//   failed call. So does an urgent mark the pinned copy does not carry, for a tool the conversation has
+//   used (`used`): a session that never called it moves no cache for it (a whole-context write for a
+//   description it has not read as a tool's), and takes the mark at the request after its first call.
 // - Deferred tools are not part of the cached prefix: one the build removed is
 //   dropped, one whose input changed takes the new definition, and one new in
 //   this build is declared at once, where the tool search finds it.
 // - A tool new to the prompt waits: adding it would rewrite the prefix.
-export function mergeTools(pinned: PinnedTool[], current: Tool[], marks: Record<string, string> = {}): Merged {
+export function mergeTools(pinned: PinnedTool[], current: Tool[], marks: Record<string, string> = {}, used?: (name: string) => boolean): Merged {
   const now = new Map(current.map((t) => [t.name, t]));
   const tools: Tool[] = [];
   const pin: PinnedTool[] = [];
@@ -102,7 +104,7 @@ export function mergeTools(pinned: PinnedTool[], current: Tool[], marks: Record<
   for (const p of pinned) {
     const c = now.get(p.name);
     const mark = marks[p.name];
-    if (c && mark && mark !== p.mark) return { tools: current, urgent: `${p.name} has an urgent change`, waiting: [] };
+    if (c && mark && mark !== p.mark && (!used || used(p.name))) return { tools: current, urgent: `${p.name} has an urgent change`, waiting: [] };
     if (!c || !servable(p, c)) {
       if (!p.defer) return { tools: current, urgent: c ? `${p.name} takes another input in this build` : `${p.name} is gone from this build`, waiting: [] };
       moved = true;

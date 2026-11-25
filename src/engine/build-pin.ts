@@ -205,6 +205,23 @@ export class BuildPins {
     this.hashes.set(now.tools, next.list);
   }
 
+  // Whether the session's conversation has used the tool: it called it, or loaded it through the search. Asked only
+  // for a tool the build marks urgent that the session's pin does not carry the mark of, and kept once true.
+  private usedTools = new Map<string, Set<string>>();
+  private used(id: string, name: string): boolean {
+    let set = this.usedTools.get(id);
+    if (set?.has(name)) return true;
+    const q = this.store.db;
+    // (Where the question cannot be answered the tool counts as used: the mark is taken, as it always was.)
+    let yes = true;
+    try {
+      yes = !!q.query("SELECT 1 FROM telemetry_tools WHERE session_id = ? AND tool = ? LIMIT 1").get(id, name)
+        || !!q.query("SELECT 1 FROM session_loaded WHERE session_id = ? AND name = ?").get(id, name);
+    } catch {}
+    if (yes) { if (!set) this.usedTools.set(id, (set = new Set())); set.add(name); }
+    return yes;
+  }
+
   // The session has been behind the running build for longer than the owner allows.
   private aged(row: Row, now = Date.now()): boolean {
     const max = maxAgeMs();
@@ -222,7 +239,7 @@ export class BuildPins {
     if (row.asked) return "the owner asked";
     const other = otherList(row, to);
     if (other) return other;
-    const m = mergeTools(this.list(row.list)!, current, toolMarks(current));
+    const m = mergeTools(this.list(row.list)!, current, toolMarks(current), (n) => this.used(session.id, n));
     if (m.urgent) return m.urgent;
     if (this.aged(row)) return agedWhy();
     const blocks = this.blocks.get(session.id);
@@ -301,7 +318,7 @@ export class BuildPins {
     const from = base ? this.list(base.list) : undefined;
     if (row) reason ??= otherList(row, to) ?? (this.aged(row) ? agedWhy() : undefined);
     if (from && !reason) {
-      const m = mergeTools(from, current, toolMarks(current));
+      const m = mergeTools(from, current, toolMarks(current), (n) => this.used(id, n));
       if (!m.urgent) {
         const waiting: Waiting = { blocks, tools: m.waiting, ...(told.length && { told }) };
         const behind = m.waiting.length + blocks.length > 0;

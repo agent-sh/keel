@@ -60,7 +60,9 @@ under `~/.cache/keel-work/bun/research/`.
   input schema (the model would keep the old description of the new
   behaviour). A removed tool or a changed input needs none: the pinned
   definition is not offered. Rewording, a new optional parameter and a new
-  tool need none either.
+  tool need none either. A tool's mark reaches only the sessions that used the tool (a call in its history,
+  or a definition it loaded): one that never did waits like an unmarked change, and takes the mark at the request
+  after its first call (`used` in `src/tools/pin.ts`, `src/engine/build-pin.ts`).
 - A request counted over the model's window is never sent: the context is
   compacted first. A context no provider has counted yet (an imported history)
   is counted from its bytes at the model's own bytes a token, learned from what
