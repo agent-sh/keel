@@ -73,7 +73,7 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
       >
         <Folder />
         <span className="k-chip-pick-name">{shown.split("/").pop() || "Folder"}</span>
-        <span className="k-chip-pick-sub max-sm:hidden">{tilde(shown.slice(0, shown.lastIndexOf("/")), home)}</span>
+        {/* Its name; where it is, in the tooltip and the picker's list. */}
         <ChevronDown className="k-chip-pick-more" />
       </Popover.Trigger>
       <Popover.Portal>

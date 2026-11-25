@@ -43,7 +43,7 @@ import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
 import { ReadyToLand } from "./ReadyToLand.tsx";
 import { actions, getState, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow, doneAlert, stateWords } from "../../../src/core/state-words.ts";
+import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow, backgroundOf, doneAlert } from "../../../src/core/state-words.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { goToAsk } from "./AnswerQueue.tsx";
@@ -149,8 +149,8 @@ function useFact(s: Session, st: SessionState): Fact {
   const asked = st.watch === "need" && st.why === "approval";
   const approval = useSafety((x) => (asked ? x.approvals[st.child ?? s.id]?.[0] : undefined));
   return {
-    // (A session that works only through its agents says how many.)
-    approval, kind: rowKind(st, approval?.kind), line: rowLine(st) || (st.watch === "work" ? stateWords(st).what : ""),
+    // (A session that works only through its agents says no count of them: its agents are named in the session.)
+    approval, kind: rowKind(st, approval?.kind), line: backgroundOf(st) === "agents" ? "" : rowLine(st),
     whole: asked && !st.child ? wholeCommand(approval, !!s.machine) : null,
     risk: approval?.risk === "high" ? (approval.why ? `High risk: ${approval.why}` : "High risk") : undefined,
   };

@@ -1089,12 +1089,9 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-home-finished { margin-bottom: 0.75rem; font-size: var(--text-ui); font-weight: 600; }
 /* A count is its mark and its figure in the state's color and its words in ink: five states on one line read as one sentence, not a row of colors. */
 .k-home-count { display: inline-flex; align-items: center; gap: 0.5rem; border-radius: var(--radius-md); color: var(--fg); }
-.k-home-n { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted); }
+/* The headline's figures are in ink: the dot before each is the state's one colour. */
+.k-home-n { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg); }
 .k-home-count .k-mark { width: 0.625rem; height: 0.625rem; }
-.k-home-count[data-watch="need"] .k-home-n { color: var(--st-need-ink); }
-.k-home-count[data-watch="work"] .k-home-n { color: var(--st-work-ink); }
-.k-home-count:is([data-watch="fail"], [data-watch="declined"]) .k-home-n { color: var(--st-fail-ink); }
-.k-home-count[data-watch="wait"] .k-home-n { color: var(--st-wait-ink); }
 .k-home-count:hover { text-decoration: underline; text-decoration-thickness: 1px; text-decoration-color: var(--line-strong); text-underline-offset: 0.22em; }
 .k-home-count:focus-visible { outline: 2px solid var(--ring); outline-offset: 0.1875rem; }
 .k-home-sec { margin-top: 1.875rem; }
@@ -1120,12 +1117,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 @container (max-width: 30rem) { .k-home-row-meta .k-pane-empty-in { max-width: 5.5rem; } }
 .k-home-row-what { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.375rem 0.5rem; margin-top: 0.25rem; padding-left: 1.75rem; font-size: var(--text-caption); line-height: 1.5; }
 /* The kind of thing that waits (a command, a question, a failure): said once, in the state's ink. */
-.k-home-row-word { flex-shrink: 0; padding: 0.125rem 0; font-weight: 600; color: var(--muted); }
-.k-home-row[data-watch="need"] .k-home-row-word { color: var(--st-need-ink); }
-.k-home-row[data-watch="work"] .k-home-row-word { color: var(--st-work-ink); }
-.k-home-row:is([data-watch="fail"], [data-watch="declined"]) .k-home-row-word { color: var(--st-fail-ink); }
-.k-home-row[data-watch="wait"] .k-home-row-word { color: var(--st-wait-ink); }
-.k-home-row[data-watch="resume"] .k-home-row-word { color: var(--muted); }
+/* What the row is (a command, a question, a failure) in the row's ink: its dot says the state's colour. */
+.k-home-row-word { flex-shrink: 0; padding: 0.125rem 0; font-weight: 400; color: var(--fg); }
 /* A request the gate rates high risk says so beside its kind. */
 .k-home-row-risk { flex-shrink: 0; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); background: var(--danger-soft); font-weight: 600; color: var(--danger); }
 .k-home-row-line { flex: 1 1 8rem; min-width: 0; padding: 0.125rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--muted); }
