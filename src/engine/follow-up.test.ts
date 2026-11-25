@@ -48,6 +48,16 @@ describe("where a follow-up to a finished agent starts", () => {
     expect(decideFollowUp(shape({ used: 106_000, prefix: 49_500, steps: 188, capsule: 9_200, ended: "stopped" })).way).toBe("carry");
   });
 
+  test("an agent whose context the model declined starts from a capsule, whatever it costs and whatever the price", () => {
+    for (const price of [PRICE, undefined]) {
+      const p = decideFollowUp(shape({ used: 20_000, prefix: 10_000, steps: 6, growth: 500, capsule: 9_000, ended: "declined", price }));
+      expect(p.way).toBe("capsule");
+      expect(p.why).toContain("declined");
+    }
+    // The owner's own choice still wins.
+    expect(decideFollowUp(shape({ used: 20_000, prefix: 10_000, capsule: 9_000, ended: "declined", force: "carry" })).way).toBe("carry");
+  });
+
   test("a model with no listed price (a plan) goes on in its context", () => {
     const p = decideFollowUp(shape({ used: 566_000, prefix: 19_000, price: undefined, steps: 23, growth: 3_100, capsule: 9_800 }));
     expect(p.way).toBe("carry");

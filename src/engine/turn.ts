@@ -4036,7 +4036,7 @@ export class Engine {
   // next. What was chosen and why is kept with the agent's record and told
   // in its parent's activity. `report`: the agent's reports since its last
   // checkpoint, newest first (src/automation/agents.ts, capsuleReport).
-  async followUp(id: string, o: { title: string; report: string; tasks: number; since: number; message: string; ended: "completed" | "failed" | "stopped" | "incomplete"; force?: Way }): Promise<(FollowUpPlan & { mark?: "carry" | "summary" }) | undefined> {
+  async followUp(id: string, o: { title: string; report: string; tasks: number; since: number; message: string; ended: "completed" | "failed" | "stopped" | "incomplete" | "declined"; force?: Way }): Promise<(FollowUpPlan & { mark?: "carry" | "summary" }) | undefined> {
     const session = this.store.session(id);
     if (!session || this.running.has(id)) return undefined;
     await this.warmContext(id);

@@ -247,6 +247,22 @@ test("a turn that declined or ran out of steps is not a completed agent, and a d
   expect(declined).toContain("Keel started no fresh context for it: 2 successors were started");
 });
 
+test("a message to an agent whose context the model declined is decided as a declined one, never as a cut mid-work", async () => {
+  const a = await spawn();
+  spendSuccessors(a);
+  store.append(a.session_id, "assistant", { blocks: [{ type: "text", text: "I will not" }], stop: "refusal" });
+  store.append(a.session_id, "turn_end", { reason: "refusal" });
+  agents.onTurnEnd(a.session_id, "refusal");
+  await settled();
+  expect(agents.get(a.id)!.status).toBe("incomplete");
+  followUps.length = 0;
+  nextPlan = undefined;
+  await agents.send(a.id, "try again");
+  expect(followUps.map((f) => f.ended)).toEqual(["declined"]);
+  end(a, "end_turn", "done");
+  await settled();
+});
+
 test("a context that declines while its own agent works hands the task and the agent to a successor", async () => {
   const a = await spawn();
   store.append(a.session_id, "assistant", { blocks: [] }); // a warm cache: its agent starts without the stagger

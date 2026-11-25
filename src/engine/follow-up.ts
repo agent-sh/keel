@@ -53,8 +53,10 @@ export type FollowUpFacts = {
   missing?: string[]; // what the message names that the history holds and the capsule leaves out
   // How its last task ended: only one it finished with its own report is a
   // cut a fresh start can be made at. One that failed, was stopped or ran out
-  // was cut mid-work, and where the work stands is in its context.
-  ended: "completed" | "failed" | "stopped" | "incomplete";
+  // was cut mid-work, and where the work stands is in its context. "declined":
+  // the model declined to go on in it, so its context is what the model's check
+  // flagged: going on in it, or in a summary of it, is declined again.
+  ended: "completed" | "failed" | "stopped" | "incomplete" | "declined";
   force?: Way;      // the owner's choice for this agent
 };
 
@@ -136,6 +138,8 @@ export function decideFollowUp(f: FollowUpFacts): FollowUpPlan {
     const how = f.force === "carry" ? "go on in its context" : f.force === "summary" ? `start from a summary (${f.prepared !== undefined ? "the one prepared while it was idle" : "written now, with the message as its focus"})` : "start fresh from a capsule of its work";
     return { ...base, way: f.force, forced: true, why: `The owner chose that this agent's follow-ups ${how}.` };
   }
+  // A context the model declined is not sent again: a fresh start from a capsule, which holds none of the declined reply.
+  if (f.ended === "declined") return { ...base, way: "capsule", why: "Started fresh from a capsule of its work: the model declined to go on in its context, and a request in it would be declined again. The capsule holds its task, the messages it was sent and the trail of its work, and none of the declined reply." };
   if (f.ended !== "completed") return { ...base, way: "carry", why: `Went on in its context: its last task ${f.ended === "failed" ? "failed" : f.ended === "stopped" ? "was stopped" : "did not finish"} mid-work, and where the work stands is there.` };
   if (costs.carry === undefined) return { ...base, way: "carry", why: "Went on in its context: the model's price is not known, so no start could be priced." };
   let way: Way = "carry";

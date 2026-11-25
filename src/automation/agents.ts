@@ -2749,7 +2749,7 @@ async function startFor(a: AgentRecord, message: string, key?: string): Promise<
   const { engine } = D();
   if (a.machine || queuedTask(a.id) || (key && engine.hasInput(a.session_id, key))) return undefined;
   try {
-    const ended = a.status === "completed" || a.status === "failed" || a.status === "stopped" ? a.status : "incomplete";
+    const ended = a.end_reason === "refusal" ? "declined" : a.status === "completed" || a.status === "failed" || a.status === "stopped" ? a.status : "incomplete";
     // Its reports since its last checkpoint, every task's: the newest is not always the one that says where its work stands.
     const plan = await engine.followUp(a.session_id, { title: attr(a.title), report: capsuleReport(a.session_id), tasks: a.tasks, since: a.first_seq, message, ended, force: a.start_force ?? undefined });
     if (!plan) return undefined;
