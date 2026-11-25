@@ -12,10 +12,13 @@ import { seedComposer } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { ContentFrame } from "./ContentFrame.tsx";
 
-type Port = { port: number; pid: number; process: string; open: boolean; point?: boolean; url?: string };
+type Port = { port: number; pid: number; process: string; open: boolean; point?: boolean; url?: string; holder?: { session_id: string; title: string; mine: boolean } };
+type Range = { from: number; to: number };
 
 export function PreviewPanel({ session }: { session: Session }) {
   const [ports, setPorts] = useState<Port[] | null>(null);
+  // The ten ports this session's commands are given in $KEEL_PORT, when its sandbox is off.
+  const [range, setRange] = useState<Range | null>(null);
   const [shown, setShown] = useState<number | null>(null);
   const [n, setN] = useState(0);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -24,7 +27,7 @@ export function PreviewPanel({ session }: { session: Session }) {
   const remote = splitId(session.id);
   const local = (p: Port): Port => (remote && p.url ? { ...p, url: p.url.replace(/^\/portal\//, `/fleet-portal/${remote.machine}/`) } : p);
   // A session deleted meanwhile (here or on its daemon) has no ports: not an error.
-  const load = () => api<{ ports: Port[] }>(`/api/sessions/${session.id}/portal`).then((r) => setPorts(r.ports.map(local))).catch((e) => ((e as any)?.status === 404 ? setPorts([]) : reportError(e)));
+  const load = () => api<{ ports: Port[]; range?: Range | null }>(`/api/sessions/${session.id}/portal`).then((r) => { setPorts(r.ports.map(local)); setRange(r.range ?? null); }).catch((e) => ((e as any)?.status === 404 ? setPorts([]) : reportError(e)));
   useEffect(() => {
     load();
     const t = setInterval(load, 5000); // a dev server the session starts shows up within seconds
@@ -57,6 +60,7 @@ export function PreviewPanel({ session }: { session: Session }) {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="preview-panel">
       <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
+        {range && <span className="text-caption text-muted" data-testid="preview-range" title="Commands of this session get this range as $KEEL_PORT (the first) and $KEEL_PORT_END, so its dev server does not meet another session's on one port">Ports {range.from} to {range.to} for this session</span>}
         {ports?.length === 0 && <span className="text-caption text-faint">No dev server: when a process of this session listens on a loopback port, it shows here.</span>}
         {ports?.map((p) => (
           <button
@@ -66,9 +70,10 @@ export function PreviewPanel({ session }: { session: Session }) {
             data-port={p.port}
             onClick={() => (p.open && shown === p.port ? toggle(p.port, false) : toggle(p.port, true, p.point))}
             className={cn("inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-caption", p.open && shown === p.port ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted hover:text-fg")}
-            title={`${p.process} (pid ${p.pid})`}
+            title={`${p.process} (pid ${p.pid})${p.holder ? (p.holder.mine ? ", in this session's port range" : `, in the port range of ${p.holder.title || "another session"}`) : ""}`}
           >
             <Globe className="size-3.5" /> :{p.port} <span className="text-faint">{p.process}</span>
+            {p.holder && !p.holder.mine && <span className="text-warn" data-testid="preview-holder">in {p.holder.title || "another session"}'s range</span>}
           </button>
         ))}
         {cur && (

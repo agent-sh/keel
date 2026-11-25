@@ -34,6 +34,7 @@ import { gate, presence } from "./permissions.ts";
 import { runMode } from "../../core/runmode.ts";
 import { allPendingQuestions } from "../../tools/interact.ts";
 import { board } from "./state.ts";
+import { rangeFor, rangeHolder } from "./session-ports.ts";
 import { fitted } from "../../engine/image-fit.ts";
 import { reachInto } from "../../safety/net-proxy.ts";
 import { sandboxScope, scopeDir } from "../../safety/sandbox-scope.ts";
@@ -178,11 +179,15 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     },
   });
 
+  // Each port with the session that holds the range it is in (src/server/routes/session-ports.ts): its own, or another's.
   const portsOf = (id: string) =>
     (sessionPorts().get(id) ?? []).sort((a, b) => a.port - b.port).map((p) => {
       const o = portalOf(id, p.port);
-      return o ? { ...p, open: true, point: o.point || undefined, url: `${portalPath(id, p.port, o.key)}/` } : p;
+      const h = rangeHolder(p.port);
+      const base = h ? { ...p, holder: { session_id: h.session_id, title: h.title, mine: h.session_id === id } } : p;
+      return o ? { ...base, open: true, point: o.point || undefined, url: `${portalPath(id, p.port, o.key)}/` } : base;
     });
+  const rangeOfSession = (id: string) => { const b = rangeFor(id); return b === null ? null : { from: b, to: b + 9 }; };
 
   // Not open, a wrong key and an unknown session are the same 404; a port whose
   // owner is gone is 502. Never follows a redirect; the page is sandboxed.
@@ -722,7 +727,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
 
     // The portal: a session's dev server inside the workbench.
     "/api/sessions/:id/portal": {
-      GET: (req: any) => (store.session(req.params.id) ? json({ ports: portsOf(req.params.id) }) : bad("no such session", 404)),
+      GET: (req: any) => (store.session(req.params.id) ? json({ ports: portsOf(req.params.id), range: rangeOfSession(req.params.id) }) : bad("no such session", 404)),
       POST: async (req: any) => {
         const id = req.params.id;
         if (!store.session(id)) return bad("no such session", 404);
@@ -731,7 +736,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         forgetOwnership();
         if (!portsOf(id).some((p) => p.port === port)) return bad(`no process of this session listens on port ${b.port}`);
         setOpen(id, port, !!b.open, !!b.point);
-        return json({ ports: portsOf(id) });
+        return json({ ports: portsOf(id), range: rangeOfSession(id) });
       },
     },
     "/portal/:session/:port/:key": (req: any) => Response.redirect(`${new URL(req.url).pathname}/`, 308),

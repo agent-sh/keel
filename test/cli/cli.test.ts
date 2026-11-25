@@ -296,6 +296,40 @@ describe("keel service install", () => {
       await p.exited;
     }
   }, 60_000);
+
+  test("two sessions with the sandbox off get port ranges of their own in what their commands run", async () => {
+    const line = readFileSync(unitPath, "utf8").split("\n").find((l) => l.startsWith("ExecStart="))!;
+    const p = Bun.spawn(execWords(line.slice("ExecStart=".length)), { cwd: SCRATCH, env: { ...ENV, KEEL_SUPERVISED: "", KEEL_DRAIN_MS: "300" }, stdout: "pipe", stderr: "pipe" });
+    try {
+      let out = "";
+      const dec = new TextDecoder();
+      for await (const chunk of p.stdout) { out += dec.decode(chunk); if (/keel listening on \S+/.test(out)) break; }
+      const url = out.match(/keel listening on (http:\/\/\S+?)\/? /)![1]!;
+      const api = async (method: string, path: string, body?: unknown) => (await fetch(url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<any>;
+      const echo = async (title: string) => {
+        const { session } = await api("POST", "/api/sessions", { model: "scripted:stand-in", title });
+        await api("PUT", `/api/sessions/${session.id}/permissions`, { mode: "full-auto", sandbox: "off" });
+        const say = async () => {
+          const before = ((await api("GET", `/api/sessions/${session.id}`)).events as any[]).filter((e) => e.kind === "turn_end").length;
+          await api("POST", `/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: 'echo "port=$KEEL_PORT end=$KEEL_PORT_END"' } }])}` });
+          let events: any[] = [];
+          for (let i = 0; i < 150; i++) { await Bun.sleep(200); events = (await api("GET", `/api/sessions/${session.id}`)).events; if (events.filter((e) => e.kind === "turn_end").length > before) break; }
+          return events.filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data)).at(-1)!.match(/port=(\d+) end=(\d+)/)!.slice(1).map(Number) as [number, number];
+        };
+        return say;
+      };
+      const [one, two] = [await echo("first"), await echo("second")];
+      const [a, b] = [await one(), await two()];
+      expect(a[1] - a[0]).toBe(9);
+      expect(b[1] - b[0]).toBe(9);
+      expect(a[0]).not.toBe(b[0]);
+      expect(Math.abs(a[0] - b[0])).toBeGreaterThanOrEqual(10);
+      expect(await one()).toEqual(a);
+    } finally {
+      p.kill();
+      await p.exited;
+    }
+  }, 90_000);
 });
 
 describe("keel serve on a port taken after its check", () => {

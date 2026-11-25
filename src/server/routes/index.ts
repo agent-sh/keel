@@ -43,6 +43,7 @@ import { surfaceRoutes } from "./surfaces.ts";
 import { pluginUnitRoutes } from "./plugin-units.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
+import { sessionPortRoutes } from "./session-ports.ts";
 import { overlapRoutes } from "./overlaps.ts";
 import { landingRoutes } from "./landing.ts";
 import { stewardRoutes } from "./steward.ts";
@@ -116,6 +117,7 @@ const modules: Record<string, RouteModule> = {
   providerSetupRoutes,
   profileRoutes,
   worktreeRoutes,
+  sessionPortRoutes, // after permissions: a session with the sandbox off gets a port range, and the portal names who holds a port
   overlapRoutes, // after worktrees: it reads the worktrees table
   landingRoutes, // after overlapRoutes: the queue orders and warns by its forecast
   boardRoutes, // after landingRoutes: the board reads the base the queue lands on

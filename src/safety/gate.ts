@@ -660,6 +660,15 @@ export class Gate {
     return b;
   }
 
+  // Whether the session's commands run inside a sandbox (a network of its own: its servers are its own). One that does
+  // not shares the host's loopback with every other such session.
+  confined(sessionId: string): boolean {
+    const session = this.store.session(sessionId);
+    if (!session) return false;
+    const p = this.perm(sessionId);
+    return p.sandbox !== "off" && this.sandboxed(session, p);
+  }
+
   perm(sessionId: string): SessionPerm {
     const r = this.store.db.query<{ mode: string; sandbox: string; network: number }, [string]>("SELECT mode, sandbox, network FROM perm_sessions WHERE session_id = ?").get(sessionId);
     if (r) return { session_id: sessionId, mode: isMode(r.mode) ? r.mode : "ask", sandbox: r.sandbox as SandboxProfile, network: !!r.network };
