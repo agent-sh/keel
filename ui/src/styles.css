@@ -299,8 +299,10 @@
   /* Type scale, in rem. The chrome has two sizes: ui for names, controls and words, micro for
      what is read beside them in the quiet ink (a time, a key, a count). Ui is caption's size: a
      name a step over the control beside it was a third size 8% from each, which reads as one size
-     drawn carelessly, and the step down keeps every card and bar in the room it had. A 16 px body
-     and an 18 px reading size at the default text size; head, title and display name things.
+     drawn carelessly, and the step down keeps every card and bar in the room it had. On a desk the
+     body is 15 px and the chrome 13 px at the default text size; a reply and the owner's words are
+     set at the body's size, read a step up only for a heading in a reply; head, title and display
+     name things.
      No stylesheet or component writes a size of its own (src/ui-conventions.test.ts). */
   --text-micro: 0.75rem;
   --text-micro--line-height: 1.35;
@@ -427,8 +429,11 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 html, body, #root { height: 100%; }
 /* Every length in the interface is a rem: the text size the owner picks
    (Settings, Ctrl + and Ctrl -) scales type, spacing and controls together. */
-/* The default text size: a 17 px root (16 px body text); the owner's size scales it. */
+/* The default text size: on a phone a 17 px root (the platform's own body size); on a desk a 16 px root, which
+   sets the conversation's text at 15 px and the chrome at 13 px, the sizes a desktop app is read at. The owner's
+   size scales it. */
 html { -webkit-text-size-adjust: 100%; font-size: calc(17px * var(--ui-scale, 1)); }
+@media (min-width: 768px) { html { font-size: calc(16px * var(--ui-scale, 1)); } }
 /* No color transitions while the theme flips: everything changes in one frame. */
 .theme-switch, .theme-switch * { transition: none !important; }
 body {
@@ -674,7 +679,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 }
 
 /* Rendered markdown in assistant replies. */
-.prose-keel { font-size: var(--text-read); line-height: 1.7; overflow-wrap: anywhere; }
+.prose-keel { font-size: var(--text-base); line-height: 1.6; overflow-wrap: anywhere; }
 /* Space between blocks: every block but the first. Not written "* + *": a
    sibling rule (+ or ~) with a side that has no class, id or attribute to
    key on (a bare tag, or *) applies to any element, so each element removed
@@ -685,14 +690,10 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    keeps such rules out. */
 .prose-keel > :where(:not(:first-child)) { margin-top: 0.8em; }
 .prose-keel > :first-child { margin-top: 0; }
-/* A heading is told from the text by more than its weight. h1 and h2 are a size up;
-   h3 and h4 are the text's own size (the scale has no step between), so h3 is bold
-   where a strong word is semibold and stands further off what is above it, and h4
-   is semibold and quiet. */
-.prose-keel h1, .prose-keel h2, .prose-keel h3, .prose-keel h4 { font-weight: 600; letter-spacing: -0.012em; line-height: 1.3; margin-top: 1.4em; }
-.prose-keel h3 { margin-top: 1.7em; }
-.prose-keel h4 { font-weight: 600; }
-.prose-keel h1 { font-size: var(--text-title); } .prose-keel h2 { font-size: var(--text-head); } .prose-keel h3 { font-size: var(--text-read); } .prose-keel h4 { font-size: var(--text-read); color: var(--muted); }
+/* A heading in a reply is the reply's own voice, a little heavier: h1 and h2 one step up the scale, h3 and h4 at
+   the text's own size, all semibold, told from the text by the room above them. h4 is quiet. */
+.prose-keel h1, .prose-keel h2, .prose-keel h3, .prose-keel h4 { font-weight: 600; letter-spacing: -0.006em; line-height: 1.35; margin-top: 1.5em; }
+.prose-keel h1 { font-size: var(--text-read); } .prose-keel h2 { font-size: var(--text-read); } .prose-keel h3 { font-size: var(--text-base); } .prose-keel h4 { font-size: var(--text-base); color: var(--muted); }
 .prose-keel strong { font-weight: 600; }
 .prose-keel ul { list-style: disc; padding-left: 1.35em; }
 .prose-keel ol { list-style: decimal; padding-left: 1.5em; }
@@ -702,7 +703,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel a { color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 45%, transparent); text-underline-offset: 0.1875rem; }
 .prose-keel a:hover { text-decoration-color: var(--accent); }
 /* Code in a sentence is a tint, not a box: a reply that names ten files has no ten outlines. */
-.prose-keel :not(pre) > code { font-family: var(--font-mono); font-size: var(--text-base); background: var(--sunken); padding: 0.05em 0.32em; border-radius: var(--radius-xs); }
+.prose-keel :not(pre) > code { font-family: var(--font-mono); font-size: var(--text-ui); background: var(--sunken); padding: 0.05em 0.32em; border-radius: var(--radius-xs); }
 /* A quote, or words held inside another (a server's message, an agent's work, a block of calls):
    one rule, one inset, everywhere. A tone colours the rule only. */
 .prose-keel blockquote { border-left: 2px solid var(--line-strong); padding-left: 0.75rem; color: var(--muted); }

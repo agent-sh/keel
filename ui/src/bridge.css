@@ -1056,22 +1056,13 @@ html[data-resizing] iframe { pointer-events: none; }
 @media (hover: none) { .k-stow-cmd { height: var(--spacing-tap); } }
 
 /* Inside a station the transcript fills it, a little tighter than reading width. */
-.k-station .k-transcript { max-width: 46rem; padding-top: 1.375rem; --k-row-gap: 0.875rem; }
-.k-station .k-compose-in { max-width: 46rem; }
-/* The reading size fits the pane. A pane among four is too narrow for 18 px
-   text at a readable measure (38 characters a line): under 28rem, where the
-   reading size holds fewer than 55 characters a line, the reply is set one
-   step down with less margin. A phone is such a pane: at 390 px the reading
-   size gives 44 characters a line and the base size 50, at the platform's
-   own body size. The owner's words are the reply's size in every pane. */
+.k-station .k-transcript { max-width: 43rem; padding-top: 1.375rem; --k-row-gap: 0.875rem; }
+.k-station .k-compose-in { max-width: 43rem; }
+/* A reply and the owner's words are set at the body's size in every pane, in a column that holds about 90
+   characters a line where the pane has the room. A pane under 28rem (one among four, a phone) gives up margin. */
 .k-reading { container: reading / inline-size; }
 @container reading (max-width: 28rem) {
   .k-transcript { padding-inline: 0.875rem; }
-  .k-transcript .prose-keel { font-size: var(--text-base); line-height: 1.6; }
-  .k-transcript .prose-keel :not(pre) > code { font-size: var(--text-ui); }
-  .k-transcript .prose-keel h1 { font-size: var(--text-head); }
-  .k-transcript .prose-keel h2 { font-size: var(--text-read); }
-  .k-transcript .prose-keel :is(h3, h4), .k-transcript .prose-keel table { font-size: var(--text-base); }
   .k-transcript .code-block pre { font-size: var(--text-caption); }
 }
 .k-stations[data-focus] .k-transcript, .k-stations[data-focus] .k-compose-in { max-width: 56rem; }
@@ -1193,7 +1184,6 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-home-recent[data-watch="resume"] .k-home-recent-word { color: var(--muted); }
 
 /* ---------- Components in the Bridge language ---------- */
-.prose-keel { font-size: var(--text-read); line-height: 1.65; }
 .k-turn-end, .k-session-usage { font-size: var(--text-micro); }
 /* Composer: a flat console field; violet ring when it has the keyboard. */
 .k-composer-box { border-radius: var(--radius-md); box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
@@ -1997,10 +1987,10 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-shell[data-mode="focus"] .k-rail-wrap[data-over] { width: 0; }
 .k-shell[data-mode="focus"] .k-band { height: 0; }
 .k-shell[data-mode="focus"] .k-station { --k-band-h: 0px; }
-.k-shell[data-mode="focus"] .k-top-in > .k-station-head { border-bottom-color: transparent; padding-inline: max(1.375rem, calc(50% - 21.5rem)) 4rem; padding-block: 0.875rem 0.25rem; }
+.k-shell[data-mode="focus"] .k-top-in > .k-station-head { border-bottom-color: transparent; padding-inline: max(1.375rem, calc(50% - 20rem)) 4rem; padding-block: 0.875rem 0.25rem; }
 .k-shell[data-mode="focus"] :is(.k-station-rest, .k-station-machine) { display: none; }
 .k-shell[data-mode="focus"] .k-top-in > .k-session-header { display: none; }
-.k-shell[data-mode="focus"] .k-stations .k-transcript, .k-shell[data-mode="focus"] .k-stations .k-compose-in { max-width: 46rem; }
+.k-shell[data-mode="focus"] .k-stations .k-transcript, .k-shell[data-mode="focus"] .k-stations .k-compose-in { max-width: 43rem; }
 .k-shell[data-mode="focus"] .k-compose-in { padding-bottom: 2.25rem; }
 .k-shell[data-mode="focus"] .k-composer-box:focus-within { box-shadow: 0 0 0 1px var(--line-strong); }
 /* A message's acts, its turn's figures and its notes come under the pointer or the keys. */

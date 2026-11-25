@@ -1255,7 +1255,7 @@ const SessionComposer = memo(function SessionComposer({
             if (onEscape) onEscape(); else if (!session || !stopHeld(session.id)) onStop?.();
           }
         }}
-        className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-2.5 text-read leading-normal outline-none placeholder:text-faint max-md:pt-3 max-md:leading-relaxed", rest ? "k-rest-text pb-3 pr-2" : "pb-0.5 max-md:pb-2")}
+        className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-2.5 text-base leading-normal outline-none max-md:text-read placeholder:text-faint max-md:pt-3 max-md:leading-relaxed", rest ? "k-rest-text pb-3 pr-2" : "pb-0.5 max-md:pb-2")}
       />
       {/* At rest a context that is nearly full still shows its ring: it is the one tool that warns. */}
       {rest && sid && <span className="k-rest-ring absolute right-11 top-1/2 -translate-y-1/2" data-testid="rest-meter"><ContextMeter sessionId={sid} above={REST_RING} /></span>}

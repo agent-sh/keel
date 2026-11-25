@@ -347,7 +347,7 @@ function EditPrompt({ e, sid, back, onDone }: { e: StoredEvent; sid: string; bac
             if (x.key === "Escape") done();
             if (x.key === "Enter" && !x.shiftKey) { x.preventDefault(); send(); }
           }}
-          className="block min-h-16 w-full resize-y bg-transparent px-2 py-1 text-read leading-relaxed outline-none placeholder:text-faint"
+          className="block min-h-16 w-full resize-y bg-transparent px-2 py-1 text-base leading-normal outline-none max-md:text-read placeholder:text-faint"
         />
         {!!nFiles && (
           <label className="flex items-start gap-2 px-2 pt-1.5 text-ui">

@@ -13,10 +13,11 @@
 /* A tint that reads on every surface in both themes: a step toward ink on paper
    and on white, a step toward light at night (never darker than the page). */
 .k-owner-words {
-  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.625rem 0.875rem;
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.5rem 0.75rem;
   border-radius: var(--radius-md);
   background: color-mix(in oklab, var(--accent-soft) 75%, transparent);
-  font-size: var(--text-read); line-height: 1.6; color: var(--fg);
+  /* The body's size, as the reply: what was asked is never the larger of the two. */
+  font-size: var(--text-base); line-height: 1.5; color: var(--fg);
 }
 /* A step off the page, and a step from a code box in Keel's notices (bg-code), which sits just
    under the page: the two never read as one grey. At night the whole tint. */
@@ -370,7 +371,6 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* A pane too narrow for the reading size: the reply is a size down, and so are the words on the rail. */
 @container reading (max-width: 28rem) {
   .k-work { --k-verb: 3.75rem; }
-  .k-owner-words { font-size: var(--text-base); }
   .k-aside .prose-keel { font-size: var(--text-ui); }
 }
 /* A pane with no room for a column of verbs (a phone at a large text size): a line is its words in
