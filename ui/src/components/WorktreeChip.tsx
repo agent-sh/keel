@@ -132,7 +132,9 @@ export function WorktreeChip({ session }: { session: Session }) {
         )}
       </Popover.Trigger>
       <Popover.Portal>
-        <Popover.Positioner align="end" sideOffset={6} className="z-50">
+        {/* This chip is in the session bar or its modal menu. Do not run a
+            second size observer while the outer menu closes by touch. */}
+        <Popover.Positioner align="end" sideOffset={6} disableAnchorTracking className="z-50">
           <Popover.Popup className={cn(popupClass, "max-h-[var(--available-height)] w-[min(24rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain p-3")} data-testid="worktree-popup">
             <Popover.Title className="flex items-center gap-2 text-ui font-medium">
               <GitBranch className="size-4 text-accent" />

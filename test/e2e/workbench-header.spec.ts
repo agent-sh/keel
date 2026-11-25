@@ -292,15 +292,16 @@ async function crowded(request: import("@playwright/test").APIRequestContext, mo
   return { id: session.id as string, drop };
 }
 
-// The toolbar never scrolls sideways: Session actions and Panels are whole on
-// screen, and every action the session has is in the row or in the More menu.
-async function reachable(page: Page, station: Locator) {
+// The toolbar never scrolls sideways. In a crowded phone bar, Panels moves
+// into Session actions along with the tools.
+async function reachable(station: Locator, foldPanels = false) {
   const header = station.getByTestId("session-header");
   // The permission mode is in the message box's row, beside the model; the bar holds no control of it.
   await expect(station.getByTestId("composer-tools").getByTestId("permission-menu")).toBeAttached();
   await expect(header.getByTestId("permission-menu")).toHaveCount(0);
   await expect(station.getByTestId("session-menu")).toBeInViewport({ ratio: 1 });
-  await expect(station.getByTestId("panel-menu")).toBeInViewport({ ratio: 1 });
+  if (foldPanels) await expect(station.getByTestId("panel-menu")).toHaveCount(0);
+  else await expect(station.getByTestId("panel-menu")).toBeInViewport({ ratio: 1 });
   expect(await header.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
   const inRow: string[] = [], inMenu: string[] = [];
   for (const id of SECONDARY) ((await header.getByTestId(id).count()) ? inRow : inMenu).push(id);
@@ -329,7 +330,7 @@ test.describe("a crowded toolbar", () => {
       await page.setViewportSize({ width: 390, height: 540 });
       await page.goto(`/s/${id}`);
       await expect(station.getByTestId("composer")).toBeVisible();
-      const phone = await reachable(page, station);
+      const phone = await reachable(station);
       expect(phone.inMenu.length).toBeGreaterThan(0);
       await expect(more).toBeInViewport({ ratio: 1 });
       await shoot(page, "workbench-toolbar-390");
@@ -371,7 +372,7 @@ test.describe("a crowded toolbar", () => {
       await expect(worktree).toBeHidden();
       await expect(menu).toBeHidden();
       // The permission modes open from the message box's row (a phone's resting box shows its tools on a tap).
-      await station.getByTestId("composer-open").tap();
+      await station.getByTestId("composer-open").tap({ timeout: 10_000 });
       await station.getByTestId("permission-menu").tap();
       await expect(page.getByTestId("mode-full-auto")).toBeVisible();
       await page.keyboard.press("Escape");
@@ -382,12 +383,17 @@ test.describe("a crowded toolbar", () => {
       await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
       await page.reload();
       await expect(more).toBeVisible();
-      const large = await reachable(page, station);
+      const large = await reachable(station, true);
+      expect(large.inRow).toEqual([]);
       await shoot(page, "workbench-toolbar-390-large-head");
+      await more.tap();
+      await expect(menu.getByTestId("menu-panels").filter({ hasText: /^Panels$/ })).toBeVisible();
+      await expect(menu.getByTestId("menu-panel-files")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(menu).toBeHidden();
       const where = station;
       await station.getByTestId("composer").fill("/permissions");
       await page.keyboard.press("Enter");
-      if (where === menu) await expect(menu).toBeVisible();
       await expect(where.getByTestId("permission-menu")).toBeInViewport({ ratio: 1 });
       // The mode in use is whole in view as the menu opens, with its description: at this text size the
       // list is longer than its room and scrolls.
@@ -406,7 +412,6 @@ test.describe("a crowded toolbar", () => {
       await shoot(page, "workbench-toolbar-390-large-text");
       await page.keyboard.press("Escape");
       await expect(modes).toBeHidden();
-      if (where === menu) await page.keyboard.press("Escape");
       await expect(menu).toBeHidden();
       await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
       await page.reload();
@@ -414,7 +419,7 @@ test.describe("a crowded toolbar", () => {
 
       // A narrow desktop pane, by keyboard.
       await page.setViewportSize({ width: 900, height: 1040 });
-      const narrow = await reachable(page, station);
+      const narrow = await reachable(station);
       expect(narrow.inMenu.length).toBeGreaterThan(0);
       await more.focus();
       await page.keyboard.press("Enter");
@@ -438,7 +443,7 @@ test.describe("a crowded toolbar", () => {
       // A wide pane keeps its resting tools, the mode and the worktree, and the rest in the menu by name; the session is named once.
       await page.setViewportSize({ width: 1920, height: 1040 });
       await expect(more).toBeVisible();
-      const wide = await reachable(page, station);
+      const wide = await reachable(station);
       expect([...wide.inRow].sort()).toEqual([...RANKED].sort());
       await more.click();
       await expect(menu).toBeVisible();

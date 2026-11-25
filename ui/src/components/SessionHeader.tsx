@@ -3,6 +3,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, MessagesSquare, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
 import { setLensView, useLensView } from "../lib/lens-view.ts";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { flushSync } from "react-dom";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
 import { commandKeys, composing, runCommand } from "../lib/keys.ts";
@@ -64,9 +65,8 @@ function useFit(tools: Tool[], reserve: number, fold = false) {
   // A folded tool is measured in the list, where it may be styled a little
   // differently: its row width is the one it folded at, moved by what it gained or lost since.
   const folded = useRef<Record<string, { row: number; list: number }>>({});
-  // What has no resting place starts in the menu: a tool drawn in the row for the first render and moved to
-  // the menu by the first measure is mounted twice, and each mount reads what it shows.
-  const [out, setOut] = useState<string[]>(() => tools.filter((t) => !t.rest).map((t) => t.id));
+  // Until the first fit a crowded bar has room only for the session menu.
+  const [out, setOut] = useState<string[]>(() => tools.filter((t) => fold || !t.rest).map((t) => t.id));
   const fit = useRef(() => {});
   fit.current = () => {
     const el = head.current;
@@ -124,11 +124,12 @@ function useFit(tools: Tool[], reserve: number, fold = false) {
     for (const id of ranked) if (!next.includes(id) && cost(id) > 0 && ++kept > ROW_TOOLS) next.push(id);
     // A bar with no room for any (a large text size on a narrow phone): they are all in the menu, the title keeps the width.
     if (fold) for (const id of ranked) if (!next.includes(id)) next.push(id);
-    setOut((prev) => (prev.join() === next.join() ? prev : next));
+    // Commit in the same frame as the fit. If left pending, the popup's
+    // positioner can flush the update from inside its own ResizeObserver.
+    if (out.join() !== next.join()) flushSync(() => setOut(next));
   };
-  // Every render measures before paint. A resize of the row or of a tool, or a
-  // change in a folded one, measures again on the next frame (not inside the
-  // observer's own delivery, which may not change what it observes).
+  // A change in the row, the folded tools or their room measures and commits
+  // on the next frame, never in an observer's delivery.
   const ro = useRef<ResizeObserver | null>(null);
   const frame = useRef(0);
   const later = useRef(() => { cancelAnimationFrame(frame.current); frame.current = requestAnimationFrame(() => fit.current()); }).current;
@@ -137,7 +138,7 @@ function useFit(tools: Tool[], reserve: number, fold = false) {
     if (head.current && ro.current) for (const c of [head.current, ...(head.current.parentElement ? [head.current.parentElement] : []), ...head.current.children, ...head.current.querySelectorAll("[data-tools] > *")]) ro.current.observe(c);
   };
   // A render that changed what is in the row (a tool came or went, the title
-  // is renamed, tools folded) measures before paint. One that left the row as
+  // is renamed, tools folded) schedules a fit. One that left the row as
   // it was measures nothing: the header renders with every event of its
   // session, and a measure makes the browser lay the page out on the spot. A
   // tool that only changed width is seen by the observer below.
@@ -147,7 +148,7 @@ function useFit(tools: Tool[], reserve: number, fold = false) {
     const now = `${reserve}|${fold}|${tools.map((t) => t.id).join()}|${out.join()}|${el ? [...el.children].map((c) => (c as HTMLElement).dataset.tool ?? c.tagName).join() : ""}|${el?.querySelectorAll("[data-tools] > *").length ?? 0}|${list.current?.childElementCount ?? 0}`;
     if (now === shape.current) return;
     shape.current = now;
-    fit.current();
+    later();
     watch();
   });
   useEffect(() => {
@@ -209,7 +210,10 @@ function SessionMenu({ tools, live, list, changed, acts, button, said }: { tools
         <Ellipsis className="size-4" />
       </Popover.Trigger>
       <Popover.Portal keepMounted>
-        <Popover.Positioner data-stow="" sideOffset={6} align="end" className="z-50 outline-none">
+        {/* This anchor is in the fixed bar, not scrolling content. In a nested
+            popup the positioner's size observer can reflow the modal while
+            the browser is still delivering sizes to the bar. */}
+        <Popover.Positioner data-stow="" sideOffset={6} align="end" disableAnchorTracking className="z-50 outline-none">
           {/* Kept in the page while closed (it measures its rows), it is a dialog only while open: a closed one
               is not a second dialog under the one that is (the shortcut sheet). */}
           {/* Opened by the keys, they go to its first control; by a pointer, to the list itself (no row lights up under nothing). */}

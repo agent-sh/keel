@@ -40,8 +40,19 @@ export function PermissionMenu({ sessionId, openSignal = 0 }: { sessionId: strin
   const [grantsOpen, setGrantsOpen] = useState(false);
   // /permissions with no mode opens this menu (in the box that has the focus: `openSignal` counts the asks).
   const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
   const atMount = useRef(openSignal);
-  useEffect(() => { if (openSignal !== atMount.current) setOpen(true); }, [openSignal]);
+  useEffect(() => {
+    if (openSignal === atMount.current) return;
+    // The compact composer scrolls its tools sideways. A command can open
+    // this menu without a tap first bringing its anchor into the row's view.
+    const button = trigger.current, row = button?.closest<HTMLElement>(".k-compose-scroll");
+    if (button && row && row.scrollWidth > row.clientWidth) {
+      const clip = row.getBoundingClientRect(), at = button.getBoundingClientRect();
+      row.scrollLeft += Math.max(0, Math.ceil(at.right - clip.right)) + Math.min(0, Math.floor(at.left - clip.left));
+    }
+    setOpen(true);
+  }, [openSignal]);
   // The mode in use is whole in view as the menu opens. Where the list is longer than its room (large
   // text, a phone, a short window) it scrolls, and the mode in use, the tallest row with its whole
   // description, lay under the list's foot: cut, or out of sight for a mode further down. Measured in
@@ -84,6 +95,7 @@ export function PermissionMenu({ sessionId, openSignal = 0 }: { sessionId: strin
     <>
       <Popover.Root open={open} onOpenChange={setOpen} onOpenChangeComplete={(o) => { if (o) showInUse(); }}>
         <Popover.Trigger
+          ref={trigger}
           data-testid="permission-menu"
           data-warm={warm ? "" : undefined}
           className={cn(
