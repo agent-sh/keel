@@ -26,22 +26,25 @@ export async function* chunks(s: ReadableStream<Uint8Array>): AsyncGenerator<Uin
 }
 
 // As chunks(), and it ends when `stop` settles: the reader is cancelled there, so a pipe that a process further
-// down still holds open is not waited for.
+// down still holds open is not waited for. The stop is not raced against each read: a race leaves a reaction on
+// `stop` for every read, which holds the chunk that read returned until `stop` settles, so a long, chatty
+// process held all of its output (every chunk, however long the caller kept only its end).
 export async function* chunksUntil(s: ReadableStream<Uint8Array>, stop: Promise<unknown>): AsyncGenerator<Uint8Array, void> {
   const r = s.getReader();
-  const stopped = Symbol("stopped");
-  const end = stop.then(() => stopped, () => stopped);
-  let ended = false;
+  let over = false, ended = false;
+  const cancel = () => { if (!ended) { ended = true; r.cancel().catch(() => {}); } };
+  const onStop = () => { over = true; cancel(); };
+  stop.then(onStop, onStop);
   try {
     for (;;) {
-      const x = await Promise.race([r.read(), end]);
-      if (x === stopped) return;
-      const { done, value } = x as ReadableStreamReadResult<Uint8Array>;
+      if (over) return;
+      const { done, value } = await r.read();
+      if (over) return;
       if (done) { ended = true; return; }
       if (value) yield value;
     }
   } finally {
-    if (!ended) r.cancel().catch(() => {});
+    cancel();
   }
 }
 
