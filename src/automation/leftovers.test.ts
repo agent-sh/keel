@@ -219,6 +219,33 @@ test("the worktree Keel made for the agent goes with its branch when clean, and 
   expect(branchesOf(m.r)).toEqual(["main"]);
 });
 
+// A child agent's worktree is made from its parent's branch, which main does not have yet. The parent's commits
+// are the parent's: with none of its own the child has nothing to merge, and its worktree and branch go.
+test("a worktree made from another live Keel branch, with nothing of its own, is not told as work to merge", async () => {
+  const parent = await keelMade("own-from-parent");
+  git(parent.wt.path, "commit", "-q", "--allow-empty", "-m", "the parent's work");
+  const child = store0(parent);
+  const made = await parent.wts.create(child.id, parent.r, "child", parent.wt.branch);
+  parent.wts.adopt(child.id, made.wt);
+  const note = await leftovers.ownWorktree({ store: parent.store, wts: parent.wts }, child.id, () => false);
+  expect(note).not.toContain("Review and merge");
+  expect(note).toContain(`its worktree was removed`);
+  expect(note).toContain(`the commits it started from are on ${parent.wt.branch}`);
+  expect(existsSync(made.wt.path)).toBe(false);
+  expect(branchesOf(parent.r)).not.toContain(made.wt.branch);
+  // The parent's branch is the parent's, untouched.
+  expect(branchesOf(parent.r)).toContain(parent.wt.branch);
+  // With a commit of its own, it is told as work to merge, as ever.
+  const second = store0(parent);
+  const own = await parent.wts.create(second.id, parent.r, "second", parent.wt.branch);
+  parent.wts.adopt(second.id, own.wt);
+  git(own.wt.path, "commit", "-q", "--allow-empty", "-m", "its own");
+  const note2 = await leftovers.ownWorktree({ store: parent.store, wts: parent.wts }, second.id, () => false);
+  expect(note2).toContain(`Its work is on branch ${own.wt.branch} in the worktree ${own.wt.path}: 1 commit over ${parent.wt.branch}, 0 uncommitted files.`);
+  expect(existsSync(own.wt.path)).toBe(true);
+});
+const store0 = (k: { store: Store; r: string }) => k.store.createSession({ workspace: k.r, title: "child", model: "scripted:stand-in" });
+
 test("the worktree Keel made is kept and listed with uncommitted work, an untracked file git hides, or a commit on no other branch", async () => {
   // Uncommitted work.
   const d = await keelMade("own-dirty");

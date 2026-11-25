@@ -147,9 +147,10 @@ const statusOf = async (path: string): Promise<Status | undefined> => {
   }
   return st;
 };
-// Commits of `ref` that no other branch, remote branch or tag holds (`self`: the branches to leave out).
-const uniqueOf = async (dir: string, ref: string, self?: string | string[]): Promise<number | undefined> => {
-  const out = await run(dir, ["rev-list", "--count", ref, "--not", ...[self ?? []].flat().map((b) => `--exclude=${b}`), "--branches", "--remotes", "--tags", "--"]);
+// Commits of `ref` that no other branch, remote branch or tag holds (`self`: the branches to leave out). `over`: a
+// branch whose commits are its own, held or not by `self` (the branch the worktree was made from).
+const uniqueOf = async (dir: string, ref: string, self?: string | string[], over?: string): Promise<number | undefined> => {
+  const out = await run(dir, ["rev-list", "--count", ref, "--not", ...(over ? [`refs/heads/${over}`] : []), ...[self ?? []].flat().map((b) => `--exclude=${b}`), "--branches", "--remotes", "--tags", "--"]);
   return out === undefined ? undefined : Number(out.trim()) || 0;
 };
 
@@ -343,7 +344,11 @@ async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessi
   // Its branch's commits, on the commit that would be deleted. The branches of Keel's other worktrees here do
   // not count as holding them: each goes at its own agent's end.
   const others = c.wts.all().filter((x) => x.session_id !== sessionId && x.state === "active" && realOf(x.repo_root) === realOf(w.repo_root)).map((x) => x.branch);
-  const unique = sha ? await uniqueOf(at, sha, [w.branch, ...others]) : 0;
+  // A worktree made from another of Keel's live branches (a child agent's, from its parent's) holds that branch's
+  // commits as its base, not as work of its own: they are on the branch they came from, and only that branch's own
+  // end decides them. (A hash for a base is no branch: its commits count.)
+  const over = others.includes(w.base) ? w.base : undefined;
+  const unique = sha ? await uniqueOf(at, sha, [w.branch, ...others], over) : 0;
   const head = st.exists ? (await run(w.path, ["symbolic-ref", "--quiet", "--short", "HEAD"]))?.trim() : w.branch;
   const moved = head === w.branch ? undefined : `its HEAD is ${head ? `on ${head}` : "detached"}, not on ${w.branch}`;
   const look = st.exists ? await statusOf(w.path) : { dirty: 0, ignored: [] };
@@ -356,12 +361,17 @@ async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessi
   const dirty = Math.max(st.dirty, look?.dirty ?? 0) + (hidden ?? 0);
   const fate = rules.ownTreeFate({ dirty, unique: unique ?? 0, inner, busy, unknown });
   if (fate.act === "remove") {
+    // (Read before the worktree and branch go.)
+    const lends = !!over && !!sha && !!(await uniqueOf(at, sha, [w.branch, ...others]));
     const r = await c.wts.removeClean(w, sha);
     if (r.removed) {
       // Its ignored files went with it: said by count and the first names.
       const names = look?.ignored ?? [];
       const gone = names.length ? `, and ${rules.count(names.length, "ignored path")} with it: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ", ..." : ""}` : "";
-      if (!st.commits_ahead) return `\n\n(The agent changed no files; its worktree was removed${gone}.)`;
+      if (!st.commits_ahead) {
+        const lent = lends ? `; the commits it started from are on ${over}` : "";
+        return `\n\n(The agent changed no files; its worktree was removed${gone}${lent}.)`;
+      }
       const on = (await run(w.repo_root, ["for-each-ref", "--count=4", `--contains=${sha}`, "--format=%(refname:short)", "refs/heads", "refs/remotes", "refs/tags"]))?.split("\n").filter((x) => x && x !== w.branch) ?? [];
       return `\n\nIts ${rules.count(st.commits_ahead, "commit")} over ${w.base} ${st.commits_ahead === 1 ? "is" : "are"} also on ${on.slice(0, 3).join(", ") || "other branches"}: its worktree ${w.path}${r.branch_deleted ? ` and branch ${w.branch} were` : " was"} removed${gone}.`;
     }
