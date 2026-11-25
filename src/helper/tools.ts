@@ -9,6 +9,8 @@ import { watchWord } from "../core/watch.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { whose } from "../engine/compact.ts";
 import * as perm from "../server/routes/permissions.ts";
+import { readsOf } from "../server/reads.ts";
+import type { Store } from "../core/store.ts";
 import { pendingQuestions } from "../tools/interact.ts";
 import { registerSessionTools } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
@@ -26,11 +28,13 @@ const guard = async (f: () => Promise<string> | string) => {
   try { return ok(await f()); } catch (e) { return fail(e instanceof Error ? e.message : String(e)); }
 };
 
-function costs(sinceMs: number): Map<string, { cost: number; tokens: number; calls: number }> {
+// Spend by session since a time. A sum over the telemetry ledger reads pages the loop has not
+// held, so it runs on the read thread (src/server/reads.ts), never on the loop.
+export async function costs(store: Pick<Store, "db" | "stateDir">, sinceMs: number): Promise<Map<string, { cost: number; tokens: number; calls: number }>> {
   const out = new Map<string, { cost: number; tokens: number; calls: number }>();
   try {
-    const rows = H!.deps.store.db.query<{ session_id: string; cost: number | null; tokens: number; calls: number }, [number]>(
-      "SELECT session_id, SUM(COALESCE(cost, 0)) AS cost, SUM(input + output + cache_read + cache_write) AS tokens, COUNT(*) AS calls FROM telemetry_calls WHERE ts >= ? GROUP BY session_id").all(sinceMs);
+    const rows = await readsOf(store).sql<{ session_id: string; cost: number | null; tokens: number; calls: number }>(
+      "SELECT session_id, SUM(COALESCE(cost, 0)) AS cost, SUM(input + output + cache_read + cache_write) AS tokens, COUNT(*) AS calls FROM telemetry_calls WHERE ts >= ? GROUP BY session_id", [sinceMs]);
     for (const r of rows) out.set(r.session_id, { cost: r.cost ?? 0, tokens: r.tokens, calls: r.calls });
   } catch {} // no ledger yet: no costs
   return out;
@@ -53,14 +57,14 @@ const sessions: Tool = {
   description: "The owner's sessions now: id, title, folder, state (needs you, working, failed, stopped, done, not started; a session whose agents still work is working), what waits for them (approvals, questions), unread alerts, last activity and the last 24 hours' cost. Archived ones with archived: true.",
   input_schema: { type: "object", properties: { archived: { type: "boolean" } }, additionalProperties: false },
   readOnly: true,
-  run: (input) => guard(() => {
+  run: (input) => guard(async () => {
     const { store, engine } = H!.deps;
     const list = store.sessions({ archived: input.archived === true }).filter((s) => !s.settings.helper && !s.parent_id).sort((a, b) => b.updated - a.updated);
     if (!list.length) return "No sessions.";
     const approvals = perm.gate?.approvals({ pending: true }) ?? [];
     let unread: Record<string, number> = {};
     try { unread = alerts.unreadCounts().sessions; } catch {}
-    const cost = costs(Date.now() - 86400_000);
+    const cost = await costs(store, Date.now() - 86400_000);
     const counts = agentCounts();
     return list.slice(0, 80).map((s) => {
       const st = engine.statusOf(s.id);
@@ -120,14 +124,14 @@ const activity: Tool = {
   description: "What happened across Keel: the helper's event digest (failures, finished long work, what waits for the owner, mail that needs them), the open errors with their counts, and spend by session, over the last hours (default 24).",
   input_schema: { type: "object", properties: { hours: { type: "number" } }, additionalProperties: false },
   readOnly: true,
-  run: (input) => guard(() => {
+  run: (input) => guard(async () => {
     const { store } = H!.deps;
     const hours = Math.min(24 * 30, Math.max(1, Number(input.hours) || 24));
     const since = Date.now() - hours * 3600_000;
     const title = (id: string | null) => (id ? store.session(id)?.title || "untitled" : "");
     const evs = H!.events(200).filter((e) => e.ts >= since);
     const errs = store.errors(200, { resolved: false }).filter((e) => e.ts >= since);
-    const cost = [...costs(since).entries()].sort((a, b) => b[1].cost - a[1].cost);
+    const cost = [...(await costs(store, since)).entries()].sort((a, b) => b[1].cost - a[1].cost);
     const total = cost.reduce((n, [, c]) => n + c.cost, 0);
     return [
       `Events (${evs.length}; ${digestZone()}):\n${evs.length ? digestLines(evs, 40, title) : "- none"}`,
