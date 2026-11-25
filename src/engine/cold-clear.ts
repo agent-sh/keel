@@ -102,6 +102,9 @@ export function stubOf(b: ToolResultBlock, call: { name: string; input: unknown 
 // Which results and thinking a cold point clears, from the branch as it is.
 // `thinking`: the wire takes the oldest run of thinking out (Anthropic's).
 // `asks`: a tool whose result is the owner's own words.
+// A result after the last prompt is never cleared, and on the Anthropic wire (`thinking`) none is when the turn
+// the last prompt opened already holds thinking: a stub changes the prefix every later thinking block is bound
+// to, and the wire would take out that turn's own thinking along with the old.
 export type Pick = { ids: string[]; chars: number; thinking?: number; thinking_chars: number; files: { id: string; text: string }[] };
 export function pickCleared(events: readonly StoredEvent[], from: number, opts: { thinking: boolean; asks: (tool: string) => boolean; keep?: number }): Pick | undefined {
   const done = clearingOf(events, from);
@@ -110,11 +113,12 @@ export function pickCleared(events: readonly StoredEvent[], from: number, opts: 
   const rows: Row[] = [];
   // Where each target was touched, by which tool, and after which result (its index in `rows`).
   const touches: { at: number; name: string; target: string }[] = [];
-  let lastUser = -1, lastUserSeq = -1;
+  let lastUser = -1, lastUserSeq = -1, rowsAtUser = 0, turnThinks = false;
   for (let i = from; i < events.length; i++) {
     const e = events[i]!;
-    if (e.kind === "user") { lastUser = i; lastUserSeq = e.seq; }
+    if (e.kind === "user") { lastUser = i; lastUserSeq = e.seq; rowsAtUser = rows.length; turnThinks = false; }
     else if (e.kind === "assistant") {
+      for (const b of e.data.blocks ?? []) if ((b.type === "thinking" || b.type === "redacted_thinking") && b.bind !== "stale") turnThinks = true;
       for (const b of e.data.blocks ?? []) if (b.type === "tool_use") {
         calls.set(b.id, { name: b.name, input: b.input });
         const t = targetOf(b.input);
@@ -132,7 +136,8 @@ export function pickCleared(events: readonly StoredEvent[], from: number, opts: 
   const keep = opts.keep ?? KEEP_NEWEST;
   const ids: string[] = [], files: Pick["files"] = [];
   let chars = 0;
-  for (let k = 0; k < rows.length - keep; k++) {
+  const upto = opts.thinking && turnThinks ? 0 : Math.min(rows.length - keep, rowsAtUser);
+  for (let k = 0; k < upto; k++) {
     const r = rows[k]!;
     if (!r.ok) continue;
     // Referred to since: a later call of another tool names the same file or folder (an edit of what it read).

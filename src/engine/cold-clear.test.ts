@@ -105,3 +105,25 @@ test("a result that a cut already saved to a file names that file, and no second
   expect(resultText(m, "a")).toContain("/spill/s/1-Bash-ab.txt");
   expect(resultText(m, "a")).toContain("Bash cargo test");
 });
+
+test("a result after the last prompt stays, and a turn that holds thinking clears no result on the Anthropic wire", () => {
+  seq = 0;
+  const l: StoredEvent[] = [ev("user", { text: "go" })];
+  for (let i = 0; i < 4; i++) l.push(...step(`old${i}`, "Read", { file_path: `/old${i}.ts` }, big(5000)));
+  l.push(ev("assistant", { blocks: [{ type: "text", text: "done" }], model: "m", usage: {} }));
+  l.push(ev("user", { text: "next" }));
+  // The turn the prompt opened: twelve big results of its own, none of them cleared, whatever the keep count.
+  for (let i = 0; i < 12; i++) l.push(...step(`new${i}`, "Read", { file_path: `/new${i}.ts` }, big(5000)));
+  const pick = pickCleared(l, 0, { thinking: false, asks, keep: 0 })!;
+  expect(pick.ids).toEqual(["old0", "old1", "old2", "old3"]);
+  // On the Anthropic wire that turn's own thinking is bound to the prefix a stub would change: no result is cleared
+  // (the earlier thinking alone may go: a thinking block's fingerprint leaves thinking out).
+  const t = pickCleared(l, 0, { thinking: true, asks, keep: 0 })!;
+  expect(t.ids).toEqual([]);
+  expect(t.thinking).toBe(l.findLast((e) => e.kind === "user")!.seq);
+  // At the start of a turn (its prompt is the last event) results and earlier thinking go together.
+  const start = [...l.slice(0, 10), ev("user", { text: "again" })];
+  const p = pickCleared(start, 0, { thinking: true, asks, keep: 0 })!;
+  expect(p.ids.length).toBeGreaterThan(0);
+  expect(p.thinking).toBe(start.at(-1)!.seq);
+});
