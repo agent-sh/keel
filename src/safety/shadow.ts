@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { addAll, git, gitEach, gitSync, innerHead } from "../core/git.ts";
 import { capPatch } from "./patch.ts";
 import { timed } from "../admin/stall.ts";
@@ -144,8 +144,26 @@ export class Shadow {
   // it, and the same text is not written again (a file write on a busy disk
   // holds the loop).
   private excludes?: string;
+  // What the owner hid from git in this folder's own repository: its .git/info/exclude (a linked
+  // worktree's is the shared repository's). git reads that file only for the repository it belongs
+  // to, and the store is another one, so its lines are copied in. The global excludes file needs
+  // nothing: the store's git reads the owner's own config. Ours follow these lines, so a negation
+  // here cannot bring back a folder that is always left out.
+  private ownerExcludes(): string[] {
+    if (this.gitDir) return [];
+    try {
+      let dir = join(this.workspace, ".git");
+      if (lstatSync(dir).isFile()) {
+        const at = /^gitdir:\s*(.+)$/m.exec(readFileSync(dir, "utf8"))?.[1]?.trim();
+        if (!at) return [];
+        dir = resolve(this.workspace, at);
+        try { dir = resolve(dir, readFileSync(join(dir, "commondir"), "utf8").trim()); } catch {} // no commondir: its own
+      }
+      return readFileSync(join(dir, "info", "exclude"), "utf8").split("\n").filter((l) => l.trim() !== "");
+    } catch { return []; }
+  }
   private writeExcludes(big: string[]) {
-    const lines = ["# written by Keel", ...ALWAYS_OUT, ...(this.own ? [this.own] : []), ...big.map((p) => `/${p.replace(/([*?[\\])/g, "\\$1")}`)];
+    const lines = ["# written by Keel", ...this.ownerExcludes(), ...ALWAYS_OUT, ...(this.own ? [this.own] : []), ...big.map((p) => `/${p.replace(/([*?[\\])/g, "\\$1")}`)];
     const text = lines.join("\n") + "\n";
     if (text === this.excludes) return;
     mkdirSync(join(this.dir, "info"), { recursive: true });
