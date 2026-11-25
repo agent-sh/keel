@@ -15,6 +15,8 @@ export type RigHooks = {
   setup?: () => Promise<void>;
   // Runs before the stand-in answers a request (hold a turn open, act mid-turn).
   request?: (req: ProviderRequest) => Promise<void>;
+  // The model family of the stand-in (its tool set is that family's): "other" by default.
+  family?: ModelInfo["family"];
 };
 
 const texts = (messages: Message[]) =>
@@ -31,7 +33,7 @@ export const untilStopped = (req: ProviderRequest) =>
 export function rig(stateDir: string, hooks: RigHooks = {}) {
   const store = new Store(stateDir);
   const scripted = new ScriptedProvider();
-  const info: ModelInfo = { id: "scripted:stand-in", provider: "scripted", model: "stand-in", name: "Scripted stand-in", family: "other", context: 100_000, output: 2_000, tools: false, efforts: [], billing: "unknown" };
+  const info: ModelInfo = { id: "scripted:stand-in", provider: "scripted", model: "stand-in", name: "Scripted stand-in", family: hooks.family ?? "other", context: 100_000, output: 2_000, ...(hooks.family ? {} : { tools: false }), efforts: [], billing: "unknown" };
   // The owner's and the harness's words each model request carried, in order.
   const requests: string[][] = [];
   const provider = {
