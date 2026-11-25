@@ -88,7 +88,7 @@ test("the history read counts the drive's first name for the message tool and th
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c1", name: "keel__session_send", input: { to: "claude:x", text: "sent under the first name" } }] });
   // The fleet's tool of the same name, to one of Keel's own sessions: not the drive's.
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c5", name: "keel__session_send", input: { to: "01a212c3-1359-7231-a922-c87e4bad179e", text: "to a session of Keel's" } }] });
-  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c6", name: "keel__session_send", input: { to: "mini/01a212c3-1359-7231-a922-c87e4bad179f", text: "to a session on another Keel" } }] });
+  store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c6", name: "keel__session_send", input: { to: "far/01a212c3-1359-7231-a922-c87e4bad179f", text: "to a session on another Keel" } }] });
   store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "c2", name: "run_code", input: { code: "await tools.keel__session_message(...)" } }] });
   store.migrate("CREATE TABLE IF NOT EXISTS code_calls (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL)");
   const call = (id: string, tool: string, input: unknown) => store.db.query("INSERT INTO code_calls VALUES (?, ?, 'c2', 1, ?)").run(id, s.id, JSON.stringify({ id, parent: "c2", seq: 1, tool, input, started: 0 }));

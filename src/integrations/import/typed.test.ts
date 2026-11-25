@@ -263,7 +263,7 @@ test("a paired daemon that has not said it told its sends keeps the marks off, a
   const store = new Store(join(root, "state-held"));
   store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
   store.migrate("CREATE TABLE IF NOT EXISTS fleet_pairs (daemon_id TEXT PRIMARY KEY, name TEXT, key TEXT NOT NULL, created INTEGER NOT NULL)");
-  store.db.query("INSERT INTO fleet_pairs VALUES ('d9', 'the mini', 'k', 0)").run();
+  store.db.query("INSERT INTO fleet_pairs VALUES ('d9', 'the far machine', 'k', 0)").run();
   const imports = new Imports(store);
   await ready(store);
   const held: { id: string; name: string | null }[] = [];
@@ -273,5 +273,5 @@ test("a paired daemon that has not said it told its sends keeps the marks off, a
   transcript(own, id);
   const made = await imports.import(imports.byPath(own, "claude")!, { model: "m", workspace: root, owner: true });
   expect(store.events(made.session.id).filter((e) => e.kind === "user").map((e) => (e.data as any).typed === true)).toEqual([false, false]);
-  expect(held).toEqual([{ id: "d9", name: "the mini" }]);
+  expect(held).toEqual([{ id: "d9", name: "the far machine" }]);
 });
