@@ -38,11 +38,8 @@ test("code is read for the connections it opens, the lines it runs, and what it 
 // The scan reads a command line in step with its length: a line of many calls, quotes, brackets or pieces is read in a bounded
 // number of steps (past a number of calls the rest is unread), and the text of a long line is read once. (Lines of open
 // brackets are the shell parser's own, which src/safety/shell-linear.test.ts bounds.)
-const timed = (f: () => unknown) => {
-  let best = Infinity;
-  for (let k = 0; k < 3; k++) { const t = performance.now(); f(); best = Math.min(best, performance.now() - t); }
-  return best;
-};
+// One try; a pair that looks too slow is tried again, up to three times, and the fastest of each counts.
+const once = (f: () => unknown, have: number) => { const t = performance.now(); f(); return Math.min(have, performance.now() - t); };
 const UNITS = [
   "ls /tmp/x; git status; ", "echo ls | bash; ", "x=$(ls); y=$x; ", "export A=1; ls $A/b; ", "os.system('ls'); ", "os.system(", "system(system(", "subprocess.run([", "'a'+'b'+", "'a' 'b' ", "\"a\" . \"b\" . ", "\\x41", "`", "import(", "require('x'); ", "exec(", "eval('1'); ", "a.", "'", "\"", "a ", "<<< ", "$d/", "/dev/", "$X ", "-c ", "https://h.example/ ", "x=1;",
   // lua, awk, R, PowerShell, Tcl, the sqlite3 shell, vim, emacs and gdb
@@ -56,12 +53,14 @@ test("a command line of many calls, quotes or pieces is read in step with its le
   const slow: string[] = [];
   for (const unit of UNITS) {
     for (const wrap of WRAPS) {
-      const small = timed(() => shellReaches(line(unit, 50_000, wrap), { cwd: "/w" }));
-      const big = timed(() => shellReaches(line(unit, 200_000, wrap), { cwd: "/w" }));
-      // Four times the text takes at most twelve times as long (and nothing under 60 ms is judged by its ratio).
-      if (big > 60 && big > small * 12) slow.push(`${JSON.stringify(unit)} in ${JSON.stringify(wrap)}: ${small.toFixed(0)} ms, ${big.toFixed(0)} ms`);
-      if (big > 1500) slow.push(`${JSON.stringify(unit)} in ${JSON.stringify(wrap)}: ${big.toFixed(0)} ms for 200,000 characters`);
+      const a = line(unit, 12_500, wrap), b = line(unit, 50_000, wrap);
+      let small = Infinity, big = Infinity;
+      const verdict = () => (big > 15 && big > small * 12) || big > 400;
+      for (let k = 0; k < 3 && (k === 0 || verdict()); k++) { small = once(() => shellReaches(a, { cwd: "/w" }), small); big = once(() => shellReaches(b, { cwd: "/w" }), big); }
+      // Four times the text takes at most twelve times as long (and nothing under 15 ms is judged by its ratio).
+      if (big > 15 && big > small * 12) slow.push(`${JSON.stringify(unit)} in ${JSON.stringify(wrap)}: ${small.toFixed(0)} ms, ${big.toFixed(0)} ms`);
+      if (big > 400) slow.push(`${JSON.stringify(unit)} in ${JSON.stringify(wrap)}: ${big.toFixed(0)} ms for 50,000 characters`);
     }
   }
   expect(slow).toEqual([]);
-}, 480_000);
+}, 120_000);

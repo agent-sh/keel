@@ -33,7 +33,8 @@ const lookup = mcp("notes__get", true);
 
 const rig = (mode: Mode = "full-auto") => {
   const store = new Store(mkdtempSync(join(tmp(), "prov-gate-")));
-  const g = new Gate(store, new Bus(), () => false);
+  const bus = new Bus();
+  const g = new Gate(store, bus, () => false);
   if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
   store.migrate("CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, parent_id TEXT, session_id TEXT)");
   g.webUse = webUse;
@@ -59,9 +60,15 @@ const rig = (mode: Mode = "full-auto") => {
   // What a call is decided as: "ran" (let through), "card" (the owner is asked, with the card's reason), or "refused".
   const decide = async (s: Session, tool: Tool, input: unknown, answer: "deny" | "allow" = "deny") => {
     const call: ToolCall = { id: crypto.randomUUID(), tool, input, ctx: { sessionId: s.id, cwd: s.workspace, signal: new AbortController().signal, spillDir: s.workspace, seen: new Map() } };
+    // The gate says a card is open by its own event: no wait for a time. A call that settles with none open is let through or refused.
+    let opened = () => {};
+    const open = new Promise<"opened">((res) => { opened = () => res("opened"); });
+    const off = bus.on((e) => { if (e.t === "feature" && e.name === "approval" && e.session_id === s.id && (e.data as { state?: string }).state === "pending") opened(); });
     const out = g.check(s, call);
-    const settled = await Promise.race([out.then(() => "done" as const), Bun.sleep(80).then(() => "waiting" as const)]);
-    if (settled === "done") { const r = await out; return "deny" in r ? { is: "refused" as const, text: r.deny } : { is: "ran" as const, text: "" }; }
+    const settled = await Promise.race([out.then(() => "done" as const), open]).finally(off);
+    // (A card saved and settled in the same turn is no card: let the turn end, then look.)
+    if (settled === "opened") await new Promise((r) => setImmediate(r));
+    if (settled === "done" || !g.approvals({ session: s.id, pending: true }).length) { const r = await out; return "deny" in r ? { is: "refused" as const, text: r.deny } : { is: "ran" as const, text: "" }; }
     const [card] = g.approvals({ session: s.id, pending: true });
     const text = card ? `${card.why ?? ""}` : "";
     if (card) g.resolve(card.id, s.id, answer === "allow" ? { choice: "once", seen: "whole" } : { choice: "deny" });

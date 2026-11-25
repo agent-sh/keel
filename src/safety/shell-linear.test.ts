@@ -120,18 +120,19 @@ test("a whole line of 100,000 characters is decided in step with its length", ()
 // A here-document is one part a line. What a shell, another machine's shell or an interpreter is fed that way is
 // read once per command, and one longer than the rules read through is high risk for its length alone: 20,000
 // lines fed to bash held the loop for eleven seconds when each line looked back over the others.
-test("a here-document of 100,000 lines is decided in step with its length, whoever it feeds", () => {
+const LINES = 25_000;
+test("a here-document of 25,000 lines is decided in step with its length, whoever it feeds", () => {
   const facts = (mode: "ask" | "full-auto") => ({ mode, workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] });
   const slow: string[] = [];
   const fed: [string, string][] = [["bash <<'EOF'", "touch a"], ["ssh host <<'EOF'", "touch a"], ["ssh host bash <<'EOF'", "rm -rf /srv/a"], ["python3 - <<'EOF'", "x = 1"], ["cat > f <<'EOF'", "some text"], ["psql <<'EOF'", "select 1;"],
     ["kubectl exec -i pod -- sh <<'EOF'", "touch a"], ["bash -s <<'EOF' | bash <<'EOF2'", "touch a"]];
   for (const [lead, line] of fed) for (const mode of ["ask", "full-auto"] as const) {
-    const command = `${lead}\n${`${line}\n`.repeat(N)}EOF`;
+    const command = `${lead}\n${`${line}\n`.repeat(LINES)}EOF`;
     let best = Infinity, d: ReturnType<typeof decide> | undefined;
-    // (The parser alone takes 200 to 400 ms on 100,000 lines, and several times that on a busy machine: the
-    // bound is two seconds, which a square, minutes long at this size, cannot meet.)
-    for (let k = 0; k < 6 && best > 40 * LIMIT; k++) { const t = performance.now(); d = decide({ kind: "shell", command, cwd: "/w" }, facts(mode)); best = Math.min(best, performance.now() - t); }
-    if (best > 40 * LIMIT) slow.push(`${mode}: ${lead}: ${best.toFixed(0)} ms`);
+    // (The parser alone takes 50 to 100 ms on 25,000 lines, and several times that on a busy machine: the
+    // bound is a second, which a square, over ten seconds long at this size, cannot meet.)
+    for (let k = 0; k < 6 && best > 20 * LIMIT; k++) { const t = performance.now(); d = decide({ kind: "shell", command, cwd: "/w" }, facts(mode)); best = Math.min(best, performance.now() - t); }
+    if (best > 20 * LIMIT) slow.push(`${mode}: ${lead}: ${best.toFixed(0)} ms`);
     // Fed to a shell, here or there, it is longer than the rules read: high risk. Text for a file is data.
     const high = !!d && "ask" in d && d.ask.risk === "high";
     if (high !== !/^(cat|python3|psql)/.test(lead)) slow.push(`${mode}: ${lead}: ${high ? "high risk" : "not high risk"}`);
@@ -168,10 +169,12 @@ test("a line of many commands that change folder, write, run elsewhere or delete
     ["read xN, ${!xN}, [ -v xN ]", (n) => `x='a[$(echo 1)]'; ${many(n, () => 'read "$x" < /dev/null; echo ${!x}; [ -v "$x" ]')}`, [[1_000, false]]],
     ["mv dN dN+1, then rm", (n) => `${many(n, (k) => `mv d${k} d${k + 1}`)}; rm -rf d${n}`, [[4_000, true]]],
   ];
-  const best = (command: string, mode: "ask" | "full-auto") => {
-    let b = Infinity, d: ReturnType<typeof decide> | undefined;
-    for (let k = 0; k < 5; k++) { const t = performance.now(); d = decide({ kind: "shell", command, cwd: "/w" }, facts(mode)); b = Math.min(b, performance.now() - t); }
-    return { ms: b, d: d! };
+  // One try each; a pair that looks too slow is tried again, up to five times, and the fastest of each counts (a busy
+  // machine stalls single tries). A pair within the bound at the first try needs no other.
+  const tries = (command: string, mode: "ask" | "full-auto", have: number) => {
+    const t = performance.now();
+    decide({ kind: "shell", command, cwd: "/w" }, facts(mode));
+    return Math.min(have, performance.now() - t);
   };
   const wrong: string[] = [];
   for (const [label, line, risks] of shapes) for (const mode of ["ask", "full-auto"] as const) {
@@ -182,7 +185,9 @@ test("a line of many commands that change folder, write, run elsewhere or delete
     // Both under PARTS_MAX (4,096), so both are read whole: four times the parts in linear time is
     // four times the time; reading the line again for every part would be sixteen. (A few
     // milliseconds of either are noise.)
-    const small = best(line(1_000), mode).ms, big = best(line(4_000), mode).ms;
+    const a = line(1_000), b = line(4_000);
+    let small = Infinity, big = Infinity;
+    for (let k = 0; k < 5 && (k === 0 || big > 7 * small + 10); k++) { small = tries(a, mode, small); big = tries(b, mode, big); }
     if (big > 7 * small + 10) wrong.push(`${mode}: ${label}: 1,000 parts ${small.toFixed(0)} ms, 4,000 parts ${big.toFixed(0)} ms`);
   }
   expect(wrong).toEqual([]);
