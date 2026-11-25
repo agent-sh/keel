@@ -23,8 +23,8 @@ for (const kind of ["approval", "question", "plan", "secret"] as Kind[]) {
       await shoot(page, `reminders-01-${kind}`);
       if (kind === "approval") {
         await page.setViewportSize({ width: 390, height: 844 });
-        await expect(line).toBeVisible();
-        expect(await line.evaluate((el) => el.getBoundingClientRect().right <= innerWidth)).toBe(true);
+        // A phone's layout leaves the room to the card: the line is not drawn there (Settings > Alerts keeps it).
+        await expect(line).toBeHidden();
         await shoot(page, "reminders-02-phone-width");
         await page.setViewportSize({ width: 1920, height: 1040 });
       }
