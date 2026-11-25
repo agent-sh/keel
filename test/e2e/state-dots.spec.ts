@@ -157,6 +157,11 @@ test("a row's state is one dot, and a session that waits on what it left going h
     await expect.poll(async () => Number(await page.getByTestId("sum-unread").locator(".k-sum-n").innerText().catch(() => "0")), { message: "the 'new' count and the dots" }).toBe(await dots.count());
     expect(await dots.count()).toBeGreaterThanOrEqual(2);
     for (const id of [asking, failed, declined]) await expect(row(page, id).getByTestId("row-unread")).toHaveCount(0);
+    // The line above the list says its counts in words, not a dot and a figure: "failed or declined" gives up its second half
+    // for the room (its tooltip keeps it), so the counts after it keep theirs for as long as there is room.
+    const sum = page.getByTestId("list-summary");
+    for (const k of ["need", "fail", "work"]) await expect(sum.getByTestId(`sum-${k}`).locator(".k-sum-word"), `the ${k} count has its word`).toBeVisible();
+    await expect(sum.getByTestId("sum-fail")).toHaveAttribute("title", /^\d+ failed or declined: /);
     // The foot: one count of what waits on the owner, and no dot after it.
     await expect(page.getByTestId("inbox-count")).toHaveText("1");
     await expect(page.getByTestId("inbox-button").locator(".k-inbox-dot")).toHaveCount(0);

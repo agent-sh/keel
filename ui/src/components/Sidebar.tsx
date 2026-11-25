@@ -1003,12 +1003,14 @@ function fitSummary(el: HTMLElement) {
   const over = () => el.scrollWidth > el.clientWidth || (!!calm && !calm.hidden && calm.scrollWidth > calm.clientWidth);
   el.removeAttribute("data-tight");
   if (calm) calm.hidden = false;
-  for (const c of chips) { c.hidden = false; c.setAttribute("data-bare", ""); }
+  for (const c of chips) { c.hidden = false; c.setAttribute("data-bare", ""); c.removeAttribute("data-short"); }
   if (!over()) {
     for (const k of WORDS_STAY) {
       const c = chip(k);
       if (!c) continue;
       c.removeAttribute("data-bare");
+      // "failed or declined" gives up its second half before a count loses its word: the tooltip has it whole.
+      if (over()) chips.find((x) => x.querySelector(".k-sum-or"))?.setAttribute("data-short", "");
       // Closer counts first, then the word goes: a word that says less is not shown where one that says more has no room.
       if (over() && !el.hasAttribute("data-tight")) { el.setAttribute("data-tight", ""); if (!over()) continue; el.removeAttribute("data-tight"); }
       if (over()) { c.setAttribute("data-bare", ""); break; }
@@ -1085,7 +1087,7 @@ function Summary() {
             {c.watch && c.kind !== "need" && c.kind !== "fail" && <span className="k-sum-mark" aria-hidden="true"><Mark w={c.watch} /></span>}
             {c.kind === "unread" && <span className="k-sum-mark" aria-hidden="true"><span className="k-sum-dot" /></span>}
             <b className="k-sum-n">{n}</b>
-            <span className="k-sum-word">{c.kind === "offline" && down.length === 1 && <span className="inline-block max-w-[6.5rem] truncate align-bottom" data-testid="sum-offline-name">{down[0]!.name}</span>}{c.kind === "offline" && down.length === 1 ? " " : ""}{word}</span>
+            <span className="k-sum-word">{c.kind === "offline" && down.length === 1 && <span className="inline-block max-w-[6.5rem] truncate align-bottom" data-testid="sum-offline-name">{down[0]!.name}</span>}{c.kind === "offline" && down.length === 1 ? " " : ""}{c.kind === "fail" && word.includes(" or ") ? <>{word.split(" or ")[0]}<span className="k-sum-or"> or {word.split(" or ")[1]}</span></> : word}</span>
           </button>
         );
       })}
