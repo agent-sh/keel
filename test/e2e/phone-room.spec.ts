@@ -879,6 +879,7 @@ test.describe("on a phone, the errors", () => {
     const message = `Daemon unresponsive for 3.5 s ${tag}: 1.8 s waiting for the disk in a write of the session store, 1.2 s on a processor`;
     const { id: error } = await (await request.post("/api/errors", { data: { message, source: "browser", stack: "at a test" } })).json();
     const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Errors ${tag}` } })).json();
+    const extra: number[] = [];
     try {
       for (const [width, height] of [[390, 844], [412, 915]] as const) for (const scale of [1, 1.5]) {
         const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width, height }, hasTouch: true, isMobile: true });
@@ -895,13 +896,21 @@ test.describe("on a phone, the errors", () => {
           await expect(row).toBeVisible();
           const whole = (el: Element) => el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1;
           expect(await row.evaluate(whole)).toBe(true);
-          expect(await panel.getByTestId("errors-note").evaluate(whole)).toBe(true);
           await shoot(page, `phone-18-errors-${width}-${scale}`);
+          // Three open errors make it the drawer: its note has a line of its own under the title, read whole
+          // (the popover, under three, has no note).
+          // (Worded apart: errors alike but for a number are one, folded.)
+          for (const word of ["first", "second", "third"]) extra.push((await (await request.post("/api/errors", { data: { message: `The ${word} other thing broke here`, source: "browser" } })).json()).id);
+          await expect(panel).toHaveAttribute("data-mode", "drawer");
+          expect(await row.evaluate(whole)).toBe(true);
+          expect(await panel.getByTestId("errors-note").evaluate(whole)).toBe(true);
+          await shoot(page, `phone-18-errors-drawer-${width}-${scale}`);
+          for (const id of extra.splice(0)) await request.patch(`/api/errors/${id}`, { data: { resolved: true } });
         } finally { await ctx.close(); }
       }
     } finally {
       await request.delete(`/api/sessions/${session.id}`);
-      await request.patch(`/api/errors/${error}`, { data: { resolved: true } });
+      for (const id of [error, ...extra]) await request.patch(`/api/errors/${id}`, { data: { resolved: true } });
     }
   });
 });
