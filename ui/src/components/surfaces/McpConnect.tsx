@@ -4,11 +4,12 @@
 // find any other. Adding writes Keel's mcp.json; sign-in is the server's own.
 import { ExternalLink, Globe, KeyRound, Plus, Search, SquareTerminal } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
-import type { Access, Connector, RegistryServer } from "../../../../src/mcp/connectors.ts";
+import type { Access, Connector, LocalServer, RegistryServer } from "../../../../src/mcp/connectors.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
 import { api, failed } from "../../lib/store.ts";
 
 type Card = Connector & { access: Access; added?: string; gh?: boolean };
+type Local = LocalServer & { found: string | null; added?: string };
 type Hit = RegistryServer & { suggested_name: string; added: boolean };
 type Done = (servers: McpServerState[], name: string) => void;
 
@@ -71,6 +72,32 @@ function ConnectorCard({ c, redirect, onDone }: { c: Card; redirect: string; onD
   );
 }
 
+// A server a program of this machine runs: offered only when the program is installed.
+function LocalCard({ c, onDone }: { c: Local; onDone: Done }) {
+  const [err, setErr] = useState("");
+  const add = async () => {
+    setErr("");
+    try {
+      const r = await api<{ name: string; servers: McpServerState[] }>(`/api/mcp/local/${c.id}`, { method: "POST" });
+      onDone(r.servers, r.name);
+    } catch (x) { setErr(failed(x, { at: "McpConnect" })); }
+  };
+  return (
+    <div className="flex flex-col gap-2 border-b border-line py-3 last:border-0" data-testid="mcp-local" data-id={c.id}>
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+        <SquareTerminal className="size-3.5 shrink-0 text-faint" />
+        <span className="shrink-0 text-ui font-medium">{c.name}</span>
+        <span className="min-w-40 flex-1 truncate text-caption text-faint">{c.what}</span>
+        <span className="min-w-0 shrink truncate font-mono text-micro text-faint" title={c.found ?? undefined}>{c.command}</span>
+        <a className="k-btn" data-quiet href={c.docs} target="_blank" rel="noopener" aria-label={`${c.name} documentation`}><ExternalLink /></a>
+        {c.added ? <span className="w-28 shrink-0 text-right text-caption text-faint" data-testid="mcp-local-added">In Keel as {c.added}</span>
+          : <button type="button" className="k-btn w-28 justify-center" data-testid="mcp-local-add" onClick={add}><Plus /> Add</button>}
+      </div>
+      {err && <p className="k-form-err ml-6">{err}</p>}
+    </div>
+  );
+}
+
 function RegistryHit({ h, onDone }: { h: Hit; onDone: Done }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
@@ -114,13 +141,15 @@ function RegistryHit({ h, onDone }: { h: Hit; onDone: Done }) {
 
 export function Connect({ onDone }: { onDone: Done }) {
   const [cards, setCards] = useState<Card[] | null>(null);
+  const [local, setLocal] = useState<Local[]>([]);
   const [redirect, setRedirect] = useState("");
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<Hit[] | null>(null);
   const [err, setErr] = useState("");
   const load = () => api<{ connectors: Card[]; redirect_uri: string }>("/api/mcp/connectors").then((r) => { setCards(r.connectors); setRedirect(r.redirect_uri); }).catch((x) => setErr(failed(x, { at: "McpConnect" })));
-  useEffect(() => { load(); }, []);
-  const done: Done = (servers, name) => { onDone(servers, name); load(); setHits((h) => h && h.map((x) => (x.suggested_name === name ? { ...x, added: true } : x))); };
+  const loadLocal = () => api<{ servers: Local[] }>("/api/mcp/local").then((r) => setLocal(r.servers.filter((x) => x.found))).catch(() => setLocal([]));
+  useEffect(() => { load(); loadLocal(); }, []);
+  const done: Done = (servers, name) => { onDone(servers, name); load(); loadLocal(); setHits((h) => h && h.map((x) => (x.suggested_name === name ? { ...x, added: true } : x))); };
   const search = async (e: FormEvent) => {
     e.preventDefault();
     setErr("");
@@ -131,6 +160,10 @@ export function Connect({ onDone }: { onDone: Done }) {
     <div data-testid="mcp-connect">
       <div className="k-sub k-label">Apps, through their makers' own servers</div>
       {cards ? cards.map((c) => <ConnectorCard key={c.id} c={c} redirect={redirect} onDone={done} />) : <p className="text-caption text-faint">Asking each server what it needs to sign in.</p>}
+      {local.length > 0 && <>
+        <div className="k-sub mt-5">On this machine</div>
+        {local.map((c) => <LocalCard key={c.id} c={c} onDone={done} />)}
+      </>}
       <div className="k-sub mt-5">Any other, from the MCP registry</div>
       <form onSubmit={search} className="k-form" data-testid="mcp-registry-search"><div className="flex items-center gap-2">
         <input className="min-w-0 flex-1" data-testid="mcp-registry-q" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, for example io.github.github or notion" />

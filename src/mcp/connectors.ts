@@ -23,6 +23,21 @@ export const SUGGESTED: Connector[] = [
   { id: "linear", name: "Linear", what: "Issues, projects, cycles", url: "https://mcp.linear.app/mcp", docs: "https://linear.app/docs/mcp" },
 ];
 
+// Servers a program on this machine runs, offered when the program is installed and added only
+// on the owner's press. agnix-mcp: agnix's own MCP server (github.com/agent-sh/agnix), the linter
+// Keel runs on each session's agent configs, for a model to validate a file as it writes it.
+export type LocalServer = { id: string; name: string; what: string; command: string; docs: string };
+export const LOCAL: LocalServer[] = [
+  { id: "agnix", name: "agnix", what: "Lint agent configs as they are written: CLAUDE.md, AGENTS.md, skills, hooks, MCP", command: "agnix-mcp", docs: "https://github.com/agent-sh/agnix" },
+];
+// Where its program is: on the PATH, else in ~/.cargo/bin (where cargo installs it); null when it is not installed.
+export function localPath(c: LocalServer, home: string, path = process.env.PATH ?? ""): string | null {
+  const onPath = Bun.which(c.command, { PATH: path });
+  if (onPath) return onPath;
+  const cargo = `${home}/.cargo/bin/${c.command}`;
+  return Bun.which(cargo) ? cargo : null;
+}
+
 // How a remote server lets Keel in:
 // open: no sign-in; sign_in: OAuth with dynamic client registration (one click);
 // client_id: OAuth, but the provider registers no clients on the fly, so the

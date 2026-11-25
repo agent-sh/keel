@@ -8,7 +8,7 @@ import { heldFile } from "../../core/store-files.ts";
 import { gitSync } from "../../core/git.ts";
 import { contains, homeDir } from "../../core/paths.ts";
 import type { Session } from "../../core/types.ts";
-import { instructionFilter } from "../../engine/turn.ts";
+import { instructionFilter, instructionPaths } from "../../engine/turn.ts";
 import { jobsOf, running, toolEnv } from "../../tools/jobs.ts";
 import { GitError, Worktrees } from "../../worktree/manager.ts";
 import { lineage } from "../../core/tree.ts";
@@ -22,19 +22,11 @@ const expand = (p: string) => resolve(p.replace(/^~(?=$|\/)/, HOME));
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 const isRepo = (p: string) => existsSync(join(p, ".git"));
 
-// The instruction files (AGENTS.md, else CLAUDE.md, per folder up to the
-// root) of `to` that the session's prompt does not carry yet: those of the
-// folders `from` does not share. Applied through the same filter as the prompt.
+// The instruction files of `to` (every session's chain: engine/turn.ts instructionPaths) that the
+// session's prompt does not carry yet: those of the folders `from` does not share. Applied through the
+// same filter as the prompt.
 export function newInstructions(to: string, from: string): string {
-  const chain = (dir: string) => {
-    const out: string[] = [];
-    for (let d = dir; ; d = dirname(d)) {
-      const f = ["AGENTS.md", "CLAUDE.md"].map((n) => join(d, n)).find((p) => existsSync(p));
-      if (f) out.unshift(f);
-      if (dirname(d) === d) break;
-    }
-    return out;
-  };
+  const chain = (dir: string) => instructionPaths(dir).filter((f) => f.scope !== "owner").map((f) => f.path);
   const had = new Set(chain(from));
   return chain(to).filter((p) => !had.has(p)).map((p) => {
     try {

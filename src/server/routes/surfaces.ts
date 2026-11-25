@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import type { RouteModule } from "../app.ts";
 import { definitions } from "../../automation/agents.ts";
 import { expandImports, instructionLimit, instructionPaths } from "../../engine/turn.ts";
+import { agnix } from "../../integrations/agnix.ts";
 import { ownerHooksPath, parseHooks } from "../../integrations/hooks.ts";
 import { configDir, inConfigDir } from "../../providers/config.ts";
 import { writeOwnFile } from "../../core/ownfile.ts";
@@ -125,7 +126,11 @@ export const surfaceRoutes: RouteModule = (deps) => {
     const own = join(configDir(), "AGENTS.md");
     if (!files.some((f) => f.path === own)) create.push({ path: own, scope: "owner" });
     if (!files.some((f) => f.scope === "folder")) create.push({ path: join(cwd, "AGENTS.md"), scope: "folder" });
-    return { cwd, files, create };
+    // agnix's last run on the folder's agent configs (src/integrations/agnix.ts): null before any.
+    const a = agnix();
+    const l = a?.of(cwd);
+    const lint = !a ? null : !a.installed() ? { installed: false } : l ? { installed: true, at: l.at, errors: l.errors, warnings: l.warnings, failed: l.failed ?? null, findings: l.findings.slice(0, 5) } : { installed: true, at: null };
+    return { cwd, files, create, lint };
   };
 
   // --- plugins.toml

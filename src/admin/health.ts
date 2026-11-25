@@ -31,7 +31,8 @@ import { ERROR_TYPES } from "../server/routes/hooks.ts";
 import { gate } from "../server/routes/permissions.ts";
 import type { FilesAsk, FilesResult, HeldFile } from "./health-files.ts";
 import { countsOf, ordered, type HealthReport, type Row } from "./health-rows.ts";
-import { diskRow, hookRows, layerRows, layersOk, mcpRows, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts, type ProviderFacts } from "./health-rules.ts";
+import { agnix } from "../integrations/agnix.ts";
+import { agnixRows, diskRow, hookRows, layerRows, layersOk, mcpRows, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts, type ProviderFacts } from "./health-rules.ts";
 
 export type HealthDeps = { store: Store; providers: Providers };
 
@@ -241,8 +242,9 @@ export async function runHealth(deps: HealthDeps, cwd: string): Promise<HealthRe
   // The file walk answers two groups, the files and the layers; the layers wait on it.
   let held: Row[] = [];
   const walked = bounded("files", "files", CHECK_MS, async () => { const r = await files(deps.store, cwd); held = r.layers; return r.files; });
-  const [fileRows, hookRowsOut, sandboxOut, providerOut, mcpOut, telemetryOut, diskOut] = await Promise.all([
+  const [fileRows, agnixOut, hookRowsOut, sandboxOut, providerOut, mcpOut, telemetryOut, diskOut] = await Promise.all([
     walked,
+    bounded("agnix", "agnix", CHECK_MS, () => { const a = agnix(); return a ? agnixRows({ installed: a.installed(), folders: a.all() }) : []; }),
     bounded("hooks", "hooks", CHECK_MS, () => hooks(deps.store, cwd)),
     bounded("sandbox", "sandbox", CHECK_MS, sandbox),
     bounded("providers", "providers", CHECK_MS, () => providers(deps.providers)),
@@ -252,6 +254,6 @@ export async function runHealth(deps: HealthDeps, cwd: string): Promise<HealthRe
   ]);
   const layers = layerRows({ unreadable: settingsUnreadable(), refused: refusedConfigs(), observe: settings().observe ?? {}, env: process.env, homeWithheld: !mayReadHome() });
   const layerOut = [...layers, ...held];
-  const rows = ordered([...fileRows, ...hookRowsOut, ...(layerOut.length ? layerOut : [layersOk]), ...sandboxOut, ...providerOut, ...mcpOut, ...telemetryOut, ...diskOut]);
+  const rows = ordered([...fileRows, ...agnixOut, ...hookRowsOut, ...(layerOut.length ? layerOut : [layersOk]), ...sandboxOut, ...providerOut, ...mcpOut, ...telemetryOut, ...diskOut]);
   return { at: t0, took_ms: Date.now() - t0, rows, counts: countsOf(rows) };
 }

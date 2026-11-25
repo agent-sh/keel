@@ -1,10 +1,10 @@
 // The native memory layout of each model family, on a scratch home: which files a Claude or a GPT
 // model's session reads, where its memory folder is, what its prompt carries and where it may write.
 import { expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ownEnv, tempTree } from "../../test/env.ts";
-import { autoMemory, claudeChain, codexChain, codexConfig, codexMemories, cutSummary, nativeMemory, nativePlaces, nativeWrites, notesOf, slugOf, withoutPorted, type Roots } from "./native-memory.ts";
+import { autoMemory, codexConfig, codexMemories, cutSummary, nativeMemory, nativePlaces, nativeWrites, notesOf, OnceSet, instructionChain, slugOf, withoutPorted, type Roots } from "./native-memory.ts";
 
 const put = (path: string, text: string) => { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, text); };
 
@@ -22,31 +22,6 @@ function repo(dir: string) {
 test("the project folder is the path with every character that is not a letter or a digit made a dash", () => {
   expect(slugOf("/home/o/projects/agent-sh/keel-bun")).toBe("-home-o-projects-agent-sh-keel-bun");
   expect(slugOf("/home/o/.cache/x_y")).toBe("-home-o--cache-x-y");
-});
-
-test("a Claude session reads the user file, then each folder's CLAUDE.md, .claude/CLAUDE.md and CLAUDE.local.md", () => {
-  const { home, roots } = world();
-  const cwd = join(home, "p", "app");
-  put(join(roots.claude, "CLAUDE.md"), "user");
-  put(join(home, "p", "CLAUDE.md"), "parent");
-  put(join(cwd, "CLAUDE.md"), "folder");
-  put(join(cwd, ".claude", "CLAUDE.md"), "dot");
-  put(join(cwd, "CLAUDE.local.md"), "mine");
-  put(join(cwd, "AGENTS.md"), "agents: not read while a CLAUDE.md file counts");
-  const got = claudeChain(cwd, roots).map((e) => `${e.path.slice(home.length + 1)}:${e.scope}`);
-  expect(got).toEqual([".claude/CLAUDE.md:owner", "p/CLAUDE.md:parent", "p/app/CLAUDE.md:folder", "p/app/.claude/CLAUDE.md:folder", "p/app/CLAUDE.local.md:folder"]);
-});
-
-test("AGENTS.md is read when no CLAUDE.md file is in the folder or above, and the user file does not count", () => {
-  const { home, roots } = world();
-  const cwd = join(home, "p", "app");
-  put(join(roots.claude, "CLAUDE.md"), "user");
-  put(join(home, "p", "AGENTS.md"), "parent agents");
-  put(join(cwd, ".claude", "AGENTS.md"), "dot agents");
-  expect(claudeChain(cwd, roots).map((e) => e.path.slice(home.length + 1))).toEqual([".claude/CLAUDE.md", "p/AGENTS.md", "p/app/.claude/AGENTS.md"]);
-  // A CLAUDE.local.md anywhere above takes AGENTS.md out, as in Claude Code.
-  put(join(home, "CLAUDE.local.md"), "mine");
-  expect(claudeChain(cwd, roots).map((e) => e.path.slice(home.length + 1))).toEqual([".claude/CLAUDE.md", "CLAUDE.local.md"]);
 });
 
 test("auto memory: one folder for a repository and its worktrees, outside a repository the folder itself", () => {
@@ -103,28 +78,6 @@ test("a Claude session's prompt carries the first 200 lines of MEMORY.md, neutra
   expect(nativeWrites("claude", home, roots)).toEqual([dir]);
 });
 
-test("Codex: instructions are the first non-empty global file, then one file a folder from the repository root, within the byte limit", () => {
-  const { home, roots } = world();
-  const top = join(home, "work", "app");
-  repo(top);
-  const cwd = join(top, "svc");
-  put(join(roots.codex, "AGENTS.override.md"), "   \n");
-  put(join(roots.codex, "AGENTS.md"), "global");
-  put(join(top, "AGENTS.md"), "x".repeat(40));
-  put(join(cwd, "AGENTS.md"), "ignored: the override wins");
-  put(join(cwd, "AGENTS.override.md"), "y".repeat(40));
-  put(join(roots.codex, "config.toml"), 'project_doc_fallback_filenames = ["TEAM.md"]\nproject_doc_max_bytes = 60\n');
-  put(join(home, "AGENTS.md"), "above the repository: not read");
-  const cfg = codexConfig(roots);
-  expect(cfg).toMatchObject({ docMax: 60, fallback: ["TEAM.md"] });
-  const got = codexChain(cwd, roots, cfg);
-  expect(got.map((e) => e.path.slice(home.length + 1))).toEqual([".codex/AGENTS.md", "work/app/AGENTS.md", "work/app/svc/AGENTS.override.md"]);
-  // The project files share the limit: the first has all of it, the next what is left.
-  expect(got.map((e) => e.limit)).toEqual([undefined, 60, 20]);
-  put(join(cwd, "TEAM.md"), "fallback");
-  expect(codexChain(cwd, roots, cfg).at(-1)!.path).toBe(join(cwd, "AGENTS.override.md"));
-});
-
 test("Codex memories are off unless the config turns them on; the version follows the config, else the folder that exists", () => {
   const { roots } = world();
   expect(codexMemories(roots)).toBeNull();
@@ -155,18 +108,6 @@ test("a GPT session's prompt carries the summary cut at Codex's bound and writes
   expect(cutSummary("short")).toBe("short");
 });
 
-test("the copies Keel's import made of each harness's user file leave the owner's file when the family reads its own", () => {
-  const text = "mine\n<!-- keel port: instructions:claude -->\nclaude copy\n<!-- /keel port: instructions:claude -->\n<!-- keel port: instructions:codex -->\ncodex copy\n<!-- /keel port: instructions:codex -->\n<!-- keel port: claude-style -->\nstyle\n<!-- /keel port: claude-style -->\n";
-  for (const family of ["claude", "gpt"] as const) {
-    const out = withoutPorted(text, family, true);
-    expect(out).toContain("mine");
-    expect(out).toContain("style");
-    expect(out).not.toContain("copy");
-  }
-  expect(withoutPorted(text, "claude", false)).toBe(text);
-  expect(withoutPorted(text, "gemini", true)).toBe(text);
-});
-
 test("the notes of an auto memory folder: their kind, whether the index lists them, and lines that point nowhere", () => {
   const { roots } = world();
   const dir = join(roots.claude, "m");
@@ -181,28 +122,98 @@ test("the notes of an auto memory folder: their kind, whether the index lists th
   expect(notesOf(dir).notes.length).toBe(3);
 });
 
-// The prompt of a session: what each family's files and memory give it, through the real assembly.
-test("the instruction files of a prompt are the family's own: Claude reads CLAUDE.local.md, GPT reads AGENTS.override.md, another family the old chain", async () => {
+// The instruction chain: one for every family, both harnesses' files, each once.
+const rel = (home: string, list: { path: string }[]) => list.map((e) => e.path.slice(home.length + 1));
+
+test("every session reads both harnesses' files: the user files, then each folder's CLAUDE.md files, its AGENTS.md slot and .claude/AGENTS.md", () => {
+  const { home, roots } = world();
+  const cwd = join(home, "p", "app");
+  put(join(roots.claude, "CLAUDE.md"), "claude user");
+  put(join(roots.codex, "AGENTS.md"), "codex user");
+  put(join(home, "p", "CLAUDE.md"), "parent claude");
+  put(join(home, "p", "AGENTS.md"), "parent agents");
+  put(join(cwd, "CLAUDE.md"), "folder claude");
+  put(join(cwd, ".claude", "CLAUDE.md"), "dot claude");
+  put(join(cwd, "CLAUDE.local.md"), "mine");
+  put(join(cwd, "AGENTS.md"), "folder agents");
+  put(join(cwd, ".claude", "AGENTS.md"), "dot agents");
+  const got = instructionChain(cwd, roots).map((e) => `${e.path.slice(home.length + 1)}:${e.scope}${e.of ? `:${e.of}` : ""}`);
+  expect(got).toEqual([
+    ".claude/CLAUDE.md:owner:claude", ".codex/AGENTS.md:owner:codex",
+    "p/CLAUDE.md:parent", "p/AGENTS.md:parent",
+    "p/app/CLAUDE.md:folder", "p/app/.claude/CLAUDE.md:folder", "p/app/CLAUDE.local.md:folder", "p/app/AGENTS.md:folder", "p/app/.claude/AGENTS.md:folder",
+  ]);
+});
+
+test("the AGENTS.md slot of a folder: Codex's override first, an empty file gives way, the config's fallback names last", () => {
+  const { home, roots } = world();
+  const cwd = join(home, "app");
+  put(join(roots.codex, "AGENTS.override.md"), "  \n");
+  put(join(roots.codex, "AGENTS.md"), "global");
+  put(join(roots.codex, "config.toml"), 'project_doc_fallback_filenames = ["TEAM.md"]\n');
+  put(join(cwd, "TEAM.md"), "team");
+  expect(rel(home, instructionChain(cwd, roots))).toEqual([".codex/AGENTS.md", "app/TEAM.md"]);
+  put(join(cwd, "AGENTS.md"), "");
+  expect(rel(home, instructionChain(cwd, roots))).toEqual([".codex/AGENTS.md", "app/TEAM.md"]);
+  put(join(cwd, "AGENTS.md"), "shared");
+  expect(rel(home, instructionChain(cwd, roots))).toEqual([".codex/AGENTS.md", "app/AGENTS.md"]);
+  put(join(cwd, "AGENTS.override.md"), "override");
+  expect(rel(home, instructionChain(cwd, roots))).toEqual([".codex/AGENTS.md", "app/AGENTS.override.md"]);
+});
+
+test("each file once: a link of either kind, the same text, a CLAUDE.md that only imports what the chain holds", () => {
+  const { home, roots } = world();
+  const a = join(home, "a"), b = join(home, "b"), c = join(home, "c"), d = join(home, "d");
+  put(join(a, "AGENTS.md"), "rules A");
+  symlinkSync("AGENTS.md", join(a, "CLAUDE.md"));
+  expect(rel(home, instructionChain(a, roots))).toEqual(["a/CLAUDE.md"]);
+  put(join(b, "AGENTS.md"), "rules B");
+  linkSync(join(b, "AGENTS.md"), join(b, "CLAUDE.md"));
+  expect(rel(home, instructionChain(b, roots))).toEqual(["b/CLAUDE.md"]);
+  put(join(c, "CLAUDE.md"), "same\r\nrules  \n");
+  put(join(c, "AGENTS.md"), "same\nrules\n");
+  expect(rel(home, instructionChain(c, roots))).toEqual(["c/CLAUDE.md"]);
+  // A file of nothing but imports of files the chain takes says nothing of its own, even read first.
+  put(join(d, "AGENTS.md"), "rules D");
+  put(join(d, "CLAUDE.local.md"), "@AGENTS.md\n");
+  put(join(d, ".claude", "AGENTS.md"), "@../AGENTS.md\n");
+  expect(rel(home, instructionChain(d, roots))).toEqual(["d/AGENTS.md"]);
+  // Its own words keep it.
+  put(join(d, "CLAUDE.local.md"), "@AGENTS.md\nAnd mine.\n");
+  expect(rel(home, instructionChain(d, roots))).toEqual(["d/CLAUDE.local.md", "d/AGENTS.md"]);
+  const once = new OnceSet();
+  once.add(join(d, "AGENTS.md"), "rules D");
+  expect(once.has(join(d, "CLAUDE.md"), "@AGENTS.md\n")).toBe(true);
+  expect(once.has(join(d, "CLAUDE.md"), "@AGENTS.md\nmore")).toBe(false);
+});
+
+test("the copies Keel's import made of each harness's user file leave the owner's file when that harness's file is read", () => {
+  const text = "mine\n<!-- keel port: instructions:claude -->\nclaude copy\n<!-- /keel port: instructions:claude -->\n<!-- keel port: instructions:codex -->\ncodex copy\n<!-- /keel port: instructions:codex -->\n<!-- keel port: claude-style -->\nstyle\n<!-- /keel port: claude-style -->\n";
+  const both = withoutPorted(text, { claude: true, codex: true });
+  expect(both).toContain("mine");
+  expect(both).toContain("style");
+  expect(both).not.toContain("copy");
+  expect(withoutPorted(text, { claude: true })).toContain("codex copy");
+  expect(withoutPorted(text, { claude: true })).not.toContain("claude copy");
+  expect(withoutPorted(text, {})).toBe(text);
+});
+
+// The prompt of a session, through the real assembly: the same instruction files whatever the model's family.
+test("the instruction files of a prompt are the union for every family: Claude, GPT and any other read the same block", async () => {
   const { home } = world();
   ownEnv({ KEEL_IMPORT_HOME: home, CODEX_HOME: undefined, CLAUDE_CONFIG_DIR: undefined, CLAUDE_CODE_DISABLE_AUTO_MEMORY: undefined });
-  const { instructionFiles } = await import("./turn.ts");
+  const { sessionParts } = await import("./turn.ts");
   const cwd = join(home, "app");
+  put(join(cwd, "CLAUDE.md"), "PROJECT-CLAUDE");
   put(join(cwd, "CLAUDE.local.md"), "LOCAL-NOTES");
   put(join(cwd, "AGENTS.md"), "SHARED-AGENTS");
-  put(join(cwd, "AGENTS.override.md"), "CODEX-OVERRIDE");
   put(join(home, ".claude", "CLAUDE.md"), "CLAUDE-USER");
   put(join(home, ".codex", "AGENTS.md"), "CODEX-USER");
-  const claude = instructionFiles(cwd, undefined, undefined, "claude");
-  expect(claude).toContain("CLAUDE-USER");
-  expect(claude).toContain("LOCAL-NOTES");
-  expect(claude).not.toContain("SHARED-AGENTS");
-  expect(claude).not.toContain("CODEX-USER");
-  const gpt = instructionFiles(cwd, undefined, undefined, "gpt");
-  expect(gpt).toContain("CODEX-USER");
-  expect(gpt).toContain("CODEX-OVERRIDE");
-  expect(gpt).not.toContain("SHARED-AGENTS");
-  expect(gpt).not.toContain("LOCAL-NOTES");
-  const other = instructionFiles(cwd, undefined, undefined, "other");
-  expect(other).toContain("SHARED-AGENTS");
-  expect(other).not.toContain("CLAUDE-USER");
+  const block = (family: string) => sessionParts(cwd, 0, undefined, undefined, { family: family as any, top: false, session: { id: `s-${family}` } as any }).parts.find((p) => p.name === "instruction files")!.text;
+  const claude = block("claude");
+  for (const w of ["CLAUDE-USER", "CODEX-USER", "PROJECT-CLAUDE", "LOCAL-NOTES", "SHARED-AGENTS"]) expect(claude).toContain(w);
+  // Claude Code's order within a folder: its CLAUDE.md files, then AGENTS.md.
+  expect(claude.indexOf("LOCAL-NOTES")).toBeLessThan(claude.indexOf("SHARED-AGENTS"));
+  expect(block("gpt")).toBe(claude);
+  expect(block("gemini")).toBe(claude);
 });

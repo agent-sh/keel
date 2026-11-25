@@ -20,6 +20,7 @@ import { permissionRoutes } from "./permissions.ts";
 import { secretRoutes } from "./secrets.ts";
 import { trustRoutes } from "./trust.ts";
 import { nestedRoutes } from "./nested.ts";
+import { agnixRoutes } from "./agnix.ts";
 import { repeatRoutes } from "./repeat.ts";
 import { pointerRoutes } from "./pointer.ts";
 import { readRunRoutes } from "./read-runs.ts";
@@ -102,6 +103,7 @@ const modules: Record<string, RouteModule> = {
   pointerRoutes,
   trustRoutes, // protected files are watched around calls the gate let through
   nestedRoutes, // after trust: nested instruction files go through its filter
+  agnixRoutes,
   checkpointRoutes,
   lspRoutes, // after trust and checkpoints: an edit's result gets its diagnostics last
   workspaceRoutes,

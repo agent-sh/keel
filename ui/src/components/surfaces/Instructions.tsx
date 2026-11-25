@@ -7,7 +7,28 @@ import { fmtSize } from "../../lib/utils.ts";
 import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, Seg, tilde, tok, useFolder, type Mark } from "./kit.tsx";
 
 type File = { path: string; scope: "owner" | "parent" | "folder"; text: string; bytes: number; loaded: string; loaded_tokens: number; imports: boolean; truncated: boolean; trust: string | null };
-type View = { cwd: string; files: File[]; create: { path: string; scope: "owner" | "folder" }[] };
+type Finding = { level: string; rule: string; file: string; line: number; message: string };
+type Lint = { installed: false } | { installed: true; at: null } | { installed: true; at: number; errors: number; warnings: number; failed: string | null; findings: Finding[] };
+type View = { cwd: string; files: File[]; create: { path: string; scope: "owner" | "folder" }[]; lint: Lint | null };
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+// agnix's last run on the folder's agent configs: one quiet line, its findings on a hover.
+function LintLine({ lint }: { lint: Lint | null }) {
+  if (!lint) return null;
+  const said = !lint.installed ? "Not linted: agnix is not installed."
+    : lint.at === null ? "agnix lints this folder's agent configs when a session starts here."
+    : lint.failed ? `agnix's last run failed: ${lint.failed}`
+    : lint.errors || lint.warnings ? `agnix: ${plural(lint.errors, "error")}, ${plural(lint.warnings, "warning")} in this folder's agent configs.`
+    : "agnix: no errors or warnings in this folder's agent configs.";
+  const title = lint.installed && lint.at !== null && !lint.failed ? lint.findings.map((f) => `${f.level} ${f.file || "(project)"}${f.line ? `:${f.line}` : ""} ${f.rule}: ${f.message}`).join("\n") : undefined;
+  const tone = lint.installed && lint.at !== null && (lint.failed || lint.errors) ? "text-warn" : "text-muted";
+  return (
+    <p className={`mt-2 text-caption ${tone}`} data-testid="instructions-lint" title={title || undefined}>
+      {said}{" "}
+      {lint.installed && lint.at !== null && <button type="button" className="k-link underline underline-offset-2 hover:text-fg" onClick={() => navigate({ name: "settings", section: "health" })}>Health</button>}
+    </p>
+  );
+}
 const SCOPE = { owner: "Yours, in every folder", parent: "A folder above", folder: "This folder" };
 const WHERE = { owner: "yours", parent: "above", folder: "this folder" };
 const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
@@ -30,6 +51,7 @@ export default function Instructions() {
   return (
     <div data-testid="instructions-settings">
       <FolderLine tally={[{ n: v?.files.length ?? 0, label: "files loaded" }, { n: total, label: "tokens a session" }]} />
+      <LintLine lint={v?.lint ?? null} />
       <Ledger
         testid="instructions-ledger"
         selected={sel}
@@ -77,7 +99,7 @@ export default function Instructions() {
               path={blank.path}
               desc={blank.scope === "owner"
                 ? "Your own instructions, read first in every session, whatever the folder. The place Codex keeps as ~/.codex/AGENTS.md and Claude Code as ~/.claude/CLAUDE.md."
-                : "This folder's AGENTS.md, the name Codex, OpenCode and Keel read (CLAUDE.md is read where there is none)."}
+                : "This folder's AGENTS.md, the name Codex and OpenCode read. Every session reads it, and the folder's CLAUDE.md files beside it."}
             />
             <FileEditor name={base(blank.path)} text={""} onSave={async (t) => { await save(blank.path, t); setSel(blank.path); }} />
           </>

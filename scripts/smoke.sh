@@ -138,6 +138,8 @@ for _ in 1 2 3 4 5 6 7 8; do port=$((20000 + RANDOM % 12000)); free "$port" && b
 # of its own every port is.
 if [ -n "${KEEL_PICTURES_FIXED:-}" ] && free 24680; then port=24680; fi
 export KEEL_DEV_DIR="$root/dev" KEEL_SCRIPTED_PROVIDER=1 KEEL_DEFAULT_MODEL=scripted:stand-in
+# agnix, the agent-config linter a session's folder is checked with, as a stand-in (src/integrations/agnix.ts).
+export KEEL_AGNIX="$TOP/test/e2e/fixtures/agnix-standin.sh"
 bash scripts/dev.sh "$port" > "$root/daemon.log" 2>&1 &
 launcher=$!
 stop() { kill "$launcher" 2> /dev/null || true; wait "$launcher" 2> /dev/null || true; }

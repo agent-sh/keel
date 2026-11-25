@@ -178,6 +178,13 @@ export type TurnHooks = {
   // one, a report, a continuation after a restart).
   turnStart?: (s: Session) => void;
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
+  // The session's prompt was made (its first request, or again after an instruction file changed): a
+  // feature that reads the folder's files does its work in the background (src/integrations/agnix.ts).
+  instructionsRendered?: (s: Session) => void;
+  // The first request of a turn: a note of the harness for the model, stored at the tail so later
+  // requests carry the same bytes, and shown as a line told to the model (`data.short`). `kind` names the note;
+  // `data` is kept with it (what the hook reads to tell a thing once).
+  turnNote?: (s: Session, line: readonly StoredEvent[]) => { kind: string; text: string; data?: Record<string, unknown> } | undefined;
   // The first request of a turn: a note for the model about the files that turns off its branch left on
   // disk (src/safety/branch-note.ts). Asked once a turn; the engine stores the note, `turns` are the ones it tells.
   branchNote?: (s: Session, line: readonly StoredEvent[]) => Promise<{ short: string; text: string; turns: number[] } | undefined>;

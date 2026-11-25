@@ -22,7 +22,7 @@ import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBloc
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { BRANCH_NOTE } from "../safety/branch-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
-import { chainOf, nativeContext, nativeMemory, nativeRoots, withoutPorted, type Native } from "./native-memory.ts";
+import { instructionChain, nativeContext, nativeMemory, nativeRoots, OnceSet, withoutPorted, type Native } from "./native-memory.ts";
 import { testBuild } from "../core/build.ts";
 import { BuildPins, coldReason, pinAged } from "./build-pin.ts";
 import { SCHEMA_RESENDS, ToolFit, wireOf as fitWireOf } from "./tool-fit.ts";
@@ -305,39 +305,30 @@ export function withPending(messages: Message[], pending: { id: string; text: st
 // instruction file loads as last trusted); null leaves the file out.
 export const instructionFilter: { file?: (path: string, text: string) => string | null } = {};
 
-// The instruction files a session in `cwd` loads, outermost first: the
-// owner's own (<config>/AGENTS.md, for every folder), then the AGENTS.md
-// (else CLAUDE.md) of each folder from the home folder down to `cwd` (from
-// the root, for a folder outside the home): the folders above the home are
-// other accounts' and the system's, as the agents' walk stops there too
-// (src/automation/agents.ts). A daemon that may not read the account's home
-// (a scratch one, `withheldHome`) lists nothing of it, where its folder stands.
-// A file linked from two places is one source: it is listed once, where it is
-// met first from the root down (the owner's own file before a folder's).
+// The instruction files a session in `cwd` loads, outermost first, the same
+// for every model: the owner's own (<config>/AGENTS.md, for every folder), then
+// the owner's files of Claude Code and Codex, then the CLAUDE.md and AGENTS.md
+// files of each folder from the home folder down to `cwd` (from the root, for
+// a folder outside the home), each file once (src/engine/native-memory.ts,
+// instructionChain, says the names, their order and how two files are told to
+// be one). The folders above the home are other accounts' and the system's, as
+// the agents' walk stops there too (src/automation/agents.ts). A daemon that
+// may not read the account's home (a scratch one, `withheldHome`) lists
+// nothing of it, where its folder stands.
 // `marks`: every path looked for is noted with its mark on disk, before it is
 // looked at (src/engine/instruction-marks.ts).
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-// A model of the Claude or GPT family reads the files its own harness does (src/engine/native-memory.ts);
-// any other family, or none named, the chain below.
-export function instructionPaths(cwd: string, marks?: Marks, family?: Family): { path: string; scope: "owner" | "parent" | "folder"; limit?: number }[] {
-  const native = family ? chainOf(family, cwd, nativeRoots(), marks) : null;
-  const found: { path: string; scope: "owner" | "parent" | "folder"; limit?: number }[] = native ?? [];
-  const seen = new Set<string>();
-  // A daemon that may not read the account's home (withheldHome) walks past it: nothing there is its own.
-  const withheld = withheldHome();
-  for (let dir = cwd; !native && !seen.has(dir); dir = dirname(dir)) {
-    seen.add(dir);
-    const theirs = withheld !== null && real(dir) === real(withheld);
-    if (marks && !theirs) for (const n of ["AGENTS.md", "CLAUDE.md"]) noteMark(marks, join(dir, n));
-    const name = theirs ? undefined : ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
-    if (name) found.unshift({ path: join(dir, name), scope: dir === cwd ? "folder" : "parent" });
-    if (dirname(dir) === dir || dir === homeDir()) break;
-  }
+export type InstructionEntry = { path: string; scope: "owner" | "parent" | "folder"; limit?: number; of?: "claude" | "codex" };
+export function instructionPaths(cwd: string, marks?: Marks): InstructionEntry[] {
+  const once = new OnceSet();
+  const found: InstructionEntry[] = [];
   const own = join(configDir(), "AGENTS.md");
   noteMark(marks, own);
-  if (existsSync(own)) found.unshift({ path: own, scope: "owner" });
-  const ids = new Set<string>();
-  return found.filter((f) => !ids.has(real(f.path)) && !!ids.add(real(f.path)));
+  let ownText: string | null | undefined;
+  try { ownText = existsSync(own) ? readFileSync(own, "utf8") : undefined; } catch { ownText = null; }
+  if (ownText !== undefined) { once.add(own, ownText); found.push({ path: own, scope: "owner" }); }
+  const roots = nativeRoots();
+  return [...found, ...instructionChain(cwd, roots, { marks, once, homes: [homeDir(), roots.home], skip: withheldHome() })];
 }
 
 // A `@path` line of a file outside a repository brings that file in (up to
@@ -425,14 +416,14 @@ export function cutInstructions(path: string, text: string, limit: number, lines
 
 // `window`: the context window of the model the prompt is for, in tokens (instructionLimit).
 // `marks`: each file's mark on disk, noted before it is read (src/engine/instruction-marks.ts).
-export function instructionFiles(cwd: string, window?: number, marks?: Marks, family?: Family): string {
+export function instructionFiles(cwd: string, window?: number, marks?: Marks): string {
   const whole = instructionLimit(window);
   const parts: string[] = [];
-  const files = instructionPaths(cwd, marks, family);
+  const files = instructionPaths(cwd, marks);
   const seen = new Set(files.map((f) => real(f.path)));
-  // A family that reads its own harness's user file has no use for the copy Keel's import made of it.
+  // A harness's user file that is read has no use for the copy Keel's import made of it in the owner's file.
   const own = join(configDir(), "AGENTS.md");
-  const theirs = !!family && files.some((f) => f.scope === "owner" && f.path !== own);
+  const ported = { claude: files.some((f) => f.of === "claude"), codex: files.some((f) => f.of === "codex") };
   for (const { path: p, limit: room } of files) {
     const limit = room === undefined ? whole : Math.min(whole, room);
     let read: string;
@@ -440,7 +431,7 @@ export function instructionFiles(cwd: string, window?: number, marks?: Marks, fa
       const held = heldFile(p);
       if (held) throw new Error(held);
       read = readFileSync(p, "utf8");
-      if (p === own && family) read = withoutPorted(read, family, theirs);
+      if (p === own) read = withoutPorted(read, ported);
     } catch (e) {
       // Not left out silently: the model knows a source is missing, not removed.
       parts.push(`# ${p}\n\n(This file could not be read: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}. Its instructions are not loaded.)`);
@@ -469,7 +460,7 @@ const CORE = [
 // context popup), and the kept one is sent while a warm cache holds it. The memory counts as loaded
 // when a prompt that carries it is stored (`loadSystem`), so the sweep counts what models were sent.
 export function sessionParts(cwd: string, created: number, window?: number, marks?: Marks, native?: { family: Family; top: boolean; session: Session }): { parts: PromptPart[]; native: Native | null } {
-  const inst = instructionFiles(cwd, window, marks, native?.family);
+  const inst = instructionFiles(cwd, window, marks);
   const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
   const mem = (native && nativeMemory(native.family, cwd, { top: native.top, store: nativeContext.store?.(native.session) })) || null;
   return { native: mem, parts: [
@@ -2182,6 +2173,7 @@ export class Engine {
     const made = sessionParts(session.workspace, session.created, info && !info.context_assumed ? info.context : undefined, marks, info ? { family: info.family, top: !session.parent_id, session } : undefined);
     const folder = made.parts.map(sent);
     this.marks.set(session.id, marks);
+    for (const h of allHooks()) try { h.instructionsRendered?.(session); } catch (e) { this.errors.capture("server", e, { hook: "instructionsRendered", session: session.id }); }
     const parts = [...shared, ...folder, ...own];
     const chars = (list: PromptPart[]) => list.reduce((n, p) => n + p.text.length, 0);
     return { text: parts.map((p) => p.text).join(""), split: chars(shared), own: chars(shared) + chars(folder), blocks: blocksOf(parts), model: info?.id ?? null, native: made.native };
@@ -2220,6 +2212,22 @@ export class Engine {
       }
     }
     return false;
+  }
+
+  // The first request of a turn: the hooks' notes for the model (turnNote), stored at the tail.
+  private tellNotes(session: Session, events: readonly StoredEvent[]): boolean {
+    let told = false;
+    for (const h of allHooks()) {
+      try {
+        const n = h.turnNote?.(session, events);
+        if (!n) continue;
+        this.append(session.id, "note", { ...n.data, kind: n.kind, model: true, system: true, text: n.text });
+        told = true;
+      } catch (e) {
+        this.errors.capture("server", e, { hook: "turnNote", session: session.id });
+      }
+    }
+    return told;
   }
 
   // The model and effort a step of the turn runs at: the session's, or what an
@@ -3257,6 +3265,7 @@ export class Engine {
         if (waits === "now" || (waits && this.coldWhy(id, st.provider, st.info, events))) st = await this.step(session, session.model);
         if (await this.tellSwitch(id, events, st)) events = this.lineage(id);
         if (steps === 1 && (await this.tellBranch(session, events))) events = this.lineage(id);
+        if (steps === 1 && this.tellNotes(session, events)) events = this.lineage(id);
         if (st.info.id === session.model && this.tellPrompt(session, events)) events = this.lineage(id);
         const messages = timed(() => "projecting a session's history into a request's messages", () => toMessages(events));
         let res: ProviderResult;

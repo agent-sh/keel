@@ -4,10 +4,11 @@
 
 export type Level = "ok" | "warning" | "broken";
 // What a row is about, in the order the list shows them.
-export const GROUPS = ["files", "hooks", "settings", "sandbox", "providers", "mcp", "telemetry", "disk"] as const;
+export const GROUPS = ["files", "agnix", "hooks", "settings", "sandbox", "providers", "mcp", "telemetry", "disk"] as const;
 export type Group = (typeof GROUPS)[number];
 export const GROUP_NAMES: Record<Group, string> = {
   files: "Skills, commands, agents and plugins",
+  agnix: "Agent configs, linted by agnix",
   hooks: "Hooks",
   settings: "Settings and layers",
   sandbox: "Sandbox",
@@ -41,12 +42,12 @@ export type HealthReport = {
 
 // The Settings sections rows point to, as the page names them.
 export const SECTION_NAMES: Record<string, string> = {
-  skills: "Skills", commands: "Commands", agents: "Agents", plugins: "Plugins", hooks: "Hooks", mcp: "MCP servers", providers: "Providers",
+  skills: "Skills", commands: "Commands", agents: "Agents", plugins: "Plugins", hooks: "Hooks", mcp: "MCP servers", providers: "Providers", instructions: "Instructions",
   safety: "Safety", observability: "Observability", storage: "Storage", general: "General", daemon: "Daemon",
 };
 
 // The sections the page keeps under Customize rather than Settings (ui/src/lib/customize-ids.ts).
-const CUSTOMIZE = new Set(["skills", "commands", "agents", "plugins", "hooks", "mcp"]);
+const CUSTOMIZE = new Set(["skills", "commands", "agents", "plugins", "hooks", "mcp", "instructions"]);
 
 const RANK: Record<Level, number> = { broken: 0, warning: 1, ok: 2 };
 

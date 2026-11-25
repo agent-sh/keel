@@ -1,15 +1,32 @@
 // Native memory: what each model family's own harness keeps, read and written
 // where and how that harness does, so the owner's memory is one across Keel and
-// the tool the model was trained in. Before this, every session read the one
-// AGENTS.md (else CLAUDE.md) of each folder and the owner's Keel file, which
-// held a one-time copy of both harnesses' user files; auto memory and Codex's
-// memories were not read and nothing wrote them.
+// the tool the model was trained in.
+//
+// Instruction files are one chain for every model, whatever its family: the
+// CLAUDE.md files Claude Code reads and the AGENTS.md files Codex reads, each
+// file once (instructionChain below). A repository written for either tool, or
+// for both, gives every session the same rules.
+// - Claude Code (code.claude.com/docs/en/memory): ~/.claude/CLAUDE.md, then
+//   each folder from the root down to the working folder: CLAUDE.md,
+//   .claude/CLAUDE.md, CLAUDE.local.md. Its default reads AGENTS.md and
+//   .claude/AGENTS.md only where no CLAUDE.md file is in the folder or above;
+//   its claude-md-and-agents-md setting reads both, each folder's CLAUDE.md
+//   files first, and skips an AGENTS.md a CLAUDE.md imports or links to.
+//   Subfolders' files load when the work reaches them.
+// - Codex (developers.openai.com/codex/guides/agents-md): $CODEX_HOME's
+//   AGENTS.override.md else AGENTS.md (the first non-empty), then from the
+//   repository root down one file a folder: AGENTS.override.md, AGENTS.md, then
+//   the fallback names of config.toml, within project_doc_max_bytes.
+// - OpenCode (opencode.ai/docs/rules): AGENTS.md of each folder, CLAUDE.md where
+//   a folder has none, ~/.claude/CLAUDE.md where its own global file is missing.
+// Keel reads the union as Claude Code's both-files setting does, with Codex's
+// override rule for the AGENTS.md slot of a folder. What changed: a Claude
+// session no longer drops AGENTS.md when a CLAUDE.md exists, a GPT session
+// reads CLAUDE.md files and the folders above the repository, and any other
+// family reads both files of a folder instead of AGENTS.md alone. Codex's byte
+// budget gives way to Keel's own per-file bound, sized by the model's window.
 //
 // Claude family (code.claude.com/docs/en/memory):
-// - instructions: ~/.claude/CLAUDE.md, then for each folder from the home down
-//   to the working folder CLAUDE.md, .claude/CLAUDE.md and CLAUDE.local.md
-//   (the local file last). AGENTS.md is read only when none of those three
-//   exists in the working folder or above (the user file does not count).
 // - auto memory: <config>/projects/<slug>/memory/. The slug is the project's
 //   path with every character that is not a letter or a digit made a dash;
 //   the project is the repository (all its worktrees share one folder), else
@@ -20,12 +37,7 @@
 //   Subagents do not load it. Off by CLAUDE_CODE_DISABLE_AUTO_MEMORY or
 //   autoMemoryEnabled false in the user settings; autoMemoryDirectory moves it.
 //
-// GPT family (developers.openai.com/codex/guides/agents-md and /memories):
-// - instructions: $CODEX_HOME/AGENTS.override.md else AGENTS.md (the first
-//   non-empty one), then from the repository root down to the working folder
-//   the first non-empty of AGENTS.override.md, AGENTS.md and the fallback names
-//   of config.toml, one file a folder, the project files together within
-//   project_doc_max_bytes (32 KiB).
+// GPT family (developers.openai.com/codex/memories):
 // - memories: off unless config.toml has [features] memories = true. Codex
 //   writes them itself in the background (its own extraction and consolidation
 //   of past sessions): memories_v2/ on a fresh home, memories/ where that
@@ -38,8 +50,8 @@
 //   applies. Keel writes only that note, through the tool the family is
 //   trained on (apply_patch or the shell).
 //
-// Other families keep the chain they had. A Keel session never writes what
-// another harness generates.
+// Other families have no memory of their own harness here. A Keel session never
+// writes what another harness generates.
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { locate } from "../core/git.ts";
@@ -63,46 +75,139 @@ export function nativeRoots(): Roots {
 
 const read = (p: string): string | null => { try { return readFileSync(p, "utf8"); } catch { return null; } };
 const json = (p: string): any => { try { return JSON.parse(read(p) ?? ""); } catch { return null; } };
-const present = (p: string) => { try { return statSync(p).isFile(); } catch { return false; } };
-const filled = (p: string) => { try { return statSync(p).isFile() && !!readFileSync(p, "utf8").trim(); } catch { return false; } };
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
-// The folders of the walk from `cwd` up, outermost first: to the home folder, or for a
-// folder outside it to the root (what is above the home belongs to other accounts).
-function walk(cwd: string, home: string): string[] {
+// --- instructions: one chain for every family -------------------------------
+
+// Each folder's files, in the order they are read: Claude Code's CLAUDE.md files, then the AGENTS.md
+// slot (Codex's override, else AGENTS.md, else the fallback names of its config: the first that holds
+// anything), then Claude Code's .claude/AGENTS.md.
+const CLAUDE_NAMES: readonly string[] = CLAUDE_FILES;
+const AGENTS_SLOT: readonly string[] = CODEX_FILES;
+const DOT_AGENTS = CLAUDE_AGENTS_FILES.filter((n) => !AGENTS_SLOT.includes(n));
+
+// What a file holds for the chain: its text, null when it cannot be read (it is still listed, and the
+// prompt says it could not be read), undefined when it is not a file.
+function textOf(p: string): string | null | undefined {
+  try { if (!statSync(p).isFile()) return undefined; } catch { return undefined; }
+  try { return readFileSync(p, "utf8"); } catch { return null; }
+}
+
+// The files of one folder the chain reads, before the chain's own dedupe. Every path looked for is
+// noted with its mark, so a file made later is noticed.
+export function folderFiles(dir: string, fallback: readonly string[] = [], marks?: Marks): { path: string; text: string | null }[] {
+  const out: { path: string; text: string | null }[] = [];
+  const take = (n: string) => {
+    const p = join(dir, n);
+    noteMark(marks, p);
+    const t = textOf(p);
+    if (t === undefined) return false;
+    out.push({ path: p, text: t });
+    return true;
+  };
+  for (const n of CLAUDE_NAMES) take(n);
+  for (const n of [...AGENTS_SLOT, ...fallback.filter((f) => !AGENTS_SLOT.includes(f))]) {
+    const p = join(dir, n);
+    noteMark(marks, p);
+    const t = textOf(p);
+    // (An empty file gives the slot to the next name, as in Codex; an unreadable one keeps it.)
+    if (t === undefined || (t !== null && !t.trim())) continue;
+    out.push({ path: p, text: t });
+    break;
+  }
+  for (const n of DOT_AGENTS) take(n);
+  return out;
+}
+
+// How the chain tells that two files are one: the same file on disk (a link, either kind: its device
+// and inode), the same text (spacing and line ends aside), or a file that only imports files the chain
+// holds or will hold (a CLAUDE.md that is "@AGENTS.md" beside the AGENTS.md it imports).
+export class OnceSet {
+  private ids = new Set<string>();
+  private texts = new Set<string>();
+  private paths = new Set<string>();
+  static id(p: string): string { try { const s = statSync(p); return `${s.dev}:${s.ino}`; } catch { return real(p); } }
+  static norm(t: string): string { return t.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").trim(); }
+  // `beside`: the files the chain takes with this one (its folder's): an import of one of them is held too.
+  has(p: string, text: string | null, beside: readonly string[] = []): boolean {
+    if (this.ids.has(OnceSet.id(p))) return true;
+    if (text === null) return false;
+    const n = OnceSet.norm(text);
+    if (!n) return true;
+    if (this.texts.has(n)) return true;
+    // Only imports, each of a file held (or taken with it, and not itself).
+    const near = new Set(beside.filter((b) => b !== p).map(OnceSet.id));
+    const lines = n.split("\n").filter((l) => l.trim());
+    return lines.every((l) => {
+      const m = /^@(\S+)\s*$/.exec(l.trim());
+      if (!m || m[1]!.startsWith("~")) return false;
+      const id = OnceSet.id(join(dirname(p), m[1]!));
+      return id !== OnceSet.id(p) && (this.ids.has(id) || near.has(id));
+    });
+  }
+  add(p: string, text: string | null) {
+    this.ids.add(OnceSet.id(p));
+    this.paths.add(p);
+    if (text !== null) this.texts.add(OnceSet.norm(text));
+  }
+  // Takes the file when it is not one already held; whether it was taken.
+  take(p: string, text: string | null, beside: readonly string[] = []): boolean {
+    if (this.has(p, text, beside)) return false;
+    this.add(p, text);
+    return true;
+  }
+}
+
+// The folders of the walk from `cwd` up, outermost first: to the home folder, or for a folder outside
+// it to the root (what is above the home belongs to other accounts). `skip`: a folder whose files are
+// not this daemon's (a scratch daemon's view of the account's home).
+function walk(cwd: string, homes: readonly string[], skip?: string | null): string[] {
   const out: string[] = [];
   for (let d = cwd; ; d = dirname(d)) {
-    out.unshift(d);
-    if (dirname(d) === d || d === home) break;
+    if (!skip || real(d) !== real(skip)) out.unshift(d);
+    if (dirname(d) === d || homes.includes(d)) break;
   }
   return out;
 }
 
-// --- Claude: instructions ---------------------------------------------------
-
-const CLAUDE_NAMES: readonly string[] = CLAUDE_FILES;
-const AGENTS_NAMES: readonly string[] = CLAUDE_AGENTS_FILES;
-
-export function claudeChain(cwd: string, roots: Roots, marks?: Marks): Entry[] {
-  const dirs = walk(cwd, roots.home);
-  for (const d of dirs) for (const n of [...CLAUDE_NAMES, ...AGENTS_NAMES]) noteMark(marks, join(d, n));
+// The owner's own files of each harness: Claude Code's user file, Codex's (its override, else its
+// AGENTS.md: the first that holds anything).
+export function ownerFiles(roots: Roots, marks?: Marks): { path: string; text: string | null; of: "claude" | "codex" }[] {
+  const out: { path: string; text: string | null; of: "claude" | "codex" }[] = [];
   const user = join(roots.claude, "CLAUDE.md");
   noteMark(marks, user);
-  // AGENTS.md stands in for CLAUDE.md only where no CLAUDE.md file counts, anywhere on the way.
-  // (The home folder's own .claude/CLAUDE.md is the user file: it is read once and does not count.)
-  const found = (d: string, n: string) => join(d, n) !== user && present(join(d, n));
-  const counts = dirs.some((d) => CLAUDE_NAMES.some((n) => found(d, n)));
-  const names = counts ? CLAUDE_NAMES : AGENTS_NAMES;
-  const out: Entry[] = [];
-  if (present(user)) out.push({ path: user, scope: "owner" });
-  for (const d of dirs) for (const n of names) if (found(d, n)) out.push({ path: join(d, n), scope: d === cwd ? "folder" : "parent" });
+  const u = textOf(user);
+  if (u !== undefined) out.push({ path: user, text: u, of: "claude" });
+  for (const n of CODEX_FILES) {
+    const p = join(roots.codex, n);
+    noteMark(marks, p);
+    const t = textOf(p);
+    if (t === undefined || (t !== null && !t.trim())) continue;
+    out.push({ path: p, text: t, of: "codex" });
+    break;
+  }
   return out;
 }
 
-// --- Codex: instructions and config -----------------------------------------
+// The chain every session reads, outermost first: the owner's files of both harnesses, then each
+// folder's files from the home (or the root) down to `cwd`, each file once (OnceSet). `once` may come
+// with files already taken (Keel's own file). `homes`: where the walk stops going up.
+export function instructionChain(cwd: string, roots: Roots, o: { marks?: Marks; once?: OnceSet; homes?: readonly string[]; skip?: string | null } = {}): (Entry & { of?: "claude" | "codex" })[] {
+  const once = o.once ?? new OnceSet();
+  const out: (Entry & { of?: "claude" | "codex" })[] = [];
+  for (const f of ownerFiles(roots, o.marks)) if (once.take(f.path, f.text)) out.push({ path: f.path, scope: "owner", of: f.of });
+  const fallback = codexConfig(roots).fallback;
+  for (const d of walk(cwd, o.homes ?? [roots.home], o.skip)) {
+    const files = folderFiles(d, fallback, o.marks);
+    const paths = files.map((f) => f.path);
+    for (const f of files) if (once.take(f.path, f.text, paths)) out.push({ path: f.path, scope: d === cwd ? "folder" : "parent" });
+  }
+  return out;
+}
 
-export type CodexConfig = { memories: boolean; use: boolean; version?: "v1" | "v2"; docMax: number; fallback: string[] };
-export const DOC_MAX_BYTES = 32 * 1024;
+// --- Codex: config ------------------------------------------------------------
+
+export type CodexConfig = { memories: boolean; use: boolean; version?: "v1" | "v2"; fallback: string[] };
 // The summary the prompt carries: Codex's own bound, 2,500 tokens, at four bytes a token.
 export const SUMMARY_TOKENS = 2_500;
 
@@ -112,37 +217,12 @@ export function codexConfig(roots: Roots): CodexConfig {
   if (text !== null) try { t = Bun.TOML.parse(text); } catch {}
   const m = t?.memories ?? {};
   const names = Array.isArray(t?.project_doc_fallback_filenames) ? t.project_doc_fallback_filenames.filter((n: unknown) => typeof n === "string" && n && !/[\\/]/.test(n)) : [];
-  const max = Number(t?.project_doc_max_bytes);
   return {
     memories: t?.features?.memories === true,
     use: m.use_memories !== false,
     version: m.version === "v1" || m.version === "v2" ? m.version : undefined,
-    docMax: Number.isFinite(max) && max >= 0 ? Math.floor(max) : DOC_MAX_BYTES,
     fallback: names,
   };
-}
-
-export function codexChain(cwd: string, roots: Roots, cfg = codexConfig(roots), marks?: Marks): Entry[] {
-  const out: Entry[] = [];
-  const g = CODEX_FILES.map((n) => join(roots.codex, n));
-  for (const p of g) noteMark(marks, p);
-  const global = g.find(filled);
-  if (global) out.push({ path: global, scope: "owner" });
-  const top = locate(cwd)?.top;
-  const root = top && (cwd === top || cwd.startsWith(`${top}/`)) ? top : cwd;
-  const dirs: string[] = [];
-  for (let d = cwd; ; d = dirname(d)) { dirs.unshift(d); if (d === root || dirname(d) === d) break; }
-  let left = cfg.docMax;
-  for (const d of dirs) {
-    const names = [...CODEX_FILES, ...cfg.fallback];
-    for (const n of names) noteMark(marks, join(d, n));
-    const hit = names.map((n) => join(d, n)).find(filled);
-    if (!hit || left <= 0) continue;
-    const size = statSync(hit).size;
-    out.push({ path: hit, scope: d === cwd ? "folder" : "parent", limit: left });
-    left -= size;
-  }
-  return out;
 }
 
 // --- Claude: auto memory -----------------------------------------------------
@@ -294,21 +374,13 @@ export function nativePlaces(family: Family, cwd: string, roots = nativeRoots())
   return { read: w, write: w };
 }
 
-// The names of a family's native files for the walk: what the prompt of Keel's own chain
-// (turn.ts) calls the owner's, the parents' and the folder's.
-export function chainOf(family: Family, cwd: string, roots: Roots, marks?: Marks): Entry[] | null {
-  if (family === "claude") return claudeChain(cwd, roots, marks);
-  if (family === "gpt") return codexChain(cwd, roots, undefined, marks);
-  return null;
-}
-
-// The port blocks of the owner's Keel file that a family's own files replace: Keel's import
-// copied each harness's user file into it once, and a session of that family now reads the file.
-const PORTED = { claude: ["instructions:claude", "instructions:codex"], gpt: ["instructions:claude", "instructions:codex"] } as const;
-export function withoutPorted(text: string, family: Family, nativeUser: boolean): string {
-  if (!nativeUser || (family !== "claude" && family !== "gpt")) return text;
+// The port blocks of the owner's Keel file that a harness's own user file replaces: Keel's import
+// copied each harness's user file into it once, and every session now reads the files themselves.
+export function withoutPorted(text: string, read: { claude?: boolean; codex?: boolean }): string {
   let out = text;
-  for (const id of PORTED[family]) out = out.replace(new RegExp(`<!-- keel port: ${id} -->\\n[\\s\\S]*?\\n?<!-- /keel port: ${id} -->\\n?`, "g"), "");
+  for (const [id, on] of [["instructions:claude", read.claude], ["instructions:codex", read.codex]] as const) {
+    if (on) out = out.replace(new RegExp(`<!-- keel port: ${id} -->\\n[\\s\\S]*?\\n?<!-- /keel port: ${id} -->\\n?`, "g"), "");
+  }
   return out;
 }
 

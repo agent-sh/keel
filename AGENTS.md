@@ -123,6 +123,14 @@ under `~/.cache/keel-work/bun/research/`.
   image is sent again with the images at the limit it stated, else without
   the damaged ones, else without any, and the owner can have them sent again.
   Decodes are four at a time across the process.
+- Every session reads one chain of instruction files, whatever its model's family: the owner's Keel file, Claude
+  Code's and Codex's user files, then each folder's CLAUDE.md, .claude/CLAUDE.md, CLAUDE.local.md, its AGENTS.md
+  slot (Codex's override first) and .claude/AGENTS.md, each file once: a link, the same text, or a file of only
+  imports of files the chain holds is one (`instructionChain`, `OnceSet` in `src/engine/native-memory.ts`; nested
+  folders the same, `src/engine/nested.ts`). A session's prompt made in a folder lints its agent configs with agnix
+  in the background, niced, bounded, one run at a time and only when their contents changed
+  (`src/integrations/agnix.ts`); the findings are a line in Settings > Health and the folder's instructions view,
+  and errors reach a session of the folder once as a note told to the model (`src/server/routes/agnix.ts`).
 - The owner's config folder (MCP servers, hooks, skills, plugins, agents) is
   edited only through `src/core/ownfile.ts`: whole or not at all, with what the
   file held kept as `<name>.prev`. The MCP manager reads and writes the file

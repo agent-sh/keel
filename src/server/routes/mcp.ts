@@ -16,7 +16,8 @@ import { agentServers, defOfSession } from "../../automation/agents.ts";
 import { readsOf } from "../reads.ts";
 import { configPath, readConfig, serverFromJson, type McpServerConfig } from "../../mcp/config.ts";
 import { endpoint, importHome } from "../../mcp/sources.ts";
-import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
+import { access, connectorConfig, ghSignedIn, keelName, LOCAL, localPath, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
+import { homeDir } from "../../core/paths.ts";
 import { catalogSources, catalogTools, sessionOff } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
 import { gate, presence } from "./permissions.ts";
@@ -584,6 +585,28 @@ export const mcpRoutes: RouteModule = (deps) => {
         const name = String(b.name ?? c.id);
         const err = m.add(name, cfg);
         return err ? bad(err) : json({ name, servers: m.list() });
+      },
+    },
+    // Servers a program of this machine runs (LOCAL): offered when installed, added on the owner's press.
+    "/api/mcp/local": {
+      GET: () => {
+        const have = new Map(m.list().filter((s) => s.endpoint).map((s) => [s.endpoint!, s.name]));
+        return json({ servers: LOCAL.map((c) => {
+          const found = localPath(c, homeDir());
+          return { ...c, found, added: found ? have.get(endpoint({ command: found, args: [] })) ?? have.get(endpoint({ command: c.command, args: [] })) : undefined };
+        }) });
+      },
+    },
+    "/api/mcp/local/:id": {
+      POST: async (req: any) => {
+        const c = LOCAL.find((x) => x.id === req.params.id);
+        if (!c) return bad(`no local server named ${req.params.id}`, 404);
+        const found = localPath(c, homeDir());
+        if (!found) return bad(`${c.command} is not installed`, 404);
+        const guard = needs(req);
+        if (guard) return guard;
+        const err = m.add(c.id, { command: found });
+        return err ? bad(err) : json({ name: c.id, servers: m.list() });
       },
     },
     // The official MCP registry (or a file: mirror), searched by name.

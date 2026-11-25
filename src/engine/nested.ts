@@ -1,11 +1,13 @@
 // Instruction files below the session's folder, loaded when the work reaches
-// them. The system prompt carries the AGENTS.md (else CLAUDE.md) of each folder
+// them. The system prompt carries the CLAUDE.md and AGENTS.md files of each folder
 // from the root down to the session's folder; a repository with an AGENTS.md
 // in a subfolder (a package, a crate, a service) has rules there the prompt
 // does not carry. When a call reads, lists, edits or runs in a folder under the
 // session's folder, the instruction files between that folder and the session's
 // folder that the model has not seen yet are appended to the call's result,
-// nearest the session's folder first, once each. An edit outside the session's
+// nearest the session's folder first, once each: a folder's files are the
+// prompt's (folderFiles), and a file that is one the prompt or this call
+// already holds (a link, the same text) is left out (OnceSet). An edit outside the session's
 // folder, in a repository, brings that repository's files from its root down.
 //
 // Claude Code, OpenCode and Gemini CLI load nested instruction files the same
@@ -14,7 +16,7 @@
 // file unchanged; a rewind to before it lets the next call there load it again.
 // The text goes through the same trust filter as the prompt's files.
 import { heldFile } from "../core/store-files.ts";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
@@ -23,8 +25,8 @@ import type { Tool } from "../tools/types.ts";
 import { checkpointAt } from "./compact.ts";
 import { cutInstructions, instructionFilter, instructionLimit, instructionPaths } from "./turn.ts";
 import { rootOf } from "../safety/trust.ts";
+import { codexConfig, folderFiles, nativeRoots, OnceSet } from "./native-memory.ts";
 
-const NAMES = ["AGENTS.md", "CLAUDE.md"]; // AGENTS.md wins in one folder, as in the prompt
 const OPEN = '<nested-instructions path="';
 const MARK = /<nested-instructions path="([^"]+)">/g;
 
@@ -56,12 +58,12 @@ export function targetsOf(tool: Pick<Tool, "name" | "kind">, input: any, cwd: st
   return { paths: out.map((p) => (isAbsolute(p) ? p : resolve(cwd, p.replace(/^~(?=\/)/, process.env.HOME ?? "~")))), edit };
 }
 
-const fileIn = (dir: string) => NAMES.map((n) => join(dir, n)).find((p) => existsSync(p));
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
 // The instruction files a target brings, outermost first, leaving out those
 // the system prompt already carries and the target itself (a read of the file).
-export function filesFor(target: string, cwd: string, edit: boolean, inPrompt: Set<string>): string[] {
+// `inPrompt`: the prompt's files; `fallback`: the AGENTS.md slot's other names (Codex's config).
+export function filesFor(target: string, cwd: string, edit: boolean, inPrompt: Iterable<string>, fallback: readonly string[] = []): string[] {
   const start = isDir(target) ? target : dirname(target);
   let stop: string | null = null;
   if (contains(cwd, start)) stop = cwd;
@@ -70,10 +72,14 @@ export function filesFor(target: string, cwd: string, edit: boolean, inPrompt: S
     if (root) stop = dirname(root); // the repository's root folder counts
   }
   if (!stop) return [];
+  const dirs: string[] = [];
+  for (let d = start; d !== stop && contains(stop, d) && d !== dirname(d); d = dirname(d)) dirs.unshift(d);
+  const once = new OnceSet();
+  for (const p of inPrompt) once.add(p, null);
   const found: string[] = [];
-  for (let d = start; d !== stop && contains(stop, d) && d !== dirname(d); d = dirname(d)) {
-    const f = fileIn(d);
-    if (f && f !== target && !inPrompt.has(f)) found.unshift(f);
+  for (const d of dirs) {
+    const files = folderFiles(d, fallback);
+    for (const f of files) if (once.take(f.path, f.text, files.map((x) => x.path)) && f.path !== target) found.push(f.path);
   }
   return found;
 }
@@ -134,11 +140,12 @@ export function nestedFor(store: Store, s: Session, tool: Tool, input: any, tool
   const cwd = s.workspace;
   const { paths, edit } = targetsOf(tool, input, toolCwd ?? cwd);
   if (!paths.length) return [];
-  const inPrompt = new Set(instructionPaths(cwd).map((f) => f.path));
+  const inPrompt = instructionPaths(cwd).map((f) => f.path);
+  const fallback = codexConfig(nativeRoots()).fallback;
   let loaded: Set<string> | null = null;
   const out: string[] = [];
   for (const p of paths) {
-    for (const f of filesFor(p, cwd, edit, inPrompt)) {
+    for (const f of filesFor(p, cwd, edit, inPrompt, fallback)) {
       loaded ??= loadedPaths(store, s.id);
       if (loaded.has(f)) continue;
       const b = block(f, window);
