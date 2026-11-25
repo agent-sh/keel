@@ -35,13 +35,13 @@ export function SessionRow({ r, picked, onPick, testid = "import-row", strip }: 
     <div className={cn("border-b border-line/60 transition-colors", picked ? "k-picked" : "hover:bg-hover")}>
       <button type="button" data-testid={testid} data-id={r.id} data-machine={r.machine} onClick={onPick} className="block w-full px-3 py-2 text-left">
         <div className="flex items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-ui font-medium">{r.title}</span>
+          <span className="min-w-0 flex-1 truncate text-ui font-medium max-md:whitespace-normal max-md:break-words">{r.title}</span>
           {r.in_text && <span className="shrink-0 rounded-xs bg-accent-soft px-1.5 text-micro text-accent-ink" data-testid="import-in-text" title="The words are in what was said, not in the title or prompts">in the conversation</span>}
           {r.imported && <span className="shrink-0 rounded-xs bg-ok/15 px-1.5 text-micro font-medium text-ok" data-testid="import-imported">{r.imported.grew ? "imported · grew" : "imported"}</span>}
           {r.kind !== "interactive" && <span className="shrink-0 rounded-xs bg-sunken px-1.5 text-micro text-muted">{r.kind}</span>}
         </div>
         <div className="mt-0.5 flex gap-2 text-micro text-faint">
-          <span className="min-w-0 flex-1 truncate">{home(r.cwd)}</span>
+          <span className="min-w-0 flex-1 truncate max-md:whitespace-normal max-md:break-all">{home(r.cwd)}</span>
           <span className="shrink-0 tabular-nums">{fmtSize(r.size_bytes)}</span>
           <span className="shrink-0">{ago(r.updated_ms)}</span>
         </div>

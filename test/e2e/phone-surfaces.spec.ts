@@ -1664,5 +1664,58 @@ for (const size of SIZES) {
         } finally { await ctx.close(); }
       }
     });
+    // MOB-S105 (the sheet) and MOB-S106 (the other machines under their separators)
+    test("the import sheet fills a phone, shows the list or the session picked one at a time, and lists another machine's sessions under its separator", async ({ browser }) => {
+      const row = (n: number, harness: string, machine = "") => ({
+        harness, id: `s${n}${machine}`, path: `/h/${machine}${n}.jsonl`, cwd: "/home/dev/projects/checkout-service", title: `Name the mango fixture, number ${n}, with a rather long title`, updated_ms: Date.now() - n * 3600_000,
+        size_bytes: 3000 * n, kind: "interactive", model: "claude-stand-in",
+      });
+      const local = [row(1, "claude"), row(2, "claude")];
+      const far = [row(3, "claude", "b"), row(4, "claude", "b")];
+      const box = { id: "m-box", name: "build-box", source: "ssh", enabled: true, state: "ok", transport: "ssh", ssh_host: "build-box", workspace_root: "/home/dev/work", routes: ["build-box"], route: "build-box" };
+      for (const scale of [1, 1.5]) {
+        const { ctx, page } = await atScale(browser, size, scale);
+        try {
+          await page.route("**/api/import/sessions?*", (r) => r.fulfill({ json: { sessions: local, total: local.length, harnesses: [{ harness: "claude", label: "Claude Code", installed: true, interactive: 2 }, { harness: "codex", label: "Codex", installed: true, interactive: 0 }, { harness: "keel", label: "Keel (Rust)", installed: true, interactive: 0 }], index: { building: false } } }));
+          await page.route("**/api/import/preview?*", (r) => r.fulfill({ json: { session: { ...local[0], cwd_exists: true }, counts: { prompts: 4, assistant_messages: 5, tool_calls: 9, thoughts_dropped: 0, skipped: 0, media: 0 }, notes: ["Tool results are kept as text."], tail: [{ role: "user", text: "Name the fruit in fruit.txt." }, { role: "assistant", text: "It names a quince." }], links: [] } }));
+          await page.route("**/api/fleet/machines", (r) => r.request().method() === "GET" ? r.fulfill({ json: { machines: [box] } }) : r.continue());
+          await page.route("**/api/fleet/machines/m-box/transcripts?*", (r) => r.fulfill({ json: { sessions: far, total: far.length } }));
+          await page.route("**/api/fleet/machines/m-box/running", (r) => r.fulfill({ json: { sessions: [row(5, "claude", "b")], supported: true } }));
+          await page.goto("/");
+          // A finger reaches it from the list's Search and commands.
+          await page.getByTestId("show-sidebar").first().tap();
+          await page.getByTestId("open-palette").first().tap();
+          await page.getByTestId("palette-input").fill("Import sessions");
+          await page.getByRole("option", { name: /^Import sessions/ }).first().tap();
+          const sheet = page.getByTestId("import-sheet");
+          await expect(sheet).toBeVisible();
+          await expect(sheet.getByTestId("import-row")).toHaveCount(2);
+          // Each machine has its part of the list under its separator, what runs there first.
+          await expect(sheet.getByTestId("import-machine-sep")).toHaveCount(2);
+          await expect(sheet.getByTestId("import-machine-running-row")).toHaveCount(1);
+          await expect(sheet.getByTestId("import-machine-row")).toHaveCount(2);
+          expect(await phoneProblems(sheet), `the import sheet at ${scale * 100}% text`).toEqual([]);
+          // The list scrolls, so what is in it is read for itself: no title or folder cut, nothing wider than the list.
+          const cut = await sheet.getByTestId("import-list").evaluate((list) => [...list.querySelectorAll<HTMLElement>("*")].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).textOverflow === "ellipsis" || r.right > list.getBoundingClientRect().right + 1); }).map((e) => `${e.dataset.testid ?? e.className}`.slice(0, 60)));
+          expect(cut, "cut words or parts past the list").toEqual([]);
+          const b = (await sheet.boundingBox())!;
+          expect(b.width, "the sheet is the page wide").toBeGreaterThanOrEqual(size.width - 1);
+          await shoot(page, `phone-surfaces-42-import-list-${size.width}-${scale}`);
+          // A session picked: its preview takes the page, with a way back to the list.
+          await sheet.getByTestId("import-row").first().tap();
+          await expect(sheet.getByTestId("import-preview")).toBeVisible();
+          await expect(sheet.getByTestId("import-list")).toBeHidden();
+          expect(await phoneProblems(sheet), `the preview at ${scale * 100}% text`).toEqual([]);
+          await shoot(page, `phone-surfaces-43-import-preview-${size.width}-${scale}`);
+          await sheet.getByTestId("import-back").tap();
+          await expect(sheet.getByTestId("import-list")).toBeVisible();
+          await expect(sheet.getByTestId("import-preview")).toHaveCount(0);
+          // Close is in the page and a finger's size.
+          await inside(page, sheet.getByRole("button", { name: "Close" }));
+          await sheet.getByRole("button", { name: "Close" }).tap();
+          await expect(sheet).toHaveCount(0);
+        } finally { await ctx.close(); }
+      }
+    });
   });
 }

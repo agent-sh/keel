@@ -4,12 +4,13 @@
 // brought up to date with what its source gained.
 import { Dialog } from "@base-ui/react/dialog";
 import { Switch } from "@base-ui/react/switch";
-import { ArrowDownToLine, FileUp, FolderOpen, History, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDownToLine, ChevronLeft, FileUp, FolderOpen, History, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { KEEL_FILE_MAX, sizeText } from "../../../src/core/keel-file.ts";
 import type { Found, Harness } from "../../../src/integrations/import/types.ts";
 import { useFleet } from "../lib/fleet.ts";
 import { api, reportError, failed } from "../lib/store.ts";
+import { usePhoneWidth } from "../lib/list-hold.ts";
 import { navigate } from "../lib/ui.ts";
 import { takeOver, TOOL } from "./TakeOver.tsx";
 import { noteRows, OriginalStrip, ResumeCard, useStopped, type Intent, type Original, type Wait } from "./ResumeFrom.tsx";
@@ -106,7 +107,7 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
   // Its original was ended and the copy is owed: the card above finishes it, with what was in flight.
   const stopped = useStopped({ machine: from, harness: row.harness, id: row.id });
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="import-preview">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="import-preview">
       <div className="border-b border-line px-5 py-4">
         <div className="text-base font-semibold leading-snug">{row.title}</div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-faint">
@@ -158,8 +159,8 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
           </>
         ); })()}
       </div>
-      <div className="flex items-center gap-2 border-t border-line px-5 py-3">
-        <span className="min-w-0 flex-1 text-caption text-faint" data-testid="import-foot">
+      <div className="flex items-center gap-2 border-t border-line px-5 py-3 max-md:flex-wrap max-md:px-3">
+        <span className="min-w-0 flex-1 text-caption text-faint max-md:basis-full" data-testid="import-foot">
           {stopped ? "The original was stopped. Finish the copy above: a plain import would leave out what it was in the middle of." : done ? (done.went_on ? `Imported before; the copy went on here${done.grew ? " and the original too" : ""}, so it is not updated.` : done.grew ? "Imported before; the original has gone on since." : "Imported before.") : row.original ? "Import makes a copy and leaves the original running; taking it over ends it." : "A copy: the original stays as it is."}
         </span>
         {done ? (
@@ -241,6 +242,7 @@ function Running({ onDone }: { onDone: () => void }) {
 
 export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const [harness, setHarness] = useState<Harness>("claude");
+  const narrow = usePhoneWidth();
   const panel = useId();
   const [harnesses, setHarnesses] = useState<HarnessState[]>([]);
   const [q, setQ] = useState("");
@@ -435,9 +437,9 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="import-sheet"
- className="fixed inset-x-4 top-[6vh] bottom-[6vh] z-50 mx-auto flex max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
+ className="k-import fixed inset-x-4 top-[6vh] bottom-[6vh] z-50 mx-auto max-md:inset-0 max-md:rounded-none max-md:border-0 flex max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 max-md:gap-x-1 md:flex-nowrap">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 max-md:gap-x-1 max-md:px-3 max-md:py-2 md:flex-nowrap">
             <History className="size-4 text-muted" />
             <Dialog.Title className="shrink-0 whitespace-nowrap font-semibold">Import sessions</Dialog.Title>
             <Seg
@@ -446,6 +448,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               manual
               panel={panel}
               className="order-last min-w-0 basis-full md:order-none md:ml-2 md:basis-auto"
+              wrap={narrow}
               label="Where to import from"
               value={harness}
               onChange={setHarness}
@@ -473,10 +476,10 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                 </Select>
               </label>
             )}
-            <button type="button" title="Read the stores again" onClick={() => load(undefined, true)} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
+            <button type="button" title="Read the stores again" onClick={() => load(undefined, true)} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg max-md:order-1">
               <RefreshCw className={cn("size-3.5", building && "animate-spin")} />
             </button>
-            <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-4" /></Dialog.Close>
+            <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg max-md:order-2" aria-label="Close"><X className="size-4" /></Dialog.Close>
           </div>
           {keelFile && (
             <div data-testid="import-keel-result" data-state={keelFile.state} className={cn("flex items-start gap-3 border-b border-line px-4 py-2.5 text-caption", keelFile.state === "failed" ? "bg-danger-soft text-danger" : "bg-sunken text-muted")}>
@@ -496,10 +499,10 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
             </div>
           )}
           <div className="flex min-h-0 flex-1">
-            <div className="flex w-[26rem] shrink-0 flex-col border-r border-line">
+            <div className={cn("flex w-[26rem] shrink-0 flex-col border-r border-line", narrow && "w-full min-w-0 border-r-0", narrow && sel && "hidden")}>
               <div className="flex items-center gap-2 border-b border-line px-3 py-2">
                 <Search className="size-4 shrink-0 text-faint" />
-                <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, folder, prompt or reply" className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
+                <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={narrow ? "Search sessions" : "Title, folder, prompt or reply"} className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
                 {!from && (
                   <label className="flex shrink-0 items-center gap-1.5 text-caption text-faint" title="Sessions already imported show on their Keel session, not here. Show them to make another copy.">
                     Imported
@@ -568,9 +571,13 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               </div>
             </div>
             {sel ? (
-              <PreviewPane row={sel} from={at} resume={ssh ? { machineName: ssh.name } : undefined} intent={intent} onIntent={setIntent} onDone={() => onOpenChange(false)} />
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                {/* A phone shows the list or the session picked, one at a time: Back is the way to the list. */}
+                {narrow && <button type="button" data-testid="import-back" onClick={() => { setSel(null); setIntent(null); }} className="k-import-back"><ChevronLeft className="size-4" />Sessions</button>}
+                <PreviewPane row={sel} from={at} resume={ssh ? { machineName: ssh.name } : undefined} intent={intent} onIntent={setIntent} onDone={() => onOpenChange(false)} />
+              </div>
             ) : (
-              <div className="flex-1 p-6">
+              <div className="flex-1 p-6 max-md:hidden">
                 <div className="k-empty max-w-md" data-testid="import-pick-hint">
                   <b>No session picked</b>
                   <p>{total > 0 || (rows && rows.length > 0) ? "Pick a session in the list: its counts and last messages show here, and Import makes a copy." : "Nothing here to pick."}</p>

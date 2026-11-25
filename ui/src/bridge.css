@@ -1958,3 +1958,11 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-look-task { display: flex; flex-direction: column; gap: 0.375rem; margin-top: 0.25rem; }
 .k-look-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.625rem; }
 .k-look-cost { font-size: var(--text-micro); color: var(--faint); }
+
+/* The import sheet on a phone fills the screen and shows the list or the session picked, one at a time; each control is a
+   finger's size (the desk's are 1.5 to 2 rem high). */
+@media (max-width: 767px) {
+  .k-import :is(button, select, input:not([type="hidden"]), label) { min-height: 2.75rem; }
+  .k-import :is(button, select) { min-width: 2.75rem; }
+  .k-import-back { display: flex; align-items: center; gap: 0.25rem; padding: 0 0.75rem; border-bottom: 1px solid var(--line); font-size: var(--text-ui); color: var(--accent); text-align: left; }
+}
