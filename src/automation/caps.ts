@@ -212,7 +212,9 @@ export function closing(root: string, agent: boolean, byOwner: () => boolean = (
     warnOnce(rootScope(at.s, at.cap), capView({ ...at.cap, spent, recent, now }));
   }
   if (spent < at.cap.usd) return undefined;
-  if (byOwner()) return { text: capOwnerNote(at.cap.usd, spent), cap: true, note: true };
+  // Only a top session's turn runs on at the owner's word. An agent's task carries that word when its
+  // parent's turn did (it lets a merge through), and must not take the cap's spend with it: an agent stops.
+  if (!agent && byOwner()) return { text: capOwnerNote(at.cap.usd, spent), cap: true, note: true };
   return { text: capClosing(at.cap.usd, spent, agent ? at.s.title || "Session" : undefined), cap: true };
 }
 

@@ -208,6 +208,10 @@ test("the owner's own message past the cap runs the turn with a note; an agent, 
   const last = caps.closing(root, false, () => false) as { text: string; note?: boolean };
   expect(last.note).toBeUndefined();
   expect(last.text).toContain("This is your last step");
+  // An agent whose task carries the owner's word (its parent's turn was the owner's) still stops at the cap.
+  const stopped = caps.closing(root, true, () => true) as { text: string; note?: boolean };
+  expect(stopped.note).toBeUndefined();
+  expect(stopped.text).toContain("This is your last step");
   // Below the cap the owner's turn needs no note.
   const room = top("Room", 5);
   spend(room, 1);
