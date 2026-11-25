@@ -122,12 +122,25 @@ export function claudeFound(path: string, size: number, mtime: number): Found | 
 }
 
 // A prompt a person entered at Claude Code's own prompt, by the marks Claude Code records on it: typed there (or typed
-// while a reply ran and queued), from a human. Not a record without those marks (an older version's, or a file another
-// writer made), a hand-back of a peer or a subagent (origin peer), a task's notice (origin task-notification), a
-// scheduled or an SDK prompt (a program's), a meta record (system reminders, hook and skill text), a summary, or a
-// side chain (a subagent's). Tool results, attachments and queue records are no prompt at all (ClaudeConvert.push).
+// while a reply ran and queued), from a human, in a turn a human started. Not a record without those marks (an older
+// version's, or a file another writer made), a hand-back of a peer or a subagent (origin peer), a task's notice
+// (origin task-notification), a scheduled or an SDK prompt (a program's), a meta record (system reminders, hook and
+// skill text), a summary, or a side chain (a subagent's). Tool results, attachments and queue records are no prompt
+// at all (ClaudeConvert.push).
+// It fails closed: a record that carries any key outside the ones Claude Code writes on a typed prompt is not one.
+// Claude Code marks what was not typed with keys of its own (textNotTyped, handedOff, isVirtual, promptRewritten,
+// fromAnotherSession, fromConnector, a wake's wakeupSource and scheduledTaskId, hookText, modelOnlyText, the queue's
+// queueSkipAttachments and queueTranscriptOnly, and more each release), so a key it adds later counts against the
+// record until it is read and added here. The set is every key on the typed prompts of a store of 48,000
+// transcripts (versions to 2.1.3xx).
+const TYPED_KEYS = new Set([
+  "type", "uuid", "parentUuid", "timestamp", "message", "sessionId", "cwd", "gitBranch", "version", "userType", "entrypoint", "slug",
+  "isSidechain", "permissionMode", "origin", "promptSource", "turnOrigin", "promptId", "turnPosition", "turnPromptId", "dataFlowOn",
+  "sessionKind", "queueSkipSlashCommands", "imagePasteIds",
+]);
 const typedRecord = (r: any): boolean =>
-  r?.type === "user" && !r.isMeta && !r.isCompactSummary && !r.isSidechain && (r.promptSource === "typed" || r.promptSource === "queued") && r.origin?.kind === "human";
+  r?.type === "user" && r.isSidechain !== true && (r.promptSource === "typed" || r.promptSource === "queued") && r.turnOrigin === "human"
+  && r.origin?.kind === "human" && Object.keys(r.origin).length === 1 && Object.keys(r).every((k) => TYPED_KEYS.has(k));
 
 // A record's chain parent. A compaction's boundary starts a chain of its own
 // (no parent): the record it follows is its logical parent, so the history

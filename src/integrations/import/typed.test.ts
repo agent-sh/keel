@@ -27,7 +27,9 @@ const marks = (events: { kind: string; data: any; typed?: true }[]) => events.fi
 const T = "2026-11-20T10:00:00.000Z";
 let u = 0;
 // A Claude Code user record; `more` overrides its marks.
-const cc = (content: unknown, more: object = {}) => ({ type: "user", uuid: `u${++u}`, timestamp: T, message: { role: "user", content }, promptSource: "typed", origin: { kind: "human" }, ...more });
+const cc = (content: unknown, more: object = {}) => ({ type: "user", uuid: `u${++u}`, timestamp: T, message: { role: "user", content }, promptSource: "typed", origin: { kind: "human" }, turnOrigin: "human", isSidechain: false, ...more });
+
+const NOT_TYPED = ["isMeta", "textNotTyped", "handedOff", "queueSkipAttachments", "queueTranscriptOnly", "isVirtual", "isVisibleInTranscriptOnly", "promptRewritten", "fromAnotherSession", "fromConnector", "verifiedSlackHumanTurn", "emailSenderTurn", "wakeupSource", "scheduledTaskId", "hookText", "modelOnlyText"];
 
 test("Claude Code: a prompt typed (or queued) by a human counts; tool results, hand-backs, notices, hooks, programs' prompts and queue records do not", () => {
   const conv = new ClaudeConvert();
@@ -57,6 +59,13 @@ test("Claude Code: a prompt typed (or queued) by a human counts; tool results, h
     cc("[from session \"x\"] relayed words"),
     // A side chain is a subagent's.
     cc("a subagent's task", { isSidechain: true }),
+    // Claude Code's own marks of words that were not typed, on a record that otherwise reads as typed; a turn no human
+    // started; a key no typed prompt carries.
+    ...NOT_TYPED.map((k) => cc(`marked ${k}`, { [k]: k === "wakeupSource" ? "loop_wakeup" : k === "scheduledTaskId" ? "s1" : true })),
+    cc("a turn a wake started", { turnOrigin: "scheduled" }),
+    cc("no turn origin", { turnOrigin: undefined }),
+    cc("an origin with more in it", { origin: { kind: "human", via: "relay" } }),
+    cc("a key from a later release", { notYetKnown: true }),
   ];
   for (const r of records) conv.push(r, 0);
   // Records that are no message: a queue's record, an attachment (a hook's added context), command output.
@@ -80,9 +89,14 @@ test("Claude Code: a prompt typed (or queued) by a human counts; tool results, h
     ["[momentum] Your last turn ended. Continue.", false],
     ["[from session \"x\"] relayed words", false],
     ["a subagent's task", false],
+    ...NOT_TYPED.filter((k) => k !== "isMeta").map((k) => [`marked ${k}`, false]),
+    ["a turn a wake started", false],
+    ["no turn origin", false],
+    ["an origin with more in it", false],
+    ["a key from a later release", false],
   ]);
   // The hand-back and the scheduled prompt are notes; the tool result is a result: neither is a user event.
-  expect(conv.b.events.filter((e) => e.kind === "note").length).toBe(2);
+  expect(conv.b.events.filter((e) => e.kind === "note").length).toBe(3);
   expect(conv.b.events.filter((e) => e.kind === "tool_result").length).toBe(1);
 });
 
@@ -129,7 +143,7 @@ test("Antigravity: no prompt counts, since a script's `agy -p` prompt is recorde
 const transcript = (path: string, id: string) => {
   mkdirSync(join(path, ".."), { recursive: true });
   const rec = (i: number, type: string, more: object) => JSON.stringify({ cwd: root, sessionId: id, version: "2.1.330", isSidechain: false, userType: "external", entrypoint: "cli", timestamp: new Date(Date.UTC(2026, 10, 20, 10, i)).toISOString(), type, uuid: `${id}-${i}`, parentUuid: i ? `${id}-${i - 1}` : null, ...more });
-  const user = (i: number, text: string) => rec(i, "user", { message: { role: "user", content: text }, promptSource: "typed", origin: { kind: "human" } });
+  const user = (i: number, text: string) => rec(i, "user", { message: { role: "user", content: text }, promptSource: "typed", origin: { kind: "human" }, turnOrigin: "human" });
   const reply = (i: number) => rec(i, "assistant", { message: { id: `m${i}`, role: "assistant", model: "claude-test", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" } });
   writeFileSync(path, [user(0, "push to git@forge.example:me/repo.git"), reply(1), user(2, "words a model sent   through the drive"), reply(3)].join("\n") + "\n");
 };
