@@ -287,7 +287,9 @@ test("what needs you is named in a long list, and keeps its reason in a narrow o
     const strip = page.getByTestId("need-strip");
     const named = strip.locator(`[data-session="${asker}"]`);
     await expect(named).toBeInViewport();
-    await expect(named).toHaveText("Rotate the long-list certificates");
+    await expect(named).toHaveText("Next: Rotate the long-list certificates");
+    // One chip: the foot names the next one and counts the rest, it does not list them.
+    expect(await strip.locator(".k-need-name[data-session]").count(), "the foot names one session").toBe(1);
     // The list's rows did not move for it: what shrank is the room under them.
     await shoot(page, "session-rows-need-strip");
     // The same at the desk's own size.

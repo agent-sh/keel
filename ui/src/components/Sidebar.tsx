@@ -587,7 +587,9 @@ function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }
   );
 }
 
-const STRIP_MOST = 8;
+// What is out of the list's view is one chip, "Next: <title>", with the count of the rest behind "+N": the foot
+// does not repeat the rows the list holds, and it takes the room of one row.
+const STRIP_MOST = 1;
 function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: (id: string) => void }) {
   const counts = useCounts();
   const ids = useMemo(() => [...counts.need, ...counts.fail], [counts]);
@@ -628,7 +630,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
   const kept = useRef(found);
   if (!held) kept.current = found;
   const out = kept.current.filter((id) => ids.includes(id));
-  // As many names as the strip's room holds, and the rest behind "+N": nothing in it scrolls out of
+  // The first name, and the rest behind "+N": nothing in it scrolls out of
   // sight. Counted down before the frame is painted, from the most (STRIP_MOST) each time what it
   // names or its room changes.
   const box = useRef<HTMLDivElement>(null);
@@ -666,7 +668,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
     <div ref={box} className="k-need-strip" data-testid="need-strip" role="group" aria-label="Out of view in the list: what needs you or failed">
       {out.slice(0, n).map((id) => (
         <button key={id} type="button" className="k-need-name" data-session={id} data-watch={need.has(id) ? "need" : "fail"} title={`${title(id)}: ${need.has(id) ? STATE_WORD.need.toLowerCase() : STATE_WORD.fail.toLowerCase()}. Open it`} onClick={() => open(id)}>
-          <Mark w={need.has(id) ? "need" : "fail"} /><span className="k-need-title">{title(id)}</span>
+          <Mark w={need.has(id) ? "need" : "fail"} /><span className="k-need-title"><span className="k-need-next">Next: </span>{title(id)}</span>
         </button>
       ))}
       {rest.length > 0 && <button type="button" className="k-need-name k-need-more" data-testid="need-strip-more" title={rest.map(title).join(", ")} onClick={() => jumpNext(need.has(rest[0]!) ? "need" : "fail")}>+{rest.length}</button>}
