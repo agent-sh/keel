@@ -143,7 +143,10 @@ under `~/.cache/keel-work/bun/research/`.
   the loop before it is read (`store.warm`): every request that names a
   session does, and so does whatever sends into one (an agent's report). A
   reader that cannot wait asks for a fact, not the session (`lastSeq`,
-  `hasKind`, `headEvent`). A whole-session read that still lands on the loop
+  `hasKind`, `headEvent`). A call's reply is looked for among its branch's
+  newest replies (`replyOf` in `src/core/tree.ts`), never to the branch's
+  start: a call a program made (run_code) is in none, and is asked for like
+  any other. A whole-session read that still lands on the loop
   is counted with who asked (`coldReads`, in `/api/resources`), named in the
   stall row, and fails the command line e2e.
 - The loop waits for the disk as little as SQLite allows. The write-ahead log

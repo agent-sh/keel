@@ -1,7 +1,7 @@
 // What the transcript marks on a stored call: the table of what is marked,
 // with what words, and what is not.
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -11,7 +11,7 @@ import { asShellCommand } from "../tools/codemode.ts";
 import { toolFacts } from "../tools/registry.ts";
 import { ownEnv } from "../../test/env.ts";
 import { Gate } from "./gate.ts";
-import { EVENTS_MAX, marksOf, programCommand, sentence, type MarkArgs } from "./marks.ts";
+import { EVENTS_BY_ID, EVENTS_MAX, foldersOf, marksOf, programCommand, sentence, type MarkArgs } from "./marks.ts";
 import { classify, decide } from "./policy.ts";
 
 type Use = { id: string; name: string; input: any };
@@ -165,6 +165,20 @@ test("a request's events are taken once each, at most a page of them, and only t
   const many = Array.from({ length: EVENTS_MAX }, (_, k) => `filler-${k}`);
   expect(marks([...many, one])).toEqual({});
   expect(Object.keys(marks([one, ...many]))).toEqual(["p1"]);
+  // Each is found by its id: through the session's index of replies, one event cost a read of every reply the session has.
+  const plan = store.db.query<{ detail: string }, [string, string]>(`EXPLAIN QUERY PLAN ${EVENTS_BY_ID}`).all(session.id, JSON.stringify([one])).map((r) => r.detail).join("\n");
+  expect(plan).toContain("(id=?)");
+});
+
+test("a session's command records are read once each: a new one joins, one read before is not read again", () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-jobs-"));
+  writeFileSync(join(dir, "j1.json"), JSON.stringify({ call_id: "c1", cwd: "/srv/one" }));
+  expect([...foldersOf(dir)]).toEqual([["c1", "/srv/one"]]);
+  // (What j1 holds now would be read as nothing: it is not opened again.)
+  writeFileSync(join(dir, "j1.json"), "{");
+  writeFileSync(join(dir, "j2.json"), JSON.stringify({ call_id: "c2", cwd: "/srv/two" }));
+  utimesSync(dir, new Date(), new Date(Date.now() + 10_000)); // the folder is seen to have changed, whatever the clock's step
+  expect([...foldersOf(dir)]).toEqual([["c1", "/srv/one"], ["c2", "/srv/two"]]);
 });
 
 test("a program is marked for the calls it made, and each of them for itself; a tool's marks follow what its server says now", () => {

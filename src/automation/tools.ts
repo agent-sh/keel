@@ -9,6 +9,7 @@ import * as loops from "./loops.ts";
 import { toolsFor } from "../tools/registry.ts";
 import { skillRun } from "../tools/skills.ts";
 import { D, familyOf } from "./core.ts";
+import { replyOf } from "../core/tree.ts";
 import * as waits from "./waits.ts";
 import { privateHost } from "../tools/web.ts";
 import { heldSays } from "../core/stoppers.ts";
@@ -161,16 +162,14 @@ const Agent: Tool = {
 };
 
 // A call as the session's history holds it: the reply that made it, and what
-// it asked for. Undefined for a call no reply holds (one a program made).
+// it asked for. Undefined for a call no reply holds (one a program made). The
+// reply is looked for among the branch's newest (replyOf), never to its start.
 function callOf(sessionId: string, callId: string): { event: string; name: string; input: any } | undefined {
   const line = D().engine.lineage(sessionId);
-  for (let i = line.length - 1; i >= 0; i--) {
-    const e = line[i]!;
-    if (e.kind !== "assistant") continue;
-    const u = (e.data.blocks as any[]).find((b) => b.type === "tool_use" && b.id === callId);
-    if (u) return { event: e.id, name: String(u.name), input: u.input };
-  }
-  return undefined;
+  const e = line[replyOf(line, callId)];
+  if (!e) return undefined;
+  const u = (e.data.blocks as any[]).find((b) => b.type === "tool_use" && b.id === callId);
+  return { event: e.id, name: String(u.name), input: u.input };
 }
 // The sender's name for a message: the call that sent it, by the reply that
 // holds the call and the call's id. A provider may give two calls one id (in
@@ -178,7 +177,8 @@ function callOf(sessionId: string, callId: string): { event: string; name: strin
 // message is never taken for one already sent.
 const keyOf = (event: string, callId: string) => `call:${event}:${callId}`;
 const callKey = (ctx: ToolContext) => {
-  const c = ctx.callId ? callOf(ctx.sessionId, ctx.callId) : undefined;
+  // (A program's call is in no reply: nothing is looked for.)
+  const c = ctx.callId && !ctx.nestedIn ? callOf(ctx.sessionId, ctx.callId) : undefined;
   return c ? keyOf(c.event, ctx.callId!) : undefined;
 };
 const MESSAGE_TOOLS = new Set(["SendMessage", "send_input"]);

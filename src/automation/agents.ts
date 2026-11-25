@@ -15,6 +15,7 @@ import { awaited, beingStopped, listens, sampleServing, unfinished } from "../to
 import { ownerPrompt } from "../core/owner.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
+import { replyOf } from "../core/tree.ts";
 import { plain } from "./plain.ts";
 import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, movePending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, whenPartsGo, withdraw } from "./core.ts";
 import { Line, limitWords } from "./slots.ts";
@@ -1131,8 +1132,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     // way the parent's next request reads it: a clear or a summary keeps what
     // it took out of the parent's context out of the child's too.
     const line = engine.lineage(parentId);
-    const holds = (e: StoredEvent) => e.kind === "assistant" && (e.data.blocks as any[]).some((b) => b.type === "tool_use" && b.id === input.call_id);
-    let cut = input.call_id ? line.findLastIndex(holds) : -1;
+    // (The call is in one of the newest replies, or in none when a program made it: the branch is not walked to its start for it.)
+    let cut = input.call_id ? replyOf(line, input.call_id) : -1;
     if (cut < 0) cut = line.findLastIndex((e) => e.kind === "assistant");
     const prefix = line.slice(0, cut < 0 ? line.length : cut);
     const cp = checkpointAt(prefix);

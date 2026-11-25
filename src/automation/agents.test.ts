@@ -12,7 +12,7 @@ import * as agents from "./agents.ts";
 import * as failures from "./failures.ts";
 import * as leftovers from "./leftovers.ts";
 import { deliver, dropPending, flush, isPending, setDeps } from "./core.ts";
-import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
+import { ackStoredWaits, automationTools, messageHooks, waitAckHooks } from "./tools.ts";
 import { dropChoice, holdChoice } from "../tools/skill-turn.ts";
 import * as waits from "./waits.ts";
 import { bindBefore, latest } from "../checks/before-run.ts";
@@ -115,6 +115,46 @@ test("an agent that messages the session that started it is told that its report
   const other = await tool("SendMessage").run({ to: "no-such-agent", message: "a word" }, { ...ctx, sessionId: a.session_id });
   expect(String(other.content)).toContain("no agent \"no-such-agent\" in this session's tree");
   end(a, "end_turn");
+  await settled();
+});
+
+// A program (run_code) that messages several agents at once: each message is a call no reply holds. Looking
+// for the reply of such a call walked the sender's branch to its start, which on a long session read and
+// parsed every reply of its history on the loop, once a message: the daemon answered nothing meanwhile.
+test("a message a program sends, or one for a call no reply holds, reads nothing of a long session's history", async () => {
+  // A long session as another run of the daemon stored it: none of its events' bodies is in memory here.
+  const seed = new Store(join(dir, "state"));
+  const long = seed.createSession({ model: "m:x", workspace: dir, title: "long" });
+  const RUNS = 20; // the store reads bodies in runs of 64 events
+  seed.db.transaction(() => {
+    for (let i = 0; i < RUNS * 32; i++) {
+      seed.append(long.id, "assistant", { blocks: [{ type: "tool_use", id: `c${i}`, name: "Bash", input: { command: "true" } }] });
+      seed.append(long.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: `c${i}`, content: "ok" }] });
+    }
+  })();
+  seed.db.close();
+  const kids = [await agents.spawn(long.id, { prompt: "do it", isolation: "none", background: true }), await agents.spawn(long.id, { prompt: "do it", isolation: "none", background: true })];
+  const runs = () => { const b = store.bodyReads(); return b.n + b.start.n; };
+  const before = runs();
+  const top = `c${RUNS * 32 - 1}`;
+  const sent = await Promise.all(kids.flatMap((k) => [1, 2, 3].map((n) => tool("SendMessage").run({ to: k.id, message: `main moved (${n})` }, { ...ctx, sessionId: long.id, callId: `${top}~${k.id}${n}`, nestedIn: top }))));
+  expect(sent.map((r) => r.is_error ?? false)).toEqual(Array(6).fill(false));
+  expect(sends.filter((x) => x.text.includes("main moved")).length).toBe(6);
+  expect(runs() - before).toBe(0);
+  // A call the newest replies do not hold (asked of every unanswered call when a restart cut a turn) is looked for in them alone.
+  expect(messageHooks.callOutcome!(long.id, "no-such-call")).toBeUndefined();
+  expect(runs() - before).toBeLessThanOrEqual(1);
+  // The call of the reply the turn is on is found there.
+  const keys: (string | undefined)[] = [];
+  const eng = engine as { message: (...a: any[]) => unknown };
+  const message = eng.message;
+  eng.message = (id: string, text: string, meta: any, o: any) => (keys.push(o?.key), message(id, text, meta, o));
+  try {
+    await tool("SendMessage").run({ to: kids[0]!.id, message: "from the turn's own call" }, { ...ctx, sessionId: long.id, callId: top });
+  } finally { eng.message = message; }
+  expect(keys).toEqual([`call:${store.lineage(long.id).findLast((e) => e.kind === "assistant")!.id}:${top}`]);
+  expect(runs() - before).toBeLessThanOrEqual(1);
+  for (const k of kids) end(agents.get(k.id)!, "end_turn");
   await settled();
 });
 

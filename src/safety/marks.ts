@@ -99,25 +99,28 @@ export function reachesOut(command: string, cwd: string, own: string[], home: st
 const SINKS = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
 
 // The folder each of a session's commands ran in, by the call that started
-// it: from the records its jobs left. Read again only when the folder of
-// records changed.
-const ranIn = new Map<string, { at: number; by: Map<string, string> }>();
+// it: from the records its jobs left. Looked at again only when the folder of
+// records changed, and then only the records not read yet are read (a record
+// says where its command ran from its start, and a long session has thousands).
+const ranIn = new Map<string, { at: number; by: Map<string, string>; read: Set<string> }>();
 export function foldersOf(dir: string): Map<string, string> {
   let at = 0;
   try { at = statSync(dir).mtimeMs; } catch { return new Map(); }
   const had = ranIn.get(dir);
   if (had && had.at === at) return had.by;
-  const by = new Map<string, string>();
+  // (A new map: one handed out before stays as it was.)
+  const by = new Map(had?.by), read = had?.read ?? new Set<string>();
   let files: string[] = [];
-  try { files = readdirSync(dir).filter((f) => f.endsWith(".json")); } catch {}
+  try { files = readdirSync(dir).filter((f) => f.endsWith(".json") && !read.has(f)); } catch {}
   for (const f of files) {
     try {
       const m = JSON.parse(readFileSync(join(dir, f), "utf8")) as { call_id?: string; cwd?: string };
       if (m.call_id && typeof m.cwd === "string") by.set(m.call_id, m.cwd);
+      read.add(f);
     } catch {}
   }
   if (ranIn.size > 32) ranIn.clear();
-  ranIn.set(dir, { at, by });
+  ranIn.set(dir, { at, by, read });
   return by;
 }
 
@@ -132,7 +135,7 @@ export function marksOf(db: Database, a: MarkArgs): Record<string, CallMark[]> {
   const out: Record<string, CallMark[]> = {};
   const ids = [...new Set(a.events)].slice(0, EVENTS_MAX);
   if (!ids.length) return out;
-  const rows = db.query<{ ts: number; data: string }, [string, string]>("SELECT ts, data FROM events WHERE session_id = ?1 AND kind = 'assistant' AND id IN (SELECT value FROM json_each(?2))").all(a.session, JSON.stringify(ids));
+  const rows = db.query<{ ts: number; data: string }, [string, string]>(EVENTS_BY_ID).all(a.session, JSON.stringify(ids));
   const uses: Use[] = [];
   for (const r of rows) {
     let blocks: any[] = [];
@@ -192,6 +195,9 @@ export function marksOf(db: Database, a: MarkArgs): Record<string, CallMark[]> {
 }
 // The events one request may name: a page asks for the part it holds.
 export const EVENTS_MAX = 500;
+// The replies asked for, each found by its id, oldest first. (The `+` keeps the session's index of replies out of it:
+// through that index every reply of the session is read to answer one, so the read grew with the session.)
+export const EVENTS_BY_ID = "SELECT ts, data FROM events WHERE id IN (SELECT value FROM json_each(?2)) AND +session_id = ?1 AND +kind = 'assistant' ORDER BY +seq";
 
 // What a stored call is to the policy, as the live gate classes it (gate.ts
 // callClass), from the call's name and input alone.

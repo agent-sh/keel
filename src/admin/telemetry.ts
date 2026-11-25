@@ -10,7 +10,7 @@ import { silentExit } from "../tools/no-match.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
-import { lineage } from "../core/tree.ts";
+import { CALL_REPLIES, lineage } from "../core/tree.ts";
 import { cacheBreaks, registerHooks } from "../engine/hooks.ts";
 import { promptOf } from "../engine/prompt-store.ts";
 import { adoptionBetween, EXPIRED } from "../engine/build-pin.ts";
@@ -148,7 +148,7 @@ export const onLedgerCost = (fn: (c: LedgerCost) => void): (() => void) => { cos
 
 // The steps a call's own is looked for in, newest first: the step a call belongs to is the newest the
 // session stored when the call runs. `instr` first: only a step that mentions the id is parsed.
-const CALL_STEPS = 4;
+const CALL_STEPS = CALL_REPLIES;
 const CALL_EVENT_NEWEST = `SELECT e.id AS id, json_extract(e.data, '$.model') AS model
   FROM (SELECT id, data, seq FROM events WHERE session_id = ?1 AND kind = 'assistant' ORDER BY seq DESC LIMIT ?2) e, json_each(e.data, '$.blocks') b
   WHERE instr(e.data, ?3) > 0 AND json_extract(b.value, '$.type') = 'tool_use' AND json_extract(b.value, '$.id') = ?4

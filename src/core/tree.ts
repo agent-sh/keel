@@ -14,6 +14,23 @@ export function lineage(events: readonly StoredEvent[], head: string | null): St
   return out.reverse();
 }
 
+// The replies a call's own is looked for among, from the newest. A call runs while the reply that made it
+// is the newest of its branch (its turn waits for its calls), and a call a restart cut is in the reply its
+// turn ended on; the rest allow for a reply stored meanwhile.
+export const CALL_REPLIES = 4;
+// Where on a branch the reply that holds this call is: among its newest CALL_REPLIES replies, else -1.
+// Never the whole branch: a call no reply holds (one a program made, run_code) is asked for like any
+// other, and a walk to the start reads and parses every reply of a long session on the loop.
+export function replyOf(line: readonly StoredEvent[], callId: string): number {
+  for (let i = line.length - 1, seen = 0; i >= 0 && seen < CALL_REPLIES; i--) {
+    const e = line[i]!;
+    if (e.kind !== "assistant") continue;
+    seen++;
+    if ((e.data.blocks as any[] | undefined)?.some((b) => b?.type === "tool_use" && b.id === callId)) return i;
+  }
+  return -1;
+}
+
 // The newest event at or below `id`: where the branch that grew from it ends.
 export function leafOf(events: readonly StoredEvent[], id: string): string {
   const children = new Map<string, StoredEvent[]>();
