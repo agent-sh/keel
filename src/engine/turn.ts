@@ -51,7 +51,7 @@ import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./re
 import { trialModel } from "./model-trial.ts";
 import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successor.ts";
-import { cleanTitle, derivedTitle, firstReply, modelTitles, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
+import { cleanTitle, derivedTitle, firstReply, modelTitles, overLong, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { derived } from "../core/message-facts.ts";
 import { clearedFile, clearedText, clearingOf, pickCleared, stubOf } from "./cold-clear.ts";
@@ -1188,8 +1188,9 @@ export class Engine {
   private retitle(id: string) {
     let s = this.store.session(id);
     if (!s || s.parent_id || s.archived) return;
-    // A title a model, the owner or the session's maker gave owes nothing (no read of the history for it).
-    if (s.title && s.title_by !== "prompt" && s.title_by !== "start") return;
+    // A title a model, the owner or the session's maker gave owes nothing (no read of the history for it),
+    // apart from a model's title longer than titles are now (made again once).
+    if (s.title && s.title_by !== "prompt" && s.title_by !== "start" && !(s.title_by === "model" && overLong(s.title))) return;
     const line = this.lineage(id);
     // A session that reads "New session" with the owner's words in it (their first prompt reached the history
     // by a way `send` does not title: a queued one) gets the first prompt's line at once. An empty title is
@@ -1202,7 +1203,7 @@ export class Engine {
       }
     }
     if (this.titling.has(id) || this.untitled.has(id) || (this.titleFails.get(id) ?? 0) >= TITLE_TRIES || !modelTitles()) return;
-    if (!titleOwed(s.title_by, line)) return;
+    if (!titleOwed(s.title_by, line, s.title)) return;
     this.titling.add(id);
     const gen = this.titleGen.get(id) ?? 0;
     void this.writeTitle(id, s, line, gen)

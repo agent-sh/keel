@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { ask, HAIKU, SCRIPTED, shoot } from "./shots.ts";
 
 // Feature: a session's title says its task. Until the first reply it is the
-// first prompt's first line; then one of the owner's small models writes a
-// few words for it, and the list, the header and a search read them. A first
+// first prompt's first line; then one of the owner's small models writes
+// three words at most for it (a longer answer is cut to three), and the list,
+// the header and a search read them. A first
 // prompt that held no task yet (a greeting) gets its title written once more
 // after the next reply. A new version of the first prompt is a new task and
 // is titled again. A title the owner gave is never replaced.
@@ -24,15 +25,15 @@ test("a small model titles a session after its first reply, and never over the o
   // A long first prompt: the title is its first line until the reply, then the task in a few words.
   await page.goto("/");
   const long = `Point 1: the cart total must handle discounts given as a percentage (10 means ten percent), not only amounts (${tag})`;
-  await page.getByTestId("composer").fill(ask(long, `${long}\nscript:say Done.\nscript:title Percentage discounts in cart ${tag}`));
+  await page.getByTestId("composer").fill(ask(long, `${long}\nscript:say Done.\nscript:title Percentage discounts ${tag} and more words`));
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/s\//);
   const id = new URL(page.url()).pathname.split("/s/")[1]!;
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 90_000 });
-  if (SCRIPTED) await expect(header).toHaveText(`Percentage discounts in cart ${tag}`, { timeout: 30_000 });
+  if (SCRIPTED) await expect(header).toHaveText(`Percentage discounts ${tag}`, { timeout: 30_000 });
   else await expect.poll(() => titleOf(id), { timeout: 60_000 }).not.toContain("Point 1");
   const title = await titleOf(id);
-  expect(title.length).toBeLessThanOrEqual(80);
+  expect(title.split(" ").length).toBeLessThanOrEqual(3);
   await expect(list).toContainText(title);
   if (small) {
     const used = (await (await request.get(`/api/usage?group=model&session_id=${id}`)).json()).buckets.map((b: any) => b.key);
@@ -42,7 +43,7 @@ test("a small model titles a session after its first reply, and never over the o
 
   // A search finds it by its new words.
   await page.keyboard.press("Control+k");
-  await page.getByTestId("palette-input").fill(`discounts in cart ${tag}`);
+  await page.getByTestId("palette-input").fill(`Percentage discounts ${tag}`);
   await expect(page.getByTestId("palette").getByRole("option").first()).toContainText(title);
   await shoot(page, "titles-02-search");
   await page.keyboard.press("Escape");
@@ -51,10 +52,10 @@ test("a small model titles a session after its first reply, and never over the o
   const other = `Count the cart items one by one and say how many there are (${tag})`;
   await page.getByTestId("user-message").hover();
   await page.getByTestId("edit-message").click();
-  await page.getByTestId("edit-box").fill(ask(other, `${other}\nscript:say Three.\nscript:title Count cart items ${tag}`));
+  await page.getByTestId("edit-box").fill(ask(other, `${other}\nscript:say Three.\nscript:title Count items ${tag}`));
   await page.getByTestId("edit-send").click();
   await expect(page.getByTestId("branch-pos")).toHaveText("2/2", { timeout: 30_000 });
-  if (SCRIPTED) await expect(header).toHaveText(`Count cart items ${tag}`, { timeout: 30_000 });
+  if (SCRIPTED) await expect(header).toHaveText(`Count items ${tag}`, { timeout: 30_000 });
   else await expect.poll(() => titleOf(id), { timeout: 60_000 }).not.toBe(title);
 
   // A greeting first: a title is written, and once more after the next reply, and not again.
@@ -66,10 +67,10 @@ test("a small model titles a session after its first reply, and never over the o
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 90_000 });
   if (SCRIPTED) await expect(header).toHaveText(`Greeting ${tag}`, { timeout: 30_000 });
   const task = `The uploader must retry a part three times before it gives up (${tag})`;
-  await composer.fill(ask(task, `${task}\nscript:say On it.\nscript:title Uploader part retries ${tag}`));
+  await composer.fill(ask(task, `${task}\nscript:say On it.\nscript:title Uploader retries ${tag}`));
   await composer.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 90_000 });
-  if (SCRIPTED) await expect(header).toHaveText(`Uploader part retries ${tag}`, { timeout: 30_000 });
+  if (SCRIPTED) await expect(header).toHaveText(`Uploader retries ${tag}`, { timeout: 30_000 });
   else await expect.poll(() => titleOf(hi.id), { timeout: 60_000 }).toMatch(/upload|retr/i);
   const settled = await titleOf(hi.id);
   await composer.fill(ask("Also log each retry.", `Also log each retry.\nscript:say Logged.\nscript:title Something else ${tag}`));
@@ -86,7 +87,7 @@ test("a small model titles a session after its first reply, and never over the o
   await page.getByLabel("Session title").fill(`Mine ${tag}`);
   await page.getByLabel("Session title").press("Enter");
   await expect(header).toHaveText(`Mine ${tag}`);
-  await composer.fill(ask("Fix the build of the docs site.", `Fix the build of the docs site.\nscript:say Fixed.\nscript:title Docs build fix ${tag}`));
+  await composer.fill(ask("Fix the build of the docs site.", `Fix the build of the docs site.\nscript:say Fixed.\nscript:title Docs build ${tag}`));
   await composer.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 90_000 });
   await page.getByTestId("user-message").hover();
@@ -132,10 +133,10 @@ test("a session started in a worktree gets a model title after its first reply",
   await page.getByTestId("start-in-worktree").click();
   await expect(page.getByTestId("start-in-worktree")).toHaveAttribute("aria-checked", "true");
   const long = `Point 1: round the invoice tax per line, not on the total (${tag})`;
-  await page.getByTestId("composer").fill(ask(long, `${long}\nscript:say Done.\nscript:title Per line tax rounding ${tag}`));
+  await page.getByTestId("composer").fill(ask(long, `${long}\nscript:say Done.\nscript:title Tax rounding ${tag}`));
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/s\//);
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 90_000 });
-  await expect(page.getByTestId("session-title")).toHaveText(`Per line tax rounding ${tag}`, { timeout: 30_000 });
+  await expect(page.getByTestId("session-title")).toHaveText(`Tax rounding ${tag}`, { timeout: 30_000 });
   await shoot(page, "titles-05-worktree");
 });

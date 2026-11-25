@@ -229,3 +229,30 @@ test("an imported session with a derived title is titled by a model, one with it
   expect(own.asked.filter((r) => r.purpose === "title")).toEqual([]);
   expect(own.store.session(own.s.id)!.title).toBe("Checkout work (named in Claude Code)");
 });
+
+// Titles are three words now. A model's title from before (longer) is made again once, at the session's next
+// turn end, and the new one is cut to three words if the answer is longer; a title the owner gave is never made again.
+test("a model's title longer than three words is made again once at the next turn end", async () => {
+  const { engine, s, store, asked, titled } = rig([BIG, SMALL], async () => said("Cart discount rounding in checkout"));
+  const user = store.append(s.id, "user", { text: "Fix the cart discount rounding in the checkout flow" });
+  store.append(s.id, "assistant", { blocks: [{ type: "text", text: "Done." }] }, user.id);
+  store.updateSession(s.id, { title: "Fix the cart discount rounding", title_by: "model" });
+  engine.send(s.id, "And the tax too");
+  await engine.idle(s.id);
+  await titled("Cart discount rounding");
+  expect(store.session(s.id)!.title_by).toBe("model");
+  engine.send(s.id, "And the shipping");
+  await engine.idle(s.id);
+  await Bun.sleep(100);
+  expect(asked.filter((r) => r.purpose === "title").length).toBe(1);
+
+  const mine = rig([BIG, SMALL], async () => said("Not mine"));
+  const u = mine.store.append(mine.s.id, "user", { text: "Fix the cart discount rounding" });
+  mine.store.append(mine.s.id, "assistant", { blocks: [{ type: "text", text: "Done." }] }, u.id);
+  mine.store.updateSession(mine.s.id, { title: "My own long name for this work", title_by: "" });
+  mine.engine.send(mine.s.id, "And the tax too");
+  await mine.engine.idle(mine.s.id);
+  await Bun.sleep(100);
+  expect(mine.asked.filter((r) => r.purpose === "title")).toEqual([]);
+  expect(mine.store.session(mine.s.id)!.title).toBe("My own long name for this work");
+});

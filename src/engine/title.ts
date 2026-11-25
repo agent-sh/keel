@@ -10,8 +10,13 @@
 //   - the title is made once the first reply is in, from the owner's first
 //     prompts and the start of the reply, in one request with no conversation,
 //     no tools and no cache (it is not part of any turn's prefix);
+//   - a title is three words at most: the request asks for that, and a longer
+//     answer is cut to its first three words (TITLE_WORDS);
 //   - a first prompt that says nothing of a task yet (a greeting, one or two
 //     words) gives a title made again once, after the next reply (`start`);
+//   - a title a model wrote before titles were three words (`model` or
+//     `start`, longer than that) is made again once, at the session's next
+//     turn end; the new one is three words, so it is not made again;
 //   - an edit of the first prompt gives the session a new task: its title is
 //     the new prompt's words until the next reply makes one again;
 //   - the title is saved only when nobody renamed the session meanwhile;
@@ -35,6 +40,9 @@ export type TitleBy = "" | "prompt" | "model" | "start" | "hook";
 
 export const TITLE_SYSTEM = "You name a coding session in a list of sessions. You answer with the title only.";
 
+// The words a title made by a model has at most: a list row reads it at a glance,
+// beside its folder.
+export const TITLE_WORDS = 3;
 // The longest title kept: the request asks for a few words (the Codex app's
 // titles are 36 characters at most), and an answer longer than a first
 // prompt's title (80 characters) is cut as that one is.
@@ -81,10 +89,12 @@ export function firstReply(line: readonly StoredEvent[]): string {
 // Whether a title request is owed now, after a turn's end: the title is the
 // first prompt's (or a weak start's), and the branch holds a reply to it (for
 // a weak start, a reply to a later prompt as well).
-export function titleOwed(by: TitleBy | undefined, line: readonly StoredEvent[]): boolean {
-  if (by !== "prompt" && by !== "start") return false;
+// A model's title longer than TITLE_WORDS (one written before titles were that short) is owed once more.
+export function titleOwed(by: TitleBy | undefined, line: readonly StoredEvent[], title = ""): boolean {
+  if (by !== "prompt" && by !== "start" && !(by === "model" && overLong(title))) return false;
   const prompts = ownerPrompts(line);
   if (!prompts.length || !line.some((e) => e.kind === "assistant")) return false;
+  if (overLong(title) && by !== "prompt") return true;
   if (by === "start") return prompts.length >= 2 && line.findLastIndex((e) => e.kind === "assistant") > line.findLastIndex((e) => e.kind === "user");
   return true;
 }
@@ -102,14 +112,18 @@ export function derivedTitle(title: string, firstPrompt: string): boolean {
   return n > 0 && t.length >= n && t.slice(0, n) === line.slice(0, n);
 }
 
+const wordsOf = (t: string) => t.trim().split(/\s+/).filter(Boolean);
+// Whether a title a model wrote has more words than a title has now.
+export const overLong = (title: string) => wordsOf(title).length > TITLE_WORDS;
+
 const cut = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)}\u2026`);
 
 // The one request a title takes.
 export function titlePrompt(prompts: string[], reply: string): string {
   const said = prompts.slice(0, PROMPTS).map((p) => `<prompt>\n${cut(p, PROMPT_CHARS)}\n</prompt>`).join("\n");
   return [
-    "Write a title for this coding session: what the owner asked for, in 3 to 6 words.",
-    "Say the task, not the conversation: \"Fix the cart discount rounding\", not \"User asks about a bug\".",
+    `Write a title for this coding session: what the owner asked for, in ${TITLE_WORDS} words at most.`,
+    "Say the task, not the conversation: \"Cart discount rounding\", not \"User asks about a bug\".",
     "Use the language the owner wrote in. Sentence case, no quotes, no period at the end, no markdown. Answer with the title alone.",
     "",
     said,
@@ -118,13 +132,13 @@ export function titlePrompt(prompts: string[], reply: string): string {
 }
 
 // The title in a model's answer: its first line, without quotes, a "Title:"
-// label, markdown or an end period, cut at a word within TITLE_CHARS. Empty
-// when nothing is left.
+// label, markdown or an end period, its first TITLE_WORDS words, cut at a word
+// within TITLE_CHARS. Empty when nothing is left.
 export function cleanTitle(answer: string): string {
   let t = (answer.split("\n").map((l) => l.trim()).find(Boolean) ?? "");
   t = t.replace(/^[#>*_`\-\s]+/, "").replace(/^(session )?title\s*[:\-]\s*/i, "").replace(/[*_`]+/g, "");
   t = t.replace(/^["'\u201c\u2018\u00ab]+|["'\u201d\u2019\u00bb]+$/g, "").replace(/[.\s]+$/, "").replace(/\s+/g, " ").trim();
-  return cutTitle(t);
+  return cutTitle(wordsOf(t).slice(0, TITLE_WORDS).join(" ").replace(/[\s,.;:\-]+$/, ""));
 }
 
 // A title cut to TITLE_CHARS at a word, with an ellipsis where it was cut.
