@@ -392,7 +392,7 @@ export function Settings({ kind = "settings", section }: { kind?: Kind; section:
                       s.id === cur.id && "k-picked",
                     )}
                   >
-                    <span className={s.id === cur.id ? "text-accent" : "text-faint"}>{s.icon}</span>
+                    {/* A section by its name: a glyph before each of twenty names read as a second column of noise. */}
                     {s.label}
                   </button>}
                   {hits(s.id).map((n) => (
