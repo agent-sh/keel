@@ -728,6 +728,9 @@ keel resume --last [PROMPT] [run options]
       --open    show the session in the workbench: the desktop app when one is attached, else the browser
                 (with no prompt it does not attach)
 
+keel resume --fleet
+  Ends the fleet pause (keel pause): the starts it held go on.
+
 ${RUN_USAGE.split("\n").slice(4).join("\n")}`;
 
 const resumeCmd = command("resume", RESUME_USAGE, { ...RUN_OPTIONS, last: { type: "boolean" }, thoughts: { type: "boolean" }, open: { type: "boolean" } }, async (v, pos, c, found) => {
@@ -757,7 +760,8 @@ const resumeCmd = command("resume", RESUME_USAGE, { ...RUN_OPTIONS, last: { type
   if (!hasInput) return attachTo(c, id ?? (await named()), v);
   return runPrompt({ ...v, session: id ?? target, continue: v.last && !target && !id ? true : undefined }, args, c, found, "resume");
 });
-const resume = (argv: string[]) => resumeCmd(worktreeArg(argv));
+// `keel resume --fleet` ends the fleet pause (src/cli/pause.ts); any other form resumes a session.
+const resume = async (argv: string[]) => (argv.includes("--fleet") ? (await import("./pause.ts")).resumeFleet(argv) : resumeCmd(worktreeArg(argv)));
 
 // ---- keel export
 

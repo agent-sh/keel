@@ -25,6 +25,7 @@ const from = {
   safety: () => import("./safety.ts").then((m): Record<string, Command> => ({ safety: m.safetyCmd })),
   review: () => import("./review.ts").then((m): Record<string, Command> => ({ review: m.reviewCmd })),
   experiments: () => import("./experiments.ts").then((m): Record<string, Command> => ({ experiments: m.experimentsCmd })),
+  pause: () => import("./pause.ts").then((m): Record<string, Command> => ({ pause: m.pauseCmd })),
   debug: () => import("./debug.ts").then((m): Record<string, Command> => ({ debug: m.debug })),
   import: () => import("./imports.ts").then((m): Record<string, Command> => ({ import: m.importCmd })),
   port: () => import("./port.ts").then((m): Record<string, Command> => ({ port: m.portCmd })),
@@ -45,7 +46,7 @@ export const WHERE: Record<string, keyof typeof from> = {
   providers: "providers",
   messages: "inspect", changes: "inspect", rewind: "inspect", cost: "inspect",
   run: "run", "-p": "run", "--print": "run",
-  experiments: "experiments", rules: "rules", audit: "audit", safety: "safety", review: "review", debug: "debug", import: "import", port: "port", mcp: "mcp", completion: "completion",
+  experiments: "experiments", pause: "pause", rules: "rules", audit: "audit", safety: "safety", review: "review", debug: "debug", import: "import", port: "port", mcp: "mcp", completion: "completion",
 };
 
 export const isCommand = (name: string): boolean => Object.hasOwn(WHERE, name);

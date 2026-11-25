@@ -1,6 +1,6 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Clock, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Clock, Pause, Play, OctagonX, Copy, Ellipsis, Folder, FolderPlus, GitBranch, GitFork, LayoutList, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
@@ -24,6 +24,7 @@ import { useSessionState } from "../lib/watch.ts";
 import { REST_AT } from "../../../src/automation/cap-rules.ts";
 import { CapControl } from "./CapControl.tsx";
 import { useCap } from "../lib/caps.ts";
+import { pauseFleet, resumeFleet, useFleetPause } from "../lib/fleet-pause.ts";
 import { iconButton } from "./ui.tsx";
 
 // Popovers of the header load after the page (their Base UI parts are large).
@@ -270,6 +271,25 @@ function LaterPill({ id }: { id: string }) {
   );
 }
 
+// While the fleet is paused every pane's bar says so, and a press resumes it.
+function FleetPausedPill() {
+  const fleet = useFleetPause();
+  if (!fleet.paused) return null;
+  return (
+    <button
+      type="button"
+      data-testid="fleet-paused-pill"
+      onClick={() => void resumeFleet().catch(reportError)}
+      aria-label="The fleet is paused: resume it"
+      title="Every start you did not make waits: loops, wakes, agents, follow-ups. Press to resume."
+      className="inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-warn/40 bg-warn/10 px-2 text-caption font-medium text-warn outline-none hover:border-warn focus-visible:ring-2 focus-visible:ring-warn/40"
+    >
+      <Pause className="size-3" aria-hidden="true" />
+      Fleet paused
+    </button>
+  );
+}
+
 // `bar`: the pane's top bar holds the list's button itself (a phone's one row: the button, the title and state, the tools).
 export function SessionHeader({ session, bar }: { session: Session; bar?: boolean }) {
   const menuButton = useRef<HTMLButtonElement>(null); // where a menu item's failed copy is said
@@ -363,6 +383,8 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
   const panes = useStations((x) => x.count);
   const alone = phone() || panes < 2;
   const rename: Act = { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) };
+  // One switch for the whole fleet: every start the owner did not make (loops, wakes, agents, follow-ups) waits.
+  const fleet = useFleetPause();
   const acts: Act[] = [
     ...(alone ? [
       { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, command: "station.pin", run: () => runCommand("station.pin") },
@@ -385,6 +407,12 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
     ...(!session.parent_id && !session.machine ? [{ id: "menu-unread", label: "Mark unread", icon: <MailOpen />, run: () => void auto.unreadSession(session.id).catch(reportError) }] : []),
     { id: "menu-fork", label: "Fork", icon: <GitBranch />, gap: true, disabled: !session.head, run: () => { if (session.head) actions.fork(session.id, session.head).then((f) => openPlaced(f.id, session.id), reportError); } },
     { id: "menu-fork-worktree", label: "Fork into a new worktree", icon: <GitFork />, disabled: !session.head, run: () => { if (session.head) actions.fork(session.id, session.head, { worktree: true }).then((f) => openPlaced(f.id, session.id), reportError); } },
+    ...(fleet.paused
+      ? [{ id: "menu-fleet-resume", label: "Resume the fleet", icon: <Play />, gap: true, run: () => void resumeFleet().catch(reportError) }]
+      : [
+        { id: "menu-fleet-pause", label: "Pause every unattended start", icon: <Pause />, gap: true, run: () => void pauseFleet().catch(reportError) },
+        { id: "menu-fleet-stop", label: "Pause and stop unattended turns", icon: <OctagonX />, run: () => void pauseFleet(true).catch(reportError) },
+      ]),
     session.archived
       ? { id: "menu-restore", label: "Restore", icon: <ArchiveRestore />, gap: true, run: () => void actions.patch(session.id, { archived: false }).catch(reportError) }
       : { id: "menu-archive", label: "Archive", icon: <Archive />, gap: true, run: () => void archive(session).catch(reportError) },
@@ -428,6 +456,7 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
           </button>
         )}
         {!editing && <LaterPill id={session.id} />}
+        {!editing && <FleetPausedPill />}
       </div>
       <div data-tools="" className="k-head-tools">
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}

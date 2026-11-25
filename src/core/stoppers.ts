@@ -39,6 +39,7 @@ export const STOPPERS: Record<string, Stopper> = {
   parent_turn: { says: "stopped with its parent's turn", parent: true, held: "this session stopped with its parent's turn" },
   time_limit: { says: "stopped at its time limit", parent: true, held: "this session passed its time limit" },
   parent_archived: { says: "stopped when its parent session was archived", parent: true, held: "this session's parent was archived" },
+  pause: { says: "stopped when the fleet was paused" },
   hook: { says: "stopped by a hook" },
   supervisor: { says: "stopped by the supervisor" },
   review: { says: "stopped with its review" },

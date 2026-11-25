@@ -808,7 +808,7 @@ const isPrompt = shownAsPrompt;
 const STOP_BY: Record<string, string> = {
   owner: " by you", phone: " by you, from the phone", edit: ": you edited an earlier prompt", send_now: ": you sent a new message",
   parent: " by the parent agent", ancestor: " with an agent above it", parent_turn: " with the parent's turn", time_limit: ": its time limit passed", parent_archived: ": its parent session was archived",
-  hook: " by a hook", supervisor: " by the supervisor", review: " with its review", handoff: " to move the session",
+  pause: " when you paused the fleet", hook: " by a hook", supervisor: " by the supervisor", review: " with its review", handoff: " to move the session",
   archive: ": the session was archived", delete: ": the session was deleted", api: " through the API",
 };
 

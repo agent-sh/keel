@@ -30,6 +30,7 @@ import * as writeAsks from "./write-asks.ts";
 import * as agents from "./agents.ts";
 import * as caps from "./caps.ts";
 import * as windowCap from "./window-cap.ts";
+import * as fleetPause from "./fleet-pause.ts";
 import { dollars, raisedCap } from "./cap-rules.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
@@ -90,6 +91,7 @@ const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_us
 function init(deps: Deps) {
   setDeps(deps);
   windowCap.listen();
+  fleetPause.listen();
   // What a parked session waits on, for its cache plan.
   deps.engine.waitShape = (id) => waits.shapeOf(id);
   // What a wait on the owner costs as it begins, kept with its alert (the next-look queue's key).
@@ -215,7 +217,7 @@ function init(deps: Deps) {
     // An agent whose budget is spent writes its report in one more step (src/automation/budget.ts).
     // Another session's message to a top session at its reached cap waits for a raise, as a loop run does.
     holdsInput: (s) => caps.held(s.id),
-    stepHold: (s, byOwner) => windowCap.hold(s, byOwner),
+    stepHold: (s, byOwner) => fleetPause.hold(s, byOwner) ?? windowCap.hold(s, byOwner),
     budget: (s, byOwner) => (s.parent_id ? agents.budgetSpent(s.id, byOwner) : caps.closing(s.id, false, byOwner)),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
@@ -800,6 +802,21 @@ export const automationRoutes: RouteModule = (deps) => {
     // Settings > Usage (PATCH /api/settings { spend_window: { usd, hours } }).
     "/api/spend-window": {
       GET: () => attempt(async () => json(await windowCap.refresh())),
+    },
+    // The fleet pause (src/automation/fleet-pause.ts): one switch that holds every start the owner did not make.
+    //   GET: { paused, since }; POST { on: true, stop_running?: true } pauses (with it, the unattended turns
+    //   running now are stopped), POST { on: false } resumes. A turn the owner's own words started goes on.
+    "/api/fleet-pause": {
+      GET: () => json(fleetPause.state()),
+      POST: (req: any) => attempt(async () => {
+        if (!isLocal(req) || forwardedStanding(req)) return bad("pause the fleet from the daemon's own desk", 403);
+        const b = await body(req);
+        if (typeof b.on !== "boolean") return bad("on is true to pause or false to resume", 400);
+        if (b.stop_running !== undefined && typeof b.stop_running !== "boolean") return bad("stop_running is true or false", 400);
+        if (!b.on) return json({ ...fleetPause.resume(), stopped: [] });
+        const r = await fleetPause.pause(!!b.stop_running);
+        return json({ ...r.state, stopped: r.stopped });
+      }),
     },
     "/api/sessions/:id/cap": {
       GET: (req: any) => attempt(async () => {

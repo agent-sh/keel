@@ -255,7 +255,7 @@ export function agentState(a: AgentLike, told?: SessionState): SessionState {
 // Who stopped an agent, and why one did not finish, as the owner reads it.
 const STOPPED_BY: Record<string, string> = {
   owner: "You stopped this agent", parent: "Its parent agent stopped it", ancestor: "An agent above it was stopped", parent_turn: "Stopped with its parent's turn",
-  time_limit: "Its time limit passed", parent_archived: "Its parent session was archived",
+  time_limit: "Its time limit passed", parent_archived: "Its parent session was archived", pause: "The fleet was paused",
   hook: "A hook stopped its turn", supervisor: "The supervisor stopped its turn", api: "Its turn was stopped through the API",
   handoff: "Its turn was stopped to move its session", unknown: "Its turn was stopped",
 };

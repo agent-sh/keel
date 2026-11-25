@@ -12,6 +12,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["safety", "trial: a safety rule change replayed over the stored calls before it is on"],
     ["review", "pull request reviews from GitHub: watch a repository, list, post a draft"],
     ["experiments", "trials of a change: list, templates, start from a template, stop, report"],
+    ["pause", "hold every start you did not make (loops, wakes, agents, follow-ups); keel resume --fleet ends it"],
     ["stop", "interrupt a session's running turn"],
   ]],
   ["Sessions", [

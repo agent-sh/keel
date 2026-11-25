@@ -91,7 +91,7 @@ export type AgentStatus = "running" | "waiting" | "completed" | "incomplete" | "
 // (The last five are a stop of its own turn by something else than the owner or its parent, in the
 // words of src/core/stoppers.ts; `unknown`: a stop nobody named.)
 // `ancestor`: an agent above it was stopped by something else than the owner, and the stop went down the tree.
-export type StopBy = "owner" | "parent" | "ancestor" | "parent_turn" | "time_limit" | "parent_archived" | "hook" | "supervisor" | "api" | "handoff" | "unknown";
+export type StopBy = "owner" | "parent" | "ancestor" | "parent_turn" | "time_limit" | "parent_archived" | "pause" | "hook" | "supervisor" | "api" | "handoff" | "unknown";
 export const STOP_TEXT: Record<StopBy, string> = {
   owner: "the owner stopped it",
   parent: "its parent agent stopped it",
@@ -99,6 +99,7 @@ export const STOP_TEXT: Record<StopBy, string> = {
   parent_turn: "it stopped with its parent's turn",
   time_limit: "its time limit passed",
   parent_archived: "its parent session was archived",
+  pause: "the fleet was paused",
   hook: "a hook stopped its turn",
   supervisor: "the supervisor stopped its turn",
   api: "its turn was stopped through the API",

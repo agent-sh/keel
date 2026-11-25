@@ -203,6 +203,11 @@ under `~/.cache/keel-work/bun/research/`.
   send. What a start reads of the store for nobody in a hurry (the cut sessions, the rows of the sessions
   used in the last hour) waits behind a report on the read thread (`Reads.rowsLater`) instead of being
   read on the loop.
+- One switch pauses the fleet (`src/automation/fleet-pause.ts`, the settings section `fleet_pause`, kept across a
+  restart): the engine's `stepHold` makes every turn the owner did not start wait before its next model step (loop
+  runs, wakes, agents' turns, follow-ups), with its reason in its status; only a top session's turn the owner's own
+  words started or steered goes on. Optionally the unattended turns running now are stopped (stopper `pause`).
+  Resuming frees what waits. `keel pause`, `keel resume --fleet`, a row in the pane's menu.
 - A turn ends as "interrupted" only when `Engine.interrupt` was called for it,
   and every caller says who it is with a word of `src/core/stoppers.ts`, kept
   on the turn's end (`stopped_by`). What is said of the stop and what follows

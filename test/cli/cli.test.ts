@@ -1782,6 +1782,19 @@ describe("client commands against a running daemon", () => {
     expect((await k(["experiments", "stop", exp.id])).err).toContain("it is stopped");
   }, 60_000);
 
+  // The fleet pause from a terminal: the switch, its state kept, the way back (`resume` with --fleet is the fleet's).
+  test("pause, pause --status and resume --fleet", async () => {
+    expect((await k(["pause", "--status"])).out).toContain("the fleet is not paused");
+    const paused = await k(["pause", "--json"]);
+    expect([paused.code, json(paused.out)]).toEqual([0, { paused: true, since: expect.any(Number), stopped: [] }]);
+    expect((await k(["pause", "--status"])).out).toContain("the fleet is paused");
+    const back = await k(["resume", "--fleet", "--json"]);
+    expect([back.code, json(back.out)]).toEqual([0, { paused: false, since: null, stopped: [] }]);
+    expect((await k(["pause", "--status"])).out).toContain("the fleet is not paused");
+    // Without --fleet `resume` is still the session's.
+    expect((await k(["resume"])).err).toContain("name the session, or pass --last");
+  }, 60_000);
+
   test("audit: a session's history is whole, a bundle is streamed out and verifies alone, an edited one is refused", async () => {
     const id = json((await k(["run", "--json", "seal me"])).out).session_id;
     const whole = await k(["audit", "verify", id]);
