@@ -18,7 +18,9 @@
 // tells nothing again.
 import type { StoredEvent } from "../core/types.ts";
 import { diffLines, splitLines } from "../tools/diff.ts";
+import { existsSync } from "node:fs";
 import { changedBlocks, ownChanges, type PromptBlock } from "./prompt-store.ts";
+import { sectionsOf } from "./sections.ts";
 
 export const NOTE_KIND = "prompt_update";
 
@@ -66,21 +68,49 @@ const CONTEXT = 3;
 const HEADING = /^# \//;
 // A file the block no longer holds is told apart from an edit: its heading
 // went, so the file was deleted (or moved out of the folders read); a heading
-// that came is a new file.
+// that came is a new file. A file whose heading went that is still on disk is
+// not called deleted: its text may be carried by another file of the chain.
 const headings = (t: string) => new Set(splitLines(t).filter((l) => HEADING.test(l)).map((l) => l.slice(2).trim()));
-function filesSaid(before: string, after: string): string {
+function filesSaid(before: string, after: string, exists: (p: string) => boolean = existsSync): string {
   const was = headings(before), is = headings(after);
   const gone = [...was].filter((f) => !is.has(f)), came = [...is].filter((f) => !was.has(f));
+  const deleted = gone.filter((f) => !exists(f)), kept = gone.filter((f) => exists(f));
   return [
-    ...(gone.length ? [`Deleted (or no longer found where it was read): ${gone.join(", ")}. What it said no longer applies.`] : []),
+    ...(deleted.length ? [`Deleted (or no longer found where it was read): ${deleted.join(", ")}. What it said no longer applies.`] : []),
+    ...(kept.length ? [`No longer read on its own: ${kept.join(", ")}. What of it still applies is in the text below.`] : []),
     ...(came.length ? [`New: ${came.join(", ")}.`] : []),
   ].map((l) => `${l}\n`).join("");
 }
-export function blockDiff(before: string, after: string): string {
-  const files = filesSaid(before, after);
+// A block's change, told the shortest of three ways: the lines around each change, its sections
+// that are new or gone (a section the model holds that only moved, to another file of the chain or
+// another place, is not told again), or the whole new text.
+export function blockDiff(before: string, after: string, exists?: (p: string) => boolean): string {
+  const files = filesSaid(before, after, exists);
   if (!after.trim()) return `${files}It is empty now: what the system prompt says under it no longer applies.`;
   if (!before.trim()) return `${files}It reads:\n${after.trimEnd()}`;
-  return files + changedLines(before, after);
+  const lines = changedLines(before, after);
+  const secs = changedSections(before, after);
+  return files + (secs !== undefined && secs.length < lines.length ? secs : lines);
+}
+// The sections of `after` the model does not hold anywhere in `before`, and the sections of
+// `before` that are nowhere in `after`, each run under its file's heading.
+function changedSections(before: string, after: string): string | undefined {
+  const keys = (t: string) => new Set(sectionsOf(t).map((s) => s.key));
+  const had = keys(before), has = keys(after);
+  const pick = (t: string, mark: "+" | "-", other: Set<string>): string[] => {
+    const out: string[] = [];
+    let file: string | undefined, said: string | undefined;
+    for (const s of sectionsOf(t)) {
+      if (HEADING.test(s.key) && !s.key.includes("\n")) { file = s.key; continue; }
+      if (other.has(s.key)) continue;
+      if (said !== file || !out.length) { out.push(file ? `@@ ${file}` : "@@"); said = file; }
+      for (const l of splitLines(t.slice(s.start, s.end))) out.push(`${mark}${l}`);
+    }
+    return out;
+  };
+  const out = [...pick(before, "-", has), ...pick(after, "+", had)];
+  if (!out.length) return undefined;
+  return `Changed sections (- before, + now; the rest is as it was, some of it moved to another file or place):\n${out.join("\n")}`;
 }
 function changedLines(before: string, after: string): string {
   const ops = diffLines(splitLines(before), splitLines(after));

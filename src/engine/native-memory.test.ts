@@ -123,7 +123,9 @@ test("the notes of an auto memory folder: their kind, whether the index lists th
 });
 
 // The instruction chain: one for every family, both harnesses' files, each once.
-const rel = (home: string, list: { path: string }[]) => list.map((e) => e.path.slice(home.length + 1));
+// The files read (a file one with another is listed with `same`, not read).
+const rel = (home: string, list: { path: string; same?: unknown }[]) => list.filter((e) => !e.same).map((e) => e.path.slice(home.length + 1));
+const sameOf = (home: string, list: { path: string; same?: { of: string; imports: boolean } }[]) => list.filter((e) => e.same).map((e) => `${e.path.slice(home.length + 1)}=${e.same!.imports ? "imports " : ""}${e.same!.of.slice(home.length + 1)}`);
 
 test("every session reads both harnesses' files: the user files, then each folder's CLAUDE.md files, its AGENTS.md slot and .claude/AGENTS.md", () => {
   const { home, roots } = world();
@@ -137,7 +139,7 @@ test("every session reads both harnesses' files: the user files, then each folde
   put(join(cwd, "CLAUDE.local.md"), "mine");
   put(join(cwd, "AGENTS.md"), "folder agents");
   put(join(cwd, ".claude", "AGENTS.md"), "dot agents");
-  const got = instructionChain(cwd, roots).map((e) => `${e.path.slice(home.length + 1)}:${e.scope}${e.of ? `:${e.of}` : ""}`);
+  const got = instructionChain(cwd, roots).filter((e) => !e.same).map((e) => `${e.path.slice(home.length + 1)}:${e.scope}${e.of ? `:${e.of}` : ""}`);
   expect(got).toEqual([
     ".claude/CLAUDE.md:owner:claude", ".codex/AGENTS.md:owner:codex",
     "p/CLAUDE.md:parent", "p/AGENTS.md:parent",
@@ -178,6 +180,9 @@ test("each file once: a link of either kind, the same text, a CLAUDE.md that onl
   put(join(d, "CLAUDE.local.md"), "@AGENTS.md\n");
   put(join(d, ".claude", "AGENTS.md"), "@../AGENTS.md\n");
   expect(rel(home, instructionChain(d, roots))).toEqual(["d/AGENTS.md"]);
+  // Each is listed with the file it is one with, for the prompt's one line.
+  expect(sameOf(home, instructionChain(d, roots))).toEqual(["d/CLAUDE.local.md=imports d/AGENTS.md", "d/.claude/AGENTS.md=imports d/AGENTS.md"]);
+  expect(sameOf(home, instructionChain(c, roots))).toEqual(["c/AGENTS.md=c/CLAUDE.md"]);
   // Its own words keep it.
   put(join(d, "CLAUDE.local.md"), "@AGENTS.md\nAnd mine.\n");
   expect(rel(home, instructionChain(d, roots))).toEqual(["d/CLAUDE.local.md", "d/AGENTS.md"]);

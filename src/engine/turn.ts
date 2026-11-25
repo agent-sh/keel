@@ -22,7 +22,8 @@ import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBloc
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { BRANCH_NOTE } from "../safety/branch-note.ts";
 import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
-import { instructionChain, nativeContext, nativeMemory, nativeRoots, OnceSet, withoutPorted, type Native } from "./native-memory.ts";
+import { instructionChain, nativeContext, nativeMemory, nativeRoots, OnceSet, withoutPorted, type Native, type Same } from "./native-memory.ts";
+import type { LineSource } from "./sections.ts";
 import { testBuild } from "../core/build.ts";
 import { BuildPins, coldReason, pinAged } from "./build-pin.ts";
 import { SCHEMA_RESENDS, ToolFit, wireOf as fitWireOf } from "./tool-fit.ts";
@@ -318,9 +319,10 @@ export const instructionFilter: { file?: (path: string, text: string) => string 
 // `marks`: every path looked for is noted with its mark on disk, before it is
 // looked at (src/engine/instruction-marks.ts).
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-export type InstructionEntry = { path: string; scope: "owner" | "parent" | "folder"; limit?: number; of?: "claude" | "codex" };
-export function instructionPaths(cwd: string, marks?: Marks): InstructionEntry[] {
-  const once = new OnceSet();
+export type InstructionEntry = { path: string; scope: "owner" | "parent" | "folder"; limit?: number; of?: "claude" | "codex"; same?: Same };
+// `o.covered`: also the files one with another the chain holds (their `same` says which); `o.once`: the set the chain fills.
+export function instructionPaths(cwd: string, marks?: Marks, o: { covered?: boolean; once?: OnceSet } = {}): InstructionEntry[] {
+  const once = o.once ?? new OnceSet();
   const found: InstructionEntry[] = [];
   const own = join(configDir(), "AGENTS.md");
   noteMark(marks, own);
@@ -328,7 +330,8 @@ export function instructionPaths(cwd: string, marks?: Marks): InstructionEntry[]
   try { ownText = existsSync(own) ? readFileSync(own, "utf8") : undefined; } catch { ownText = null; }
   if (ownText !== undefined) { once.add(own, ownText); found.push({ path: own, scope: "owner" }); }
   const roots = nativeRoots();
-  return [...found, ...instructionChain(cwd, roots, { marks, once, homes: [homeDir(), roots.home], skip: withheldHome() })];
+  const all = [...found, ...instructionChain(cwd, roots, { marks, once, homes: [homeDir(), roots.home], skip: withheldHome() })];
+  return o.covered ? all : all.filter((f) => f.same === undefined);
 }
 
 // A `@path` line of a file outside a repository brings that file in (up to
@@ -342,7 +345,7 @@ export function expandImports(text: string, from: string, depth = 0, seen = new 
 
 // Where a line of an expanded text is on disk: each line of the result starts at `at`, and is line
 // `line` of `path` (a file the first imports, or the first itself).
-export type LineSource = { at: number; path: string; line: number };
+export type { LineSource };
 export function expandMapped(text: string, from: string, depth = 0, seen = new Set([real(from)]), marks?: Marks): { text: string; lines: LineSource[] } {
   const lines: LineSource[] = [];
   const own = text.split("\n");
@@ -414,18 +417,37 @@ export function cutInstructions(path: string, text: string, limit: number, lines
   return `${kept.trimEnd()}\n\n${said} ${where})`;
 }
 
+// The whole chain's bound: a quarter of the model's window, at four bytes a token. The chain is
+// context every step of the session pays for, and the session's own work gets what is left before
+// compaction at COMPACT_SHARE of the window (85%): past a quarter, under 60% of the window is the
+// work's. The files are filled in the chain's order, outermost first, as Codex fills its
+// project_doc_max_bytes from the repository root down; a file past the bound is cut with the line that
+// says where its rest is, and the files after it are named with that line alone.
+export function chainLimit(window?: number): number {
+  const w = window && window > 0 ? window : 200_000;
+  return Math.floor((w * 4) / 4);
+}
+
 // `window`: the context window of the model the prompt is for, in tokens (instructionLimit).
 // `marks`: each file's mark on disk, noted before it is read (src/engine/instruction-marks.ts).
+// Each file's text with its imports brought in is carried by the chain's OnceSet: a section a later
+// file says again is left out of it, with one line naming the file that says it (src/engine/sections.ts).
+// A file the chain holds already is named with one line (`same`).
 export function instructionFiles(cwd: string, window?: number, marks?: Marks): string {
   const whole = instructionLimit(window);
+  let room = chainLimit(window);
   const parts: string[] = [];
-  const files = instructionPaths(cwd, marks);
-  const seen = new Set(files.map((f) => real(f.path)));
+  const once = new OnceSet();
+  const files = instructionPaths(cwd, marks, { covered: true, once });
+  const seen = new Set(files.filter((f) => f.same === undefined).map((f) => real(f.path)));
   // A harness's user file that is read has no use for the copy Keel's import made of it in the owner's file.
   const own = join(configDir(), "AGENTS.md");
-  const ported = { claude: files.some((f) => f.of === "claude"), codex: files.some((f) => f.of === "codex") };
-  for (const { path: p, limit: room } of files) {
-    const limit = room === undefined ? whole : Math.min(whole, room);
+  const ported = { claude: files.some((f) => f.of === "claude" && f.same === undefined), codex: files.some((f) => f.of === "codex" && f.same === undefined) };
+  for (const { path: p, limit: cap, same } of files) {
+    if (same !== undefined) {
+      parts.push(`# ${p}\n\n(${same.imports ? "It only imports" : "The same as"} ${same.of}, above.)`);
+      continue;
+    }
     let read: string;
     try {
       const held = heldFile(p);
@@ -437,10 +459,21 @@ export function instructionFiles(cwd: string, window?: number, marks?: Marks): s
       parts.push(`# ${p}\n\n(This file could not be read: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}. Its instructions are not loaded.)`);
       continue;
     }
+    if (room <= 0) {
+      parts.push(`# ${p}\n\n(Not loaded: the instruction files above fill the room this model's window gives them. Read ${p} with the Read tool before you work on what it may cover.)`);
+      continue;
+    }
     const mapped = rootOf(dirname(p)) ? undefined : expandMapped(read, p, 0, seen, marks);
     const raw = mapped?.text ?? read;
-    const text = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
-    if (text !== null) parts.push(`# ${p}\n\n${cutInstructions(p, text, limit, text !== raw ? null : mapped?.lines)}`);
+    const filtered = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
+    if (filtered === null) continue;
+    const trusted = filtered === raw;
+    const fresh = once.carried.fresh(p, filtered, trusted ? mapped?.lines : undefined);
+    if (!fresh.text.trim()) continue;
+    const limit = Math.min(cap === undefined ? whole : Math.min(whole, cap), room);
+    const body = cutInstructions(p, fresh.text, limit, trusted ? fresh.lines : null);
+    room -= Math.min(fresh.text.length, limit);
+    parts.push(`# ${p}\n\n${body}`);
   }
   return parts.join("\n\n");
 }

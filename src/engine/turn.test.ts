@@ -224,6 +224,58 @@ test("instruction files: each source once, an unreadable one named", async () =>
   }
 });
 
+// The owner's layout: two user files import one shared file, and a third file is a generated copy of it
+// with a header and a section of its own. The shared text rides once; the copy keeps its own section.
+test("instruction files: a section another file already carries is left out where it stands", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { instructionFiles } = await import("./turn.ts");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? `${process.env.HOME}/.cache/tmp`, "inst-"));
+  try {
+    const rules = Array.from({ length: 40 }, (_, i) => `- shared rule ${i}: a sentence of the shared rules.`).join("\n");
+    const shared = `# Shared rules\n\n${rules}\n\n## Testing\n\n- TEST-RULE: a test proves what failed before.\n`;
+    writeFileSync(join(root, "shared.md"), shared);
+    mkdirSync(join(root, "a/b"), { recursive: true });
+    writeFileSync(join(root, "a/CLAUDE.md"), "@../shared.md\n\n## Claude only\n\n- CLAUDE-ONLY\n");
+    writeFileSync(join(root, "a/AGENTS.md"), `<!-- Generated from shared.md. -->\n${shared}\n## Codex only\n\n- CODEX-ONLY\n`);
+    writeFileSync(join(root, "a/b/AGENTS.md"), "INNER\n");
+    const text = instructionFiles(join(root, "a/b"));
+    expect(text.match(/shared rule 7:/g)?.length).toBe(1);
+    expect(text.match(/TEST-RULE/g)?.length).toBe(1);
+    for (const own of ["CLAUDE-ONLY", "CODEX-ONLY", "INNER", "## Codex only"]) expect(text).toContain(own);
+    expect(text).toContain(`(Left out here: 2 sections the same as in ${join(root, "shared.md")}, above.)`);
+    // A heading goes with its section: the copy's "## Testing" went with its rule.
+    expect(text.match(/## Testing/g)?.length).toBe(1);
+  } finally {
+    rmSync(join(root, ""), { recursive: true, force: true });
+  }
+});
+
+// The whole chain is bounded by a quarter of the window: the files past it are named, not loaded.
+test("instruction files: the chain's bound names the files past it", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { instructionFiles, chainLimit } = await import("./turn.ts");
+  expect(chainLimit(200_000)).toBe(200_000);
+  expect(chainLimit(32_000)).toBe(32_000);
+  const root = mkdtempSync(join(process.env.TMPDIR ?? `${process.env.HOME}/.cache/tmp`, "inst-"));
+  try {
+    const big = (tag: string) => Array.from({ length: 300 }, (_, i) => `- ${tag} ${i}: a line of rules of this folder.`).join("\n") + "\n";
+    mkdirSync(join(root, "a/b/c"), { recursive: true });
+    writeFileSync(join(root, "a/AGENTS.md"), big("OUTER"));
+    writeFileSync(join(root, "a/b/AGENTS.md"), big("MIDDLE"));
+    writeFileSync(join(root, "a/b/c/AGENTS.md"), big("INNER"));
+    // A 32K window: 8,000 characters a file (instructionLimit), 32,000 for the chain.
+    const text = instructionFiles(join(root, "a/b/c"), 32_000);
+    expect(text).toContain("OUTER 0:");
+    expect(text.length).toBeLessThan(32_000 + 2_000);
+    const all = instructionFiles(join(root, "a/b/c"), 8_000);
+    expect(all).toContain(`# ${join(root, "a/b/c/AGENTS.md")}\n\n(Not loaded: the instruction files above fill the room`);
+  } finally {
+    rmSync(join(root, ""), { recursive: true, force: true });
+  }
+});
+
 // A call the restart cut gets what its approval card recorded: the owner's
 // denial and reason, "did not run" for a card nothing answered, and "may have
 // partly run" only for an allowed call or one with no card. Also state from

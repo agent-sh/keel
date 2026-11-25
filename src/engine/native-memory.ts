@@ -61,9 +61,12 @@ import type { Family } from "../providers/types.ts";
 import { memoryHead, neutralMemory, MEMORY_BYTES, MEMORY_LINES } from "../automation/agent-memory.ts";
 import { noteMark, type Marks } from "./instruction-marks.ts";
 import { CLAUDE_AGENTS_FILES, CLAUDE_FILES, CODEX_FILES } from "../safety/instruction-files.ts";
+import { Carried, norm } from "./sections.ts";
 
 export type Roots = { home: string; claude: string; codex: string };
-export type Entry = { path: string; scope: "owner" | "parent" | "folder"; limit?: number };
+// `same`: a file the chain holds already (the path it is one with, or the files it only imports): listed, not read again.
+export type Same = { of: string; imports: boolean };
+export type Entry = { path: string; scope: "owner" | "parent" | "folder"; limit?: number; same?: Same };
 
 // Where the harnesses keep their files for this daemon: the owner's, or the
 // scratch home a daemon that may not read his was given (core/paths.ts).
@@ -121,34 +124,45 @@ export function folderFiles(dir: string, fallback: readonly string[] = [], marks
 
 // How the chain tells that two files are one: the same file on disk (a link, either kind: its device
 // and inode), the same text (spacing and line ends aside), or a file that only imports files the chain
-// holds or will hold (a CLAUDE.md that is "@AGENTS.md" beside the AGENTS.md it imports).
+// holds or will hold (a CLAUDE.md that is "@AGENTS.md" beside the AGENTS.md it imports). What a file
+// brings in by its imports is carried too (`carried`, filled as the prompt expands each file): a
+// section another file says again is left out of it where it stands (src/engine/sections.ts).
 export class OnceSet {
-  private ids = new Set<string>();
-  private texts = new Set<string>();
-  private paths = new Set<string>();
+  private ids = new Map<string, string>();
+  private texts = new Map<string, string>();
+  readonly carried = new Carried();
   static id(p: string): string { try { const s = statSync(p); return `${s.dev}:${s.ino}`; } catch { return real(p); } }
-  static norm(t: string): string { return t.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").trim(); }
-  // `beside`: the files the chain takes with this one (its folder's): an import of one of them is held too.
-  has(p: string, text: string | null, beside: readonly string[] = []): boolean {
-    if (this.ids.has(OnceSet.id(p))) return true;
-    if (text === null) return false;
+  static norm = norm;
+  // The file it is one with (a path held, or the files it only imports), null for an empty file,
+  // undefined for a file of its own. `beside`: the files the chain takes with this one (its folder's): an import
+  // of one of them counts too.
+  sameAs(p: string, text: string | null, beside: readonly string[] = []): Same | null | undefined {
+    const byId = this.ids.get(OnceSet.id(p));
+    if (byId !== undefined) return { of: byId, imports: false };
+    if (text === null) return undefined;
     const n = OnceSet.norm(text);
-    if (!n) return true;
-    if (this.texts.has(n)) return true;
+    if (!n) return null;
+    const byText = this.texts.get(n);
+    if (byText !== undefined) return { of: byText, imports: false };
     // Only imports, each of a file held (or taken with it, and not itself).
-    const near = new Set(beside.filter((b) => b !== p).map(OnceSet.id));
+    const near = new Map(beside.filter((b) => b !== p).map((b) => [OnceSet.id(b), b] as const));
     const lines = n.split("\n").filter((l) => l.trim());
-    return lines.every((l) => {
+    const of: string[] = [];
+    for (const l of lines) {
       const m = /^@(\S+)\s*$/.exec(l.trim());
-      if (!m || m[1]!.startsWith("~")) return false;
+      if (!m || m[1]!.startsWith("~")) return undefined;
       const id = OnceSet.id(join(dirname(p), m[1]!));
-      return id !== OnceSet.id(p) && (this.ids.has(id) || near.has(id));
-    });
+      const held = id === OnceSet.id(p) ? undefined : this.ids.get(id) ?? near.get(id);
+      if (held === undefined) return undefined;
+      of.push(held);
+    }
+    return { of: of.join(", "), imports: true };
   }
+  has(p: string, text: string | null, beside: readonly string[] = []): boolean { return this.sameAs(p, text, beside) !== undefined; }
   add(p: string, text: string | null) {
-    this.ids.add(OnceSet.id(p));
-    this.paths.add(p);
-    if (text !== null) this.texts.add(OnceSet.norm(text));
+    const id = OnceSet.id(p);
+    if (!this.ids.has(id)) this.ids.set(id, p);
+    if (text !== null) { const n = OnceSet.norm(text); if (!this.texts.has(n)) this.texts.set(n, p); }
   }
   // Takes the file when it is not one already held; whether it was taken.
   take(p: string, text: string | null, beside: readonly string[] = []): boolean {
@@ -195,12 +209,19 @@ export function ownerFiles(roots: Roots, marks?: Marks): { path: string; text: s
 export function instructionChain(cwd: string, roots: Roots, o: { marks?: Marks; once?: OnceSet; homes?: readonly string[]; skip?: string | null } = {}): (Entry & { of?: "claude" | "codex" })[] {
   const once = o.once ?? new OnceSet();
   const out: (Entry & { of?: "claude" | "codex" })[] = [];
-  for (const f of ownerFiles(roots, o.marks)) if (once.take(f.path, f.text)) out.push({ path: f.path, scope: "owner", of: f.of });
+  // A file one with another is kept as an entry that says so (`same`), an empty one is not.
+  const put = (e: Entry & { of?: "claude" | "codex" }, text: string | null, beside?: readonly string[]) => {
+    const same = once.sameAs(e.path, text, beside);
+    if (same === undefined) { once.add(e.path, text); out.push(e); }
+    // (The one file again by its own path, as the home's .claude/CLAUDE.md is Claude Code's user file: nothing to say.)
+    else if (same && same.of !== e.path) out.push({ ...e, same });
+  };
+  for (const f of ownerFiles(roots, o.marks)) put({ path: f.path, scope: "owner", of: f.of }, f.text);
   const fallback = codexConfig(roots).fallback;
   for (const d of walk(cwd, o.homes ?? [roots.home], o.skip)) {
     const files = folderFiles(d, fallback, o.marks);
     const paths = files.map((f) => f.path);
-    for (const f of files) if (once.take(f.path, f.text, paths)) out.push({ path: f.path, scope: d === cwd ? "folder" : "parent" });
+    for (const f of files) put({ path: f.path, scope: d === cwd ? "folder" : "parent" }, f.text, paths);
   }
   return out;
 }
