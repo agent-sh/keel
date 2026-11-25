@@ -43,6 +43,10 @@ export function commandsOf(list: unknown): SlashCommand[] {
 }
 
 
+// The first of each value: an agent that states one value twice (two entries for "auto") is one choice, not two
+// rows of one model id in the picker.
+const once = (list: Choice[]): Choice[] => { const seen = new Set<string>(); return list.filter((c) => !seen.has(c.value) && !!seen.add(c.value)); };
+
 // The values of a select, its groups flattened in order.
 function values(options: Json): Choice[] {
   const out: Choice[] = [];
@@ -50,7 +54,7 @@ function values(options: Json): Choice[] {
     if (Array.isArray(o?.options)) out.push(...values(o.options));
     else if (o && typeof o.value === "string") out.push({ value: o.value, name: typeof o.name === "string" && o.name ? o.name : o.value, ...(typeof o.description === "string" && o.description ? { description: o.description } : {}) });
   }
-  return out;
+  return once(out);
 }
 
 // The choices a session setup result states. The first select of a category
@@ -148,7 +152,7 @@ export function listedOf(agent: { id: string; name: string }, c?: AgentChoices):
   const base = { billing: { kind: "subscription" as const, plan: agent.name }, images: true, ...(c?.efforts ? { efforts: c.efforts.options.map((o) => o.value) } : {}) };
   const out: ListedModel[] = [{ model: agent.id, name: agent.name, ...base }];
   const set = pickable(c);
-  for (const o of set?.options ?? []) out.push({ model: `${agent.id}/${o.value}`, name: `${agent.name}: ${o.name}`, ...base });
+  for (const o of once(set?.options ?? [])) out.push({ model: `${agent.id}/${o.value}`, name: `${agent.name}: ${o.name}`, ...base });
   return out;
 }
 

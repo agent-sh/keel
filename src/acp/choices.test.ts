@@ -76,3 +76,12 @@ test("an agent's switches are its boolean options; one that loosens what it may 
   // After a resume that stated nothing the agent's value is not known: the owner's is sent, and a held one is turned off.
   expect(settle(unknownCurrent(c), { switches: { brief: false } }).map((x) => [x.params.configId, x.params.value])).toEqual([["brief", false], ["brave_mode", false]]);
 });
+
+test("a value an agent states twice is one choice and one listed model", () => {
+  const twice = { id: "model", name: "Model", category: "model", type: "select", currentValue: "auto", options: [{ value: "auto", name: "Auto", description: "Let it pick" }, { value: "a", name: "A" }, { value: "auto", name: "Auto" }] };
+  const c = choicesOf({ configOptions: [twice] });
+  expect(c.models?.options).toEqual([{ value: "auto", name: "Auto", description: "Let it pick" }, { value: "a", name: "A" }]);
+  // What was learned before is listed once too.
+  const old = { models: { via: "config" as const, configId: "model", name: "Model", current: "auto", options: [{ value: "auto", name: "Auto" }, { value: "auto", name: "Auto" }] } };
+  expect(listedOf({ id: "ag", name: "Ag" }, old).map((m) => m.model)).toEqual(["ag", "ag/auto"]);
+});
