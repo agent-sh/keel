@@ -9,6 +9,7 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { allHooks } from "./hooks.ts";
+import { patchSettings, settings } from "../admin/settings.ts";
 import { AIM_PART, namedIn, readAim } from "./read-aim.ts";
 import { Engine } from "./turn.ts";
 
@@ -45,8 +46,13 @@ function rig(models = [BIG, SMALL]) {
   };
   const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }), recovered: () => {} } as any, join(dir, "spill"));
   (engine as any).systemOf = async () => ({ text: "A stand-in system prompt.", split: 0 });
-  const run = async (settings = {}, prompt = "Look at the values file and say where v240 is set.") => {
+  const run = async (settings = {}, prompt = "Look at the values file and say where v240 is set.", parent?: string) => {
     const s = store.createSession({ model: BIG.id, workspace: dir, settings });
+    // (An agent: the column is the agents module's, which this rig does not load.)
+    if (parent) {
+      if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+      store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent, s.id);
+    }
     engine.send(s.id, prompt);
     await engine.idle(s.id);
     const result = engine.lineage(s.id).find((e) => e.kind === "tool_result")!.data as any;
@@ -129,4 +135,26 @@ test("which words of a prompt name a file: its path, or its name where a file na
   for (const no of ["the reading module", "reading.tsx is the view", "reading.ts.bak", "pre-reading.ts", "my_reading.ts", "x.reading.ts", "reading.test.ts", ""]) expect(namedIn([no], paths)).toBe(false);
   expect(namedIn(["first", "then reading.ts"], paths)).toBe(true);
   expect(namedIn(["anything"], [])).toBe(false);
+});
+
+test("the owner's defaults: a session he talks to reads through a reader, an agent reads the file until the trial keeps the other way", async () => {
+  const before = { sessions: { ...settings().sessions }, agents: { ...settings().agents } };
+  const r = rig();
+  const reading = "[Compiled reading of values.ts", file = `1\t${line(1)}\n2\t${line(2)}`;
+  try {
+    expect([settings().sessions.read_through, settings().agents.read_through]).toEqual([true, false]);
+    const top = await r.run();
+    expect(top.result.content).toStartWith(reading);
+    // An agent of it: the file. One whose tree a trial's arm set to read through a reader: a reading.
+    expect((await r.run({}, undefined, top.id)).result.content).toStartWith(file);
+    expect((await r.run({ read_through: true }, undefined, top.id)).result.content).toStartWith(reading);
+    // The owner's two switches.
+    expect(patchSettings({ agents: { read_through: true }, sessions: { read_through: false } }).ok).toBe(true);
+    expect((await r.run({}, undefined, top.id)).result.content).toStartWith(reading);
+    expect((await r.run()).result.content).toStartWith(file);
+    expect(patchSettings({ sessions: { read_through: "yes" } }).ok).toBe(false);
+  } finally {
+    patchSettings(before);
+    r.store.db.close();
+  }
 });

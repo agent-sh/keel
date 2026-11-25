@@ -69,3 +69,29 @@ test("a long file is read through the reader; raw is the file; an edit of lines 
   await expect(page.locator('[data-testid="tool-call"][data-tool="Edit"]').nth(1).getByTestId("tool-why")).toContainText("Not applied");
   await shoot(page, "read-through-01-reading-and-held-edit");
 });
+
+// The owner's two switches (Settings > Models): sessions read long files through a small model, agents do not
+// until the trial of it ends with Keep.
+test("the two switches: sessions on, agents off, each saved in the daemon's settings", async ({ page, request }) => {
+  const now = async () => { const s = (await (await request.get("/api/settings")).json()).settings; return [s.sessions.read_through, s.agents.read_through]; };
+  const before = (await (await request.get("/api/settings")).json()).settings;
+  try {
+    await request.patch("/api/settings", { data: { sessions: { read_through: true }, agents: { read_through: false } } });
+    await page.goto("/settings/models");
+    const sessions = page.getByTestId("read-through-sessions"), agents = page.getByTestId("read-through-agents");
+    await expect(sessions).toHaveAttribute("aria-checked", "true");
+    await expect(agents).toHaveAttribute("aria-checked", "false");
+    await page.getByTestId("read-through-agents-row").scrollIntoViewIfNeeded();
+    await shoot(page, "read-through-02-switches");
+    await sessions.click();
+    await expect(sessions).toHaveAttribute("aria-checked", "false");
+    await expect.poll(now).toEqual([false, false]);
+    await agents.click();
+    await expect(agents).toHaveAttribute("aria-checked", "true");
+    await expect.poll(now).toEqual([false, true]);
+    // A value that is not a switch's is refused.
+    expect((await request.patch("/api/settings", { data: { sessions: { read_through: "yes" } } })).status()).toBe(400);
+  } finally {
+    await request.patch("/api/settings", { data: { sessions: before.sessions, agents: before.agents } });
+  }
+});

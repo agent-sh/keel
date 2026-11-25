@@ -3,7 +3,9 @@
 // reader's compiled reading (src/tools/reading.ts). The owner's setting is the section
 // `agents` (settings.json); a trial's arm sets the session setting on the tree's first agent, and every
 // agent under it reads that one. Only agents are covered: a session the owner talks to keeps the window
-// share and the cache plan it always had, and reads through a reader unless its own setting says otherwise.
+// share and the cache plan it always had, and reads through a reader by the owner's setting for sessions
+// (`sessions.read_through`, on) unless its own setting says otherwise. An agent reads files itself until
+// the trial of the other way ends with Keep, which sets `agents.read_through`.
 import { registerSettings, settings } from "../admin/settings.ts";
 import type { Session, SessionSettings } from "../core/types.ts";
 import { COMPACT_SHARE } from "./compact.ts";
@@ -12,13 +14,16 @@ import { COMPACT_SHARE } from "./compact.ts";
 // summary leave too little room for a step in a small window, and the agent would compact at every step.
 export const MIN_WINDOW_SHARE = 0.3;
 
-export const AGENT_DEFAULTS = { window_share: null as number | null, cache_plan: true, read_through: true };
+export const AGENT_DEFAULTS = { window_share: null as number | null, cache_plan: true, read_through: false };
 const DEFAULTS = AGENT_DEFAULTS;
 const check = (v: any) =>
   v.window_share !== null && !(typeof v.window_share === "number" && v.window_share >= MIN_WINDOW_SHARE && v.window_share <= 1) ? `window_share is a share of the model's window from ${MIN_WINDOW_SHARE} to 1, or null for the usual ${COMPACT_SHARE}`
   : typeof v.cache_plan !== "boolean" ? "cache_plan is true or false"
   : typeof v.read_through !== "boolean" ? "read_through is true or false" : undefined;
 registerSettings("agents", DEFAULTS, check);
+// What a session the owner talks to does by default: its long file reads come back as a reader's compiled reading.
+export const SESSION_DEFAULTS = { read_through: true };
+registerSettings("sessions", SESSION_DEFAULTS, (v) => (typeof v.read_through !== "boolean" ? "read_through is true or false" : undefined));
 
 const agents = (): typeof DEFAULTS => settings().agents;
 
@@ -46,7 +51,8 @@ export function cachePlanOn(s: Session, parentOf: (id: string) => Session | unde
 }
 
 // Whether the session's file reads come back as a reader's compiled reading (src/tools/reading.ts): its own
-// setting or the nearest one up its tree, else the owner's default for agents; every other session reads so.
+// setting or the nearest one up its tree, else the owner's default: for an agent `agents.read_through`, for a
+// session the owner talks to `sessions.read_through`.
 export function readThrough(s: Session, parentOf: (id: string) => Session | undefined): boolean {
-  return up("read_through", s, parentOf) ?? (s.parent_id ? agents().read_through : true);
+  return up("read_through", s, parentOf) ?? (s.parent_id ? agents().read_through : settings().sessions.read_through);
 }

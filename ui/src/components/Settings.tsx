@@ -10,6 +10,7 @@ import { settingsFind } from "../lib/settings-find.macro.ts" with { type: "macro
 import { findSettings } from "../lib/settings-match.ts";
 import { everyCommand, composing } from "../lib/keys.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
+import { ReadThrough } from "./ReadThrough.tsx";
 import { SmallModels } from "./SmallModels.tsx";
 import { NewModelCards } from "./NewModels.tsx";
 import { RouteChange } from "./RouteChange.tsx";
@@ -144,6 +145,7 @@ function Models() {
         >
           <SmallModels />
         </SettingRow>
+        <ReadThrough />
         <SettingRow label="Listings" hint={`${models.length} models from ${byProvider.length} providers, as each provider lists them.`}>
           <button
             type="button"

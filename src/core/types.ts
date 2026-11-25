@@ -167,8 +167,8 @@ export type SessionSettings = {
   compact_share?: number;
   cache_plan?: boolean;
   // Whether a file read comes back as a reader model's compiled reading (src/tools/reading.ts): for the session and
-  // the tree under it (a trial's arm sets it on the tree's first agent); absent = on, and for an agent the owner's
-  // `agents.read_through`.
+  // the tree under it (a trial's arm sets it on the tree's first agent); absent = the owner's `sessions.read_through`
+  // (on), and for an agent the owner's `agents.read_through` (off until its trial ends with Keep).
   read_through?: boolean;
   // An agent told at a run of read-only steps what each step costs and what else there is (src/engine/read-run.ts):
   // "batch" (parallel reads), "reader" (that, and an Explore agent on the reader model) or "code" (that, and run_code

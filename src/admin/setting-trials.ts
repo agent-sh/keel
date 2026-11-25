@@ -11,7 +11,8 @@
 // - cache_plan: whether an agent's waits get a cache plan (session `cache_plan`; `agents.cache_plan`).
 //   The other arm lets the cache lapse, as before the plan.
 // - read_through: whether an agent's file reads come back as a reader's compiled reading (session
-//   `read_through`; `agents.read_through`; src/tools/reading.ts). The other arm reads the files itself.
+//   `read_through`; `agents.read_through`, off until this trial ends with Keep; src/tools/reading.ts). The
+//   other arm reads long files through a reader.
 import { MIN_WINDOW_SHARE } from "../engine/agent-defaults.ts";
 import { COMPACT_SHARE } from "../engine/compact.ts";
 import { FAMILIES_PER_ARM, type Experiment } from "./experiments.ts";
