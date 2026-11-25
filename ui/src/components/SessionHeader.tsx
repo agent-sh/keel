@@ -434,7 +434,6 @@ export function SessionHeader({ session, bar }: { session: Session; bar?: boolea
       </div>
       {!crowded && <PanelsButton session={session} />}
       <SessionMenu tools={folded} live={live} list={list} changed={later} acts={acts} button={menuButton} said={said} />
-      {session.phase === "working" && <div className="k-wake-line" aria-hidden="true" data-testid="wake-line" />}
     </header>
   );
 }

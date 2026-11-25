@@ -671,8 +671,6 @@
 /* The paper under a pane's header (tools that lie over the header fade into it). */
 .k-station { --k-head-bg: var(--bg); }
 .k-station[data-helm] { --k-head-bg: var(--raised); }
-.k-station[data-watch="need"]:not([data-helm]) { --k-head-bg: color-mix(in oklch, var(--st-need) 7%, var(--bg)); }
-.k-station[data-helm][data-watch="need"] { --k-head-bg: color-mix(in oklch, var(--st-need) 7%, var(--raised)); }
 /* The pane worked in, among several: its lighter paper, its tools in its bar and its title in
    ink; the other panes' titles step back to the muted ink. No rule or edge is drawn across a
    pane's top or down its side: one there met the rail as a short light line in the dark theme. */
@@ -813,14 +811,8 @@ html[data-resizing] iframe { pointer-events: none; }
    the paper of the bar, and only the pane that takes the keys draws it, in ink (the rule of the aimed
    pane, above). Its height is the same in every state, so the bars end on one line. */
 .k-band { height: var(--k-band-h); flex-shrink: 0; position: relative; overflow: hidden; background-color: transparent; }
-/* The header's working line: the same breath, in opacity. */
-.k-wake-line { position: absolute; inset: auto 0 -1px; height: 2px; pointer-events: none; background: var(--st-wait); animation: k-breathe-o 3.2s ease-in-out infinite; }
-@keyframes k-breathe-o { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-/* A turn held on the owner (an approval, a question) is not at work: the line goes quiet. */
-.k-station:is([data-watch="need"], [data-watch="wait"]) .k-wake-line { display: none; }
-/* Needs you: a tinted head. Still, no blinking. Neither it nor a failed head draws at the pane's edges: an outline or an edge there stood beside the rail's own
-   hairline as a second, lighter line (top-edge.spec.ts). */
-.k-station[data-watch="need"] .k-station-head { background: color-mix(in oklch, var(--st-need) 7%, transparent); }
+/* A head says its state by its dot and word alone: no tint, no rule across it. A tinted head under the band met the rail
+   as a short light line, and a breathing rule said again what the dot says (top-edge.spec.ts). */
 
 /* At least the top bar's height under the band, whatever the band's: its hairline is on the line where the rail's brand row ends. */
 .k-station-head { position: relative; display: flex; flex-direction: column; justify-content: center; min-height: calc(var(--spacing-bar) - var(--k-band-h)); padding: 0.75rem 1.125rem 0.6875rem 1.375rem; border-bottom: 1px solid var(--line); flex-shrink: 0; }
@@ -975,7 +967,6 @@ html[data-resizing] iframe { pointer-events: none; }
      (SessionHeader.tsx, TOOLS_SHARE), and the head takes the rest. */
   .k-station .k-top-in > .k-session-header { position: static; flex: 0 1 auto; max-width: min(44rem, 50%); min-width: 0; height: auto; padding-left: 0; container-type: normal; }
   /* (No container of its own here: one would size it by nothing. Its usage figure asks the bar, which is wide.) */
-  .k-station[data-watch="need"] .k-top-in > .k-session-header { background: color-mix(in oklch, var(--st-need) 7%, transparent); }
 }
 
 /* A pane narrower than the bar's measure, on a desk: the head is still the brand row's height (the title
@@ -1465,7 +1456,6 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-station-identity .k-station-rest { flex: 1 1 var(--k-state-room); }
   .k-station-head { --k-state-room: 6.5rem; }
   .k-station:not([data-question]) .k-top-in > .k-session-header { position: static; flex: 0 1 auto; max-width: 60%; min-width: 0; height: auto; padding-left: 0; padding-right: 0.25rem; border-bottom: 0; container-type: normal; }
-  .k-station[data-watch="need"] .k-top-in > .k-session-header { background: color-mix(in oklch, var(--st-need) 7%, transparent); }
   .k-station[data-card] .k-top-in > .k-list-button { display: none; }
   /* A large text size on a narrow screen (SessionHeader: useCrowded): the bar's buttons stand as close as fingers allow and
      the Panels button is in the menu, so the title has the width. */
