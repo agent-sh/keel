@@ -1793,5 +1793,37 @@ for (const size of SIZES) {
         if (id) await drop(request, id);
       }
     });
+    // MOB-S110
+    test("the helper's look at an error is read whole on a phone in each state, and the panel's filter is a finger's size", async ({ browser, request }) => {
+      const tag = `look${Date.now().toString(36)}${size.width}`;
+      const causes = ["keel", "setup", "held", "failed"];
+      for (const c of causes) await request.post("/api/errors", { data: { message: `TypeError ${tag} ${c}: undefined is not an object (evaluating 'call.input')`, context: { tool: "Bash" } } });
+      const mine = ((await (await request.get("/api/errors?resolved=0")).json()).errors as { id: string; message: string }[]).filter((e) => e.message.includes(tag));
+      expect(mine.length).toBe(4);
+      const idOf = (c: string) => mine.find((e) => e.message.includes(` ${c}:`))!.id;
+      const base = { ts: Date.now(), title: "TypeError", model: "scripted:stand-in", cost: 0.0042, tokens: 1840 };
+      const looks = [
+        { ...base, cause: `${tag}-keel`, state: "done", blame: "keel", error_ids: [idOf("keel")], what: "The tool runner read a field of a call that was never made. That is a bug in Keel.", task: "Fix the crash in the tool runner: it reads a field of an undefined call. Add a test that fails before the fix." },
+        { ...base, cause: `${tag}-setup`, state: "done", blame: "setup", error_ids: [idOf("setup")], what: "The provider's key is not set, so the request was refused.", step: "Add the key for the provider in Settings > Providers, then ask again from the session." },
+        { ...base, cause: `${tag}-held`, state: "held", error_ids: [idOf("held")] },
+        { ...base, cause: `${tag}-failed`, state: "failed", error_ids: [idOf("failed")], error: "the model did not answer in time" },
+      ];
+      try {
+        for (const scale of [1, 1.5]) {
+          const { ctx, page } = await atScale(browser, size, scale);
+          try {
+            await page.route("**/api/helper/looks", (r) => r.request().method() === "GET" ? r.fulfill({ json: { looks } }) : r.continue());
+            await page.goto("/?errors=1");
+            const panel = page.getByTestId("errors-panel");
+            await expect(panel.getByTestId("helper-look")).toHaveCount(4);
+            expect(await phoneProblems(panel), `the Errors panel with the helper's looks at ${scale * 100}% text`).toEqual([]);
+            for (const t of ["helper-look-task", "helper-look-start", "helper-look-now", "helper-look-again"]) await panel.getByTestId(t).first().scrollIntoViewIfNeeded();
+            await shoot(page, `phone-surfaces-47-helper-look-${size.width}-${scale}`);
+          } finally { await ctx.close(); }
+        }
+      } finally {
+        for (const e of mine) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } });
+      }
+    });
   });
 }

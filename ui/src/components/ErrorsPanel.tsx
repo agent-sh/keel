@@ -365,7 +365,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
             />}
             <div className={cn("ml-auto items-center gap-1 max-md:flex-wrap", tab === "open" && openList.length > 0 ? "flex" : "hidden")}>
             {tab === "open" && !popover && (
-              <label className="flex h-ctl-md items-center gap-1.5 px-1.5 text-caption text-muted">
+              <label className="flex h-ctl-md items-center gap-1.5 px-1.5 text-caption text-muted max-md:h-11">
                 <input type="checkbox" checked={unreadOnly} onChange={(ev) => setUnreadOnly(ev.currentTarget.checked)} className="accent-[var(--accent)]" data-testid="errors-unread-only" />
                 Unread only
               </label>
