@@ -139,9 +139,17 @@ test("the rail and a pinned pane meet in one clean top edge, the head and its to
     await expect(second).toHaveAttribute("data-station", other.id);
     await page.mouse.move(1000, 700);
     await expect(page.getByTestId("station-head")).toHaveCount(2);
-    const ends = await page.getByTestId("station-head").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().bottom)));
-    for (const end of ends) expect(Math.abs(end - (brand.y + brand.height)), `panes end at ${ends.join(", ")}, the brand row at ${brand.y + brand.height}`).toBeLessThanOrEqual(1);
+    // Compare in one layout: a notice above the workbench moves both down.
+    const ends = await page.getByTestId("station-head").evaluateAll((els) => {
+      const edge = document.querySelector(".k-rail-brand")!.getBoundingClientRect().bottom;
+      return els.map((e) => Math.abs(e.getBoundingClientRect().bottom - edge));
+    });
+    for (const end of ends) expect(end, "a pane and the brand row end apart").toBeLessThanOrEqual(1);
     await shoot(page, "top-edge-04-two-panes");
+    // A drop activates its destination, and reducing the pane count keeps the active pane.
+    await expect(second).toHaveAttribute("data-helm", "true");
+    await head.getByTestId("station-word").click();
+    await expect(pane).toHaveAttribute("data-helm", "true");
     await setPanes(page, 1);
   } finally {
     await request.delete(`/api/sessions/${other.id}`);
