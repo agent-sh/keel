@@ -321,8 +321,9 @@ export class CodexApp {
       // Read again right before the child starts: another process may have taken the thread since.
       const holder = this.d.outside.holderNow(sessionId);
       if (holder && holder.kind !== "free" && holder.kind !== "keel") return this.set(id, "failed", { said: `${holderSaid(holder, "Codex")}: it did not go` });
-      r = this.begin(sessionId);
-      if (!r) return this.set(id, "failed", { said: "its rollout is no longer where it was" });
+      const begun = this.begin(sessionId);
+      if (typeof begun === "string") return this.set(id, "failed", { said: begun });
+      r = begun;
     }
     const run = r;
     if (!(await run.ready)) {
@@ -352,17 +353,19 @@ export class CodexApp {
     }
   }
 
-  // The child for a turn: started, initialized and resumed on the thread (ready says whether it is).
-  private begin(sessionId: string): Run | undefined {
+  // The child for a turn: started, initialized and resumed on the thread (ready says whether it is); else why not.
+  private begin(sessionId: string): Run | string {
     const row = this.d.outside.row(sessionId);
     const bin = this.d.bin();
-    if (!row || !bin || !existsSync(row.path)) return undefined;
+    if (!row || !bin || !existsSync(row.path)) return "its rollout is no longer where it was";
     const { head } = headTail(row.path, 64 * 1024);
     const ctx = lastRecord(row.path, "turn_context");
     const f = threadFacts(head, ctx ? [ctx] : []);
     const home = this.d.home();
     const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
-    const cwd = isDir(f.cwd) ? f.cwd! : homeDir();
+    // The thread's folder is gone (removed, a worktree cleaned up): Codex would work in another one.
+    if (f.cwd && !isDir(f.cwd)) return `its folder ${f.cwd} is gone: Codex would work somewhere else. It did not go`;
+    const cwd = f.cwd ?? homeDir();
     // The owner's own coding agent, as an ACP agent is: the whole environment (it signs in from it), with the Codex
     // home the mirror reads.
     const conn = new AcpConnection([bin, "app-server"], { cwd, env: { CODEX_HOME: home } }, (m) => this.d.trouble(new Error(m), "codex app-server"));
@@ -377,7 +380,7 @@ export class CodexApp {
         conn.notify("initialized", undefined);
         await conn.request("thread/resume", {
           threadId: run.threadId, excludeTurns: true,
-          ...(f.provider ? { modelProvider: f.provider } : {}), ...(f.cwd && isDir(f.cwd) ? { cwd: f.cwd } : {}),
+          ...(f.provider ? { modelProvider: f.provider } : {}), ...(f.cwd ? { cwd: f.cwd } : {}),
           ...(f.approval ? { approvalPolicy: f.approval } : {}), ...(f.sandbox ? { sandbox: f.sandbox } : {}),
         });
         this.d.outside.retell(sessionId);

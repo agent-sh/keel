@@ -164,6 +164,18 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   }, 30_000);
 
+  test("a thread whose folder is gone is not resumed elsewhere: its send fails and says why", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      rmSync(r.cwd, { recursive: true, force: true });
+      r.app().send(s.id, "fix the build", "k1");
+      const [failed] = await until(() => { const x = r.app().sends(s.id); return x[0]?.state === "failed" && x; });
+      expect(failed!.said).toBe(`its folder ${r.cwd} is gone: Codex would work somewhere else. It did not go`);
+      expect(r.app().ours(s.id)).toBe(false);
+    } finally { r.done(); }
+  });
+
   test("a file change is the gate's one-call card: the owner's alone, showing the diff Codex will write", async () => {
     const r = rig({ realGate: true });
     try {
