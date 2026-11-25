@@ -3,7 +3,8 @@
 // ("end"). A turn's diff is start..end; a rewind puts files back as they were
 // at a turn's start, and skips files changed outside the session's turns
 // since (the owner's or another session's edits) unless told otherwise.
-import { lstatSync, mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import { detached, type ErrorTracker } from "../core/errors.ts";
@@ -71,17 +72,20 @@ function budget(root: string): number {
     return 10 * 1024 ** 3;
   }
 }
-function sizeOf(dir: string): number {
+// The bytes under a folder. The store holds a shadow repository of every folder worked in, tens of
+// thousands of entries: walked with the sync calls this held the loop for most of a second at each pass.
+// The calls here run on the file thread pool, a folder's entries together.
+export async function sizeOf(dir: string): Promise<number> {
   let n = 0;
-  const walk = (d: string) => {
+  const walk = async (d: string): Promise<void> => {
     let names: string[] = [];
-    try { names = readdirSync(d); } catch { return; }
-    for (const x of names) {
+    try { names = await readdir(d); } catch { return; }
+    await Promise.all(names.map(async (x) => {
       const p = join(d, x);
-      try { const st = lstatSync(p); if (st.isDirectory()) walk(p); else n += st.size; } catch {}
-    }
+      try { const st = await lstat(p); if (st.isDirectory()) await walk(p); else n += st.size; } catch {}
+    }));
   };
-  walk(dir);
+  await walk(dir);
   return n;
 }
 
@@ -329,13 +333,13 @@ export class Checkpoints {
     await gcAll();
     // Over the budget: the oldest tenth goes, until it fits.
     const cap = budget(this.root);
-    let bytes = sizeOf(this.root);
+    let bytes = await sizeOf(this.root);
     for (let i = 0; i < 6 && bytes > cap; i++) {
       const n = Math.max(1, Math.ceil((db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM checkpoints WHERE tree != ''").get()?.n ?? 0) / 10));
       removed += db.query("UPDATE checkpoints SET tree = '' WHERE id IN (SELECT id FROM checkpoints WHERE tree != '' ORDER BY created LIMIT ?)").run(n).changes;
       removed += settle();
       await gcAll(true); // only a full pass gives back what the let-go trees held
-      bytes = sizeOf(this.root);
+      bytes = await sizeOf(this.root);
     }
     return { removed, bytes };
   }
