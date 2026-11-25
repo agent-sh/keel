@@ -85,8 +85,11 @@ export function writeCustom(agents: Record<string, CustomAgent>, path = agentsPa
 // How long a probe of an agent's choices is given: its start, initialize and
 // session/new. An agent run through npx or uvx downloads its package on its
 // first start, which takes a minute or more on a slow link; past this the
-// probe is a failure, kept until the agent's program changes.
+// probe is a failure. A failure holds until the agent's program changes or RETRY_MS
+// passes: the owner signs an agent in, or its package finishes downloading, with no
+// change to the program's file, and its models should then appear on their own.
 const PROBE_MS = 180_000;
+export const RETRY_MS = 10 * 60_000;
 const COMMANDS_GRACE_MS = 1_000;
 
 // Which program an agent is now: its command, arguments and the command's
@@ -104,6 +107,7 @@ export class AcpAgents {
   private known: Record<string, Learned> = {};
   private queue: AcpAgent[] = [];
   private probing = false;
+  private asking?: string; // the agent being probed now
   error?: string;
   // Told when an agent's choices changed (the route lists the provider again).
   onLearned?: () => void;
@@ -151,15 +155,21 @@ export class AcpAgents {
   // process of its own).
   ask(agents: AcpAgent[]) {
     // (One learned before commands were kept is asked once more for them.)
-    for (const a of agents) if (a.run && (this.known[a.id]?.key !== programKey(a.run) || (!this.known[a.id]?.error && !this.known[a.id]?.commands)) && !this.queue.some((q) => q.id === a.id)) this.queue.push(a);
+    // (One whose last probe failed is asked again after RETRY_MS.)
+    const now = Date.now();
+    for (const a of agents) {
+      const k = this.known[a.id];
+      if (a.run && (k?.key !== programKey(a.run) || (!k?.error && !k?.commands) || (k?.error && now - k.at >= RETRY_MS)) && this.asking !== a.id && !this.queue.some((q) => q.id === a.id)) this.queue.push(a);
+    }
     if (!this.probing) void this.drain();
   }
 
   private async drain() {
     this.probing = true;
     try {
-      for (let a = this.queue.shift(); a; a = this.queue.shift()) await this.probe(a);
+      for (let a = this.queue.shift(); a; a = this.queue.shift()) { this.asking = a.id; await this.probe(a); }
     } finally {
+      this.asking = undefined;
       this.probing = false;
     }
   }
