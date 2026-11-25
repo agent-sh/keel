@@ -4,7 +4,8 @@ import "./lib/shell.ts";
 import "./lib/frames.ts";
 import "./lib/tips.ts";
 import { createRoot } from "react-dom/client";
-import { App } from "./App.tsx";
+import { App, firstView } from "./App.tsx";
+import { firstDraw } from "./lib/preload.ts";
 import "./features/safety.tsx";
 import "./features/drive.tsx";
 import "./features/voice.tsx";
@@ -31,6 +32,9 @@ import "./features/shell.ts";
 import "./features/presses.tsx";
 import "./features/speech.tsx";
 
+// The first draw waits this long at most for the code the first view needs; past it the page draws what it has.
+const FIRST_DRAW_MS = 600;
+
 // Install metadata. Added here, not in index.html, because the bundler tries
 // to resolve every link in the page as a file to bundle.
 for (const [rel, href, extra] of [
@@ -45,4 +49,4 @@ if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+void firstDraw(firstView, FIRST_DRAW_MS).then(() => createRoot(document.getElementById("root")!).render(<App />));

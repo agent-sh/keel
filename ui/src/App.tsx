@@ -28,7 +28,7 @@ import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
 import { focusApproval } from "./lib/automation.ts";
 import { getUI, phone, savePref, setUI, useUI } from "./lib/ui.ts";
-import { preloadSettled } from "./lib/preload.ts";
+import { chunked, preloadSettled } from "./lib/preload.ts";
 
 // Overlays and Settings load on first use; the first page carries the shell only.
 const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ default: m.Palette })));
@@ -39,15 +39,20 @@ const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) =
 const PageFind = lazy(() => import("./components/FindBar.tsx").then((m) => ({ default: m.PageFind })));
 // The incident band is drawn only while an incident is open: its code comes with the first one.
 const IncidentBand = lazy(() => import("./components/IncidentBand.tsx").then((m) => ({ default: m.IncidentBand })));
-// The list of sessions is its own chunk. A wide window draws it at once, so it is fetched with the page, as
-// the bridge is; a phone keeps it in a drawer that is closed at the start, so its code comes once the page
-// has settled, and at the press that opens the drawer if that is sooner.
-const loadSidebar = () => import("./components/Sidebar.tsx");
-const Sidebar = lazy(() => loadSidebar().then((m) => ({ default: m.Sidebar })));
-if (phone()) preloadSettled(loadSidebar);
-else void loadSidebar();
-// The bridge (stations, sessions) is its own chunk, fetched with the page.
-const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
+// The list of sessions is its own chunk. A wide window draws it at its first view, so it is fetched with the
+// page and the first draw waits for it (see `firstView`); a phone keeps it in a drawer that is closed at the
+// start, so its code comes once the page has settled, and at the press that opens the drawer if that is sooner.
+const sidebarChunk = chunked(() => import("./components/Sidebar.tsx").then((m) => m.Sidebar));
+const Sidebar = sidebarChunk.View;
+// The bridge (stations, sessions) is its own chunk.
+const bridgeChunk = chunked(() => import("./components/Bridge.tsx").then((m) => m.Bridge));
+const Bridge = bridgeChunk.View;
+// What the first draw waits for: on a wide window the list, and the bridge where the first page is not Settings
+// or a project. React shows nothing for a lazy view until its code is in and then holds the content back for
+// 300 ms, so a first draw that does not wait pays that on the desktop.
+export const firstView: Promise<unknown> = phone()
+  ? (preloadSettled(sidebarChunk.start), Promise.resolve())
+  : Promise.all([sidebarChunk.start(), ["settings", "customize", "project"].includes(getUI().route.name) ? undefined : bridgeChunk.start()]);
 const ProjectPage = lazy(() => import("./components/ProjectPage.tsx").then((m) => ({ default: m.ProjectPage })));
 const PanelWindow = lazy(() => import("./components/PanelWindow.tsx").then((m) => ({ default: m.PanelWindow })));
 const Settings = lazy(() => import("./components/Settings.tsx").then((m) => ({ default: m.Settings })));
