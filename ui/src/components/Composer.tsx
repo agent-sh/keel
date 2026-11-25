@@ -7,7 +7,7 @@ import { completedPrompt, loadMcpPrompts } from "../lib/tools-ui.ts";
 import { promptArgAt, type PromptArg } from "../lib/prompt-args.ts";
 import { loadAgentCommands } from "../lib/acp-commands.ts";
 import { fromBlock, MAX_EDGE, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
-import { boxRefused, ownFocus } from "../lib/asks.ts";
+import { boxRefused, ownFocus, takeKeys } from "../lib/asks.ts";
 import { BACKGROUND_KEYS, composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, keepText, keptText, textTaken, typing, type Draft } from "../lib/drafts.ts";
@@ -1297,6 +1297,9 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
   // and how tall the region was. `pin` holds the region's height while a request that came since waits below it.
   const look = useRef<{ card: HTMLElement; top: number; height: number } | null>(null);
   const pin = useRef<{ card: HTMLElement; height: number; count: number } | null>(null);
+  // The requests that wait below the one kept in view, out of sight: how many, and the first of them.
+  const [more, setMore] = useState(0);
+  const next = useRef<HTMLElement | null>(null);
   const pad = () => parseFloat(getComputedStyle(ref.current!).paddingTop);
   const home = () => {
     const el = ref.current!;
@@ -1310,7 +1313,24 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
     stick.current = Math.abs(el.scrollTop - home()) < 4;
     // Where cards are scrolled out of view, that edge fades (styles.css).
     el.dataset.more = [el.scrollTop > 1 && "up", el.scrollHeight - el.scrollTop - el.clientHeight > 1 && "down"].filter(Boolean).join(" ");
+    // While a request is kept in view, those that came below it are said at the region's foot (the fade there gives way to it).
+    const unseen = below();
+    next.current = unseen[0] ?? null;
+    el.toggleAttribute("data-cue", unseen.length > 0);
+    setMore(unseen.length);
     if (!pin.current) watch();
+  };
+  const below = () => {
+    const el = ref.current;
+    const kept = pin.current?.card;
+    if (!el || !kept?.isConnected) return [];
+    const box = el.getBoundingClientRect();
+    return [...wait.current!.querySelectorAll<HTMLElement>(CARDS)].filter((c) => {
+      if (c === kept || kept.contains(c) || !(kept.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) || c.parentElement?.closest(CARDS)) return false;
+      const r = c.getBoundingClientRect();
+      // Less than half of it shows (or of the region, for a taller card).
+      return r.bottom > box.bottom && box.bottom - r.top < Math.min(r.height, box.height) / 2;
+    });
   };
   // The oldest request, when half of it (or of the region, for a taller card) is in view.
   const watch = () => {
@@ -1439,6 +1459,23 @@ function Tray({ children, asks, onAsking }: { children: ReactNode; asks?: ReactN
       <div ref={inner}>
         {children}
         <div ref={wait} className="k-asks" data-testid="composer-asks">{asks}</div>
+        {/* Said while requests wait below the one in view; a press goes to the first of them. */}
+        {more > 0 && (
+          <div className="k-tray-cue">
+            <button
+              type="button"
+              data-testid="tray-more-below"
+              // The press does not take the focus to itself.
+              onMouseDown={(e) => e.preventDefault()}
+              // It goes to the request: the keyboard rests on it (the region keeps the card with the keyboard in view).
+              onClick={() => { const c = next.current; if (!c?.isConnected) return; takeKeys(c, true, false); show(c); }}
+              className="inline-flex items-center gap-1 rounded-sm px-1 text-micro leading-none text-muted hover:text-fg focus-visible:text-fg"
+            >
+              {more} more below
+              <ChevronDown aria-hidden="true" className="size-3" />
+            </button>
+          </div>
+        )}
       </div>
       {/* (Whoever else watches the region's size watches this too: see trayGauge.) */}
       <div ref={gauge} data-tray-gauge="" aria-hidden="true" className="pointer-events-none invisible absolute inset-0" />
