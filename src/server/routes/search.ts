@@ -22,6 +22,10 @@ type Hit = {
 
 export { fold } from "../search-query.ts";
 
+// A session's id as typed: all of it, or a part of ID_PART characters or more (shorter would match half of them).
+export const ID_PART = 6;
+export const holdsId = (id: string, word: string): boolean => word.length >= ID_PART ? id.toLowerCase().includes(word) : word === id.toLowerCase();
+
 // How well a title holds the words asked for, the lower the better: 0, the words as typed, as whole
 // words ("agent 17" in "Agent 17: check the parser", not in "Agent 170"); 1, as typed; 2, each
 // somewhere in the title or the folder.
@@ -118,10 +122,12 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
         const words = fold(q).split(/\s+/).map((w) => w.replace(/"/g, "")).filter(Boolean);
         // A title is no command and has no time of its own: a search limited to a kind of row or a time lists none.
         // With no words, every session in the scope is a title hit, newest first (a state alone lists its sessions).
+        // A session is also found by its id (whole, or a part of ID_PART or more characters) and by its worktree's branch.
+        const branch = store.columnExists("worktrees", "branch") ? "(SELECT w.branch FROM worktrees w WHERE w.session_id = s.id)" : "NULL";
         const titles = limited ? [] : store.db
-          .prepare<any, (string | number)[]>(`SELECT s.id, s.title, s.workspace, s.updated, s.archived, ${pid} AS parent_id FROM sessions s WHERE 1 ${where} ORDER BY s.archived, s.updated DESC`)
+          .prepare<any, (string | number)[]>(`SELECT s.id, s.title, s.workspace, s.updated, s.archived, ${pid} AS parent_id, ${branch} AS branch FROM sessions s WHERE 1 ${where} ORDER BY s.archived, s.updated DESC`)
           .all(...args)
-          .filter((t) => { const hay = fold(`${t.title ?? ""} ${t.workspace}`); return words.every((w) => holdsWord(hay, w)); })
+          .filter((t) => { const hay = fold(`${t.title ?? ""} ${t.workspace} ${t.branch ?? ""}`); return words.every((w) => holdsWord(hay, w) || holdsId(t.id, w)); })
           // The titles that hold the words as they were typed come first, the ones that hold them as
           // whole words before those: among hundreds of agents named alike, the one asked for is not
           // cut off behind the newest dozen that share its words.

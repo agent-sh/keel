@@ -487,3 +487,20 @@ test("a search for the phone or another machine leaves out an outside session", 
   expect(await ids(new Request(`${url}&outside=0`))).toEqual([mine]);
   expect(await ids(new Request(url, { headers: innerHeaders({ local: false, enrolled: true, present: null }, "far box") }))).toEqual([mine]);
 });
+
+// A session is found by its id (all of it, or six characters or more of it) and by its worktree's branch.
+test("a session is found by its id, a part of it of six characters or more, and its worktree branch", async () => {
+  const { store, start } = open();
+  const get = start();
+  const s = store.createSession({ model: "m", workspace: "/work/keel" });
+  store.createSession({ model: "m", workspace: "/work/other" });
+  store.db.run("CREATE TABLE IF NOT EXISTS worktrees (session_id TEXT PRIMARY KEY, repo_root TEXT NOT NULL, path TEXT NOT NULL, branch TEXT NOT NULL, base TEXT NOT NULL, base_commit TEXT NOT NULL, state TEXT NOT NULL, snapshot_ref TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL)");
+  store.db.run("INSERT INTO worktrees VALUES (?, '/r', '/w', 'keel/r8-area-a-x1y2z3', 'main', 'c0', 'ready', NULL, 1, 1)", [s.id]);
+  const titles = async (q: string): Promise<string[]> =>
+    (await (await get(new Request(`http://keel/api/search?q=${encodeURIComponent(q)}&limit=100`))).json()).hits.filter((h: any) => h.kind === "title").map((h: any) => h.session_id);
+  expect(await titles("r8-area-a")).toEqual([s.id]);
+  expect(await titles("x1y2z3")).toEqual([s.id]);
+  expect(await titles(s.id)).toEqual([s.id]);
+  expect(await titles(s.id.slice(-9))).toEqual([s.id]);
+  expect(await titles(s.id.slice(-5))).toEqual([]);
+});
