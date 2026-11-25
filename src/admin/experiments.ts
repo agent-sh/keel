@@ -13,7 +13,9 @@
 // count in the report, but the family is one independent sample: intervals
 // resample families, guards read one value per family, and the cap
 // (`stop.sessions_per_arm`) counts families per arm. The key is stored with
-// the assignment.
+// the assignment. A template whose change only agents see (`unit: "agent"`)
+// draws for each agent a top-level session starts instead, and that agent is
+// the root of its tree: the report, the guards and the cap count agent trees.
 //
 // Live guards stop the experiment on sequential evidence that is valid at
 // every look:
@@ -89,7 +91,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { registerTrialRunning } from "../engine/model-trial.ts";
 import { registerToolsOff } from "../tools/registry.ts";
 import { assignArm } from "./stats.ts";
-import { liveOf, liveRows, turnMetrics, withSuccessors, FAMILY_METRICS, METRICS, TREE_METRICS, report, liveGuards, familyObs, ALPHA, WINDOW_MIN, TURNS, FAMILIES_PER_ARM, worse, type Metric, type Arm, type Experiment, type Decision, type Live, type Report, type Final, type Row, type ArmReport, type Effect } from "./experiment-report.ts";
+import { liveOf, liveRows, turnMetrics, withSuccessors, FAMILY_METRICS, METRICS, unitWord, TREE_METRICS, report, liveGuards, familyObs, ALPHA, WINDOW_MIN, TURNS, FAMILIES_PER_ARM, worse, type Metric, type Arm, type Experiment, type Decision, type Live, type Report, type Final, type Row, type ArmReport, type Effect } from "./experiment-report.ts";
 export * from "./experiment-report.ts";
 
 
@@ -201,12 +203,13 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
         { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
-    // A quarter of the new session trees each: their agents are told nothing at a run of reads, are told to send
-    // them in parallel, are told that and offered an Explore agent on the reader model, or are told that and
-    // offered run_code for the reads they know they need (src/engine/read-run.ts). The last two overlap: compare
-    // them, do not add their savings.
+    // A quarter of the new agent trees each (the unit is an agent a top-level session starts, with the agents under
+    // it): they are told nothing at a run of reads, are told to send them in parallel, are told that and offered an
+    // Explore agent on the reader model, or are told that and offered run_code for the reads they know they need
+    // (src/engine/read-run.ts). The last two overlap: compare them, do not add their savings. Agents are what the
+    // note is about, and a coordinator starts many of them for each session the owner opens.
     id: "read_runs", label: "Agents batch their reads",
-    make: () => ({ name: "Reads in batches", mode: "live", template: "read_runs",
+    make: () => ({ name: "Reads in batches", mode: "live", template: "read_runs", unit: "agent",
       hypothesis: "Agents told at a run of read-only steps what each step costs, and to send the reads they know they need in one step (or to hand a search to an Explore agent on the reader model, or to make them in one run_code program that prints only what matters), cost less per turn and take fewer steps a read, without more errors or failed tool calls.",
       arms: [{ name: "plain" }, { name: "batch", settings: { read_runs: "batch" } }, { name: "reader", settings: { read_runs: "reader" } }, { name: "code", settings: { read_runs: "code" } }], primary: "cost_usd",
       // What a read the agent needed and did not make would show: a turn that fails, more failed calls (an edit
@@ -217,10 +220,12 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
         { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
-    // Half of the new session trees: when their cache has lapsed, old tool results are sent as stubs and the
-    // thinking of earlier turns is left out (src/engine/cold-clear.ts).
+    // Half of the new agent trees (the unit is an agent a top-level session starts, with the agents under it; a
+    // top-level session gets no arm): when their cache has lapsed, old tool results are sent as stubs and the
+    // thinking of earlier turns is left out (src/engine/cold-clear.ts). Agents start about twenty times as often
+    // as the owner opens a session, so the sample size is reached in days, not weeks.
     id: "cold_clear", label: "Clear old results after a lapse",
-    make: () => ({ name: "Clearing at a cold point", mode: "live", template: "cold_clear",
+    make: () => ({ name: "Clearing at a cold point", mode: "live", template: "cold_clear", unit: "agent",
       hypothesis: "Sessions whose cache lapsed, sent with old tool results as one-line stubs and without the thinking of earlier turns, cost less per turn than the same sessions whole, without more failed calls or more steps.",
       arms: [{ name: "whole" }, { name: "clear", settings: { cold_clear: true } }], primary: "cost_usd",
       // What a result the model needed and no longer has would show: a turn that fails, more failed calls, more steps
@@ -593,7 +598,7 @@ export class Experiments {
     // An arm with weight 0 gets no sessions, so the cap is over the arms that do.
     const enabled = e.arms.filter((a) => (a.weight ?? 1) > 0);
     const have = (arm: string) => new Set(rows.filter((r) => r.arm === arm && (!tree || (r.family && typeof r.m[e.primary] === "number"))).map((r) => r.cluster)).size;
-    if (enabled.every((a) => have(a.name) >= n)) return this.stop(e.id, tree ? `all ${n} trees per arm are settled` : `reached ${n} session families per arm`, now);
+    if (enabled.every((a) => have(a.name) >= n)) return this.stop(e.id, tree ? `all ${n} trees per arm are settled` : `reached ${n} ${unitWord(e)} per arm`, now);
   }
   private looked = new Map<string, number>();
 }

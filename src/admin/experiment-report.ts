@@ -135,6 +135,8 @@ export function familyObs(turns: FamilyTurn[], assigned: number, now: number, k:
 
 // Whether a live experiment has the sample size it set in advance: every arm that gets sessions has that many families.
 // A tree metric counts the settled trees of the first `n` assigned to the arm: the sample is full when all of them are.
+// What one counted unit is called: the agent tree of an experiment on agent trees, else the session family.
+export const unitWord = (e: Pick<Experiment, "unit">) => (e.unit === "agent" ? "agent trees" : "session families");
 const familiesOf = (e: Experiment, r: ArmReport | undefined) => (TREE_METRICS.has(e.primary) ? r?.metrics[e.primary]?.n ?? 0 : r?.clusters ?? 0);
 const capReached = (e: Experiment, arms: ArmReport[]) => {
   const n = e.stop.sessions_per_arm;
@@ -171,7 +173,7 @@ export function report(e: Experiment, rows: Row[], live?: Live): Report {
   const guards = seq?.guards ?? guardTests(e, rows);
   const guard = seq && { evidence: seq.evidence, threshold: seq.threshold, tests: seq.tests, window_min: e.stop.window_min ?? WINDOW_MIN, turns: e.stop.turns ?? TURNS, fixed: live?.obs.length ?? 0, pending: live?.pending ?? 0 };
   const judged = e.mode === "offline" || capReached(e, arms);
-  return { mode: e.mode, unit: e.mode === "live" ? "turn (resampled by session family)" : "run (resampled within task)", arms, effects, guards, threshold: 1 / (e.stop.alpha ?? ALPHA), judged, ...(guard ? { guard } : {}), decision: decide(e, effects, guards, arms) };
+  return { mode: e.mode, unit: e.mode === "live" ? `turn (resampled by ${e.unit === "agent" ? "agent tree" : "session family"})` : "run (resampled within task)", arms, effects, guards, threshold: 1 / (e.stop.alpha ?? ALPHA), judged, ...(guard ? { guard } : {}), decision: decide(e, effects, guards, arms) };
 }
 
 // Live guards over the fixed family observations, in the order they were
@@ -264,10 +266,10 @@ export function decide(e: Experiment, effects: Effect[], guards: Report["guards"
     const have = e.arms.filter((a) => (a.weight ?? 1) > 0).map((a) => `${a.name} ${familiesOf(e, arms.find((x) => x.arm === a.name))}`).join(", ");
     return { winner: null, verdict: "inconclusive", ts,
       text: n && e.state === "stopped"
-        ? `No winner: it stopped before the ${n} session families per arm it set (it had: ${have}). The interval of ${METRICS[e.primary].label} is for that sample size; read at a moment picked from the data, it has no stated error rate.`
+        ? `No winner: it stopped before the ${n} ${unitWord(e)} per arm it set (it had: ${have}). The interval of ${METRICS[e.primary].label} is for that sample size; read at a moment picked from the data, it has no stated error rate.`
         : n
-        ? `No winner yet: ${METRICS[e.primary].label} is judged once, when every arm has ${n} session families (now: ${have}). Its interval is for a sample size set in advance; read sooner, at a moment picked from the data, it has no stated error rate.`
-        : `No winner is named: this experiment set no sample size in advance (stop.sessions_per_arm), and an interval read at a moment picked from the data has no stated error rate. The intervals describe the data so far (session families: ${have}).`,
+        ? `No winner yet: ${METRICS[e.primary].label} is judged once, when every arm has ${n} ${unitWord(e)} (now: ${have}). Its interval is for a sample size set in advance; read sooner, at a moment picked from the data, it has no stated error rate.`
+        : `No winner is named: this experiment set no sample size in advance (stop.sessions_per_arm), and an interval read at a moment picked from the data has no stated error rate. The intervals describe the data so far (${unitWord(e)}: ${have}).`,
       remove: "Nothing proven: the variant does not ship, and the current path stays." };
   }
   // The arms the control is compared with.

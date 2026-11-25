@@ -9,7 +9,7 @@ import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { experimentRoutes, experiments, outcomes } from "../server/routes/experiments.ts";
-import { armOf, Experiments, familyObs, registerFamilyRead, FAMILIES_PER_ARM, liveGuards, report, TURNS, WINDOW_MIN, type Experiment, type FamilyTurn, type Obs } from "./experiments.ts";
+import { armOf, Experiments, familyObs, registerFamilyRead, FAMILIES_PER_ARM, liveGuards, report, unitWord, TURNS, WINDOW_MIN, type Experiment, type FamilyTurn, type Obs } from "./experiments.ts";
 import { offlineReport, receiptOf, runMetrics, runnable, Uploads } from "./offline.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { assignArm, rng } from "./stats.ts";
@@ -679,5 +679,40 @@ test("an experiment stopped before reports were kept is frozen without guards it
     expect([r.guards, r.guard]).toEqual([[], undefined]);
     ({ store, x } = d.open());
     expect(x.report(x.get(e.id)!)).toEqual(r);
+  } finally { d.close(); }
+});
+
+// The templates of agents' own changes (cold_clear, read_runs) draw per agent tree, so they reach their sample at the rate agents start.
+test.each([["cold_clear", "clear", { cold_clear: true }], ["read_runs", "batch", { read_runs: "batch" }]] as const)("the %s template draws per agent tree and counts agent trees", (template, variant, setting) => {
+  const d = daemon();
+  try {
+    const { store, x } = d.open();
+    expect(x.create({ template: "effort", name: "by session" }).unit).toBeUndefined();
+    const e = x.start(x.create({ template, name: template, stop: { sessions_per_arm: 3 } }).id);
+    expect(e.unit).toBe("agent");
+    // The owner's top-level session is in no arm and its settings are untouched.
+    const top = store.createSession({ model: "p:m", workspace: "/" });
+    x.assign(top);
+    expect(armOf(store, top.id)).toBeNull();
+    expect(store.session(top.id)!.settings).toEqual({});
+    // Each agent it starts takes an arm at its start and keeps it for its tree.
+    const agents: string[] = [];
+    const by = (arm: string) => agents.filter((id) => armOf(store, id)!.arm === arm);
+    while (e.arms.some((a) => by(a.name).length < 3)) agents.push(child(store, x, top.id));
+    for (const id of agents) expect(armOf(store, id)).toMatchObject({ exp_id: e.id, root: id });
+    for (const id of by(variant)) expect(store.session(id)!.settings).toMatchObject(setting);
+    for (const id of by(e.arms[0]!.name)) expect(store.session(id)!.settings).toEqual({});
+    const deep = child(store, x, agents[0]!);
+    expect(armOf(store, deep)).toEqual({ ...armOf(store, agents[0]!)!, root: agents[0]! });
+    // The report counts trees: every agent with its agents is one, each turn is a turn.
+    for (const id of [...agents, deep]) turn(store, id);
+    const r = x.report(x.get(e.id)!, closed());
+    expect(r.unit).toBe("turn (resampled by agent tree)");
+    expect(r.arms.map((a) => [a.arm, a.clusters])).toEqual(e.arms.map((a) => [a.name, by(a.name).length]));
+    expect(r.arms.reduce((n, a) => n + a.units, 0)).toBe(agents.length + 1);
+    expect(unitWord(e)).toBe("agent trees");
+    // The cap counts trees, the top-level session none.
+    x.check(agents[0]!);
+    expect(x.get(e.id)).toMatchObject({ state: "stopped", stop_reason: "reached 3 agent trees per arm" });
   } finally { d.close(); }
 });
