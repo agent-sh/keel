@@ -5,8 +5,8 @@
 // paired machine, no phone gets it. Continuing it in Keel makes a copy of its
 // own, with no `outside` mark, and that copy is shared as any session is.
 // One exception, the owner's ruling: while Keel answers such a session in place
-// (src/integrations/outside/codex-app.ts), the cards its harness raises (a
-// one-call approval, a question) reach the owner's own devices as any card does:
+// (src/integrations/outside/codex-app.ts, claude-code.ts), the cards its harness
+// raises (a one-call approval, a question, a plan) reach the owner's own devices as any card does:
 // the page, the desktop notification and the phone. No hook of his, no command
 // he set for alerts, no paired machine and no standing answer gets them.
 import type { Session } from "./types.ts";

@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { shoot } from "./shots.ts";
+import { choose, shoot } from "./shots.ts";
 
 // Feature: a Codex session the owner runs elsewhere is answered in its own row. Its bar says who holds it
 // (free here), its box sends the text to that same thread through Codex's server (the daemon's
@@ -177,6 +177,97 @@ test("a Codex session is answered in place: a send, its card, the reply in the s
   } finally {
     if (sid) await request.delete(`/api/sessions/${sid}`);
     rmSync(year, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// Feature: a Claude Code session the owner runs elsewhere is answered in its own row, same id. Nothing holds it, so
+// its box resumes it through `claude -p --resume ID` (the daemon's KEEL_CLAUDE_BIN, a stand-in that speaks Claude
+// Code's stream-json wire and writes the transcript as Claude Code does), the command Claude Code asks about is a
+// Keel card answered once, and the reply comes into the same row from the transcript. Run the daemon with
+// KEEL_IMPORT_CLAUDE_DIR at a scratch store and KEEL_CLAUDE_BIN at test/e2e/fixtures/claude-code.ts
+// (scripts/scratch-env.ts names both).
+test("a Claude Code session is answered in place: a send, its card, the reply in the same row", async ({ page, request }) => {
+  const listed = await (await request.get("/api/import/sessions?limit=1")).json();
+  const root = listed.harnesses?.find((h: any) => h.harness === "claude")?.store as string | undefined;
+  test.skip(!root || !root.includes("import/claude"), "needs a scratch Claude Code store (KEEL_IMPORT_CLAUDE_DIR) and the claude stand-in (KEEL_CLAUDE_BIN)");
+  const watches = async () => (await (await request.get("/api/outside")).json()).watches as number;
+  const tag = String(Date.now());
+  const id = `0c1a0e2e-0000-4000-8000-${tag.slice(-12).padStart(12, "0")}`;
+  const cwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `outside-claude-${tag}`);
+  mkdirSync(cwd, { recursive: true });
+  const dir = join(root!, `-e2e-outside-claude-${tag}`);
+  const path = join(dir, `${id}.jsonl`);
+  let parent: string | null = null;
+  const write = (r: object) => {
+    const uuid = crypto.randomUUID();
+    appendFileSync(path, JSON.stringify({ parentUuid: parent, isSidechain: false, userType: "external", cwd, sessionId: id, version: "2.1.332", entrypoint: "cli", timestamp: new Date().toISOString(), uuid, ...r }) + "\n");
+    parent = uuid;
+  };
+  const sessionOf = async () => ((await (await request.get("/api/sessions")).json()).sessions as any[]).find((s) => s.outside?.source_id === id);
+  let sid: string | undefined;
+  try {
+    const before = await watches();
+    mkdirSync(dir, { recursive: true });
+    await expect.poll(watches, { timeout: 10_000 }).toBeGreaterThan(before);
+    write({ type: "user", message: { role: "user", content: `Set up the release script ${tag}` }, permissionMode: "acceptEdits" });
+    write({ type: "assistant", message: { id: "m0", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "The script is in place." }], stop_reason: "end_turn" } });
+    await expect.poll(async () => (await sessionOf())?.outside?.state, { timeout: 15_000 }).toBe("done");
+    sid = (await sessionOf()).id as string;
+
+    await page.goto(`/s/${sid}`);
+    const bar = page.getByTestId("outside-bar");
+    await expect(bar).toBeVisible();
+    await expect(bar.getByTestId("outside-holder")).toHaveText("Free");
+    const input = bar.getByTestId("outside-input");
+    await expect(input).toHaveAttribute("placeholder", "Answer here: Keel resumes this session in Claude Code");
+    await shoot(page, "outside-answer-claude-free");
+
+    // A send: Claude Code resumes the session and asks before it runs a command.
+    await input.fill(`Run the tests ${tag}`);
+    await bar.getByTestId("outside-send").dblclick();
+    const card = page.getByTestId("approval");
+    await expect(card).toBeVisible({ timeout: 15_000 });
+    await expect(card.getByTestId("approval-summary")).toContainText("make test");
+    await expect(bar.getByTestId("outside-holder")).toHaveText("Keel is answering");
+    await expect(bar.getByTestId("outside-stop")).toBeVisible();
+    await expect(page.getByTestId("transcript").getByText(`Run the tests ${tag}`).first()).toBeVisible();
+    await shoot(page, "outside-answer-claude-card");
+
+    // Answered once: the reply comes into the same row, from the transcript.
+    await card.getByRole("button", { name: /Allow once/i }).click();
+    await expect(page.getByTestId("transcript").getByText(`The command was allowed: Run the tests ${tag}`).first()).toBeVisible({ timeout: 15_000 });
+    await expect(card).toHaveCount(0);
+    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    await expect(bar.getByTestId("outside-sends")).toHaveCount(0);
+    expect((await sessionOf())?.id).toBe(sid);
+    await shoot(page, "outside-answer-claude-reply");
+
+    // What Keel sent is the transcript's own record, once, in the same session file.
+    const text = readFileSync(path, "utf8");
+    expect(text.split(`"content":"Run the tests ${tag}"`).length - 1).toBe(1);
+    // Resumed by its id with its own model and mode; the text went on standard input, not the command line.
+    const started = readFileSync(`${path}.standin.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((m) => m.argv);
+    expect(started?.argv).toEqual(["-p", "--resume", id, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio", "--model", "claude-opus-5-5", "--permission-mode", "acceptEdits"]);
+
+    // A plan Claude Code presents is Keel's plan card; approved in Auto edits, Claude Code goes on in acceptEdits.
+    await input.fill(`plan the rename ${tag}`);
+    await bar.getByTestId("outside-send").click();
+    const plan = page.getByTestId("plan-card");
+    await expect(plan).toBeVisible({ timeout: 15_000 });
+    await expect(plan.getByTestId("plan-text")).toContainText("Rename the loader");
+    await shoot(page, "outside-answer-claude-plan");
+    // (Approve takes a press once the plan stood read in view: the card says so.)
+    await expect(plan).toHaveAttribute("data-read", "true");
+    await choose(plan.getByTestId("plan-mode"), "auto-edits");
+    await plan.getByTestId("plan-approve").click();
+    await expect(page.getByTestId("transcript").getByText("The plan was approved; going on in acceptEdits mode.").first()).toBeVisible({ timeout: 15_000 });
+    await expect(plan).toHaveCount(0);
+    await expect(bar.getByTestId("outside-holder")).toHaveText("Free", { timeout: 10_000 });
+    expect((await request.post(`/api/sessions/${sid}/messages`, { data: { text: "hello" } })).status()).toBe(409);
+  } finally {
+    if (sid) await request.delete(`/api/sessions/${sid}`);
+    rmSync(dir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });

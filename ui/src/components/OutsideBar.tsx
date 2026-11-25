@@ -1,9 +1,10 @@
 // A session another harness runs, in the composer's place: Keel shows what it
 // writes, its state from its own records, what it spent, the files its calls
-// changed and who holds it now. A Codex session nothing else holds is answered
-// here: the text goes to that same session in Codex (src/integrations/outside/
-// codex-app.ts), the reply comes into this view as Codex writes it, and what
-// Codex asks comes as Keel's cards above. While another process holds it, the
+// changed and who holds it now. A Codex or Claude Code session nothing else
+// holds is answered here: the text goes to that same session in its harness
+// (src/integrations/outside/codex-app.ts, claude-code.ts), the reply comes into
+// this view as the harness writes it, and what it asks comes as Keel's cards
+// above. While another process holds it, the
 // bar says who and offers nothing that writes. One press copies it into Keel
 // (a copy that goes on here; the original keeps running where it runs).
 import { ArrowUp, ChevronDown, ChevronRight, CornerDownRight, Square, X } from "lucide-react";
@@ -74,7 +75,8 @@ export function OutsideBar({ session }: { session: Session }) {
     }
   };
   // What a send does now, from who holds it: Keel resumes it, adds to the turn Keel runs, or nothing.
-  const route: Route = o.harness !== "codex" ? "none" : holder?.kind === "keel" ? "steer" : holder && holder.kind !== "free" ? "held" : d?.route === "missing" || d?.route === "unlocked" ? d.route : "resume";
+  const route: Route = d?.route === "none" ? "none" : holder?.kind === "keel" ? "steer" : holder && holder.kind !== "free" ? "held" : d?.route === "missing" || d?.route === "unlocked" ? d.route : "resume";
+  const program = o.harness === "claude" ? "claude" : "codex";
   const send = async (words: string, again?: string) => {
     if (!words.trim()) return;
     setNote("");
@@ -109,7 +111,7 @@ export function OutsideBar({ session }: { session: Session }) {
   const pending = (sends ?? []).filter((x) => x.state !== "delivered");
   const placeholder = route === "steer" ? `Add to the turn Keel runs in ${where}` : `Answer here: Keel resumes this session in ${where}`;
   const quiet = route === "held" ? `${holderSaid(holder, where)}: answer it there. Keel sends nothing while another process holds it.`
-    : route === "missing" ? `No codex program here: Keel answers a ${where} session with the codex on your PATH.`
+    : route === "missing" ? `No ${program} program here: Keel answers a ${where} session with the ${program} on your PATH.`
     : route === "unlocked" ? `This ${where} keeps no writer locks, so Keel cannot tell whether a terminal has it open: answer it there, or update ${where}.`
     : route === "none" ? `Read-only here: Keel sends nothing to ${where}. Copy into Keel makes a copy you work on here; the session there keeps running.`
     : `Sent to this same session in ${where}: its reply comes here, and what it asks comes as cards. Copy into Keel makes a copy instead.`;

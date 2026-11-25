@@ -134,13 +134,15 @@ function frameOf(h: unknown, m: string | Buffer): string {
 // a handoff, a terminal) is refused: one guard, so a route added later is refused too.
 const OUTSIDE_ACTS = new Set([
   "POST /api/sessions/:id/outside/copy",
-  // Answering it in place, in its own harness (src/integrations/outside/codex-app.ts): a send, an answer to a
-  // card its harness raised (a one-call approval, a question), a send put away, and Stop of the turn Keel runs.
+  // Answering it in place, in its own harness (src/integrations/outside/codex-app.ts, claude-code.ts): a send, an
+  // answer to a card its harness raised (a one-call approval, a question, a plan), a send put away, and Stop of
+  // the turn Keel runs.
   "POST /api/sessions/:id/outside/send",
   "DELETE /api/sessions/:id/outside/sends/:send",
   "POST /api/sessions/:id/outside/interrupt",
   "POST /api/sessions/:id/approvals/:aid",
   "POST /api/sessions/:id/questions/:call",
+  "POST /api/sessions/:id/plan/:pid",
   "DELETE /api/sessions/:id",
   "POST /api/sessions/:id/marks",
   "POST /api/sessions/:id/unread",

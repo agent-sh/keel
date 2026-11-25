@@ -12,7 +12,7 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
 
 export type PlanCard = { id: string; session_id: string; plan: string; title?: string; created: number };
-type Answer = { approved: true; mode: string; plan: string; note?: string } | { approved: false; feedback?: string };
+export type Answer = { approved: true; mode: string; plan: string; note?: string } | { approved: false; feedback?: string; stopped?: true };
 // By session and id: a plan is known by its tool call's id, and a wire whose ids count the calls
 // gives two sessions the same one.
 const waiting = new Map<string, PlanCard & { resolve: (a: Answer) => void }>();
@@ -40,29 +40,10 @@ async function present(input: any, ctx: ToolContext) {
   const mode = gate?.perm(ctx.sessionId).mode;
   if (mode && mode !== "plan") return { content: `The session is not in plan mode (it is in ${mode}): go ahead with the work.` };
   const card: PlanCard = { id: ctx.callId ?? crypto.randomUUID(), session_id: ctx.sessionId, plan: plan.slice(0, 40_000), title: input?.title ? String(input.title).slice(0, 120) : undefined, created: Date.now() };
-  let cut = false;
-  const a = await new Promise<Answer>((resolve) => {
-    const done = (x: Answer, stopped = false) => {
-      if (!waiting.delete(keyOf(card.session_id, card.id))) return;
-      cut = stopped;
-      ctx.signal.removeEventListener("abort", onAbort);
-      // Parked with its turn by a daemon that stops: it did not end, and no client is told it did.
-      if (stopped && parking()) { emit(card, "closed"); resolve(x); return; }
-      const end: PlanEnd = { card, how: stopped ? "expired" : x.approved ? "approved" : "denied", ...(x.approved ? { mode: x.mode } : {}), at: Date.now() };
-      while (ended.length && (ended[0]!.at < end.at - ENDED_FOR)) ended.shift();
-      ended.push(end);
-      emit(card, "closed", end);
-      resolve(x);
-    };
-    const onAbort = () => done({ approved: false, feedback: "the turn was stopped" }, true);
-    waiting.set(keyOf(card.session_id, card.id), { ...card, resolve: done });
-    emit(card, "open");
-    if (ctx.signal.aborted) onAbort();
-    else ctx.signal.addEventListener("abort", onAbort, { once: true });
-  });
+  const a = await waitPlan(card, ctx.signal);
   // His own words on the plan, kept with the result for what a compaction keeps of his (src/engine/compact.ts
   // ownerReplies); a stop's words are the harness's, never his.
-  if (!a.approved) return { content: `The owner did not approve the plan${a.feedback ? `: ${a.feedback}` : "."} Stay in plan mode, change the plan, and present it again.`, ...(!cut && a.feedback ? { shown: { plan_answer: { feedback: a.feedback } } } : {}) };
+  if (!a.approved) return { content: `The owner did not approve the plan${a.feedback ? `: ${a.feedback}` : "."} Stay in plan mode, change the plan, and present it again.`, ...(!a.stopped && a.feedback ? { shown: { plan_answer: { feedback: a.feedback } } } : {}) };
   const edited = a.plan !== card.plan;
   const said = { ...(a.note ? { note: a.note } : {}), ...(edited ? { plan: a.plan } : {}) };
   return {
@@ -73,6 +54,29 @@ async function present(input: any, ctx: ToolContext) {
       a.note ? `The owner's note: ${a.note}` : "",
     ].filter(Boolean).join("\n\n"),
   };
+}
+
+// A plan on its card until the owner decides it or `signal` stops the wait (`stopped` on the answer). Also the card
+// of a plan another harness presents while Keel answers its session in place (src/integrations/outside/claude-code.ts).
+export function waitPlan(card: PlanCard, signal: AbortSignal): Promise<Answer> {
+  return new Promise<Answer>((resolve) => {
+    const done = (x: Answer, stopped = false) => {
+      if (!waiting.delete(keyOf(card.session_id, card.id))) return;
+      signal.removeEventListener("abort", onAbort);
+      // Parked with its turn by a daemon that stops: it did not end, and no client is told it did.
+      if (stopped && parking()) { emit(card, "closed"); resolve(x); return; }
+      const end: PlanEnd = { card, how: stopped ? "expired" : x.approved ? "approved" : "denied", ...(x.approved ? { mode: x.mode } : {}), at: Date.now() };
+      while (ended.length && (ended[0]!.at < end.at - ENDED_FOR)) ended.shift();
+      ended.push(end);
+      emit(card, "closed", end);
+      resolve(x);
+    };
+    const onAbort = () => done({ approved: false, feedback: "the turn was stopped", stopped: true }, true);
+    waiting.set(keyOf(card.session_id, card.id), { ...card, resolve: done });
+    emit(card, "open");
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 const schema = {
@@ -121,7 +125,8 @@ export const planRoutes: RouteModule = (deps: Deps) => {
     const plan = typeof b.plan === "string" ? b.plan.trim().slice(0, 40_000) : w.plan;
     // (An approval changes the session's mode: not something owed to a store that takes no writes.)
     if (store.refusing) return { status: 503, body: { error: "the daemon's store takes no writes right now, and a plan's approval changes the session's mode, which cannot be kept: approve it when the store takes writes again, or reject it now" } };
-    gate?.setPerm(w.session_id, { mode });
+    // (A session another harness runs keeps no Keel mode: the mode goes to that harness with the answer.)
+    if (!store.session(w.session_id)?.outside) gate?.setPerm(w.session_id, { mode });
     const rec = { session_id: w.session_id, plan, approval_id: w.id, mode, approved_ms: Date.now() };
     store.db.query("INSERT INTO plans (session_id, data) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET data = excluded.data").run(w.session_id, JSON.stringify(rec));
     w.resolve({ approved: true, mode, plan, note: typeof b.note === "string" && b.note.trim() ? b.note.trim().slice(0, 2000) : undefined });

@@ -634,8 +634,12 @@ type Filing = {
 // The channels that are the owner's own screens. A command of his (KEEL_NOTIFY_COMMAND) is a program like a
 // hook and gets none of another harness's words.
 const OWN_DEVICES = new Set(["desktop", "push"]);
-// A card a session of another harness raised while Keel answers it in place (src/integrations/outside/codex-app.ts).
-const OWN_CARDS = (kind: AlertKind, data: unknown) => (kind === "approval" && !!(data as { approval_id?: unknown } | undefined)?.approval_id) || (kind === "question" && !!(data as { ask_id?: unknown } | undefined)?.ask_id);
+// A card a session of another harness raised while Keel answers it in place (src/integrations/outside/codex-app.ts,
+// claude-code.ts): an approval, a question, a plan to approve.
+const OWN_CARDS = (kind: AlertKind, data: unknown) => {
+  const d = data as { approval_id?: unknown; ask_id?: unknown; plan_id?: unknown } | undefined;
+  return (kind === "approval" && !!d?.approval_id) || (kind === "question" && (!!d?.ask_id || !!d?.plan_id));
+};
 // Alerts filed in one go keep their order: each is a millisecond after the last at least.
 let lastTs = 0;
 function file(x: Filing): Alert | undefined {

@@ -42,7 +42,7 @@ import { alive, codexKeepsLocks, codexLock, descendants, holderChain, lockHolder
 type Json = any;
 type ProcRow = { session_id: string; pid: number; start: string };
 
-const SCHEMA = `
+export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS outside_sends (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -795,14 +795,15 @@ export class CodexApp {
     try { this.d.cutAsks?.(); } catch (e) { this.d.trouble(e, "closing the questions a Codex child asked before the restart"); }
     const owed: Send[] = [];
     const started: { send: Send; path: string }[] = [];
-    for (const s of this.d.store.db.query<Send, []>("SELECT * FROM outside_sends WHERE state IN ('stored', 'started') ORDER BY created").all()) {
+    for (const s of this.d.store.db.query<Send, []>("SELECT s.* FROM outside_sends s LEFT JOIN outside_sessions o ON o.session_id = s.session_id WHERE o.harness IS NOT 'claude' AND s.state IN ('stored', 'started') ORDER BY s.created").all()) {
       const row = this.d.outside.row(s.session_id);
       if (!row) { this.set(s.id, "lost", { said: "its session is no longer followed" }); continue; }
       if (s.state === "started") started.push({ send: s, path: row.path });
       else owed.push(s);
     }
     // Read now: a child this daemon starts from here on is not one an earlier daemon left.
-    const left = this.d.store.db.query<ProcRow, []>("SELECT session_id, pid, start FROM outside_procs").all();
+    // (A Claude Code session's processes and sends are claude-code.ts's: the two routes share the tables.)
+    const left = this.d.store.db.query<ProcRow, []>("SELECT p.session_id, p.pid, p.start FROM outside_procs p LEFT JOIN outside_sessions o ON o.session_id = p.session_id WHERE o.harness IS NOT 'claude'").all();
     const looked = (async () => {
       for (const { send: s, path } of started) {
         const after = await recordsFrom(path, s.offset ?? 0);

@@ -7,16 +7,21 @@
 // POST /api/sessions/:id/outside/copy        -> a Keel session that goes on with it (the import path:
 //                                               its copy brought up to date, else a new copy)
 // POST /api/sessions/:id/outside/send        -> { text, client_id, again? }: the text sent to that session
-//                                               in its own harness (Codex: codex-app.ts), stored first
+//                                               in its own harness (Codex: codex-app.ts, Claude Code:
+//                                               claude-code.ts), stored first
 //                                               and delivered once; refused while another process holds it
 // DELETE /api/sessions/:id/outside/sends/:send -> a send that was lost or refused, put away
 // POST /api/sessions/:id/outside/interrupt   -> the turn Keel runs in it, stopped
 import { statSync } from "node:fs";
+import { dirname } from "node:path";
 import { Outside } from "../../integrations/outside/service.ts";
 import { CodexApp } from "../../integrations/outside/codex-app.ts";
+import { ClaudeCode } from "../../integrations/outside/claude-code.ts";
 import { codexHome } from "../../integrations/import/codex.ts";
+import { claudeRoot } from "../../integrations/import/claude.ts";
+import { waitPlan } from "./plan.ts";
 import { allHooks } from "../../engine/hooks.ts";
-import { ownerLookup } from "../../core/paths.ts";
+import { ownerEnv, ownerLookup } from "../../core/paths.ts";
 import { gate } from "./permissions.ts";
 import { modelFor, sharedImports } from "../../integrations/import/service.ts";
 import { record } from "../../automation/failures.ts";
@@ -33,9 +38,14 @@ const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); }
 
 export let outside: Outside | undefined;
 export let codexApp: CodexApp | undefined;
+export let claudeCode: ClaudeCode | undefined;
 
 // The codex program a Codex session is answered with: KEEL_CODEX_BIN, else the owner's codex on his PATH.
 const codexBin = () => process.env.KEEL_CODEX_BIN?.trim() || Bun.which("codex", { PATH: ownerLookup("PATH") ?? "" }) || undefined;
+// The claude program a Claude Code session is answered with: KEEL_CLAUDE_BIN, else the owner's claude on his PATH.
+const claudeBin = () => process.env.KEEL_CLAUDE_BIN?.trim() || Bun.which("claude", { PATH: ownerLookup("PATH") ?? "" }) || undefined;
+// Claude Code's folder for the child, when it is not its default: the folder the mirror reads.
+const claudeConfig = () => (process.env.KEEL_IMPORT_CLAUDE_DIR ? dirname(claudeRoot()) : ownerEnv("CLAUDE_CONFIG_DIR"));
 
 export const outsideRoutes: RouteModule = (deps) => {
   const { store, bus, engine, providers, errors } = deps;
@@ -43,6 +53,7 @@ export const outsideRoutes: RouteModule = (deps) => {
   // A hot reload makes the module again: the watches of the one before go first.
   g.__keelOutside?.stop();
   g.__keelCodexApp?.stop();
+  g.__keelClaudeCode?.stop();
   outside = g.__keelOutside = new Outside({
     store, bus, workspace: deps.workspace,
     price: (model, h) => providers.catalog.lookup(model, h === "claude" ? "anthropic" : "openai")?.price,
@@ -52,7 +63,7 @@ export const outsideRoutes: RouteModule = (deps) => {
     trouble: (e, at) => errors.capture("server", e, { at }),
     // A source with a copy in Keel shows on the copy, not as a session of its own.
     copied: (h, id) => sharedImports(store).links(h, id).length > 0,
-    ours: (id) => !!codexApp?.ours(id),
+    ours: (id) => !!codexApp?.ours(id) || !!claudeCode?.ours(id),
   });
   const tell = (f: (h: ReturnType<typeof allHooks>[number]) => void) => { for (const h of allHooks()) try { f(h); } catch (e) { errors.capture("server", e, { at: "a question of a session answered in place" }); } };
   const app = codexApp = g.__keelCodexApp = new CodexApp({
@@ -65,12 +76,29 @@ export const outsideRoutes: RouteModule = (deps) => {
     answered: (sid, call, answered, ask) => tell((h) => h.ownerAnswered?.(sid, call, answered, ask)),
     cutAsks: () => void closeAsks("codex-", (id) => isOutside(store.session(id))),
   });
+  const claude = claudeCode = g.__keelClaudeCode = new ClaudeCode({
+    store, bus, outside,
+    gate: () => gate,
+    bin: claudeBin,
+    configDir: claudeConfig,
+    trouble: (e, at) => errors.capture("server", e, { at }),
+    asked: (sid, call, text, ask) => tell((h) => h.ownerAsked?.(sid, call, text, ask)),
+    answered: (sid, call, answered, ask) => tell((h) => h.ownerAnswered?.(sid, call, answered, ask)),
+    plan: waitPlan,
+    cutAsks: () => void closeAsks("claude-", (id) => isOutside(store.session(id))),
+  });
   sharedImports(store).onCopy("outside", (h, id) => { if (h === "claude" || h === "codex") outside?.copiedNow(h, id); });
   outside.start();
   app.start();
+  claude.start();
   const o = outside;
+  // The driver that answers a session in place: its harness's.
+  const driver = (id: string) => (o.row(id)?.harness === "claude" ? claude : app);
   // What the bar shows besides the transcript's facts: who holds it, what a send does now, the sends not yet delivered.
-  const inPlace = (id: string, holder = o.holderNow(id)) => ({ holder, route: o.row(id)?.harness === "codex" ? app.route(id, holder) : "none", turn: app.running(id), sends: app.sends(id), notes: app.notes(id), answers: app.answers(id) });
+  const inPlace = (id: string, holder = o.holderNow(id)) => {
+    const d = driver(id);
+    return { holder, route: o.row(id) ? d.route(id, holder) : "none", turn: d.running(id), sends: d.sends(id), notes: d.notes(id), answers: d.answers(id) };
+  };
   return {
     // (The owner's alone, as the sessions are: peer-scope.ts blindTo.)
     "/api/outside": { GET: (req: Request) => (seesOutside(req) ? json(o.status()) : bad("not found", 404)) },
@@ -85,15 +113,15 @@ export const outsideRoutes: RouteModule = (deps) => {
         const b = (await req.json().catch(() => null)) as { text?: unknown; client_id?: unknown; again?: unknown } | null;
         if (typeof b?.text !== "string") return bad("text is the message to send");
         const key = typeof b.client_id === "string" && b.client_id ? b.client_id.slice(0, 200) : crypto.randomUUID();
-        const r = app.send(req.params.id, b.text, key, typeof b.again === "string" ? b.again : undefined);
+        const r = driver(req.params.id).send(req.params.id, b.text, key, typeof b.again === "string" ? b.again : undefined);
         return "error" in r ? json({ error: r.error, ...(r.holder ? { holder: r.holder } : {}) }, r.status) : json({ send: r.send, ...inPlace(req.params.id) }, 202);
       },
     },
     "/api/sessions/:id/outside/sends/:send": {
-      DELETE: (req: Request & { params: { id: string; send: string } }) => (app.dismiss(req.params.id, req.params.send) ? json({ ok: true }) : bad("no such send to put away", 404)),
+      DELETE: (req: Request & { params: { id: string; send: string } }) => (driver(req.params.id).dismiss(req.params.id, req.params.send) ? json({ ok: true }) : bad("no such send to put away", 404)),
     },
     "/api/sessions/:id/outside/interrupt": {
-      POST: async (req: Request & { params: { id: string } }) => json({ stopped: await app.interrupt(req.params.id) }),
+      POST: async (req: Request & { params: { id: string } }) => json({ stopped: await driver(req.params.id).interrupt(req.params.id) }),
     },
     "/api/sessions/:id/outside/copy": {
       POST: async (req: Request & { params: { id: string } }) => {

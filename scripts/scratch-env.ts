@@ -30,6 +30,8 @@ export function standIns(dir: string, { host = false } = {}): Record<string, str
     KEEL_IMPORT_CODEX_DIR: join(dir, "import/codex"),
     // A Codex session answered in place talks to this stand-in of `codex app-server`, never the owner's codex.
     KEEL_CODEX_BIN: fixture("codex-app-server.ts"),
+    // A Claude Code session answered in place talks to this stand-in of `claude -p`, never the owner's claude.
+    KEEL_CLAUDE_BIN: fixture("claude-code.ts"),
     KEEL_IMPORT_AGY_DIR: join(dir, "import/agy"),
     KEEL_IMPORT_KEEL_DB: join(dir, "import/keel.db"),
     KEEL_IMPORT_HERMES_DIR: join(dir, "import/hermes"),
