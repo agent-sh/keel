@@ -13,7 +13,7 @@ import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, keepText, keptText, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
-import { getState, onFeature, reportError, reportUnlessGone, useStore, useModels, failed, whileHeard, type ListedModel } from "../lib/store.ts";
+import { getState, onFeature, readAtOpen, reportError, reportUnlessGone, useStore, useModels, failed, whileHeard, type ListedModel } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
 import { menuClosed, stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
@@ -292,10 +292,11 @@ const SessionComposer = memo(function SessionComposer({
       const d = await getDraft(sid);
       return live && keeps() !== at ? read() : take(d);
     };
-    read().catch(reportError);
+    // (Read as the page loads, once, at its socket's open; a box that mounts after reads at once.)
+    const again = readAtOpen(() => (live ? read().catch(reportUnlessGone) : Promise.resolve()), "draft");
     const off = onFeature({
       frame: (f) => { if (f.name === "draft" && f.session_id === sid) take(f.data as Draft); },
-      reconnect: () => { read().catch(reportUnlessGone); },
+      reconnect: again,
     });
     return () => { live = false; off(); have.current.clear(); };
   }, [sid]);

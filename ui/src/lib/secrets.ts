@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { SecretMeta } from "../../../src/safety/secrets.ts";
 import type { SecretRequest } from "../../../src/server/routes/secrets.ts";
-import { api, onFeature, reportError, reportUnlessGone } from "./store.ts";
+import { api, onFeature, readAtOpen, reportError, reportUnlessGone } from "./store.ts";
 
 export type { SecretMeta, SecretRequest };
 
@@ -24,6 +24,11 @@ const loaded = new Set<string>();
 const upsert = (list: SecretMeta[] = [], m: SecretMeta) => [...list.filter((x) => x.id !== m.id), m];
 
 export const secrets = {
+  // A view shows this session's secrets: read as the page loads (once, at its socket's open) or at once after.
+  watch(sessionId: string) {
+    loaded.add(sessionId);
+    readAtOpen(() => secrets.load(sessionId), "secrets");
+  },
   async load(sessionId: string) {
     loaded.add(sessionId);
     const r = await api<{ secrets: SecretMeta[]; requests: SecretRequest[] }>(`/api/sessions/${sessionId}/secrets`);

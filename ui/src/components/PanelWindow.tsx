@@ -20,7 +20,7 @@ export function PanelWindow({ id, panel }: { id: string; panel: string }) {
 
   useEffect(() => scope.show(id), [id]);
   useEffect(() => {
-    actions.loadSession(id).then(() => scope.loaded(id), (e) => {
+    actions.openSession(id).then(() => scope.loaded(id), (e) => {
       if ((e as { status?: number }).status === 404) setMissing(true);
       else reportError(e, { at: "open panel window" });
     });

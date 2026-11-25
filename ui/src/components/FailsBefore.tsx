@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { BeforeRun } from "../../../src/checks/before-run.ts";
 import type { FileResult } from "../../../src/checks/before.ts";
-import { api, onFeature, failed, reportError } from "../lib/store.ts";
+import { api, onFeature, readAtOpen, failed, reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 
 const TONE: Record<FileResult["state"], string> = {
@@ -31,8 +31,8 @@ export function FailsBefore({ session }: { session: Session }) {
   const [note, setNote] = useState("");
   const load = useCallback(() => api<{ run: BeforeRun | null; tests: boolean }>(`/api/sessions/${session.id}/fails-before`).then((r) => { setRun(r.run); setTests(r.tests); }).catch(reportError), [session.id]);
   useEffect(() => {
-    load();
-    return onFeature({ frame: (f) => { if (f.name === "fails_before" && f.session_id === session.id) setRun(f.data); }, reconnect: load });
+    const again = readAtOpen(async () => void (await load()));
+    return onFeature({ frame: (f) => { if (f.name === "fails_before" && f.session_id === session.id) setRun(f.data); }, reconnect: again });
   }, [load]);
   if (!tests && !run) return null;
   const start = async () => {

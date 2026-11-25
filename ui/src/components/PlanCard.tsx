@@ -6,7 +6,7 @@ import { dropRepeats, keyRefused, noteAnswer, pageFocus, typeToBox, useAskKeys, 
 import { composing } from "../lib/keys.ts";
 import { setOpenPlans } from "../lib/plans.ts";
 import { wasBrought } from "../lib/shell.ts";
-import { api, onFeature, reportUnlessGone, failed } from "../lib/store.ts";
+import { api, onFeature, readAtOpen, reportUnlessGone, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { trayGauge } from "./Composer.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -34,10 +34,11 @@ export function PlanCards({ sessionId }: { sessionId: string }) {
       const mine: F[] = (since = []);
       api<{ open: Card[] }>(`/api/sessions/${sessionId}/plan`).then((r) => { const open = mine.reduce(step, r.open); setOpenPlans(sessionId, open.map((c) => c.id)); setCards(open); }).catch(reportUnlessGone).finally(() => { if (since === mine) since = null; });
     };
-    load();
+    // (Read as the page loads, once, at its socket's open.)
+    const again = readAtOpen(async () => load());
     return onFeature({
       // A plan put back up after a daemon restart may have opened before this socket did.
-      reconnect: load,
+      reconnect: again,
       frame: (f) => {
         if (f.name !== "plan" || f.session_id !== sessionId) return;
         since?.push(f.data);

@@ -5,7 +5,7 @@ import { Inbox, MessageSquareOff, MessageSquareShare, Send, X } from "lucide-rea
 import { useEffect, useState } from "react";
 import type { StoredEvent } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
-import { api, onFeature, reportError } from "../lib/store.ts";
+import { api, onFeature, readAtOpen, reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 
@@ -71,8 +71,8 @@ export function HeldMessages({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     const { prefix, id } = base(sessionId);
     const load = () => api<{ messages: Held[] }>(`${prefix}/fleet/messages?session_id=${id}&state=held`).then((r) => setHeld(r.messages)).catch(reportError);
-    load();
-    return onFeature({ frame: (f) => { if (f.name === "fleet_message" && f.session_id === sessionId) load(); }, reconnect: load });
+    const again = readAtOpen(async () => void (await load()));
+    return onFeature({ frame: (f) => { if (f.name === "fleet_message" && f.session_id === sessionId) load(); }, reconnect: again });
   }, [sessionId]);
   if (!held.length) return null;
   const decide = async (id: string, decision: "deliver" | "drop") => {

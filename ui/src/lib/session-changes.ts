@@ -2,7 +2,7 @@
 // folder): the files and the lines, for the line above the message box. Read when the session is shown, when a turn
 // ends, and (a moment after the last of them) when the daemon says its checkpoints moved.
 import { useEffect, useState } from "react";
-import { api, onFeature, reportUnlessGone, useStore } from "./store.ts";
+import { api, onFeature, readAtOpen, reportUnlessGone, useStore } from "./store.ts";
 
 export type Changed = { files: number; added: number; removed: number };
 type Turn = { turn: number; elsewhere?: string };
@@ -24,8 +24,8 @@ export function useChanged(sessionId: string): Changed | null {
       } catch (e) { reportUnlessGone(e, { at: "changes line" }); }
     };
     const soon = () => { clearTimeout(timer); timer = setTimeout(load, 1000); };
-    void load();
-    const off = onFeature({ frame: (f) => { if (f.name === "checkpoints" && f.session_id === sessionId) soon(); }, reconnect: () => void load() });
+    const again = readAtOpen(load);
+    const off = onFeature({ frame: (f) => { if (f.name === "checkpoints" && f.session_id === sessionId) soon(); }, reconnect: again });
     return () => { stop = true; clearTimeout(timer); off(); };
   }, [sessionId, idle]);
   return changed;

@@ -63,7 +63,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   useEffect(() => {
     setMissing(null);
     if (unreached === id && !connected) return;
-    actions.loadSession(id).then(() => { scope.loaded(id); setUnreached(null); }, (e) => {
+    actions.openSession(id).then(() => { scope.loaded(id); setUnreached(null); }, (e) => {
       const status = (e as { status?: number }).status;
       if (status === 404) setMissing(id);
       else if (status === undefined && e instanceof TypeError) setUnreached(id);

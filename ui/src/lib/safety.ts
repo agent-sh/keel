@@ -89,7 +89,7 @@ export const safety = {
   // reconnect while the view stays. Returns the release.
   watch(id: string): () => void {
     // A second view of a session already shown reads nothing: the first read, the frames and a reconnect keep it.
-    if (!shown.has(id)) safety.loadSession(id).catch(reportError);
+    if (!shown.has(id)) readAtOpen(() => safety.loadSession(id), "session cards");
     shown.set(id, (shown.get(id) ?? 0) + 1);
     return () => {
       const n = (shown.get(id) ?? 1) - 1;

@@ -1,7 +1,7 @@
 import { GitBranch, MessageSquare, RefreshCw, Send, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, onFeature, failed } from "../lib/store.ts";
+import { api, onFeature, readAtOpen, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { DiffView, parsePatch, type Comment, type FileChange } from "./DiffView.tsx";
 import { ReviewFindings } from "./ReviewFindings.tsx";
@@ -81,8 +81,8 @@ export function BranchReview({ session }: { session: Session }) {
     if (session.phase === "idle" && was !== "idle") load();
   }, [session.phase, load]);
   useEffect(() => {
-    load();
-    return onFeature({ frame: (f) => { if ((f.name === "checkpoints" || f.name === "worktree") && f.session_id === sessionId) load(); }, reconnect: load });
+    const again = readAtOpen(async () => void (await load()));
+    return onFeature({ frame: (f) => { if ((f.name === "checkpoints" || f.name === "worktree") && f.session_id === sessionId) load(); }, reconnect: again });
   }, [load]);
 
   const refresh = (

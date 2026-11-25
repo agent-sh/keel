@@ -11,7 +11,7 @@ import { rootOf } from "../lib/agent-tree.ts";
 import { useBoard, useTreeMark } from "../lib/board.ts";
 import { useChanged, type Changed } from "../lib/session-changes.ts";
 import { branchLine } from "../lib/rows.ts";
-import { actions, api, liveNow, onFeature, reportError, reportUnlessGone, useStore, type JobView } from "../lib/store.ts";
+import { actions, api, liveNow, onFeature, readAtOpen, reportError, reportUnlessGone, useStore, type JobView } from "../lib/store.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
@@ -59,8 +59,8 @@ function useJobs(sessionId: string, working: boolean) {
         if (list.some((j) => j.running && j.background)) timer = setTimeout(load, 2000);
       } catch (e) { reportError(e, { at: "jobs" }); }
     };
-    load();
-    const off = onFeature({ frame: (f) => { if (f.name === "jobs" && f.session_id === sessionId) void load(); }, reconnect: () => void load() });
+    const again = readAtOpen(load);
+    const off = onFeature({ frame: (f) => { if (f.name === "jobs" && f.session_id === sessionId) void load(); }, reconnect: again });
     return () => { stop = true; clearTimeout(timer); off(); };
   }, [sessionId, turn]);
   return jobs.filter((j) => j.background && (j.running || (j.ended ?? 0) > Date.now() - 60_000));

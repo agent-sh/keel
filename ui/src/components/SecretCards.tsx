@@ -17,7 +17,7 @@ export function SecretCards({ sessionId }: { sessionId: string }) {
   const requests = useSecrets((s) => s.requests[sessionId] ?? NONE);
   const fresh = useSecrets((s) => s.fresh[sessionId] ?? NONE);
   const all = useSecrets((s) => s.secrets[sessionId] ?? NONE);
-  useEffect(() => { secrets.load(sessionId).catch(reportError); }, [sessionId]);
+  useEffect(() => { secrets.watch(sessionId); }, [sessionId]);
   const found = fresh.map((id) => all.find((x) => x.id === id)).filter((x): x is SecretMeta => !!x);
   if (!requests.length && !found.length) return null;
   return (

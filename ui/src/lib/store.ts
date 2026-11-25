@@ -206,6 +206,7 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
     }
   };
   let r = await send();
+  lastAnswer = Date.now();
   let body = await read(r);
   if (r.status === 428 && body.presence?.action && presenceHook.sign) {
     const receipt = await presenceHook.sign(body.presence.action);
@@ -393,6 +394,21 @@ export const actions = {
   // A part of a branch the page does not hold yet (pageOf in src/core/tree.ts):
   // older or newer than a seq, around an event, or the end of the branch `head`
   // ends. Its events join the session's. `first` runs before they do.
+  // A view that shows a session opens it: the read another view of it has on its way is the one it takes.
+  // (A pane that stood for the session until the list was in and the pane that replaces it both open it:
+  // two reads of the same snapshot, a moment apart, on a page that is slow to start.)
+  openSession(id: string): Promise<void> {
+    const reading = opening.get(id);
+    if (reading) {
+      if (preload?.id === id && preload.p === reading) preload = null; // taken, as loadSession takes it
+      return reading;
+    }
+    const p = actions.loadSession(id);
+    opening.set(id, p);
+    const done = () => { if (opening.get(id) === p) opening.delete(id); };
+    p.then(done, done);
+    return p;
+  },
   async page(id: string, ask: { head?: string; before?: number; after?: number; around?: string }, first?: (p: Page) => void): Promise<Page> {
     const q = new URLSearchParams({ limit: String(PAGE) });
     for (const [k, v] of Object.entries(ask)) if (v !== undefined) q.set(k, String(v));
@@ -620,17 +636,28 @@ let opened = false;
 // feature's `reconnect` listener: one read per open, none before.
 //
 // A socket that is slow to open, or refused, is not waited for without end:
-// a second after the page loaded the features read once without it, so what
-// waits on the owner (an approval, a question, a secret) shows while the
-// page still reconnects. The open reads again, as every open does.
+// a second after the page asked for it the features read once without it, so
+// what waits on the owner (an approval, a question, a secret) shows while the
+// page still reconnects. The open reads again, as every open does. (The
+// second is the socket's own, counted from the ask: a page that was slow to
+// start, on a busy machine, has not waited on its socket yet, and reading
+// twice for it would only cost what it has not got.)
 const LATE_MS = 1000;
 let late = false;
+let lateTimer: ReturnType<typeof setTimeout> | undefined;
 const unread = new Set<() => void>();
-setTimeout(() => {
-  late = true;
-  if (!opened) for (const read of unread) read();
-  unread.clear();
-}, LATE_MS);
+// (A daemon that is answering the page's requests is not gone: its socket is on its way behind them. The look is
+// taken again a second later, up to four times, while it answers.)
+let lastAnswer = 0;
+function startLate(rearmed = 0) {
+  if (lateTimer && !rearmed || late) return;
+  lateTimer = setTimeout(() => {
+    if (!opened && rearmed < 4 && Date.now() - lastAnswer < LATE_MS) return startLate(rearmed + 1);
+    late = true;
+    if (!opened) for (const read of unread) read();
+    unread.clear();
+  }, LATE_MS);
+}
 export function readAtOpen(load: () => Promise<unknown>, at?: string): () => void {
   const read = () => void load().catch((e) => reportError(e, at ? { at } : undefined));
   if (opened || late) read();
@@ -929,10 +956,15 @@ export const useStaleSince = () => useStore(staleSince);
 // The session in the address is asked for at boot, with the page's first
 // loads, not once its view mounts (after the lazy chunks and the first render).
 let preload: { id: string; p: Promise<void> } | null = null;
+const opening = new Map<string, Promise<void>>();
 export function preloadSession(id: string) {
   const p = actions.loadSession(id);
   p.catch(() => {}); // its view takes this promise and reports a failure
   preload = { id, p };
+  // A view that opens the session while this read is on its way joins it.
+  opening.set(id, p);
+  const done = () => { if (opening.get(id) === p) opening.delete(id); };
+  p.then(done, done);
 }
 // The page's first socket open does not load the sessions, models and errors
 // the page is loading at start; it does when those loads failed (the daemon
@@ -1163,6 +1195,7 @@ function onClose(ws: WebSocket) {
   if (state.connected || !downTimer) lose("closed");
 }
 export function connect() {
+  startLate();
   downFrom = Date.now();
   downTick();
 }

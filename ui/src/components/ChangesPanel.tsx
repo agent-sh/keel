@@ -2,7 +2,7 @@ import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { FileDiff, FolderX, History, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { api, onFeature, reportError, reportUnlessGone, failed } from "../lib/store.ts";
+import { api, onFeature, readAtOpen, reportError, reportUnlessGone, failed } from "../lib/store.ts";
 import { stoppingShells } from "../lib/shells.ts";
 import { ago, cn, scrollMotion } from "../lib/utils.ts";
 import { DiffView, FileList, RevertButton, type FileChange } from "./DiffView.tsx";
@@ -60,8 +60,8 @@ export function ChangesPanel({ session }: { session: Session }) {
   }, [sessionId]);
 
   useEffect(() => {
-    load();
-    return onFeature({ frame: (f) => { if (f.name === "checkpoints" && f.session_id === sessionId) load(); }, reconnect: load });
+    const again = readAtOpen(async () => load());
+    return onFeature({ frame: (f) => { if (f.name === "checkpoints" && f.session_id === sessionId) load(); }, reconnect: again });
   }, [load]);
   // A turn that ends may have changed files.
   useEffect(() => { if (session.phase === "idle") load(); }, [session.phase]);
