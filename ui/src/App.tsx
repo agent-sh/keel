@@ -4,7 +4,6 @@ import { ContextMenuHost } from "./components/ContextMenu.tsx";
 import { inShell, panelPlace } from "./lib/shell.ts";
 import { Attention, setBaseTitle } from "./components/Attention.tsx";
 import { Boundary } from "./components/Boundary.tsx";
-import { Sidebar } from "./components/Sidebar.tsx";
 import "./lib/builtins.ts";
 import { AnswerQueue } from "./components/AnswerQueue.tsx";
 import { StartedToast } from "./components/StartedToast.tsx";
@@ -29,6 +28,7 @@ import { toggleList, useRail } from "./lib/rail.ts";
 import { actions, connect, preloadSession, reportError, setBootLoad } from "./lib/store.ts";
 import { focusApproval } from "./lib/automation.ts";
 import { getUI, phone, savePref, setUI, useUI } from "./lib/ui.ts";
+import { preloadSettled } from "./lib/preload.ts";
 
 // Overlays and Settings load on first use; the first page carries the shell only.
 const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ default: m.Palette })));
@@ -39,6 +39,13 @@ const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) =
 const PageFind = lazy(() => import("./components/FindBar.tsx").then((m) => ({ default: m.PageFind })));
 // The incident band is drawn only while an incident is open: its code comes with the first one.
 const IncidentBand = lazy(() => import("./components/IncidentBand.tsx").then((m) => ({ default: m.IncidentBand })));
+// The list of sessions is its own chunk. A wide window draws it at once, so it is fetched with the page, as
+// the bridge is; a phone keeps it in a drawer that is closed at the start, so its code comes once the page
+// has settled, and at the press that opens the drawer if that is sooner.
+const loadSidebar = () => import("./components/Sidebar.tsx");
+const Sidebar = lazy(() => loadSidebar().then((m) => ({ default: m.Sidebar })));
+if (phone()) preloadSettled(loadSidebar);
+else void loadSidebar();
 // The bridge (stations, sessions) is its own chunk, fetched with the page.
 const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
 const ProjectPage = lazy(() => import("./components/ProjectPage.tsx").then((m) => ({ default: m.ProjectPage })));
@@ -109,6 +116,10 @@ export function App() {
   // Escape, like a tap beside it, closes it and nothing else, with the keys
   // back on what opened it. A popup the drawer opened keeps its own keys.
   const drawer = phone() && sidebar;
+  // A phone draws the list when its drawer first opens and keeps it after; a wide window always draws it.
+  const listSeen = useRef(false);
+  if (!phone() || sidebar) listSeen.current = true;
+  const listDrawn = listSeen.current;
   const wrap = useRef<HTMLDivElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const closeDrawer = () => {
@@ -122,11 +133,13 @@ export function App() {
     if (!el) return;
     opener.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     const stops = () => [...el.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])')].filter((x) => x.getClientRects().length > 0);
-    // The drawer is not focusable until it starts to slide in: asked again on the next frames.
-    let raf = 0, tries = 0;
+    // The drawer is not focusable until it starts to slide in, and its list may still be on its way (its code
+    // loads at the first open when the page has not settled yet): asked again on the next frames, for a few seconds.
+    let raf = 0;
+    const t0 = performance.now();
     const enter = () => {
       (el.querySelector<HTMLElement>('[aria-current="page"]') ?? stops()[0])?.focus();
-      if (!el.contains(document.activeElement) && tries++ < 12) raf = requestAnimationFrame(enter);
+      if (!el.contains(document.activeElement) && performance.now() - t0 < 5000) raf = requestAnimationFrame(enter);
     };
     enter();
     let picked = 0;
@@ -194,7 +207,7 @@ export function App() {
           }}
         >
           {/* Desktop: the rail, folded or open. Phone: the open rail as a drawer. */}
-          <div ref={wrap} className="k-rail-wrap" data-drawer={sidebar || undefined} data-over={rail.over || undefined}><Sidebar open={rail.list} /></div>
+          <div ref={wrap} className="k-rail-wrap" data-drawer={sidebar || undefined} data-over={rail.over || undefined}>{listDrawn && <Suspense fallback={null}><Sidebar open={rail.list} /></Suspense>}</div>
           {(rail.over || sidebar) && <div className="k-scrim" data-over={rail.over || undefined} onClick={() => (drawer ? closeDrawer() : toggleList(false))} aria-hidden="true" />}
           <div className="contents" inert={drawer} data-testid="under-drawer">
             {page ? (

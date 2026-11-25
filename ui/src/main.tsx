@@ -1,3 +1,4 @@
+import "./lib/first-visit.ts";
 import "./lib/fonts.ts";
 import "./lib/shell.ts";
 import "./lib/frames.ts";

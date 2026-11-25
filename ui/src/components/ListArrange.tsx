@@ -16,14 +16,14 @@ import { cn } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 import { PaneChoices } from "./Panes.tsx";
 import { phone } from "../lib/ui.ts";
+import { returning } from "../lib/first-visit.ts";
 
 export { order, type Arrange } from "../lib/list-order.ts";
 const KEY = "keel.listArrange";
 
 // The arrangement the browser keeps, on this version's defaults. A browser
 // that ran Keel before is told once, in the menu, that the default changed.
-const used = () => { for (let i = 0; i < localStorage.length; i++) if (localStorage.key(i)!.startsWith("keel.")) return true; return false; };
-let kept = readArrange(localStorage.getItem(KEY), used());
+let kept = readArrange(localStorage.getItem(KEY), returning);
 let arrange: Arrange = kept.arrange;
 const subs = new Set<() => void>();
 // The note is a hint for one load: once it was on screen it is kept as read, and this load still shows it
