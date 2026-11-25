@@ -133,6 +133,26 @@ test("a row's state is one dot, and a session that waits on what it left going h
       expect(await mark(declined).evaluate((el) => getComputedStyle(el).boxShadow)).toContain((await paint(page, "--dot-fail")).color);
       expect(await mark(command).evaluate((el) => ({ color: getComputedStyle(el).borderTopColor, style: getComputedStyle(el).borderTopStyle, inner: getComputedStyle(el, "::before").content }))).toEqual({ color: (await paint(page, "--dot-work")).color, style: "dashed", inner: "none" });
     }
+    // The done dot is the quietest of the four, and it still reads on the page's own ground (the phone's bar and tab strip
+    // are on it, not on the rail): 3:1 on paper and 4.5:1 at night.
+    for (const isDark of [false, true]) {
+      await dark(page, isDark);
+      const onBg = await page.evaluate(() => {
+        const probe = document.createElement("i");
+        probe.style.cssText = "position:fixed;width:0;height:0;color:var(--dot-done);background:var(--bg)";
+        document.body.append(probe);
+        const cv = document.createElement("canvas");
+        cv.width = cv.height = 1;
+        const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+        const rgb = (c: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = c; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+        const lum = (c: number[]) => { const [r, g, b] = c.map((v) => { const x = v / 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
+        const s = getComputedStyle(probe);
+        const [x, y] = [lum(rgb(s.color)), lum(rgb(s.backgroundColor))].sort((a, b) => b - a);
+        probe.remove();
+        return (x! + 0.05) / (y! + 0.05);
+      });
+      expect(onBg, `the done dot on the page, ${isDark ? "dark" : "light"}`).toBeGreaterThanOrEqual(isDark ? 4.5 : 3);
+    }
     await dark(page, false);
 
     // Working is a solid dot the size of the others; its glow is a shadow that starts at the dot's edge (no gap, so no ring
