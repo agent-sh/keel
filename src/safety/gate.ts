@@ -52,6 +52,9 @@ import { headHold } from "./head-trust.ts";
 import { OWN_SERVERS, fetchReaches, inputTargets, judgeFact, outsideCommand, plainFetcher, reasonOf as provReason, refusalOf as provRefusal, serverOf, shellReaches, wholeTargets, type Hit, type Reach } from "./provenance.ts";
 import { webShape } from "./web-shape.ts";
 import { helperDenial, ownerDenial } from "../core/stops.ts";
+import { unwritten, writeOutRefusal } from "./written-out.ts";
+// The lines of one turn the gate sends back to be written out before it lets the owner's card open instead.
+export const WRITE_OUT_MAX = 3;
 // What a card a hook asked for says before the hook's reason.
 export const HOOK_ASKS = "A hook of yours asks";
 import { landing, type MarkArgs } from "./marks.ts";
@@ -1904,6 +1907,12 @@ export class Gate {
     let words: Held | null = null;
     if (cls.kind === "shell" && !session.machine && /\b(push|gh)\b/.test(cls.command)) {
       words = await this.privateWords(session, cls.command, cwdOf(call) ?? call.ctx.cwd);
+      // A line the owner would be asked about because it spells where it goes or what it sends with a variable goes back
+      // once to be written out (written-out.ts): the line that comes back is read exactly, and asks only for what it does.
+      if (words || ("ask" in d && d.ask.account === "")) {
+        const back = this.writeOut(session, cls.command, cls.cwd ?? cwdOf(call) ?? call.ctx.cwd);
+        if (back) return { deny: back };
+      }
       if (words) {
         if (session.parent_id) return { deny: heldRefusal(words) };
         const out = await this.askOnce(session, call, name, heldWhy(words), "words");
@@ -1967,6 +1976,22 @@ export class Gate {
       }
     }
     return (await this.card(session, call, name, cls, summary, { ...d.ask, notice: notice ?? d.ask.notice, bind: target?.source, cut })) ?? { cls };
+  }
+
+  // A line sent back to be written out (written-out.ts): once for a line, and at most WRITE_OUT_MAX times in a turn, so
+  // a model that keeps its variables reaches the owner's card as before. The same line again is judged as it is.
+  private sentBack = new Map<string, Set<string>>();
+  private writeOut(session: Session, command: string, cwd: string): string | null {
+    const u = unwritten(command, cwd, homeDir());
+    if (!u.length) return null;
+    const had = this.sentBack.get(session.id) ?? new Set<string>();
+    const key = Bun.hash(command).toString(36);
+    if (had.has(key) || had.size >= WRITE_OUT_MAX) return null;
+    had.add(key);
+    // (A session whose turn never starts again leaves its lines here: the oldest goes when there are many.)
+    if (!this.sentBack.has(session.id) && this.sentBack.size >= 1024) this.sentBack.delete(this.sentBack.keys().next().value!);
+    this.sentBack.set(session.id, had);
+    return writeOutRefusal(u);
   }
 
   // The private words a command sends to a public place, or null: none, a private repository, or a check that could
@@ -2042,6 +2067,7 @@ export class Gate {
   // A new turn: the run of refusals starts over.
   turnStarted(sessionId: string) {
     this.streak.delete(sessionId);
+    this.sentBack.delete(sessionId);
     this.ownRefs.delete(sessionId);
     this.turnBegan(sessionId);
   }
