@@ -4,7 +4,7 @@
 // panel, the changes open the Changes panel. The line above it (SessionDock.tsx) holds the plan and the agents.
 import { Boxes, Folder } from "lucide-react";
 import type { ReactNode } from "react";
-import { STATE_WORD, stateLabel } from "../../../src/core/state-words.ts";
+import { STATE_WORD, backgroundOf, stateLabel } from "../../../src/core/state-words.ts";
 import { briefText, whyText } from "../../../src/core/watch.ts";
 import { momentOf, pathInAction, type Moment } from "../lib/now-line.ts";
 import { projectOfFolder, useProjects } from "../lib/projects.ts";
@@ -50,9 +50,13 @@ export function DockNow({ sessionId, changes }: { sessionId: string; changes: Re
   const path = moment === "acting" ? pathInAction(said, session.workspace) : null;
   const clock = moment && timed(st) ? stateClock(st, now) : "";
   const folder = session.workspace ? folderOf(session) : "";
-  // An ask whose card is above the box is said by the bar (its dot, its word, its clock) and by the card: the line
-  // does not say it a third time.
-  const asked = moment === "need" && inView;
+  // A session at rest, or one whose ask the card above the box makes, is said by the bar (its dot, its word, its clock,
+  // its reason): the line does not say it again. What is left of the line is the places and the changes, and a line
+  // with none of them is not drawn (styles.css, .k-now:empty).
+  const asked = moment === null || (moment === "need" && inView);
+  // The bar names the folder while the turn is not at work and the bar has the room; the line names it for a bar
+  // that has not (styles.css, data-bar).
+  const bar = !(st.watch === "work" && !backgroundOf(st));
   return (
     <div className="k-docket-line k-now" data-testid="dock-now" data-moment={moment ?? undefined} data-watch={st.watch} data-why={st.why}>
       {!asked && <span className="k-now-act" data-testid="dock-action" title={whole || undefined}>
@@ -68,7 +72,7 @@ export function DockNow({ sessionId, changes }: { sessionId: string; changes: Re
         {clock && <span className="k-now-clock k-face-figure" data-testid="dock-action-clock">{clock}</span>}
       </span>}
       {folder && (
-        <button type="button" className="k-now-seg k-now-folder" data-testid="dock-folder" title={`${session.workspace}\nOpen the folder in Files`} aria-label={`Folder ${session.workspace}: open it in Files`} onClick={() => showInFiles(sessionId, "")}>
+        <button type="button" className="k-now-seg k-now-folder" data-bar={bar || undefined} data-testid="dock-folder" title={`${session.workspace}\nOpen the folder in Files`} aria-label={`Folder ${session.workspace}: open it in Files`} onClick={() => showInFiles(sessionId, "")}>
           <Folder className="k-docket-glyph" aria-hidden="true" />
           <span className="k-now-name">{folder}</span>
         </button>

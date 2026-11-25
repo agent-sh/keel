@@ -194,6 +194,35 @@ test.describe("at a desk", () => {
       for (const id of made_) await request.delete(`/api/sessions/${id}`).catch(() => {});
     }
   });
+
+  test("a session at rest has no line over the box that the bar already says: no state word, no folder, no height", async ({ page, request }) => {
+    const ws = folder("rest");
+    const id = await made(request, "Rests with nothing changed", ws);
+    try {
+      await send(request, id, calls([{ name: "Read", input: { file_path: join(ws, "src/a.ts") } }]));
+      await rested(request, id, 1);
+      await page.setViewportSize({ width: 1920, height: 1040 });
+      await page.goto(`/s/${id}`);
+      const pane = page.locator(".k-station[data-helm]");
+      // The bar says the state and the folder.
+      await expect(pane.getByTestId("station-word")).toContainText("Done", { timeout: 30_000 });
+      await expect(pane.locator(".k-station-where")).toBeVisible();
+      // The line over the box says neither again, and with nothing else to say it is not drawn.
+      await expect(pane.getByTestId("dock-action")).toHaveCount(0);
+      await expect(pane.getByTestId("dock-folder")).toBeHidden();
+      await expect(pane.getByTestId("dock-now")).toBeHidden();
+      const m = await measure(page);
+      expect(m.dock!.height, "the block over the box takes no height").toBeLessThanOrEqual(1);
+      await shoot(page, "status-07-rest-1920");
+      // In a narrow pane the bar has no room for the folder: the line names it.
+      await page.setViewportSize({ width: 480, height: 900 });
+      await expect(pane.getByTestId("dock-folder")).toBeVisible();
+      await expect(pane.getByTestId("dock-action")).toHaveCount(0);
+      await shoot(page, "status-07-rest-480");
+    } finally {
+      await request.delete(`/api/sessions/${id}`).catch(() => {});
+    }
+  });
 });
 
 test.describe("on a phone", () => {
