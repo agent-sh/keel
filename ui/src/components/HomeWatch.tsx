@@ -47,7 +47,7 @@ import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow, doneAlert, stateWords }
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { goToAsk } from "./AnswerQueue.tsx";
-import { usePress } from "./ApprovalCard.tsx";
+import { usePress } from "../lib/press-hooks.tsx";
 import { Mark, folderOf, stateClock, tickOf, timed, useNow } from "./Mark.tsx";
 
 const MOST = { attention: 6, working: 4 };

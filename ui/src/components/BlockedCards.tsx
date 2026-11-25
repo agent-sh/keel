@@ -1,7 +1,7 @@
 import { RotateCcw, ShieldX, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
-import { useNudge, usePress, useStood } from "./ApprovalCard.tsx";
+import { useNudge, usePress, useStood } from "../lib/press-hooks.tsx";
 import { Spelled } from "./Spelled.tsx";
 
 // The one retry the owner can let through. It lets a call run, so it is held like an answer on a
