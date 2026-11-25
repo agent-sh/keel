@@ -122,6 +122,36 @@ export function turnEnded(records: Json[], text: string): boolean {
   return at >= 0 && records.slice(at + 1).some((r) => r?.type === "event_msg" && (r.payload?.type === "task_complete" || r.payload?.type === "turn_aborted"));
 }
 
+// The last record of a type in a JSONL file, read back from its end a part at a time until one is found
+// (a long thread's last turn can have begun far before the file's tail).
+export function lastRecord(path: string, type: string, part = 256 * 1024): Json | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    let end = fstatSync(fd).size;
+    let rest = Buffer.alloc(0);
+    const mark = `"type":"${type}"`;
+    while (end > 0) {
+      const from = Math.max(0, end - part);
+      const got = Buffer.alloc(end - from);
+      readSync(fd, got, 0, got.length, from);
+      end = from;
+      // The part's first line may be cut (a character too): its bytes are kept and read with the part before it.
+      const buf = Buffer.concat([got, rest]);
+      const cut = from > 0 ? buf.indexOf(10) : -1;
+      if (from > 0 && cut < 0) { rest = buf; continue; }
+      rest = from > 0 ? buf.subarray(0, cut) : Buffer.alloc(0);
+      const lines = buf.subarray(cut + 1).toString("utf8").split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const l = lines[i]!;
+        if (!l.includes(mark)) continue;
+        try { const r = JSON.parse(l); if (r?.type === type) return r; } catch {}
+      }
+    }
+    return undefined;
+  } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
 // The records of a file from a byte offset on (the bytes a send started at): what the thread gained since.
 function recordsFrom(path: string, offset: number): Json[] {
   let fd: number | undefined;
@@ -308,8 +338,9 @@ export class CodexApp {
     const row = this.d.outside.row(sessionId);
     const bin = this.d.bin();
     if (!row || !bin || !existsSync(row.path)) return undefined;
-    const { head, tail } = headTail(row.path, 64 * 1024);
-    const f = threadFacts(head, tail);
+    const { head } = headTail(row.path, 64 * 1024);
+    const ctx = lastRecord(row.path, "turn_context");
+    const f = threadFacts(head, ctx ? [ctx] : []);
     const home = this.d.home();
     const isDir = (p?: string) => { try { return !!p && statSync(p).isDirectory(); } catch { return false; } };
     const cwd = isDir(f.cwd) ? f.cwd! : homeDir();

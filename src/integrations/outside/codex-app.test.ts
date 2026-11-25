@@ -130,6 +130,21 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   }, 30_000);
 
+  test("a long thread resumes with the policy of its last turn, however far back that turn began", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      const filler = (n: number) => { for (let i = 0; i < n; i++) r.rec("event_msg", { type: "agent_message", message: "x".repeat(1000) }); };
+      filler(200);
+      r.rec("turn_context", { turn_id: "t1", cwd: r.cwd, approval_policy: "never", sandbox_policy: { type: "danger-full-access" }, model: "gpt-x" });
+      filler(200);
+      r.app().send(s.id, "fix the build", "k1");
+      await until(() => !r.app().ours(s.id) && readFileSync(r.rollout, "utf8").includes("The command was allowed: fix the build"), 15_000);
+      const log = readFileSync(`${r.rollout}.standin.log`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+      expect(log.find((m) => m.method === "thread/resume")?.params).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access" });
+    } finally { r.done(); }
+  }, 30_000);
+
   test("a file change is the gate's one-call card: the owner's alone, showing the diff Codex will write", async () => {
     const r = rig({ realGate: true });
     try {
