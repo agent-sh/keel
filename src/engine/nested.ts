@@ -26,6 +26,7 @@ import { checkpointAt } from "./compact.ts";
 import { cutInstructions, instructionFilter, instructionLimit, instructionPaths } from "./turn.ts";
 import { rootOf } from "../safety/trust.ts";
 import { codexConfig, folderFiles, nativeRoots, OnceSet } from "./native-memory.ts";
+import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
 
 const OPEN = '<nested-instructions path="';
 const MARK = /<nested-instructions path="([^"]+)">/g;
@@ -118,6 +119,29 @@ export function loadedPaths(store: Store, sessionId: string): Set<string> {
   return new Set([...st.paths, ...(pending.get(sessionId) ?? [])]);
 }
 
+// The prompt's chain of a folder and Codex's fallback names, kept while no file they were read from
+// changed (its size, change time and inode: instruction-marks.ts), so a call costs a stat a path
+// instead of reading the chain and the config again. The folders of the sessions that work now.
+const CHAINS = 64;
+type Chain = { paths: string[]; fallback: string[]; marks: Marks };
+const chains = new Map<string, Chain>();
+export function chainOf(cwd: string): Chain {
+  const roots = nativeRoots();
+  const key = `${roots.codex}\0${cwd}`;
+  const was = chains.get(key);
+  if (was && !editedPath(was.marks)) { chains.delete(key); chains.set(key, was); return was; }
+  const marks: Marks = new Map();
+  noteMark(marks, join(roots.codex, "config.toml"));
+  const fallback = codexConfig(roots).fallback;
+  // (The files one with another are in the prompt too, named by their line.)
+  const paths = instructionPaths(cwd, marks, { covered: true }).map((f) => f.path);
+  const c = { paths, fallback, marks };
+  chains.delete(key);
+  chains.set(key, c);
+  while (chains.size > CHAINS) chains.delete(chains.keys().next().value!);
+  return c;
+}
+
 // `window`: the context window of the session's model, in tokens (how much of a long file comes: instructionLimit).
 export function block(path: string, window?: number): string | null {
   let raw: string;
@@ -140,8 +164,7 @@ export function nestedFor(store: Store, s: Session, tool: Tool, input: any, tool
   const cwd = s.workspace;
   const { paths, edit } = targetsOf(tool, input, toolCwd ?? cwd);
   if (!paths.length) return [];
-  const inPrompt = instructionPaths(cwd).map((f) => f.path);
-  const fallback = codexConfig(nativeRoots()).fallback;
+  const { paths: inPrompt, fallback } = chainOf(cwd);
   let loaded: Set<string> | null = null;
   const out: string[] = [];
   for (const p of paths) {

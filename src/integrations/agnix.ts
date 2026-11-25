@@ -129,7 +129,8 @@ export class Agnix {
   private loaded = false;
   // Runs started (for the tests: a cached key runs nothing).
   runs = 0;
-  constructor(private o: { file?: string; bin?: () => string | null; fallback?: () => readonly string[]; nice?: boolean; ms?: number; changed?: (l: Lint) => void } = {}) {}
+  // `failed`: a run of the program that failed, once a run (a failure kept for the same files is not told again).
+  constructor(private o: { file?: string; bin?: () => string | null; fallback?: () => readonly string[]; nice?: boolean; ms?: number; changed?: (l: Lint) => void; failed?: (l: Lint) => void } = {}) {}
 
   private bin(): string | null { return (this.o.bin ?? agnixPath)(); }
   // Whether the program is there (Health's one line when it is not).
@@ -179,7 +180,9 @@ export class Agnix {
     // One run at a time across the daemon.
     const run = this.line.then(() => this.spawn(folder, names, bin, key));
     this.line = run.catch(() => {});
-    return this.keep(await run);
+    const lint = await run;
+    if (lint.failed) try { this.o.failed?.(lint); } catch {}
+    return this.keep(lint);
   }
 
   private keep(lint: Lint): Lint {
@@ -198,7 +201,7 @@ export class Agnix {
     const base = { folder, key, at: t0, version: "", files: 0, errors: 0, warnings: 0, info: 0, findings: [] as Finding[] };
     let proc: ReturnType<typeof Bun.spawn>;
     try {
-      proc = Bun.spawn(argv, { cwd: folder, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, NO_COLOR: "1" } });
+      proc = Bun.spawn(argv, { cwd: folder, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, NO_COLOR: "1", AGNIX_TELEMETRY: "0" } });
     } catch (e) {
       return { ...base, ms: Date.now() - t0, failed: `could not start: ${(e as Error).message}` };
     }

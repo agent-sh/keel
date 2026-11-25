@@ -24,12 +24,16 @@ export function errorNote(l: Lint): { short: string; text: string } {
 }
 
 export const agnixRoutes: RouteModule = ({ store, errors }) => {
-  const a = new Agnix({ file: join(store.stateDir, "agnix.json"), fallback: () => codexConfig(nativeRoots()).fallback });
+  const a = new Agnix({
+    file: join(store.stateDir, "agnix.json"), fallback: () => codexConfig(nativeRoots()).fallback,
+    // Once a run: a failure kept for the same files answers later checks without a new row.
+    failed: (l) => errors.capture("server", new Error(`agnix: ${l.failed}`), { at: "agnix", folder: l.folder }),
+  });
   setAgnix(a);
   registerHooks({
     instructionsRendered(s) {
       if (s.machine) return; // the files are on the session's machine
-      void a.check(s.workspace).then((l) => { if (l?.failed) errors.capture("server", new Error(`agnix: ${l.failed}`), { at: "agnix", folder: l.folder }); });
+      void a.check(s.workspace);
     },
     turnNote(s, line) {
       if (s.machine) return;

@@ -17,11 +17,11 @@ const OUT = {
   summary: { errors: 1, warnings: 1, info: 1 },
 };
 
-// A stand-in that notes each run (its arguments) and prints OUT, or hangs when the folder says so.
+// A stand-in that notes each run (its arguments and AGNIX_TELEMETRY) and prints OUT, or hangs when the folder says so.
 function standIn(dir: string): { bin: string; log: string } {
   const bin = join(dir, "agnix"), log = join(dir, "runs.log"), out = join(dir, "out.json");
   writeFileSync(out, JSON.stringify(OUT));
-  writeFileSync(bin, `#!/bin/sh\necho "$*" >> '${log}'\n[ -e HANG ] && exec sleep 30\ncat '${out}'\n[ -e CLAUDE.md ] && grep -q nonexistent CLAUDE.md && exit 1\nexit 0\n`);
+  writeFileSync(bin, `#!/bin/sh\necho "$*" >> '${log}'\n[ "$AGNIX_TELEMETRY" = 0 ] || echo telemetry-on >> '${log}'\n[ -e HANG ] && exec sleep 30\ncat '${out}'\n[ -e CLAUDE.md ] && grep -q nonexistent CLAUDE.md && exit 1\nexit 0\n`);
   chmodSync(bin, 0o755);
   return { bin, log };
 }
@@ -76,13 +76,17 @@ test("a run that hangs is cut at its bound and says so; a folder with no configs
   const { bin } = standIn(dir);
   const folder = join(dir, "repo");
   mkdirSync(folder);
-  const a = new Agnix({ bin: () => bin, nice: false, ms: 300 });
+  const failed: string[] = [];
+  const a = new Agnix({ bin: () => bin, nice: false, ms: 300, failed: (l) => failed.push(l.failed!) });
   expect(await a.check(folder)).toBeNull();
   writeFileSync(join(folder, "AGENTS.md"), "# Repo\n");
   writeFileSync(join(folder, "HANG"), "");
   const r = (await a.check(folder))!;
   expect(r.failed).toContain("longer than");
   expect(r.errors).toBe(0);
+  // Told once a run: the kept failure answers the next check without telling it again.
+  expect(await a.check(folder)).toEqual(r);
+  expect(failed).toHaveLength(1);
 });
 
 test("without agnix: not installed, and a check runs nothing", async () => {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { DISK_BROKEN, diskRow, hookRows, layerRows, mcpRows, matcherVerdict, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts } from "./health-rules.ts";
+import { agnixRows, DISK_BROKEN, diskRow, hookRows, layerRows, mcpRows, matcherVerdict, processRows, providerRows, sandboxRows, telemetryRows, type MatcherFacts } from "./health-rules.ts";
 
 const facts: MatcherFacts = {
   tools: new Set(["Bash", "Edit", "Write", "Read", "shell", "mcp_call"]),
@@ -137,4 +137,12 @@ test("providers: each row says which call was made and what came back", () => {
   expect(rows[1]!.fix).toContain("key");
   expect(rows[4]!.fix).toContain("credit");
   expect(providerRows([])[0]!.level).toBe("warning");
+});
+
+test("agnix: a line a folder with findings or a failed run, the clean folders one line with their count", () => {
+  const lint = (folder: string, o: { errors?: number; warnings?: number; failed?: string } = {}) => ({ folder, at: 0, version: "0.61.0", files: 3, errors: o.errors ?? 0, warnings: o.warnings ?? 0, ...(o.failed ? { failed: o.failed } : {}), findings: o.errors ? [{ level: "error", rule: "R", file: "CLAUDE.md", line: 1, message: "m" }] : [] });
+  const rows = agnixRows({ installed: true, folders: [lint("/a", { errors: 1 }), lint("/b"), lint("/c", { failed: "took longer than 30 s" }), lint("/d"), lint("/e", { warnings: 2 })] });
+  expect(rows.map((r) => [r.id, r.level])).toEqual([["agnix:/a", "warning"], ["agnix:/c", "warning"], ["agnix:/e", "ok"], ["agnix:clean", "ok"]]);
+  expect(rows.at(-1)!.title).toBe("2 folders linted with no errors or warnings");
+  expect(agnixRows({ installed: false, folders: [] }).map((r) => r.id)).toEqual(["agnix:missing"]);
 });

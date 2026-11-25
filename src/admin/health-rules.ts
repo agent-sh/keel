@@ -290,15 +290,18 @@ export type AgnixFacts = {
   folders: { folder: string; at: number; version: string; files: number; errors: number; warnings: number; failed?: string; findings: { level: string; rule: string; file: string; line: number; message: string }[] }[];
 };
 
-// A line a folder: its errors and warnings from agnix's last run on its files (src/integrations/agnix.ts).
+// A line a folder with findings: its errors and warnings from agnix's last run on its files
+// (src/integrations/agnix.ts), or the run's failure; the folders with none are one line with their count.
 // Errors make the line a warning: they are the folder's to fix, nothing of Keel is broken. No agnix: one line.
 export function agnixRows(f: AgnixFacts): Row[] {
   const link = { section: "instructions" };
   if (!f.installed) return [{ id: "agnix:missing", group: "agnix", level: "ok", title: "agnix is not installed: agent configs are not linted", detail: "Keel lints each session folder's CLAUDE.md, AGENTS.md, skills, hooks and MCP files with agnix when it is on the PATH (cargo install agnix-cli)", how: "looked for agnix on the PATH and in ~/.cargo/bin" }];
   if (!f.folders.length) return [{ id: "agnix:none", group: "agnix", level: "ok", title: "no folder linted yet", detail: "a session's folder is linted when its first prompt is made, and again when one of its agent configs changes" }];
   const n = (k: number, w: string) => `${k} ${w}${k === 1 ? "" : "s"}`;
-  return f.folders.map((l) => {
-    const head = l.failed ? `the last run failed: ${l.failed}` : l.errors || l.warnings ? `${n(l.errors, "error")}, ${n(l.warnings, "warning")}` : `no errors or warnings in ${n(l.files, "file")}`;
+  const said = f.folders.filter((l) => l.failed || l.errors || l.warnings);
+  const clean = f.folders.length - said.length;
+  const rows: Row[] = said.map((l) => {
+    const head = l.failed ? `the last run failed: ${l.failed}` : `${n(l.errors, "error")}, ${n(l.warnings, "warning")}`;
     const lines = l.findings.slice(0, 5).map((x) => `${x.level} ${x.file || "(project)"}${x.line ? `:${x.line}` : ""} ${x.rule}: ${x.message}`);
     const rest = l.findings.length > 5 ? [`and ${l.errors + l.warnings - 5} more`] : [];
     return {
@@ -308,4 +311,6 @@ export function agnixRows(f: AgnixFacts): Row[] {
       path: l.folder, link, how: `agnix ${l.version || ""}`.trim() + `, ${new Date(l.at).toISOString().slice(0, 16).replace("T", " ")} UTC`,
     };
   });
+  if (clean) rows.push({ id: "agnix:clean", group: "agnix", level: "ok", title: `${n(clean, "folder")} linted with no errors or warnings`, link });
+  return rows;
 }
