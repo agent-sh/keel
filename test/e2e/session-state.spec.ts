@@ -241,8 +241,13 @@ test("is anything stuck: a held stream, a silent command and a stalled agent are
     }, { timeout: 30_000 }).toEqual([1, 1, 1]);
     // (A tooltip moves from title to data-tip once a pointer has been over it.)
     const tip = async (el: Locator) => (await el.getAttribute("title")) ?? (await el.getAttribute("data-tip")) ?? "";
-    // One line an entry (the dot, the title, how long) in the colour of what needs the owner; what it has not done and
-    // whose agent it is are in the tooltip.
+    // The strip belongs to the list: a quiet head in sentence case, no box, no glyph, and one line an entry as a session
+    // row is (the session's own dot, the title, how long); what it has not done and whose agent it is are in the tooltip.
+    const head = strip.locator(".k-stuck-head");
+    await expect(head).toContainText("Not moving");
+    expect(await head.evaluate((el) => getComputedStyle(el).textTransform), "no capitals").toBe("none");
+    await expect(strip.locator("svg"), "no warning glyph").toHaveCount(0);
+    expect(await strip.evaluate((el) => { const c = getComputedStyle(el); return [c.borderTopWidth, c.backgroundColor, c.boxShadow]; }), "no box").toEqual(["0px", "rgba(0, 0, 0, 0)", "none"]);
     await expect.poll(() => tip(strip.locator(`[data-session="${stream}"]`))).toMatch(/no output/);
     await expect.poll(() => tip(strip.locator(`[data-session="${tool}"]`))).toMatch(/Running until .+, no output/);
     // An agent is no entry of its own: the session it works for is, with how many of its agents are stuck.
@@ -252,7 +257,8 @@ test("is anything stuck: a held stream, a silent command and a stalled agent are
     await expect(strip.locator(`[data-session="${agent}"]`)).toHaveCount(0);
     for (const id of [stream, tool, parent]) {
       const item = strip.locator(`[data-session="${id}"]`);
-      await expect(item.locator(".k-mark"), "the needs-you dot").toHaveAttribute("data-watch", "need");
+      await expect(item, "a session row").toHaveClass(/\bk-row\b/);
+      await expect(item.locator(".k-mark"), "the session's own state, not needs-you").toHaveAttribute("data-watch", /^(work|wait)$/);
       expect(await item.evaluate((el) => el.getBoundingClientRect().height), "one line").toBeLessThan(32);
       await expect(item.locator(".k-stuck-what")).toHaveCount(0);
     }
@@ -1117,6 +1123,11 @@ test("what made no progress is capped at three entries with the rest a count, ag
     await shoot(page, "session-state-06-stuck-all");
     await strip.getByTestId("stuck-more").click();
     await expect(strip.getByTestId("stuck-item")).toHaveCount(3);
+    // A phone: the drawer holds the same list, the strip over it as it is on a wide page.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "All sessions" }).click();
+    await expect(page.getByTestId("stuck").getByTestId("stuck-item").first()).toBeVisible();
+    await shoot(page, "session-state-07-stuck-phone");
   } finally {
     await request.patch("/api/settings", { data: { stuck: null } }).catch(() => {});
     mkdirSync(WS, { recursive: true });

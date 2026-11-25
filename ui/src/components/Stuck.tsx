@@ -2,21 +2,24 @@
 // progress for too long (src/core/stuck.ts), agents' included, the longest
 // first. The daemon marks such a session's state, so this reads the states
 // the rows read and asks nothing more, and it is there only while something
-// is stuck. Folded, it is a count that opens the list. An entry is one line, as a row is: the dot, the title, how
-// long; what it has not done and whose agent it is are in its tooltip. It is in the colour of what needs the owner.
+// is stuck. It is part of the list, not a warning over it: a quiet head in the list's own type, and entries that are
+// session rows, each with the session's own state's dot (these work: the daemon says only that their step shows no
+// sign of life) and how long in the muted time column; what it has not done and whose agent it is are in its tooltip.
+// Folded, it is a count that opens the list.
 // An agent is not an entry of its own: the session it works for is, with how many of its agents are stuck, and the list
 // shows the first few with the rest as a count that opens them (a long list took a quarter of the rail).
-import { TriangleAlert } from "lucide-react";
+import { Clock } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { StuckMark } from "../../../src/core/watch.ts";
+import { NOT_MOVING } from "../../../src/core/state-words.ts";
 import { toggleList } from "../lib/rail.ts";
 import { useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { useSessionStates } from "../lib/watch.ts";
+import { useSessionStates, type SessionState } from "../lib/watch.ts";
 import { Mark, span, useNow } from "./Mark.tsx";
 
-type Item = StuckMark & { s: Session; parent?: Session; elapsed: number };
+type Item = StuckMark & { s: Session; st: SessionState; parent?: Session; elapsed: number };
 
 export function useStuck(): Item[] {
   const sessions = useStore((x) => x.sessions);
@@ -26,7 +29,7 @@ export function useStuck(): Item[] {
   const now = useNow(list.some((s) => states[s.id]?.stuck), 5000);
   return useMemo(
     () => list
-      .flatMap((s) => { const hit = states[s.id]?.stuck; return hit ? [{ ...hit, s, parent: s.parent_id ? sessions[s.parent_id] : undefined, elapsed: now - hit.since }] : []; })
+      .flatMap((s) => { const hit = states[s.id]?.stuck; return hit ? [{ ...hit, s, st: states[s.id]!, parent: s.parent_id ? sessions[s.parent_id] : undefined, elapsed: now - hit.since }] : []; })
       .sort((a, b) => b.elapsed - a.elapsed),
     [list, states, sessions, now],
   );
@@ -54,6 +57,8 @@ export function foldStuck(items: Item[], sessions: Record<string, Session>): Stu
 const SAID = (i: Item) => (i.what === "stream" ? "no output" : i.what === "model" ? "no answer yet" : i.what === "tool" ? `${i.text}, no output` : `Long step: ${i.text}`);
 
 const TIP = (i: Item) => `${i.s.title || "New session"}${i.parent ? `, agent of ${i.parent.title || "a session"}` : ""}: ${SAID(i)}`;
+// The entry's dot is its session's own state: the session's, else the first agent's when only an agent is stuck.
+const st = (g: StuckGroup) => (g.own ?? g.agents[0]!).st;
 const agentsWord = (n: number) => `${n} ${n === 1 ? "agent" : "agents"}`;
 
 export function StuckStrip({ open }: { open: boolean }) {
@@ -62,11 +67,11 @@ export function StuckStrip({ open }: { open: boolean }) {
   const [all, setAll] = useState(false);
   const groups = useMemo(() => foldStuck(items, sessions), [items, sessions]);
   if (!groups.length) return null;
-  const label = `${groups.length} without progress`;
+  const label = `${groups.length} ${NOT_MOVING.toLowerCase()}`;
   if (!open) {
     return (
       <button type="button" className="k-stuck-chip" data-testid="stuck" aria-label={`${label}. Show the list`} title={`${label}: ${groups.map((g) => g.s.title || "New session").join(", ")}`} onClick={() => toggleList(true)}>
-        <TriangleAlert /><span className="tabular-nums">{groups.length}</span>
+        <Clock /><span className="tabular-nums">{groups.length}</span>
       </button>
     );
   }
@@ -74,13 +79,15 @@ export function StuckStrip({ open }: { open: boolean }) {
   const more = groups.length - shown.length;
   return (
     <section className="k-stuck" data-testid="stuck" aria-label={label}>
-      <h2 className="k-stuck-head"><TriangleAlert /><span>No progress</span><span className="tabular-nums">{groups.length}</span></h2>
+      <h2 className="k-group-head k-stuck-head"><span>{NOT_MOVING}</span><span className="k-stuck-n tabular-nums">{groups.length}</span></h2>
       {shown.map((g) => (
-        <button key={g.s.id} type="button" className="k-stuck-item" data-testid="stuck-item" data-session={g.s.id} data-what={(g.own ?? g.agents[0]!).what} data-agents={g.agents.length || undefined} title={[...(g.own ? [TIP(g.own)] : []), ...g.agents.map(TIP)].join("\n")} onClick={() => navigate({ name: "session", id: g.s.id })}>
-          <Mark w="need" />
-          <span className="k-stuck-title">{g.s.title || "New session"}</span>
-          {g.agents.length > 0 && <span className="k-stuck-agents" data-testid="stuck-agents">{agentsWord(g.agents.length)}</span>}
-          <span className="k-stuck-time tabular-nums">{span(g.elapsed)}</span>
+        <button key={g.s.id} type="button" className="k-row k-stuck-item" data-testid="stuck-item" data-session={g.s.id} data-watch={st(g).watch} data-what={(g.own ?? g.agents[0]!).what} data-agents={g.agents.length || undefined} title={[...(g.own ? [TIP(g.own)] : []), ...g.agents.map(TIP)].join("\n")} onClick={() => navigate({ name: "session", id: g.s.id })}>
+          <Mark w={st(g).watch} st={st(g)} />
+          <span className="k-row-main"><span className="k-row-title">{g.s.title || "New session"}</span></span>
+          <span className="k-row-end">
+            {g.agents.length > 0 && <span className="k-stuck-agents" data-testid="stuck-agents">{agentsWord(g.agents.length)}</span>}
+            <span className="k-row-time">{span(g.elapsed)}</span>
+          </span>
         </button>
       ))}
       {(more > 0 || all) && groups.length > SHOWN && (

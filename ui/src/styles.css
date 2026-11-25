@@ -386,7 +386,7 @@
   font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
 }
 /* (The list's and the top bar's figures, in the text face: tabular, so a clock does not jitter.) */
-.k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-act-count, .k-act-n, .k-inbox-count, .k-machine-sep-count { font-variant-numeric: tabular-nums; }
+.k-station-clock, .k-row-queued, .k-row-cap, .k-rail-card-time, .k-stuck-n, .k-stuck-chip, .k-tick-more, .k-act-count, .k-act-n, .k-inbox-count, .k-machine-sep-count { font-variant-numeric: tabular-nums; }
 /* 3. A session's call sign on the folded rail. */
 .k-hour-inferred { background-image: repeating-linear-gradient(135deg, transparent 0 0.1875rem, var(--hour-hatch) 0.1875rem 0.3125rem); }
 .k-tick-code, .k-dock-code { font-family: var(--font-inst); font-stretch: 75%; }

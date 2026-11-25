@@ -76,6 +76,9 @@ export const waitsFor = (kind: unknown) => WAITS_FOR[String(kind)] ?? "a conditi
 export const COMMAND_IN_BACKGROUND = "command in background";
 // The same command when it has written nothing for the tool's stuck limit (src/core/stuck.ts): it still works.
 export const COMMAND_RUNNING_LONG = "command running long";
+// The sidebar's quiet head over the sessions whose step shows no sign of life (src/core/stuck.ts). Not a
+// state: each of them keeps its own state's dot, and this says only that nothing moves.
+export const NOT_MOVING = "Not moving";
 const commandWhat = (st: Stated) => (st.stuck ? COMMAND_RUNNING_LONG : COMMAND_IN_BACKGROUND);
 
 // A failure's class: one fixed word each. A class with no better word than
