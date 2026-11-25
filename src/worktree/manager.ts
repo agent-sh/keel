@@ -204,12 +204,22 @@ export class Worktrees {
     mkdirSync(this.root, { recursive: true });
     await git(repo.root, ["worktree", "add", "-q", "-b", branch, path, baseCommit], { fetch: gitReach(madeFor) });
     // Ignored files the repository asks to carry (.worktreeinclude, as Claude Code reads it): .env and the like.
-    if (existsSync(join(repo.top, ".worktreeinclude"))) {
-      const list = (await git(repo.top, ["ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude"], { ok: true })).split("\0").filter(Boolean);
-      for (const f of list) {
-        mkdirSync(dirname(join(path, f)), { recursive: true });
-        copyFileSync(join(repo.top, f), join(path, f));
+    // The checkout and the branch exist now and no caller has recorded them: a step that throws removes both, so
+    // nothing is left that no row names.
+    try {
+      if (existsSync(join(repo.top, ".worktreeinclude"))) {
+        const list = (await git(repo.top, ["ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude"], { ok: true })).split("\0").filter(Boolean);
+        for (const f of list) {
+          mkdirSync(dirname(join(path, f)), { recursive: true });
+          copyFileSync(join(repo.top, f), join(path, f));
+        }
       }
+    } catch (e) {
+      const left: string[] = [];
+      try { await git(repo.root, ["worktree", "remove", "--force", path]); } catch (f) { left.push(`the checkout ${path} (${(f as Error).message})`); }
+      try { await git(repo.root, ["branch", "-D", branch]); } catch (f) { left.push(`the branch ${branch} (${(f as Error).message})`); }
+      const was = (e as Error).message ?? String(e);
+      throw new GitError(left.length ? `${was}; the new worktree could not be removed, left: ${left.join(", ")}` : `${was}; the new worktree and its branch ${branch} were removed`, (e as GitError).status ?? 500);
     }
     const now = Date.now();
     return {

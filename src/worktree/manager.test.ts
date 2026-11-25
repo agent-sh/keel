@@ -1,6 +1,6 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { summarizeChecks, Worktrees } from "./manager.ts";
@@ -161,6 +161,34 @@ test("the branches a worktree can start from: the default, local by recency, the
     const from = await wts.create("s2", repo, "from dev", "dev");
     expect(from.wt.base).toBe("dev");
     await expect(wts.branches(join(root, "nowhere"))).rejects.toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Nothing records a worktree until create returns: a step after `git worktree add` that throws must not
+// leave the checkout or its branch behind.
+test("a worktree whose .worktreeinclude copy fails is removed with its branch", async () => {
+  const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `wt-fail-${process.pid}`);
+  const repo = join(root, "repo");
+  mkdirSync(repo, { recursive: true });
+  const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd, encoding: "utf8" }).trim();
+  try {
+    g(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "a"), "a\n");
+    writeFileSync(join(repo, ".gitignore"), ".env*\n");
+    writeFileSync(join(repo, ".worktreeinclude"), ".env*\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-qm", "init");
+    // A listed file that cannot be copied: a link to nothing.
+    symlinkSync(join(root, "missing"), join(repo, ".env.local"));
+    const wts = new Worktrees(new Store(join(root, "state")), join(root, "wts"));
+    const before = [g(repo, "worktree", "list"), g(repo, "branch", "--list", "keel/*")];
+    const err = await wts.create("s1", repo, "work", undefined).then(() => null, (e: Error) => e);
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain("were removed");
+    expect([g(repo, "worktree", "list"), g(repo, "branch", "--list", "keel/*")]).toEqual(before);
+    expect(readdirSync(join(root, "wts"))).toEqual([]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
