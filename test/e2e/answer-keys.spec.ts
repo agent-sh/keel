@@ -1423,8 +1423,15 @@ test("a request that comes under the pointer takes no click within its second, t
   await page.keyboard.press("Enter");
   await expect.poll(() => waiting(first), { timeout: 10_000 }).toEqual([expect.stringContaining("c1")]);
   await expect(page.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 8000 });
-  await page.waitForTimeout(1200);
-  const there = (await page.getByTestId("allow-once").boundingBox())!;
+  // Where it lands is where it stands once the page has drawn the step: the box is the same for a second.
+  const box = async () => (await page.getByTestId("allow-once").boundingBox())!;
+  let there = await box();
+  await expect.poll(async () => {
+    const was = there;
+    await page.waitForTimeout(800);
+    there = await box();
+    return was.x === there.x && was.y === there.y;
+  }, { timeout: 20_000 }).toBe(true);
   await drop(request, first);
   const id = await create(request, "Clicks onto the next", folder("click-next"));
   await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
