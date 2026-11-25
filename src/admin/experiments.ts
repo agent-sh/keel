@@ -215,6 +215,18 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
         { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
+    // Half of the new session trees: when their cache has lapsed, old tool results are sent as stubs and the
+    // thinking of earlier turns is left out (src/engine/cold-clear.ts).
+    id: "cold_clear", label: "Clear old results after a lapse",
+    make: () => ({ name: "Clearing at a cold point", mode: "live", template: "cold_clear",
+      hypothesis: "Sessions whose cache lapsed, sent with old tool results as one-line stubs and without the thinking of earlier turns, cost less per turn than the same sessions whole, without more failed calls or more steps.",
+      arms: [{ name: "whole" }, { name: "clear", settings: { cold_clear: true } }], primary: "cost_usd",
+      // What a result the model needed and no longer has would show: a turn that fails, more failed calls, more steps
+      // (it reads a stub's file or makes the call again), a context lost to a successor, the owner's Stop, a reply rated down.
+      guards: [{ metric: "error", mde: 0.1 }, { metric: "tool_errors", mde: 0.25, relative: true }, { metric: "successor", mde: 0.05 },
+        { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
+  },
+  {
     id: "speed", label: "Speed tier",
     make: () => ({ name: "Speed tier", mode: "live", template: "speed",
       hypothesis: "A faster tier shortens turns enough to be worth its price.",
