@@ -6,8 +6,9 @@ import { choose, endsAre, shoot } from "./shots.ts";
 // turn, the tokens it added, whether the turn used it, what was not added again
 // and the time it took. A fact the context already holds is not added a second
 // time, so a second prompt that gets the same fact shows no memory chip.
-// A store that does not answer in time does not hold a turn past the hook's
-// wait. One such call is only counted; two in a row are an outage: the
+// A store that does not answer in time does not hold a turn past the short
+// hold for a typed prompt's recall; the call is counted late when the hook's
+// own wait is over. One such call is only counted; two in a row are an outage: the
 // session says so once, a probe that asks nothing finds the store answering
 // again, and the panel counts both.
 // The daemon runs with TACIT_BIN at test/e2e/fixtures/tacit-standin.sh (the same
@@ -104,24 +105,25 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   await page.setViewportSize({ width: 1920, height: 1040 });
 
   // The store takes too long for one prompt. The turn goes on after the
-  // hook's wait; one slow call is not an outage: nothing is said, no error is filed.
+  // short hold (the call is counted late when the hook's wait ends); one slow call is not an outage: nothing is said, no error is filed.
   const t0 = Date.now();
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:memory standin:slow Is the store there?" } });
   await ended(request, session.id, 4);
   expect(Date.now() - t0).toBeLessThan(8_000);
   const out = async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[]).filter((e) => e.kind === "note" && e.data.kind === "memory_out");
-  expect(await out()).toHaveLength(0);
   const OUT = "the memory store did not answer in time: turns go on without it until it does";
   expect((await errorList()).filter((e) => !errorsBefore.has(e.id) && e.message === OUT)).toHaveLength(0);
   const prompts = async () => (await (await request.get(`/api/telemetry/memory?session_id=${session.id}`)).json()).paths.find((p: any) => p.path === "store_prompt");
-  expect(await prompts()).toMatchObject({ asked: 4, timeouts: 1 });
+  await expect.poll(prompts, { timeout: 15_000 }).toMatchObject({ asked: 4, timeouts: 1 });
+  expect(await out()).toHaveLength(0);
   // A second one in a row is an outage: the session says so, once.
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:memory standin:slow And now?" } });
   await ended(request, session.id, 5);
-  expect(await out()).toHaveLength(1);
+  await expect.poll(out, { timeout: 15_000 }).toHaveLength(1);
   const held = await prompts();
   expect(held).toMatchObject({ asked: 5, timeouts: 2 });
-  expect(held.wait_max_ms).toBeGreaterThan(2_000);
+  // A turn held for the recall no longer than its hold, well under the hook's wait.
+  expect(held.wait_max_ms).toBeLessThan(1_500);
   // The next prompt costs no further wait (the probe found the store answering) and is not told again.
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:memory Back again?" } });
   await ended(request, session.id, 6);
