@@ -79,25 +79,55 @@ type Seen = { view: WindowView; until?: number; none: number; at: number };
 let seen: Seen | undefined;
 // Turns that wait, each released when the window is under the cap (or the cap is raised or cleared).
 const waiting = new Set<() => void>();
-// Said once for a stretch over the cap, and once for a stretch past the 80 percent.
+// Said once for a stretch over the cap, and once for a stretch past the 80 percent. Kept in the store with the
+// cap they were said for (admin_meta), so a restart in the middle of a stretch tells nothing again; a cap
+// that changed since is a stretch of its own.
 let warned = false;
 let holdTold = false;
+let loaded = false;
+let kept = "";
+const TOLD = "spend_window_told";
 
 const capNow = () => windowCapOf(settings().spend_window);
+const capKey = () => { const c = capNow(); return c ? `${c.usd}/${c.hours}` : ""; };
+
+// What was said before this start, when it was said for the cap that is set now.
+function load() {
+  if (loaded) return;
+  loaded = true;
+  try {
+    const db = D().store.db;
+    db.exec("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    const row = db.query<{ value: string }, [string]>("SELECT value FROM admin_meta WHERE key = ?").get(TOLD);
+    const v = row ? JSON.parse(row.value) : null;
+    kept = row?.value ?? "";
+    if (v && v.cap === capKey()) { warned = !!v.warned; holdTold = !!v.held; }
+  } catch (e) { capture(e, { at: "spend window told" }); }
+}
+
+// What is said now, written when it changed (two or three writes in a stretch over the cap).
+function keep() {
+  const now = JSON.stringify({ cap: capKey(), warned, held: holdTold });
+  if (now === kept) return;
+  kept = now;
+  try { D().store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES (?, ?)").run(TOLD, now); } catch (e) { capture(e, { at: "spend window told" }); }
+}
 
 function tell(view: WindowView, until: number | undefined) {
   try {
-    if (view.level === "ok") { warned = false; holdTold = false; return; }
+    load();
+    if (view.level === "ok") { warned = false; holdTold = false; keep(); return; }
     // A cap passed in one step is told as the cap, not as the 80 percent it passed on the way.
     if (!warned) {
       warned = true;
       if (view.level === "warn") alerts.raise("limit", null, windowWarnTitle(view), windowWarnBody(view), { cls: "window", open_settings: "usage" });
     }
-    if (view.level === "warn") { holdTold = false; return; }
+    if (view.level === "warn") { holdTold = false; keep(); return; }
     if (!holdTold) {
       holdTold = true;
       alerts.raise("limit", null, "Spend window reached", windowHeldAlert(view, until), { cls: "window", ...(until ? { until } : {}), open_settings: "usage" });
     }
+    keep();
   } catch (e) { capture(e, { at: "spend window notice" }); }
 }
 
@@ -146,7 +176,7 @@ export const state = (): WindowState => {
 // One exact read on the read thread: the window's spend, and when it rolls under the cap if it is over.
 export async function measure(now = Date.now()): Promise<WindowState> {
   const cap = capNow();
-  if (!cap) { seen = undefined; sum = undefined; warned = holdTold = false; release(); return state(); }
+  if (!cap) { seen = undefined; sum = undefined; load(); warned = holdTold = false; keep(); release(); return state(); }
   if (!hasLedger()) return state();
   const reads = readsOf(D().store);
   const start = now - cap.ms;
@@ -195,9 +225,12 @@ export function listen() {
     was = now;
     lastAt = 0;
     sum = undefined;
+    load();
     warned = holdTold = false;
+    keep();
     refresh().catch((e) => capture(e, { at: "spend window" }));
   });
 }
 
-export const reset = () => { sum = undefined; seen = undefined; waiting.clear(); warned = holdTold = false; busy = false; lastAt = 0; printed = ""; };
+// (A start of the daemon, as the tests have it: what was said stays in the store.)
+export const reset = () => { sum = undefined; seen = undefined; waiting.clear(); warned = holdTold = false; loaded = false; kept = ""; busy = false; lastAt = 0; printed = ""; };

@@ -27,7 +27,6 @@ test("a spend window: told at 80 percent, a loop run is held at the cap, the own
     // Set from Settings > Usage: dollars and hours, both needed. Half a cap holds nothing.
     await page.goto("/settings/usage");
     const panel = page.getByTestId("usage-window");
-    await panel.scrollIntoViewIfNeeded();
     await expect(page.getByTestId("window-state")).toContainText("Off.");
     await panel.getByTestId("window-usd").fill("1000");
     await panel.getByTestId("window-usd").press("Enter");
@@ -37,6 +36,10 @@ test("a spend window: told at 80 percent, a loop run is held at the cap, the own
     await expect(page.getByTestId("window-state")).toContainText("every session counted");
     const spent = (await win()).spent;
     expect(spent).toBeGreaterThan(0);
+    // The bar is in view where the panel is first drawn at the window's height, with no scrolling.
+    await page.goto("/settings/usage");
+    await expect(page.getByTestId("window-bar")).toBeInViewport({ timeout: 15_000 });
+    await shoot(page, "spend-window-00-in-view");
     expect((await alerts()).length).toBe(0);
 
     // Past 80 percent, under the cap: told once.

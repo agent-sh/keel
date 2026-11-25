@@ -1,6 +1,6 @@
 // The daemon's spend cap over a rolling window: the running sum over the ledger (rows after the last one
 // in, rows that rolled out off), and the hold it makes before a model step of a turn the owner did not start.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,4 +119,51 @@ test("at the cap an unattended step waits and the owner's own turn goes on with 
   expect(freed).toBe(true);
   expect(win.hold(sess(), () => false)).toBeUndefined();
   set(null, null);
+});
+
+// What was said stays said across a restart (a start of the daemon is `reset` here): a stretch past the 80
+// percent, and a stretch over the cap, are each told once; a cap that changed is a stretch of its own.
+test("the 80 percent and the reached alerts are told once across a restart", async () => {
+  win.reset();
+  store.db.query("DELETE FROM telemetry_calls").run();
+  store.db.query("DELETE FROM admin_meta WHERE key = 'spend_window_told'").run();
+  listed = [];
+  const alerts = await import("./alerts.ts");
+  const said: string[] = [];
+  const raise = spyOn(alerts, "raise").mockImplementation(((_kind: string, _session: unknown, title: string) => { said.push(title); }) as any);
+  const told = () => said.length;
+  const before = told();
+  row(8.5, 5 * 60_000);
+  set(10, 1);
+  await win.refresh();
+  expect(told() - before).toBe(1);
+  // The daemon restarts in the same stretch: nothing is told again.
+  win.reset();
+  await win.refresh();
+  win.hold(sess(), () => false);
+  expect(told() - before).toBe(1);
+  // It reaches the cap, restarts, and the reached alert is told once, not at each start.
+  row(3, 1000);
+  await win.refresh();
+  expect(told() - before).toBe(2);
+  win.reset();
+  await win.refresh();
+  win.reset();
+  await win.refresh();
+  expect(told() - before).toBe(2);
+  // Under the 80 percent again, the next stretch is told anew.
+  store.db.query("DELETE FROM telemetry_calls").run();
+  await win.refresh();
+  expect(win.state().level).toBe("ok");
+  win.reset();
+  row(9, 1000);
+  await win.refresh();
+  expect(told() - before).toBe(3);
+  // A cap changed since is a stretch of its own.
+  win.reset();
+  set(10.5, 1);
+  await win.refresh();
+  expect(told() - before).toBe(4);
+  set(null, null);
+  raise.mockRestore();
 });

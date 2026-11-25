@@ -141,7 +141,7 @@ function SpendWindow() {
           : hold ? `Reached: ${fmtUsd(now.spent)} of ${fmtUsd(now.cap.usd)}. New requests of unattended turns wait${now.rolls_at ? ` until about ${clock(now.rolls_at, { date: new Date(now.rolls_at).toDateString() !== new Date().toDateString() })}` : " until the window rolls under it"}.`
           : `${fmtUsd(now.spent)} of ${fmtUsd(now.cap.usd)} in the last ${now.cap.hours === 1 ? "hour" : `${now.cap.hours} hours`}, every session counted.`}
       </p>
-      {now?.cap ? <div className="mt-1.5 h-1 w-64 max-w-full rounded-full bg-sunken"><div className={cn("h-1 rounded-full", hold ? "bg-danger" : now.level === "warn" ? "bg-warn" : "bg-series-1")} style={{ width: `${Math.min(100, now.pct * 100)}%` }} /></div> : null}
+      {now?.cap ? <div className="mt-1.5 h-1 w-64 max-w-full rounded-full bg-sunken" data-testid="window-bar"><div className={cn("h-1 rounded-full", hold ? "bg-danger" : now.level === "warn" ? "bg-warn" : "bg-series-1")} style={{ width: `${Math.min(100, now.pct * 100)}%` }} /></div> : null}
     </Panel>
   );
 }
@@ -383,6 +383,9 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
         </div>
       </section>
 
+      {/* The cap and how far the spend is from it, beside the figure it limits: in view at 1040 px, not under the charts. */}
+      <SpendWindow />
+
       {/* Where it went: who and what took the spend, in two lists of the same columns, and when. */}
       <div className="grid gap-x-6 gap-y-6 xl:grid-cols-2">
         <Panel plain title="By model" hint={costFailed && cost ? `spend as of the last price lookup; it failed ${ago(costFailed)} ago` : undefined} testid="usage-models">
@@ -435,7 +438,6 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
         </div>
       </Panel>
 
-      <SpendWindow />
       {budget && (
         <Panel plain title="Spend limits" hint="a turn stops before a request once a limit is reached; calls with no known price are not counted" testid="usage-budget">
           <div className="flex flex-wrap gap-x-10 gap-y-3">
