@@ -4,10 +4,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { dirname, join } from "node:path";
 import { Store } from "../core/store.ts";
 import { bindLedger, repoOf, treeOf, unbindLedger } from "../checks/ledger.ts";
-import { sessionVars, toolEnv } from "../tools/jobs.ts";
+import { jobScope, sessionVars, toolEnv } from "../tools/jobs.ts";
+import { patchSettings, settings } from "../admin/settings.ts";
 import { tempTree } from "../../test/env.ts";
 import { Worktrees } from "./manager.ts";
-import { headHeld, parseEnvFile, parseSetup, refusedName, setupHook } from "./setup.ts";
+import { allowedName, headHeld, parseEnvFile, parseSetup, refusedName, setupHook } from "./setup.ts";
 
 setDefaultTimeout(30_000);
 
@@ -22,7 +23,7 @@ test("the file's words: a list of commands and a time limit, anything else named
 });
 
 test("the variables a setup writes: NAME=value lines, quotes taken off, Keel's own names and other lines left out", () => {
-  const r = parseEnvFile(["# c", "", "A=1", 'B="two words"', "export C='x'", "A=3", "KEEL_SESSION=other", "not a line", "1X=2", "D="].join("\n"));
+  const r = parseEnvFile(["# c", "", "A=1", 'B="two words"', "export C='x'", "A=3", "KEEL_SESSION=other", "not a line", "1X=2", "D="].join("\n"), ["*"]);
   expect(r.env).toEqual({ A: "3", B: "two words", C: "x", D: "" });
   expect(r.left).toEqual(["KEEL_SESSION", "a line that is not NAME=value", "a line that is not NAME=value"]); // names only: a value may be a secret
 });
@@ -31,7 +32,7 @@ test("names that change what a program loads or runs are never taken from a setu
   const bad = ["PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "BASH_ENV", "ENV", "SHELLOPTS", "PS4", "NODE_OPTIONS", "BUN_CONFIG_REGISTRY", "PYTHONPATH", "PYTHONSTARTUP", "HOME", "TMPDIR", "https_proxy", "HTTPS_PROXY", "ALL_PROXY", "SSH_ASKPASS", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND", "GIT_CONFIG_COUNT", "KEEL_X", "XDG_DATA_DIRS", "EDITOR"];
   for (const n of bad) expect([n, refusedName(n)]).toEqual([n, true]);
   for (const n of ["NODE_ENV", "CI", "FROM_SETUP", "GIT_AUTHOR_NAME", "GIT_COMMITTER_EMAIL", "DATABASE_URL"]) expect([n, refusedName(n)]).toEqual([n, false]);
-  const r = parseEnvFile(["PATH=/x:$PATH", "LD_PRELOAD=/x.so", "SETUP_FLAG=test", "GIT_SSH_COMMAND=x"].join("\n"));
+  const r = parseEnvFile(["PATH=/x:$PATH", "LD_PRELOAD=/x.so", "SETUP_FLAG=test", "GIT_SSH_COMMAND=x"].join("\n"), ["*"]); // even a pattern that names everything
   expect(r.env).toEqual({ SETUP_FLAG: "test" });
   expect(r.left).toEqual(["PATH", "LD_PRELOAD", "GIT_SSH_COMMAND"]);
 });
@@ -70,7 +71,9 @@ test("a setup that is not pinned is held, and one that is pinned runs once, afte
   expect(wts.setupPins.pin(repo, shown.sha256!)).toBeNull();
   expect(wts.setupPins.show(repo).state).toBe("pinned");
 
+  patchSettings({ worktree_setup: { env: ["FROM_SETUP"] } });
   const a = await wts.create("s2", repo, "two"), b = await wts.create("s3", repo, "three");
+  patchSettings({ worktree_setup: { env: null } });
   for (const w of [a, b]) {
     expect(w.wt.setup?.state).toBe("ok");
     expect(w.wt.setup?.steps).toBe(3);
@@ -84,7 +87,9 @@ test("a setup that is not pinned is held, and one that is pinned runs once, afte
   // daemon's own spawns (xdg-open, git init, the landing queue) read: those run outside the sandbox.
   wts.adopt("s2", a.wt);
   setupHook.envOf = (id) => wts.get(id)?.setup?.env;
+  patchSettings({ worktree_setup: { env: ["FROM_SETUP"] } });
   expect(sessionVars("s2").FROM_SETUP).toBe(a.wt.path);
+  patchSettings({ worktree_setup: { env: null } });
   expect(sessionVars("s3").FROM_SETUP).toBeUndefined();
   expect(toolEnv("s2").FROM_SETUP).toBeUndefined();
   // A job asks for them (StartOpts.vars) in a program of its own: a job started here would stay in this process's job list.
@@ -166,23 +171,59 @@ test("what the setup installs is not hashed by the check ledger's look", async (
 });
 
 
+test("a setup variable is taken only when a pattern the owner set matches its name, and the floor holds even then", () => {
+  const text = ["LESSOPEN=|x", "npm_config_script_shell=/x", "RUSTC_WRAPPER=/x", "GOFLAGS=-x", "CC=/x", "GH_TOKEN=t", "NODE_ENV=test", "APP_MODE=a", "APP_X=1", "PATH=/x"].join("\n");
+  expect(parseEnvFile(text).env).toEqual({}); // nothing is taken until the owner names it
+  expect(parseEnvFile(text).unlisted).toEqual(["LESSOPEN", "npm_config_script_shell", "RUSTC_WRAPPER", "GOFLAGS", "CC", "GH_TOKEN", "NODE_ENV", "APP_MODE", "APP_X"]);
+  expect(parseEnvFile(text).left).toEqual(["PATH"]);
+  const r = parseEnvFile(text, ["NODE_ENV", "APP_*", "PATH"]);
+  expect(r.env).toEqual({ NODE_ENV: "test", APP_MODE: "a", APP_X: "1" });
+  expect(r.left).toEqual(["PATH"]); // allowed by name, still refused
+  expect(allowedName("APP_X", ["APP_*"])).toBe(true);
+  expect(allowedName("MYAPP_X", ["APP_*"])).toBe(false);
+  expect(allowedName("NODE_ENV", [])).toBe(false);
+  // the setting: names and * only
+  for (const bad of [["a b"], [""], ["A=1"], "A", [1]]) expect([bad, patchSettings({ worktree_setup: { env: bad } }).ok]).toEqual([bad, false]);
+  expect(patchSettings({ worktree_setup: { env: ["NODE_ENV"] } }).ok).toBe(true);
+  expect(settings().worktree_setup.env).toEqual(["NODE_ENV"]);
+  patchSettings({ worktree_setup: { env: null } });
+  expect(settings().worktree_setup.env).toEqual([]);
+});
+
 test("a planted PATH does not reach the session's commands or the daemon's spawns", async () => {
   writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ['echo "PATH=$PWD/bin:$PATH" >> "$KEEL_ENV_FILE"', 'echo "SETUP_FLAG=test" >> "$KEEL_ENV_FILE"'] }));
   git(repo, "commit", "-qam", "path");
   expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  patchSettings({ worktree_setup: { env: ["SETUP_*", "PATH"] } });
   const w = await wts.create("s11", repo, "eleven");
   wts.adopt("s11", w.wt);
+  setupHook.envOf = (id) => wts.get(id)?.setup?.env;
   expect(w.wt.setup?.note).toContain("sets SETUP_FLAG");
-  expect(w.wt.setup?.note).toContain("PATH");
+  expect(w.wt.setup?.note).toContain("left out of $KEEL_ENV_FILE: PATH");
   expect(sessionVars("s11")).toEqual({ SETUP_FLAG: "test" });
   expect(toolEnv("s11").PATH).toBe(process.env.PATH);
   expect(toolEnv("s11").SETUP_FLAG).toBeUndefined();
+  patchSettings({ worktree_setup: { env: null } });
+  // the owner took the pattern away: the variable is gone from the session's next command
+  expect(sessionVars("s11")).toEqual({});
+});
+
+test("with no pattern set, a setup's variables are left out by name and the note says how to allow them", async () => {
+  const w = await wts.create("s16", repo, "sixteen");
+  expect(w.wt.setup?.state).toBe("ok");
+  wts.adopt("s16", w.wt);
+  expect(sessionVars("s16")).toEqual({});
+  expect(w.wt.setup?.env).toBeUndefined();
+  expect(w.wt.setup?.note).toContain("not taken from $KEEL_ENV_FILE: SETUP_FLAG");
+  expect(w.wt.setup?.note).toContain("worktree_setup.env");
+  expect(w.wt.setup?.note).not.toContain("test");
 });
 
 test("what a step leaves running is stopped at its end, and the variables are read after that", async () => {
   writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ["sleep 60 & echo $! > pidfile", '(sleep 0.4; echo "LATE=1" >> "$KEEL_ENV_FILE") &', 'echo "EARLY=1" >> "$KEEL_ENV_FILE"'] }));
   git(repo, "commit", "-qam", "background");
   expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  patchSettings({ worktree_setup: { env: ["EARLY", "LATE"] } });
   const w = await wts.create("s12", repo, "twelve");
   expect(w.wt.setup?.state).toBe("ok");
   const pid = Number(readFileSync(join(w.wt.path, "pidfile"), "utf8"));
@@ -194,6 +235,7 @@ test("what a step leaves running is stopped at its end, and the variables are re
   await Bun.sleep(700); // past the late write
   wts.adopt("s12", w.wt);
   expect(sessionVars("s12")).toEqual({ EARLY: "1" });
+  patchSettings({ worktree_setup: { env: null } });
 });
 
 test("a time limit stops what the step started too", async () => {
@@ -206,6 +248,41 @@ test("a time limit stops what the step started too", async () => {
   let alive = true;
   try { process.kill(pid, 0); } catch { alive = false; }
   expect(alive).toBe(false);
+});
+
+test("a step's process that started a session of its own is stopped with the step's scope", async () => {
+  if (!jobScope().slice) return console.log("skipped: needs a systemd user manager with cgroups for scopes");
+  writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ["setsid sleep 60 > /dev/null 2>&1 & echo $! > pidfile; sleep 0.2"] }));
+  git(repo, "commit", "-qam", "setsid");
+  expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  const w = await wts.create("s17", repo, "seventeen");
+  expect(w.wt.setup?.state).toBe("ok");
+  const pid = Number(readFileSync(join(w.wt.path, "pidfile"), "utf8"));
+  await Bun.sleep(100);
+  let alive = true;
+  try { process.kill(pid, 0); } catch { alive = false; }
+  expect(alive).toBe(false);
+  writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ["setsid sleep 60 > /dev/null 2>&1 & echo $! > pidfile; sleep 60"], timeout: 0.6 }));
+  git(repo, "commit", "-qam", "setsid limit");
+  expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  const x = await wts.create("s18", repo, "eighteen");
+  expect(x.wt.setup?.state).toBe("failed");
+  const pid2 = Number(readFileSync(join(x.wt.path, "pidfile"), "utf8"));
+  await Bun.sleep(100);
+  let alive2 = true;
+  try { process.kill(pid2, 0); } catch { alive2 = false; }
+  expect(alive2).toBe(false);
+});
+
+test("two calls for the head of a pull request run its setup once", async () => {
+  writeFileSync(join(repo, ".keel", "worktree.json"), JSON.stringify({ setup: ["echo ran >> marker; sleep 0.3"] }));
+  git(repo, "commit", "-qam", "twice");
+  expect(wts.setupPins.pin(repo, wts.setupPins.show(repo).sha256!)).toBeNull();
+  const w = await wts.create("s19", repo, "nineteen", undefined, "s19", { setup: false });
+  wts.adopt("s19", w.wt);
+  await Promise.all([wts.settleSetup("s19"), wts.settleSetup("s19")]);
+  expect(readFileSync(join(w.wt.path, "marker"), "utf8")).toBe("ran\n");
+  expect(wts.get("s19")?.setup).toMatchObject({ state: "ok" });
 });
 
 test("the head of a pull request from a fork runs its setup only after its trust is decided", async () => {

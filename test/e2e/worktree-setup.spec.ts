@@ -83,4 +83,27 @@ test("a repository's worktree setup runs once per worktree under the owner's pin
   await page.getByTestId("worktree-chip").click();
   await expect(page.getByTestId("worktree-setup")).toContainText("Setup failed after");
   await shoot(page, "worktree-setup-03-failed");
+
+  // The variables a setup writes are taken only when the owner names them in Settings; the floor holds even then.
+  setup('echo "APP_MODE=ci" >> "$KEEL_ENV_FILE"', 'echo "LESSOPEN=|x" >> "$KEEL_ENV_FILE"', 'echo "PATH=/x" >> "$KEEL_ENV_FILE"');
+  const again = await request.get(`/api/worktree-setup?cwd=${encodeURIComponent(repo)}`);
+  expect((await request.post("/api/worktree-setup/trust", { data: { cwd: repo, sha256: (await again.json()).sha256 } })).ok()).toBe(true);
+  const none = await start("sixth");
+  expect(none.wt.setup.env).toBeUndefined();
+  expect(none.wt.setup.note).toContain("not taken from $KEEL_ENV_FILE: APP_MODE, LESSOPEN");
+  await page.goto("/settings/safety");
+  const names = page.getByTestId("worktree-setup-env");
+  await expect(names).toHaveValue("");
+  await names.fill("APP_*, PATH");
+  await names.blur();
+  await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.worktree_setup.env).toEqual(["APP_*", "PATH"]);
+  await shoot(page, "worktree-setup-04-variables");
+  try {
+    const some = await start("seventh");
+    expect(some.wt.setup.note).toContain("sets APP_MODE");
+    expect(some.wt.setup.note).toContain("not taken from $KEEL_ENV_FILE: LESSOPEN");
+    expect(some.wt.setup.note).toContain("left out of $KEEL_ENV_FILE: PATH");
+  } finally {
+    await request.patch("/api/settings", { data: { worktree_setup: { env: null } } });
+  }
 });

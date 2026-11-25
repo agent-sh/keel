@@ -567,12 +567,16 @@ under `~/.cache/keel-work/bun/research/`.
   is not held, and a link of `.keel/` or the file out of the repository is refused). The head of a pull request
   from a fork runs no setup until the owner trusts the head (`create` takes `setup: false`, the route calls
   `settleSetup` after the head's trust is decided; `headHeld` and `setupHook.headTrusted` are what the head-trust
-  code fills). Each step runs in a process group of its own, killed at the step's end and at the time limit. It
+  code fills). Each step runs in a job scope of its own (`sessionScope`, a `keel-setup-` unit; else a process
+  group), stopped at the step's end and at the time limit, so a process that started a session of its own goes too. It
   runs under the session's own sandbox and network rules (nothing when its sandbox is read-only), its output is a
   file, a failure is a failure of the session and shows on its worktree chip and its agent's card. The NAME=value
   lines it writes to `$KEEL_ENV_FILE` are read once when it ends and are the environment of the session's own
   commands only (`StartOpts.vars`, the code tool: never `toolEnv`, which the daemon's own unconfined spawns read),
-  and not the names that change what a program loads or runs (`refusedName`). Its folder goes with the worktree.
+  and only the names the owner allows: a list of refused names cannot be complete, so a name is taken when a
+  pattern of the setting `worktree_setup.env` matches it (empty by default: nothing is taken; Settings > Safety),
+  and never a name on the floor (`refusedName`: `KEEL_*`, `PATH`, `LD_*`, `BASH_ENV`...) even when allowed. The
+  note names what was left out, never a value. Its folder goes with the worktree.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

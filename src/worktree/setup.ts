@@ -13,10 +13,11 @@
 // environment of the session's later commands.
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { registerSettings, settings } from "../admin/settings.ts";
 import type { Store } from "../core/store.ts";
 import { coveredFiles, linksOut, pinDigest, pinKey, projectRoot } from "../integrations/hooks.ts";
 import { contains, realOf } from "../core/paths.ts";
-import { registerVars, toolEnv } from "../tools/jobs.ts";
+import { registerVars, sessionScope, toolEnv } from "../tools/jobs.ts";
 
 export type SetupState = "ok" | "failed" | "held" | "skipped";
 // What a setup came to, kept with the worktree: shown on its chip and on the agent's card.
@@ -120,28 +121,42 @@ export const setupHook: {
   headTrusted?: (sessionId: string) => void;
 } = {};
 
-// Names that change what a program loads, runs or reaches: the session's own commands do not get them from a setup (a
-// repository's file is a script's word, not the owner's). GIT_* is refused but for the few that name the author.
+// What a setup may set for the session's commands is what the owner names: a setup variable is taken only when its name
+// matches a pattern of the setting worktree_setup.env (names, `*` for any run of characters; empty by default: nothing is
+// taken). A list of names to refuse cannot be complete (LESSOPEN, RUSTC_WRAPPER, npm_config_script_shell and a hundred more
+// make a program run another), so the owner names what a repository's setup may set (NODE_ENV, CI, a database URL).
+const NAME_PATTERN = /^[A-Za-z_*][A-Za-z0-9_*]*$/;
+registerSettings("worktree_setup", { env: [] as string[] }, (v) => {
+  if (!Array.isArray(v.env) || v.env.length > 200 || !v.env.every((p: unknown) => typeof p === "string" && p.length <= 100 && NAME_PATTERN.test(p))) return "env is a list of variable names, with * for any run of characters (at most 200)";
+  return undefined;
+});
+export const allowPatterns = (): string[] => settings().worktree_setup?.env ?? [];
+const matches = (pattern: string, name: string) => pattern === name || (pattern.includes("*") && new RegExp(`^${pattern.replace(/\*/g, ".*")}$`).test(name));
+export const allowedName = (n: string, patterns: string[] = allowPatterns()) => !refusedName(n) && patterns.some((p) => matches(p, n));
+
+// The floor: names that are never taken from a setup, whatever the owner allows. They change what a program loads, runs or
+// reaches, or are Keel's own. GIT_* is on it but for the few that name the author.
 const GIT_OK = /^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$/;
 const REFUSED_NAME = /^(PATH|HOME|TMPDIR|TMP|TEMP|SHELL|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|PS[0-9]|PROMPT_COMMAND|CDPATH|GLOBIGNORE|LD_.*|DYLD_.*|GCONV_PATH|LOCPATH|NLSPATH|HOSTALIASES|MALLOC_.*|NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|BUN_.*|PYTHON.*|PERL5.*|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|SSL_CERT_.*|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE|EDITOR|VISUAL|PAGER|XDG_.*|SSH_.*|GIT_.*|.*_PROXY|.*_proxy|NO_PROXY|no_proxy)$/;
 export const refusedName = (n: string) => n.startsWith("KEEL_") || (REFUSED_NAME.test(n) && !GIT_OK.test(n));
 
-// The variables a setup wrote: NAME=value lines (a value may be quoted); a line that is not one, and a name that is refused
-// (Keel's own, or one that changes what a program loads or runs), are left out and named.
-export function parseEnvFile(text: string): { env: Record<string, string>; left: string[] } {
-  const env: Record<string, string> = {}, left: string[] = [];
+// The variables a setup wrote: NAME=value lines (a value may be quoted). `env`: taken. `left`: a line that is not one, and a
+// name on the floor. `unlisted`: a name no pattern of the owner's matches. Only names are kept of a line not taken: a value
+// may be a secret.
+export function parseEnvFile(text: string, patterns: string[] = allowPatterns()): { env: Record<string, string>; left: string[]; unlisted: string[] } {
+  const env: Record<string, string> = {}, left: string[] = [], unlisted: string[] = [];
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
-    // Only a name is kept of a line left out: the value may be a secret.
     if (!m) { left.push("a line that is not NAME=value"); continue; }
     if (refusedName(m[1]!) || m[2]!.includes("\0")) { left.push(m[1]!); continue; }
+    if (!allowedName(m[1]!, patterns)) { unlisted.push(m[1]!); continue; }
     let v = m[2]!;
     if (v.length >= 2 && (v[0] === '"' || v[0] === "'") && v.at(-1) === v[0]) v = v.slice(1, -1);
     env[m[1]!] = v;
   }
-  return { env, left };
+  return { env, left, unlisted };
 }
 
 // The file is read again only when it changed (a command asks for the environment at every start).
@@ -151,7 +166,7 @@ export function envFrom(file: string): Record<string, string> {
   try { st = statSync(file, { bigint: true }); } catch { return {}; }
   const key = `${st.ino}:${st.size}:${st.mtimeNs}`;
   const hit = envCache.get(file);
-  if (hit?.key === key) return hit.env;
+  if (hit?.key === key) return allowedOf(hit.env);
   // The copy the setup's end wrote: a JSON object of the accepted variables.
   const env: Record<string, string> = {};
   try {
@@ -160,8 +175,13 @@ export function envFrom(file: string): Record<string, string> {
   } catch { return {}; }
   if (envCache.size > 256) envCache.clear();
   envCache.set(file, { key, env });
-  return env;
+  return allowedOf(env);
 }
+// What the owner allows now: a pattern taken away takes its variables from the session's next command.
+const allowedOf = (env: Record<string, string>) => {
+  const patterns = allowPatterns();
+  return Object.fromEntries(Object.entries(env).filter(([k]) => allowedName(k, patterns)));
+};
 registerVars((sessionId) => { const f = setupHook.envOf?.(sessionId); return f ? envFrom(f) : {}; });
 
 const tail = (file: string) => { try { return readFileSync(file, "utf8").trimEnd().slice(-TAIL_CHARS); } catch { return ""; } };
@@ -196,11 +216,18 @@ export async function runSetup(o: { path: string; dir: string; madeFor: string; 
     else {
       const fd = openSync(log, "a");
       try {
-        // A process group of its own: what the step leaves running in the background is stopped with it, at its end and at the time limit.
-        const p = Bun.spawn(how.wrap ? how.wrap(["bash", "-c", command]) : ["bash", "-c", command], { cwd: o.path, env, stdin: "ignore", stdout: fd, stderr: fd, detached: true });
-        const group = () => { try { process.kill(-p.pid, "SIGKILL"); return true; } catch { return false; } };
-        const timer = setTimeout(() => { timedOut = true; group(); }, left);
-        try { code = await p.exited; } finally { clearTimeout(timer); if (group()) await Bun.sleep(25); }
+        // In a scope of its own, as the session's commands run (else in a process group of its own): what the step leaves running,
+        // a process that started a session of its own too, is stopped with it, at its end and at the time limit.
+        const scope = sessionScope("setup", how.wrap ? how.wrap(["bash", "-c", command]) : ["bash", "-c", command], o.madeFor);
+        const unit = scope.cgroup ? basename(scope.cgroup) : undefined;
+        const p = Bun.spawn(scope.argv, { cwd: o.path, env: { ...env, ...scope.env }, stdin: "ignore", stdout: fd, stderr: fd, detached: !unit });
+        const release = scope.hold(p.pid);
+        const stop = async () => {
+          if (!unit) { try { process.kill(-p.pid, "SIGKILL"); await Bun.sleep(25); } catch {} return; }
+          try { await Bun.spawn(["systemctl", "--user", "kill", "--signal=SIGKILL", unit], { stdout: "ignore", stderr: "ignore" }).exited; } catch {}
+        };
+        const timer = setTimeout(() => { timedOut = true; void stop(); }, left);
+        try { code = await p.exited; } finally { clearTimeout(timer); await stop(); release(); }
         signal = p.signalCode == null ? null : String(p.signalCode);
       } catch (e) { why = `step ${step} did not start: ${(e as Error).message}`; }
       finally { closeSync(fd); }
@@ -216,11 +243,17 @@ export async function runSetup(o: { path: string; dir: string; madeFor: string; 
   }
   // Read once, after every step and what it left running was stopped; what the session's commands get is this copy, in a file
   // beside the setup's folder (a process of the setup that got away writes to the folder, never to the copy).
-  const { env: vars, left } = parseEnvFile((() => { try { return readFileSync(envFile, "utf8").slice(0, ENV_MAX); } catch { return ""; } })());
+  const { env: vars, left, unlisted } = parseEnvFile((() => { try { return readFileSync(envFile, "utf8").slice(0, ENV_MAX); } catch { return ""; } })());
   rmSync(envFile, { force: true });
   const set = Object.keys(vars);
   if (set.length) writeFileSync(final, JSON.stringify(vars), { mode: 0o600 });
-  return { state: "ok", ms: Date.now() - started, steps: step, log, ...(set.length ? { env: final } : {}), ...(set.length || left.length ? { note: `${set.length ? `sets ${set.join(", ")} for the session's commands` : ""}${left.length ? `${set.length ? "; " : ""}left out of $KEEL_ENV_FILE: ${[...new Set(left)].join(", ")} (a name that changes what programs load or run is never taken, nor is a KEEL_ name)` : ""}` } : {}) };
+  const names = (l: string[]) => [...new Set(l)].join(", ");
+  const note = [
+    set.length ? `sets ${set.join(", ")} for the session's commands` : "",
+    unlisted.length ? `not taken from $KEEL_ENV_FILE: ${names(unlisted)}. A setup's variables are taken only when you name them: add the name to "Variables a worktree setup may set" in Settings (worktree_setup.env)` : "",
+    left.length ? `left out of $KEEL_ENV_FILE: ${names(left)} (a line that is not NAME=value, Keel's own names, and names that change what a program loads or runs are never taken)` : "",
+  ].filter(Boolean).join("; ");
+  return { state: "ok", ms: Date.now() - started, steps: step, log, ...(set.length ? { env: final } : {}), ...(note ? { note } : {}) };
 }
 
 // A worktree's files are gone with it.

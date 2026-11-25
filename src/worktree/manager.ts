@@ -354,7 +354,16 @@ export class Worktrees {
 
   // The setup of a worktree made without it (a pull request's head), once the head's trust is decided: it runs unless the head is
   // still held, and again when the owner trusts the head (setupHook.headTrusted). Nothing for any other worktree.
-  async settleSetup(sessionId: string): Promise<Worktree | undefined> {
+  // A second call while one runs gets the first one's answer: the setup runs once.
+  private settling = new Map<string, Promise<Worktree | undefined>>();
+  settleSetup(sessionId: string): Promise<Worktree | undefined> {
+    const going = this.settling.get(sessionId);
+    if (going) return going;
+    const p = this.settleNow(sessionId).finally(() => this.settling.delete(sessionId));
+    this.settling.set(sessionId, p);
+    return p;
+  }
+  private async settleNow(sessionId: string): Promise<Worktree | undefined> {
     const w = this.get(sessionId);
     if (!w?.setup?.pending || w.state !== "active") return w;
     const held = headHeld.of?.(w.path);

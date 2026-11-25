@@ -7,6 +7,7 @@ import { useStore } from "../lib/store.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { enroll, passkeyBlock } from "../lib/presence.ts";
 import { Card, SettingRow } from "./Settings.tsx";
+import { useSettings } from "./StoragePanel.tsx";
 import { AccountsCard } from "./AccountsCard.tsx";
 import { RuleTrialCard } from "./RuleTrialCard.tsx";
 import { Select } from "./Select.tsx";
@@ -354,8 +355,32 @@ function TrustCard() {
             <option value="ask">Wait for me</option>
           </Select>
         </SettingRow>
+        <SetupVariables />
       </Card>
     </div>
+  );
+}
+
+// The variables a repository's worktree setup may set for the session's commands: names the owner lists (* for any run of
+// characters). Nothing is taken until one is named; Keel's own names, PATH, LD_* and the like are never taken.
+function SetupVariables() {
+  const [settings, patch] = useSettings();
+  const saved: string[] = settings?.worktree_setup?.env ?? [];
+  const [text, setText] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  if (!settings) return null;
+  const shown = text ?? saved.join(", ");
+  const save = () => {
+    const env = shown.split(/[\s,]+/).filter(Boolean);
+    patch({ worktree_setup: { env } }).then(() => { setText(null); setErr(""); }).catch((e) => setErr(failed(e, { at: "SafetySettings" })));
+  };
+  return (
+    <SettingRow label="Variables a worktree setup may set" hint="A repository's setup can write NAME=value lines to $KEEL_ENV_FILE for the session's commands. Only the names listed here are taken, * stands for any run of characters (NODE_ENV, CI, DATABASE_*). PATH, LD_*, BASH_ENV and Keel's own names are never taken.">
+      <div className="flex flex-col items-end gap-1">
+        <input data-testid="worktree-setup-env" value={shown} onChange={(e) => setText(e.target.value)} onBlur={() => text !== null && save()} placeholder="none" className="k-field w-64 font-mono" />
+        {err && <p className="text-caption text-danger">{err}</p>}
+      </div>
+    </SettingRow>
   );
 }
 
