@@ -45,6 +45,7 @@ test("the Files panel previews a file by its kind and reads a large one in parts
   const dir = join(home, ".cache/keel-work/bun/e2e-ws", word);
   mkdirSync(join(dir, "pack"), { recursive: true });
   writeFileSync(join(dir, "notes.md"), "# Release notes\n\nA **bold** claim, a [link](https://example.com/docs) and a list:\n\n- first\n- second\n\n| a | b |\n| - | - |\n| 1 | 2 |\n");
+  writeFileSync(join(dir, "other.md"), "# Other\n");
   const rows = ["id,name,note"];
   for (let i = 1; i <= 1500; i++) rows.push(i === 2 ? `2,"Smith, Jo","said ""hi"""` : `${i},name${i},n${i}`);
   writeFileSync(join(dir, "people.csv"), rows.join("\n") + "\n");
@@ -93,7 +94,6 @@ test("the Files panel previews a file by its kind and reads a large one in parts
   expect(raw.headers()["content-type"]).toContain("text/plain");
   expect(await raw.text()).toContain("**bold**");
   // The choice is kept for the kind: another Markdown file opens in its source.
-  writeFileSync(join(dir, "other.md"), "# Other\n");
   await open("other.md");
   await expect(view.getByTestId("file-view-source")).toHaveAttribute("aria-selected", "true");
   await view.getByTestId("file-view-preview").click();
