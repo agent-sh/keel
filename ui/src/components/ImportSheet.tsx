@@ -439,7 +439,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
           data-testid="import-sheet"
  className="k-import fixed inset-x-4 top-[6vh] bottom-[6vh] z-50 mx-auto max-md:inset-0 max-md:rounded-none max-md:border-0 flex max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 max-md:gap-x-1 max-md:px-3 max-md:py-2 md:flex-nowrap">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3 max-md:gap-x-1 max-md:px-2 max-md:py-2 md:flex-nowrap">
             <History className="size-4 text-muted max-md:hidden" />
             <Dialog.Title className="shrink-0 whitespace-nowrap font-semibold max-md:min-w-0 max-md:shrink max-md:flex-1 max-md:whitespace-normal">Import sessions</Dialog.Title>
             <Seg
@@ -477,7 +477,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               </label>
             )}
             {narrow && !from && (
-              <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption text-faint max-md:order-5" title="Sessions already imported show on their Keel session, not here. Show them to make another copy.">
+              <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption text-faint max-md:order-5 max-md:gap-1" title="Sessions already imported show on their Keel session, not here. Show them to make another copy.">
                 Imported
                 <Switch.Root checked={copies} onCheckedChange={setCopies} className="k-switch" data-testid="import-copies">
                   <Switch.Thumb className="k-switch-thumb" />
