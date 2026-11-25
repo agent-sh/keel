@@ -7,7 +7,7 @@ import { itemClass, popupClass } from "./ui.tsx";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Ellipsis, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square, Undo2 } from "lucide-react";
 import { undoRewindOrReport } from "../lib/rewind-act.ts";
 import { TurnNotes } from "./MemoryNote.tsx";
-import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, Fragment, lazy, memo, Suspense, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { quoteParts } from "../lib/quote.ts";
 import { flushSync } from "react-dom";
 import { lineage } from "../../../src/core/tree.ts";
@@ -23,9 +23,9 @@ import { announce } from "../lib/announce.ts";
 import { useAgentCount, useToldState } from "../lib/watch.ts";
 import { composing, isMac } from "../lib/keys.ts";
 import { findKey } from "../lib/find.ts";
-import { FindBar } from "./FindBar.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtSize, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
+import { preloadSettled } from "../lib/preload.ts";
 import { every } from "../lib/clock.ts";
 import { flushPlaces, isLater, newAfter, offsetAt, placeOf, putPlace, WRITE_MS, type Place } from "../lib/place.ts";
 import { auto, autoState, presentAt } from "../lib/automation.ts";
@@ -49,6 +49,12 @@ import { attemptWords, CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, 
 import { agentLive, hhmm, LIMIT_WAIT, limitText } from "../../../src/core/watch.ts";
 import { probeWords } from "../../../src/engine/trail.ts";
 import { appSaysNow } from "./Stale.tsx";
+
+// The find bar is drawn on the find key only: its code is its own chunk, fetched once the page has settled,
+// so the first press finds it there (lib/preload.ts).
+const loadFindBar = () => import("./FindBar.tsx");
+const FindBar = lazy(() => loadFindBar().then((m) => ({ default: m.FindBar })));
+preloadSettled(loadFindBar);
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
   return (
@@ -2128,8 +2134,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       )}
       {finding && <p role="status" data-testid="finding-place" className="k-place-wait">Finding your place</p>}
       {findAsk > 0 && events.length > 0 && (
-        <FindBar sessionId={sessionId} events={events} head={reading?.other ? reading.head ?? undefined : undefined} before={events[0]!.seq} after={reading?.end ? events.at(-1)!.seq : undefined}
-          whole={!more} content={content} bring={bringFound} ask={findAsk} onClose={closeFind} />
+        <Suspense fallback={null}>
+          <FindBar sessionId={sessionId} events={events} head={reading?.other ? reading.head ?? undefined : undefined} before={events[0]!.seq} after={reading?.end ? events.at(-1)!.seq : undefined}
+            whole={!more} content={content} bring={bringFound} ask={findAsk} onClose={closeFind} />
+        </Suspense>
       )}
       {/* The way to where what is new starts, while that line is not in view, stands at the conversation's
           foot: with the way to the end when the reader is away from it; when they follow the end, over the

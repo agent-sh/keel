@@ -1,7 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { ConfirmHost } from "./components/Confirm.tsx";
 import { ContextMenuHost } from "./components/ContextMenu.tsx";
-import { PageFind } from "./components/FindBar.tsx";
 import { inShell, panelPlace } from "./lib/shell.ts";
 import { Attention, setBaseTitle } from "./components/Attention.tsx";
 import { Boundary } from "./components/Boundary.tsx";
@@ -36,6 +35,8 @@ const Palette = lazy(() => import("./components/Palette.tsx").then((m) => ({ def
 const ShortcutSheet = lazy(() => import("./components/ShortcutSheet.tsx").then((m) => ({ default: m.ShortcutSheet })));
 import { UpdateNotice } from "./components/UpdateNotice.tsx";
 const ErrorsPanel = lazy(() => import("./components/ErrorsPanel.tsx").then((m) => ({ default: m.ErrorsPanel })));
+// The page's own Find is the desktop app's only (a tab has the browser's): its chunk loads there alone.
+const PageFind = lazy(() => import("./components/FindBar.tsx").then((m) => ({ default: m.PageFind })));
 // The bridge (stations, sessions) is its own chunk, fetched with the page.
 const Bridge = lazy(() => import("./components/Bridge.tsx").then((m) => ({ default: m.Bridge })));
 const ProjectPage = lazy(() => import("./components/ProjectPage.tsx").then((m) => ({ default: m.ProjectPage })));
@@ -203,7 +204,7 @@ export function App() {
       <Overlays />
       <ConfirmHost />
       <ContextMenuHost />
-      {inShell && <PageFind at={route.name === "session" ? `s ${route.id}` : route.name} />}
+      {inShell && <Suspense fallback={null}><PageFind at={route.name === "session" ? `s ${route.id}` : route.name} /></Suspense>}
     </Boundary>
   );
 }
