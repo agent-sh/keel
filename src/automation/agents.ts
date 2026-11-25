@@ -2450,11 +2450,11 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   // of credit, suspended or signed out is passed over for the next (it would fail at once), and said.
   // Only models of the providers the folder allows (src/safety/content-routes.ts).
   const models = allowedOnly(routeOf(store, a.session_id), await providers.models());
-  const order = successorOrder(models.map((m) => ({ id: m.id, provider: m.provider, family: m.family, tools: m.tools, release: m.release })), { current: a.model, family: info.family, switchFamily: plan.switchFamily, avoid: plan.avoid, parent: parent.model, preferred: await providers.namedDefault().catch(() => undefined) });
+  const order = successorOrder(models.map((m) => ({ id: m.id, provider: m.provider, family: m.family, tools: m.tools, release: m.release, context: m.context, output: m.output, price: m.price })), { current: a.model, family: info.family, switchFamily: plan.switchFamily, avoid: plan.avoid, lost: { context: info.context, output: info.output, price: info.price }, parent: parent.model, preferred: await providers.namedDefault().catch(() => undefined) });
   const pick = firstOpen(order, routeShut);
   if (pick.skipped.length) failures.record(a.parent_id, { kind: "provider", cls: "route_shut", message: `A fresh context of agent "${a.title}" was not started on ${skippedWords(pick.skipped)}`, ref: { id: a.id, label: a.title } }, a.session_id);
   if (!pick.model) {
-    const why = plan.switchFamily && !order.length ? `the model declined it twice, and no listed model of another family than ${plan.avoid.join(" and ")} takes tools`
+    const why = plan.switchFamily && !order.length ? `the model declined it twice, and no listed model of another family than ${plan.avoid.join(" and ")} takes tools and is near its strength by price and window`
       : `every model it could go on has a route that takes no work now: ${skippedWords(pick.skipped)}`;
     return { note: givenUpNote({ why, lost }) };
   }
@@ -2515,7 +2515,7 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   const g = perm.gate;
   if (g) g.setPerm(child.id, g.perm(old.id), g.tieOf(old.id));
   bus.emit({ t: "session", session: store.session(child.id)! });
-  const line = parentLine({ title: attr(a.title), id: a.id, loss, category, n: plan.n, model, moved: otherFamily, skipped: pick.skipped });
+  const line = parentLine({ title: attr(a.title), id: a.id, loss, category, n: plan.n, model, moved: otherFamily, from: a.model, skipped: pick.skipped });
   activity.record("agent", "successor", a.parent_id, `Agent "${a.title}" lost its context (${LOSS_WORDS[loss]}); successor ${plan.n} started on ${model}${pick.skipped.length ? `, skipping ${skippedWords(pick.skipped)}` : ""}`, { agent_id: a.id, child_session: child.id, lost_session: a.session_id, loss, ...(category ? { category } : {}), model, ...(pick.skipped.length ? { skipped: pick.skipped } : {}) });
   emit("agent", brief(get(a.id)!));
   // The parent hears one line, with its next input: nothing for it to act on.

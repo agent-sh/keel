@@ -90,7 +90,31 @@ export function decideSuccessor(loss: LossKind, lost: readonly Lost[], family: F
   return { go: true, n: lost.length + 1, switchFamily, avoid: switchFamily ? [...new Set(refused)] : [] };
 }
 
-export type Candidate = { id: string; provider: string; family: Family; tools?: boolean; release?: string };
+// What a model's strength is read from: the listing's facts only, never its name.
+export type Strength = { context?: number; output?: number; price?: { input: number; output: number } };
+export type Candidate = { id: string; provider: string; family: Family; tools?: boolean; release?: string } & Strength;
+
+// A model of another family is "near" the lost one when its window and output limit are at least
+// half of the lost model's and its price tier (input plus output, per million tokens) at least a third
+// of it. Far below is what a small model of a big one's family looks like; above is allowed, ranked
+// by how far it is.
+const FLOOR = { window: 0.5, price: 1 / 3 };
+const tier = (p?: { input: number; output: number }) => (p ? p.input + p.output : 0);
+
+// How far `m` is from the lost model by price and window: a sum of absolute log ratios over the facts
+// both have, and `undefined` when it is far below on any of them. No fact in common: 0 (the order
+// of the listing decides).
+export function strengthGap(lost: Strength, m: Strength): number | undefined {
+  let gap = 0;
+  const one = (a: number | undefined, b: number | undefined, floor: number) => {
+    if (!a || !b || a <= 0 || b <= 0) return true;
+    if (b / a < floor) return false;
+    gap += Math.abs(Math.log(b / a));
+    return true;
+  };
+  const ok = one(lost.context, m.context, FLOOR.window) && one(lost.output, m.output, FLOOR.window) && one(tier(lost.price), tier(m.price), FLOOR.price);
+  return ok ? gap : undefined;
+}
 
 // A model of a family the work was not declined on: the parent's model, then
 // the owner's default, then one of the lost model's provider (an aggregator
@@ -115,8 +139,18 @@ function ranked(models: readonly Candidate[], fit: (m: Candidate) => boolean, o:
 // then the rest: the first whose route takes work is chosen
 // (src/providers/account.ts firstOpen), so a route out of credit or signed out
 // is passed over for the next.
-export function successorOrder(models: readonly Candidate[], o: { current: string; family: Family; switchFamily: boolean; avoid: readonly Family[]; parent?: string; preferred?: string }): string[] {
-  if (o.switchFamily) return ranked(models, (m) => !o.avoid.includes(m.family), o);
+// After a second refusal the models of another family come nearest first by price and window to the
+// lost model (`lost`), those far below it left out; equal distance keeps otherFamily's order.
+export function successorOrder(models: readonly Candidate[], o: { current: string; family: Family; switchFamily: boolean; avoid: readonly Family[]; parent?: string; preferred?: string; lost?: Strength }): string[] {
+  if (o.switchFamily) {
+    const lost = o.lost ?? models.find((m) => m.id === o.current) ?? {};
+    const gaps = new Map<string, number>();
+    for (const id of ranked(models, (m) => !o.avoid.includes(m.family), o)) {
+      const g = strengthGap(lost, models.find((m) => m.id === id)!);
+      if (g !== undefined) gaps.set(id, g);
+    }
+    return [...gaps.keys()].sort((a, b) => gaps.get(a)! - gaps.get(b)!);
+  }
   return [...new Set([o.current, ...ranked(models, (m) => m.family === o.family, o), ...ranked(models, (m) => m.family !== o.family, o)])];
 }
 
@@ -169,9 +203,9 @@ export function capsuleBrief(f: CapsuleFacts): string {
 
 // The one line the parent hears.
 // `skipped`: the models passed over because their routes take no work now, each with why.
-export function parentLine(o: { title: string; id: string; loss: LossKind; category?: string; n: number; model: string; moved: boolean; skipped?: readonly Skipped[] }): string {
+export function parentLine(o: { title: string; id: string; loss: LossKind; category?: string; n: number; model: string; moved: boolean; from?: string; skipped?: readonly Skipped[] }): string {
   const passed = o.skipped?.length ? ` It skipped ${skippedWords(o.skipped)}.` : "";
-  return `[harness] Agent "${o.title}" (${o.id}) lost its context: ${LOSS_WORDS[o.loss]}${o.category ? ` (${o.category})` : ""}. Keel started it again with a fresh context from a capsule of its work, in the same worktree, on ${o.model}${o.moved ? ", a model of another family" : ""} (successor ${o.n} of at most ${MAX_SUCCESSORS}).${passed} Its report comes when it finishes: nothing to do.`;
+  return `[harness] Agent "${o.title}" (${o.id}) lost its context: ${LOSS_WORDS[o.loss]}${o.category ? ` (${o.category})` : ""}. Keel started it again with a fresh context from a capsule of its work, in the same worktree, on ${o.model}${o.moved ? `, a model of another family: the nearest of another family by price and window${o.from ? ` to ${o.from}` : ""}` : ""} (successor ${o.n} of at most ${MAX_SUCCESSORS}).${passed} Its report comes when it finishes: nothing to do.`;
 }
 
 // What its report says when no successor starts.
