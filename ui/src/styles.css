@@ -860,11 +860,13 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
 .k-docket-row > .k-docket-planline { flex: 1 1 0; }
 .k-docket-row > .k-agents-line { max-width: 70%; }
 .k-docket-row .k-agents-parts { flex: 0 1 auto; }
-/* The agents' line: the word, then each state's dot and count in the vocabulary's words, what calls the owner first. It wraps nothing:
-   a count with no room goes whole, the last first (the line's name carries them all). */
+/* The agents' line: the word, then each state's dot and count in the vocabulary's words, what calls the owner first. A count with
+   no room goes whole, the last first: each count is as tall as the row, so one that wraps lies wholly under it, where the row's
+   overflow cuts it away (the line's name and the popup it opens carry them all). */
 .k-agents-label { flex-shrink: 0; font-weight: 600; color: var(--fg); }
 .k-agents-parts { display: flex; flex: 1 1 0; min-width: 0; height: var(--spacing-ctl-md); align-items: center; column-gap: 0.75rem; overflow: hidden; flex-wrap: wrap; }
-.k-agents-part { display: inline-flex; align-items: center; gap: 0.3125rem; flex-shrink: 0; white-space: nowrap; }
+.k-agents-none { height: var(--spacing-ctl-md); display: inline-flex; align-items: center; color: var(--faint); white-space: nowrap; }
+.k-agents-part { display: inline-flex; align-items: center; height: var(--spacing-ctl-md); gap: 0.3125rem; flex-shrink: 0; white-space: nowrap; }
 .k-agents-waits { flex-shrink: 0; white-space: nowrap; color: var(--faint); }
 .k-docket-jobs { flex-shrink: 0; }
 .k-docket-jobs-n { font-weight: 600; color: var(--fg); }
@@ -933,6 +935,7 @@ button.k-docket-line:hover { background: var(--hover); color: var(--fg); }
   /* The agents line: its counts keep their words, and what it waits on goes under them where the row is short. */
   .k-agents-line { flex-wrap: wrap; row-gap: 0; }
   .k-agents-parts { flex: 0 1 auto; height: auto; overflow: visible; }
+  .k-agents-part, .k-agents-none { height: auto; }
   .k-agents-waits { white-space: normal; }
   .k-agents-line > .k-docket-more { margin-left: auto; }
   /* The plan's count already says how far it is; the bar would take the step's words their room. */

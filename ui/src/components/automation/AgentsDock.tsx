@@ -7,6 +7,7 @@ import { ChevronRight } from "lucide-react";
 import { useMemo } from "react";
 import { isCounted } from "../../../../src/core/agent-count.ts";
 import { agentTally, backgroundOf, WAITING_ON_AGENTS } from "../../../../src/core/state-words.ts";
+import type { Watch } from "../../../../src/core/watch.ts";
 import { useAuto } from "../../lib/automation.ts";
 import { useSessionState, useToldStates } from "../../lib/watch.ts";
 import { useStore } from "../../lib/store.ts";
@@ -15,14 +16,20 @@ import { agentSaid } from "./bits.tsx";
 import { BackgroundPopup, useBackground } from "./BackgroundPopover.tsx";
 
 // The tally of the agents the session's counts name (src/core/agent-count.ts), its tree's included; null with none.
+// `shown` is what the line draws: only what is live or owed to the owner (needs you, working, waiting, and a failure
+// the owner has not looked at). Done and stopped agents stay in the popup the line opens, and in `text`.
 export function useAgentsTally(sessionId: string) {
   const { agents } = useBackground(sessionId);
   const told = useToldStates();
+  const seen = useStore((s) => s.sessions[sessionId]?.settings.agents_fail_seen_ms ?? 0);
   return useMemo(() => {
-    const counted = agents.filter((a) => isCounted(a));
-    return counted.length ? agentTally(counted.map((a) => agentSaid(a, told[a.session_id]).watch)) : null;
-  }, [agents, told]);
+    const counted = agents.filter((a) => isCounted(a)).map((a) => ({ a, w: agentSaid(a, told[a.session_id]).watch }));
+    if (!counted.length) return null;
+    const owed = counted.filter(({ a, w }) => (w === "fail" || w === "declined" ? (a.ended ?? 0) > seen : LINE.has(w)));
+    return { ...agentTally(counted.map((c) => c.w)), shown: agentTally(owed.map((c) => c.w)).parts };
+  }, [agents, told, seen]);
 }
+const LINE = new Set<Watch>(["need", "work", "wait", "resume"]);
 
 export function AgentsDock({ sessionId }: { sessionId: string }) {
   const bg = useBackground(sessionId);
@@ -37,11 +44,12 @@ export function AgentsDock({ sessionId }: { sessionId: string }) {
       <Popover.Trigger className="k-docket-line k-agents-line" data-testid="dock-agents" aria-label={tally.text} aria-description={waiting ? WAITING_ON_AGENTS : undefined} title={tally.text}>
         <span className="k-agents-label">Agents</span>
         <span className="k-agents-parts" data-testid="dock-agents-summary">
-          {tally.parts.map((p) => (
+          {tally.shown.map((p) => (
             <span key={p.w} className="k-agents-part" data-watch={p.w} data-count={p.n} data-testid="dock-agents-part">
               <Mark w={p.w} />{p.text}
             </span>
           ))}
+          {!tally.shown.length && <span className="k-agents-none" data-testid="dock-agents-none">none running</span>}
         </span>
         {waiting && <span className="k-agents-waits" data-testid="dock-agents-waiting">{WAITING_ON_AGENTS}</span>}
         <ChevronRight className="k-docket-more" aria-hidden="true" />

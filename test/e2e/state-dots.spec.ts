@@ -238,7 +238,7 @@ test("the sidebar counts no agents: the row's chevron opens their tree, and the 
     await page.goto(`/s/${lead}`);
     const line = page.getByTestId("dock-agents");
     await expect(line).toBeVisible();
-    await expect(line.getByTestId("dock-agents-part")).toHaveText(["2 working", "1 done"]);
+    await expect(line.getByTestId("dock-agents-part")).toHaveText(["2 working"]);
     await expect(line).toHaveAttribute("aria-label", "3 agents: 2 working, 1 done");
     await expect(line).toHaveAttribute("aria-description", "Waiting on agents");
     await expect(line.getByTestId("dock-agents-waiting")).toHaveText("Waiting on agents");
@@ -246,7 +246,7 @@ test("the sidebar counts no agents: the row's chevron opens their tree, and the 
     await page.setViewportSize(SIZES[0]!);
     // An agent that fails: it is counted, and the session reads Failed until looked at, so it no longer waits on its agents.
     await send(request, lead, script([child("Fetch the notes", "script:billing")]));
-    await expect(line.getByTestId("dock-agents-part")).toHaveText(["1 failed", "2 working", "1 done"], { timeout: 60_000 });
+    await expect(line.getByTestId("dock-agents-part")).toHaveText(["1 failed", "2 working"], { timeout: 60_000 });
     await expect(line).toHaveAttribute("aria-label", "4 agents: 1 failed, 2 working, 1 done");
     await expect(line.getByTestId("dock-agents-waiting")).toHaveCount(0);
     for (const part of await line.getByTestId("dock-agents-part").all()) await expect(part.locator(".k-mark")).toBeVisible();

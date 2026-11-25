@@ -61,14 +61,27 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     const dock = page.getByTestId("dock-agents");
     const parts = dock.getByTestId("dock-agents-part");
     await expect(dock).toHaveAttribute("aria-label", "8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
-    expect(await parts.evaluateAll((els) => els.map((e) => `${e.getAttribute("data-watch")} ${e.getAttribute("data-count")}`))).toEqual(["fail 1", "work 1", "done 6"]);
+    expect(await parts.evaluateAll((els) => els.map((e) => `${e.getAttribute("data-watch")} ${e.getAttribute("data-count")}`))).toEqual(["fail 1", "work 1"]);
     expect(reads).toEqual([""]);
     expect(await wrap.innerText(), "the sidebar says no number of agents").not.toMatch(/\b\d+ agents?\b/);
     // One form whatever the states: each is its dot and its words, on one line.
-    for (const [i, word] of ["1 failed", "1 working", "6 done"].entries()) {
+    for (const [i, word] of ["1 failed", "1 working"].entries()) {
       await expect(parts.nth(i).locator(".k-mark")).toBeVisible();
       await expect(parts.nth(i)).toHaveText(word);
     }
+    // The line draws what is live or owed to the owner: the six that finished are in its name and its popup, not on the line.
+    await expect(dock.getByTestId("dock-agents-part").filter({ hasText: /done|stopped/ })).toHaveCount(0);
+    await expect(dock).not.toContainText("done");
+    // Every count lies inside the line's box, at the two desk sizes, in both themes: none peeks out cut under it.
+    for (const size of [{ width: 1920, height: 1040 }, { width: 1366, height: 768 }]) {
+      await page.setViewportSize(size);
+      await expect.poll(() => dock.evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        return [...el.querySelectorAll<HTMLElement>("[data-testid=dock-agents-part]")].filter((p) => { const r = p.getBoundingClientRect(); return r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5 || r.right > box.right + 0.5; }).length;
+      }), { message: `the counts of the agents line lie inside it at ${size.width}` }).toBe(0);
+      await shoot(page, `session-list-01-agents-line-${size.width}`);
+    }
+    await page.setViewportSize({ width: 1920, height: 1040 });
     await shoot(page, "session-list-01-agents-line");
     expect((await dock.boundingBox())!.height, "the agents line is one line").toBeLessThanOrEqual(30);
 
