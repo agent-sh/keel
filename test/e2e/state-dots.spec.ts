@@ -5,9 +5,9 @@ import { shoot } from "./shots.ts";
 
 // Feature: a session's state is one small dot in its row. Working is a solid blue dot, the size of the others, with a soft
 // glow that breathes slowly (no spin, and still under reduced motion); it is never a dot inside a ring, which reads as a
-// selected radio button. Needs you is yellow, failed or declined red, done green (a success mark's hue); a finished row that was read steps
-// back to a fainter dot. A session that only waits on its agents or on a command in the background wears a hollow ring
-// of blue dashes and says so. News is a white dot at the row's end, in the time's place; every title has one weight.
+// selected radio button. Needs you is yellow, failed or declined red, done green (a success mark's hue) where done is counted;
+// a finished row in the list draws no dot (done is the quiet default, and a row shows one dot at most). A session that only waits on its agents or on a command in the background wears a hollow ring
+// of blue dashes and says so. News is a small quiet dot at the row's end, in the time's place, fainter than every state dot; every title has one weight.
 // Every dot keeps its state word for a reader and
 // in its tooltip. The sidebar says no number of agents: the row has a chevron that opens their tree, and the
 // session itself says how many work, wait, failed or are done. Contrast of each dot on the rail is 3:1 or more.
@@ -119,7 +119,7 @@ test("a row's state is one dot, and a session that waits on what it left going h
     for (const id of [working, asking, failed, declined, done]) await expect(mark(id)).not.toHaveAttribute("data-bg", /./);
 
     // Color is the state: the dot wears its token, in both themes, and each reads on the rail.
-    const TOKENS: [string, string][] = [[working, "--dot-work"], [asking, "--dot-need"], [failed, "--dot-fail"], [done, "--dot-done"]];
+    const TOKENS: [string, string][] = [[working, "--dot-work"], [asking, "--dot-need"], [failed, "--dot-fail"]];
     for (const isDark of [false, true]) {
       await dark(page, isDark);
       for (const [id, token] of TOKENS) {
@@ -129,7 +129,10 @@ test("a row's state is one dot, and a session that waits on what it left going h
         const { ratio } = await paint(page, token === "--dot-need" ? "--dot-need-edge" : token);
         expect(ratio, `${token} on the rail, ${isDark ? "dark" : "light"}`).toBeGreaterThanOrEqual(3);
       }
-      expect((await paint(page, "--dot-unread")).ratio, `news on the rail, ${isDark ? "dark" : "light"}`).toBeGreaterThanOrEqual(7);
+      // News reads on the rail, and quieter than every state dot.
+      const newsRatio = (await paint(page, "--dot-news")).ratio;
+      expect(newsRatio, `news on the rail, ${isDark ? "dark" : "light"}`).toBeGreaterThanOrEqual(3);
+      for (const t of ["--dot-work", "--dot-need-edge", "--dot-fail"]) expect(newsRatio, `news is quieter than ${t}, ${isDark ? "dark" : "light"}`).toBeLessThan((await paint(page, t)).ratio);
       // Declined is red too (a hollow dot), and a command that waits is a ring of the work dot's blue with nothing inside it.
       expect(await mark(declined).evaluate((el) => getComputedStyle(el).boxShadow)).toContain((await paint(page, "--dot-fail")).color);
       expect(await mark(command).evaluate((el) => ({ color: getComputedStyle(el).borderTopColor, style: getComputedStyle(el).borderTopStyle, inner: getComputedStyle(el, "::before").content }))).toEqual({ color: (await paint(page, "--dot-work")).color, style: "dashed", inner: "none" });
@@ -194,18 +197,20 @@ test("a row's state is one dot, and a session that waits on what it left going h
     await expect(row(page, done).getByTestId("row-new")).toHaveCount(0);
     const weight = (id: string) => row(page, id).locator(".k-row-title").evaluate((el) => Number(getComputedStyle(el).fontWeight));
     expect(await weight(news), "news is not a heavier title").toBe(await weight(done));
-    // The done dot is green, a success mark's hue, on the news row too; the done row that was read steps back.
+    {
+      const dot = (await row(page, news).getByTestId("row-new").boundingBox())!, state = (await mark(failed).boundingBox())!;
+      expect(dot.width, "the news dot is smaller than a state dot").toBeLessThan(state.width);
+    }
+    // The done token is green, a success mark's hue; a finished row draws no dot, read or not (its word stays for a reader).
     for (const isDark of [false, true]) {
       await dark(page, isDark);
       const done_ = await paint(page, "--dot-done");
       expect(done_.color, `the done dot is the success green, ${isDark ? "dark" : "light"}`).toBe((await paint(page, "--ok")).color);
       expect(done_.rgb[1]!, `a done dot is green (${done_.rgb}), ${isDark ? "dark" : "light"}`).toBeGreaterThan(Math.max(done_.rgb[0]!, done_.rgb[2]!));
-      for (const id of [done, news]) expect(await mark(id).evaluate((el) => getComputedStyle(el).backgroundColor), "the done dot wears that green").toBe(done_.color);
+      for (const id of [done, news]) expect(await mark(id).evaluate((el) => getComputedStyle(el).backgroundColor), "a finished row draws no dot").toBe("rgba(0, 0, 0, 0)");
     }
     await dark(page, false);
-    const fade = (id: string) => mark(id).evaluate((el) => Number(getComputedStyle(el).opacity));
-    expect(await fade(news), "a finished row with news has its full dot").toBe(1);
-    expect(await fade(done), "a finished row that was read steps back").toBeLessThan(1);
+    for (const id of [done, news]) await expect(mark(id)).toHaveAttribute("aria-label", "Done");
 
     await shootList(page, "state-dots-01-list", working, async () => {
       // (A page that has just loaded shows each row as its session record says, until the states it is told arrive and settle.)

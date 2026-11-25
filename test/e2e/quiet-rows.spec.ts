@@ -2,10 +2,11 @@ import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a session row says one state, and the bar above a session says its reason in words.
-// The row's mark is its state. Every title has one weight. The rows that call the owner (needs you, failed,
-// declined) are in ink; what is new is in ink, says "New" to a reader and has a white dot at the row's end in
-// the time's place; a session at work is in ink, the rest is quiet (reading it moves nothing); the open row is
-// in ink. A finished row that was read steps back: its green dot is fainter. The row's end is one slot: the
+// The row's mark is its state, drawn only where it asks for the eye: a finished row draws no dot. Every title has
+// one weight. The rows that call the owner (needs you, failed, declined) and what is new are in ink; what is new
+// says "New" to a reader and has a small quiet dot at the row's end in the time's place, fainter than any state
+// dot, so a row shows one dot at most; a session at work is in ink, the rest is quiet (reading it moves nothing);
+// the open row is in ink. The row's end is one slot: the
 // age of every row (where its bucket changes), with the word of a row that waits on the owner (you) or was
 // declined before it. The time is in the text face, quiet. Nothing in the sidebar is set in capitals. The
 // note that the list's order changed is a hint for one load. A background command with no description of its own
@@ -21,7 +22,7 @@ const row = (page: Page, id: string) => page.locator(`[data-testid="session-row"
 const style = (page: Page, id: string, sel: string, prop: "fontWeight" | "fontFamily" | "backgroundColor" | "color") =>
   row(page, id).locator(sel).first().evaluate((el, p) => getComputedStyle(el)[p as "fontWeight"], prop);
 
-test("a row says one state, in one weight, and news is a white dot in the time's place", async ({ page, request }) => {
+test("a row says one state, in one weight, and news is a quiet dot in the time's place", async ({ page, request }) => {
   const model = await scriptedModel(request);
   test.skip(!model, "needs the scripted provider: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
   const made: string[] = [];
@@ -58,7 +59,7 @@ test("a row says one state, in one weight, and news is a white dot in the time's
     await expect(row(page, seen).getByTestId("row-new")).toHaveCount(0);
     expect(await dot.evaluate((el) => getComputedStyle(el).backgroundColor), "the dot is the news dot's colour").toBe(await page.evaluate(() => {
       const probe = document.createElement("span");
-      probe.style.cssText = "position:fixed;width:0;height:0;background:var(--dot-unread)";
+      probe.style.cssText = "position:fixed;width:0;height:0;background:var(--dot-news)";
       document.body.append(probe);
       const c = getComputedStyle(probe).backgroundColor;
       probe.remove();
@@ -74,7 +75,7 @@ test("a row says one state, in one weight, and news is a white dot in the time's
     expect(await style(page, fresh, ".k-row-title", "color"), "a row with news is in the ink").not.toBe(await style(page, seen, ".k-row-title", "color"));
     expect(await style(page, asks, ".k-row-title", "color"), "a row that needs the owner is in ink").not.toBe(await style(page, seen, ".k-row-title", "color"));
     expect(await style(page, failed, ".k-row-title", "color")).toBe(await style(page, asks, ".k-row-title", "color"));
-    // One weight: the dots and the ink say the state, the title's weight says nothing.
+    // One weight: quiet is the default; the dots and the ink say the state, the title's weight says nothing.
     await expect(row(page, declined)).toHaveAttribute("data-watch", "declined");
     const weights = await page.evaluate((ids) => ids.map((id) => getComputedStyle(document.querySelector(`[data-testid="session-row"][data-session="${id}"] .k-row-title`)!).fontWeight), [seen, fresh, asks, failed, declined]);
     expect(new Set(weights).size, `the titles of rows read, new, needing the owner, failed and declined have one weight: ${weights.join(",")}`).toBe(1);
@@ -93,6 +94,8 @@ test("a row says one state, in one weight, and news is a white dot in the time's
     await expect(slot(asks).getByTestId("row-on")).toHaveText("Needs you");
     expect((await slot(asks).getByTestId("row-on").boundingBox())!.width, "the word is not drawn").toBeLessThanOrEqual(1);
     await expect(slot(asks)).toHaveText(/^Needs you (now|\d+[smh])$/);
+    // Its clock is the quiet ink of every other time: the yellow dot alone says it needs the owner.
+    expect(await style(page, asks, '[data-testid="row-time"]', "color"), "a live clock of a row that asks is quiet").toBe(await style(page, failed, '[data-testid="row-time"]', "color"));
     await expect(slot(failed)).toHaveText(/^(now|\d+[smh])$/);
     await expect(slot(failed)).toHaveAttribute("title", /^Failed: billing, /);
     await expect(slot(failed).getByTestId("row-on")).toHaveCount(0);
@@ -105,11 +108,16 @@ test("a row says one state, in one weight, and news is a white dot in the time's
     // Each row's end shows one thing.
     const slots = await page.evaluate((ids) => ids.map((id) => document.querySelector<HTMLElement>(`[data-testid="session-row"][data-session="${id}"]`)!).map((r) => [...r.querySelectorAll<HTMLElement>(".k-row-end > *")].filter((e) => e.getClientRects().length && getComputedStyle(e).visibility !== "hidden" && !e.classList.contains("sr-only")).length), made);
     expect(Math.max(...slots), `a row's end shows more than one thing: ${slots.join(",")}`).toBe(1);
-    // One state signal: two finished rows wear the same green mark, read or not; the one that was read steps back.
-    expect(await style(page, fresh, ".k-mark", "backgroundColor")).toBe(await style(page, seen, ".k-mark", "backgroundColor"));
-    const fade = (id: string) => row(page, id).locator(".k-mark").first().evaluate((el) => Number(getComputedStyle(el).opacity));
-    expect(await fade(fresh), "a finished row with news has its full dot").toBe(1);
-    expect(await fade(seen), "a finished row that was read steps back").toBeLessThan(1);
+    // One dot a row at most: a finished row draws no mark, read or not, and its news dot is smaller and fainter than a state dot.
+    const clear = "rgba(0, 0, 0, 0)";
+    expect(await style(page, fresh, ".k-mark", "backgroundColor"), "a finished row with news draws no state dot").toBe(clear);
+    expect(await style(page, seen, ".k-mark", "backgroundColor"), "a finished row that was read draws no state dot").toBe(clear);
+    await expect(row(page, fresh).locator(".k-mark"), "the mark keeps its word for a reader").toHaveAttribute("aria-label", /./);
+    {
+      const news = (await dot.boundingBox())!, mark = (await row(page, failed).locator(".k-mark").boundingBox())!;
+      expect(news.width, "the news dot is smaller than a state dot").toBeLessThan(mark.width);
+      // (Fainter: its contrast on the rail is under every state dot's, state-dots.spec.ts measures it.)
+    }
     // The time is in the text face.
     const text = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
     expect(await style(page, seen, '[data-testid="row-time"]', "fontFamily")).toBe(text);
@@ -129,8 +137,6 @@ test("a row says one state, in one weight, and news is a white dot in the time's
     await expect(row(page, fresh).getByTestId("row-new")).toHaveCount(0);
     const shown = (id: string) => row(page, id).getByTestId("row-time").evaluate((el) => getComputedStyle(el).display !== "none" || el.hasAttribute("data-calm"));
     await expect.poll(() => shown(fresh), { message: "read, the row's age is back in the dot's place (or calm, as a read row's may be)" }).toBe(true);
-    const read = await fade(seen);
-    await expect.poll(() => fade(fresh), { message: "read, its dot steps back as the other read one" }).toBe(read);
     expect(await style(page, fresh, ".k-row-title", "fontWeight")).toBe(await style(page, seen, ".k-row-title", "fontWeight"));
     expect(await style(page, fresh, ".k-row-title", "color")).toBe(await style(page, seen, ".k-row-title", "color"));
 

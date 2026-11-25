@@ -102,12 +102,16 @@
   --dot-need: oklch(0.8 0.17 88);
   --dot-need-edge: oklch(0.55 0.12 80);
   --dot-fail: oklch(0.55 0.2 27);
-  /* Done is green, as a success mark is (--ok). A finished row you have read steps back (bridge.css), so a list of
-     finished sessions is not a wall of green: the full green is what finished since you looked. */
+  /* Done is green, as a success mark is (--ok), where finishes are counted (the home, the Inbox). A finished row of the
+     rail draws no dot (bridge.css): a list of finished sessions is not a wall of green. */
   --dot-done: var(--ok);
   /* News is a "white" dot. On the light rail a white dot is invisible (1.3:1), so it is the ink, the one neutral that is
-     as far from the rail as white is in the dark theme (14:1 here, 18:1 there). */
+     as far from the rail as white is in the dark theme (14:1 here, 18:1 there). The desktop tray's menu draws it so. */
   --dot-unread: var(--fg);
+  /* The rail's news dot is quieter: smaller and fainter than a state dot, the ink mixed into the rail (45% ink, 55% rail;
+     at night 55% white), opaque, 3:1 on the rail and under the work, need and failure dots in both themes, so a column
+     of them is not the loudest thing on the rail. */
+  --dot-news: oklch(0.593 0.013 255);
   /* The ink band on pages, panels and dialogs. */
   --band: var(--fg);
 
@@ -217,6 +221,7 @@
   --dot-fail: oklch(0.7 0.18 27);
   --dot-done: var(--ok);
   --dot-unread: oklch(0.98 0 0);
+  --dot-news: oklch(0.618 0.007 255);
   /* At night the band is steel, not a white bar across the screen. */
   --band: oklch(0.52 0.018 255);
 

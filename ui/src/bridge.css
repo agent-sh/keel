@@ -423,25 +423,26 @@
 /* The title and its project or folder: one line that gives way as a whole; the title is cut first. */
 .k-row-head { flex: 0 1 auto; min-width: 0; max-width: 100%; display: flex; align-items: baseline; gap: 0.375rem; overflow: hidden; }
 .k-row-name { flex: 1 1 auto; height: 1.5rem; padding: 0 0.375rem; margin: -0.125rem -0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--fg); font-size: inherit; font-weight: inherit; outline: none; box-shadow: 0 0 0 2px var(--ring); }
-/* Every row is one weight: the dot says the state. What calls the owner (needs them, failed, declined), news,
-   a session at work and the open row are in ink; the rest steps back to the quiet ink. The row's end holds one thing. */
+/* Every title is one weight: quiet is the default. The dot says a state only where it asks for the eye: work, need,
+   failure (and the rings of waits and stops). What calls the owner (needs them, failed, declined), news, a session at
+   work and the open row are in ink; the rest steps back to the quiet ink. The row's end holds one thing. */
 .k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); }
 .k-row[data-unread]:not([data-gone]):is([data-watch="done"], [data-watch="idle"], [data-watch="stop"]) .k-row-title { color: var(--fg); }
-/* News is a white dot at the row's end, in the time's place (a live clock keeps its place). */
+/* News is a small quiet dot at the row's end, in the time's place (a live clock keeps its place): smaller and fainter
+   than any state dot, so a column of them stays quiet. */
 .k-row-new { display: none; }
-.k-row[data-news]:not([data-gone]) .k-row-new { display: block; flex-shrink: 0; width: 0.4375rem; height: 0.4375rem; margin: 0 0.375rem 0 0.25rem; border-radius: 999px; background: var(--dot-unread); }
+.k-row[data-news]:not([data-gone]) .k-row-new { display: block; flex-shrink: 0; width: 0.375rem; height: 0.375rem; margin: 0 0.4375rem 0 0.3125rem; border-radius: 999px; background: var(--dot-news); }
 .k-row[data-news]:not([data-gone]) .k-row-time:not([data-live]) { display: none; }
 /* Under the hand the row's actions take the end, as they do the time's place: the dot gives way with the time. */
 .k-row[data-news]:is(:hover, :focus-within) .k-row-new { display: none; }
-/* A finished row that was read steps back: its green is for what finished since you looked. */
-.k-row[data-watch="done"]:not([data-unread]):not([aria-current]) > .k-mark { opacity: 0.55; }
+/* A finished row draws no dot: done is the quiet default, and one dot a row at most (its word stays for a reader). */
+.k-row[data-watch="done"] > .k-mark { background: transparent; }
 /* A session at work reads first of the rows that need nothing: its title is in ink, not the quiet grey of a row at rest. */
 .k-row[data-watch="work"]:not([data-gone], [data-offline]) .k-row-title { color: var(--fg); }
 /* A quiet row's time is in its tooltip where it says what the row above said (Sidebar.tsx, calm). */
 .k-row-time[data-calm] { display: none; }
-/* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
+/* The time, in the text face and quiet, a live clock too: the dot alone says what needs the owner. */
 .k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1.25rem; color: var(--faint); }
-.k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); font-weight: 400; }
 /* The word before the age, for a row that waits on the owner (you) or was declined (Sidebar.tsx, `on`): the owner in the need ink,
    a declined one in the failure's. The state word on the row's line would say it twice: the reason has that room. */
 .k-row-time { white-space: nowrap; }
