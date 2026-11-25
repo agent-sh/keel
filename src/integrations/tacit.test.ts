@@ -622,9 +622,10 @@ test("one slow call is no outage: no error, no note, its answer still follows; a
   // A prompt that takes 3 s once: the turn goes on after its wait.
   st.set("slow-once", "prompt");
   const waited = await w.say(s, "slow kw2");
-  expect(waited).toBeGreaterThan(T(2_000));
+  expect(waited).toBeLessThan(T(1_000));
   expect(w.names(w.last(s))).not.toContain("fact-kw2");
-  expect(w.tacit.stats().hooks.prompt.late).toBe(1);
+  // The call is late once the hook's wait is over, not when the request stopped holding for it.
+  await until(() => w.tacit.stats().hooks.prompt.late === 1);
   expect(w.tacit.stats().out).toEqual({ ask: false, tool: false });
   expect(w.told(s)).toBe(0);
   expect(w.captured.filter(memoryError)).toEqual([]);
@@ -646,6 +647,7 @@ test("one slow call is no outage: no error, no note, its answer still follows; a
   // A slow call, an answer in time, a slow call: still no two in a row.
   st.set("slow-once", "prompt");
   await w.say(s, "slow again kw6");
+  await until(() => w.tacit.stats().hooks.prompt.late === 2);
   expect(w.tacit.stats().out.ask).toBe(false);
   expect(w.told(s)).toBe(0);
   await w.say(s, "answered kw61");
@@ -654,9 +656,10 @@ test("one slow call is no outage: no error, no note, its answer still follows; a
   // A store that really hangs: two prompts in a row go unanswered, and that is one outage, one error, one note.
   st.set("mode", "slow");
   await w.say(s, "hang kw7");
+  await until(() => w.tacit.stats().hooks.prompt.late === 3);
   expect(w.tacit.stats().out.ask).toBe(false);
   await w.say(s, "hang kw8");
-  expect(w.tacit.stats().out.ask).toBe(true);
+  await until(() => w.tacit.stats().out.ask);
   for (const k of [9, 10]) expect(await w.say(s, `hang kw${k}`)).toBeLessThan(T(1_000));
   expect(w.told(s)).toBe(1);
   expect(w.captured.filter((m) => m.includes("did not answer in time"))).toHaveLength(1);
@@ -667,8 +670,8 @@ test("a store that hangs: two waits, then an outage said once and no wait after;
   await w.say(s, "first kw1");
   st.set("mode", "slow");
   const waited = await w.say(s, "third kw3");
-  expect(waited).toBeGreaterThan(T(2_000));
-  expect(waited).toBeLessThan(T(4_000));
+  expect(waited).toBeLessThan(T(1_000));
+  await until(() => w.tacit.stats().hooks.prompt.late === 1);
   const notes = () => w.store.events(s).filter((e) => e.kind === "note" && e.data.kind === "memory_out");
   // One call not answered in time is counted, and measured as a timeout: no outage yet, nothing said.
   expect(notes()).toHaveLength(0);
@@ -676,8 +679,8 @@ test("a store that hangs: two waits, then an outage said once and no wait after;
   const measured = () => memoryMeter(w.store).report({ session: s }).paths.find((p) => p.path === "store_prompt")!;
   expect(measured()).toMatchObject({ timeouts: 1, late: 0 });
   // The second in a row: the outage, said once, in a line for the owner that the model is not sent.
-  expect(await w.say(s, "more kw4 tools=4")).toBeGreaterThan(T(2_000));
-  expect(notes()).toHaveLength(1);
+  expect(await w.say(s, "more kw4 tools=4")).toBeLessThan(T(1_000) + T(900) * 2);
+  await until(() => notes().length === 1);
   expect(notes()[0]!.data.model).toBeUndefined();
   expect(w.last(s)).not.toContain("Memory did not answer");
   // From here prompts do not wait; the session's calls go out one at a time;
@@ -1222,10 +1225,10 @@ test("an agent gets no start block, and its brief is asked unwaited; the owner's
   const owner = w.session(), agent = w.session();
   if (!w.store.columnExists("sessions", "parent_id")) w.store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
   w.store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(owner, agent);
-  st.set("mode", "lagprompt");
-  // The typed prompt waits for the store (its lag is shorter than the wait).
-  expect(await w.say(owner, "typed kw1")).toBeGreaterThan(T(1_200));
+  // The typed prompt waits for the store (its answer is quick, so it is in the first request).
+  await w.say(owner, "typed kw1");
   expect(w.names(w.last(owner))).toEqual(expect.arrayContaining(["start-rule", "fact-kw1"]));
+  st.set("mode", "lagprompt");
   // The brief does not: the first request goes at once and the fact is in the one after the tool call.
   expect(await w.say(agent, "kw5 tools=1", { kind: "task", agent_id: "x" })).toBeLessThan(T(1_000));
   const mine = w.asked.filter((r) => r.session === agent);
@@ -1244,6 +1247,33 @@ test("an agent gets no start block, and its brief is asked unwaited; the owner's
   expect(paths.store_prompt).toMatchObject({ asked: 2, later: 1, empty: 1 });
   expect(paths.store_prompt!.wait_ms).toBeLessThan(T(500));
   expect(paths.store_prompt!.proc_ms).toBeGreaterThan(0);
+}), 60_000);
+
+// The recall of a typed prompt holds the turn's first request for PROMPT_HOLD_MS at most, though the store's
+// answer may take up to the hook's wait before it counts as late: past the hold the request goes without it,
+// the answer is owed and joins the next request, and the store is not called slow for it.
+test("a typed prompt's recall holds the first request for the hold at most; its late answer joins the next request", () => inWorld("hold", async (w, st) => {
+  const s = w.session();
+  await w.say(s, "warm kw1");
+  st.set("mode", "lagprompt");
+  const before = w.asked.filter((r) => r.session === s).length;
+  const took = await w.say(s, "typed kw2");
+  const mine = w.asked.filter((r) => r.session === s).slice(before);
+  expect(mine[0]!.messages).not.toContain("fact-kw2");
+  // The stand-in takes 1.8 s (0.6 s here); a request that waited for it took at least that.
+  expect(took).toBeLessThan(T(1_700));
+  await until(() => w.tacit.owed(s) > 0);
+  st.set("mode", "ok");
+  await w.say(s, "next kw3");
+  expect(w.names(w.last(s))).toEqual(expect.arrayContaining(["fact-kw2", "fact-kw3"]));
+  // It answered within the hook's wait: no late call, no outage, however many.
+  st.set("mode", "lagprompt");
+  await w.say(s, "typed kw4");
+  await w.say(s, "typed kw5");
+  expect(w.tacit.stats().out.ask).toBe(false);
+  const { memoryMeter } = await import("./memory-meter.ts");
+  const row = memoryMeter(w.store).report({ session: s }).paths.find((p) => p.path === "store_prompt")!;
+  expect(row.timeouts).toBeGreaterThan(0);
 }), 60_000);
 
 // Since 0.9.38 the store's pre-tool hook answers with a deny (once a session, for a shell command a fact

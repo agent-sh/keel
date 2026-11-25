@@ -127,6 +127,13 @@ const FRAME = memoryBlock("session-start", "").length;
 // block; a tool's result for its hook; a compaction for the store's dream.
 export const START_WAIT_MS = 6000;
 export const PROMPT_WAIT_MS = 2200;
+// The most the first request of a turn holds for the recall of the owner's typed prompt, whatever the
+// hook's wait above: the hook of a short session answers in tens of milliseconds, and the few that take
+// longer (the hook of a very long session takes about a second) buy one step: what they answer is owed
+// and joins the next request as a note. Most answers are empty, so a longer hold is paid by every message
+// for the rare fact the first step would have had. The hook's wait still decides when a store is slow:
+// an answer later than it counts as a late call, and two in a row are an outage.
+export const PROMPT_HOLD_MS = 400;
 export const TOOL_WAIT_MS = 900;
 const COMPACT_WAIT_MS = 4000;
 // The store installs its own hooks with a 15 s timeout. Its processes write
@@ -790,6 +797,10 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
   private waitOf(hook: Hook): number {
     return WAIT_OF[hook] / this.speed;
   }
+  // How long a request holds for a hook's answer: its wait, and for the typed prompt no more than PROMPT_HOLD_MS.
+  private holdOf(hook: Hook): number {
+    return hook === "prompt" ? Math.min(this.waitOf(hook), PROMPT_HOLD_MS / this.speed) : this.waitOf(hook);
+  }
 
   // A call did not answer within its wait: one late call, counted. Two of a
   // kind in a row, with no answer in time between them, open an outage. Many
@@ -803,6 +814,15 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
       const late = this.recent[kind].filter(Boolean).length;
       this.bus.emit({ t: "event", event: this.store.append(session, "note", { kind: "memory_slow", text: `Memory is answering slowly: ${late} of its last ${DEGRADED_WINDOW} ${kind === "ask" ? "answers to prompts" : "answers before a tool"} came later than a turn waits. Turns go on without the late ones; what they answer follows.` }) });
     }
+  }
+  // A call a turn stopped holding for before the hook's wait: counted late when the wait ends with no answer.
+  private async missAt(kind: Kind, hook: Hook, session: string, c: Running) {
+    const left = this.waitOf(hook) - (performance.now() - c.at);
+    if (left > 0) await Promise.race([c.done.catch(() => {}), Bun.sleep(left)]);
+    if (c.got || !this.store.session(session)) return;
+    this.miss(kind, hook, session);
+    // The outage this miss opened is said in the session the call came from, as it is when a request waited out the wait.
+    if (this.out[kind]) this.tell(session, kind, "timeout");
   }
   private seen(kind: Kind, late: boolean) {
     const r = this.recent[kind];
@@ -1276,7 +1296,7 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
         // Only the owner's typed prompt is waited for. Any other input (an agent's brief, a parent's
         // message, a loop's run) is asked beside its request, and what the store answers joins a later one.
         const typed = fresh && ownerPrompt(last!.data);
-        if (waits) await Promise.all([start && within(start, t.waitOf("session-start")), prompt && typed && within(prompt, t.waitOf("prompt"))]);
+        if (waits) await Promise.all([start && within(start, t.waitOf("session-start")), prompt && typed && within(prompt, t.holdOf("prompt"))]);
         const waited = performance.now() - began;
 
         const shown = t.shownIn(s.id, events);
@@ -1292,7 +1312,8 @@ CREATE TABLE IF NOT EXISTS memory_tool_families (key TEXT PRIMARY KEY, answered 
             // and not there in time, it starts an outage of asking.
             // Measured as a timeout when the turn waited its full wait for it,
             // as late when it did not wait at all (asking was already out).
-            if (waits) t.miss("ask", hook, s.id);
+            // A prompt's hold ends before the hook's wait: the call is late once that wait is over.
+            if (waits) void t.missAt("ask", hook, s.id, c);
             const row = t.meter.record(s.id, PATH_OF[hook], { outcome: waits ? "timeout" : "late", waitMs });
             c.done.then((r) => t.meter.addProc(row, r.ms), () => {});
             t.oweLater(s.id, hook, c);
