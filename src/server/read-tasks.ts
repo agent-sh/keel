@@ -6,6 +6,7 @@ import type { Database } from "bun:sqlite";
 import { reportOf, sideOf, tokensOf, type Limits } from "../admin/telemetry-report.ts";
 import type { Filter } from "../admin/telemetry.ts";
 import { marksOf, type MarkArgs } from "../safety/marks.ts";
+import { ledgerOf, type LedgerAsk } from "../safety/not-undone.ts";
 import { searchContent, type ContentQuery } from "./routes/search-content.ts";
 import { findInSession, type FindAsk } from "./routes/find-read.ts";
 import { callAnswered, callsNamed, type AnsweredAsk, type NamedAsk } from "./routes/calls-read.ts";
@@ -49,6 +50,7 @@ export const tasks = {
   "find.session": (db: Database, a: FindAsk) => findInSession(db, a),
   // What the transcript marks on the calls of a page's events: every command of them is parsed here.
   "calls.marks": (db: Database, a: MarkArgs) => marksOf(db, a),
+  "rewind.ledger": (db: Database, a: LedgerAsk) => ledgerOf(db, a),
   // The replies of a session that hold a call by one of some names, and whether a call was answered (the last-call route).
   "calls.named": (db: Database, a: NamedAsk) => callsNamed(db, a),
   "calls.answered": (db: Database, a: AnsweredAsk) => callAnswered(db, a),

@@ -6,16 +6,18 @@ import { api, onFeature, readAtOpen, reportError, reportUnlessGone, failed } fro
 import { stoppingShells } from "../lib/shells.ts";
 import { ago, cn, scrollMotion } from "../lib/utils.ts";
 import { DiffView, FileList, RevertButton, type FileChange } from "./DiffView.tsx";
+import { NotUndoneList, type NotUndone } from "./NotUndone.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { useViewed } from "../lib/viewed.ts";
 
 type Step = { id: string; call: string; label: string; created: number };
-type Turn = { steps?: Step[]; turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
+type Turn = { steps?: Step[]; turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string; not_undone?: NotUndone[] };
 type Diff = { files: FileChange[]; diff: string; truncated: boolean; partial?: string; scope: "tree" | "written"; incomplete?: boolean };
 type RewindResult = {
   files: string[]; failed: { path: string; error: string }[]; skipped: string[]; outside: string[]; merged: string[]; conflicts: string[]; removes: string[]; uncaptured: string[];
   blocked?: { path: string; uncaptured: string }[];
   versions: Record<string, string>; incomplete: boolean; undo: string | null; scope: string;
+  not_undone?: NotUndone[];
 };
 const NO_FILES: FileChange[] = [];
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -248,6 +250,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                     {turnDiff[t.turn] ? <DiffView files={turnDiff[t.turn]!.files} patch={turnDiff[t.turn]!.diff} truncated={turnDiff[t.turn]!.truncated} partial={turnDiff[t.turn]!.partial} loadFile={fileDiff(`turn=${t.turn}`)} empty="This turn changed no files." /> : <p className="text-caption text-faint">Loading…</p>}
                   </div>
                 </details>
+                {!!t.not_undone?.length && <NotUndoneList bare items={t.not_undone} testid="turn-not-undone" className="border-t border-line px-3 py-2" />}
               </li>
             ))}
           </ol>
@@ -287,6 +290,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                 ))}
               </ul>
             )}
+            {pending && !!pending.preview.not_undone?.length && <NotUndoneList items={pending.preview.not_undone} testid="rewind-not-undone" className="mt-3" />}
             {pending && pending.preview.skipped.length > 0 && (
               <label className="mt-3 flex items-start gap-2 text-ui">
                 <input type="checkbox" checked={includeOutside} onChange={(e) => setIncludeOutside(e.target.checked)} className="mt-0.5 accent-[var(--accent)]" data-testid="include-outside" />

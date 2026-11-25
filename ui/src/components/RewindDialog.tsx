@@ -15,14 +15,17 @@ import { stoppingShells } from "../lib/shells.ts";
 import { api, failed, useStore } from "../lib/store.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
+import { NotUndoneList, type NotUndone } from "./NotUndone.tsx";
 import { Seg } from "./Seg.tsx";
 
 type Ask = { sessionId: string; eventId?: string };
 type Mode = "both" | "chat" | "files";
 type Preview = {
   files: string[]; skipped: string[]; merged: string[]; removes: string[]; versions: Record<string, string>; turn: number | null; uncaptured: string[];
+  not_undone?: NotUndone[];
 };
 type Done = { chat: { prompt_text: string; prompt_images?: PromptBlock[] } | null };
+
 
 let current: Ask | null = null;
 const subs = new Set<() => void>();
@@ -186,6 +189,9 @@ function RewindDialog({ ask, onClose }: { ask: Ask; onClose: () => void }) {
                   </label>
                 )}
               </div>
+            )}
+            {preview && (preview.not_undone?.length ?? 0) > 0 && (
+              <NotUndoneList items={preview.not_undone!} testid="rewind-not-undone" className="mt-3" />
             )}
             {error && <p className="mt-2 text-caption text-danger" role="alert" data-testid="rewind-error">{error}</p>}
           </div>

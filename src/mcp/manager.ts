@@ -1070,6 +1070,7 @@ export class McpManager {
       description: t.description ?? t.title ?? "",
       input_schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
       readOnly,
+      ...(t.annotations?.readOnlyHint === true ? { hinted_read: true as const } : {}),
       ...(hints || interaction ? { hints: { ...hints, ...(interaction ? { interaction: true as const } : {}) } } : {}),
       judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input)
         : interaction ? async (input: any) => ({ kind: "other" as const, hints: { ...careful, interaction: true as const }, ...(readOnly ? { reads: true as const } : {}), ...(account && this.classOf(e.name)?.account.yes ? { account: { server, name: e.name, tool: t.name, input } } : {}) })

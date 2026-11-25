@@ -419,6 +419,18 @@ export class Shadow {
     return this.lock(async () => (await this.git(["diff-tree", "-r", "-z", "--no-renames", "--name-only", a, b, ...(paths ? ["--", ...paths] : [])])).split("\0").filter(Boolean));
   }
 
+  // Which of these workspace paths a snapshot never holds: the folder's own ignore files and what every snapshot
+  // leaves out (dependency and cache trees). A folder is asked as one too, so a deleted `data/` is known as one.
+  async ignored(paths: string[]): Promise<Set<string>> {
+    const out = new Set<string>();
+    if (!paths.length || this.gitDir) return out;
+    await this.init();
+    const asked = paths.flatMap((p) => [p, `${p}/`]);
+    const got = await this.lock(() => this.git(["check-ignore", "-z", "--stdin", "--no-index"], { input: `${asked.join("\0")}\0`, ok: [1] }));
+    for (const p of got.split("\0")) if (p) out.add(p.replace(/\/$/, ""));
+    return out;
+  }
+
   private async treeValues(tree: string, paths: string[], absent: string, value: (mode: string, oid: string) => string): Promise<Map<string, string>> {
     const out = new Map(paths.map((p) => [p, absent]));
     if (!paths.length) return out;

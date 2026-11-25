@@ -13,6 +13,9 @@ export type CatalogTool = {
   description: string;
   input_schema: Record<string, unknown>;
   readOnly?: boolean;
+  // Its server's own readOnlyHint (the server's word: it never makes a call a read, src/mcp/manager.ts). A rewind reads it to say
+  // which calls it cannot take back.
+  hinted_read?: true;
   // What its MCP server says it does, for the gate (policy.ts ToolHints) and for a failure's words (`idempotent`).
   hints?: ToolHints & { idempotent?: boolean };
   hidden?: boolean;        // not offered by search, still answered by mcp_call (a server turned off says so)

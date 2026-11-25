@@ -514,6 +514,20 @@ export class Checkpoints {
     return this.here(s).find((c) => c.at === "start" && c.turn >= seq)?.turn;
   }
 
+  // The files a turn left out of its end snapshot that its start snapshot held or did not meet: over the size
+  // cap at its end, not before it. A rewind puts none of them back (`uncaptured`), and says so before it runs.
+  leftOut(s: Session, from: number): { turn: number; path: string }[] {
+    const rows = this.here(s);
+    const out: { turn: number; path: string }[] = [];
+    for (const end of rows) {
+      if (end.at !== "end" || end.turn < from || !end.skipped?.length) continue;
+      const start = rows.find((c) => c.at === "start" && c.turn === end.turn);
+      const was = new Set(start?.skipped ?? []);
+      for (const p of end.skipped) if (!was.has(p)) out.push({ turn: end.turn, path: p });
+    }
+    return out;
+  }
+
   // A turn's changed files never change: read once.
   private turnFiles = new Map<string, string[]>();
 

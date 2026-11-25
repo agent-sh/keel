@@ -9,6 +9,7 @@ import type { Session, StoredEvent } from "../../core/types.ts";
 import { folderUse, inUse } from "../inuse.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
+import { rewindReach } from "./rewind-reach.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -26,6 +27,7 @@ export let checkpoints: Checkpoints | undefined;
 export const checkpointRoutes: RouteModule = (deps: Deps) => {
   const { store, engine, errors, bus } = deps;
   const c = (checkpoints = new Checkpoints(store, deps.bus, errors, join(store.stateDir, "checkpoints")));
+  const reach = rewindReach(store, c);
   const quiet = (at: string, f: () => unknown) =>
     Promise.resolve().then(f).catch((e) => void errors.capture("server", e, { at }));
   // A store that grew past its budget (or holds sessions that are gone) is trimmed soon after start.
@@ -68,9 +70,11 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
     if (!prompt || !shownAsPrompt(prompt)) return bad("not a prompt of the branch shown");
     const turn = mode === "chat" && !b.preview ? undefined : c.fileTurn(s, prompt.seq);
     if (b.preview) {
-      // What the files would do (nothing, when no turn from this prompt on changed any).
-      if (turn === undefined) return json({ files: [], failed: [], skipped: [], outside: [], merged: [], conflicts: [], blocked: [], removes: [], uncaptured: [], versions: {}, incomplete: false, undo: null, scope: c.shadow(s.workspace).mode, turn: null });
-      return json({ ...(await c.rewind(s, { turn, preview: true, includeOutside: !!b.include_outside, paths })), turn });
+      // What the files would do (nothing, when no turn from this prompt on changed any), and what the turns did that
+      // no restore takes back.
+      const said = await reach.fromPrompt(s, prompt.seq).catch((e) => (void errors.capture("server", e, { at: "rewind not undone" }), { not_undone: [] }));
+      if (turn === undefined) return json({ files: [], failed: [], skipped: [], outside: [], merged: [], conflicts: [], blocked: [], removes: [], uncaptured: [], versions: {}, incomplete: false, undo: null, scope: c.shadow(s.workspace).mode, turn: null, ...said });
+      return json({ ...(await c.rewind(s, { turn, preview: true, includeOutside: !!b.include_outside, paths })), turn, ...said });
     }
     if (mode !== "chat" && s.workspace_gone) return bad("the session's folder is gone; move the session to a folder that exists first", 409);
     if (mode === "chat" && engine.isRunning(s.id)) return bad("a turn is running", 409);
@@ -135,7 +139,8 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         // (The starts alone, from the index that holds only those columns, on the read thread.)
         const starts = turns.length ? (await readsOf(store).sql<{ seq: number }>("SELECT seq FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq", [s.id])).map((r) => r.seq) : [];
         const place = new Map(starts.map((seq, i) => [seq, i + 1]));
-        return json({ turns: turns.map((t) => (place.has(t.turn) ? { ...t, n: place.get(t.turn) } : t)), expired, scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
+        const said = await reach.byTurn(s, (turn) => place.get(turn)).catch((e) => (void errors.capture("server", e, { at: "rewind not undone" }), new Map()));
+        return json({ turns: turns.map((t) => ({ ...t, ...(place.has(t.turn) ? { n: place.get(t.turn) } : {}), ...(said.get(t.turn)?.length ? { not_undone: said.get(t.turn) } : {}) })), expired, scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
       }),
     },
     // The prompts of the branch shown, all of them (the page holds only the newest part of a long one), and
@@ -194,7 +199,13 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         if (typeof b.step === "string" && b.mode && b.mode !== "files") return bad("a step is not a prompt: only the files go back to before it, the chat stays");
         const h = b.preview ? null : await held(s, !!b.stop_shells);
         if (h) return h;
-        return json(await c.rewind(s, { turn: b.turn, step: typeof b.step === "string" ? b.step : undefined, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside, confirm }));
+        const res = await c.rewind(s, { turn: b.turn, step: typeof b.step === "string" ? b.step : undefined, checkpoint: b.checkpoint, paths, preview: !!b.preview, includeOutside: !!b.include_outside, confirm });
+        // A preview of a revert to before a turn: what that turn and the ones after it did that no restore takes back.
+        if (b.preview && Number.isInteger(b.turn)) {
+          const said = await reach.fromPrompt(s, b.turn - 1).catch((e) => (void errors.capture("server", e, { at: "rewind not undone" }), undefined));
+          if (said) return json({ ...res, not_undone: said.not_undone });
+        }
+        return json(res);
       }),
     },
   };
