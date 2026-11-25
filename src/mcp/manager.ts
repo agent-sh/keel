@@ -32,6 +32,7 @@ import { toOutput } from "./result.ts";
 import { appUriOf, visibleTo } from "./apps.ts";
 import { base64Bytes as b64Bytes } from "../tools/blob.ts";
 import { hintsOf, hintWords } from "./hints.ts";
+import { LINE_MAX as LINE_MAX_READ } from "../acp/rpc.ts";
 import { ASKED, LOG_KEPT, logLine, severe, type LogLine } from "./logs.ts";
 import { conceal } from "../core/conceal.ts";
 import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
@@ -163,6 +164,7 @@ export type McpServerState = {
   prompts_rev: number;   // goes up when its prompt list changed or it connected again
   logging: boolean;      // the connected server sends its log (src/mcp/logs.ts)
   log_rev: number;       // goes up with each line of its log
+  dropped_lines?: number; // lines of its standard output dropped for their size (Health says so)
   completions: boolean;  // the connected server suggests prompt and template arguments (completion/complete)
   resource_updates: Record<string, number>; // per subscribed URI: goes up when its body changed
   retry?: { attempt: number; next_ms: number; until_ms: number }; // a failed remote server is tried again at next_ms, for a day from its first failure
@@ -246,6 +248,8 @@ type Entry = {
   logRev: number;
   // When a line of it last went to the Errors panel.
   logCaptured?: number;
+  // Lines of its standard output dropped for their size, over all its connections (the first is said in its log).
+  dropped?: number;
   updates: Record<string, number>;
   subscribed: Set<string>;
   // A session's own server (an editor passed it with the session, over ACP):
@@ -1199,6 +1203,15 @@ export class McpManager {
           e.logCaptured = Date.now();
           this.errors.capture("server", new Error(`MCP server ${e.label ?? name} logged ${line.level === "error" ? "an error" : `a ${line.level} line`}${line.logger ? ` (${line.logger})` : ""}: ${line.text.slice(0, 500)}`), { mcp: name, at: "mcp log", level: line.level, ...(line.logger ? { logger: line.logger } : {}) }, { group: `mcp log\u0000${e.spec ?? name}\u0000${line.logger ?? ""}\u0000${line.level}` });
         };
+        // A line of its output too long to read is dropped unread: said once in its log, counted for Health.
+        client.onDropped = () => {
+          if (this.entries.get(name) !== e || e.abort !== abort) return;
+          e.dropped = (e.dropped ?? 0) + 1;
+          if (e.dropped > 1) return;
+          e.log.push({ ts: Date.now(), level: "warning", text: `a line of its output longer than ${LINE_MAX_READ} characters was dropped unread; later ones are counted, not said` });
+          if (e.log.length > LOG_KEPT) e.log.splice(0, e.log.length - LOG_KEPT);
+          e.logRev++;
+        };
         // Watched from the start: a server that exits during discovery is not ready.
         let gone: string | undefined;
         client.onClose = (why) => {
@@ -2021,6 +2034,7 @@ export class McpManager {
       prompts_rev: e.promptsRev,
       logging: !!e.client?.capabilities.logging,
       log_rev: e.logRev,
+      ...(e.dropped ? { dropped_lines: e.dropped } : {}),
       completions: !!e.client?.capabilities.completions,
       resource_updates: e.updates,
       ...(e.bundled ? {} : { idle_browser: { on: !!e.config.close_idle_browser, can: this.browserClose(e), min: settings().mcp_idle.close_browser_min as number } }),

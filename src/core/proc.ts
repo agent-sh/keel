@@ -78,8 +78,9 @@ export async function readText(pipe: Pipe, where?: string): Promise<string> {
 // Lines as they come (the last one without its newline at the end). With `limit`, a line longer than `limit.max`
 // characters is never held or handed on: what comes of it is dropped up to its newline, and `limit.over` is told
 // its length once (a program that writes one without a newline cannot make this process hold it), with the first
-// `limit.head` characters of it (none by default), so a caller can tell what the line was.
-export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: string, limit?: { max: number; over: (chars: number, head: string) => void; head?: number }): Promise<void> {
+// `limit.head` characters of it (none by default), so a caller can tell what the line was. `limit.grew` hears the
+// dropped part's length each time it grows, before the line ends (or never does).
+export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: string, limit?: { max: number; over: (chars: number, head: string) => void; head?: number; grew?: (skipped: number, head: string) => void }): Promise<void> {
   let buf = "";
   if (!limit) {
     return pumpText(pipe, (t) => {
@@ -102,7 +103,8 @@ export function pumpLines(pipe: Pipe, onLine: (l: string) => void, where?: strin
     const rest = from ? t.slice(from) : t;
     if (skipped) skipped += rest.length;
     else if (buf.length + rest.length > max) { head = (buf + rest.slice(0, headMax)).slice(0, headMax); skipped = buf.length + rest.length; buf = ""; }
-    else buf += rest;
+    else { buf += rest; return; }
+    limit.grew?.(skipped, head);
   }, where).then(() => { if (skipped) over(skipped, head); else if (buf) onLine(buf); });
 }
 

@@ -183,7 +183,7 @@ export function diskRow(f: { path: string; free: number; total: number; database
 // ---- MCP servers -----------------------------------------------------------------
 
 // `bundled`: a server Keel brings itself (the browser bridge, the phone): not set up is not a failure to start.
-export type McpFacts = { name: string; enabled: boolean; bundled?: boolean; state: string; error?: string; target?: string; held?: boolean; sign_in?: boolean; transport?: string };
+export type McpFacts = { name: string; enabled: boolean; bundled?: boolean; state: string; error?: string; target?: string; held?: boolean; sign_in?: boolean; transport?: string; dropped?: number };
 
 export function mcpRows(servers: McpFacts[]): Row[] {
   const link = { section: "mcp" };
@@ -194,6 +194,7 @@ export function mcpRows(servers: McpFacts[]): Row[] {
     if (s.state === "error" || s.state === "unreachable" || s.state === "missing") rows.push({ id: `mcp:${s.name}`, group: "mcp", level: "broken", title: `${s.name} does not start`, detail: s.error ?? `its state is ${s.state}`, fix: s.transport === "stdio" ? "run its command in a terminal and fix what it prints; then reload the server" : "check the address and its sign-in; Keel tries a remote server again for a day", link, ...where });
     else if (s.state === "needs_auth") rows.push({ id: `mcp:${s.name}`, group: "mcp", level: "warning", title: `${s.name} needs a sign-in`, fix: "sign in from its entry", link, ...where });
     else if (s.held) rows.push({ id: `mcp:${s.name}:held`, group: "mcp", level: "warning", title: `${s.name} changed its tools and they are held`, fix: "read the change and accept it, or leave the old definitions", link, ...where });
+    if (s.dropped) rows.push({ id: `mcp:${s.name}:lines`, group: "mcp", level: "warning", title: `${s.name} wrote ${s.dropped === 1 ? "a line" : `${s.dropped} lines`} too long to read`, detail: "its output is read a line at a time and a line past the limit is dropped unread", fix: "make the server write less in one line, or to its own log file", link, ...where });
   }
   if (!rows.length) rows.push({ id: "mcp:ok", group: "mcp", level: "ok", title: on.length ? `${on.length} MCP ${on.length === 1 ? "server" : "servers"} set up, none failing` : "no MCP servers set up", link });
   return rows;

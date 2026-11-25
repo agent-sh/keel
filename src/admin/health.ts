@@ -223,7 +223,7 @@ const providers = async (reg: Providers): Promise<Row[]> => providerRows(await p
 
 function mcp(): Row[] {
   const m = (globalThis as { __keelMcp?: { list(): any[] } }).__keelMcp;
-  return mcpRows((m?.list() ?? []).map((s) => ({ name: s.name, enabled: s.enabled, state: s.state, error: s.error, target: s.target, held: !!s.held, sign_in: s.sign_in, transport: s.transport, bundled: !!s.bundled })));
+  return mcpRows((m?.list() ?? []).map((s) => ({ name: s.name, enabled: s.enabled, state: s.state, error: s.error, target: s.target, held: !!s.held, sign_in: s.sign_in, transport: s.transport, bundled: !!s.bundled, dropped: s.dropped_lines })));
 }
 
 // ---- disk ---------------------------------------------------------------------------

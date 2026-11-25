@@ -13,6 +13,7 @@ import { APP_MIME, UI_EXTENSION } from "./apps.ts";
 import { SKILLS_EXTENSION } from "./skills.ts";
 import { vault } from "../safety/secrets.ts";
 import { maskProxy } from "./env.ts";
+import { LINE_MAX, responseId } from "../acp/rpc.ts";
 
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSION = "2025-11-25";
@@ -81,6 +82,8 @@ const QUIET_ROUNDS = 3;
 // The most rounds one call takes, whatever its handler answers: more than the
 // manager's own bounds on a call's questions allow (src/mcp/manager.ts), so
 // it is met only by a server that is called again for ever.
+// A line of a stdio server's stdout with no end after this many characters is a flood: the server is closed.
+const FLOOD_MAX = 8 * LINE_MAX;
 const ROUNDS_MAX = 64;
 // The most requests of its own a server makes in a minute that no call
 // answers (outside any call, after its call ended, or with nothing to say
@@ -219,6 +222,10 @@ export class McpClient {
   private pending = new Map<number | string, Pending>();
   private proc?: ReturnType<typeof Bun.spawn>;
   private stderrTail = "";
+  // Lines of the server's stdout dropped for their size, and told as each begins (the count so far).
+  dropped = 0;
+  private overrun = false;
+  onDropped?: (count: number) => void;
   private sessionId?: string;
   private closed = false;
 
@@ -324,13 +331,39 @@ export class McpClient {
     });
     this.proc = proc;
     t.started?.(proc);
-    void pumpLines(proc.stdout as ReadableStream<Uint8Array>, (l) => { const line = l.trim(); if (line) this.onMessage(line); }, "mcp stdout");
+    void pumpLines(proc.stdout as ReadableStream<Uint8Array>, (l) => { const line = l.trim(); if (line) this.onMessage(line); }, "mcp stdout", {
+      max: LINE_MAX,
+      head: 1024,
+      // A line the server has not ended: said when it passes the bound, and the server is closed when it goes on
+      // for FLOOD_MAX characters (a flood, not a message).
+      grew: (n) => {
+        if (!this.overrun) { this.overrun = true; this.dropped++; this.onDropped?.(this.dropped); }
+        if (n > FLOOD_MAX && !this.closed) this.flood(`the server wrote ${FLOOD_MAX} characters with no line end, more than Keel reads (a line is at most ${LINE_MAX})`);
+      },
+      over: (n, head) => {
+        this.overrun = false;
+        const id = responseId(head);
+        // A response dropped unread would leave its request waiting for its whole timeout.
+        const p = id === undefined ? undefined : this.pending.get(id);
+        if (p) {
+          this.pending.delete(id!);
+          p.reject(new Error(`the server's answer was ${n} characters, more than the ${LINE_MAX} Keel reads in one line, and was dropped`));
+        }
+      },
+    });
     void pumpText(proc.stderr as ReadableStream<Uint8Array>, (t) => (this.stderrTail = (this.stderrTail + t).slice(-4000)), "mcp stderr");
     proc.exited.then((code) => {
       const why = `the server exited (code ${code})`;
       this.failAll(this.withStderr(new Error(why)));
       this.shut(why);
     });
+  }
+
+  // The server wrote more than a line can hold with no end to it: its calls fail and it is closed, with the reason.
+  private flood(why: string) {
+    this.failAll(this.withStderr(new Error(why)));
+    this.shut(why);
+    try { this.proc?.kill("SIGKILL"); } catch {}
   }
 
   // The other side ended it: no new request goes out, and the owner of this client hears why.
