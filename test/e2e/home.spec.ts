@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
+import { answersOf, ask, create, folder } from "./answering.ts";
 import { shoot, setPanes } from "./shots.ts";
 
 // Feature: the home screen is the watch over every session. Its headline is
@@ -558,6 +559,32 @@ test("home: every way to a waiting session lands on the list of requests", async
   } finally {
     await drop(request, ids);
     console.log(`\nPATH-TABLE-HOME\n${table.join("\n")}\nPATH-TABLE-HOME-END`);
+  }
+});
+
+// A row's Answer opens the session that asks as the start of an answering sequence, so the owner is
+// back on the home screen once they have answered it, not left in the session they answered in.
+test("home: answering what a row opened leads back to the home screen", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const id = await create(request, "Home: back after the answer", folder("home-back"));
+  try {
+    await ask(request, id, "question");
+    await page.goto("/");
+    const review = row(page, id).getByTestId("home-review");
+    await expect(review).toHaveText("Answer", { timeout: 30_000 });
+    await expect(review).toBeEnabled();
+    await review.click();
+    await expect(page).toHaveURL(new RegExp(`/s/${id}$`));
+    const card = page.getByTestId("question");
+    await expect(card).toBeFocused();
+    await expect(card).toHaveAttribute("data-keys", "ready");
+    await page.keyboard.press("1");
+    await expect.poll(() => answersOf(request, id)).toBeTruthy();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("home-watch")).toBeVisible();
+    await shoot(page, "home-11-back-home");
+  } finally {
+    await drop(request, [id]);
   }
 });
 

@@ -21,8 +21,10 @@
 //   Anything else is reviewed on its card.
 // - Every way from here to a session with a request waiting (the row's title,
 //   its Review, a count in the headline, the line under the rows) goes through
-//   one helper (`openWaiting`), which asks the card for its list of requests,
-//   never for an answer.
+//   one helper (`answerFromHome`: the answering sequence of AnswerQueue.tsx for
+//   what has a card, so a Review goes on through every request that waits and
+//   ends back here; else `openWaiting`), which asks the card for its list of
+//   requests, never for an answer.
 // - The buttons belong to one approval (keyed by its id), so neither a press
 //   nor the focus passes to the session's next call.
 // - Every button of a row acts only after it has stood whole and still on
@@ -43,6 +45,7 @@ import { navigate } from "../lib/ui.ts";
 import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow, doneAlert, stateWords } from "../../../src/core/state-words.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
+import { goToAsk } from "./AnswerQueue.tsx";
 import { usePress } from "./ApprovalCard.tsx";
 import { Mark, folderOf, stateClock, tickOf, timed, useNow } from "./Mark.tsx";
 
@@ -81,6 +84,17 @@ export function openWaiting(id: string, child?: string, why?: string) {
   else focusAsk(to);
 }
 
+// What waits with a card (the daemon's reasons that are cards), as against a message that did not go or a turn to resume.
+const CARD_WHY = new Set(["approval", "question", "plan", "secret"]);
+
+// From the home screen, a request with a card starts the answering sequence where the owner stands (AnswerQueue.tsx):
+// the session's requests and then the next that waits, in the order of Alt A, and when nothing is left the owner is
+// back on the home screen. Anything else (a failure, a message that did not go, a turn to resume) is opened as before.
+export function answerFromHome(id: string, child?: string, why?: string) {
+  if (why && CARD_WHY.has(why)) goToAsk(child ?? id);
+  else openWaiting(id, child, why);
+}
+
 export function useHome() {
   const sessions = useStore((x) => x.sessions);
   const own = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
@@ -112,7 +126,7 @@ export function WatchHeadline() {
   return (
     <h1 className="k-home-state" data-testid="home-watch">
       {head.map((p) => (
-        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} data-count={p.n} aria-label={`${p.text}. Open ${byId[p.ids[0]!]?.title || "the session"}`} title={`${p.text}. ${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
+        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} data-count={p.n} aria-label={`${p.text}. Open ${byId[p.ids[0]!]?.title || "the session"}`} title={`${p.text}. ${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => answerFromHome(p.ids[0]!, states[p.ids[0]!]?.child, states[p.ids[0]!]?.why)}>
           <Mark w={p.w} />{headCount(p.text)}
         </button>
       ))}
@@ -215,7 +229,7 @@ function Row({ s, st, lead, stands, onAnswer, room }: { s: Session; st: SessionS
   useEffect(() => setNote(null), [a?.id]);
   useEffect(() => { if (!note || note.review) return; const t = setTimeout(() => setNote(null), 4000); return () => clearTimeout(t); }, [note]);
   // The card is where a request is read: the keyboard lands on the list of requests, on no answer.
-  const open = () => openWaiting(s.id, st.child, st.why);
+  const open = () => answerFromHome(s.id, st.child, st.why);
   const deny = () => { navigate({ name: "session", id: s.id }); if (a) focusApproval(a.id, "deny"); };
   // A turn a restart cut that Keel did not resume: the row resumes it.
   const held = w === "need" && st.why === "resume";
@@ -352,7 +366,7 @@ function List({ title, rows, most, testid, className, counted }: { title: string
           : byId[id] && states[id] && <Row key={id} s={byId[id]!} st={states[id]!} lead={id === still.order.find((x) => !still.gone.has(x))} stands={stands} onAnswer={still.answered} room={still.held ? still.height(id) : undefined} />)}
       </div>
       {/* What did not fit, in the headline's own words, so the two counts read as one. */}
-      {next && <button type="button" className="k-home-more" data-testid="home-more" onClick={() => openWaiting(next, states[next]?.child, states[next]?.why)}>{sayMore(more)}</button>}
+      {next && <button type="button" className="k-home-more" data-testid="home-more" onClick={() => answerFromHome(next, states[next]?.child, states[next]?.why)}>{sayMore(more)}</button>}
     </section>
   );
 }
