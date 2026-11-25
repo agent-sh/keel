@@ -269,9 +269,9 @@ test("Full auto is neutral ink where it is the owner's usual mode and warm where
 });
 
 // Feature: the bar says a session's state once, in the glyph and the word (no coloured strip across the
-// top of the pane), and after the folder, faint, what it waits on the owner for: "approve: ..." for a
-// call, "asks: ..." for a question, in the room the folder leaves.
-test("the bar has no state strip, and a session that needs the owner says why after its folder", async ({ page, request }) => {
+// top of the pane), and what it waits on the owner for is said once, in its card: while the card is in view the bar
+// and the dock's line say the state only, not "approve: ..." or "asks: ..." again (UX-S143).
+test("the bar has no state strip, and a session that needs the owner says why once, in its card", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
   const model = models.find((m) => m.id === "scripted:stand-in")?.id;
   test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
@@ -289,7 +289,7 @@ test("the bar has no state strip, and a session that needs the owner says why af
     const asks = await make("Waits on a question", calls({ name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which store should hold the sessions?", options: [{ label: "SQLite" }, { label: "Files" }], multiSelect: false }] } }), "full-auto");
     const failed = await make("Fails at the top", "script:billing", "full-auto");
     await page.setViewportSize({ width: 1920, height: 1040 });
-    for (const [id, watch, said] of [[approve, "need", /^approve: git push origin release/], [asks, "need", /^asks: Which store should hold the sessions/], [failed, "fail", null]] as const) {
+    for (const [id, watch, said] of [[approve, "need", true], [asks, "need", true], [failed, "fail", false]] as const) {
       await page.goto(`/s/${id}`);
       const pane = page.getByTestId("station").and(page.locator(`[data-station="${id}"]`));
       await expect(pane).toHaveAttribute("data-watch", watch, { timeout: 30_000 });
@@ -297,25 +297,14 @@ test("the bar has no state strip, and a session that needs the owner says why af
       const head = pane.getByTestId("station-head");
       // The strip: no colour of the state across the pane's top.
       expect(await pane.locator(":scope > .k-band").evaluate((el) => getComputedStyle(el).backgroundColor), `a pane that is ${watch} draws a strip`).toBe("rgba(0, 0, 0, 0)");
-      const reason = head.getByTestId("station-ask");
-      if (!said) { await expect(reason).toHaveCount(0); continue; }
-      await expect(reason).toHaveText(said);
-      // After the folder, on the line of the state, fainter than the word.
-      const [folder, word, ask] = await Promise.all([head.locator(".k-station-where").boundingBox(), head.getByTestId("station-word").boundingBox(), reason.boundingBox()]);
-      expect(ask!.x, "the reason follows the folder").toBeGreaterThanOrEqual(folder!.x + folder!.width - 1);
-      expect(Math.abs(ask!.y - folder!.y), "the reason is on the folder's line").toBeLessThan(4);
-      expect(Math.abs(word!.y - folder!.y), "the state is on the folder's line").toBeLessThan(8);
-      expect(await reason.evaluate((el) => getComputedStyle(el).color), "the reason is not the word's colour").not.toBe(await head.getByTestId("station-word").evaluate((el) => getComputedStyle(el).color));
+      // The card is in view: the bar does not say its reason again, nor does the dock's line over the message box.
+      await expect(head.getByTestId("station-ask")).toHaveCount(0);
+      if (!said) continue;
+      const needs = id === approve ? "git push origin release" : "Which store should hold the sessions";
+      await expect(pane.getByTestId(id === approve ? "approval" : "question")).toContainText(needs);
+      await expect(head).not.toContainText(needs);
+      await expect(pane.getByTestId("dock-action-text")).toHaveText("Needs you");
       await shoot(page, `top-edge-ask-${id === approve ? "call" : "question"}`);
-    }
-    // Narrow: it is cut to the room left, never wider than the head.
-    await page.setViewportSize({ width: 1200, height: 800 });
-    await page.goto(`/s/${approve}`);
-    const head = page.getByTestId("station-head").first();
-    const ask = head.getByTestId("station-ask");
-    if (await ask.count()) {
-      const [h, a] = await Promise.all([head.boundingBox(), ask.boundingBox()]);
-      expect(a!.x + a!.width, "the reason stays inside the head").toBeLessThanOrEqual(h!.x + h!.width);
     }
   } finally {
     for (const id of made) {

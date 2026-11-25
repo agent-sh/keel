@@ -33,6 +33,7 @@ import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
 import { askSuffix } from "../../../src/core/watch.ts";
+import { CARDED, useCardInView } from "../lib/card-view.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
 import { COUNTERS, OFFLINE, STATE_WORD, asOf, backgroundOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
@@ -129,8 +130,6 @@ const StationTools = memo(function StationTools({ id, helm, pinned, focus, panes
   );
 });
 
-// The asks whose card the pane draws (src/core/watch.ts names them).
-const CARDED = new Set(["approval", "question", "plan", "secret"]);
 function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: boolean }) {
   // What it last did is shown in a pane that is not the helm: only such a pane reads its events,
   // and works the line out when they changed, not at each tick of its clock.
@@ -155,7 +154,9 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // keeps the state and its clock, and the whole reason is its tooltip.
   const carded = (w === "need" && CARDED.has(st.why ?? "")) || w === "declined";
   // The head does not say the card's words again, but the reason a session needs the owner stays in view: a faint line after the folder.
-  const ask = !offline && carded && w === "need" ? askSuffix(st) : "";
+  // While its card is in view the card says it, and the bar does not (lib/card-view.ts): the reason is said once.
+  const inView = useCardInView(s.id, st);
+  const ask = !offline && carded && w === "need" && !inView ? askSuffix(st) : "";
   // A session at work: the bar keeps the title, the dot, the word and the timer; what it runs is the word's tooltip and the
   // folder is the title's. What it does now is the line over the message box (DockNow.tsx): a reason here would change with
   // each step and move the conversation under the bar a line at every one, on a phone too.

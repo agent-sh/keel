@@ -3,8 +3,7 @@ import { openSession, useAuto } from "../../lib/automation.ts";
 import { asksBelow, below } from "../../lib/agent-tree.ts";
 import { safety, useSafety } from "../../lib/safety.ts";
 import { useStore } from "../../lib/store.ts";
-import { cn } from "../../lib/utils.ts";
-import { AgentMark, STATE_INK } from "./bits.tsx";
+import { AgentMark } from "./bits.tsx";
 import { stateWords } from "../../../../src/core/state-words.ts";
 const Questions = lazy(() => import("../QuestionCard.tsx").then((m) => ({ default: m.Questions })));
 const Approvals = lazy(() => import("../ApprovalCard.tsx").then((m) => ({ default: m.Approvals })));
@@ -59,7 +58,8 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
               <AgentMark w="need" />
               {/* The same line an agent's report has: its name first and heavier, then its state word. */}
               <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words" data-testid="child-path" title={agent}>Agent {names.length > 1 && <>{names.slice(0, -1).join(" › ")} › </>}<span className="font-semibold text-fg">{names.at(-1)}</span></span>
-              <span className={cn("shrink-0", STATE_INK.need)}>{stateWords({ watch: "need", why: asks && !open[id]?.length ? "question" : "approval" }).phrase.toLowerCase()}</span>
+              {/* The card under it says what is asked, and the dot says who needs the owner: the phrase is for a reader only. */}
+              <span className="sr-only">{stateWords({ watch: "need", why: asks && !open[id]?.length ? "question" : "approval" }).phrase.toLowerCase()}</span>
             </button>
             {!!open[id]?.length && <Suspense fallback={null}><Approvals sessionId={id} asker={agent} where={where} /></Suspense>}
             {asks && <Suspense fallback={null}><Questions sessionId={id} agent lead={i === firstQuestion} /></Suspense>}

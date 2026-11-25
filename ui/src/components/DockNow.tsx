@@ -10,6 +10,7 @@ import { momentOf, pathInAction, type Moment } from "../lib/now-line.ts";
 import { projectOfFolder, useProjects } from "../lib/projects.ts";
 import { useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI } from "../lib/ui.ts";
+import { useCardInView } from "../lib/card-view.ts";
 import { useSessionState } from "../lib/watch.ts";
 import { folderOf, tickOf, timed, stateClock, useNow } from "./Mark.tsx";
 
@@ -37,10 +38,12 @@ export function DockNow({ sessionId, changes }: { sessionId: string; changes: Re
   const session = useStore((s) => s.sessions[sessionId]);
   const st = useSessionState(session);
   const now = useNow(timed(st), tickOf(st));
+  const inView = useCardInView(sessionId, st);
   const project = useProjects((s) => s.projects.find((p) => p.id === (session ? (s.members[session.id] ?? projectOfFolder(session.workspace)?.id) : undefined)));
   if (!session) return null;
   const moment = momentOf(st);
-  const said = st.text ? briefText(st, now) : "";
+  // The card above the message box says what it asks: the line says the state only (lib/card-view.ts).
+  const said = st.text && !inView ? briefText(st, now) : "";
   const whole = st.text ? whyText(st, now) : "";
   // At rest the line says the state in its word (and the reason a failure or a stop has); at work, the action.
   const words = moment ? said || stateLabel(st) : [stateLabel(st), st.watch === "fail" || st.watch === "declined" || st.watch === "stop" ? said : ""].filter(Boolean).join(": ");
