@@ -206,8 +206,18 @@ export class CodexApp {
   private said = new Map<string, string[]>();
   private closed = false;
 
+  private off: () => void;
+
   constructor(private d: CodexAppDeps) {
     d.store.migrate(SCHEMA);
+    // A row the owner deletes while Keel runs its turn: the turn is stopped and the child ends (its sends went
+    // with the row).
+    this.off = d.bus.on((f) => {
+      if (f.t !== "session" || !f.deleted) return;
+      this.said.delete(f.session.id);
+      const r = this.runs.get(f.session.id);
+      if (r) void this.interrupt(f.session.id).catch((e) => d.trouble(e, "stopping a deleted session's Codex turn"));
+    });
   }
 
   // Keel's own child holds the session now (until it has ended: it holds the writer lock until then).
@@ -568,6 +578,7 @@ export class CodexApp {
 
   stop() {
     this.closed = true;
+    this.off();
     for (const r of [...this.runs.values()]) void this.kill(r);
     this.runs.clear();
   }

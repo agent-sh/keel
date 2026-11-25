@@ -252,6 +252,19 @@ describe("a Codex session answered in place", () => {
     } finally { r.done(); }
   }, 60_000);
 
+  test("a row the owner deletes while Keel runs its turn: the turn is stopped and the child ends", async () => {
+    const r = rig();
+    try {
+      const s = await r.session();
+      r.app().send(s.id, "wait for me", "k1");
+      await until(() => r.app().running(s.id));
+      r.store.deleteSession(s.id);
+      r.bus.emit({ t: "session", session: s, deleted: true });
+      await until(() => !r.app().ours(s.id), 15_000);
+      expect(readFileSync(r.rollout, "utf8")).toContain('"type":"turn_aborted"');
+    } finally { r.done(); }
+  }, 30_000);
+
   test("a session another process holds takes nothing, and says who holds it", async () => {
     const r = rig({ holder: () => ({ kind: "terminal", pid: 4242 }) });
     try {
