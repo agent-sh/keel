@@ -60,6 +60,8 @@ chmod 700 "$D/home/run"
 for t in agent-workspace-linux gjs gdbus curl python3 bun; do command -v "$t" > /dev/null || { echo "missing $t"; exit 2; }; done
 
 fails=0; n=0
+# KEEL_E2E_UNTIL=NAME: stop at the place that names it (see the lines `stop_at NAME`), for a quick run of the cases before it.
+stop_at() { if [ "${KEEL_E2E_UNTIL:-}" = "$1" ]; then echo "$((n - fails)) of $n passed (stopped at $1)"; [ "$fails" = 0 ]; exit; fi; }
 ok() { n=$((n + 1)); echo "ok $n - $1"; }
 fail() { n=$((n + 1)); fails=$((fails + 1)); echo "FAIL $n - $1"; }
 check() { if eval "$2"; then ok "$1"; else fail "$1"; fi; }
@@ -457,8 +459,12 @@ else
   echo "# note: the paste of a copied picture needs wl-copy and the native Wayland backend"
 fi
 
+# A press of the owner's on the page where it holds nothing: the margin between the rail and the conversation's column
+# (a click in the column's top lands on the hover actions of the prompt's row).
+blank_click() { $A click --id "$WS" $((X + 540)) $((Y + 600)) > /dev/null 2>&1; sleep 0.5; }
+
 # --- 5b3. the clipboard through the app: at the owner's press, and not without one
-$A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+blank_click
 $A key --id "$WS" F7 > /dev/null 2>&1
 check "a copy announced at the owner's press is written" "wait_for 5 \"grep -aq '^PROBE COPIED id=9001 ok=true' '$D/shell.out'\""
 check "a copy four seconds later, with no press, is refused" "wait_for 8 \"grep -aq '^PROBE COPIED id=9002 ok=false' '$D/shell.out'\""
@@ -542,13 +548,13 @@ if [ "${KEEL_E2E_UNTIL:-}" = microphone ]; then echo "$((n - fails)) of $n passe
 # --- 5c. the main frame stays on the daemon's origin
 (python3 "$HERE/listener.py" "$FOREIGN" 200 12 > "$D/foreign.out" 2>&1 &)
 read -r X Y W H _ <<< "$(geometry)"
-$A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+blank_click
 $A key --id "$WS" F8 > /dev/null 2>&1
 # The page's own script still reports after the attempt: the page that was there is the page that is there.
 check "a page that tries to leave the daemon's origin stays where it was, not loaded again" "wait_for 10 \"said LEAVING | grep -q LEAVING\" && sleep 5 && grep -a '^PROBE AT ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ] && ! geometry | grep -qi foreign"
 
 # --- 5c2. the main frame shows places of the page only: not an artifact's own address, which is a sandboxed document
-$A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+blank_click
 $A key --id "$WS" F9 > /dev/null 2>&1
 check "the main frame does not show an artifact's own address, and the artifact gets no app object" "wait_for 10 \"said GOING-RAW | grep -q GOING\" && sleep 5 && grep -a '^PROBE AT ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && ! grep -aq '^PROBE ARTIFACT handler=true keelShell=object' '$D/shell.out' && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ]"
 # The same address as a file to keep is saved, and the page is not loaded again.
@@ -603,6 +609,8 @@ else
 fi
 
 # --- 5e. the file dialog: the attach button opens the desktop's own dialog, and the file picked there is attached
+shot 05e-before-attach
+stop_at before-attach
 read -r X Y W H _ <<< "$(geometry)"
 read -r CX CY IW IH <<< "$(said 'ATTACH ' | cut -d' ' -f3-)"
 files=$(said 'FILES ' | cut -d' ' -f3)
@@ -632,6 +640,8 @@ check "resume lets them through again" "wait_for 10 \"api /api/snooze | grep -q 
 
 # --- 6b. the window closed while a tray host is there is hidden, not ended; a click on the mark brings it back as it was
 read -r X Y W H _ <<< "$(geometry)"
+shot 06b-before-typing
+stop_at before-typing
 $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 1
 $A type --id "$WS" "kept while hidden" > /dev/null 2>&1; sleep 2
 draft=$(said 'AT ' | sed -n 's/.* draft=\([0-9]*\) .*/\1/p')
@@ -642,6 +652,7 @@ mark=$(lines)
 # (As a panel does at a click on the mark.)
 gdbus call --session --dest "$BUS" --object-path /StatusNotifierItem --method org.kde.StatusNotifierItem.Activate 0 0 > /dev/null 2>&1
 check "a click on the mark brings the window back as it was: what was typed is there, and the page was not loaded again" "wait_for 10 '[ \"\$(windows)\" = 1 ]' && [ \"${draft:-0}\" -ge 17 ] && wait_for 10 \"since $mark | grep -a '^PROBE AT ' | tail -1 | grep -q ' draft=$draft '\" && [ \"\$(logged load)\" = \"$loads\" ]"
+stop_at back-from-tray
 read -r X Y W H _ <<< "$(geometry)"
 $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 0.5
 $A key --id "$WS" ctrl+a > /dev/null 2>&1; $A key --id "$WS" BackSpace > /dev/null 2>&1; sleep 1
