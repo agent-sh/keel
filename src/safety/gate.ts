@@ -1909,7 +1909,9 @@ export class Gate {
       words = await this.privateWords(session, cls.command, cwdOf(call) ?? call.ctx.cwd);
       // A line the owner would be asked about because it spells where it goes or what it sends with a variable goes back
       // once to be written out (written-out.ts): the line that comes back is read exactly, and asks only for what it does.
-      if (words || ("ask" in d && d.ask.account === "")) {
+      // A card already parked for this call (a restart while it waited) is taken back, never sent back: the owner's
+      // answer on it stands.
+      if ((words || ("ask" in d && d.ask.account === "")) && !this.parked.has(callKey(session.id, call.id))) {
         const back = this.writeOut(session, cls.command, cls.cwd ?? cwdOf(call) ?? call.ctx.cwd);
         if (back) return { deny: back };
       }

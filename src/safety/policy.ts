@@ -809,6 +809,7 @@ const ELSE_WHY = "a cd before it may not land where it says (it can fail, the li
 // variable, a glob, `~user`), or stands in a line that may give HOME another value: one that names HOME other than to
 // read it, an eval or a sourced file. A script another shell is given (`bash -c`, behind `sudo -u`) is not read so: whose
 // home that shell has is not in the line's words. Such a word stays one the rules do not place.
+const MADE_COMPUTES = /\$\{(?![A-Za-z_][A-Za-z0-9_]*\})|\$\(\(|\$\[/;
 const HOME_READ = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
 // (git's own options that take the next word, as the account rules read them: accounts.ts gitWrites.)
 const GIT_VALUED = new Set(["-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
@@ -816,7 +817,19 @@ function homeWritten(parts: Simple[], pre: ReturnType<typeof laid>, home: string
   let runs: Run[] | undefined, kept: boolean | undefined;
   const homeKept = () => (kept ??= !parts.some((s, i) => {
     const first = baseName(pre.runs[i]?.words[0]);
-    return first === "eval" || first === "source" || first === "." || /\bHOME\s*\+?=/.test(s.text) || s.words.some((w) => /\bHOME\b/.test(w.replace(HOME_READ, "")));
+    if (s.heredoc) return false;
+    const run = pre.runs[i]!;
+    // A part the parser does not read (a for or select name, a descriptor variable, arithmetic), code it is handed.
+    if (s.unknown || first === "eval" || first === "source" || first === ".") return true;
+    if (/\bHOME\b/.test(s.text.replace(HOME_READ, "")) || s.words.some((w) => /\bHOME\b/.test(w.replace(HOME_READ, "")))) return true;
+    // A name that stands for another, or one whose value is computed.
+    if (/^(declare|typeset|local)$/.test(first) && s.words.some((w) => /^-[a-zA-Z]*[ni]/.test(w))) return true;
+    if (!s.dyn?.length) return false;
+    // A word an expansion makes: one that can compute (${x:n}, ${a[n]}, ${!x}, $((..)), $[..]), an array subscript,
+    // or any in a command that can give a name a value (export ${x}ME=, read $n, printf -v "$n", let, trap).
+    if (s.dyn.some((n) => MADE_COMPUTES.test(s.words[n] ?? ""))) return true;
+    if (!run.words.length) return s.words.some((w) => /^[A-Za-z_][A-Za-z0-9_]*\[/.test(w));
+    return first !== "git" && first !== "cd" && !isReadOnly(s);
   }));
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!, run = pre.runs[i]!;
