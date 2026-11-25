@@ -57,7 +57,7 @@ export default function PressesPanel() {
         <p>Keel notes which control you press: its name, the view, the session in view and the time. Never a word you type and never a value.</p>
         <p>It stays in this machine's own database. It is not sent to Keel's makers, a model provider or anyone else.</p>
         <Disclosure summary="How it is counted">
-          <p>A command run by its shortcut is counted as key:name; plain keys, such as Enter to send, are not counted. It is the same in the browser, the desktop app and the page on a phone.</p>
+          <p>A command run by its shortcut is counted as key:name, and the keys that send as key:send or key:queue; other plain keys are not counted. A press on a session's row, or on one of its actions, is counted for that row's session. It is the same in the browser, the desktop app and the page on a phone.</p>
           <p>It is not part of the OTLP export. It is kept {r.kept_days} days, at most {r.row_cap.toLocaleString()} presses.</p>
           <p>What you press most tells which controls earn their place.</p>
         </Disclosure>
@@ -75,6 +75,7 @@ export default function PressesPanel() {
         <Stats>
           <Stat testid="press-total" label="Presses" value={r.presses.toLocaleString()} sub={`last ${r.days} days`} />
           <Stat label="Views" value={r.views.length.toLocaleString()} />
+          <Stat testid="press-surfaces" label="Where" value={r.surfaces[0] ? `${r.surfaces[0].presses.toLocaleString()} ${SURFACE[r.surfaces[0].surface] ?? r.surfaces[0].surface}` : "none yet"} sub={r.surfaces.length > 1 ? r.surfaces.slice(1).map((x) => `${x.presses.toLocaleString()} ${SURFACE[x.surface] ?? x.surface}`).join(", ") : "no other surface"} />
           <Stat label="Never pressed" value={r.never.length.toLocaleString()} sub="drawn, not pressed" />
         </Stats>
       </Group>

@@ -45,9 +45,9 @@ test("telemetry: what you press, most used first, never a word typed", async ({ 
   // The intro is two lines; how a press is counted is behind a disclosure of its own.
   const how = panel.getByTestId("press-disclosure").locator("details", { hasText: "How it is counted" });
   await expect(how.locator("summary")).toBeVisible();
-  await expect(how.getByText("plain keys, such as Enter to send, are not counted")).toBeHidden();
+  await expect(how.getByText("other plain keys are not counted")).toBeHidden();
   await how.locator("summary").click();
-  await expect(how.getByText("plain keys, such as Enter to send, are not counted")).toBeVisible();
+  await expect(how.getByText("other plain keys are not counted")).toBeVisible();
   await expect(panel.getByTestId("press-disclosure").locator(".k-set-hint > p")).toHaveCount(2);
   const view = panel.locator('[data-testid="press-view"][data-view="session"]');
   await expect(view).toBeVisible();
@@ -108,5 +108,79 @@ test("telemetry: what you press, most used first, never a word typed", async ({ 
   await expect.poll(async () => (await (await request.get("/api/presses")).json()).presses, { timeout: 30_000 }).toBeGreaterThan(again);
   await other.close();
   await expect.poll(async () => (await (await request.get("/api/presses")).json()).record).toBe(true);
+  await request.delete("/api/sessions/" + session.id);
+});
+
+// The owner's usual acts are recorded: opening a session (a row is a link), the keys that send, a key command, a row's
+// action for the row it acts on (its id, never its title), an item of a menu by name, and the surface the page ran in.
+test("telemetry: a session row, the send keys, a key command, a row action and a menu item are recorded", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await request.delete("/api/presses");
+  const tag = Math.random().toString(36).slice(2, 7);
+  const make = async (title: string) => (await (await request.post("/api/sessions", { data: { model: STAND_IN, title } })).json()).session as { id: string };
+  const here = await make(`Press here ${tag}`);
+  const other = await make(`Press other ${tag}`);
+  type Sent = { surface: string; presses: { c: string; v: string; s?: string }[] };
+  const sent: Sent[] = [];
+  page.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith("/api/presses")) sent.push(JSON.parse(r.postData() ?? "{}")); });
+  const got = (c: string) => sent.flatMap((b) => b.presses).filter((p) => p.c === c);
+  const gotOne = (c: string, s?: string) => expect.poll(() => got(c).filter((p) => s === undefined || p.s === s).length, { timeout: 30_000, message: c }).toBeGreaterThan(0);
+
+  await page.goto(`/s/${here.id}`);
+  const row = (id: string) => page.locator(`[data-testid="session-row"][data-session="${id}"]`);
+  await expect(row(other.id)).toBeVisible();
+  // Opening a session: the row is a link, and the press is the row's own session, not the one in view.
+  await row(other.id).click();
+  await gotOne("session-row", other.id);
+  await expect(page).toHaveURL(new RegExp(`/s/${other.id}`));
+  // A row's action is recorded for the row it acts on (the session in view is the other one).
+  await row(here.id).hover();
+  await row(here.id).getByTestId("row-pin").click();
+  await gotOne("row-pin", here.id);
+  // The keys that send.
+  const box = page.getByTestId("composer");
+  await box.fill(`say hi ${tag}`);
+  await box.press("Enter");
+  await gotOne("key:send");
+  // A key command (the palette).
+  await page.keyboard.press("Control+k");
+  await gotOne("key:palette");
+  await page.keyboard.press("Escape");
+  // A menu item, by name.
+  await page.getByTestId("effort-picker").click();
+  await page.getByRole("menuitem", { name: "low" }).click();
+  await gotOne("effort-low");
+
+  // Never a title, a word typed or a value; only ids shaped like ids.
+  const all = JSON.stringify(sent);
+  expect(all).not.toContain(`Press here ${tag}`);
+  expect(all).not.toContain(`say hi ${tag}`);
+  for (const p of sent.flatMap((b) => b.presses)) if (p.s) expect(p.s).toMatch(/^[A-Za-z0-9-]{8,64}$/);
+  expect(new Set(sent.map((b) => b.surface))).toEqual(new Set(["page"]));
+
+  // Settings > Telemetry shows where the presses were made.
+  await page.goto("/settings/telemetry");
+  await expect(page.getByTestId("press-surfaces")).toContainText("browser");
+  await shoot(page, "presses-04-surface");
+  await request.delete("/api/sessions/" + here.id);
+  await request.delete("/api/sessions/" + other.id);
+});
+
+// The page inside the desktop app says so: the app puts one object on the window (lib/shell.ts), and every batch then names the
+// desktop app as its surface.
+test("telemetry: a page inside the desktop app is recorded as the desktop app", async ({ page, request }) => {
+  await request.delete("/api/presses");
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "keelShell", { value: Object.freeze({ name: "keel-desktop", version: "0", engine: "webkit", platform: "linux", window: "main", can: Object.freeze({ titlebar: false, windows: false, links: false, notifications: false, tray: false }), post() {} }) });
+  });
+  const surfaces: string[] = [];
+  page.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith("/api/presses")) { const b = JSON.parse(r.postData() ?? "{}"); if (b.presses?.length) surfaces.push(b.surface); } });
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Press app" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("session-menu").click();
+  await expect.poll(() => surfaces.length, { timeout: 30_000 }).toBeGreaterThan(0);
+  expect(new Set(surfaces)).toEqual(new Set(["desktop"]));
+  await expect.poll(async () => (await (await request.get("/api/presses")).json()).surfaces.map((s: any) => s.surface), { timeout: 30_000 }).toEqual(["desktop"]);
   await request.delete("/api/sessions/" + session.id);
 });

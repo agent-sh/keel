@@ -80,3 +80,15 @@ test("the report: most used first per view, and the controls drawn but not press
   expect(r.never.find((n) => n.control === "unused")!.views.split(",").sort()).toEqual(["new", "session"]);
   expect(pressReport(d, { now: NOW, days: 90 }).never.map((n) => n.control)).toEqual(["unused"]);
 });
+
+test("the report splits the presses by where the page ran", () => {
+  const d = db();
+  const one = (surface: "page" | "desktop" | "phone", n: number, at = NOW - DAY) =>
+    storePresses(d, { surface, presses: Array.from({ length: n }, () => ({ control: "fork", view: "session", session: null, ts: at })), seen: [] }, NOW);
+  one("page", 5);
+  one("desktop", 3);
+  one("phone", 1);
+  one("desktop", 9, NOW - 40 * DAY); // outside the range
+  expect(pressReport(d, { now: NOW }).surfaces).toEqual([{ surface: "page", presses: 5 }, { surface: "desktop", presses: 3 }, { surface: "phone", presses: 1 }]);
+  expect(pressReport(d, { now: NOW, days: 90 }).surfaces.find((s) => s.surface === "desktop")!.presses).toBe(12);
+});

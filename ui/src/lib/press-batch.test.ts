@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ASK_MS, Batcher, BATCH_MAX, FLUSH_MS, isDrawn, nameOf, QUEUE_MAX, SEEN_AGAIN_MS, type Body } from "./press-batch.ts";
+import { actsOn, ASK_MS, Batcher, BATCH_MAX, FLUSH_MS, isDrawn, nameOf, QUEUE_MAX, SEEN_AGAIN_MS, type Body } from "./press-batch.ts";
 
 // A clock and a beat the test drives; the sender records what it was given.
 function rig(answer: () => Promise<{ record: boolean } | void> = async () => ({ record: true })) {
@@ -150,4 +150,13 @@ test("a control is drawn when it is shown and not disabled", () => {
   expect(isDrawn(el({ disabled: true }))).toBe(false);
   expect(isDrawn(el({ aria: "true" }))).toBe(false);
   expect(isDrawn(el({ rects: 0 }))).toBe(false);
+});
+
+test("a press on a row's action is the row's session: its id, never a title", () => {
+  const row = (id: string | null) => ({ closest: (sel: string) => (sel === "[data-press-on]" && id !== null ? { getAttribute: (n: string) => (n === "data-press-on" ? id : null) } : null) });
+  expect(actsOn(row("01a1fb6f-d40c-71f2-8ef4-d02c9006567a"))).toBe("01a1fb6f-d40c-71f2-8ef4-d02c9006567a");
+  expect(actsOn(row(null))).toBeUndefined();
+  // A title, or anything not shaped like an id, is dropped.
+  expect(actsOn(row("Fix the login bug"))).toBeUndefined();
+  expect(actsOn(row(""))).toBeUndefined();
 });

@@ -1,7 +1,7 @@
 // What the owner presses, kept on this machine (src/admin/presses.ts is the
 // other end, Settings > Telemetry reads it back). One capture listener on the
 // page notes a press on a control: a button, a link, a menu item, a tab, a
-// switch. The control is named by `data-press`, else by the `data-testid` it
+// switch (a session's row is a link). The control is named by `data-press`, else by the `data-testid` it
 // already carries; a control with neither is not recorded. What is kept is
 // that name, the view, the session in view and the time: never a word typed,
 // never a value, and a text field's click is no press. The desktop app and a
@@ -12,13 +12,13 @@
 // after it changes and after a press), so "never pressed" has something to be
 // measured against.
 import { every } from "./clock.ts";
-import { Batcher, isDrawn, nameOf, type Body } from "./press-batch.ts";
+import { actsOn, Batcher, isDrawn, nameOf, type Body } from "./press-batch.ts";
 import { keyRan } from "./keys.ts";
 import { shell } from "./shell.ts";
 import { whileLinked } from "./store.ts";
 import { getUI, onUI, phone } from "./ui.ts";
 
-const CONTROL = "button, a[href], summary, [role=button], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=radio], [role=switch], [role=checkbox], [role=option], input[type=checkbox], input[type=radio], input[type=button], input[type=submit]";
+const CONTROL = "button, a[href], summary, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=radio], [role=switch], [role=checkbox], [role=option], input[type=checkbox], input[type=radio], input[type=button], input[type=submit]";
 const SCAN_MAX = 500;
 
 export const viewOf = (): string => {
@@ -50,10 +50,13 @@ async function send(b: Body, last: boolean): Promise<{ record: boolean } | void>
 export const batcher = new Batcher(send, every, () => (shell ? "desktop" : phone() ? "phone" : "page"));
 
 // A press that is not a click: a command run by its key. Named `key:<command>`.
-export const notePress = (name: string) => {
+// `on`: the session the press acts on when it is not the one in view (a row of the list): its id, never its title.
+export const notePress = (name: string, on?: string) => {
   const n = nameOf(name);
-  if (n) batcher.press(n, viewOf(), sessionOf());
+  if (n) batcher.press(n, viewOf(), on ?? sessionOf());
 };
+
+
 
 // The owner turned recording off or on (Settings > Telemetry).
 export const setRecording = (on: boolean) => { batcher.recording = on; };
@@ -83,7 +86,7 @@ export function installPresses() {
     const el = t?.closest?.(CONTROL);
     if (!el || disabled(el)) return;
     const name = controlName(el);
-    if (name) batcher.press(name, viewOf(), sessionOf());
+    if (name) batcher.press(name, viewOf(), actsOn(el) ?? sessionOf());
     scanSoon();
   }, { capture: true, passive: true });
   let at = viewOf();

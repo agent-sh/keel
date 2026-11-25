@@ -49,7 +49,7 @@ export const SpeedPicker = memo(function SpeedPicker({ sessionId }: { sessionId:
         <Menu.Positioner side="top" align="start" sideOffset={6} className="z-50 outline-none">
           <Menu.Popup className={cn(popupClass, "w-72")} data-testid="speed-menu">
             <div className="px-2 pt-1 pb-1.5 text-micro text-faint">Speed, from the next request</div>
-            <Menu.Item onClick={() => set(null)} className={cn(itemClass, "h-auto py-1.5")} data-testid="speed-option" data-speed="standard">
+            <Menu.Item onClick={() => set(null)} className={cn(itemClass, "h-auto py-1.5")} data-testid="speed-option" data-press="speed-standard" data-speed="standard">
               <span className="w-3.5 shrink-0">{!cur && <Check className="size-3.5 text-accent" />}</span>
               <span className="flex min-w-0 flex-col">
                 <span>Standard</span>
@@ -57,7 +57,7 @@ export const SpeedPicker = memo(function SpeedPicker({ sessionId }: { sessionId:
               </span>
             </Menu.Item>
             {model.speeds.map((o) => (
-              <Menu.Item key={o.id} onClick={() => set(o.id)} className={cn(itemClass, "h-auto py-1.5")} data-testid="speed-option" data-speed={o.id}>
+              <Menu.Item key={o.id} data-press={`speed-${o.id}`} onClick={() => set(o.id)} className={cn(itemClass, "h-auto py-1.5")} data-testid="speed-option" data-speed={o.id}>
                 <span className="w-3.5 shrink-0">{cur?.id === o.id && <Check className="size-3.5 text-accent" />}</span>
                 <span className="flex min-w-0 flex-col">
                   <span>{o.label}</span>

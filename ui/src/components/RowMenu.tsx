@@ -38,7 +38,7 @@ export function RowMenu({ at, onClose, pinned, archived, beside, onPin, onMove, 
       <Menu.Portal>
         <Menu.Positioner anchor={anchor} side="bottom" align="start" sideOffset={2} className="z-50 outline-none">
           {/* (The menu is drawn in a portal but stands under its row in the tree: a press in it must not open the session as a press on the row does.) */}
-          <Menu.Popup className={`${popupClass} min-w-48`} data-testid="row-menu" onClick={(e) => e.stopPropagation()}>
+          <Menu.Popup className={`${popupClass} min-w-48`} data-testid="row-menu" data-press-on={session?.id} onClick={(e) => e.stopPropagation()}>
             {onRename && item("row-menu-rename", <Pencil />, "Rename", onRename, "f2")}
             {!archived && item("row-menu-pin", pinned ? <PinOff /> : <Pin />, pinned ? "Unpin" : "Pin to the top", onPin)}
             {pinned && onMove && item("row-menu-up", <ArrowUp />, "Move up", () => onMove(-1), "alt+arrowup")}
@@ -82,7 +82,7 @@ function MoveTo({ id, at }: { id: string; at: string | null }) {
       </Menu.SubmenuTrigger>
       <Menu.Portal>
         <Menu.Positioner side="right" align="start" sideOffset={2} className="z-50 outline-none">
-          <Menu.Popup className={`${popupClass} min-w-44 max-w-72`} data-testid="row-menu-folders" onClick={(e) => e.stopPropagation()}>
+          <Menu.Popup className={`${popupClass} min-w-44 max-w-72`} data-testid="row-menu-folders" data-press-on={id} onClick={(e) => e.stopPropagation()}>
             {tree(list).flatMap(({ folder, kids }) => [one(folder.id, folder.name, false), ...kids.map((k) => one(k.id, k.name, true))])}
             {list.length > 0 && <Menu.Separator className="mx-1 my-1 h-px bg-line" />}
             {at && (

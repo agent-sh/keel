@@ -466,6 +466,7 @@ export const EffortPicker = memo(function EffortPicker({ sessionId, openSignal }
             {efforts.map((e) => (
               <Menu.Item
                 key={e}
+                data-press={`effort-${e}`}
                 onClick={() => { if (e !== cur) switchSession(sessionId, { effort: e }).catch(reportError); }}
                 className={itemClass}
               >

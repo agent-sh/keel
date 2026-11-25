@@ -27,6 +27,14 @@ export function nameOf(raw: string | null | undefined): string | null {
   return /^[A-Za-z][A-Za-z0-9_.:/*-]{0,63}$/.test(n) ? n : null;
 }
 
+// The session a control acts on when it is not the one in view: a row of the list, or the menu of a row, says so with
+// `data-press-on`. Its id, never its title; anything that is not shaped like an id is dropped.
+export const ON_ID = /^[A-Za-z0-9-]{8,64}$/;
+export function actsOn(el: { closest(selector: string): { getAttribute(name: string): string | null } | null }): string | undefined {
+  const id = el.closest("[data-press-on]")?.getAttribute("data-press-on");
+  return id && ON_ID.test(id) ? id : undefined;
+}
+
 export type Pressed = { c: string; v: string; s?: string; t: number };
 export type Drawn = { c: string; v: string };
 export type Body = { surface: "page" | "desktop" | "phone"; presses: Pressed[]; seen: Drawn[] };

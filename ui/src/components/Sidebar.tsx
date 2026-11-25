@@ -65,6 +65,7 @@ import { selected, selectRange, toggleSelected, useIsSelected } from "../lib/sel
 import { SelectBar } from "./SelectBar.tsx";
 import { calls, useSettled, useSettledState, useSettledStates } from "../lib/settle.ts";
 import { afterSize } from "../lib/after-size.ts";
+import { notePress } from "../lib/presses.ts";
 
 // How long a finger rests on a row before it is marked.
 const LONG_PRESS_MS = 450;
@@ -324,6 +325,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
       tabIndex={0}
       data-testid="session-row"
       data-session={s.id}
+      data-press-on={s.id}
       data-watch={w}
       data-shown={shown || undefined}
       data-unread={unread || undefined}
@@ -376,6 +378,7 @@ function RowOf({ s: given, active, where, gone, calm, said }: { s: Session; acti
         if (e.key !== "Enter") return;
         // Shift Enter: the menu of panes, to place the session in one of them.
         if (e.shiftKey && panes > 1 && !restore && !phone()) { e.preventDefault(); return setPlacing(true); }
+        notePress("session-row", s.id);
         open(e.ctrlKey || e.metaKey);
       }}
       className="k-row group"

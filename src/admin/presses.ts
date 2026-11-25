@@ -115,6 +115,8 @@ export type NeverRow = { control: string; views: string; seen_since_ms: number }
 export type PressReport = {
   since_ms: number; days: number; presses: number; first_ms: number | null; rows: number; row_cap: number; kept_days: number;
   views: ViewRow[]; never: NeverRow[];
+  // The window's presses by where the page ran: a browser tab, the desktop app, a phone.
+  surfaces: { surface: string; presses: number }[];
 };
 
 const PER_VIEW = 30;
@@ -139,10 +141,12 @@ export function pressReport(db: Database, a: { now?: number; days?: number } = {
     `SELECT control, GROUP_CONCAT(view) AS views, MIN(first_ts) AS since FROM press_seen
       WHERE last_ts >= ? AND control NOT IN (SELECT DISTINCT control FROM presses WHERE ts >= ?)
       GROUP BY control ORDER BY since, control LIMIT ?`).all(since, since, NEVER_MAX);
+  const surfaces = db.query<{ surface: string; n: number }, [number]>("SELECT surface, COUNT(*) AS n FROM presses WHERE ts >= ? GROUP BY surface ORDER BY n DESC, surface").all(since);
   const total = db.query<{ n: number; first: number | null }, []>("SELECT COUNT(*) AS n, MIN(ts) AS first FROM presses").get()!;
   return {
     since_ms: since, days, presses: [...byView.values()].reduce((n, v) => n + v.presses, 0), first_ms: total.first, rows: total.n, row_cap: PRESS_ROWS, kept_days: PRESS_DAYS,
     views: [...byView.values()].sort((x, y) => y.presses - x.presses || x.view.localeCompare(y.view)),
+    surfaces: surfaces.map((r) => ({ surface: r.surface, presses: r.n })),
     never: never.map((r) => ({ control: r.control, views: r.views, seen_since_ms: r.since })),
   };
 }

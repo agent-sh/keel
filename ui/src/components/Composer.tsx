@@ -9,6 +9,7 @@ import { promptArgAt, type PromptArg } from "../lib/prompt-args.ts";
 import { loadAgentCommands } from "../lib/acp-commands.ts";
 import { fromBlock, MAX_EDGE, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { boxRefused, ownFocus, takeKeys } from "../lib/asks.ts";
+import { notePress } from "../lib/presses.ts";
 import { BACKGROUND_KEYS, composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, keepText, keptText, textTaken, typing, type Draft } from "../lib/drafts.ts";
@@ -1198,6 +1199,7 @@ const SessionComposer = memo(function SessionComposer({
             if (e.repeat) return;
             const no = canSend ? boxRefused(e.currentTarget) : "";
             if (no) return setNotice(no);
+            notePress("key:start-background");
             return submit(false, true);
           }
           if (queues || (e.key === "Enter" && !e.altKey && ((enterSends && !e.shiftKey && !mod) || (!enterSends && mod)))) {
@@ -1209,6 +1211,8 @@ const SessionComposer = memo(function SessionComposer({
             if (e.repeat) return;
             const no = canSend ? boxRefused(e.currentTarget) : "";
             if (no) return setNotice(no);
+            // (The keys that send are a press the page records, as a button is: lib/presses.ts.)
+            notePress(queues && !!working && !!onQueue ? "key:queue" : "key:send");
             submit(queues && !!working && !!onQueue);
           }
           // Tab with a draft while a turn runs goes to the queue button (Enter there queues),
