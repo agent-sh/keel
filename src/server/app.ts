@@ -112,7 +112,7 @@ const PAGES = ["/", "/s/:id", "/p/:id", "/settings", "/settings/:section", "/cus
 // memory: a request to one brings nothing in (Store.warm). A session brought in stays for an hour,
 // so a reader that asks one of these of every session (a page of timelines, a sampler) would
 // otherwise hold every session's events in memory, up to the whole budget.
-const TABLE_READS = new Set(["GET /api/sessions/:id/timeline"]);
+const TABLE_READS = new Set(["GET /api/sessions/:id/timeline", "GET /api/sessions/:id/events"]);
 
 // The route a request matched, as it is registered: each value of its path is its parameter's name.
 function routeOf(req: Request & { params?: Record<string, string> }): string {
@@ -158,6 +158,23 @@ export async function outsideRefused(req: Request, route: string): Promise<boole
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 // The size of the parts a whole session's answer is sent in.
 const WHOLE_PART = 1 << 20;
+// An answer the read thread wrote (a whole session, or its events). A long one goes out a part at a time,
+// the loop free between the parts: tens of megabytes handed to the socket in one piece are copied where
+// every other session waits.
+function wholeAnswer(whole: { body: Uint8Array<ArrayBuffer>; coding: string | null }): Response {
+  const headers = { "content-type": "application/json;charset=utf-8", ...(whole.coding ? { "content-encoding": whole.coding, vary: "Accept-Encoding" } : {}) };
+  if (whole.body.length <= WHOLE_PART) return new Response(whole.body, { headers });
+  let at = 0;
+  return new Response(new ReadableStream<Uint8Array>({
+    pull(c) {
+      c.enqueue(whole.body.subarray(at, (at += WHOLE_PART)));
+      if (at >= whole.body.length) c.close();
+    },
+  }), { headers });
+}
+// A cursor read of fewer events than this after its seq is made on the loop (a follower polling a session): the
+// bodies it reads are warmed first. Longer, and every read that reaches back to the start of a session, goes to the read thread.
+const CURSOR_MAX = 256;
 // Bun's default idle timeout, and the point where a handler counts as slow.
 const IDLE_S = 10;
 const SLOW_MS = 8_000;
@@ -383,18 +400,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             const s = session(req.params.id)!;
             const head = `{"session":${JSON.stringify(s)},"events":`;
             const tail = `,${JSON.stringify({ running: engine.isRunning(s.id), bytes_per_token: bytesPerToken(s.model), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() }).slice(1)}`;
-            const whole = await readsOf(store).run("session.whole", { session: s.id, head, tail, coding: codingOf(req) });
-            const headers = { "content-type": "application/json;charset=utf-8", ...(whole.coding ? { "content-encoding": whole.coding, vary: "Accept-Encoding" } : {}) };
-            // A long answer goes out a part at a time, the loop free between the parts: tens of megabytes
-            // handed to the socket in one piece are copied where every other session waits.
-            if (whole.body.length <= WHOLE_PART) return new Response(whole.body, { headers });
-            let at = 0;
-            return new Response(new ReadableStream<Uint8Array>({
-              pull(c) {
-                c.enqueue(whole.body.subarray(at, (at += WHOLE_PART)));
-                if (at >= whole.body.length) c.close();
-              },
-            }), { headers });
+            return wholeAnswer(await readsOf(store).run("session.whole", { session: s.id, head, tail, coding: codingOf(req) }));
           }
           // A part of a transcript that is not in memory: its events are
           // brought in without their bodies, a part at a time, and what is
@@ -654,10 +660,22 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         }),
       },
 
+      // `?after=SEQ`: the events after that seq. A read of a long stretch (the whole session, or a cursor far
+      // back) is written on the read thread from the rows as stored, like the whole session above: the loop reads,
+      // parses, writes and compresses none of it. A cursor close to the end of a session in memory is a few runs,
+      // read here after their bodies were warmed off the loop. `seq` is the newest of the events answered.
       "/api/sessions/:id/events": {
-        GET: wrap((req) => {
-          const after = Number(new URL(req.url).searchParams.get("after") ?? 0);
-          return json({ events: store.events(req.params.id, after) });
+        GET: wrap(async (req) => {
+          const id = req.params.id;
+          const after = Math.max(0, Number(new URL(req.url).searchParams.get("after") ?? 0) || 0);
+          if (!store.session(id)) return json({ events: [], seq: 0 });
+          // (A session in memory, read a little way back: a follower's poll.)
+          if (after > 0 && store.isKept(id) && store.lastSeq(id) - after <= CURSOR_MAX) {
+            await store.warmBodies(id, after + 1);
+            const events = store.events(id, after);
+            return json({ events, seq: events.at(-1)?.seq ?? 0 });
+          }
+          return wholeAnswer(await readsOf(store).run("session.whole", { session: id, head: '{"events":', tail: "}", coding: codingOf(req), after }));
         }),
       },
 

@@ -57,7 +57,7 @@ A session from any unique prefix of its id (`?id=PREFIX`).
 
 The session's stored events after a seq (`?after=SEQ`), in order. Each has `id`, `session_id`, `seq`, `ts`, `kind` and `data`.
 
-- Response: `{ events }`. Kinds a script reads: `user`, `assistant` (`data.blocks`: text, thinking, tool_use), `tool_result` (`data.results`), `turn_start`, `turn_end` (`data.reason`, `data.usage`), `error` (`data.message`).
+- Response: `{ events, seq }` (`seq`: the newest of the events answered). Kinds a script reads: `user`, `assistant` (`data.blocks`: text, thinking, tool_use), `tool_result` (`data.results`), `turn_start`, `turn_end` (`data.reason`, `data.usage`), `error` (`data.message`).
 
 ### POST /api/sessions/:id/interrupt
 

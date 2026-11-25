@@ -73,3 +73,18 @@ test("a session of several parts is the same answer under every coding", async (
   }
   store.db.close();
 });
+
+// The events route's answer (`{ events, seq }`): the events after a cursor, as the store hands them out.
+test("the events after a seq are written from the rows, the newest seq with them", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-whole-"));
+  dirs.push(dir);
+  const store = new Store(dir);
+  const s = store.createSession({ model: "m", workspace: "/" });
+  for (let i = 0; i < 6; i++) store.append(s.id, i % 2 ? "assistant" : "user", i % 2 ? { blocks: [{ type: "text", text: `a${i}` }] } : { text: `u${i}` });
+  const ask = { session: s.id, head: '{"events":', tail: "}", coding: null } as const;
+  for (const after of [0, 2, 5, 6]) {
+    const got = await sessionWhole(store.db, { ...ask, after });
+    expect(new TextDecoder().decode(got.body)).toBe(JSON.stringify({ events: store.events(s.id, after), seq: after >= 6 ? 0 : 6 }));
+  }
+  store.db.close();
+});

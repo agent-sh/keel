@@ -26,7 +26,7 @@ export const STABLE: StableRoute[] = [
   { method: "GET", path: "/api/cli/resolve", what: "A session from any unique prefix of its id (`?id=PREFIX`).", response: "`{ session }`" },
   {
     method: "GET", path: "/api/sessions/:id/events", what: "The session's stored events after a seq (`?after=SEQ`), in order. Each has `id`, `session_id`, `seq`, `ts`, `kind` and `data`.",
-    response: "`{ events }`. Kinds a script reads: `user`, `assistant` (`data.blocks`: text, thinking, tool_use), `tool_result` (`data.results`), `turn_start`, `turn_end` (`data.reason`, `data.usage`), `error` (`data.message`).",
+    response: "`{ events, seq }` (`seq`: the newest of the events answered). Kinds a script reads: `user`, `assistant` (`data.blocks`: text, thinking, tool_use), `tool_result` (`data.results`), `turn_start`, `turn_end` (`data.reason`, `data.usage`), `error` (`data.message`).",
   },
   { method: "POST", path: "/api/sessions/:id/interrupt", what: "Stops the turn that runs and answers when it has ended. A session with no turn is left as it is. Body `{ \"by\": \"owner\" }` when the owner asked for it: that is their Stop, after which the queue waits for them and a goal pauses. Without it only the turn ends.", response: "`{ ok: true }`" },
   { method: "GET", path: "/api/sessions/:id/permissions", what: "The session's permission mode.", response: "`{ perm: { mode, ... }, scope, rev }`" },

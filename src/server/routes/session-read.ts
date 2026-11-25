@@ -14,7 +14,8 @@ import { encode, MIN_BYTES, type Enc } from "../compress.ts";
 
 // `head`: the answer's text up to its events; `tail`: its text after the
 // session's newest seq. `coding`: what the request takes, null for none.
-export type WholeAsk = { session: string; head: string; tail: string; coding: Enc | null };
+// `after`: only the events after this seq (all of them when it is not given).
+export type WholeAsk = { session: string; head: string; tail: string; coding: Enc | null; after?: number };
 // `coding`: what `body` is compressed with, null when it is not. `transfer`: what is handed to the loop without a copy.
 export type Whole = { body: Uint8Array<ArrayBuffer>; coding: Enc | null; events: number; transfer?: ArrayBuffer[] };
 
@@ -63,9 +64,9 @@ export async function sessionWhole(db: Database, a: WholeAsk): Promise<Whole> {
   put(a.head);
   put("[");
   let seq = 0, n = 0;
-  const rows = db.prepare<{ id: string; seq: number; parent: string | null; kind: string; data: string; ts: number }, [string]>("SELECT id, seq, parent, kind, data, ts FROM events WHERE session_id = ? ORDER BY seq");
+  const rows = db.prepare<{ id: string; seq: number; parent: string | null; kind: string; data: string; ts: number }, [string, number]>("SELECT id, seq, parent, kind, data, ts FROM events WHERE session_id = ? AND seq > ? ORDER BY seq");
   try {
-    for (const r of rows.iterate(a.session)) {
+    for (const r of rows.iterate(a.session, a.after ?? 0)) {
       // (An event as the store hands it out: its fields in this order.)
       put(`${n++ ? "," : ""}{"id":${JSON.stringify(r.id)},"session_id":${sid},"seq":${r.seq},"parent":${r.parent === null ? "null" : JSON.stringify(r.parent)},"kind":${JSON.stringify(r.kind)},"data":`);
       put(r.data);
