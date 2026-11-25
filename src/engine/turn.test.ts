@@ -2,7 +2,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { Message, StoredEvent } from "../core/types.ts";
-import { cutOf, followUpMark, noDearer, RESTART_CUT, stalledContinuations, toMessages, unanswered, withPending } from "./turn.ts";
+import { cutOf, followUpMark, noDearer, RESTART_CUT, stalledContinuations, toMessages, toolLimits, unanswered, withPending } from "./turn.ts";
 import { checkpointAt, keptMessages } from "./compact.ts";
 import { allHooks } from "./hooks.ts";
 
@@ -1398,4 +1398,10 @@ test("a restart between a stored follow-up and its first step keeps the follow-u
   expect(followUpMark([prompt, start])).toEqual({ way: "carry", focus: "Go on with the second part." });
   expect(followUpMark([prompt, start, cut, restart, ev("fu3b", "fu3", "turn_start", {})])).toEqual({ way: "carry", focus: "Go on with the second part." });
   expect(followUpMark([prompt, start, ev("fu4", "fu3", "assistant", { blocks: [] })])).toBeUndefined();
+});
+
+test("a tool step's time limit is read from the call's timeout or timeout_ms", () => {
+  const use = (input: unknown) => ({ type: "tool_use" as const, id: "u", name: "Bash", input });
+  expect(toolLimits([use({ timeout: 5000 }), use({ timeout_ms: 7000 }), use({ timeout: 0 }), use({ command: "ls" })])).toEqual([5000, 7000]);
+  expect(toolLimits([use({ timeout: 5000, timeout_ms: 9000 })])).toEqual([5000]);
 });

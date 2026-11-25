@@ -191,6 +191,11 @@ export const MAX_CONTINUATIONS = 3;
 // Rebuild the wire conversation from the stored events of one branch (oldest
 // first). Pure: the same events always give the same bytes, so the provider's
 // prefix cache holds across turns.
+// The time limit each call of a tool step asked for (its `timeout` or `timeout_ms`), in ms, the ones that are numbers above zero.
+export function toolLimits(uses: ToolUseBlock[]): number[] {
+  return uses.map((u) => Number((u.input as any)?.timeout ?? (u.input as any)?.timeout_ms)).filter((x) => Number.isFinite(x) && x > 0);
+}
+
 export function toMessages(events: readonly StoredEvent[]): Message[] {
   const cp = checkpointAt(events);
   const out: Message[] = [];
@@ -3903,7 +3908,7 @@ export class Engine {
     try {
       past = this.store.db.query<{ ms: number }, [string, string]>("SELECT ms FROM telemetry_tools WHERE session_id = ? AND tool = ? AND ms IS NOT NULL ORDER BY ts DESC LIMIT 20").all(id, name).map((r) => r.ms);
     } catch {} // a store without telemetry
-    const limits = uses.map((u) => Number((u.input as any)?.timeout ?? (u.input as any)?.timedroppedms)).filter((x) => Number.isFinite(x) && x > 0);
+    const limits = toolLimits(uses);
     return { kind: `tool:${name}`, ...(past.length ? { past } : {}), ...(limits.length === uses.length ? { deadline: Date.now() + Math.max(...limits) } : {}) };
   }
 
