@@ -11,7 +11,7 @@ import { whose } from "../engine/compact.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { readsOf } from "../server/reads.ts";
 import type { Store } from "../core/store.ts";
-import { pendingAsks, pendingQuestions, relay } from "../tools/interact.ts";
+import { askedOf, pendingAsks, pendingQuestions, relay } from "../tools/interact.ts";
 import * as activityLog from "../automation/activity.ts";
 import { relayAnswers } from "./relay.ts";
 import { registerSessionTools } from "../tools/registry.ts";
@@ -264,7 +264,7 @@ const approval: Tool = {
 // The owner's typed answer to another session's question, carried as his words (relay.ts checks they are).
 const relayTool: Tool = {
   name: "helper__relay_answer",
-  description: "Answer another session's open question (a model's question to the owner, or a server's form) with the owner's own words from his message to you, when he answered it here. event: the id of his message in this conversation; each answer quotes his words verbatim (never your own) and names the question id when the card asks several. A permission card is not a question: it is answered only with helper__approval.",
+  description: "Answer another session's open question (a model's question to the owner) with the owner's own words from his message to you, when he answered it here after it was asked. event: the id of his message in this conversation; each answer quotes his whole message or one whole sentence of it verbatim (never your own words, never part of a sentence) and names the question id when the card asks several. A server's form and a permission card are not relayed: the owner answers a form himself, and a permission card only with helper__approval.",
   input_schema: {
     type: "object",
     properties: {
@@ -276,7 +276,7 @@ const relayTool: Tool = {
     required: ["session", "event", "answers"], additionalProperties: false,
   },
   readOnly: false, kind: "own",
-  run: (input, ctx) => guard(() => {
+  run: (input, ctx) => guard(async () => {
     const { store } = H!.deps;
     if (!H!.isHelper(ctx.sessionId)) throw new Error("only the owner's helper relays his answers");
     const s = find(String(input.session));
@@ -285,10 +285,15 @@ const relayTool: Tool = {
     if (!call) throw new Error(waiting.length ? `${s.title || s.id} waits on ${waiting.length} questions: name the call (${waiting.join(", ")})` : `${s.title || s.id} waits on no question`);
     const qs = pendingAsks(s.id, call);
     if (!qs) throw new Error(`no open question ${call} in ${s.title || s.id}${perm.gate?.approvals({ session: s.id, pending: true }).some((a) => a.call_id === call) ? ": that is a permission card, answered only with helper__approval" : ""}`);
-    const r = relayAnswers(store.lineage(ctx.sessionId), { event: String(input.event), answers: input.answers }, qs);
+    if (askedOf(s.id, call)) throw new Error("Refused: this is a server's form (an MCP elicitation): the owner answers it on its card himself.");
+    // When the question was asked: the call that asks it, as its session stored it (a restart asks it again under the same call).
+    await store.warm(s.id, false);
+    const asked = store.lineage(s.id).find((e) => e.kind === "assistant" && (e.data.blocks as any[] | undefined)?.some((b) => b.type === "tool_use" && b.id === call));
+    await store.warm(ctx.sessionId, false);
+    const r = relayAnswers(store.lineage(ctx.sessionId), { event: String(input.event), answers: input.answers }, qs, asked?.ts ?? Date.now());
     if ("refused" in r) throw new Error(`Refused: ${r.refused}.`);
-    const sent = relay(s.id, call, r.answers, { by: "helper", session: ctx.sessionId, event: String(input.event), quotes: r.quotes });
-    if (sent === "unsent") throw new Error("Refused: this form asks for what looks like a secret: the owner answers it himself.");
+    const sent = relay(s.id, call, r.answers, { by: "helper", session: ctx.sessionId, event: String(input.event), quotes: r.quotes, message: r.message });
+    if (sent === "form") throw new Error("Refused: this is a server's form (an MCP elicitation): the owner answers it on its card himself.");
     if (sent !== true) throw new Error("the question is no longer open");
     const words = Object.values(r.quotes).map((q) => `"${q}"`).join("; ");
     activityLog.record("ruling", "relayed", s.id, `The owner's answer, relayed by the Helper from his message ${input.event}: ${words}`, { call_id: call, helper_session: ctx.sessionId, event: String(input.event) });

@@ -54,7 +54,8 @@ export const standing: {
 // `relayed`: the owner's answer came through his helper, from his own words in its conversation (src/helper/relay.ts).
 export type Got = { answers: Answers; ruled?: Ruled; offer?: Offer; relayed?: Relayed };
 // An answer the helper relayed: its conversation, the owner's message there it quotes, and his words verbatim per question.
-export type Relayed = { by: "helper"; session: string; event: string; quotes: Record<string, string> };
+// `message`: his whole message, which the session reads beside the quotes.
+export type Relayed = { by: "helper"; session: string; event: string; quotes: Record<string, string>; message: string };
 const relays = new Map<string, Relayed>();
 
 // The model's own question: the card reads it from the call's input.
@@ -84,7 +85,7 @@ async function card(ctx: ToolContext, qs: Question[]): Promise<Got | null> {
 export const shownOf = (g: Got) => ({ answers: g.answers, ...(g.ruled ? { ruling: g.ruled.shown } : {}), ...(g.offer ? { offer: g.offer } : {}), ...(g.relayed ? { relayed: g.relayed } : {}) });
 // What the model reads first of an answer the helper relayed: whose words they are and where they were said.
 export const relayNote = (r: Relayed) =>
-  `The owner answered through his helper: these are his own words, quoted verbatim from his message ${r.event} in the helper's conversation (session ${r.session}). ${Object.entries(r.quotes).map(([q, w]) => `Question ${q}: "${w}"`).join("; ")}.`;
+  `The owner answered through his helper: these are his own words, quoted verbatim from his message ${r.event} in the helper's conversation (session ${r.session}). ${Object.entries(r.quotes).map(([q, w]) => `Question ${q}: "${w}"`).join("; ")}.\nHis whole message there: "${r.message}"`;
 // The result text with the ruling named first, when one answered, or the relay's note.
 export const ruledText = (g: Got, text: string) => (g.ruled ? `${g.ruled.note}\n\n${text}` : g.relayed ? `${relayNote(g.relayed)}\n\n${text}` : text);
 
@@ -149,17 +150,17 @@ export const pendingAsks = (sessionId: string, callId: string): Question[] | und
 };
 
 // The owner's answer relayed by his helper (src/helper/relay.ts checks the words are his first): the card is
-// answered with them and the call's result says whose words they are and where he said them. A server's form that
-// asks for what looks like a secret takes no relay.
-export function relay(sessionId: string, callId: string, answers: Answers, r: Relayed): boolean | "unsent" | "stale" {
+// answered with them and the call's result says whose words they are and where he said them. A server's form takes
+// no relay: it stays the owner's.
+export function relay(sessionId: string, callId: string, answers: Answers, r: Relayed): boolean | "form" {
   const p = pending.get(keyOf(sessionId, callId));
   if (!p) return false;
-  if (p.question.asked?.sensitive) return "unsent";
-  // (A server's form takes the words as its answer; the model's own question also reads whose words they are.)
-  if (!p.question.asked) relays.set(keyOf(sessionId, callId), r);
-  const sent = answer(sessionId, callId, answers, false, p.question.asked?.id);
+  // A server's form (an MCP elicitation) is answered by the owner on its own card: what it fills goes to the server.
+  if (p.question.asked) return "form";
+  relays.set(keyOf(sessionId, callId), r);
+  const sent = answer(sessionId, callId, answers);
   if (sent !== true) relays.delete(keyOf(sessionId, callId));
-  return sent;
+  return sent === true;
 }
 
 export const allPendingQuestions = () => Array.from(pending.values(), (p) => p.question);

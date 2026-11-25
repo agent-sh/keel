@@ -2020,11 +2020,14 @@ as a row of its digest, and again only when the card changed.
 A question is not a permission card. When the owner answers another
 session's question in the helper's conversation, the helper relays his words
 to that card (`helper__relay_answer`, `src/helper/relay.ts`): each answer must
-be a verbatim quote of one of his own messages there, named by its event, so
-the helper never answers a question in its own words. The session's model
-reads that the words are the owner's, relayed, and where he said them; the
-question's line says so, and so does the session's timeline. A server's form
-that asks for what looks like a secret takes no relay.
+be his whole message there or one whole sentence of it, verbatim, from a
+message he wrote after the question was asked, named by its event, so the
+helper never answers in its own words or with part of a sentence of his. His
+words pick an offered option only when his whole message is that option. The
+session's model reads that the words are the owner's, relayed, where he said
+them, and his whole message; the question's line says so, and so does the
+session's timeline. A server's form (an MCP elicitation) takes no relay: the
+owner answers it on its card.
 
 ## Memory observability
 
